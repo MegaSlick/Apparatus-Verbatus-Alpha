@@ -643,7 +643,9 @@ class ServingManager:
         except Exception as error:
             self._refuse(
                 identity,
-                ProcessLaunchError(f"unexpected serving start failure: {error}"),
+                ProcessLaunchError(
+                    f"unexpected serving start failure: {type(error).__name__}: {error}"
+                ),
                 also=self._attempt_cleanup(process, endpoint),
             )
             raise AssertionError(

@@ -124,7 +124,7 @@ class SubprocessLauncher:
         *,
         inheritable_fds: tuple[int, ...] = (),
     ) -> ServerProcess:
-        log_path.parent.mkdir(parents=True, exist_ok=True)
+        _create_owner_only_directories(log_path.parent)
         if any(not isinstance(fd, int) or isinstance(fd, bool) or fd < 0 for fd in inheritable_fds):
             raise ProcessLaunchError("inherited file descriptors must be non-negative integers")
         handle: IO[bytes] | None = None
@@ -149,3 +149,24 @@ class SubprocessLauncher:
                     handle.close()
             raise ProcessLaunchError(f"could not launch vLLM argv: {error}") from error
         return PopenServerProcess(process, log_path, handle)
+
+
+def _create_owner_only_directories(directory: Path) -> None:
+    """Create only the missing path segments at 0700; leave existing ones unchanged."""
+
+    missing: list[Path] = []
+    current = directory
+    while not current.exists():
+        missing.append(current)
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    for path in reversed(missing):
+        try:
+            path.mkdir(mode=0o700)
+        except FileExistsError:
+            if not path.is_dir():
+                raise
+            continue
+        path.chmod(0o700)

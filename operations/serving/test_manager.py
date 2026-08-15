@@ -1355,6 +1355,31 @@ def test_registry_refusal_and_failed_cleanup_are_reported_together(tmp_path: Pat
     assert launcher.processes[0].kill_calls == 1
 
 
+def test_unexpected_start_failure_names_its_exception_type_in_the_refusal(tmp_path: Path) -> None:
+    chair = identity("reader", "reader-v1")
+    manager, _, _, launcher, registry, _ = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+        ),
+        model_ids=("reader-api",),
+    )
+
+    def fail_audit(**unused):  # type: ignore[no-untyped-def]
+        raise LookupError("injected audit construction failure")
+
+    manager._launch_audit = fail_audit  # type: ignore[method-assign]
+
+    with pytest.raises(ServingRecipeRefusal, match="LookupError"):
+        manager.start(chair, TIER)
+
+    assert "LookupError: injected audit construction failure" in registry.refusals[-1][1]
+    assert launcher.processes[0].terminate_calls == 1
+
+
 def test_interrupt_during_start_stops_the_child_and_preserves_the_interrupt(
     tmp_path: Path,
 ) -> None:
@@ -1507,6 +1532,28 @@ def test_subprocess_launcher_creates_its_log_file_owner_only_from_the_start(
     assert process.wait(3) == 0
     mode = stat.S_IMODE((tmp_path / "child.log").stat().st_mode)
     assert mode == 0o600, f"expected owner-only 0o600, got {oct(mode)}"
+
+
+def test_subprocess_launcher_creates_new_parent_segments_owner_only(
+    tmp_path: Path,
+) -> None:
+    preexisting = tmp_path / "preexisting"
+    preexisting.mkdir()
+    preexisting.chmod(0o755)
+    log_path = preexisting / "first-new" / "second-new" / "child.log"
+
+    old_umask = os.umask(0o022)
+    try:
+        process = SubprocessLauncher().launch((sys.executable, "-c", "pass"), log_path)
+    finally:
+        os.umask(old_umask)
+    assert process.wait(3) == 0
+
+    assert stat.S_IMODE(preexisting.stat().st_mode) == 0o755
+    for created in (preexisting / "first-new", log_path.parent):
+        mode = stat.S_IMODE(created.stat().st_mode)
+        assert mode == 0o700, f"expected owner-only 0o700, got {oct(mode)} for {created}"
+    assert stat.S_IMODE(log_path.stat().st_mode) == 0o600
 
 
 def _wait_until(predicate: Callable[[], bool], *, timeout_seconds: float = 5.0) -> None:
@@ -3280,7 +3327,7 @@ def test_the_placement_pixel_cap_is_a_longest_edge_and_max_pixels_is_a_count(
         manager, lambda *args: pytest.fail("stop before the launch"), gpu_profile=measured_gpu()
     )
     # It gets past the capacity check and into the lifecycle, which is the point.
-    with pytest.raises(BaseException) as refused:
+    with pytest.raises(pytest.fail.Exception, match=r"^stop before the launch$") as refused:
         reader.read(chair, fixture, placement)
     assert "exceeds measured placement limits" not in str(refused.value)
 
