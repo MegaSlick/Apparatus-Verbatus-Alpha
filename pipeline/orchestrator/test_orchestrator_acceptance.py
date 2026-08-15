@@ -389,8 +389,15 @@ FIXTURE = "synthetic-two-page-v0"
 # though serving assembly writes no new file into these offline fixture runs.
 # Fresh real orchestrator runs measured 54 files for happy (exit 0) and 58 files
 # for review (exit 3); the counts and digests below came from those same trees.
-HAPPY_RUN_TREE_DIGEST = "2f2c0d6491205c7d6bfbba2ce04867b0107d7e34c38fdb0d3353cb3d999dde90"
-REVIEW_RUN_TREE_DIGEST = "ebda7208e8389ea33db2eea8e60fdd7281bc41e7fc5480e178e69e4d3972eba8"
+#
+# Re-pinned for Stage SM CodeRabbit round 1 after correcting
+# `pod_placement.toml`'s square-image arithmetic: 1344, 1792 and 2304 total
+# pixels correspond to roughly 37x37, 42x42 and exactly 48x48 images, not one
+# 36x36 example. The file is sealed byte-for-byte, so this comment-only config
+# correction moves every dependent artifact. Fresh real runs again measured 54
+# files for happy (exit 0) and 58 for review (exit 3).
+HAPPY_RUN_TREE_DIGEST = "81750920eeaef4665cfa07066d5bec79b1c0d99c8e8e7de496af6212154b65f5"
+REVIEW_RUN_TREE_DIGEST = "f937e5997cc7c1c470e5b54c58e283964206860d6692afa91b49e4c304906196"
 
 
 def orchestrate(

@@ -22,8 +22,9 @@
 # `context_cap` is tokens.  `batch_size` is concurrent sequences.
 # `engine_memory_fraction` is a fraction of the card.  **`pixel_cap` is a
 # LONGEST-EDGE cap in pixels**, not a pixel count — 1344, 1792 and 2304 are
-# side lengths, and as counts they would describe a 36x36 image.  A serving
-# profile's `max_pixels` in `config/serving_recipes.toml` is the other thing:
+# side lengths; as total counts they would describe roughly 37x37, 42x42 and
+# exactly 48x48 images, respectively.  A serving profile's `max_pixels` in
+# `config/serving_recipes.toml` is the other thing:
 # a total pixel count, passed straight to vLLM's `--mm-processor-kwargs`,
 # where the old pipeline's proven values were 3136 (56x56) and 2359296
 # (1536x1536).  The two must never be compared directly; the sound relation is
