@@ -65,6 +65,7 @@ from .outcomes import (
     terminal_category,
     witness_coverage,
 )
+from .serving import SERVING_CONFIG_INPUTS_FIELDS, SERVING_CONFIG_INPUTS_SCHEMA
 from .stages import HANDOFFS, STAGES, stage_directory
 
 __all__ = [
@@ -80,6 +81,8 @@ __all__ = [
     "OutcomeClass",
     "REAL_INGRESS",
     "SCHEMA_LABEL",
+    "SERVING_CONFIG_INPUTS_FIELDS",
+    "SERVING_CONFIG_INPUTS_SCHEMA",
     "STAGES",
     "SchemaRefusal",
     "SYNTHETIC_FIXTURE_INGRESS",

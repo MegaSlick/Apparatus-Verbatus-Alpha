@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from pathlib import Path
 
@@ -65,6 +66,7 @@ def _context(tmp_path) -> tuple[StageContext, ChairIdentity]:
         adapter_revision=adapter_recipe_for(run, ATTESTATORES),
         args=object(),
         registry=registry,
+        serving_config_inputs=bindings["serving_config_inputs"],
     )
     identity = registry.resolve("attestator_1")
     assert isinstance(identity, ChairIdentity)
@@ -123,6 +125,209 @@ def test_serving_receipts_are_refused_as_stage_artifacts_and_accepted_as_run_rec
     receipt = context.tree.read_run_receipt(reference)
     assert receipt["chair"] == identity.role
     assert receipt["revision"] == identity.receipt_revision
+
+
+def test_serving_launch_audit_is_a_content_addressed_stage_blob(tmp_path):
+    context, _ = _context(tmp_path)
+    audit = {
+        "schema": "serving-launch-audit.v1",
+        "chair": "attestator_1",
+        "started_at": "2026-08-09T12:00:00Z",
+        "configuration_inputs": dict(context.serving_config_inputs),
+    }
+
+    first = context.write_serving_launch_audit(audit)
+    second = context.write_serving_launch_audit(audit)
+
+    assert first == second
+    stored = context.tree.read_bytes(first["relative_path"])
+    assert b'"configuration_inputs"' in stored
+    assert context.serving_config_inputs["serving_recipes_sha256"].encode() in stored
+    with pytest.raises(SchemaRefusal, match="non-empty"):
+        context.write_serving_launch_audit({})
+    with pytest.raises(SchemaRefusal, match="differ from the run-sealed"):
+        context.write_serving_launch_audit(
+            {
+                **audit,
+                "configuration_inputs": {
+                    **context.serving_config_inputs,
+                    "pod_placement_sha256": "0" * 64,
+                },
+            }
+        )
+    # The equality-mismatch case above exercises write_serving_launch_audit's
+    # own comparison against the run-sealed inputs; these three exercise
+    # _serving_config_inputs' own shape/format refusals, which a well-formed
+    # but differing digest does not reach.
+    without_inputs = {key: value for key, value in audit.items() if key != "configuration_inputs"}
+    with pytest.raises(SchemaRefusal, match="must contain exactly schema"):
+        context.write_serving_launch_audit(without_inputs)
+    with pytest.raises(SchemaRefusal, match="schema must be"):
+        context.write_serving_launch_audit(
+            {**audit, "configuration_inputs": {**context.serving_config_inputs, "schema": "wrong"}}
+        )
+    with pytest.raises(SchemaRefusal, match="must be lowercase SHA-256"):
+        context.write_serving_launch_audit(
+            {
+                **audit,
+                "configuration_inputs": {
+                    **context.serving_config_inputs,
+                    "serving_recipes_sha256": "F" * 64,
+                },
+            }
+        )
+
+
+def test_a_stage_context_with_no_run_sealed_serving_inputs_refuses_a_launch_audit(tmp_path):
+    """A hand-built StageContext, not constructed through open_context, cannot publish one."""
+    context, _ = _context(tmp_path)
+    bare = StageContext(
+        tree=context.tree,
+        run=context.run,
+        fixture=context.fixture,
+        scenario=context.scenario,
+        stage=context.stage,
+        adapter_revision=context.adapter_revision,
+        args=context.args,
+        registry=context.registry,
+        serving_config_inputs=None,
+    )
+    assert bare.serving_config_inputs is None
+    with pytest.raises(SchemaRefusal, match="no run-sealed serving configuration inputs"):
+        bare.write_serving_launch_audit(
+            {
+                "schema": "serving-launch-audit.v1",
+                "chair": "attestator_1",
+                "started_at": "2026-08-09T12:00:00Z",
+                "configuration_inputs": {
+                    "schema": "serving-config-inputs.v1",
+                    "serving_recipes_sha256": "0" * 64,
+                    "pod_placement_sha256": "0" * 64,
+                },
+            }
+        )
+
+
+def test_a_non_canonical_serving_blob_is_a_named_schema_refusal(tmp_path):
+    """A float anywhere in the payload must not escape as a bare TypeError."""
+    context, _ = _context(tmp_path)
+    audit = {
+        "schema": "serving-launch-audit.v1",
+        "chair": "attestator_1",
+        "started_at": "2026-08-09T12:00:00Z",
+        "configuration_inputs": dict(context.serving_config_inputs),
+        "gpu_memory_utilization": 0.85,
+    }
+    with pytest.raises(SchemaRefusal, match="is not canonical JSON data"):
+        context.write_serving_launch_audit(audit)
+
+
+def test_serving_evidence_manifest_durably_binds_receipt_and_launch_audit(tmp_path):
+    context, identity = _context(tmp_path)
+    details = fixture_serving_details(identity)
+    receipt_reference = context.write_serving_receipt(identity, details)
+    audit_reference = context.write_serving_launch_audit(
+        {
+            "schema": "serving-launch-audit.v1",
+            "chair": identity.role,
+            "started_at": details.started_at,
+            "configuration_inputs": dict(context.serving_config_inputs),
+        }
+    )
+
+    evidence_reference = context.write_serving_evidence_manifest(receipt_reference, audit_reference)
+    evidence = json.loads(context.tree.read_bytes(evidence_reference["relative_path"]))
+    assert evidence == {
+        "schema": "serving-evidence.v1",
+        "receipt_reference": receipt_reference,
+        "launch_audit_reference": audit_reference,
+    }
+    with pytest.raises(SchemaRefusal, match="malformed"):
+        context.write_serving_evidence_manifest(
+            {"relative_path": "/absolute", "sha256": "c" * 64}, audit_reference
+        )
+    with pytest.raises(SchemaRefusal, match="malformed"):
+        context.write_serving_evidence_manifest(
+            {"relative_path": "stages/preflight/../../escape", "sha256": "c" * 64}, audit_reference
+        )
+    with pytest.raises(SchemaRefusal, match="malformed"):
+        context.write_serving_evidence_manifest(
+            {"relative_path": "stages/preflight/blobs/sha256/x", "sha256": "not-a-digest"},
+            audit_reference,
+        )
+    with pytest.raises(SchemaRefusal, match="unknown or missing fields"):
+        context.write_serving_evidence_manifest({"relative_path": "x"}, audit_reference)
+    with pytest.raises(SchemaRefusal, match="unknown or missing fields"):
+        context.write_serving_evidence_manifest(
+            {"relative_path": "x", "sha256": "c" * 64, "extra": "field"}, audit_reference
+        )
+    with pytest.raises(SchemaRefusal, match="unknown or missing fields"):
+        context.write_serving_evidence_manifest("not-a-mapping", audit_reference)
+
+    missing_digest = "c" * 64
+    with pytest.raises(SchemaRefusal, match="could not be read"):
+        context.write_serving_evidence_manifest(
+            {
+                "relative_path": context.tree.receipt_path(missing_digest),
+                "sha256": missing_digest,
+            },
+            audit_reference,
+        )
+    with pytest.raises(SchemaRefusal, match="could not be read"):
+        context.write_serving_evidence_manifest(
+            receipt_reference,
+            {
+                "relative_path": context.tree.blob_path(context.stage, missing_digest),
+                "sha256": missing_digest,
+            },
+        )
+
+    forged_audit_path = {
+        "relative_path": context.tree.receipt_path(audit_reference["sha256"]),
+        "sha256": audit_reference["sha256"],
+    }
+    with pytest.raises(SchemaRefusal, match="is not its content-addressed path"):
+        context.write_serving_evidence_manifest(receipt_reference, forged_audit_path)
+
+    tampered_audit_reference = context.write_serving_launch_audit(
+        {
+            "schema": "serving-launch-audit.v1",
+            "chair": identity.role,
+            "started_at": "2026-08-09T12:01:00Z",
+            "configuration_inputs": dict(context.serving_config_inputs),
+        }
+    )
+    context.tree.resolve(tampered_audit_reference["relative_path"]).write_bytes(b"{}")
+    with pytest.raises(SchemaRefusal, match="digest"):
+        context.write_serving_evidence_manifest(receipt_reference, tampered_audit_reference)
+
+    other_chair_audit_reference = context.write_serving_launch_audit(
+        {
+            "schema": "serving-launch-audit.v1",
+            "chair": "attestator_2",
+            "started_at": "2026-08-09T12:02:00Z",
+            "configuration_inputs": dict(context.serving_config_inputs),
+        }
+    )
+    with pytest.raises(SchemaRefusal, match="different chairs"):
+        context.write_serving_evidence_manifest(receipt_reference, other_chair_audit_reference)
+
+
+def test_serving_evidence_manifest_refuses_different_serving_start_moments(tmp_path):
+    context, identity = _context(tmp_path)
+    details = fixture_serving_details(identity)
+    receipt_reference = context.write_serving_receipt(identity, details)
+    audit_reference = context.write_serving_launch_audit(
+        {
+            "schema": "serving-launch-audit.v1",
+            "chair": identity.role,
+            "started_at": "2026-08-09T12:00:00Z",
+            "configuration_inputs": dict(context.serving_config_inputs),
+        }
+    )
+
+    with pytest.raises(SchemaRefusal, match="different start moments"):
+        context.write_serving_evidence_manifest(receipt_reference, audit_reference)
 
 
 def test_receipt_reuse_is_by_full_serving_moment_not_only_model_identity(tmp_path):

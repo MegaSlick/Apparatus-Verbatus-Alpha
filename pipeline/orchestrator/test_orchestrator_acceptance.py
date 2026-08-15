@@ -382,8 +382,23 @@ FIXTURE = "synthetic-two-page-v0"
 # this pin fixes rather than a property to preserve. Every literal row and stable
 # field -- including `normalizer_revision`, `derived_from_canonical_sha256`, and
 # `derived_kind` -- remains bound.
-HAPPY_RUN_TREE_DIGEST = "32f5cbcc92e82da23067e8fc60a43880703e18eed9be16ff5991e23345dd86d7"
-REVIEW_RUN_TREE_DIGEST = "8a560be8f5088595ed3fb82a30ec4819c11a196cfb4607e10aea9429dc4202dd"
+#
+# Re-pinned for Stage SM on current main. `run_config_bindings` now seals the
+# exact `config/serving_recipes.toml` and `config/pod_placement.toml` bytes into
+# `config_digest`, so every dependent artifact truthfully changes identity even
+# though serving assembly writes no new file into these offline fixture runs.
+# Fresh real orchestrator runs measured 54 files for happy (exit 0) and 58 files
+# for review (exit 3); the counts and digests below came from those same trees.
+#
+# Re-pinned for Stage SM CodeRabbit round 1 after correcting
+# `pod_placement.toml`'s square-image arithmetic. Its 1344, 1792 and 2304 are
+# longest-edge pixel caps, not total counts; the corrected comment says that
+# misread as totals they would describe roughly 37x37, 42x42 and exactly 48x48
+# images, not one 36x36 example. The file is sealed byte-for-byte, so this comment-only config
+# correction moves every dependent artifact. Fresh real runs again measured 54
+# files for happy (exit 0) and 58 for review (exit 3).
+HAPPY_RUN_TREE_DIGEST = "81750920eeaef4665cfa07066d5bec79b1c0d99c8e8e7de496af6212154b65f5"
+REVIEW_RUN_TREE_DIGEST = "f937e5997cc7c1c470e5b54c58e283964206860d6692afa91b49e4c304906196"
 
 
 def orchestrate(

@@ -13,10 +13,12 @@ declared fixture rather than by hard-coded strings scattered through seven files
 """
 
 import argparse
+import json
 import sys
 import tomllib
 from collections.abc import Mapping
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Callable, Final, Protocol
 
 from common.armarium_formats import (
@@ -24,10 +26,10 @@ from common.armarium_formats import (
     ArmariumFormats,
     bind_armarium_formats,
 )
-from common.chairs.models import AbsentChair, ChairIdentity, ModelsConfig, ServingDetails
+from common.chairs.models import AbsentChair, ChairIdentity, ModelsConfig, ServingDetails, is_sha256
 from common.chairs.protocol import ChairProtocol
 from common.chairs.registry import ChairRegistry
-from common.contracts.canonical import digest_bytes, digest_of, verify_self_hash
+from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of, verify_self_hash
 from common.contracts.envelope import build_envelope
 from common.contracts.errors import (
     ContractError,
@@ -40,6 +42,7 @@ from common.contracts.identities import act_bindings, artifact_id, attempt_id
 from common.contracts.identities import act_id as derive_act_id
 from common.contracts.identities import verify as verify_identity
 from common.contracts.outcomes import classify
+from common.contracts.serving import SERVING_CONFIG_INPUTS_FIELDS, SERVING_CONFIG_INPUTS_SCHEMA
 from common.contracts.stages import DESIGNATOR, EXEMPLAR, PERLECTOR, RECENSOR
 from common.exemplar_boundary import verify_sealed_page_pixels
 from common.hard_failure import DEFAULT_HARD_FAILURE_CONFIG_PATH, load_hard_failure_policy
@@ -91,7 +94,12 @@ MAX_NUDA_PER_MILLE: Final = 1000
 DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH = (
     Path(__file__).resolve().parents[1] / "config" / "designator_padding.toml"
 )
-
+DEFAULT_SERVING_RECIPES_CONFIG_PATH = (
+    Path(__file__).resolve().parents[1] / "config" / "serving_recipes.toml"
+)
+DEFAULT_POD_PLACEMENT_CONFIG_PATH = (
+    Path(__file__).resolve().parents[1] / "config" / "pod_placement.toml"
+)
 # The witness outcomes that mean a chair actually served, and therefore that a
 # serving receipt exists for the reading. Named once, here, because both halves
 # of the handoff need it and they must not drift: the Attestatores decides
@@ -154,6 +162,7 @@ class StageContext:
         "registry",
         "sealed_config_digests",
         "armarium_formats",
+        "serving_config_inputs",
     )
 
     def __init__(
@@ -168,6 +177,7 @@ class StageContext:
         registry,
         sealed_config_digests=None,
         armarium_formats: ArmariumFormats | None = None,
+        serving_config_inputs: Mapping[str, str] | None = None,
     ):
         self.tree = tree
         self.run = run
@@ -191,6 +201,11 @@ class StageContext:
         # from the exact bytes that participated in its sealed config digest.
         # In particular Armarium must not reopen formats.toml after this point.
         self.armarium_formats = armarium_formats
+        self.serving_config_inputs = (
+            MappingProxyType(_serving_config_inputs(serving_config_inputs, "StageContext"))
+            if serving_config_inputs is not None
+            else None
+        )
 
     @property
     def config_digest(self) -> str:
@@ -300,6 +315,112 @@ class StageContext:
         reference, _ = self.tree.write_run_receipt(receipt)
         return reference.to_record()
 
+    def write_serving_launch_audit(self, audit: dict[str, Any]) -> dict[str, str]:
+        """Store serving-manager operational evidence as a run-local blob.
+
+        ``chair-serving-receipt.v1`` is a deliberately closed record. The
+        serving manager therefore writes PID/profile/package/readiness/adapter
+        facts separately, under the current stage's content-addressed blob area,
+        and passes only this immutable reference beside the receipt.
+        """
+
+        if not isinstance(audit, dict) or not audit:
+            raise SchemaRefusal("serving launch audit must be a non-empty object")
+        if self.serving_config_inputs is None:
+            raise SchemaRefusal(
+                "StageContext has no run-sealed serving configuration inputs; "
+                "construct serving through open_context"
+            )
+        observed_inputs = _serving_config_inputs(
+            audit.get("configuration_inputs"), "serving launch audit"
+        )
+        if observed_inputs != dict(self.serving_config_inputs):
+            raise SchemaRefusal(
+                "serving launch audit configuration inputs differ from the run-sealed inputs"
+            )
+        return self._write_serving_blob(audit, "serving launch audit")
+
+    def write_serving_evidence_manifest(
+        self,
+        receipt_reference: Mapping[str, str],
+        audit_reference: Mapping[str, str],
+    ) -> dict[str, str]:
+        """Bind the receipt and operational audit for one successful service."""
+
+        checked_receipt_reference = _serving_evidence_reference(receipt_reference, "receipt")
+        receipt = self.tree.read_run_receipt(checked_receipt_reference)
+        checked_audit_reference = _serving_evidence_reference(audit_reference, "launch-audit")
+        audit = self._read_serving_launch_audit(checked_audit_reference)
+        if receipt["chair"] != audit["chair"]:
+            raise SchemaRefusal(
+                "serving receipt and launch audit name different chairs: "
+                f"{receipt['chair']!r} and {audit['chair']!r}"
+            )
+        if receipt["started_at"] != audit.get("started_at"):
+            raise SchemaRefusal(
+                "serving receipt and launch audit name different start moments: "
+                f"{receipt['started_at']!r} and {audit.get('started_at')!r}"
+            )
+        record = {
+            "schema": "serving-evidence.v1",
+            "receipt_reference": checked_receipt_reference,
+            "launch_audit_reference": checked_audit_reference,
+        }
+        return self._write_serving_blob(record, "serving evidence manifest")
+
+    def _read_serving_launch_audit(self, reference: dict[str, str]) -> dict[str, Any]:
+        """Read a launch audit only from its verified stage-local content address."""
+
+        expected_path = self.tree.blob_path(self.stage, reference["sha256"])
+        if reference["relative_path"] != expected_path:
+            raise SchemaRefusal(
+                f"serving launch audit reference {reference['relative_path']!r} is not its "
+                f"content-addressed path {expected_path!r}"
+            )
+        try:
+            payload = self.tree.read_bytes(reference["relative_path"])
+        except OSError as error:
+            raise SchemaRefusal(
+                f"serving launch audit {reference['relative_path']} could not be read: {error}"
+            ) from error
+        actual_digest = digest_bytes(payload)
+        if actual_digest != reference["sha256"]:
+            raise SchemaRefusal(
+                f"serving launch audit {reference['relative_path']} has digest {actual_digest}, "
+                f"not the reference digest {reference['sha256']}"
+            )
+        try:
+            audit = json.loads(payload.decode("utf-8"))
+            canonical = canonical_bytes(audit)
+        except (UnicodeDecodeError, TypeError, ValueError) as error:
+            raise SchemaRefusal(
+                f"serving launch audit {reference['relative_path']} could not be read: {error}"
+            ) from error
+        if canonical != payload or not isinstance(audit, dict):
+            raise SchemaRefusal("serving launch audit is not a canonical JSON object")
+        if audit.get("schema") != "serving-launch-audit.v1":
+            raise SchemaRefusal("serving launch audit has the wrong or missing schema")
+        if not isinstance(audit.get("chair"), str) or not audit["chair"].strip():
+            raise SchemaRefusal("serving launch audit has no non-blank chair")
+        observed_inputs = _serving_config_inputs(
+            audit.get("configuration_inputs"), "serving launch audit"
+        )
+        if observed_inputs != dict(self.serving_config_inputs or {}):
+            raise SchemaRefusal(
+                "serving launch audit configuration inputs differ from the run-sealed inputs"
+            )
+        return audit
+
+    def _write_serving_blob(self, value: dict[str, Any], label: str) -> dict[str, str]:
+        """Canonical content-addressed storage shared by serving evidence records."""
+
+        try:
+            payload = canonical_bytes(value)
+        except (TypeError, ValueError) as error:
+            raise SchemaRefusal(f"{label} is not canonical JSON data: {error}") from error
+        digest, result = self.tree.put_blob(self.stage, payload)
+        return {"relative_path": result.relative_path, "sha256": digest}
+
     def input_ref(self, relative_path: str) -> dict[str, str]:
         """An input reference to something already in this run tree.
 
@@ -320,6 +441,58 @@ class StageContext:
     def finish(self, stage: str | None = None) -> None:
         """Write the stage's derived manifest inventory."""
         self.tree.write_manifest(stage or self.stage)
+
+
+def _serving_evidence_reference(value: Mapping[str, str], label: str) -> dict[str, str]:
+    """Validate a content-addressed reference before sealing it into evidence.
+
+    The traversal check below is a shape check on the reference string, not
+    the run tree's own containment guard: nothing here reads a file with this
+    path, and every reader that eventually does must still go through
+    ``RunTree.resolve()`` (``common/runtree/store.py``), which additionally
+    resolves the path and checks it against the tree root — catching, for
+    example, a symlink component this string-only check would miss.
+    """
+
+    if not isinstance(value, Mapping) or set(value) != {"relative_path", "sha256"}:
+        raise SchemaRefusal(f"serving evidence {label} reference has unknown or missing fields")
+    relative_path = value["relative_path"]
+    digest = value["sha256"]
+    if (
+        not isinstance(relative_path, str)
+        or not relative_path
+        or relative_path.startswith("/")
+        or ".." in relative_path.split("/")
+        or not isinstance(digest, str)
+        or not is_sha256(digest)
+    ):
+        raise SchemaRefusal(f"serving evidence {label} reference is malformed")
+    return {"relative_path": relative_path, "sha256": digest}
+
+
+def _serving_config_inputs(value: object, label: str) -> dict[str, str]:
+    """Validate the two exact TOML inputs that shape a serving launch."""
+
+    if not isinstance(value, Mapping) or set(value) != SERVING_CONFIG_INPUTS_FIELDS:
+        raise SchemaRefusal(
+            f"{label} serving configuration must contain exactly schema, recipes, and placement digests"
+        )
+    schema = value["schema"]
+    recipes_digest = value["serving_recipes_sha256"]
+    placement_digest = value["pod_placement_sha256"]
+    if schema != SERVING_CONFIG_INPUTS_SCHEMA:
+        raise SchemaRefusal(
+            f"{label} serving configuration schema must be {SERVING_CONFIG_INPUTS_SCHEMA!r}"
+        )
+    if not is_sha256(recipes_digest) or not is_sha256(placement_digest):
+        raise SchemaRefusal(
+            f"{label} serving configuration digests must be lowercase SHA-256 values"
+        )
+    return {
+        "schema": schema,
+        "serving_recipes_sha256": recipes_digest,
+        "pod_placement_sha256": placement_digest,
+    }
 
 
 class _StageArgumentParser(argparse.ArgumentParser):
@@ -535,6 +708,8 @@ def run_config_bindings(
     witness_context_config_path: str | Path = DEFAULT_WITNESS_CONTEXT_CONFIG_PATH,
     nuda_per_mille: int = 0,
     nuda_approval_ref: str = "",
+    serving_recipes_config_path: str | Path = DEFAULT_SERVING_RECIPES_CONFIG_PATH,
+    pod_placement_config_path: str | Path = DEFAULT_POD_PLACEMENT_CONFIG_PATH,
 ) -> dict[str, Any]:
     """The three `run.json` bindings, and everything that shapes them.
 
@@ -542,9 +717,9 @@ def run_config_bindings(
     the adapter recipes, so two of the three come straight off it. The third,
     `config_digest`, is the digest of *everything* that shapes this run's
     behaviour — the model configuration, fixture, scenario, PDF-render settings,
-    Designator padding, Armarium projection configuration, recovery policy, and
-    the run-level hard-failure policy. The synthetic fixture declares byte-backed
-    pages only, so
+    Designator padding, Armarium projection configuration, recovery policy, the
+    run-level hard-failure policy, serving-recipe catalogue, and pod-placement
+    catalogue. The synthetic fixture declares byte-backed pages only, so
     it does not claim to bind the real Door's PDFium/Pillow/libheif execution
     recipe; ``door._real_bindings`` binds that recipe on actual ingress.
 
@@ -570,6 +745,25 @@ def run_config_bindings(
             f"{designator_padding_config_path} could not be read"
         ) from error
     armarium_formats_digest, armarium_formats = bind_armarium_formats(armarium_formats_config_path)
+    try:
+        serving_recipes_config_digest = digest_bytes(Path(serving_recipes_config_path).read_bytes())
+    except OSError as error:
+        raise ContractError(
+            "the serving recipes configuration binding at "
+            f"{serving_recipes_config_path} could not be read"
+        ) from error
+    try:
+        pod_placement_config_digest = digest_bytes(Path(pod_placement_config_path).read_bytes())
+    except OSError as error:
+        raise ContractError(
+            "the pod placement configuration binding at "
+            f"{pod_placement_config_path} could not be read"
+        ) from error
+    serving_config_inputs = {
+        "schema": SERVING_CONFIG_INPUTS_SCHEMA,
+        "serving_recipes_sha256": serving_recipes_config_digest,
+        "pod_placement_sha256": pod_placement_config_digest,
+    }
     recovery_policy = load_recovery_policy(recovery_config_path)
     hard_failure_policy = load_hard_failure_policy(hard_failure_config_path)
     witness_context_config_digest = validate_witness_context_bindings(
@@ -604,9 +798,11 @@ def run_config_bindings(
                 "witness_context_declaration_sha256": witness_context_config_digest,
                 "nuda_per_mille": nuda_per_mille,
                 "nuda_approval_ref": nuda_approval_ref,
+                "serving_config_inputs": serving_config_inputs,
             }
         ),
         "adapter_recipes": dict(sorted(models.adapter_recipes.items())),
+        "serving_config_inputs": serving_config_inputs,
         # Not a run.json binding — every caller writing a run takes the three
         # above by name. This is the record of which bytes each digest above was
         # taken over, so a stage that re-reads one of these files for its values
@@ -709,9 +905,9 @@ def fixture_serving_details(identity: ChairIdentity) -> ServingDetails:
     measurement of a real serving moment would be exactly the confusion
     GOVERNANCE 10 forbids.
 
-    Two consequences worth knowing before spec 04 replaces this with a real
-    serving manager. Endpoint and start time are confined to the run receipt, so
-    a stage payload carries only the content-addressed reference to one. And
+    Two consequences worth knowing until the pipeline adopts spec 04's real
+    serving-manager callback. Endpoint and start time are confined to the run
+    receipt, so a stage payload carries only the content-addressed reference to one. And
     `started_at` is a constant *because* the skeleton's receipts sit inside the
     tree the determinism tests hash; a real receipt is honestly
     non-deterministic, and the run at which that becomes true is the run at which
@@ -1520,6 +1716,7 @@ def open_context(
         registry=registry,
         sealed_config_digests=bindings["sealed_config_digests"],
         armarium_formats=bindings["armarium_formats"],
+        serving_config_inputs=bindings["serving_config_inputs"],
     )
 
 

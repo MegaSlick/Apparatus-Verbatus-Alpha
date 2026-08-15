@@ -307,15 +307,32 @@ class PlacementTable:
         )
 
 
-def load_placement_table(path: str | Path) -> PlacementTable:
-    """Load a strict data-only placement table; no GPU name or chair is selected here."""
+def load_placement_table(path: str | Path, *, source_bytes: bytes | None = None) -> PlacementTable:
+    """Load a strict data-only placement table; no GPU name or chair is selected here.
+
+    `source_bytes` lets a caller that has already read and digested the file parse
+    **those exact bytes** rather than the path's current contents. A caller sealing
+    a configuration must digest and parse one snapshot: reading twice means the
+    digest can describe the sealed bytes while the parsed table describes something
+    else entirely, so a run works under a placement it never sealed while every
+    check still passes. `path` is still required and is still what a refusal names,
+    because a message pointing at no file helps nobody.
+    """
 
     source = Path(path)
+    if source_bytes is None:
+        try:
+            payload = source.read_bytes()
+        except OSError as error:
+            raise PlacementRefusal(f"cannot read placement table {source}: {error}") from error
+        parse_label = "placement table"
+    else:
+        payload = source_bytes
+        parse_label = "supplied placement table bytes for"
     try:
-        with source.open("rb") as handle:
-            raw = tomllib.load(handle)
-    except (OSError, tomllib.TOMLDecodeError) as error:
-        raise PlacementRefusal(f"cannot read placement table {source}: {error}") from error
+        raw = tomllib.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+        raise PlacementRefusal(f"cannot parse {parse_label} {source}: {error}") from error
     if not isinstance(raw, dict) or set(raw) - {"card_profile"} != {
         "schema",
         "dtype_floor",

@@ -12,6 +12,7 @@ The knobs. One question per planned file, each answerable without reading code.
 | `data_handling_policy.json` | present — how real material is stored, logged, retained and disposed of |
 | `spend.toml` | present, deliberately unconfigured — Tyrel's pod-plus-attached-volume money caps; both paid paths refuse it until configured |
 | `pod_placement.toml` | present — planning-only single-resident GPU resource tiers, dtype capability floors, and the reviewed price sheet for the cards this project rents |
+| `serving_recipes.toml` | present — the complete vLLM flag profile for one configured chair at one measured GPU tier |
 | `formats.toml` | present — which Armarium product projections are written and whether verified pixels are embedded |
 
 Decoder routing is deliberately not configuration. Tyrel ruled that an uncorrupted
@@ -66,7 +67,7 @@ digest, byte-count, and fanned-page-index rows into `run.json`; an export carrie
 the same linkage back out. The policy permits no per-stage deletion: retain the whole run until it is
 dead/broken or complete/exported, then its lifecycle owner may destroy the whole
 volume. See `operations/submit/README.md` for the package being handed to Tyrel;
-transfer/pod/UI work is not built here.
+the transfer and pod runtime live under `operations/`, while UI work is not built.
 
 `models.toml` is the operational cast list. Model assignments belong there rather
 than in stage code or stage documentation, which keeps a swap to one configuration
@@ -74,6 +75,32 @@ change. It also owns the three things a run is bound to that follow from the
 roster: the witness floor, the adapter recipes, and — with the fixture and the
 scenario — the run's configuration digest. `common/chairs/README.md` describes how
 it is read and what a malformed pin earns.
+
+`serving_recipes.toml` does not name a model, choose a chair, or estimate that a
+model will fit. `models.toml`'s `serving_recipe` is only a family key; the serving
+manager requires exactly one profile for the triple `(serving_recipe, chair,
+measured placement tier)`. There is no nearest-tier or healthy-chair fallback.
+Every capacity value is a planning value until that exact identity/revision/profile
+has completed a real pod preflight. Its exact bytes are included in a run's
+`config_digest`, alongside the exact `pod_placement.toml` bytes, so changing a
+serving flag, tier threshold, or cap cannot silently reuse a run authority. The
+serving assembly receives those two run-sealed digests only through the active
+stage context and records them in its launch audit.
+
+Every row declares its `kind`. A `fixture` row is the offline walking skeleton's
+stand-in: it holds only its recipe, chair, tier and a reason, because a chair
+that is never launched has no flags, and the serving manager refuses one by that
+name rather than by a version pin it could not satisfy. Today every committed
+row is a fixture row, and a `vllm` row appearing here would mean a real chair had
+been configured to serve — Tyrel's decision at S8, not a config edit.
+`operations/serving/config.py::verify_recipes_cover_chairs` reconciles this file
+against `models.toml` and `pod_placement.toml` offline, so a chair, recipe or
+tier that nothing could resolve fails in the test suite rather than on a pod.
+
+The two files use `pixel_cap` and `max_pixels` for different things and must not
+be compared directly: `pod_placement.toml` caps a longest edge in pixels, while
+a serving profile's `max_pixels` is a total pixel count passed to vLLM. Both
+files say so where the value is defined.
 
 `spend.toml` is intentionally a refusal, not a placeholder default. A configured version
 must name `currency = "USD"`, `max_hourly_usd` and `max_estimated_metered_cost_usd`
