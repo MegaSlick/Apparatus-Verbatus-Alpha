@@ -29,6 +29,7 @@ from .models import (
     MaterialClass,
     OutputStatus,
     Perlectio,
+    PublicLimitationCode,
     ReferenceStatus,
     ResolvedIdentity,
     RunLimitations,
@@ -433,6 +434,41 @@ class MeasurementRun:
                     "Testimonium baseline differs from the retained witness evidence"
                 )
 
+    def derived_limitation_codes(self) -> frozenset[PublicLimitationCode]:
+        """Derive the closed public limitation set from retained run evidence.
+
+        A failed attempt yielded no proved Perlectio, so it is a candidate non-answer
+        for public limitation purposes even though it separately makes the run
+        unpublishable. An ``INVALID_RESPONSE`` failure is additionally malformed:
+        the adapter returned a value, but not a response shape this instrument can
+        measure. No caller declaration participates in either classification.
+        """
+
+        codes: set[PublicLimitationCode] = set()
+        if any(act.ground_truth.gaps for act in self.acts):
+            codes.add(PublicLimitationCode.CHECKED_REFERENCE_GAPS_PRESENT)
+        if any(act.ground_truth.status is not ReferenceStatus.CHECKED for act in self.acts):
+            codes.add(PublicLimitationCode.NONSCOREABLE_SELECTED_ACTS_PRESENT)
+        if self.failed_attempts or any(
+            cell.perlectio.status
+            in (
+                OutputStatus.NO_READABLE_TEXT,
+                OutputStatus.REFUSED,
+                OutputStatus.MISSING,
+                OutputStatus.UNAVAILABLE,
+            )
+            for cell in self.cells
+        ):
+            codes.add(PublicLimitationCode.CANDIDATE_NONANSWERS_PRESENT)
+        if any(
+            cell.perlectio.status is OutputStatus.MALFORMED for cell in self.cells
+        ) or any(
+            failure.kind is FailedAttemptKind.INVALID_RESPONSE
+            for failure in self.failed_attempts
+        ):
+            codes.add(PublicLimitationCode.MALFORMED_CANDIDATE_RESPONSES_PRESENT)
+        return frozenset(codes)
+
     def require_publishable(self) -> None:
         """Refuse fixture/partial evidence before the public redaction boundary."""
 
@@ -458,6 +494,32 @@ class MeasurementRun:
             raise MatrixRefusal("only a sealed declared-roster run can become a public finding")
         if self.sample_accounting is None:
             raise MatrixRefusal("only a declared run with private sample accounting can publish")
+        derived_codes = self.derived_limitation_codes()
+        declared_codes = frozenset(self.limitations.codes)
+        if self.limitations.disclosure_state is LimitationDisclosureState.CLEAR:
+            if derived_codes:
+                derived = ", ".join(sorted(code.value for code in derived_codes))
+                raise MatrixRefusal(
+                    "a clear run limitation declaration does not match retained evidence; "
+                    f"derived codes: {derived}"
+                )
+        elif declared_codes != derived_codes:
+            omitted = derived_codes - declared_codes
+            unsupported = declared_codes - derived_codes
+            differences = []
+            if omitted:
+                differences.append(
+                    "omitted: " + ", ".join(sorted(code.value for code in omitted))
+                )
+            if unsupported:
+                differences.append(
+                    "unsupported: " + ", ".join(sorted(code.value for code in unsupported))
+                )
+            raise MatrixRefusal(
+                "run limitation declaration does not match retained evidence ("
+                + "; ".join(differences)
+                + ")"
+            )
         # A `malformed` cell is a predeclared response state (README section 7),
         # and it carries no wall time or cost because there was no measurable
         # response to time. Requiring them of it refused the whole run with a

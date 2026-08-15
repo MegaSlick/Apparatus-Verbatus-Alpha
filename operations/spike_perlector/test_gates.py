@@ -474,6 +474,42 @@ def test_data_gate_resolves_the_single_repository_policy_identity_and_revision()
     assert authority.policy_revision == POLICY["policy_version"]
 
 
+@pytest.mark.parametrize(
+    ("override", "forged_value", "refusal"),
+    (
+        ("policy_identity", "forged-policy", "policy identity"),
+        (
+            "policy_repository_path",
+            "config/forged-data-handling-policy.json",
+            "policy repository path",
+        ),
+        ("policy_revision", "forged-policy-v0", "revision"),
+    ),
+)
+def test_directly_constructed_data_gate_authority_refuses_forged_policy_binding(
+    override, forged_value, refusal
+):
+    """Valid approval bytes cannot bless a caller-forged repository policy identity."""
+
+    reference, payload = approval_reference_for(
+        action="other",
+        target_version_hash=DataGateAuthority.scope_digest(policy_content=POLICY),
+    )
+    values = {
+        "policy_content": POLICY,
+        "policy_identity": DATA_GATE_POLICY_IDENTITY,
+        "policy_repository_path": DATA_GATE_POLICY_REPOSITORY_PATH,
+        "policy_revision": POLICY["policy_version"],
+        "approval_reference": reference,
+        "approval_record": json.loads(payload),
+        "approval_bytes": payload,
+    }
+    values[override] = forged_value
+
+    with pytest.raises(DisclosureRefusal, match=refusal):
+        DataGateAuthority(**values)
+
+
 def test_approval_bytes_that_do_not_match_their_content_address_refuse():
     reference, payload = approval_reference_for(
         action="other",

@@ -1,5 +1,6 @@
 import json
 from copy import deepcopy
+from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
 
@@ -8,14 +9,17 @@ import pytest
 from operations.spike_perlector.errors import PublicSafetyRefusal
 from operations.spike_perlector.fakes import FakeCandidate, FakeReply
 from operations.spike_perlector.gates import RunAuthorization
+from operations.spike_perlector.holdout import PrivateSampleAccounting, ReferenceExclusion
 from operations.spike_perlector.models import (
     ALL_CONDITIONS,
     Condition,
     DeliveryMode,
+    GapSpan,
     LimitationDisclosureState,
     MaterialClass,
     OutputStatus,
     PublicLimitationCode,
+    ReferenceStatus,
     RunLimitations,
 )
 from operations.spike_perlector.normalization import GRAPHEMIC_V1, PROFILES
@@ -48,6 +52,9 @@ def declared_fixture_run(
     elapsed_ms: float | None = 1.0,
     cost_usd: float | None = 0.0,
     limitations: RunLimitations | None = None,
+    gaps=(),
+    reference_status: ReferenceStatus = ReferenceStatus.CHECKED,
+    candidate_status: OutputStatus = OutputStatus.COMPLETE,
 ):
     roster = CandidateRoster(
         stock_base=identity("private-model-name-one", 1, source_ref=STOCK_BASE_SOURCE),
@@ -63,12 +70,29 @@ def declared_fixture_run(
         checkpoint_repository_evidence_sha256=digest("checkpoint-evidence"),
     )
     act = evaluation_act(
-        text="synthetic secret transcription", material_class=MaterialClass.CLEARED_PUBLIC
+        text="synthetic secret transcription",
+        gaps=gaps,
+        material_class=MaterialClass.CLEARED_PUBLIC,
+    )
+    if reference_status is not ReferenceStatus.CHECKED:
+        act = replace(
+            act,
+            ground_truth=replace(
+                act.ground_truth,
+                text=None,
+                status=reference_status,
+                gaps=(),
+            ),
+        )
+    response_text = (
+        "synthetic secret transcription"
+        if candidate_status in (OutputStatus.COMPLETE, OutputStatus.TRUNCATED)
+        else None
     )
     replies = {
         (act.opaque_act_id, condition): FakeReply(
-            OutputStatus.COMPLETE,
-            "synthetic secret transcription",
+            candidate_status,
+            response_text,
             elapsed_ms=elapsed_ms,
             cost_usd=cost_usd,
         )
@@ -76,6 +100,21 @@ def declared_fixture_run(
     }
     witnesses = witness_configuration_for(act)
     manifest = manifest_for(act)
+    sample_accounting = (
+        None
+        if reference_status is ReferenceStatus.CHECKED
+        else PrivateSampleAccounting(
+            manifest_sha256=manifest.manifest_sha256,
+            scoreable_opaque_act_ids=(),
+            exclusions=(
+                ReferenceExclusion(
+                    opaque_act_id=act.opaque_act_id,
+                    status=reference_status,
+                    reason_evidence_sha256=digest("synthetic-reference-exclusion"),
+                ),
+            ),
+        )
+    )
     prompts = registry(*roster.identities())
     return run_declared_roster_matrix(
         tuple(FakeCandidate(item, replies) for item in roster.identities()),
@@ -91,7 +130,9 @@ def declared_fixture_run(
             witness_configuration=witnesses,
             prompt_registry=prompts,
             profile=GRAPHEMIC_V1,
+            sample_accounting=sample_accounting,
         ),
+        sample_accounting=sample_accounting,
         limitations=limitations,
     )
 
@@ -142,6 +183,7 @@ def test_a_coded_run_specific_limitation_appears_in_the_public_finding():
     limitation = PublicLimitationCode.CHECKED_REFERENCE_GAPS_PRESENT
     finding = project_public_finding(
         declared_fixture_run(
+            gaps=(GapSpan(10, 16),),
             limitations=RunLimitations(
                 disclosure_state=LimitationDisclosureState.CODED,
                 codes=(limitation,),
@@ -151,6 +193,70 @@ def test_a_coded_run_specific_limitation_appears_in_the_public_finding():
 
     assert finding["limitations"] == [limitation.value]
     assert "transcription" not in json.dumps(finding)
+
+
+def test_a_gapped_checked_reference_declared_clear_refuses_publication():
+    run = declared_fixture_run(gaps=(GapSpan(10, 16),))
+
+    with pytest.raises(PublicSafetyRefusal, match="clear.*retained evidence"):
+        project_public_finding(run)
+
+
+@pytest.mark.parametrize(
+    ("fixture_overrides", "expected"),
+    (
+        (
+            {"gaps": (GapSpan(10, 16),)},
+            PublicLimitationCode.CHECKED_REFERENCE_GAPS_PRESENT,
+        ),
+        (
+            {"reference_status": ReferenceStatus.NO_READABLE_TEXT},
+            PublicLimitationCode.NONSCOREABLE_SELECTED_ACTS_PRESENT,
+        ),
+        (
+            {"candidate_status": OutputStatus.REFUSED},
+            PublicLimitationCode.CANDIDATE_NONANSWERS_PRESENT,
+        ),
+        (
+            {"candidate_status": OutputStatus.MALFORMED},
+            PublicLimitationCode.MALFORMED_CANDIDATE_RESPONSES_PRESENT,
+        ),
+    ),
+)
+def test_each_public_limitation_code_is_derived_from_a_retained_witness(
+    fixture_overrides, expected
+):
+    run = declared_fixture_run(**fixture_overrides)
+
+    assert run.derived_limitation_codes() == frozenset({expected})
+
+
+def test_a_coded_declaration_that_omits_a_derived_code_refuses_publication():
+    run = declared_fixture_run(
+        gaps=(GapSpan(10, 16),),
+        candidate_status=OutputStatus.REFUSED,
+        limitations=RunLimitations(
+            disclosure_state=LimitationDisclosureState.CODED,
+            codes=(PublicLimitationCode.CHECKED_REFERENCE_GAPS_PRESENT,),
+        ),
+    )
+
+    with pytest.raises(PublicSafetyRefusal, match="omitted.*candidate_nonanswers"):
+        project_public_finding(run)
+
+
+def test_a_coded_declaration_with_an_unsupported_extra_code_refuses_publication():
+    """Extra codes are false public claims even though they err toward caution."""
+
+    run = declared_fixture_run(
+        limitations=RunLimitations(
+            disclosure_state=LimitationDisclosureState.CODED,
+            codes=(PublicLimitationCode.CANDIDATE_NONANSWERS_PRESENT,),
+        )
+    )
+
+    with pytest.raises(PublicSafetyRefusal, match="unsupported.*candidate_nonanswers"):
+        project_public_finding(run)
 
 
 def test_an_unenumerable_run_specific_limitation_refuses_publication():

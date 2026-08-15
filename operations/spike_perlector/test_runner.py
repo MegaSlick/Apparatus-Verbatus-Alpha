@@ -16,6 +16,7 @@ from operations.spike_perlector.models import (
     GapSpan,
     GroundTruth,
     OutputStatus,
+    PublicLimitationCode,
     ReferenceStatus,
 )
 from operations.spike_perlector.models import (
@@ -450,6 +451,9 @@ def test_adapter_failure_is_retained_while_every_planned_read_is_attempted():
     assert run.cells == ()
     assert len(run.failed_attempts) == len(ALL_CONDITIONS)
     assert {failure.kind.value for failure in run.failed_attempts} == {"adapter-exception"}
+    assert run.derived_limitation_codes() == frozenset(
+        {PublicLimitationCode.CANDIDATE_NONANSWERS_PRESENT}
+    )
 
 
 def test_blank_reference_is_read_in_every_condition_without_a_cer_or_wer_score():
