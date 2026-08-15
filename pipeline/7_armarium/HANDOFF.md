@@ -16,9 +16,11 @@ nothing: every byte it publishes came out of the run tree already sealed.
 
 ## Export contract
 
-The export payload contains the aggregate result, the expected-act count, delivered
-and review entries, witness coverage, `pages`, and the bundle reference. Every `pages` row is one submitted
-source ordinal and retains:
+The export payload contains the aggregate result, the expected-act count, `delivered`
+entries, `non_delivered` entries (every act that was not delivered, including
+`confirmed-blank` and `excluded-with-approval`, not only `held-for-review` and
+`refused-with-reason`), witness coverage, `pages`, and the bundle reference. Every
+`pages` row is one submitted source ordinal and retains:
 
 ```text
 ordinal

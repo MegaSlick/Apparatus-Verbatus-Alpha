@@ -13,6 +13,7 @@ import stat
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from zipfile import ZipFile
 
 import pytest
@@ -199,6 +200,30 @@ def test_a_tampered_sealed_blob_is_refused_before_anything_is_published(tmp_path
     assert "no sealed armarium/export artifact" not in result.stderr
     assert "bytes changed under a sealed reference" in result.stderr
     assert not out.exists()
+
+
+def test_sealed_bundle_directly_refuses_bytes_changed_after_the_export_was_read():
+    """Isolate the publisher's guard from RunTree's earlier reference checks."""
+    import bundle as bundle_module
+
+    declared = digest_bytes(b"sealed bundle")
+    relative_path = "7_armarium/blobs/sha256/sealed"
+    tree = SimpleNamespace(
+        artifact_path=lambda *_args: "7_armarium/artifacts/export/export.json",
+        resolve=lambda _path: SimpleNamespace(is_file=lambda: True),
+        read_artifact=lambda *_args: {
+            "payload": {
+                "bundle": {
+                    "reference": {"relative_path": relative_path, "sha256": declared},
+                    "sha256": declared,
+                }
+            }
+        },
+        read_bytes=lambda _path: b"changed bundle",
+    )
+
+    with pytest.raises(ContractError, match="no longer matches the digest"):
+        bundle_module.sealed_bundle(tree)
 
 
 def test_a_sealed_blob_read_error_is_reported_as_a_product_contract_failure(happy_run, monkeypatch):

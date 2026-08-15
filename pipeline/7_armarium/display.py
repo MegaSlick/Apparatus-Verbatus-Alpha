@@ -217,6 +217,10 @@ def _render_gap_marker(gap: GapAnchor) -> str:
         "kind": gap.kind,
         "witness_variants": list(gap.witness_variants),
     }
+    # `ensure_ascii=True` is load-bearing for both marker renderers: it guarantees
+    # their JSON contains no raw ⟩/⟧ closing glyph, which is what lets
+    # `strip_display` locate the close with a plain `find`. Non-ASCII JSON would let
+    # text in a payload close its own marker early.
     return _GAP_OPEN + json.dumps(payload, ensure_ascii=True, separators=(",", ":")) + _GAP_CLOSE
 
 

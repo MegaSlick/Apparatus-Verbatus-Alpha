@@ -17,6 +17,7 @@ import pytest
 from common.armarium_formats import ArmariumFormats
 from common.chairs.registry import ChairRegistry
 from common.contracts.approval import synthetic_fixture_ingress_record
+from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ApprovalRefusal, FatalAccounting
 from common.contracts.outcomes import ArmariumCategory
 from common.contracts.stages import DOOR, EXEMPLAR
@@ -58,12 +59,19 @@ class _RecordingContext:
             ("text-bundle", "acts-database", "jsonl", "review-items", "salvage-tier"),
             False,
         )
+        self.blobs: dict[str, bytes] = {}
+
+        def read_bytes(relative_path: str) -> bytes:
+            return self.blobs.get(relative_path, b"synthetic bundle input")
+
+        def put_blob(_stage: str, data: bytes):
+            relative_path = "synthetic/armarium-export.zip"
+            self.blobs[relative_path] = data
+            return digest_bytes(data), SimpleNamespace(relative_path=relative_path)
+
         self.tree = SimpleNamespace(
-            read_bytes=lambda _path: b"synthetic bundle input",
-            put_blob=lambda _stage, _data: (
-                "b" * 64,
-                SimpleNamespace(relative_path="synthetic/armarium-export.zip"),
-            ),
+            read_bytes=read_bytes,
+            put_blob=put_blob,
         )
 
     def publish(self, **record) -> None:
@@ -79,7 +87,11 @@ class _RecordingContext:
         }
 
     def input_ref(self, relative_path: str) -> dict[str, str]:
-        return {"relative_path": relative_path, "sha256": "b" * 64}
+        data = self.blobs.get(relative_path)
+        return {
+            "relative_path": relative_path,
+            "sha256": digest_bytes(data) if data is not None else "b" * 64,
+        }
 
 
 def _all_refused_door_tree(root: Path) -> RunTree:
@@ -298,6 +310,10 @@ def test_the_synthetic_terminal_guard_context_can_complete_when_no_contradiction
     assert armarium.main() == EXIT_COMPLETE
     assert context.finished
     assert [record["kind"] for record in context.published] == ["manifest-entry", "export"]
+    bundle_record = context.published[-1]["payload"]["bundle"]
+    expected_digest = digest_bytes(b"synthetic bundle")
+    assert bundle_record["sha256"] == expected_digest
+    assert bundle_record["reference"]["sha256"] == expected_digest
 
 
 def test_a_delivered_act_with_no_established_record_stops_the_export(monkeypatch):

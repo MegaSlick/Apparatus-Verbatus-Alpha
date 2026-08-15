@@ -47,6 +47,7 @@ def test_a_plain_reading_renders_and_strips_to_itself():
 )
 def test_render_then_strip_returns_the_established_text_and_its_hash(spans):
     rendered = render_display(TEXT, **spans)
+    assert rendered != TEXT, "a described span must be visible in the rendering"
     assert strip_display(rendered) == TEXT
     assert _hash(strip_display(rendered)) == _hash(TEXT)
 

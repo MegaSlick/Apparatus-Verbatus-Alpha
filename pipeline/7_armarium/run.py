@@ -538,6 +538,10 @@ def missing_export_provenance(payload: object) -> str | None:
     visible review record, not a dropped one.
     """
     if not isinstance(payload, dict) or not verify_self_hash(payload):
+        # This does not mean provenance is complete. A damaged envelope is fatal
+        # accounting, and `verify_established_record` immediately raises on this same
+        # self-hash. Returning None delegates to that check; callers must preserve the
+        # order rather than treating this helper alone as an exportability decision.
         return None
     if not isinstance(payload.get("provenance"), dict):
         return "the established reading has no model identity provenance"
