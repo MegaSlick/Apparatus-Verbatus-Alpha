@@ -1,10 +1,15 @@
 from importlib.metadata import version
 
+import pytest
+
+from operations.spike_perlector.errors import MeasurementRefusal
 from operations.spike_perlector.normalization import (
     ALLOGRAPHIC_V1,
     GRAPHEMIC_V1,
+    PREDECLARED_PROFILE,
     character_units,
     normalize_text,
+    require_canonical_profile,
     word_units,
 )
 
@@ -53,6 +58,13 @@ def test_long_s_is_a_sealed_profile_difference():
     assert normalize_text("ſ", GRAPHEMIC_V1) == "s"
     assert normalize_text("ſ", ALLOGRAPHIC_V1) == "ſ"
     assert GRAPHEMIC_V1.digest != ALLOGRAPHIC_V1.digest
+
+
+def test_graphemic_v1_is_the_only_predeclared_real_run_profile():
+    assert PREDECLARED_PROFILE is GRAPHEMIC_V1
+    assert require_canonical_profile(GRAPHEMIC_V1) is GRAPHEMIC_V1
+    with pytest.raises(MeasurementRefusal, match="predeclared graphemic-v1"):
+        require_canonical_profile(ALLOGRAPHIC_V1)
 
 
 def test_character_units_are_extended_graphemes_and_words_are_space_delimited():

@@ -68,6 +68,47 @@ class ReferenceStatus(StrEnum):
     UNRESOLVED_GAP = "unresolved_gap"
 
 
+class PublicLimitationCode(StrEnum):
+    """Disclosure-safe run-specific limitations that a finding may publish."""
+
+    CHECKED_REFERENCE_GAPS_PRESENT = "checked_reference_gaps_present_v1"
+    NONSCOREABLE_SELECTED_ACTS_PRESENT = "nonscoreable_selected_acts_present_v1"
+    CANDIDATE_NONANSWERS_PRESENT = "candidate_nonanswers_present_v1"
+    MALFORMED_CANDIDATE_RESPONSES_PRESENT = "malformed_candidate_responses_present_v1"
+
+
+class LimitationDisclosureState(StrEnum):
+    """Whether a run has no limitation, coded limitations, or cannot disclose one."""
+
+    CLEAR = "clear"
+    CODED = "coded"
+    UNPUBLISHABLE = "unpublishable"
+
+
+@dataclass(frozen=True, slots=True)
+class RunLimitations:
+    """Closed run-specific limitation declaration with no free-text channel."""
+
+    disclosure_state: LimitationDisclosureState = LimitationDisclosureState.CLEAR
+    codes: tuple[PublicLimitationCode, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.disclosure_state, LimitationDisclosureState):
+            raise MeasurementRefusal("run limitation disclosure_state is not a closed state")
+        if any(not isinstance(code, PublicLimitationCode) for code in self.codes):
+            raise MeasurementRefusal("run limitation is not in the closed public code vocabulary")
+        if len(set(self.codes)) != len(self.codes):
+            raise MeasurementRefusal("run limitation codes must be distinct")
+        if self.disclosure_state is LimitationDisclosureState.CLEAR and self.codes:
+            raise MeasurementRefusal("a clear run cannot carry limitation codes")
+        if self.disclosure_state is LimitationDisclosureState.CODED and not self.codes:
+            raise MeasurementRefusal("a coded run must name at least one limitation code")
+        if self.disclosure_state is LimitationDisclosureState.UNPUBLISHABLE and self.codes:
+            raise MeasurementRefusal(
+                "an unpublishable limitation carries no partial public substitute"
+            )
+
+
 # UAX #15's Stream-Safe Text Format caps a run of non-starters at 30, and this
 # instrument adopts that cap for a measured reason: uniseg's grapheme
 # segmentation is quadratic in the length of a *single* cluster. Measured
@@ -345,11 +386,12 @@ class GroundTruth:
     """An independently adjudicated reference, with raw text kept private.
 
     A checked reference may carry gaps, and that is the common case rather than
-    the edge one.  ``TYREL_RULINGS_2026-08-05.md`` ruling 3: "many of our records
-    are damaged", so an act of three readable words and fifty unread spans is "a
-    successful partial reading of three words plus honest gaps -- not a failure".
-    Without ``gaps`` the only way to record that act is ``UNRESOLVED_GAP`` for the
-    whole crop, which throws away the three words and the fifty positions alike.
+    the edge one. On 2026-08-05 Tyrel ruled that damaged records retain successful
+    partial readings plus honest gaps rather than being treated as failed or filled
+    with invented content. The verbatim ruling ledger lives in the local workbench
+    outside this repository tree; this states its operative substance and date
+    inline. Without ``gaps`` the only way to record that act is ``UNRESOLVED_GAP``
+    for the whole crop, which throws away readable words and gap positions alike.
     """
 
     text: str | None

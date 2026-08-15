@@ -12,8 +12,11 @@ from operations.spike_perlector.models import (
     ALL_CONDITIONS,
     Condition,
     DeliveryMode,
+    LimitationDisclosureState,
     MaterialClass,
     OutputStatus,
+    PublicLimitationCode,
+    RunLimitations,
 )
 from operations.spike_perlector.normalization import GRAPHEMIC_V1, PROFILES
 from operations.spike_perlector.publication import write_public_finding
@@ -40,7 +43,12 @@ from operations.spike_perlector.testkit import (
 )
 
 
-def declared_fixture_run(*, elapsed_ms: float | None = 1.0, cost_usd: float | None = 0.0):
+def declared_fixture_run(
+    *,
+    elapsed_ms: float | None = 1.0,
+    cost_usd: float | None = 0.0,
+    limitations: RunLimitations | None = None,
+):
     roster = CandidateRoster(
         stock_base=identity("private-model-name-one", 1, source_ref=STOCK_BASE_SOURCE),
         vendor_unaltered=identity(
@@ -84,6 +92,7 @@ def declared_fixture_run(*, elapsed_ms: float | None = 1.0, cost_usd: float | No
             prompt_registry=prompts,
             profile=GRAPHEMIC_V1,
         ),
+        limitations=limitations,
     )
 
 
@@ -127,6 +136,32 @@ def test_public_validator_refuses_free_text_in_a_closed_metric_row():
     tampered["matrix"][0]["note"] = "synthetic secret transcription"
     with pytest.raises(PublicSafetyRefusal, match="keys"):
         validate_public_finding(tampered)
+
+
+def test_a_coded_run_specific_limitation_appears_in_the_public_finding():
+    limitation = PublicLimitationCode.CHECKED_REFERENCE_GAPS_PRESENT
+    finding = project_public_finding(
+        declared_fixture_run(
+            limitations=RunLimitations(
+                disclosure_state=LimitationDisclosureState.CODED,
+                codes=(limitation,),
+            )
+        )
+    )
+
+    assert finding["limitations"] == [limitation.value]
+    assert "transcription" not in json.dumps(finding)
+
+
+def test_an_unenumerable_run_specific_limitation_refuses_publication():
+    run = declared_fixture_run(
+        limitations=RunLimitations(
+            disclosure_state=LimitationDisclosureState.UNPUBLISHABLE,
+        )
+    )
+
+    with pytest.raises(PublicSafetyRefusal, match="outside the closed public vocabulary"):
+        project_public_finding(run)
 
 
 def test_public_validator_refuses_a_protocol_digest_that_is_not_predeclared():
@@ -235,6 +270,9 @@ def test_the_published_schema_and_the_stricter_validator_describe_one_shape():
     assert set(matrix_row["condition"]["enum"]) == conditions
     assert set(schema["properties"]["normalization_profile_id"]["enum"]) == set(PROFILES)
     assert set(schema["properties"]["measure_quotes"]["items"]["enum"]) == set(MEASURE_QUOTES)
+    assert set(schema["properties"]["limitations"]["items"]["enum"]) == {
+        code.value for code in PublicLimitationCode
+    }
     # The validator requires the exact fixed list (redaction.py's `!= list(MEASURE_QUOTES)`);
     # the schema can only express that as cardinality plus uniqueness, not order, but it
     # must at least refuse an empty or duplicated measure_quotes array.

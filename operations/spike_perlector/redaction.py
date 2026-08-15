@@ -13,7 +13,7 @@ import math
 from typing import Any
 
 from .errors import MeasurementRefusal, PublicSafetyRefusal
-from .models import Condition
+from .models import Condition, PublicLimitationCode
 from .normalization import PROFILES
 from .protocol import PREDECLARED_PROTOCOL_SHA256
 from .runner import (
@@ -42,6 +42,7 @@ _ROOT_KEYS = {
     "matrix",
     "input_baselines",
     "condition_deltas",
+    "limitations",
 }
 _MATRIX_KEYS = {
     "subject_index",
@@ -158,6 +159,7 @@ def project_public_finding(run: MeasurementRun) -> dict[str, Any]:
         "matrix": [_condition_record(row) for row in run.condition_aggregates()],
         "input_baselines": [_baseline_record(row) for row in run.witness_aggregates()],
         "condition_deltas": [_delta_record(row) for row in run.condition_deltas()],
+        "limitations": sorted(code.value for code in run.limitations.codes),
     }
     validate_public_finding(finding)
     return finding
@@ -306,6 +308,17 @@ def validate_public_finding(finding: Any) -> None:
         )
     if root["measure_quotes"] != list(MEASURE_QUOTES):
         raise PublicSafetyRefusal("public measure quotes differ from the fixed predeclared list")
+    limitations = root["limitations"]
+    allowed_limitations = {code.value for code in PublicLimitationCode}
+    if (
+        not isinstance(limitations, list)
+        or any(not isinstance(code, str) or code not in allowed_limitations for code in limitations)
+        or len(limitations) != len(set(limitations))
+        or limitations != sorted(limitations)
+    ):
+        raise PublicSafetyRefusal(
+            "public limitations must be a sorted distinct list from the closed code vocabulary"
+        )
     if not isinstance(root["matrix"], list):
         raise PublicSafetyRefusal(
             "public finding aggregate candidate-condition matrix is not a list"

@@ -13,12 +13,13 @@
     "measure_quotes",
     "matrix",
     "input_baselines",
-    "condition_deltas"
+    "condition_deltas",
+    "limitations"
   ],
   "properties": {
     "schema": {"const": "reading-claim-public-finding.v1"},
     "protocol_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "normalization_profile_id": {"enum": ["graphemic-v1", "allographetic-v1"]},
+    "normalization_profile_id": {"enum": ["graphemic-v1", "allographic-v1"]},
     "normalization_profile_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "measure_quotes": {
       "type": "array",
@@ -37,7 +38,19 @@
     },
     "matrix": {"type": "array", "minItems": 9, "maxItems": 9, "items": {"$ref": "#/$defs/matrix_row"}},
     "input_baselines": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/baseline_row"}},
-    "condition_deltas": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"$ref": "#/$defs/delta_row"}}
+    "condition_deltas": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"$ref": "#/$defs/delta_row"}},
+    "limitations": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "checked_reference_gaps_present_v1",
+          "nonscoreable_selected_acts_present_v1",
+          "candidate_nonanswers_present_v1",
+          "malformed_candidate_responses_present_v1"
+        ]
+      }
+    }
   },
   "$defs": {
     "number_or_null": {"type": ["number", "null"]},

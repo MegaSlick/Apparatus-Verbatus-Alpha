@@ -8,9 +8,7 @@ from common.contracts.approval import ApprovalRecordReference, build_approval_re
 
 from .encoding import sha256_bytes
 from .gates import (
-    NORMALIZATION_APPROVAL_SUBJECT,
     RUN_PLAN_APPROVAL_SUBJECT,
-    NormalizationApproval,
     RunAuthorization,
     RunPlanApproval,
 )
@@ -200,23 +198,6 @@ def _test_approval_reference(
     return reference, payload
 
 
-def normalization_approval_for(profile) -> NormalizationApproval:
-    """Build a self-consistent test artifact; it is never a real Tyrel approval."""
-
-    reference, payload = _test_approval_reference(
-        NormalizationApproval.scope_digest(
-            profile_id=profile.profile_id, profile_sha256=profile.digest
-        ),
-        subject_id=NORMALIZATION_APPROVAL_SUBJECT,
-    )
-    return NormalizationApproval.load(
-        profile_id=profile.profile_id,
-        profile_sha256=profile.digest,
-        approval_reference=reference,
-        read_bytes=lambda _path: payload,
-    )
-
-
 def run_plan_approval_for(
     *,
     manifest,
@@ -241,11 +222,18 @@ def run_plan_approval_for(
         "prompt_registry_sha256": prompt_registry.snapshot_sha256(roster.identities()),
         "normalization_profile_id": profile.profile_id,
         "normalization_profile_sha256": profile.digest,
-        "budget_evidence_sha256": digest("synthetic-spec05-budget-evidence"),
         "private_sample_accounting_sha256": accounting.digest,
+        "prove_before_scale_evidence_sha256": digest("synthetic-small-reasonable-well"),
+        "spend_scope_sha256": digest("synthetic-zero-spend-scope"),
+        "disclosure_scope_sha256": digest("synthetic-cleared-disclosure-scope"),
     }
     reference, payload = _test_approval_reference(
-        RunPlanApproval.scope_digest(**values), subject_id=RUN_PLAN_APPROVAL_SUBJECT
+        RunPlanApproval.scope_digest(
+            prove_before_scale_evidence_sha256=values["prove_before_scale_evidence_sha256"],
+            spend_scope_sha256=values["spend_scope_sha256"],
+            disclosure_scope_sha256=values["disclosure_scope_sha256"],
+        ),
+        subject_id=RUN_PLAN_APPROVAL_SUBJECT,
     )
     return RunPlanApproval.load(
         **values,
@@ -275,5 +263,4 @@ def cleared_public_authorization_for(
             profile=profile,
             sample_accounting=sample_accounting,
         ),
-        normalization_approval=normalization_approval_for(profile),
     )

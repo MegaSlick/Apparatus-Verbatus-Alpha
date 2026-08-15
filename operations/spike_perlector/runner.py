@@ -8,7 +8,7 @@ make an external call before prompt, held-out, and disclosure checks have succee
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from math import fsum, isfinite
 from typing import Iterable
@@ -25,11 +25,13 @@ from .models import (
     DissentSummary,
     DossierTestimonium,
     EvaluationAct,
+    LimitationDisclosureState,
     MaterialClass,
     OutputStatus,
     Perlectio,
     ReferenceStatus,
     ResolvedIdentity,
+    RunLimitations,
     WitnessConfiguration,
     anonymous_testimonia,
     dossier_for,
@@ -233,7 +235,7 @@ class WitnessAggregate:
 
 @dataclass(frozen=True, slots=True)
 class CandidateConditionDeltas:
-    """Fixed within-candidate condition deltas; interpretation remains Tyrel's."""
+    """Fixed within-candidate evidence; the session interprets without choosing text."""
 
     public_slot: int
     priming_cer_delta: float
@@ -269,12 +271,15 @@ class MeasurementRun:
     witness_configuration: WitnessConfiguration | None = None
     manifest: EvaluationManifest | None = None
     sample_accounting: PrivateSampleAccounting | None = None
+    limitations: RunLimitations = field(default_factory=RunLimitations)
 
     def __post_init__(self) -> None:
         if not self.candidates or not self.acts:
             raise MatrixRefusal("a measurement run requires candidates and acts")
         if not isinstance(self.material_class, MaterialClass):
             raise MatrixRefusal("measurement run needs an explicit material class")
+        if not isinstance(self.limitations, RunLimitations):
+            raise MatrixRefusal("measurement run needs a closed run-limitation declaration")
         if self.roster is not None:
             self.roster.validate()
             if self.candidates != self.roster.identities():
@@ -431,6 +436,10 @@ class MeasurementRun:
     def require_publishable(self) -> None:
         """Refuse fixture/partial evidence before the public redaction boundary."""
 
+        if self.limitations.disclosure_state is LimitationDisclosureState.UNPUBLISHABLE:
+            raise MatrixRefusal(
+                "a run with a limitation outside the closed public vocabulary cannot publish"
+            )
         if self.failed_attempts:
             raise MatrixRefusal("a run with unproved or invalid candidate attempts cannot publish")
         if any(
@@ -820,6 +829,7 @@ def _execute_matrix(
     witness_configuration: WitnessConfiguration | None,
     manifest: EvaluationManifest | None,
     sample_accounting: PrivateSampleAccounting | None,
+    limitations: RunLimitations,
 ) -> MeasurementRun:
     """Preflight the entire matrix, then call each already-frozen participant."""
 
@@ -861,7 +871,6 @@ def _execute_matrix(
         identities,
         act_values,
         authorization,
-        profile=profile,
         manifest=manifest,
     )
 
@@ -1008,6 +1017,7 @@ def _execute_matrix(
         witness_configuration=witness_configuration,
         manifest=manifest,
         sample_accounting=sample_accounting,
+        limitations=limitations,
     )
 
 
@@ -1018,6 +1028,7 @@ def run_matrix(
     prompt_registry: PromptRegistry,
     profile: NormalizationProfile,
     authorization: RunAuthorization,
+    limitations: RunLimitations | None = None,
 ) -> MeasurementRun:
     """Synthetic-only exercise entry point for the fake candidate interface.
 
@@ -1038,6 +1049,7 @@ def run_matrix(
         witness_configuration=None,
         manifest=None,
         sample_accounting=None,
+        limitations=RunLimitations() if limitations is None else limitations,
     )
 
 
@@ -1052,6 +1064,7 @@ def run_declared_roster_matrix(
     profile: NormalizationProfile,
     authorization: RunAuthorization,
     sample_accounting: PrivateSampleAccounting | None = None,
+    limitations: RunLimitations | None = None,
 ) -> MeasurementRun:
     """The only sealed entry point for a declared Spec 05 candidate matrix."""
 
@@ -1074,7 +1087,8 @@ def run_declared_roster_matrix(
         candidate_roster_sha256=roster.digest,
         witness_configuration_sha256=witness_configuration.digest,
         prompt_registry_sha256=prompt_registry.snapshot_sha256(roster.identities()),
-        profile=canonical_profile,
+        normalization_profile_id=canonical_profile.profile_id,
+        normalization_profile_sha256=canonical_profile.digest,
         private_sample_accounting_sha256=accounting.digest,
     )
     candidate_values = tuple(candidates)
@@ -1104,4 +1118,5 @@ def run_declared_roster_matrix(
         witness_configuration=witness_configuration,
         manifest=manifest,
         sample_accounting=accounting,
+        limitations=RunLimitations() if limitations is None else limitations,
     )

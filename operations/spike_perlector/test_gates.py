@@ -6,6 +6,7 @@ import json
 
 import pytest
 
+import operations.spike_perlector.gates as gates_module
 from common.contracts.approval import (
     ApprovalRecordReference,
     build_approval_record,
@@ -14,9 +15,10 @@ from operations.spike_perlector.errors import DisclosureRefusal, MatrixRefusal
 from operations.spike_perlector.fakes import FakeCandidate
 from operations.spike_perlector.gates import (
     DATA_GATE_APPROVAL_SUBJECT,
-    NORMALIZATION_APPROVAL_SUBJECT,
+    DATA_GATE_POLICY_IDENTITY,
+    DATA_GATE_POLICY_REPOSITORY_PATH,
+    THIRD_PARTY_APPROVAL_SUBJECT,
     DataGateAuthority,
-    NormalizationApproval,
     RunAuthorization,
     RunPlanApproval,
     ThirdPartyTransmissionApproval,
@@ -32,13 +34,23 @@ from operations.spike_perlector.testkit import (
     evaluation_act,
     identity,
     manifest_for,
-    normalization_approval_for,
     registry,
     run_plan_approval_for,
     witness_configuration_for,
 )
+from operations.submit.gate import DEFAULT_POLICY_PATH, load_policy
 
-POLICY = {"purpose": "synthetic test-only data-gate policy"}
+POLICY = load_policy()
+RUN_ENGINEERING_DECLARATION = {
+    "protocol_sha256": digest("protocol"),
+    "manifest_sha256": digest("manifest"),
+    "candidate_roster_sha256": digest("roster"),
+    "witness_configuration_sha256": digest("witnesses"),
+    "prompt_registry_sha256": digest("prompts"),
+    "normalization_profile_id": "graphemic-v1",
+    "normalization_profile_sha256": digest("normalization"),
+    "private_sample_accounting_sha256": digest("accounting"),
+}
 
 
 def private_roster() -> CandidateRoster:
@@ -62,7 +74,6 @@ def checked_data_gate_authority() -> DataGateAuthority:
         action="other", target_version_hash=DataGateAuthority.scope_digest(policy_content=POLICY)
     )
     return DataGateAuthority.load(
-        policy_content=POLICY,
         approval_reference=reference,
         read_bytes=lambda _path: payload,
     )
@@ -149,7 +160,6 @@ def _private_authorization(
             prompt_registry=prompts,
             profile=GRAPHEMIC_V1,
         ),
-        normalization_approval=normalization_approval_for(GRAPHEMIC_V1),
         external_approvals={roster.vendor_unaltered.candidate_key: approval}
         if approval is not None
         else None,
@@ -275,7 +285,7 @@ def test_shaped_private_approval_exercises_gate_without_a_network_call():
 
 def test_cleared_public_external_candidate_delivers_without_vendor_transmission_approval():
     """Spec 03/05's named carve-out: cleared-public material needs a run-plan and
-    normalization approval but never a ThirdPartyTransmissionApproval, even for
+    reserved-scope run approval but never a ThirdPartyTransmissionApproval, even for
     an external candidate -- unlike private-register material, which always
     does (asserted here alongside it, not left to an incidentally-passing test,
     per audit-d finding F7)."""
@@ -337,10 +347,7 @@ def test_synthetic_fixture_cannot_deliver_to_an_external_looking_adapter():
 
 def test_non_synthetic_authorization_requires_a_checked_run_plan_approval():
     with pytest.raises(DisclosureRefusal, match="run-plan"):
-        RunAuthorization(
-            material_class=MaterialClass.CLEARED_PUBLIC,
-            normalization_approval=normalization_approval_for(GRAPHEMIC_V1),
-        )
+        RunAuthorization(material_class=MaterialClass.CLEARED_PUBLIC)
 
 
 def test_run_authorization_refuses_a_forged_in_memory_approval_object():
@@ -375,29 +382,12 @@ def test_run_authorization_refuses_a_forged_in_memory_approval_object():
                 prompt_registry=registry(*roster.identities()),
                 profile=GRAPHEMIC_V1,
             ),
-            normalization_approval=normalization_approval_for(GRAPHEMIC_V1),
         )
     with pytest.raises(DisclosureRefusal, match="RunPlanApproval"):
         RunAuthorization(
             material_class=MaterialClass.PRIVATE_REGISTER,
             data_gate_authority=checked_data_gate_authority(),
             run_plan_approval=forged,
-            normalization_approval=normalization_approval_for(GRAPHEMIC_V1),
-        )
-    with pytest.raises(DisclosureRefusal, match="NormalizationApproval"):
-        RunAuthorization(
-            material_class=MaterialClass.PRIVATE_REGISTER,
-            data_gate_authority=checked_data_gate_authority(),
-            run_plan_approval=run_plan_approval_for(
-                manifest=manifest,
-                roster=roster,
-                witness_configuration=witness_configuration_for(
-                    evaluation_act(material_class=MaterialClass.PRIVATE_REGISTER)
-                ),
-                prompt_registry=registry(*roster.identities()),
-                profile=GRAPHEMIC_V1,
-            ),
-            normalization_approval=forged,
         )
     with pytest.raises(DisclosureRefusal, match="ThirdPartyTransmissionApproval"):
         RunAuthorization(
@@ -412,7 +402,6 @@ def test_run_authorization_refuses_a_forged_in_memory_approval_object():
                 prompt_registry=registry(*roster.identities()),
                 profile=GRAPHEMIC_V1,
             ),
-            normalization_approval=normalization_approval_for(GRAPHEMIC_V1),
             external_approvals={roster.vendor_unaltered.candidate_key: forged},
         )
 
@@ -451,23 +440,38 @@ def test_a_missing_data_gate_approval_refuses_by_name_not_by_attribute_error():
 
     with pytest.raises(DisclosureRefusal, match="data-gate approval is missing"):
         DataGateAuthority.load(
-            policy_content=POLICY,
             approval_reference=None,
             read_bytes=lambda _path: b"",
         )
 
 
-def test_an_approval_for_earlier_policy_content_is_stale_for_changed_content():
+def test_a_superseded_policy_with_its_valid_stale_approval_is_refused():
+    superseded = {**POLICY, "policy_version": "synthetic-data-gate-v0"}
+    reference, payload = approval_reference_for(
+        action="other",
+        target_version_hash=DataGateAuthority.scope_digest(policy_content=superseded),
+    )
+    with pytest.raises(DisclosureRefusal, match="stale"):
+        DataGateAuthority.load(
+            approval_reference=reference,
+            read_bytes=lambda _path: payload,
+        )
+
+
+def test_data_gate_resolves_the_single_repository_policy_identity_and_revision():
     reference, payload = approval_reference_for(
         action="other",
         target_version_hash=DataGateAuthority.scope_digest(policy_content=POLICY),
     )
-    with pytest.raises(DisclosureRefusal, match="stale"):
-        DataGateAuthority.load(
-            policy_content={**POLICY, "purpose": "a different policy entirely"},
-            approval_reference=reference,
-            read_bytes=lambda _path: payload,
-        )
+    authority = DataGateAuthority.load(
+        approval_reference=reference,
+        read_bytes=lambda _path: payload,
+    )
+
+    assert DEFAULT_POLICY_PATH.as_posix().endswith(DATA_GATE_POLICY_REPOSITORY_PATH)
+    assert authority.policy_identity == DATA_GATE_POLICY_IDENTITY
+    assert authority.policy_repository_path == DATA_GATE_POLICY_REPOSITORY_PATH
+    assert authority.policy_revision == POLICY["policy_version"]
 
 
 def test_approval_bytes_that_do_not_match_their_content_address_refuse():
@@ -477,7 +481,6 @@ def test_approval_bytes_that_do_not_match_their_content_address_refuse():
     )
     with pytest.raises(DisclosureRefusal, match="do not match their content-addressed reference"):
         DataGateAuthority.load(
-            policy_content=POLICY,
             approval_reference=reference,
             read_bytes=lambda _path: payload + b" ",
         )
@@ -496,7 +499,6 @@ def test_rehashed_approval_bytes_still_refuse_an_invalid_record_self_hash():
 
     with pytest.raises(DisclosureRefusal, match="fails its own self-hash"):
         DataGateAuthority.load(
-            policy_content=POLICY,
             approval_reference=reference,
             read_bytes=lambda _path: tampered,
         )
@@ -515,7 +517,6 @@ def test_a_record_whose_action_is_not_the_recorded_one_refuses():
     )
     with pytest.raises(DisclosureRefusal, match="recorded approval action"):
         DataGateAuthority.load(
-            policy_content=POLICY,
             approval_reference=reference,
             read_bytes=lambda _path: payload,
         )
@@ -524,10 +525,6 @@ def test_a_record_whose_action_is_not_the_recorded_one_refuses():
 @pytest.mark.parametrize(
     "sibling",
     (
-        NormalizationApproval.scope_digest(
-            profile_id=GRAPHEMIC_V1.profile_id,
-            profile_sha256=digest("any-profile"),
-        ),
         ThirdPartyTransmissionApproval.scope_digest(
             vendor="synthetic-vendor",
             candidate_artifact_digest=digest("candidate"),
@@ -535,15 +532,9 @@ def test_a_record_whose_action_is_not_the_recorded_one_refuses():
             manifest_sha256=digest("manifest"),
         ),
         RunPlanApproval.scope_digest(
-            protocol_sha256=digest("protocol"),
-            manifest_sha256=digest("manifest"),
-            candidate_roster_sha256=digest("roster"),
-            witness_configuration_sha256=digest("witnesses"),
-            prompt_registry_sha256=digest("prompts"),
-            normalization_profile_id="graphemic-v1",
-            normalization_profile_sha256=digest("normalization"),
-            budget_evidence_sha256=digest("budget"),
-            private_sample_accounting_sha256=digest("accounting"),
+            prove_before_scale_evidence_sha256=digest("scale"),
+            spend_scope_sha256=digest("spend"),
+            disclosure_scope_sha256=digest("disclosure"),
         ),
     ),
 )
@@ -562,7 +553,6 @@ def test_a_sibling_scope_digest_cannot_satisfy_the_data_gate(sibling):
     reference, payload = approval_reference_for(action="other", target_version_hash=sibling)
     with pytest.raises(DisclosureRefusal, match="stale"):
         DataGateAuthority.load(
-            policy_content=POLICY,
             approval_reference=reference,
             read_bytes=lambda _path: payload,
         )
@@ -578,7 +568,7 @@ def test_the_schema_tag_alone_separates_two_otherwise_identical_scopes():
 
     shared = {"policy_content": dict(POLICY)}
     first = _approval_digest({"schema": DATA_GATE_APPROVAL_SUBJECT, **shared})
-    second = _approval_digest({"schema": NORMALIZATION_APPROVAL_SUBJECT, **shared})
+    second = _approval_digest({"schema": THIRD_PARTY_APPROVAL_SUBJECT, **shared})
     assert first != second
 
 
@@ -592,16 +582,20 @@ def test_policy_content_that_cannot_be_canonicalized_refuses_rather_than_aliasin
     """
 
     with pytest.raises(DisclosureRefusal, match="cannot be canonically bound.*non-string key"):
-        DataGateAuthority.scope_digest(policy_content={1: "same-json"})
+        DataGateAuthority.scope_digest(policy_content={"policy_version": "test-v1", 1: "same-json"})
     with pytest.raises(DisclosureRefusal, match="cannot be canonically bound.*float"):
-        DataGateAuthority.scope_digest(policy_content={"retention_days": 1.5})
+        DataGateAuthority.scope_digest(
+            policy_content={"policy_version": "test-v1", "retention_days": 1.5}
+        )
     with pytest.raises(
         DisclosureRefusal, match="cannot be canonically bound.*surrogates not allowed"
     ):
-        DataGateAuthority.scope_digest(policy_content={"purpose": chr(0xD800)})
+        DataGateAuthority.scope_digest(
+            policy_content={"policy_version": "test-v1", "purpose": chr(0xD800)}
+        )
 
 
-def test_non_canonical_policy_content_refuses_as_a_disclosure_not_a_type_error():
+def test_non_canonical_policy_content_refuses_as_a_disclosure_not_a_type_error(monkeypatch):
     """The gate's refusal must be the governed one, not a bare `TypeError`.
 
     Strict canonicalization refuses a float or a non-string key by raising
@@ -616,37 +610,41 @@ def test_non_canonical_policy_content_refuses_as_a_disclosure_not_a_type_error()
         action="other",
         target_version_hash=DataGateAuthority.scope_digest(policy_content=POLICY),
     )
+    monkeypatch.setattr(
+        gates_module,
+        "_resolve_authoritative_data_gate_policy",
+        lambda: {"policy_version": "test-v1", "retention_days": 1.5},
+    )
     with pytest.raises(DisclosureRefusal, match="cannot be canonically bound"):
         DataGateAuthority.load(
-            policy_content={"retention_days": 1.5},
             approval_reference=reference,
             read_bytes=lambda _path: payload,
         )
+    monkeypatch.setattr(
+        gates_module,
+        "_resolve_authoritative_data_gate_policy",
+        lambda: {
+            "policy_version": "test-v1",
+            "outer": [{"retention_days": 1.5}],
+        },
+    )
     with pytest.raises(
         DisclosureRefusal,
-        match=r"cannot be canonically bound: float at \$\.policy_content\.outer\[0\]\.retention_days",
+        match=r"cannot be canonically bound: float at \$\.outer\[0\]\.retention_days",
     ):
         DataGateAuthority.load(
-            policy_content={"outer": [{"retention_days": 1.5}]},
             approval_reference=reference,
             read_bytes=lambda _path: payload,
         )
 
 
 def test_every_approval_loader_names_a_missing_approval_rather_than_an_attribute():
-    """The fix reached one loader of four; the other three said `'NoneType' object
+    """The fix reached one loader first; the remaining loaders said `'NoneType' object
     has no attribute 'relative_path'` — verbatim the diagnostic the commit that
     made it identified as wrong, in the same file. Lower stakes than the data
     gate, since these do not gate private-register disclosure, but the reasoning
     is unchanged. Found by the Opus read of this branch."""
 
-    with pytest.raises(DisclosureRefusal, match="normalization approval is missing"):
-        NormalizationApproval.load(
-            profile_id="graphemic-v1",
-            profile_sha256=digest("profile"),
-            approval_reference=None,
-            read_bytes=lambda _path: b"",
-        )
     with pytest.raises(DisclosureRefusal, match="third-party transmission approval is missing"):
         ThirdPartyTransmissionApproval.load(
             vendor="synthetic-vendor",
@@ -658,28 +656,27 @@ def test_every_approval_loader_names_a_missing_approval_rather_than_an_attribute
         )
     with pytest.raises(DisclosureRefusal, match="run-plan approval is missing"):
         RunPlanApproval.load(
-            protocol_sha256=digest("protocol"),
-            manifest_sha256=digest("manifest"),
-            candidate_roster_sha256=digest("roster"),
-            witness_configuration_sha256=digest("witnesses"),
-            prompt_registry_sha256=digest("prompts"),
-            normalization_profile_id="graphemic-v1",
-            normalization_profile_sha256=digest("normalization"),
-            budget_evidence_sha256=digest("budget"),
-            private_sample_accounting_sha256=digest("accounting"),
+            **RUN_ENGINEERING_DECLARATION,
+            prove_before_scale_evidence_sha256=digest("scale"),
+            spend_scope_sha256=digest("spend"),
+            disclosure_scope_sha256=digest("disclosure"),
             approval_reference=None,
             read_bytes=lambda _path: b"",
         )
 
 
-def test_data_gate_authority_deeply_owns_the_policy_bound_by_approval():
-    policy = {"limits": {"retention_days": [30]}}
+def test_data_gate_authority_deeply_owns_the_policy_bound_by_approval(monkeypatch):
+    policy = {"policy_version": "test-v1", "limits": {"retention_days": [30]}}
     reference, payload = approval_reference_for(
         action="other",
         target_version_hash=DataGateAuthority.scope_digest(policy_content=policy),
     )
+    monkeypatch.setattr(
+        gates_module,
+        "_resolve_authoritative_data_gate_policy",
+        lambda: policy,
+    )
     authority = DataGateAuthority.load(
-        policy_content=policy,
         approval_reference=reference,
         read_bytes=lambda _path: payload,
     )
@@ -701,7 +698,6 @@ def test_every_typed_approval_retains_an_immutable_checked_record():
     prompts = registry(*roster.identities())
     approvals = (
         checked_data_gate_authority(),
-        normalization_approval_for(GRAPHEMIC_V1),
         transmission_approval(
             vendor="synthetic-vendor",
             candidate_artifact_digest=roster.vendor_unaltered.artifact_digest,
@@ -724,6 +720,34 @@ def test_every_typed_approval_retains_an_immutable_checked_record():
             approval.approval_record["subject_ids"].append("mutated-after-check")
 
 
+def test_run_plan_keeps_engineering_declaration_out_of_tyrels_approval_scope():
+    reserved = {
+        "prove_before_scale_evidence_sha256": digest("scale"),
+        "spend_scope_sha256": digest("spend"),
+        "disclosure_scope_sha256": digest("disclosure"),
+    }
+    reference, payload = approval_reference_for(
+        action="other",
+        subject_ids=["spec05-run-plan-approval.v1"],
+        target_version_hash=RunPlanApproval.scope_digest(**reserved),
+    )
+    first = RunPlanApproval.load(
+        **RUN_ENGINEERING_DECLARATION,
+        **reserved,
+        approval_reference=reference,
+        read_bytes=lambda _path: payload,
+    )
+    second = RunPlanApproval.load(
+        **{**RUN_ENGINEERING_DECLARATION, "prompt_registry_sha256": digest("other-prompts")},
+        **reserved,
+        approval_reference=reference,
+        read_bytes=lambda _path: payload,
+    )
+
+    assert first.scope_sha256 == second.scope_sha256
+    assert first.engineering_declaration_sha256 != second.engineering_declaration_sha256
+
+
 def test_generic_other_approval_for_another_purpose_cannot_open_the_data_gate():
     reference, payload = approval_reference_for(
         action="other",
@@ -733,28 +757,12 @@ def test_generic_other_approval_for_another_purpose_cannot_open_the_data_gate():
 
     with pytest.raises(DisclosureRefusal, match="data-gate approval purpose"):
         DataGateAuthority.load(
-            policy_content=POLICY,
             approval_reference=reference,
             read_bytes=lambda _path: payload,
         )
 
 
 def test_each_typed_approval_refuses_a_generic_other_record_for_another_purpose():
-    profile_sha256 = digest("profile")
-    reference, payload = approval_reference_for(
-        action="other",
-        target_version_hash=NormalizationApproval.scope_digest(
-            profile_id="graphemic-v1", profile_sha256=profile_sha256
-        ),
-    )
-    with pytest.raises(DisclosureRefusal, match="normalization approval purpose"):
-        NormalizationApproval.load(
-            profile_id="graphemic-v1",
-            profile_sha256=profile_sha256,
-            approval_reference=reference,
-            read_bytes=lambda _path: payload,
-        )
-
     transmission = {
         "vendor": "synthetic-vendor",
         "candidate_artifact_digest": digest("candidate"),
@@ -773,18 +781,18 @@ def test_each_typed_approval_refuses_a_generic_other_record_for_another_purpose(
         )
 
     run_plan = {
-        "protocol_sha256": digest("protocol"),
-        "manifest_sha256": digest("manifest"),
-        "candidate_roster_sha256": digest("roster"),
-        "witness_configuration_sha256": digest("witnesses"),
-        "prompt_registry_sha256": digest("prompts"),
-        "normalization_profile_id": "graphemic-v1",
-        "normalization_profile_sha256": digest("normalization"),
-        "budget_evidence_sha256": digest("budget"),
-        "private_sample_accounting_sha256": digest("accounting"),
+        **RUN_ENGINEERING_DECLARATION,
+        "prove_before_scale_evidence_sha256": digest("scale"),
+        "spend_scope_sha256": digest("spend"),
+        "disclosure_scope_sha256": digest("disclosure"),
     }
     reference, payload = approval_reference_for(
-        action="other", target_version_hash=RunPlanApproval.scope_digest(**run_plan)
+        action="other",
+        target_version_hash=RunPlanApproval.scope_digest(
+            prove_before_scale_evidence_sha256=run_plan["prove_before_scale_evidence_sha256"],
+            spend_scope_sha256=run_plan["spend_scope_sha256"],
+            disclosure_scope_sha256=run_plan["disclosure_scope_sha256"],
+        ),
     )
     with pytest.raises(DisclosureRefusal, match="run-plan approval purpose"):
         RunPlanApproval.load(
@@ -795,7 +803,7 @@ def test_each_typed_approval_refuses_a_generic_other_record_for_another_purpose(
 
 
 def test_a_policy_too_deep_to_canonicalize_refuses_in_the_gate_vocabulary():
-    policy = {}
+    policy = {"policy_version": "test-v1"}
     cursor = policy
     for _ in range(1_200):
         child = {}

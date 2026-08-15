@@ -49,9 +49,10 @@ _PRESENTATION_TRANSLATION = str.maketrans(
 class NormalizationProfile:
     """A deliberately small, named normalization policy.
 
-    The optional strict allographic profile exists so Tyrel can select it *before*
-    an evaluation run.  A run records the exact profile digest; it cannot silently
-    change long-s treatment after results appear.
+    The strict allographic profile remains a closed comparison definition, while
+    ``graphemic-v1`` is the one predeclared real-run profile.  A run records the
+    exact profile digest; it cannot silently change long-s treatment after results
+    appear.
     """
 
     profile_id: str
@@ -94,10 +95,13 @@ class NormalizationProfile:
         return sha256_bytes(canonical_json_bytes(self.record()))
 
 
-# The recommendation from the predeclared protocol.  This is not selected for a
-# real run by default; a run plan must carry its profile ID and digest explicitly.
 GRAPHEMIC_V1 = NormalizationProfile("graphemic-v1", map_long_s=True)
-ALLOGRAPHIC_V1 = NormalizationProfile("allographetic-v1", map_long_s=False)
+ALLOGRAPHIC_V1 = NormalizationProfile("allographic-v1", map_long_s=False)
+
+# The session settled the engineering choice before any result existed. Folding
+# long-s treats two glyph forms of the same letter alike while retaining the
+# historic spelling distinctions that measure the candidate against the ink.
+PREDECLARED_PROFILE = GRAPHEMIC_V1
 
 PROFILES: dict[str, NormalizationProfile] = {
     GRAPHEMIC_V1.profile_id: GRAPHEMIC_V1,
@@ -115,7 +119,7 @@ def profile_by_id(profile_id: str) -> NormalizationProfile:
 
 
 def require_canonical_profile(profile: NormalizationProfile) -> NormalizationProfile:
-    """Refuse a same-name, changed-rule profile at the real-run boundary."""
+    """Refuse a changed or non-predeclared profile at the real-run boundary."""
 
     if not isinstance(profile, NormalizationProfile):
         raise MeasurementRefusal("real run normalization must be a named NormalizationProfile")
@@ -123,6 +127,10 @@ def require_canonical_profile(profile: NormalizationProfile) -> NormalizationPro
     if profile != canonical or profile.digest != canonical.digest:
         raise MeasurementRefusal(
             "real run normalization profile differs from its predeclared canonical definition"
+        )
+    if canonical is not PREDECLARED_PROFILE:
+        raise MeasurementRefusal(
+            "real run normalization differs from the predeclared graphemic-v1 profile"
         )
     return canonical
 

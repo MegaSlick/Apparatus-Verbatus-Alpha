@@ -5,20 +5,20 @@ evaluation image, ground-truth transcription, model call, pod, or reading-qualit
 number. It is not a result. Tests exercise the single candidate interface with
 synthetic fakes only.
 
-Spec 08's landing removes this harness. Its protocol and evidence can inform the later
-bench and dress rehearsal, but this package is not their implementation and does not
-silently turn a spike into durable pipeline architecture.
+Spec 08 has landed and the durable Perlector is `pipeline/4_perlector/`. This harness
+remains a separate measurement instrument: its protocol and evidence can inform a
+later bench and dress rehearsal, but it is not the durable stage implementation.
 
 The declared-run entry point hashes this exact document and compares it with a
 reviewable protocol pin in the code. A caller-supplied protocol digest is insufficient:
-the sealed manifest and its run-plan approval must name this document's digest.
+the sealed manifest must name this document's digest.
 
 Spec 05 was built twice, independently and blind, by two seats from different
 vendors. This protocol is lane B's, with lane A's human-adjudication procedure,
-gap-span handling, direct-import no-transport guard and literature citations merged into it; every
-divergence between the two builds and what was done about it is recorded in the merge
-report that accompanied this branch. Nothing in either lane ran against real
-material, and the merge did not either.
+gap-span handling, direct-import no-transport guard, and literature citations merged
+into it. Those are the substantive merge decisions needed to understand this
+instrument. Nothing in either lane ran against real material, and the merge did not
+either.
 
 Where the spike's build path departs from spec 05's own text: the spec names
 `autoclave/spike_perlector/`, and `autoclave/` was reassigned on 2026-08-01 to mean
@@ -29,9 +29,9 @@ The question is: does a Perlector grounded in the **Exemplar** and informed by f
 
 ## 1. Preconditions before any material is shown
 
-A real run is refused until the following are sealed privately: Tyrel's approval of the small, reasonable test, exact data, candidates/models, and budget (GOVERNANCE 9); a current data-gate approval for private-register material; an immutable selection manifest; an approved interim Attestator configuration; checked human references; and a prompt-format proof for every candidate.
+A real run is refused until the following are sealed privately: Tyrel's approval of what counts as a small, reasonable, well-performing test, its spend scope, and its disclosure scope (GOVERNANCE 9 and CLAUDE.md hard rule 1); a current data-gate approval for private-register material; an immutable selection manifest; a session-predeclared interim Attestator configuration; checked human references; and a prompt-format proof for every candidate.
 
-The run boundary verifies three content-addressed Tyrel approval artifacts through the repository's existing approval-record contract: a `RunPlanApproval` binds the protocol, selected manifest, three-role candidate roster, sealed witness configuration, prompt-declaration snapshot, selected normalizer, budget-evidence digest, and private sample-accounting digest; a `NormalizationApproval` binds the selected profile; and, when private register images would leave the boundary, a `ThirdPartyTransmissionApproval` binds the vendor, resolved artifact, exact page set, and manifest. `DataGateAuthority` separately rechecks the current data-gate policy and its record. A SHA-shaped string or an in-memory `approver` field is not authority.
+The run boundary verifies content-addressed Tyrel approval artifacts through the repository's existing approval-record contract. `RunPlanApproval` has two distinct digests: its Tyrel-approval scope binds evidence for the prove-before-scale judgment, spend scope, and disclosure scope, and no engineering field; its session-owned engineering declaration binds the protocol, selected manifest, three-role candidate roster, sealed witness configuration, prompt-declaration snapshot, `graphemic-v1` normalizer, and private sample accounting, which the run mechanically verifies. When private register images would leave the boundary, a separate `ThirdPartyTransmissionApproval` binds the vendor, resolved artifact, exact page set, and manifest. `DataGateAuthority` reads the one authoritative repository policy at `config/data_handling_policy.json` and binds its identity, `policy_version` revision, exact content, and approval record; a stale policy plus its matching stale approval refuses. A SHA-shaped string or an in-memory `approver` field is not authority.
 
 The immutable selection manifest records its frame digest, this protocol's digest, fixed seed, and predeclared stratum quotas. Its selected rows also bind the image provenance class, reference status, and non-literal SHA-256 values for checked reference, drafts, adjudication, raw Testimonium evidence, and both closed normalization forms. The declared-run entry point recomputes those bindings and refuses a caller-supplied material label, reference status, or text evidence that differs from the approved manifest. The code will not invent a quota or replace a short stratum. Each scoreable act needs two independent human transcriptions and an adjudicated checked-reference revision before any candidate or witness result can inform a prompt, crop, padding, or other adjustment.
 
@@ -41,7 +41,7 @@ Each candidate must supply resolved identity, revision/digest, exact declared pr
 
 Every candidate implements `Candidate.read(CandidateRequest)`. The request always carries the same semantic `Dossier`, plus that candidate's declared prompt-format bytes. The dossier gives each Testimonium a stable anonymous source slot, never its private Attestator identity, so a candidate cannot learn a witness-name preference. Every response becomes the same private `Perlectio` shape: resolved identity, condition, state, candidate text, dossier/prompt digests, image-presence, Testimonium count, structural dissent, wall time, and cost.
 
-The required roster is: (1) `Qwen/Qwen3.5-9B` as the stock base settled by Tyrel; (2) one unaltered vendor vision model, named only in Tyrel's approved run plan; and (3) Tyrel's trained checkpoint from its own model repository by its own digest. The checkpoint has no special adapter, score, or prompt fallback. It is an ordinary candidate.
+The session-configured roster is: (1) `Qwen/Qwen3.5-9B` as the stock base settled by the 2026-08-05 ruling; (2) one unaltered vendor vision model; and (3) the trained checkpoint from its own model repository by its own digest. External disclosure and spend still require Tyrel's approval, but model occupancy is a configured, swappable engineering choice. The checkpoint has no special adapter, score, or prompt fallback. It is an ordinary candidate. The ruling ledger lives in the local workbench outside this repository tree; this paragraph states the operative substance and date so the provenance is verifiable here.
 
 The framework rejects `Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR`: it is an Attestator, so making it a Perlector candidate would make the dissent evidence agree with its own witness. Every sealed Attestator source also records its private source ID, repository, revision, and artifact digest. The runner refuses any candidate that shares a witness source or artifact, even under a different private label. Names, repositories, revisions, and prompt bytes stay private. Public aggregation uses non-identifying integer slots only; a slot is not a ranking.
 
@@ -81,7 +81,7 @@ reward hallucination.
 
 ## 4. Sampling frame, seed, and held-out rule
 
-The frame is every Tyrel-approved manually cropped act with opaque act ID, source-page SHA-256, crop SHA-256, provenance class, predeclared century/record/damage stratum, and potential for a checked human reference. No criterion may depend on model output, inter-annotator agreement, cost, or apparent ease. The full pre-reference frame may be selected without text hashes; every selected member must then bind its reference status plus checked-reference, independent-draft, adjudication, and Testimonium hashes before a run can open. `no_readable_text` and `unresolved_gap` must have a private reason-evidence digest in `PrivateSampleAccounting`; that accounting must partition every selected act into scoreable or excluded, is itself in the run-plan approval, and cannot replace a selected act.
+The frame is every session-predeclared manually cropped act within Tyrel's approved prove-before-scale scope, with opaque act ID, source-page SHA-256, crop SHA-256, provenance class, predeclared century/record/damage stratum, and potential for a checked human reference. No criterion may depend on model output, inter-annotator agreement, cost, or apparent ease. The full pre-reference frame may be selected without text hashes; every selected member must then bind its reference status plus checked-reference, independent-draft, adjudication, and Testimonium hashes before a run can open. `no_readable_text` and `unresolved_gap` must have a private reason-evidence digest in `PrivateSampleAccounting`; that accounting must partition every selected act into scoreable or excluded, is predeclared by the session, and cannot replace a selected act.
 
 The seed is fixed now: `verbatus/spec05/selection-v1`. Within each sealed stratum, sort `SHA-256(UTF-8(seed) || 0x00 || UTF-8(opaque_act_id))`, then take the sealed quota. The quota is Tyrel's GOVERNANCE 9 judgement; the code refuses a missing, altered, or undersupplied quota. It records seed, algorithm, frame digest, selected-member digest, and protocol digest.
 
@@ -115,9 +115,10 @@ the good case and must not be refused, while the same draft counted twice must b
 and only a digest that includes the transcriber can tell those two apart.
 
 **A checked reference may carry gaps, and this is the common case, not the edge
-case.** Ruling 3, recorded verbatim in `TYREL_RULINGS_2026-08-05.md`: "many of our
-records are damaged", and a damaged page yielding three readable words is "a
-successful partial reading of three words plus honest gaps — not a failure". A
+case.** On 2026-08-05 Tyrel ruled that damaged records must retain successful
+partial readings plus honest gaps rather than be treated as failed or filled with
+invented content. The verbatim ruling ledger lives in the local workbench outside
+this repository tree; this states its operative substance and date inline. A
 `GapSpan` marks unread ink at its place in the reference; `start == end` is a
 legitimate zero-width anchor, which is the structural reason a gap cannot carry
 characters whatever evidence hangs off it. The gap-excised text is what CER/WER uses
@@ -201,9 +202,9 @@ transcription convention Tyrel owns (§5), not to a scorer. Over-normalization i
 named risk in that same literature, so this profile stops at the one case with no
 real controversy.
 
-### Required Tyrel decision before the first real run
+### Predeclared normalization decision
 
-Long-s/allographic handling can favour a candidate. The recommendation is `graphemic-v1`, treating long-s as an allograph while preserving historical spelling. The alternative `allographetic-v1` preserves `ſ`. Tyrel must select one named, hashed profile before the evaluation manifest opens. The same approval confirms that `i/j`, `u/v`, `œ/æ`, diacritics, and historic spelling stay significant. No hidden normalization knob may change after results appear.
+Long-s/allographic handling can favour a candidate, so this protocol selects and hashes `graphemic-v1` before the first real run. It treats long-s as an allograph of round `s` while preserving historic spelling, which serves GOALS 2's comparison “against the ink itself” better than charging a model for two glyph forms of the same letter. The alternative `allographic-v1` definition remains closed for synthetic comparison but is refused at the real-run boundary. `i/j`, `u/v`, `œ/æ`, diacritics, and historic spelling stay significant. No hidden normalization knob may change after results appear.
 
 ## 7. Exact CER/WER and response states
 
@@ -272,13 +273,13 @@ For each candidate slot × condition, report CER/WER numerator, denominator, and
 
 For each Testimonium source index, report the same direct baseline. No source is called best and none is merged. The fixed within-candidate evidence is `priming_delta = CER_nuda - CER_primed` and `image_delta = CER_image_absent - CER_primed`.
 
-For a supplied base/checkpoint pair the framework additionally exposes condition-wise base-minus-checkpoint CER and `witness_only_advantage = advantage_primed - advantage_nuda`. These are signs and numbers with no hidden threshold or verdict. They show whether an advantage exists only once Testimonia appear; Tyrel alone interprets them and decides the chair.
+For a supplied base/checkpoint pair the framework additionally exposes condition-wise base-minus-checkpoint CER and `witness_only_advantage = advantage_primed - advantage_nuda`. These are signs and numbers with no hidden threshold or verdict. They show whether an advantage exists only once Testimonia appear. The session interprets the measurements and configuration decides the swappable Perlector chair. Tyrel retains only the judgments GOVERNANCE and CLAUDE.md reserve: what is small, reasonable, and well under prove-before-scale, paid actions, disclosure, and exclusions.
 
 ## 9. External-vendor and public-evidence gates
 
-An image carries an explicit provenance class: `synthetic`, `cleared_public`, or `private_register`. It is not trusted merely because a caller labels it: the selected manifest seals the class with the exact image/evidence bindings, and the content-addressed run-plan approval seals that manifest. The generic matrix API accepts only local synthetic fakes; it refuses an external-looking fake. A non-synthetic claim can enter only through the declared-roster entry point and a content-addressed run-plan approval. For `private_register`, a current data-gate authority is required; before an external adapter is called, its independently checked `ThirdPartyTransmissionApproval` must bind the exact vendor, resolved candidate artifact digest, page IDs, and manifest. Missing/wrong vendor, snapshot, page set, or approval bytes refuses before a candidate call. Genuinely cleared-public material still needs the manifest-bound run-plan and normalization approvals, but not the private-register vendor transmission approval; it may never be used as an unapproved label for a register image.
+An image carries an explicit provenance class: `synthetic`, `cleared_public`, or `private_register`. It is not trusted merely because a caller labels it: the selected manifest seals the class with the exact image/evidence bindings, and the declared-run boundary verifies that manifest independently of Tyrel's narrow reserved-scope approval. The generic matrix API accepts only local synthetic fakes; it refuses an external-looking fake. A non-synthetic claim can enter only through the declared-roster entry point and a content-addressed run-plan approval. For `private_register`, a current data-gate authority is required; before an external adapter is called, its independently checked `ThirdPartyTransmissionApproval` must bind the exact vendor, resolved candidate artifact digest, page IDs, and manifest. Missing/wrong vendor, snapshot, page set, or approval bytes refuses before a candidate call. Genuinely cleared-public material still needs the reserved-scope run-plan approval, but not the private-register vendor transmission approval; it may never be used as an unapproved label for a register image.
 
-Raw requests, prompt bytes, model identities, image bytes/paths, Testimonia, human transcriptions, candidate responses, adjudication records, and limitations stay under approved private roots. They never go to git, `/out`, or `history/`.
+Raw requests, prompt bytes, model identities, image bytes/paths, Testimonia, human transcriptions, candidate responses, adjudication records, and free-text limitation evidence stay under approved private roots. They never go to git, `/out`, or `history/`. A run declares one closed limitation state: `clear`, `coded`, or `unpublishable`. A coded limitation publishes only enumerated `PublicLimitationCode` values; no text accompanies them. If a material limitation cannot be represented by that vocabulary, `unpublishable` refuses publication rather than emitting a finding that hides it.
 
 A dated finding conforms to `reading_claim_public_finding.schema.json`, which lives beside this document rather than in `history/` — `history/README.md` says that directory holds dated evidence and that anything there telling you what to do is out of date by definition, and a schema is exactly a document that tells you what to do. The finding itself is still written into `history/`. That schema is the published shape, for a reader checking a finding without this code; nothing here executes it, and this framework takes on no JSON-Schema dependency to do so. What runs before every write is `redaction.validate_public_finding`, deliberately the stricter of the two, and a test pins both to the same closed key sets and enumerations so they cannot drift apart unnoticed. It permits only fixed metric keys, integer slots, condition enums, SHA-256 digests, and fixed measure-quote IDs. It requires the exact three-slot × three-condition matrix, matching deltas, equal act denominators, and arithmetic-consistent CER/WER before the only supported writer, `publication.write_public_finding`, performs an exclusive dated write. It has no free-text path. Tests plant synthetic transcript, name, image, and identity fields and prove the projector omits them or validation refuses them. This build writes no finding because it measured nothing.
 
