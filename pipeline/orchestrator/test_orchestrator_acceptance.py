@@ -397,8 +397,8 @@ FIXTURE = "synthetic-two-page-v0"
 # images, not one 36x36 example. The file is sealed byte-for-byte, so this comment-only config
 # correction moves every dependent artifact. Fresh real runs again measured 54
 # files for happy (exit 0) and 58 for review (exit 3).
-HAPPY_RUN_TREE_DIGEST = "a3454e2781439e6e75336356c306828e55068aacdb170bd0f2e84e6cbc2d8729"
-REVIEW_RUN_TREE_DIGEST = "51391e788b87b18e359c16a798e744b93f4a63d8e6375503e3f37f1548ca77c5"
+HAPPY_RUN_TREE_DIGEST = "6c8559544554ebaf1ca8c2fac55212e7dce0eea6c968dbf91eeb0b88235cfdb1"
+REVIEW_RUN_TREE_DIGEST = "a07b26191d6c3f243767f66f54e282b05734f165966500ccd0cea97852444409"
 
 
 def orchestrate(
