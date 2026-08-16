@@ -51,6 +51,12 @@ CUSTODY_BINDING_SCHEMA = "chandra-custody-binding.v1"
 # names, reproduced in the test doubles meant to catch it.
 _RESPONSE_PREFIX = f"{writing_directory(DESIGNATOR)}/{BLOBS_DIR}/"
 _RECEIPT_PREFIX = "receipts/sha256/"
+# Named once, because the writer and the reader must not drift on what a binding
+# is -- and because the write half checks the same shape for a third reason
+# (`_is_custody_binding`).
+_BINDING_FIELDS = frozenset(
+    {"schema", "page_id", "page_ordinal", "receipt_sha256", "response_sha256"}
+)
 
 
 def _sha(value: object, what: str) -> str:
@@ -95,6 +101,17 @@ def retain_chandra_response(
     # Before any bytes are written: a binding sealed under a receipt the reader
     # will refuse is unreadable custody, not custody.
     _validated_designator_receipt(tree, receipt)
+    # Bindings and responses share one content-addressed blob namespace, so a
+    # response that *is* a canonical binding would enter through this door and
+    # come back out of the read door as proof of a pairing nothing recorded --
+    # measured against a real run tree, where a minted binding paired call A's
+    # receipt with call B's response and was accepted. Refusing it here means no
+    # binding this module accepts came from anywhere but its own writer below.
+    # It does not constrain a caller that writes blobs through the tree directly;
+    # that caller is the pipeline itself, and this rule is not a barrier against
+    # the pipeline, only against custody minting itself by accident.
+    if _is_custody_binding(response):
+        raise SchemaRefusal("Chandra raw response is itself a custody binding record")
     digest, published = tree.put_blob(DESIGNATOR, response)
     response_ref = custody_reference(
         {"relative_path": published.relative_path, "sha256": digest},
@@ -140,14 +157,7 @@ def read_retained_chandra_response(
         recorded = json.loads(binding_bytes.decode("utf-8"))
     except (UnicodeDecodeError, ValueError) as error:
         raise SchemaRefusal(f"Chandra custody binding is not valid JSON: {error}") from error
-    binding_fields = {
-        "schema",
-        "page_id",
-        "page_ordinal",
-        "receipt_sha256",
-        "response_sha256",
-    }
-    if not isinstance(recorded, dict) or set(recorded) != binding_fields:
+    if not isinstance(recorded, dict) or set(recorded) != _BINDING_FIELDS:
         raise SchemaRefusal("Chandra custody binding is not its closed schema")
     try:
         exact_canonical_bytes = canonical_bytes(recorded)
@@ -175,6 +185,22 @@ def read_retained_chandra_response(
     if digest_bytes(data) != response["sha256"]:
         raise SchemaRefusal("Chandra response blob differs from its sealed reference")
     return data
+
+
+def _is_custody_binding(data: bytes) -> bool:
+    """Are these bytes exactly what this module's binding writer would produce?"""
+    try:
+        recorded = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return False
+    if not isinstance(recorded, dict) or set(recorded) != _BINDING_FIELDS:
+        return False
+    if recorded["schema"] != CUSTODY_BINDING_SCHEMA:
+        return False
+    try:
+        return data == canonical_bytes(recorded)
+    except (TypeError, ValueError):
+        return False
 
 
 def _validated_designator_receipt(tree: Any, receipt: dict[str, str]) -> dict[str, Any]:

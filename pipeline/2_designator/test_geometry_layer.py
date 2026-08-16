@@ -371,6 +371,32 @@ def test_chandra_custody_refuses_to_retain_under_a_non_designator_receipt():
     assert tree.blobs == {}, "no custody may be sealed that the read half can never accept"
 
 
+def test_chandra_custody_refuses_to_retain_a_response_that_is_itself_a_binding():
+    """Custody may not be minted through the response door.
+
+    Bindings and responses are content-addressed into one blob namespace, so
+    retaining binding-shaped bytes as a response would yield a blob the read half
+    accepts as proof of a pairing nothing ever recorded -- exercised against a
+    real run tree, where it paired one call's receipt with another's response.
+    """
+    tree = _FixtureTree()
+    honest = retain_chandra_response(
+        tree, b"an honest response", RECEIPT, page_id=PAGE_ID, page_ordinal=PAGE_ORDINAL
+    )
+    minted = tree.blobs[honest["custody_ref"]["relative_path"]]
+    with pytest.raises(SchemaRefusal, match="itself a custody binding"):
+        retain_chandra_response(tree, minted, RECEIPT, page_id=PAGE_ID, page_ordinal=PAGE_ORDINAL)
+    # Only the exact canonical form is a binding; ordinary Chandra bytes that
+    # merely mention the schema are still an ordinary response.
+    mentions = b'{"html":"<p>chandra-custody-binding.v1</p>"}'
+    assert (
+        retain_chandra_response(
+            tree, mentions, RECEIPT, page_id=PAGE_ID, page_ordinal=PAGE_ORDINAL
+        )["response_ref"]["relative_path"]
+        in tree.blobs
+    )
+
+
 def test_chandra_custody_refuses_a_receipt_reused_with_a_different_response():
     tree = _FixtureTree()
     first = retain_chandra_response(
