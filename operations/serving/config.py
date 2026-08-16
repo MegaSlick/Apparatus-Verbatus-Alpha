@@ -579,6 +579,13 @@ def verify_recipes_cover_chairs(
 
     Absent chairs carry no recipe and are skipped: an absence is a decision
     already recorded.
+
+    A proven profile's ``preflight_identity_digest`` is reconciled here for the
+    same reason.  ``manager._launchable`` refuses a proof that has stopped
+    describing its chair, but it refuses at the moment of launch — which on the
+    real path is again the rented GPU.  A chair repointed in ``models.toml``
+    without its profile being preflighted again is a configuration gap of
+    exactly the shape above, so it fails in a test run too.
     """
 
     tier_values = tuple(tiers)
@@ -599,6 +606,21 @@ def verify_recipes_cover_chairs(
         raise ServingConfigurationError(
             "config/serving_recipes.toml must match exactly every configured chair at every "
             f"configured placement tier; missing={missing}, unexpected={unexpected}"
+        )
+
+    repointed = sorted(
+        f"recipe={profile.recipe!r}, chair={profile.chair!r}, tier={profile.tier!r}"
+        for profile in recipes.profiles
+        if isinstance(profile, ServingProfile)
+        and profile.preflight_state == "proven"
+        and isinstance(models.chairs.get(profile.chair), ChairIdentity)
+        and profile.preflight_identity_digest
+        != chair_preflight_identity_digest(models.chairs[profile.chair])
+    )
+    if repointed:
+        raise ServingConfigurationError(
+            "serving profile(s) are marked proven against a chair identity config/models.toml "
+            f"no longer configures; preflight them again before launch: {repointed}"
         )
 
 

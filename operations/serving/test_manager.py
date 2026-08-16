@@ -611,6 +611,29 @@ def test_a_proven_profile_does_not_carry_over_onto_a_repointed_chair(tmp_path: P
     assert launcher.calls == []
 
 
+def test_recipe_coverage_catches_a_repointed_chair_offline_not_on_the_rented_gpu() -> None:
+    """`_launchable` refuses this, but only with the meter already running."""
+
+    proven = identity("reader", "reader-v1", revision="a" * 40)
+    row = profile_row(recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000)
+    row["preflight_identity_digest"] = chair_preflight_identity_digest(proven)
+    row["preflight_digest"] = profile_preflight_digest(row)
+    catalogue = parse_serving_recipes({"schema": "serving-recipes.v1", "profiles": [row]})
+
+    verify_recipes_cover_chairs(
+        ModelsConfig(witness_floor=0, chairs={"reader": proven}), catalogue, (TIER,)
+    )
+
+    repointed = identity("reader", "reader-v1", revision="b" * 40)
+    with pytest.raises(
+        ServingConfigurationError,
+        match=r"no longer configures.*recipe='reader-v1', chair='reader', tier='generic-48gb'",
+    ):
+        verify_recipes_cover_chairs(
+            ModelsConfig(witness_floor=0, chairs={"reader": repointed}), catalogue, (TIER,)
+        )
+
+
 def test_an_unproven_profile_may_not_retain_either_half_of_a_proof_mark() -> None:
     chair = identity("reader", "reader-v1")
     row = profile_row(recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000)
