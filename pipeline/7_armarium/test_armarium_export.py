@@ -28,6 +28,7 @@ from common.armarium_formats import ArmariumFormats
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.contracts.errors import ApprovalRefusal, SchemaRefusal
 from common.contracts.outcomes import ArmariumCategory, run_aggregate
+from common.contracts.uncertainty import validate as validate_uncertainty
 from common.imaging import encode_grayscale_png
 
 TEXT_REGISTER = "text/_source_folder/register/readings.txt"
@@ -318,6 +319,66 @@ def test_projection_identity_refuses_a_self_consistent_package_with_drifted_unce
     verify_export_bundle(tampered, tmp_path / "clean")
     with pytest.raises(SchemaRefusal, match="projection differs"):
         verify_projection_identity(tampered, tmp_path / "identity")
+
+
+def test_text_bundle_refuses_two_uncertainty_lines_for_one_literal(tmp_path):
+    """A second layer cannot overwrite the first while the parser walks the section."""
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    lines = members[TEXT_REGISTER].decode("utf-8").split("\n")
+    marker = lines.index("uncertainty:")
+    lines[marker:marker] = lines[marker : marker + 2]
+    members[TEXT_REGISTER] = "\n".join(lines).encode("utf-8")
+    _refresh_manifest_member(members, TEXT_REGISTER)
+
+    with pytest.raises(SchemaRefusal, match="more than one uncertainty layer"):
+        verify_projection_identity(_zip_bytes(members), tmp_path)
+
+
+def test_text_bundle_refuses_an_uncertainty_line_before_its_literal(tmp_path):
+    """Line order binds an uncertainty layer to an already parsed act literal."""
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    lines = members[TEXT_REGISTER].decode("utf-8").split("\n")
+    marker = lines.index("uncertainty:")
+    uncertainty_lines = lines[marker : marker + 2]
+    del lines[marker : marker + 2]
+    literal_marker = lines.index("canonical_clean_text:")
+    lines[literal_marker:literal_marker] = uncertainty_lines
+    members[TEXT_REGISTER] = "\n".join(lines).encode("utf-8")
+    _refresh_manifest_member(members, TEXT_REGISTER)
+
+    with pytest.raises(SchemaRefusal, match="has no literal to anchor to"):
+        verify_projection_identity(_zip_bytes(members), tmp_path)
+
+
+def test_text_bundle_refuses_uncertainty_valid_only_for_a_different_acts_literal(tmp_path):
+    """Valid JSON and valid offsets for some other act do not authorize this act."""
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    lines = members[TEXT_REGISTER].decode("utf-8").split("\n")
+    marker = lines.index("uncertainty:")
+    own_literal = _projection().acts[0]["canonical_clean_text"]
+    other_literal = own_literal + " belongs to a different act"
+    other_layer = {
+        "uncertain_spans": [
+            {
+                "start": len(own_literal),
+                "end": len(own_literal) + 1,
+                "alternatives": ["?"],
+                "confidence": "low",
+            }
+        ],
+        "gaps": [],
+        "self_revisions": [],
+    }
+    assert validate_uncertainty(other_layer, other_literal) == other_layer
+    lines[marker + 1] = json.dumps(other_layer, ensure_ascii=False, sort_keys=True)
+    members[TEXT_REGISTER] = "\n".join(lines).encode("utf-8")
+    _refresh_manifest_member(members, TEXT_REGISTER)
+
+    with pytest.raises(SchemaRefusal, match="does not anchor to its own act's literal"):
+        verify_projection_identity(_zip_bytes(members), tmp_path)
 
 
 def test_the_delivered_gate_asks_both_questions_the_manifest_claims_were_asked(tmp_path):

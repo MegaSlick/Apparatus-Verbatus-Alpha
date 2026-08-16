@@ -1429,11 +1429,20 @@ def _text_bundle_records(
                     raise SchemaRefusal(
                         "a text-bundle uncertainty layer has no literal to anchor to"
                     )
+                if pending_uncertainty is not None:
+                    raise SchemaRefusal(
+                        "a text-bundle section carries more than one uncertainty layer"
+                    )
                 try:
                     uncertainty = json.loads(lines[index + 1])
                 except json.JSONDecodeError as error:
                     raise SchemaRefusal("a text-bundle uncertainty layer is not JSON") from error
-                pending_uncertainty = validate_uncertainty(uncertainty, pending[0])
+                try:
+                    pending_uncertainty = validate_uncertainty(uncertainty, pending[0])
+                except SchemaRefusal as error:
+                    raise SchemaRefusal(
+                        "a text-bundle uncertainty layer does not anchor to its own act's literal"
+                    ) from error
             elif line == "display:":
                 # Spec 11 test 2's second half, checked on the written product:
                 # render -> strip -> hash. The rendered display is a reading aid and
