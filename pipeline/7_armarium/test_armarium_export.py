@@ -78,6 +78,7 @@ def _projection(*, salvage_items=()) -> ArmariumProjection:
                 "act_key": "one",
                 "category": "delivered",
                 "canonical_clean_text": "Cǣsar d’Amours",
+                "uncertainty": {"uncertain_spans": [], "gaps": [], "self_revisions": []},
                 "provenance": {"chair": "perlector"},
                 "source_regions": [region],
                 "reason": None,
@@ -380,6 +381,7 @@ def test_unselected_format_members_cannot_hide_inside_a_self_consistent_bundle(t
     # check under test rather than tripping the (correct) canonical-text identity
     # mismatch a single selected literal format now produces.
     manifest["canonical_text"]["identity_verified_across"] = []
+    manifest["claims"]["uncertainty"]["carried_by"] = ["jsonl"]
     manifest["self_hash"] = self_hash(manifest)
     members[EXPORT_MANIFEST_NAME] = canonical_bytes(manifest)
 
@@ -1578,3 +1580,37 @@ def _refresh_manifest_member(members: dict[str, bytes], changed_member: str) -> 
 def _refresh_manifest(members: dict[str, bytes], manifest: dict) -> None:
     manifest["self_hash"] = self_hash(manifest)
     members[EXPORT_MANIFEST_NAME] = canonical_bytes(manifest)
+
+
+@pytest.mark.parametrize("text", ["e\u0301", "é", "𐐷\u0301", "A\u030a𐐷"])
+def test_unicode_uncertainty_offsets_survive_every_literal_projection(tmp_path, text):
+    """Offsets count Unicode code points, never UTF-8 bytes or UTF-16 units."""
+    layer = {
+        "uncertain_spans": [{"start": 0, "end": 1, "alternatives": ["?"], "confidence": "low"}],
+        "gaps": [
+            {"position": "trailing", "start": len(text), "end": len(text), "witness_evidence": []}
+        ],
+        "self_revisions": [
+            {
+                "reading_span": {"start": len(text), "end": len(text)},
+                "prior_span": {"start": 0, "end": 0},
+            }
+        ],
+    }
+    projection = _projection()
+    delivered = {**projection.acts[0], "canonical_clean_text": text, "uncertainty": layer}
+    projection = replace(projection, acts=(delivered, projection.acts[1]))
+    bundle = build_armarium_bundle(projection, _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    assert json.loads(members["acts.jsonl"].splitlines()[0])["uncertainty"] == layer
+    assert (
+        json.dumps(layer, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        in members[TEXT_REGISTER]
+    )
+    database = tmp_path / "acts.sqlite"
+    database.write_bytes(members["acts.sqlite"])
+    with sqlite3.connect(database) as connection:
+        stored = connection.execute(
+            "SELECT uncertainty_spans_json FROM acts WHERE act_id = 'act-1'"
+        ).fetchone()[0]
+    assert json.loads(stored) == layer

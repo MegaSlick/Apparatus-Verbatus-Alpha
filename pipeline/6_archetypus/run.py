@@ -56,6 +56,8 @@ from common.contracts.stages import (  # noqa: E402
     PERLECTOR,
     RECENSOR,
 )
+from common.contracts.uncertainty import from_perlectio  # noqa: E402
+from common.contracts.uncertainty import validate as validate_uncertainty
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
     EXIT_HELD,
@@ -112,6 +114,7 @@ _RECORD_FIELDS = frozenset(
         "regions",
         "provenance",
         "annotations",
+        "uncertainty",
         "evidence_ref",
         "dissent_ref",
         "perlectio_ref",
@@ -346,6 +349,14 @@ def derive_text_status(text: str, annotations: list[dict]) -> str:
     if text.strip() == "":
         return "no_readable_text"
     return "established"
+
+
+def derive_record_text_status(text: str, annotations: list[dict], uncertainty: dict) -> str:
+    """A canonical unread-ink gap makes an otherwise readable record partial."""
+    status = derive_text_status(text, annotations)
+    if status == "established" and uncertainty["gaps"]:
+        return "partial"
+    return status
 
 
 def validate_text_status(text: str, text_status: str, evidence_ref) -> None:
@@ -699,7 +710,8 @@ def validate_record(record: dict) -> dict:
             "the Archetypus annotations are not in the exact form validation produces; a "
             "resealed record may not carry a shape the constructor would never have written"
         )
-    derived_status = derive_text_status(text, annotations)
+    validate_uncertainty(record["uncertainty"], text)
+    derived_status = derive_record_text_status(text, annotations, record["uncertainty"])
     if record["text_status"] != derived_status:
         raise SchemaRefusal(
             f"the Archetypus text_status {record['text_status']!r} disagrees with its text "
@@ -903,7 +915,8 @@ def establish_from_accepted_primed_perlectio(
         witnesses,
         f"accepted reading of {act['act_id']} annotations",
     )
-    text_status = derive_text_status(text, annotations)
+    uncertainty = from_perlectio(payload)
+    text_status = derive_record_text_status(text, annotations, uncertainty)
     evidence_ref = _no_readable_text_evidence(review, reading_ref, reading.get("inputs", []))
     if evidence_ref is not None and text_status != "no_readable_text":
         raise FatalAccounting(
@@ -935,6 +948,7 @@ def establish_from_accepted_primed_perlectio(
         "regions": regions,
         "provenance": payload.get("provenance"),
         "annotations": annotations,
+        "uncertainty": uncertainty,
         "evidence_ref": evidence_ref,
         # Dissent lives inside the one Perlectio and therefore travels by the
         # same reference, never as a copied value beside the established text.

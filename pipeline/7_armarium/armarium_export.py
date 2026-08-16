@@ -54,6 +54,8 @@ from common.contracts.outcomes import (
     run_aggregate,
 )
 from common.contracts.stages import ARMARIUM
+from common.contracts.uncertainty import utf8_round_trip
+from common.contracts.uncertainty import validate as validate_uncertainty
 from common.imaging import dimensions
 
 EXPORT_MANIFEST_NAME: Final = "EXPORT_MANIFEST.json"
@@ -71,7 +73,7 @@ _ZIP_EPOCH: Final = (1980, 1, 1, 0, 0, 0)
 _SOURCE_ACCESS_REQUIRED: Final = "requires-source-access"
 _RUN_ACCESS_REQUIRED: Final = "requires-retained-run-access"
 _EMBEDDED: Final = "embedded"
-_UNAVAILABLE_UNCERTAINTY: Final = "not-available-in-archetypus-contract"
+_UNCERTAINTY_AVAILABLE: Final = "canonical-unicode-codepoint-offsets"
 _ANNOTATION_NOT_PRODUCED: Final = "not-produced-pending-architecture-approval"
 _LITERAL_TEXT_FORMATS: Final = ("text-bundle", "acts-database", "jsonl")
 _PIXEL_REFERENCE_CLAIM: Final = "reference validity only; pixel resolution requires source access"
@@ -496,6 +498,8 @@ def _validate_projection(projection: ArmariumProjection) -> None:
                 raise SchemaRefusal("a delivered act has no provenance")
             if not regions:
                 raise SchemaRefusal("a delivered act has no source-region provenance")
+            validate_uncertainty(act.get("uncertainty"), literal)
+            utf8_round_trip(act["uncertainty"], literal)
         elif literal is not None:
             raise SchemaRefusal("a non-delivered act may not carry purported clean text")
         if category == ArmariumCategory.EXCLUDED_WITH_APPROVAL.value:
@@ -846,6 +850,8 @@ def _text_bundle_members(
                     f"canonical_text_sha256: {canonical_text_sha256(act[CANONICAL_TEXT_FIELD])}",
                     "canonical_clean_text:",
                     json.dumps(act[CANONICAL_TEXT_FIELD], ensure_ascii=False),
+                    "uncertainty:",
+                    json.dumps(act["uncertainty"], ensure_ascii=False, sort_keys=True),
                     # Beside the canonical field, never instead of it: the clean
                     # verifier strips this back and requires the line above exactly.
                     f"display_convention: {DISPLAY_CONVENTION}",
@@ -1158,7 +1164,7 @@ def _acts_database_bytes(acts: tuple[dict[str, Any], ...]) -> bytes:
                     INSERT INTO acts(
                         act_id, act_key, category, canonical_clean_text,
                         canonical_text_sha256, provenance_json, source_regions_json,
-                        uncertainty_spans_json, uncertainty_status, annotations_json,
+                    uncertainty_spans_json, uncertainty_status, annotations_json,
                         annotation_status, evidence_json, approval_ref, reason
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
@@ -1170,8 +1176,8 @@ def _acts_database_bytes(acts: tuple[dict[str, Any], ...]) -> bytes:
                         text_hash,
                         canonical_text(act["provenance"]) if literal is not None else None,
                         canonical_text(act["source_regions"]) if literal is not None else None,
-                        None,
-                        _UNAVAILABLE_UNCERTAINTY,
+                        canonical_text(act["uncertainty"]) if literal is not None else None,
+                        _UNCERTAINTY_AVAILABLE if literal is not None else "not-applicable",
                         "[]",
                         _ANNOTATION_NOT_PRODUCED,
                         canonical_text(_act_evidence(act)),
@@ -1233,8 +1239,10 @@ def _act_json_records(acts: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
                 else None,
                 "provenance": act.get("provenance") if literal is not None else None,
                 "source_regions": act.get("source_regions", []) if literal is not None else [],
-                "uncertainty_spans": None,
-                "uncertainty_status": _UNAVAILABLE_UNCERTAINTY,
+                "uncertainty": act.get("uncertainty") if literal is not None else None,
+                "uncertainty_status": _UNCERTAINTY_AVAILABLE
+                if literal is not None
+                else "not-applicable",
                 "annotations": [],
                 "annotation_status": _ANNOTATION_NOT_PRODUCED,
                 "witnesses": act.get("witnesses", []),
@@ -1810,8 +1818,13 @@ def _export_manifest(
                 "resolution_claim": "artifact and receipt citations require retained-run access",
             },
             "annotations": {
-                "status": "not-produced-pending-architecture-approval",
+                "status": "semantic-annotations-not-produced",
                 "text_writable": False,
+            },
+            "uncertainty": {
+                "status": _UNCERTAINTY_AVAILABLE,
+                "offset_unit": "unicode-code-point",
+                "carried_by": sorted(set(formats.formats) & set(_LITERAL_TEXT_FORMATS)),
             },
             # Labelled a proposal because it is one: spec 11 leaves the choice of
             # convention to Tyrel at this gate, and nothing hashed depends on it.
@@ -2805,8 +2818,18 @@ def _verify_annotations_claim(manifest: dict[str, Any]) -> None:
     """
     claims = manifest.get("claims")
     annotations = claims.get("annotations") if isinstance(claims, dict) else None
-    if annotations != {"status": _ANNOTATION_NOT_PRODUCED, "text_writable": False}:
+    if annotations != {"status": "semantic-annotations-not-produced", "text_writable": False}:
         raise SchemaRefusal("the package annotations claim is not this build's fixed claim")
+    selected = manifest.get("formats")
+    format_rows = selected.get("formats") if isinstance(selected, dict) else None
+    carried = sorted(set(format_rows or []) & set(_LITERAL_TEXT_FORMATS))
+    uncertainty = claims.get("uncertainty") if isinstance(claims, dict) else None
+    if uncertainty != {
+        "status": _UNCERTAINTY_AVAILABLE,
+        "offset_unit": "unicode-code-point",
+        "carried_by": carried,
+    }:
+        raise SchemaRefusal("the package uncertainty claim is not the canonical carriage claim")
 
 
 def _verify_manifest_source_counts(
