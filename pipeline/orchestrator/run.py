@@ -137,6 +137,8 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
         str(args.perlector_instrument_approval_ref),
         "--perlector-protocol-config",
         str(args.perlector_protocol_config),
+        "--perlector-audit-config",
+        str(args.perlector_audit_config),
     ]
     command.append("--draft-fed" if args.draft_fed else "--no-draft-fed")
     for key, value in extra.items():
@@ -226,6 +228,7 @@ def main() -> int:
         "changing the default is Tyrel's through B5a (config/README.md, R5a toggle "
         "register)",
     )
+    parser.add_argument("--perlector-audit-config", default="config/perlector_audit.toml")
     parser.add_argument(
         "--pdf-render-config",
         default=str(DEFAULT_PDF_RENDER_CONFIG_PATH),

@@ -34,6 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import annotations  # noqa: E402
+import audit  # noqa: E402
 import dossier as dossier_module  # noqa: E402
 import nuda  # noqa: E402
 import prompts  # noqa: E402
@@ -739,6 +740,7 @@ _PERLECTIO_FIELDS: Final = frozenset(
         "lectio_kind",
         "self_revision",
         "protocol",
+        "audit",
     }
 )
 
@@ -1077,6 +1079,47 @@ def validate_reading_payload(
             "the truncation field is where that is confirmed or held unknown, never "
             "contradicted"
         )
+    if "audit" not in fields:
+        annotations.validate_annotations(payload, outcome=outcome)
+        return
+    audit_record = payload.get("audit")
+    if not isinstance(audit_record, dict) or set(audit_record) != {
+        "draft_ref",
+        "finding_ref",
+        "finding_digest",
+        "unresolved",
+        "reproofs",
+    }:
+        raise SchemaRefusal("a Perlectio has no closed Pass-C audit record")
+    for reference_name in ("draft_ref", "finding_ref"):
+        reference = audit_record[reference_name]
+        if (
+            not isinstance(reference, dict)
+            or set(reference) != {"relative_path", "sha256"}
+            or not all(isinstance(value, str) and value for value in reference.values())
+        ):
+            raise SchemaRefusal("a Perlectio audit record has a malformed artifact reference")
+    if (
+        not isinstance(audit_record["finding_digest"], str)
+        or not isinstance(audit_record["unresolved"], bool)
+        or not isinstance(audit_record["reproofs"], list)
+    ):
+        raise SchemaRefusal("a Perlectio audit record has malformed resolution facts")
+    for reproof in audit_record["reproofs"]:
+        if not isinstance(reproof, dict) or set(reproof) != {"class", "location", "prompt"}:
+            raise SchemaRefusal("a Perlectio audit re-proof is not its closed schema")
+        location = reproof["location"]
+        if (
+            reproof["class"] not in audit.FLAG_CLASSES
+            or not isinstance(location, dict)
+            or set(location) != {"start", "end"}
+            or not isinstance(reproof["prompt"], str)
+            or reproof["prompt"]
+            != audit.neutral_prompt(
+                start=location["start"], end=location["end"], text_length=len(payload["text"])
+            )
+        ):
+            raise SchemaRefusal("a Perlectio audit re-proof is not a neutral location-only prompt")
     annotations.validate_annotations(payload, outcome=outcome)
 
 
@@ -1394,6 +1437,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     )
     protocol_config, protocol_sha256 = protocol.load(context.perlector_protocol_config_path)
     context.require_sealed_config("perlector-protocol", protocol_sha256)
+    audit_policy, audit_sha256 = audit.load(context.perlector_audit_config_path)
+    context.require_sealed_config("perlector-audit", audit_sha256)
 
     # A recovery re-reads only the acts that were recovered. Re-reading the rest
     # would add an attempt nobody requested to an act nothing happened to, and an
@@ -1405,6 +1450,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
 
     read = 0
     acknowledged = 0
+    pending: list[dict[str, Any]] = []
     chair = perlector_chair(context)
     for act in wanted:
         act_id = act["act_id"]
@@ -1627,9 +1673,149 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "draft_fed": context.draft_fed,
             },
         }
+        pending.append(
+            {
+                "act": act,
+                "act_id": act_id,
+                "bases": bases,
+                "payload": payload,
+                "outcome": outcome,
+                "delivered_pixels": delivered_pixels,
+                "testimonia": testimonia,
+                "attachment_view": attachment_view,
+                "inputs": _reading_image_inputs(context, bases, page_renders)
+                + list(testimonium_references.values())
+                + [attachment_view["reference"], prior["reference"]],
+            }
+        )
+        read += 1
+
+    # The page flag pass receives these immutable Pass-B semi-finals together,
+    # before any re-proof result exists.  Its output is therefore one
+    # deterministic cross-act computation per page, with no cascade.
+    semi_finals = []
+    for row in pending:
+        payload = row["payload"]
+        bases = row["bases"]
+        semi_finals.append(
+            {
+                "act_id": row["act_id"],
+                "page_id": bases[0]["source_page_id"],
+                "order": row["act"]["proposal_ordinal"],
+                "geometry_order": row["act"]["proposal_ordinal"],
+                "text": payload["text"],
+                "testimonia": [
+                    record["reported"]
+                    for record in payload["dossier"]["testimonia"]
+                    if isinstance(record.get("reported"), str)
+                ],
+                "within_crop": True,
+            }
+        )
+    page_flags = audit.flags_once_per_page(semi_finals)
+    policy_record = audit.policy_record(audit_policy, audit_sha256)
+    for row in pending:
+        payload = row["payload"]
+        act_id = row["act_id"]
+        flags = page_flags[act_id]
+        page_id = row["bases"][0]["source_page_id"]
+        draft_payload = {
+            "act_key": row["act"]["act_key"],
+            "attempt_ordinal": payload["attempt_ordinal"],
+            "semi_final_text": payload["text"],
+            "page_id": page_id,
+            "round_cap": audit_policy["round_cap"],
+            "policy": policy_record,
+            "flags": flags,
+        }
+        audit.validate_draft(draft_payload)
+        draft = context.publish(
+            kind="audit-draft",
+            subject_id=act_id,
+            outcome="read",
+            attempt=perlector_attempt_id(act_id, "perlegere", payload["attempt_ordinal"]),
+            inputs=row["inputs"],
+            payload=draft_payload,
+        )
+        draft_ref = context.input_ref(draft.relative_path)
+        final_text = payload["text"]
+        unresolved = bool(flags) and audit_policy["round_cap"] == 0
+        reproofs = [
+            {
+                "class": flag["class"],
+                "location": flag["location"],
+                "prompt": audit.neutral_prompt(
+                    start=flag["location"]["start"],
+                    end=flag["location"]["end"],
+                    text_length=len(final_text),
+                ),
+            }
+            for flag in flags
+        ]
+        changes: list[dict[str, Any]] = []
+        uncertainty: list[dict[str, Any]] = []
+        if flags and audit_policy["round_cap"]:
+            # Exactly one reader invocation for this act and audit round.  The
+            # list of neutral locations is retained on the Perlectio below;
+            # no flag result can reopen this page's frozen calculation.
+            reproof = reader.read(
+                payload["dossier"],
+                pass_kind="audit-reproof",
+                delivered_pixels=row["delivered_pixels"],
+            )
+            final_text = reproof["text"]
+            changes = audit.change_record(payload["text"], final_text, flags)
+            if final_text != payload["text"]:
+                payload["text"] = final_text
+                payload["dissent"] = dissent_against(
+                    final_text, dissent_testimonia(row["testimonia"], row["attachment_view"])
+                )
+        if unresolved:
+            for flag in flags:
+                start, end = flag["location"]["start"], flag["location"]["end"]
+                if start < end:
+                    uncertainty.append(
+                        {"start": start, "end": end, "reason": "audit-round-cap-exhausted"}
+                    )
+        finding_payload = {
+            "act_key": row["act"]["act_key"],
+            "attempt_ordinal": payload["attempt_ordinal"],
+            "page_id": page_id,
+            "round_cap": audit_policy["round_cap"],
+            "policy": policy_record,
+            "flags": flags,
+            "change_record": changes,
+            "uncertain_spans": uncertainty,
+            "unresolved": unresolved,
+        }
+        audit.validate_finding(finding_payload, text=final_text)
+        finding = context.publish(
+            kind="audit-finding",
+            subject_id=act_id,
+            outcome="read",
+            attempt=perlector_attempt_id(act_id, "perlegere", payload["attempt_ordinal"]),
+            inputs=[draft_ref],
+            payload=finding_payload,
+        )
+        finding_ref = context.input_ref(finding.relative_path)
+        # R5b's uncertainty is carried on the existing Perlectio layer until
+        # R8 reconciles the canonical export schema.  An unresolved flag never
+        # silently remains a clean `read`: it becomes an explicit span and the
+        # Recensor consumes the companion `unresolved` fact below.
+        payload["uncertain_spans"] = [
+            {"start": span["start"], "end": span["end"], "alternatives": [], "confidence": "low"}
+            for span in uncertainty
+        ]
+        payload["audit"] = {
+            "draft_ref": draft_ref,
+            "finding_ref": finding_ref,
+            "finding_digest": audit.audit_digest(finding_payload),
+            "unresolved": unresolved,
+            "reproofs": reproofs,
+        }
         validate_reading_payload(
             payload,
-            outcome=outcome,
+            outcome=row["outcome"],
             fields=_PERLECTIO_FIELDS,
             run_id=context.tree.run_id,
             config_digest=context.config_digest,
@@ -1639,14 +1825,11 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         context.publish(
             kind="perlectio",
             subject_id=act_id,
-            outcome=outcome,
-            attempt=perlector_attempt_id(act_id, "perlegere", ordinal),
-            inputs=_reading_image_inputs(context, bases, page_renders)
-            + list(testimonium_references.values())
-            + [attachment_view["reference"], prior["reference"]],
+            outcome=row["outcome"],
+            attempt=perlector_attempt_id(act_id, "perlegere", payload["attempt_ordinal"]),
+            inputs=row["inputs"] + [draft_ref, finding_ref],
             payload=payload,
         )
-        read += 1
 
     if read == 0 and acknowledged == 0:
         raise ContractError("the Perlector read no act and acknowledged no held act")

@@ -92,6 +92,7 @@ from common.recovery import load_recovery_policy  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
 from common.stage import (  # noqa: E402
     DEFAULT_CORPUS_FRAME_CONFIG_PATH,
+    DEFAULT_PERLECTOR_AUDIT_CONFIG_PATH,
     DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH,
     DEFAULT_WITNESS_CONTEXT_CONFIG_PATH,
     EXIT_COMPLETE,
@@ -1090,6 +1091,7 @@ def fixture_submission(args, registry) -> int:
         perlector_instrument_per_mille=args.perlector_instrument_per_mille,
         perlector_instrument_approval_ref=args.perlector_instrument_approval_ref,
         perlector_protocol_config_path=args.perlector_protocol_config,
+        perlector_audit_config_path=args.perlector_audit_config,
         draft_fed=args.draft_fed,
     )
     require_corpus_frame_shard(len(pages), bindings["sealed_config_digests"])
@@ -1239,6 +1241,7 @@ def real_submission(args, registry) -> int:
         perlector_instrument_per_mille=args.perlector_instrument_per_mille,
         perlector_instrument_approval_ref=args.perlector_instrument_approval_ref,
         perlector_protocol_config_path=args.perlector_protocol_config,
+        perlector_audit_config_path=args.perlector_audit_config,
         draft_fed=args.draft_fed,
     )
     # Real ingress binds the same bounded shard policy before its RunTree exists.
@@ -1368,6 +1371,7 @@ def _real_bindings(
     perlector_instrument_per_mille: int = 0,
     perlector_instrument_approval_ref: str = "",
     perlector_protocol_config_path=DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH,
+    perlector_audit_config_path=DEFAULT_PERLECTOR_AUDIT_CONFIG_PATH,
     draft_fed: bool = True,
 ) -> dict[str, Any]:
     """The sealed configuration facts for a real submission.
@@ -1453,6 +1457,9 @@ def _real_bindings(
                 "perlector_instrument_per_mille": perlector_instrument_per_mille,
                 "perlector_instrument_approval_ref": perlector_instrument_approval_ref,
                 "perlector_protocol_config_sha256": perlector_protocol_config_sha256,
+                "perlector_audit_config_sha256": digest_bytes(
+                    Path(perlector_audit_config_path).read_bytes()
+                ),
                 "draft_fed": draft_fed,
             }
         ),
@@ -1475,6 +1482,7 @@ def _real_bindings(
             "alignment": alignment_config_sha256,
             "corpus-frame-shard": corpus_frame_config_sha256,
             "perlector-protocol": perlector_protocol_config_sha256,
+            "perlector-audit": digest_bytes(Path(perlector_audit_config_path).read_bytes()),
         },
     }
 

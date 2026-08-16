@@ -1,0 +1,10 @@
+# R5b Pass-C audit policy.  These bytes are sealed into every run.
+#
+# One round is the production default.  A run may use a higher value only with
+# Tyrel's recorded approval reference; no configuration can exceed the absolute
+# ceiling, and no stage has a runtime switch that can raise either value.
+schema = "perlector-audit.v1"
+default_round_cap = 1
+absolute_round_cap = 2
+round_cap = 1
+approval_ref = ""

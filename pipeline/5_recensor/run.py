@@ -24,7 +24,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "4_perlector"))
 
+import audit  # noqa: E402
 from residual_ink import page_residual_ink  # noqa: E402
 
 from common.chairs.registry import ChairRegistry  # noqa: E402
@@ -92,6 +94,51 @@ def artifacts_for(context, stage: str, kind: str, subject: str) -> list[dict]:
         if entry["kind"] == kind and entry["subject_id"] == subject:
             records.append(context.tree.read_artifact(stage, kind, entry["artifact_id"]))
     return records
+
+
+def audit_state(context, reading: dict, act_id: str) -> bool:
+    """Verify the two R5b artifacts behind a Perlectio's audit claim.
+
+    The Perlectio's self-hash only proves that somebody sealed its references;
+    this consumer proves they name the matching act, exact kinds, and the exact
+    finding bytes whose unresolved state governs review routing.
+    """
+    payload = _payload(reading, f"reading of {act_id}")
+    record = payload.get("audit")
+    if not isinstance(record, dict) or set(record) != {
+        "draft_ref",
+        "finding_ref",
+        "finding_digest",
+        "unresolved",
+        "reproofs",
+    }:
+        raise FatalAccounting(f"reading of {act_id} has no closed Pass-C audit record")
+    draft = context.tree.read_artifact_reference(
+        record["draft_ref"], stage=PERLECTOR, kind="audit-draft", subject_id=act_id
+    )
+    finding = context.tree.read_artifact_reference(
+        record["finding_ref"], stage=PERLECTOR, kind="audit-finding", subject_id=act_id
+    )
+    audit.validate_draft(draft.get("payload"))
+    audit.validate_finding(finding.get("payload"), text=payload.get("text", ""))
+    if (
+        draft["payload"]["semi_final_text"] != payload["text"]
+        and not finding["payload"]["change_record"]
+    ):
+        raise FatalAccounting(
+            f"reading of {act_id} changed after its audit draft without a change record"
+        )
+    if record["finding_digest"] != audit.audit_digest(finding["payload"]):
+        raise FatalAccounting(
+            f"reading of {act_id} names an audit finding with a mismatched digest"
+        )
+    if record["unresolved"] != finding["payload"]["unresolved"]:
+        raise FatalAccounting(
+            f"reading of {act_id} contradicts its audit finding's unresolved state"
+        )
+    if finding["inputs"] != [record["draft_ref"]]:
+        raise FatalAccounting(f"audit finding for {act_id} does not bind exactly its audit draft")
+    return record["unresolved"]
 
 
 def chair_current_attempts(context, act_id: str) -> dict[str, dict]:
@@ -901,6 +948,7 @@ def preflight_review_evidence(context, budget: dict) -> None:
             )
         latest = latest_attempt(readings, f"reading of {act_id}", operation="perlegere")
         context.artifact_ref(PERLECTOR, "perlectio", latest["artifact_id"])
+        audit_state(context, latest, act_id)
         if classify(PERLECTOR, latest["outcome"]) is OutcomeClass.COMPLETED:
             for region in _reconcile_reading_regions(latest, state["regions"], act_id):
                 context.input_ref(region["image_path"])
@@ -1067,6 +1115,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         # exact reading Recensor assessed.
         latest = latest_attempt(readings, f"reading of {act_id}", operation="perlegere")
         latest_payload = _payload(latest, f"reading of {act_id}")
+        audit_unresolved = audit_state(context, latest, act_id)
         reading_class = classify(PERLECTOR, latest["outcome"])
         reading_ref = context.artifact_ref(PERLECTOR, "perlectio", latest["artifact_id"])
         basis_regions = (
@@ -1236,6 +1285,12 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "them (a residual-ink check against the page image itself, never the "
                 "proposal set — GOALS 1: a missed act is worse than a poorly read one); "
                 "accepting this act would leave that ink unaccounted for",
+            )
+        elif audit_unresolved:
+            outcome, reason = (
+                "held-for-review",
+                "the Perlector exhausted its sealed audit re-proof cap with unresolved span(s); "
+                "they remain explicit uncertainty rather than a silent retry",
             )
         elif act_key in scenario["hold_acts"]:
             outcome, reason = "held-for-review", "the act did not reconcile and needs a human"
