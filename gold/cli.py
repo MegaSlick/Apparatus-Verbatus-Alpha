@@ -8,10 +8,13 @@ from pathlib import Path
 from common.contracts.errors import SchemaRefusal
 
 from .core import (
+    adjudicate,
     bind_instrument,
     ingest_manual_pick,
     read_json,
+    read_transcription_text,
     sample_stratified,
+    transcribe,
     validate_corpus,
     validate_record,
     verify_stratified_selection,
@@ -45,6 +48,19 @@ def main(argv: list[str] | None = None) -> int:
     bind.add_argument("--protocol-digest", required=True)
     bind.add_argument("--output", required=True)
     bind.add_argument("--run")
+    transcription = commands.add_parser("transcribe")
+    transcription.add_argument("--sample", required=True)
+    transcription.add_argument("--act-identity", required=True)
+    transcription.add_argument("--transcriber", required=True)
+    transcription.add_argument("--text-file", required=True)
+    transcription.add_argument("--output", required=True)
+    transcription.add_argument("--run")
+    adjudication = commands.add_parser("adjudicate")
+    adjudication.add_argument("--first", required=True)
+    adjudication.add_argument("--second", required=True)
+    adjudication.add_argument("--output", required=True)
+    adjudication.add_argument("--adjudicator")
+    adjudication.add_argument("--text-file")
     verify = commands.add_parser("verify-sampling")
     verify.add_argument("directory")
     verify.add_argument("--run", required=True)
@@ -67,6 +83,29 @@ def main(argv: list[str] | None = None) -> int:
             args.output,
             bind_instrument(
                 read_json(args.sample), args.act_identity, args.protocol_digest, args.run
+            ),
+        )
+    elif args.command == "transcribe":
+        write_append_only(
+            args.output,
+            transcribe(
+                read_json(args.sample),
+                args.act_identity,
+                args.transcriber,
+                read_transcription_text(args.text_file),
+                args.run,
+            ),
+        )
+    elif args.command == "adjudicate":
+        write_append_only(
+            args.output,
+            adjudicate(
+                read_json(args.first),
+                read_json(args.second),
+                adjudicator=args.adjudicator,
+                text=(
+                    read_transcription_text(args.text_file) if args.text_file is not None else None
+                ),
             ),
         )
     elif args.command == "verify-sampling":

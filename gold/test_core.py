@@ -12,14 +12,18 @@ from common.contracts.errors import IncompatibleReuse, SchemaRefusal
 from common.contracts.identities import act_id
 from gold import cli
 from gold.core import (
+    ILLEGIBLE,
     LAYOUT_SCHEMA,
     MANUAL_PICK_SCHEMA,
     PADDING_SCHEMA,
+    adjudicate,
     bind_instrument,
     build_sample,
     ingest_manual_pick,
     sample_stratified,
     set_for_page,
+    transcribe,
+    validate_adjudication,
     validate_corpus,
     validate_layout,
     validate_measurement,
@@ -305,6 +309,131 @@ def test_layout_padding_and_instrument_records_are_closed_and_self_hashed(tmp_pa
         validate_layout(layout)
 
 
+def _act(index=0):
+    return act_id("pg_0123456789abcdef", index, {"x": 1})
+
+
+def _pair(sample, first_text, second_text, path=None):
+    return (
+        transcribe(sample, _act(), "hand-a", first_text, path),
+        transcribe(sample, _act(), "hand-b", second_text, path),
+    )
+
+
+def test_two_agreeing_transcribers_need_no_adjudicator(tmp_path):
+    path, frame, pages = run_file(tmp_path)
+    sample = sample_stratified(path, catalog(pages), plan_for(frame, catalog(pages)))[0]
+    first, second = _pair(sample, "L'an mil sept cent quatre", "L'an mil sept cent quatre", path)
+    record = adjudicate(first, second)
+    assert record["outcome"] == "agreed"
+    assert record["adjudicator"] is None
+    assert record["text"] == "L'an mil sept cent quatre"
+    assert record["transcriptions"] == [first, second]
+    assert validate_adjudication(record) == record
+    # Argument order is not a fact about the act: the record is the same either way.
+    assert adjudicate(second, first) == record
+    with pytest.raises(SchemaRefusal, match="nothing for an adjudicator"):
+        adjudicate(first, second, adjudicator="hand-c", text="something else")
+
+
+def test_a_disagreement_records_the_adjudicators_own_reading_and_keeps_both(tmp_path):
+    """Reconciling two readings is not picking between them (hard rule 8): the
+    adjudicator reads the ink and records what they read, which need not be either
+    transcription, and both transcriptions are retained unaltered (GOVERNANCE 4)."""
+    path, frame, pages = run_file(tmp_path)
+    sample = sample_stratified(path, catalog(pages), plan_for(frame, catalog(pages)))[0]
+    first, second = _pair(sample, "Marie Anne Dubois", "Marie Anne Dubais", path)
+    with pytest.raises(SchemaRefusal, match="reading they established from the ink"):
+        adjudicate(first, second)
+    record = adjudicate(first, second, adjudicator="hand-c", text="Marie Anne Duboís")
+    assert record["outcome"] == "adjudicated"
+    assert record["text"] not in {first["text"], second["text"]}
+    assert record["transcriptions"] == [first, second]
+    assert validate_adjudication(record) == record
+    with pytest.raises(SchemaRefusal, match="cannot be its own reconciliation"):
+        adjudicate(first, second, adjudicator="hand-a", text="Marie Anne Dubois")
+
+
+def test_an_adjudication_cannot_assert_an_outcome_its_transcriptions_deny(tmp_path):
+    """`outcome` is derived from the two readings, never taken on trust — the same
+    discipline `set` gets. Resealing the self-hash launders neither."""
+    path, frame, pages = run_file(tmp_path)
+    sample = sample_stratified(path, catalog(pages), plan_for(frame, catalog(pages)))[0]
+    first, second = _pair(sample, "Jean Baptiste", "Jean Baptiste", path)
+    agreed = adjudicate(first, second)
+    forged = json.loads(json.dumps(agreed))
+    forged["outcome"] = "adjudicated"
+    forged["adjudicator"] = "hand-c"
+    forged["self_hash"] = self_hash(forged)
+    with pytest.raises(SchemaRefusal, match="the outcome is 'agreed'"):
+        validate_adjudication(forged)
+    differing = adjudicate(
+        *_pair(sample, "Jean Baptiste", "Jean Batiste", path),
+        adjudicator="hand-c",
+        text="Jean Baptiste",
+    )
+    forged = json.loads(json.dumps(differing))
+    forged["outcome"] = "agreed"
+    forged["adjudicator"] = None
+    forged["self_hash"] = self_hash(forged)
+    with pytest.raises(SchemaRefusal, match="the outcome is 'adjudicated'"):
+        validate_adjudication(forged)
+    # A single transcriber cannot be both readings, and the two must be of one act.
+    with pytest.raises(SchemaRefusal, match="not independent"):
+        adjudicate(first, transcribe(sample, _act(), "hand-a", "Jean Baptiste", path))
+    with pytest.raises(SchemaRefusal, match="different acts"):
+        adjudicate(first, transcribe(sample, _act(3), "hand-b", "Jean Baptiste", path))
+
+
+def test_illegible_is_the_one_spelling_and_a_transcription_is_never_blank(tmp_path):
+    path, frame, pages = run_file(tmp_path)
+    sample = sample_stratified(path, catalog(pages), plan_for(frame, catalog(pages)))[0]
+    assert transcribe(sample, _act(), "hand-a", ILLEGIBLE, path)["text"] == ILLEGIBLE
+    assert (
+        "parrain " + ILLEGIBLE
+        in transcribe(sample, _act(), "hand-a", "parrain " + ILLEGIBLE, path)["text"]
+    )
+    for rejected in ("", "   ", "parrain [illegible]", "parrain (ILLEGIBLE?)", "ILLEGIBLE"):
+        with pytest.raises(SchemaRefusal, match="empty|reserved"):
+            transcribe(sample, _act(), "hand-a", rejected, path)
+
+
+def test_gold_text_is_stored_so_two_identical_readings_compare_equal(tmp_path):
+    """Agreement is decided by equality, and the disagreement rate is a measure this
+    corpus reports. An invisible difference — surrounding space, a CRLF, an NFD
+    composition — would summon an adjudicator for two identical readings, so each is
+    refused by name rather than silently repaired."""
+    path, frame, pages = run_file(tmp_path)
+    sample = sample_stratified(path, catalog(pages), plan_for(frame, catalog(pages)))[0]
+    composed = "Année"
+    decomposed = "Année"
+    assert composed != decomposed
+    assert transcribe(sample, _act(), "hand-a", composed, path)["text"] == composed
+    for rejected, reason in (
+        (" " + composed, "whitespace"),
+        (composed + "\n", "whitespace"),
+        ("first\r\nsecond", "CR"),
+        (decomposed, "NFC"),
+    ):
+        with pytest.raises(SchemaRefusal, match=reason):
+            transcribe(sample, _act(), "hand-a", rejected, path)
+    # A multi-line act is ordinary and must still be accepted.
+    assert transcribe(sample, _act(), "hand-a", "first\nsecond", path)["text"] == "first\nsecond"
+
+
+def test_gold_may_not_be_made_of_the_pipelines_own_output(tmp_path):
+    """These records are what the pipeline is measured against, so a chair's
+    identity in place of a person's name is refused: gold made of pipeline output
+    would make the measurement circular (GOVERNANCE 3, GOALS 2)."""
+    path, frame, pages = run_file(tmp_path)
+    sample = sample_stratified(path, catalog(pages), plan_for(frame, catalog(pages)))[0]
+    with pytest.raises(SchemaRefusal, match="pipeline identity, not a person"):
+        transcribe(sample, _act(), _act(7), "Jean", path)
+    first, second = _pair(sample, "Jean", "Jehan", path)
+    with pytest.raises(SchemaRefusal, match="pipeline identity, not a person"):
+        adjudicate(first, second, adjudicator=_act(7), text="Jean")
+
+
 def test_a_page_layout_or_padding_record_may_not_be_empty(tmp_path):
     """A record whose annotation list is empty says nothing while reading as a
     completed annotation. A page with nothing on it is annotated `true-blank`, and
@@ -484,6 +613,86 @@ def test_a_page_restratified_between_records_is_refused(tmp_path):
     assert validate_sample(drawn, path) and validate_layout(layout, path)
     with pytest.raises(SchemaRefusal, match="stratified as"):
         validate_corpus([drawn, layout], path)
+
+
+def test_cli_walks_one_act_from_two_transcriptions_to_an_adjudication(tmp_path):
+    """The operator-facing flow end to end, through real files: two transcribers,
+    a disagreement, an adjudicator's own reading, and every record validating
+    afterwards as part of one gold corpus."""
+    path, frame, pages = run_file(tmp_path)
+    sample = sample_stratified(path, catalog(pages), plan_for(frame, catalog(pages)))[0]
+    records = tmp_path / "records"
+    records.mkdir()
+    sample_file = records / "sample.json"
+    sample_file.write_text(json.dumps(sample), encoding="utf-8")
+    outputs = {}
+    for hand, reading in (("hand-a", "Marie Anne"), ("hand-b", "Marie Jeanne")):
+        text_file = tmp_path / f"{hand}.txt"
+        # As a text editor writes it: one trailing newline, which is the file's.
+        text_file.write_text(reading + "\n", encoding="utf-8")
+        outputs[hand] = records / f"{hand}.json"
+        assert (
+            cli.main(
+                [
+                    "transcribe",
+                    "--sample",
+                    str(sample_file),
+                    "--act-identity",
+                    _act(),
+                    "--transcriber",
+                    hand,
+                    "--text-file",
+                    str(text_file),
+                    "--output",
+                    str(outputs[hand]),
+                    "--run",
+                    str(path),
+                ]
+            )
+            == 0
+        )
+        assert json.loads(outputs[hand].read_text())["text"] == reading
+    established = tmp_path / "established.txt"
+    established.write_text("Marie Anne\n", encoding="utf-8")
+    adjudication = records / "adjudication.json"
+    with pytest.raises(SchemaRefusal, match="reading they established"):
+        cli.main(
+            [
+                "adjudicate",
+                "--first",
+                str(outputs["hand-a"]),
+                "--second",
+                str(outputs["hand-b"]),
+                "--output",
+                str(adjudication),
+            ]
+        )
+    assert (
+        cli.main(
+            [
+                "adjudicate",
+                "--first",
+                str(outputs["hand-a"]),
+                "--second",
+                str(outputs["hand-b"]),
+                "--adjudicator",
+                "hand-c",
+                "--text-file",
+                str(established),
+                "--output",
+                str(adjudication),
+            ]
+        )
+        == 0
+    )
+    written = json.loads(adjudication.read_text())
+    assert written["outcome"] == "adjudicated"
+    assert [record["text"] for record in written["transcriptions"]] == [
+        "Marie Anne",
+        "Marie Jeanne",
+    ]
+    assert cli.main(["validate", str(adjudication)]) == 0
+    assert cli.main(["validate-corpus", str(records), "--run", str(path)]) == 0
 
 
 def test_cli_verify_sampling_replays_what_the_sampler_wrote(tmp_path):

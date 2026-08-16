@@ -39,6 +39,39 @@ The act identity `bind-instrument` carries is checked for shape only (well-forme
 and `act_`-prefixed); R7a has no act-producing stage before it in the build order,
 so it cannot check that the act actually exists anywhere.
 
+## The adjudication flow
+
+An act's gold reading is made by two people independently and reconciled by a
+third only where they differ.
+
+`transcribe --sample S.json --act-identity act_… --transcriber NAME --text-file
+F.txt --output T.json [--run RUN.json]` records one transcriber's reading of one
+act on a sampled page.  The text file is UTF-8; its final newline belongs to the
+file and is dropped, and nothing else about the bytes is adjusted.  A
+transcription is never blank — an act nobody can read is transcribed `[ILLEGIBLE]`,
+which is the one reserved spelling, so unreadable spans are counted rather than
+guessed at and never quietly dropped.  Surrounding whitespace, a CR, and any
+composition other than Unicode NFC are refused by name: agreement between two
+transcribers is decided by equality, and an invisible difference would summon an
+adjudicator for two identical readings and inflate the disagreement rate.
+
+`adjudicate --first T1.json --second T2.json --output A.json [--adjudicator NAME
+--text-file F.txt]` reconciles them.  If the two readings are identical there is
+nothing to reconcile: the outcome is `agreed`, no adjudicator is recorded, and
+naming one is refused.  If they differ, the adjudicator and their own reading of
+the ink are required — **the adjudicator does not choose the better
+transcription** (hard rule 8; the transcribers are people making the corpus, not
+Attestatores, and no model output reaches these records).  What they read may
+match one, both in part, or neither.  Both transcriptions are retained inside the
+record unaltered, and `outcome` is derived from them on every read, so a record
+cannot claim agreement over two readings that differ.
+
+A name shaped like a pipeline identity is refused wherever a person is named:
+gold is what the pipeline is measured against, so gold made of its output would
+make the measurement circular.
+
+## Custody
+
 The layout schema embeds its source `gold-page-sample.v1` and has closed
 `act`, `non-act-text`, `occlusion`, and `true-blank` rectangle kinds.  The padding
 schema also embeds its source sample and carries only rectangles plus the required

@@ -12,6 +12,7 @@ import errno
 import json
 import os
 import tempfile
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +31,11 @@ MANUAL_PICK_SCHEMA = "gold-manual-pick.v1"
 LAYOUT_SCHEMA = "gold-page-layout.v1"
 PADDING_SCHEMA = "gold-padding-rectangles.v1"
 MEASUREMENT_SCHEMA = "gold-instrument-membership.v1"
+TRANSCRIPTION_SCHEMA = "gold-transcription.v1"
+ADJUDICATION_SCHEMA = "gold-adjudication.v1"
+# The one spelling of "I cannot read this", reserved so an unreadable span is
+# counted rather than guessed at, and never quietly dropped from a transcription.
+ILLEGIBLE = "[ILLEGIBLE]"
 SETS = frozenset({"calibration", "locked-acceptance"})
 REGION_KINDS = frozenset({"act", "non-act-text", "occlusion", "true-blank"})
 
@@ -60,6 +66,22 @@ def read_json(path: str | Path) -> Any:
         return json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise SchemaRefusal(f"{path} is not readable JSON") from error
+
+
+def read_transcription_text(path: str | Path) -> str:
+    """Read one transcription from a file a person actually typed.
+
+    Exactly one trailing newline is dropped, because a text editor writes it and
+    it belongs to the file rather than to the reading. That is the only liberty
+    taken with the bytes: everything else — a second blank line, CRLF, a
+    non-NFC composition — is the transcriber's own and is refused by name rather
+    than tidied away where nobody would see it.
+    """
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        raise SchemaRefusal(f"{path} is not readable UTF-8 text") from error
+    return text[:-1] if text.endswith("\n") else text
 
 
 def _frame_from_run(run: dict[str, Any]) -> tuple[dict[str, str], list[dict[str, Any]]]:
@@ -389,6 +411,20 @@ def ingest_manual_pick(run_path: str | Path, pick: Any) -> dict[str, Any]:
     return validate_sample(sample, run_path)
 
 
+def _act_identity(value: Any, label: str) -> str:
+    """Shape only: well-formed and specifically an act identity.
+
+    R7a samples pages, and no stage before R2 derives an act, so there is no act
+    authority here to check existence against. Shared by every gold record that
+    names an act so they all refuse the same shapes for the same reason.
+    """
+    _refuse(
+        not is_well_formed(value) or not value.startswith("act_"),
+        f"{label} act_identity is not an act identity",
+    )
+    return value
+
+
 def bind_instrument(
     sample: Any, act_identity: str, protocol_digest: str, run_path: str | Path | None = None
 ) -> dict[str, Any]:
@@ -404,10 +440,7 @@ def bind_instrument(
     against the R0 run authority; it does not and cannot reach act existence.
     """
     validate_sample(sample, run_path)
-    _refuse(
-        not is_well_formed(act_identity) or not act_identity.startswith("act_"),
-        "instrument act_identity is not an act identity",
-    )
+    _act_identity(act_identity, "instrument")
     _sha(protocol_digest, "instrument protocol_digest")
     record = {
         "schema": MEASUREMENT_SCHEMA,
@@ -416,6 +449,240 @@ def bind_instrument(
         "protocol_digest": protocol_digest,
     }
     record["self_hash"] = self_hash(record)
+    return record
+
+
+def _person(value: Any, label: str) -> str:
+    """A human's name on a gold record: present, trimmed, and not a chair.
+
+    Gold is made by people. Nothing in this module can prove a string was typed by
+    one, but a name shaped like a pipeline identity is the mistake worth catching:
+    a model's output entering the gold corpus would make every later measurement
+    circular, since these records are what the pipeline is measured *against*
+    (GOVERNANCE 3; GOALS 2's "not against what a witness reported").
+    """
+    _refuse(not isinstance(value, str) or not value.strip(), f"{label} is empty")
+    _refuse(value != value.strip(), f"{label} has surrounding whitespace")
+    _refuse(
+        is_well_formed(value),
+        f"{label} is a pipeline identity, not a person; gold is what the pipeline is "
+        "measured against and may not be made of its output",
+    )
+    return value
+
+
+def _gold_text(value: Any, label: str) -> str:
+    """One human reading of the ink, stored so two of them can be compared exactly.
+
+    `[ILLEGIBLE]` is reserved: it is the one spelling of "I cannot read this", so a
+    later measure can count unreadable spans instead of guessing which of
+    `illegible`, `[illeg.]` or `(ILLEGIBLE?)` meant it. Reserving it also keeps a
+    transcriber from silently dropping what they could not read — an empty
+    transcription is refused, and an unreadable act is transcribed as the token.
+
+    The exactness rules exist because agreement between two transcribers is
+    decided by equality: surrounding whitespace, a CRLF line ending, or a page
+    typed in NFD rather than NFC would summon an adjudicator for two identical
+    readings, and the disagreement rate is a measure this corpus reports. None of
+    them is repaired here — repairing evidence silently is the thing this module
+    exists not to do — each is refused by name and its own author fixes it.
+    """
+    _refuse(
+        not isinstance(value, str) or not value.strip(),
+        f"{label} is empty; an act nobody can read is transcribed {ILLEGIBLE}, never blank",
+    )
+    _refuse(value != value.strip(), f"{label} begins or ends with whitespace")
+    _refuse("\r" in value, f"{label} carries a CR; gold text uses LF line endings only")
+    _refuse(
+        value != unicodedata.normalize("NFC", value),
+        f"{label} is not in Unicode NFC; two readings of the same ink must compare equal",
+    )
+    _refuse(
+        "illegible" in value.replace(ILLEGIBLE, "").casefold(),
+        f"{label} spells an illegibility some way other than the reserved {ILLEGIBLE}",
+    )
+    return value
+
+
+def transcribe(
+    sample: Any,
+    act_identity: str,
+    transcriber: str,
+    text: str,
+    run_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Record one transcriber's reading of one act on a sampled page.
+
+    Two of these, made independently, are what an adjudication reconciles. Like
+    `bind_instrument` this carries the sample's digest rather than the sample, and
+    checks the act identity for shape only; pass `run_path` to also re-check the
+    sample against the R0 run authority.
+    """
+    validate_sample(sample, run_path)
+    record = {
+        "schema": TRANSCRIPTION_SCHEMA,
+        "sample_digest": sample["sample_digest"],
+        "act_identity": _act_identity(act_identity, "transcription"),
+        "transcriber": _person(transcriber, "transcriber"),
+        "text": _gold_text(text, "transcription text"),
+    }
+    record["self_hash"] = self_hash(record)
+    return record
+
+
+def validate_transcription(record: Any) -> dict[str, Any]:
+    _refuse(
+        not isinstance(record, dict)
+        or set(record)
+        != {"schema", "sample_digest", "act_identity", "transcriber", "text", "self_hash"},
+        "transcription has the wrong closed schema",
+    )
+    _refuse(record["schema"] != TRANSCRIPTION_SCHEMA, "transcription schema is not recognized")
+    _sha(record["sample_digest"], "transcription sample_digest")
+    _act_identity(record["act_identity"], "transcription")
+    _person(record["transcriber"], "transcriber")
+    _gold_text(record["text"], "transcription text")
+    _refuse(not verify_self_hash(record), "transcription fails its self-hash")
+    return record
+
+
+def _adjudication_facts(
+    transcriptions: Any, outcome: Any, adjudicator: Any, text: Any
+) -> tuple[list[dict[str, Any]], str, str | None, str]:
+    """The whole rule, applied identically when building and when reading back.
+
+    `outcome` is derived from the two transcriptions, never asserted: a record
+    claiming agreement over two readings that differ is refused, exactly as a
+    sample claiming the wrong set is.
+    """
+    _refuse(
+        not isinstance(transcriptions, list) or len(transcriptions) != 2,
+        "an adjudication reconciles exactly two transcriptions",
+    )
+    pair = [validate_transcription(record) for record in transcriptions]
+    first, second = pair
+    _refuse(
+        first["sample_digest"] != second["sample_digest"],
+        "the two transcriptions are of different gold samples",
+    )
+    _refuse(
+        first["act_identity"] != second["act_identity"],
+        "the two transcriptions are of different acts",
+    )
+    _refuse(
+        first["transcriber"] == second["transcriber"],
+        "both transcriptions name the same transcriber; the second reading is not "
+        "independent of the first",
+    )
+    _refuse(
+        first["transcriber"] > second["transcriber"],
+        "adjudicated transcriptions are ordered by transcriber, so the record does not "
+        "depend on which reading arrived first",
+    )
+    if first["text"] == second["text"]:
+        _refuse(
+            outcome != "agreed",
+            f"the two transcriptions are identical, so the outcome is 'agreed', not {outcome!r}",
+        )
+        _refuse(
+            adjudicator is not None,
+            "the transcriptions agree; there is nothing for an adjudicator to establish",
+        )
+        _refuse(
+            text != first["text"],
+            "the transcriptions agree, so the established text is the text they agree on",
+        )
+        return pair, "agreed", None, first["text"]
+    _refuse(
+        outcome != "adjudicated",
+        f"the two transcriptions differ, so the outcome is 'adjudicated', not {outcome!r}",
+    )
+    _refuse(
+        adjudicator is None,
+        "the transcriptions differ; reconciling them records the adjudicator and the "
+        "reading they established from the ink",
+    )
+    _person(adjudicator, "adjudicator")
+    _refuse(
+        adjudicator in {first["transcriber"], second["transcriber"]},
+        "the adjudicator is one of the two transcribers; a reading cannot be its own "
+        "reconciliation",
+    )
+    return pair, "adjudicated", adjudicator, _gold_text(text, "adjudicated text")
+
+
+def adjudicate(
+    first: Any, second: Any, *, adjudicator: str | None = None, text: str | None = None
+) -> dict[str, Any]:
+    """Reconcile two independent transcriptions of one act into one gold reading.
+
+    **This is not a picker** (hard rule 8, GOVERNANCE 3), and the distinction is
+    the same one the architecture makes everywhere else. The transcribers are
+    people making the corpus the pipeline is measured against, not Attestatores,
+    and no model output reaches these records. Where the two readings differ, the
+    adjudicator does not choose the better transcription: they read the ink and
+    record what they read, which may match one, both in part, or neither. Both
+    transcriptions are retained inside the record, unaltered, whatever it says
+    (GOVERNANCE 4).
+
+    Where the two readings are identical there is nothing to reconcile: the
+    outcome is `agreed`, no adjudicator is recorded, and passing one is refused —
+    an adjudicator's name on an unadjudicated act would overstate the custody the
+    record actually has.
+    """
+    pair = sorted(
+        (validate_transcription(first), validate_transcription(second)),
+        key=lambda record: record["transcriber"],
+    )
+    agreed = pair[0]["text"] == pair[1]["text"]
+    pair, outcome, adjudicator, established = _adjudication_facts(
+        pair,
+        "agreed" if agreed else "adjudicated",
+        adjudicator,
+        pair[0]["text"] if agreed and text is None else text,
+    )
+    record = {
+        "schema": ADJUDICATION_SCHEMA,
+        "sample_digest": pair[0]["sample_digest"],
+        "act_identity": pair[0]["act_identity"],
+        "transcriptions": pair,
+        "outcome": outcome,
+        "adjudicator": adjudicator,
+        "text": established,
+    }
+    record["self_hash"] = self_hash(record)
+    return record
+
+
+def validate_adjudication(record: Any) -> dict[str, Any]:
+    _refuse(
+        not isinstance(record, dict)
+        or set(record)
+        != {
+            "schema",
+            "sample_digest",
+            "act_identity",
+            "transcriptions",
+            "outcome",
+            "adjudicator",
+            "text",
+            "self_hash",
+        },
+        "adjudication has the wrong closed schema",
+    )
+    _refuse(record["schema"] != ADJUDICATION_SCHEMA, "adjudication schema is not recognized")
+    pair, _outcome, _adjudicator, _text = _adjudication_facts(
+        record["transcriptions"], record["outcome"], record["adjudicator"], record["text"]
+    )
+    _refuse(
+        record["sample_digest"] != pair[0]["sample_digest"],
+        "adjudication names a different sample than the transcriptions it carries",
+    )
+    _refuse(
+        record["act_identity"] != pair[0]["act_identity"],
+        "adjudication names a different act than the transcriptions it carries",
+    )
+    _refuse(not verify_self_hash(record), "adjudication fails its self-hash")
     return record
 
 
@@ -592,6 +859,10 @@ def validate_record(record: Any, run_path: str | Path | None = None) -> dict[str
         return validate_padding(record, run_path)
     if schema == MEASUREMENT_SCHEMA:
         return validate_measurement(record)
+    if schema == TRANSCRIPTION_SCHEMA:
+        return validate_transcription(record)
+    if schema == ADJUDICATION_SCHEMA:
+        return validate_adjudication(record)
     raise SchemaRefusal(f"{schema!r} is not a gold record schema")
 
 
