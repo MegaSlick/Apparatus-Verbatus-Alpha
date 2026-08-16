@@ -45,6 +45,7 @@ def _store(tmp_path):
         root.mkdir(parents=True)
         (root / "config.json").write_text('{"fixture":true}', encoding="utf-8")
         (root / "LICENSE").write_text(f"license for {requirement.artifact}\n", encoding="utf-8")
+        (root / "model.safetensors").write_bytes(f"weights for {requirement.artifact}\n".encode())
         carried = []
         if requirement.artifact == "dai-recordgold-atr":
             for name in ("system.txt", "query.txt"):
@@ -63,6 +64,9 @@ def _store(tmp_path):
             "digest_manifest": pin,
             "license": "LICENSE",
             "carried": carried,
+            "required_files": sorted(
+                ["LICENSE", "model.safetensors", *[x["path"] for x in carried]]
+            ),
         }
     record = {
         "schema": STORE_SCHEMA,
@@ -165,6 +169,8 @@ def _promotion_artifact(tmp_path, entry):
     staging = tmp_path / "staging" / "churro-3B-promoted"
     staging.mkdir(parents=True)
     (staging / "config.json").write_text('{"fixture":true}', encoding="utf-8")
+    (staging / "LICENSE").write_text("fixture licence\n", encoding="utf-8")
+    (staging / "model.safetensors").write_bytes(b"fixture weights\n")
     return {
         **entry,
         "staging": staging.relative_to(tmp_path).as_posix(),
@@ -214,6 +220,7 @@ def test_write_download_record_round_trips_through_load_download_record(tmp_path
         root.mkdir(parents=True)
         (root / "config.json").write_text('{"fixture":true}', encoding="utf-8")
         (root / "LICENSE").write_text(f"license for {requirement.artifact}\n", encoding="utf-8")
+        (root / "model.safetensors").write_bytes(f"weights for {requirement.artifact}\n".encode())
         carried = []
         if requirement.artifact == "dai-recordgold-atr":
             for name in ("system.txt", "query.txt"):
@@ -232,6 +239,9 @@ def test_write_download_record_round_trips_through_load_download_record(tmp_path
             "digest_manifest": pin,
             "license": "LICENSE",
             "carried": carried,
+            "required_files": sorted(
+                ["LICENSE", "model.safetensors", *[x["path"] for x in carried]]
+            ),
         }
     record = {
         "schema": STORE_SCHEMA,
@@ -283,6 +293,8 @@ def test_promote_verified_snapshot_accepts_a_legitimate_nested_staging_path(tmp_
     staging = tmp_path / "staging" / "nested" / "churro-3B"
     staging.mkdir(parents=True)
     (staging / "config.json").write_text('{"fixture":true}', encoding="utf-8")
+    (staging / "LICENSE").write_text("fixture licence\n", encoding="utf-8")
+    (staging / "model.safetensors").write_bytes(b"fixture weights\n")
     artifact = {
         **entry,
         "staging": staging.relative_to(tmp_path).as_posix(),
@@ -659,3 +671,45 @@ def test_a_digest_manifest_must_live_under_the_declared_manifests_root(tmp_path)
 
     with pytest.raises(DigestMismatchRefusal, match="outside the store's 'manifests/' root"):
         derived_inventory(record)
+
+
+# --- L2: required files constrain a fetch, not merely the bytes that arrived -------
+
+
+def test_store_refuses_a_required_weight_absent_from_a_rewritten_manifest(tmp_path):
+    """A config-only snapshot cannot define its own smaller meaning of complete."""
+
+    record = _store(tmp_path)
+    entry = next(item for item in record["artifacts"] if item["artifact"] == "qwen3.5-9B")
+    snapshot = tmp_path / entry["snapshot"]
+    (snapshot / "model.safetensors").unlink()
+    entry["digest_manifest"] = write_manifest(
+        build_manifest(snapshot), tmp_path / entry["manifest"]
+    )
+    (tmp_path / "download_record.json").write_bytes(canonical_bytes(record))
+
+    with pytest.raises(DigestMismatchRefusal, match="required file 'model.safetensors'"):
+        verify_store(tmp_path)
+
+
+def test_present_entry_required_files_must_name_a_model_payload(tmp_path):
+    record = _store(tmp_path)
+    entry = next(item for item in record["artifacts"] if item["artifact"] == "churro-3B")
+    entry["required_files"] = ["LICENSE"]
+
+    with pytest.raises(DigestMismatchRefusal, match="at least one model payload"):
+        derived_inventory(record)
+
+
+def test_store_refuses_an_empty_required_model_payload(tmp_path):
+    record = _store(tmp_path)
+    entry = next(item for item in record["artifacts"] if item["artifact"] == "churro-3B")
+    snapshot = tmp_path / entry["snapshot"]
+    (snapshot / "model.safetensors").write_bytes(b"")
+    entry["digest_manifest"] = write_manifest(
+        build_manifest(snapshot), tmp_path / entry["manifest"]
+    )
+    (tmp_path / "download_record.json").write_bytes(canonical_bytes(record))
+
+    with pytest.raises(DigestMismatchRefusal, match="required file 'model.safetensors' is empty"):
+        verify_store(tmp_path)

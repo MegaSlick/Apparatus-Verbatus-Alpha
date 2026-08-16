@@ -51,6 +51,7 @@ PRESENT_FIELDS = {
     "digest_manifest",
     "license",
     "carried",
+    "required_files",
 }
 PENDING_FIELDS = {"artifact", "state", "source", "repo", "revision", "reason"}
 RECORD_FIELDS = {"schema", "layout", "capacity", "artifacts"}
@@ -142,6 +143,7 @@ DAI_PROMPT_CITATION = (
     "Teklia, Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR, pinned repository files "
     "system.txt and query.txt"
 )
+MODEL_PAYLOAD_SUFFIXES = {".bin", ".gguf", ".onnx", ".pt", ".pth", ".safetensors"}
 
 
 def load_download_record(store_root: str | Path) -> dict[str, Any]:
@@ -353,6 +355,7 @@ def verify_store(store_root: str | Path) -> dict[str, Any]:
             manifest_path, expected_digest=item["digest_manifest"], chair=item["artifact"]
         )
         rows = {row.path: row for row in manifest.rows}
+        _verify_required_files(item, rows)
         license_row = rows.get(item["license"])
         if license_row is None:
             raise DigestMismatchRefusal(
@@ -425,6 +428,7 @@ def promote_verified_snapshot(store_root: str | Path, artifact: Mapping[str, Any
     root = Path(store_root).resolve()
     staging = _under(root, artifact["staging"])
     manifest = build_manifest(staging)
+    _verify_required_files(artifact, {row.path: row for row in manifest.rows})
     destination = _under(root, artifact["manifest"])
     payload = canonical_bytes(manifest.to_record())
     _publish_once(destination, payload, chair="model-store", label="verified manifest")
@@ -631,6 +635,45 @@ def _validate_record(raw: Mapping[str, Any]) -> None:
             raise DigestMismatchRefusal(
                 item["artifact"], "only DAI prompt files are carried content in this roster"
             )
+        required_files = item["required_files"]
+        if (
+            not isinstance(required_files, list)
+            or not required_files
+            or not all(isinstance(path, str) and path.strip() for path in required_files)
+            or len(required_files) != len(set(required_files))
+        ):
+            raise DigestMismatchRefusal(
+                item["artifact"], "required_files must be a nonempty list of unique paths"
+            )
+        for path in required_files:
+            _safe(path, "required file")
+        declared_requirements = {item["license"], *(entry["path"] for entry in carried)}
+        if not declared_requirements <= set(required_files):
+            missing = sorted(declared_requirements - set(required_files))
+            raise DigestMismatchRefusal(
+                item["artifact"],
+                f"required_files omits mandatory licence or carried content: {missing}",
+            )
+        if not any(PurePosixPath(path).suffix in MODEL_PAYLOAD_SUFFIXES for path in required_files):
+            raise DigestMismatchRefusal(
+                item["artifact"],
+                "required_files must name at least one model payload "
+                f"with a supported suffix: {sorted(MODEL_PAYLOAD_SUFFIXES)}",
+            )
+
+
+def _verify_required_files(item: Mapping[str, Any], rows: Mapping[str, Any]) -> None:
+    """Refuse an incomplete fetch even when its smaller manifest is self-consistent."""
+
+    for path in item["required_files"]:
+        row = rows.get(path)
+        if row is None:
+            raise DigestMismatchRefusal(
+                item["artifact"],
+                f"required file {path!r} is absent from its digest manifest",
+            )
+        if row.size == 0:
+            raise DigestMismatchRefusal(item["artifact"], f"required file {path!r} is empty")
 
 
 def _validate_origin(item: Mapping[str, Any]) -> None:

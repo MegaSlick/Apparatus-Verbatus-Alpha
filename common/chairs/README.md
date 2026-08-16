@@ -101,3 +101,9 @@ inventory `complete: false` with every pending artifact named;
 `require_complete_store` is the door for a consumer that needs the whole roster
 on disk. A half-fetched store is therefore recordable and visibly partial rather
 than unrepresentable (GOVERNANCE 2).
+
+Every `present` entry also names `required_files`. The digest manifest remains
+the exact allow-list used when a chair cache fills, while `required_files` is
+the non-negotiable subset that must be present and nonempty. It includes the
+licence, any carried DAI prompts, and at least one model payload; a smaller,
+self-consistent manifest containing only configuration metadata is refused.
