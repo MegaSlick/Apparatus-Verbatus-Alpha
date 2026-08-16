@@ -1250,6 +1250,12 @@ def _launchable(
             "launched, and the offline walking skeleton answers it from declared serving "
             "details instead"
         )
+    if profile.preflight_state != "proven":
+        raise ServingConfigurationError(
+            f"chair {identity.role!r} serving profile is structurally marked "
+            f"preflight_state={profile.preflight_state!r}; real-silicon preflight must "
+            "prove this exact profile before launch"
+        )
     return profile
 
 

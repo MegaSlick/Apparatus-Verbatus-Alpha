@@ -395,6 +395,7 @@ def profile_row(
         "enable_tower_connector_lora": tower_connector,
         "max_lora_rank": 16,
         "generation_config": "vllm",
+        "preflight_state": "proven",
         "startup_timeout_seconds": 3,
         "poll_interval_seconds": 1,
         "readiness_probe": {
@@ -406,6 +407,15 @@ def profile_row(
 
 def recipes(*rows: dict[str, object]):
     return parse_serving_recipes({"schema": "serving-recipes.v1", "profiles": list(rows)})
+
+
+def test_real_serving_profile_is_structurally_unproven_until_preflight():
+    row = profile_row(recipe="reader", chair="perlector", served_model_id="reader", port=8100)
+    row["preflight_state"] = "unproven"
+
+    profile = recipes(row).profiles[0]
+
+    assert profile.preflight_state == "unproven"
 
 
 def measured_gpu(dtype: str = "bfloat16") -> GpuProfile:

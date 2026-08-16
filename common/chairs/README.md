@@ -11,6 +11,7 @@ in code.
 | `models.py` | the typed values: `ChairIdentity`, `AbsentChair`, the digest manifest, `VerifiedSnapshot`, `ServingDetails`, `ServingReceipt`, `ModelsConfig` |
 | `config.py` | the one schema `config/models.toml` must match, and every refusal a malformed pin earns |
 | `manifests.py` | building, writing, reading and verifying the per-file digest manifest |
+| `model_store.py` | read-only validation of the host's durable model store, its derived seven-chair inventory, licence snapshots, carried DAI prompts, and capacity record |
 | `registry.py` | resolution and verification against the filesystem and Hugging Face |
 | `receipts.py` | what a serving receipt must carry before it is one |
 | `errors.py` | the closed refusal taxonomy — one member per door "Resolution refuses; it never substitutes" names |
@@ -75,5 +76,8 @@ naming the chair, never as a second route under the same role name. Both are
 integration doors for spec 04's manager; neither chooses how a stage obtains
 its serving details.
 
-Where the model root lives off-pod is still open; spec 02 flags it rather than
-resolving it, and `model_root` in `config/models.toml` is relative to that file.
+The durable host model store is intentionally outside this repository. Its
+caller-supplied root contains canonical `download_record.json`, `hf/`, `local/`,
+`manifests/`, and `staging/`; `model_store.py` only verifies existing bytes and
+never fetches. `model_root` in `config/models.toml` remains local-repository
+only and relative to that file.
