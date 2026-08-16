@@ -132,24 +132,44 @@ def _validate_geometry_policy(value: object) -> dict[str, Any]:
     return geometry
 
 
-def _point(value: object, page_w: int, page_h: int, what: str) -> dict[str, int]:
-    point = _closed(value, {"x", "y"}, what)
-    if (
-        not _integer(point["x"])
-        or not _integer(point["y"])
-        or not (0 <= point["x"] < page_w and 0 <= point["y"] < page_h)
-    ):
-        raise SchemaRefusal(f"{what} is outside page pixels")
-    return {"x": point["x"], "y": point["y"]}
+def _polygon_points(value: object, what: str) -> list[dict[str, int]]:
+    """The shape of a page polygon, asked once, independently of any page extent.
 
-
-def _polygon(value: object, page_w: int, page_h: int, what: str) -> list[dict[str, int]]:
+    Raw proposal geometry and occlusion geometry are the same kind of object and
+    were asked different questions about it: proposal geometry had to carry three
+    *distinct* points, while an occlusion polygon only had to carry three points
+    at all, so a fully degenerate occlusion (one pixel repeated) was page geometry
+    to one validator and not to the other. Two predicates answering one question
+    differently is the defect this shared one removes. The page-extent half stays
+    where each caller can actually ask it: `_polygon` has a transform,
+    `validate_occlusion` does not, and the resolver checks the occlusion against
+    the page extent it pins.
+    """
     if not isinstance(value, list) or len(value) < 3:
         raise SchemaRefusal(f"{what} is not a polygon")
-    points = [_point(point, page_w, page_h, what) for point in value]
+    points = []
+    for item in value:
+        point = _closed(item, {"x", "y"}, what)
+        if not _integer(point["x"]) or not _integer(point["y"]) or point["x"] < 0 or point["y"] < 0:
+            raise SchemaRefusal(f"{what} is not non-negative integer page geometry")
+        points.append({"x": point["x"], "y": point["y"]})
     if len({(point["x"], point["y"]) for point in points}) < 3:
         raise SchemaRefusal(f"{what} has fewer than three distinct points")
     return points
+
+
+def _polygon(value: object, page_w: int, page_h: int, what: str) -> list[dict[str, int]]:
+    points = _polygon_points(value, what)
+    if any(not (point["x"] < page_w and point["y"] < page_h) for point in points):
+        raise SchemaRefusal(f"{what} is outside page pixels")
+    return points
+
+
+def _score_bp(value: object, what: str) -> int:
+    """One basis-point confidence predicate, asked wherever a score arrives."""
+    if not _integer(value) or not 0 <= value <= 10_000:
+        raise SchemaRefusal(f"{what} is not an integer basis-point confidence")
+    return value
 
 
 def enclosing_aabb(points: list[dict[str, int]], page_w: int, page_h: int) -> Bounds:
@@ -252,8 +272,7 @@ def validate_raw_proposal(payload: object) -> dict[str, Any]:
     expected_aabb = enclosing_aabb(geometry, page_w, page_h)
     if record["aabb"] != expected_aabb:
         raise SchemaRefusal("raw proposal AABB does not derive from its source geometry")
-    if not _integer(record["score_bp"]) or not 0 <= record["score_bp"] <= 10_000:
-        raise SchemaRefusal("raw proposal score is not an integer basis-point confidence")
+    _score_bp(record["score_bp"], "raw proposal score")
     expected_proposal_id = _proposal_id(
         record["source"], record["page_id"], geometry, record["score_bp"]
     )
@@ -314,21 +333,10 @@ def validate_occlusion(payload: object) -> dict[str, Any]:
     ):
         raise SchemaRefusal("occlusion lacks page lineage")
     # Occlusion coordinates cannot be validated without the source page's extent;
-    # this payload records the exact polygon and resolver checks its page match.
-    if (
-        not isinstance(record["polygon"], list)
-        or len(record["polygon"]) < 3
-        or any(
-            not isinstance(point, dict)
-            or set(point) != {"x", "y"}
-            or not _integer(point["x"])
-            or not _integer(point["y"])
-            or point["x"] < 0
-            or point["y"] < 0
-            for point in record["polygon"]
-        )
-    ):
-        raise SchemaRefusal("occlusion polygon is not non-negative integer page geometry")
+    # this payload records the exact polygon and the resolver checks its page match.
+    # The shape of the polygon is the same question raw proposal geometry asks, so
+    # it is asked with the same predicate rather than a second, laxer copy.
+    _polygon_points(record["polygon"], "occlusion polygon")
     if record["z_relationship"] not in {"unknown", "above-ink", "below-ink"} or record[
         "review_state"
     ] not in {"open", "reviewed"}:
@@ -435,8 +443,7 @@ def surya_double_pass(
                 for detection in detect(tile):
                     item = _closed(detection, {"polygon", "score_bp"}, "Surya detection")
                     points = _polygon(item["polygon"], page_w, page_h, "Surya polygon")
-                    if not _integer(item["score_bp"]) or not 0 <= item["score_bp"] <= 10_000:
-                        raise SchemaRefusal("Surya score is not basis points")
+                    _score_bp(item["score_bp"], "Surya score")
                     key = digest_of({"geometry": points, "score_bp": item["score_bp"]})
                     if key not in union:
                         union[key] = _raw(

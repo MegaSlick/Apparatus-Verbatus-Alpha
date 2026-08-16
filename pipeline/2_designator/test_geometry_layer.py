@@ -832,3 +832,26 @@ def test_a_raw_proposal_must_name_what_its_observation_ordinals_count():
         validate_raw_proposal({**proposal, "observation_unit": "pass"})
     with pytest.raises(SchemaRefusal, match="observed ordinals"):
         validate_raw_proposal({**proposal, "observed_ordinals": [1, 0]})
+
+
+def test_occlusion_polygon_answers_the_same_shape_question_as_proposal_geometry():
+    """One degenerate point repeated three times is not page geometry, and the two
+    validators may not disagree about that."""
+    with pytest.raises(SchemaRefusal, match="fewer than three distinct points"):
+        occlusion_envelope(
+            run_id="r2-fixture",
+            subject_id="occ_degenerate",
+            config_digest="d" * 64,
+            adapter_revision="fixture-r2-v1",
+            inputs=[],
+            payload={
+                "schema": "designator-occlusion.v1",
+                "occlusion_id": "occ_degenerate",
+                "page_id": "pg_fixture",
+                "page_ordinal": 0,
+                "polygon": [{"x": 11, "y": 11}, {"x": 11, "y": 11}, {"x": 11, "y": 11}],
+                "z_relationship": "unknown",
+                "review_state": "open",
+                "receipt_ref": RECEIPT,
+            },
+        )
