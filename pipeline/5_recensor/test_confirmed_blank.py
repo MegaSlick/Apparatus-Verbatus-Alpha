@@ -239,5 +239,52 @@ def test_unanimous_genuinely_empty_corroborates_blank():
     ]
 
 
+def test_a_floor_met_only_by_zero_length_attachments_completes_only_as_a_blank():
+    """R4 audit, composition seam: the trivial zero-length attachment (F-G2) x
+    the rederived coverage count x dissent's zero-span departure record.
+
+    An act CAN reach a satisfied floor with no chair having placed one
+    character of real text -- every chair `genuinely-empty`, every attachment
+    zero-length, `under_witnessed` False. That is the intended reading of a
+    blank act and the whole basis of `confirmed-blank`: `genuinely-empty` is a
+    reading outcome, not a recorded failure, and "read the page, found nothing"
+    is exactly the independent corroboration this outcome exists to recognize.
+
+    What keeps a NON-blank act out of that door is the Perlector's own
+    autopsia, not the witness count: `blank_corroboration` is consulted only
+    when the reading itself is `no-readable-text`, and one chair that actually
+    read text collapses it to `None` and holds the act for a human. An act
+    whose reading DID establish text and whose witnesses were all
+    genuinely-empty is not refused -- it is delivered, with `by_outcome`
+    retaining `{genuinely-empty: 3}` and every dissent row recording
+    `departed: True` over the whole reading. That is a recorded contradiction
+    rather than a silent one (GOVERNANCE 2), and flagging it belongs to R6's
+    named per-witness content diff (page text against the ordered union of that
+    witness's own act attachments), not to a coverage floor. Pinned here so the
+    answer travels with the code.
+    """
+    outcomes = {
+        "attestator_1": "genuinely-empty",
+        "attestator_2": "genuinely-empty",
+        "attestator_3": "genuinely-empty",
+    }
+    coverage = witness_coverage(outcomes, 3, attachments={chair: True for chair in outcomes})
+
+    assert coverage["under_witnessed"] is False
+    assert coverage["by_outcome"] == {"genuinely-empty": 3}
+    assert coverage["shortfalls"] == {"failed": 0, "truncated": 0, "unaligned": 0}
+    # The blank door, open only because the Perlector itself found no ink.
+    assert RECENSOR_RUN.blank_corroboration(coverage, outcomes) == sorted(outcomes)
+    # One chair that actually read text closes it, however satisfied the floor.
+    contradicted = dict(outcomes, attestator_2="read")
+    assert (
+        RECENSOR_RUN.blank_corroboration(
+            witness_coverage(contradicted, 3, attachments={c: True for c in contradicted}),
+            contradicted,
+        )
+        is None
+    )
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))
