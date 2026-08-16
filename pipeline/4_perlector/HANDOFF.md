@@ -295,6 +295,9 @@ whatever reading now sorts latest. This prevents an unreviewed recovery reading
 from becoming established text.
 
 **A `lectio-nuda` record is never a valid Perlectio reference for any consumer,**
+by construction: its `kind` differs, and its `attempt_id` derives from a
+different operation than any reference a Recensor review or Archetypus would
+ever have recorded for a real reading.
 
 ## R5a prior-draft protocol
 
@@ -314,9 +317,17 @@ tallied when failed; they do not consume the ruled production hard-failure cap.
 The Pass-B dossier contains a digest-checked reference to the Pass-A draft and
 records whether its text was `fed` or `withheld`. The `--draft-fed` default is
 fed; B5a remains Tyrel's routed production decision.
-by construction: its `kind` differs, and its `attempt_id` derives from a
-different operation than any reference a Recensor review or Archetypus would
-ever have recorded for a real reading.
+
+**Four reading kinds, three conditions.** `lectio-nuda` and `lectio-prior` are
+built from identical dossier arguments — page context, no Testimonia, no prior
+draft — so for one act they carry the same `dossier_digest` and the same
+`rendered_sha256`. That is correct (they *are* the same condition) and it is
+pinned by a test, because it is not visible from the kind names. With a real
+chair, nuda against lectio-prior measures sampling variance; the
+witness-dependence contrast is lectio-prior, or the sampled control, against
+the production Perlectio. Whether the approval-gated nuda arm still earns its
+second model call once Pass A is universal belongs to B4's three-condition
+matrix and to Tyrel — this build changed nuda in no way and claims no answer.
 
 ## Not built here
 

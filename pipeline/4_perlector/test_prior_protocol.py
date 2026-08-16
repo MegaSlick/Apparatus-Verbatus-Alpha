@@ -88,6 +88,43 @@ def test_sampled_triple_has_all_three_records_and_nuda_stays_unfed(tmp_path):
         assert "act_attachment" not in dossier
 
 
+def test_nuda_and_the_pass_a_prior_are_fed_the_identical_condition(tmp_path):
+    """Measured, and pinned because it matters rather than because it is tidy.
+
+    Pass A is a cold read with page context and no witnesses; a Lectio nuda is
+    an unprimed read with page context and no witnesses. They are the same
+    condition, and `main()` builds their dossiers from identical arguments --
+    so for one act the two carry the same `dossier_digest` and the same
+    `rendered_sha256`. That is correct, and it is also the thing a reader of a
+    run tree would not guess: four Perlector reading kinds, only three
+    conditions. Once a real chair sits here, nuda against lectio-prior measures
+    sampling variance, not witness dependence; the witness-dependence contrast
+    is lectio-prior (or the sampled control) against the production Perlectio.
+    Whether the approval-gated nuda arm still earns its second model call is
+    B4's three-condition matrix and Tyrel's, not this build's -- but it cannot
+    be answered by anyone who does not know the two arms are the same draw.
+    This test makes either arm drifting a deliberate, visible change.
+    """
+    root = tmp_path / "runs"
+    result = _run(
+        root, "r", "happy", "--nuda-per-mille", "1000", "--nuda-approval-ref", "fixture/nuda"
+    )
+    assert result.returncode == 0, result.stderr
+    tree = RunTree(root, "r")
+    priors = {record["subject_id"]: record["payload"] for record in _records(tree, "lectio-prior")}
+    nudae = {record["subject_id"]: record["payload"] for record in _records(tree, "lectio-nuda")}
+    assert priors and set(priors) == set(nudae)
+    for subject_id, prior in priors.items():
+        nuda_payload = nudae[subject_id]
+        assert prior["dossier"] == nuda_payload["dossier"]
+        assert prior["prompt"] == nuda_payload["prompt"]
+    # Distinct records all the same: different kinds, different attempt
+    # identities, and only one of them is a retained production draft.
+    assert {record["artifact_id"] for record in _records(tree, "lectio-prior")}.isdisjoint(
+        {record["artifact_id"] for record in _records(tree, "lectio-nuda")}
+    )
+
+
 def test_unsampled_run_has_prior_and_production_but_no_control(tmp_path):
     root = tmp_path / "runs"
     result = _run(root)
