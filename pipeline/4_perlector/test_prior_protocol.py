@@ -109,9 +109,25 @@ def test_draft_fed_toggle_records_both_states_and_withholds_prompt_text(tmp_path
     root = tmp_path / "runs"
     result = _run(root, "r", "happy", "--no-draft-fed")
     assert result.returncode == 0, result.stderr
-    final = _records(RunTree(root, "r"), "perlectio")[0]["payload"]
+    final = next(
+        record["payload"]
+        for record in _records(RunTree(root, "r"), "perlectio")
+        if record["payload"]["dossier"]["prior_draft"]["text"] != record["payload"]["text"]
+    )
     assert final["protocol"]["draft_fed"] is False
     assert final["dossier"]["prior_draft_view"] == "withheld"
+    prior_text = final["dossier"]["prior_draft"]["text"]
+    assert prior_text
+
+    protocol_config, _protocol_sha256 = protocol.load(ROOT / "config" / "perlector_protocol.toml")
+    identity = perlector.ChairIdentity(**final["provenance"]["resolved_identity"])
+    rendered = perlector.prompts.build_prompt(
+        identity.serving_recipe,
+        identity.role,
+        final["dossier"],
+        protocol_config,
+    )
+    assert prior_text not in rendered
 
 
 def test_control_selection_has_no_run_id_input_at_all():
@@ -316,6 +332,22 @@ def test_a_real_published_lectio_prior_satisfies_its_closed_schema(
         protocol_config=protocol_config,
         protocol_sha256=protocol_sha256,
     )
+
+
+def test_validator_refuses_a_protocol_record_without_threaded_sealed_config(
+    published_lectio_prior_payload,
+):
+    """The validator must not recover protocol bytes from process cwd.
+
+    This goes red if the removed cwd-relative reload returns: the real payload
+    carries a protocol record, and no alternate validation failure is expected.
+    """
+    with pytest.raises(SchemaRefusal, match="not given the sealed protocol bytes"):
+        perlector.validate_reading_payload(
+            copy.deepcopy(published_lectio_prior_payload),
+            outcome="read",
+            fields=perlector._LECTIO_PRIOR_FIELDS,
+        )
 
 
 @pytest.mark.parametrize("field", sorted(perlector._LECTIO_PRIOR_FIELDS))
