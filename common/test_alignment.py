@@ -5,6 +5,7 @@ import time
 
 import pytest
 
+import common.alignment as alignment_module
 from common.alignment import AlignmentLimits, align_to_anchor, markup_text_view
 
 
@@ -135,3 +136,68 @@ def test_alignment_deadline_reports_unaligned_honestly_never_a_partial_map():
     assert result["status"] == "unaligned"
     assert result["reason"] == "timeout"
     assert "spans" not in result, "a timed-out alignment must never carry a partial spans list"
+
+
+@pytest.mark.skipif(
+    not all(hasattr(signal, name) for name in ("SIGALRM", "ITIMER_REAL")),
+    reason="requires the POSIX real-time alarm inspected by the alignment backstop",
+)
+def test_alignment_does_not_cancel_an_unrelated_existing_alarm():
+    """A caller's timer remains its timer; alignment must not borrow or clear it."""
+    previous_handler = signal.getsignal(signal.SIGALRM)
+
+    def unrelated_handler(signum, frame):
+        pass
+
+    signal.signal(signal.SIGALRM, unrelated_handler)
+    signal.alarm(30)
+    try:
+        result = align_to_anchor(
+            "alpha beta",
+            "alpha beta",
+            AlignmentLimits(max_characters=100, max_character_pairs=10_000, timeout_seconds=1),
+        )
+        remaining = signal.alarm(0)
+
+        assert result["status"] == "aligned"
+        assert remaining > 0
+        assert signal.getsignal(signal.SIGALRM) is unrelated_handler
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous_handler)
+
+
+@pytest.mark.skipif(
+    not all(hasattr(signal, name) for name in ("SIGALRM", "ITIMER_REAL")),
+    reason="requires the POSIX real-time alarm inspected by the alignment backstop",
+)
+def test_alignment_clears_its_alarm_and_restores_the_handler_on_an_exception(monkeypatch):
+    """No alignment-owned alarm may escape into unrelated work after a failure."""
+    previous_handler = signal.getsignal(signal.SIGALRM)
+
+    def caller_handler(signum, frame):
+        pass
+
+    def broken_matcher(**kwargs):
+        raise RuntimeError("matcher failed")
+
+    signal.alarm(0)
+    signal.signal(signal.SIGALRM, caller_handler)
+    monkeypatch.setattr(alignment_module, "SequenceMatcher", broken_matcher)
+    try:
+        with pytest.raises(RuntimeError, match="matcher failed"):
+            align_to_anchor(
+                "alpha beta",
+                "alpha beta",
+                AlignmentLimits(
+                    max_characters=100,
+                    max_character_pairs=10_000,
+                    timeout_seconds=10,
+                ),
+            )
+
+        assert signal.alarm(0) == 0
+        assert signal.getsignal(signal.SIGALRM) is caller_handler
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous_handler)

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import html
 import signal
+import threading
 import tomllib
 import unicodedata
 from dataclasses import dataclass
@@ -155,20 +156,30 @@ def align_to_anchor(witness_raw: str, anchor_raw: str, limits: AlignmentLimits) 
             "anchor": anchor,
         }
     previous = None
+    alarm_armed = False
     try:
-        if hasattr(signal, "SIGALRM"):
+        if (
+            hasattr(signal, "SIGALRM")
+            and hasattr(signal, "ITIMER_REAL")
+            and threading.current_thread() is threading.main_thread()
+            and signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0)
+        ):
             previous = signal.signal(signal.SIGALRM, _alarm)
-            signal.alarm(limits.timeout_seconds)
+            try:
+                signal.alarm(limits.timeout_seconds)
+            except BaseException:
+                signal.signal(signal.SIGALRM, previous)
+                raise
+            alarm_armed = True
         blocks = SequenceMatcher(
             a=witness_text, b=anchor_text, autojunk=False
         ).get_matching_blocks()
     except _TimedOut:
         return {"status": "unaligned", "reason": "timeout", "witness": witness, "anchor": anchor}
     finally:
-        if hasattr(signal, "SIGALRM"):
+        if alarm_armed:
             signal.alarm(0)
-            if previous is not None:
-                signal.signal(signal.SIGALRM, previous)
+            signal.signal(signal.SIGALRM, previous)
     spans = [
         {
             "witness": {"start": block.a, "end": block.a + block.size},
