@@ -81,3 +81,12 @@ caller-supplied root contains canonical `download_record.json`, `hf/`, `local/`,
 `manifests/`, and `staging/`; `model_store.py` only verifies existing bytes and
 never fetches. `model_root` in `config/models.toml` remains local-repository
 only and relative to that file.
+
+A store is materialized one snapshot at a time, so a record entry is either
+`present` — snapshot, manifest, pin, licence and carried content — or
+`pending-fetch`, which names the artifact, its roster origin, and the reason its
+bytes are not there yet. `verify_store` proves what exists and marks the derived
+inventory `complete: false` with every pending artifact named;
+`require_complete_store` is the door for a consumer that needs the whole roster
+on disk. A half-fetched store is therefore recordable and visibly partial rather
+than unrepresentable (GOVERNANCE 2).

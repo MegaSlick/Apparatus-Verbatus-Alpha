@@ -31,6 +31,28 @@ from .models import ChairIdentity, is_hf_revision, is_sha256
 STORE_SCHEMA = "verbatus-model-store.v1"
 INVENTORY_SCHEMA = "verbatus-model-inventory.v1"
 
+# An artifact entry is one of two closed shapes.  A store is materialized one
+# snapshot at a time, so "every roster artifact is already on disk" is a state
+# the host reaches, not the only state it may record: an entry the operator has
+# not fetched yet is written in the `pending-fetch` shape, which names the
+# absence and its reason instead of leaving the store unrepresentable until the
+# last byte lands (GOVERNANCE 2 — a partial result is visibly partial).  The
+# schema label stays `.v1`: no record has ever been written in the earlier
+# shape, so there is no evidence on disk for a bump to protect.
+PRESENT_FIELDS = {
+    "artifact",
+    "state",
+    "source",
+    "repo",
+    "revision",
+    "snapshot",
+    "manifest",
+    "digest_manifest",
+    "license",
+    "carried",
+}
+PENDING_FIELDS = {"artifact", "state", "source", "repo", "revision", "reason"}
+
 
 @dataclass(frozen=True, slots=True)
 class RequiredArtifact:
@@ -163,12 +185,39 @@ def derived_inventory(record: Mapping[str, Any]) -> dict[str, Any]:
                     "model-store", f"{required.artifact!r} {field} diverges from roster policy"
                 )
         rows.append({"chair": required.chair, **item})
+    # An inventory over a half-materialized store is a real inventory of a
+    # partial store, never a complete one.  Both facts travel with it: each row
+    # carries its own `state`, and `pending`/`complete` say at the top what a
+    # consumer would otherwise have to rediscover by scanning rows.
+    pending = sorted(
+        {item["artifact"] for item in record["artifacts"] if item["state"] == "pending-fetch"}
+    )
     return {
         "schema": INVENTORY_SCHEMA,
         "download_record_sha256": digest_bytes(canonical_bytes(record)),
+        "complete": not pending,
         "artifacts": rows,
+        "pending": pending,
         "refusals": [SURYA_OCR_2_REFUSAL],
     }
+
+
+def require_complete_store(inventory: Mapping[str, Any]) -> None:
+    """Refuse an inventory that is honest about being partial, by name.
+
+    ``verify_store`` proves the bytes that exist; it never invents the ones that
+    do not, so it returns a partial inventory rather than refusing outright.
+    This is the door for the consumer that genuinely needs every roster artifact
+    on disk — S8 roster activation, a pod assembly — and it names each artifact
+    still to be fetched rather than reporting a count.
+    """
+
+    if not inventory.get("complete"):
+        raise DigestMismatchRefusal(
+            "model-store",
+            "model store is not complete; still pending fetch: "
+            f"{', '.join(inventory.get('pending') or ['(unknown)'])}",
+        )
 
 
 def write_derived_inventory(record: Mapping[str, Any], path: str | Path) -> str:
@@ -203,12 +252,22 @@ def read_derived_inventory(store_root: str | Path, path: str | Path) -> dict[str
 
 
 def verify_store(store_root: str | Path) -> dict[str, Any]:
-    """Verify every declared manifest against its existing bytes; never fetch."""
+    """Verify every declared manifest against its existing bytes; never fetch.
+
+    A `pending-fetch` entry has no bytes to verify, so it is passed over and
+    reported: the returned inventory is then a verified inventory of a
+    *partial* store, marked `complete: false`.  Call
+    :func:`require_complete_store` where every roster artifact must be on disk.
+    """
 
     root = Path(store_root).resolve()
     record = load_download_record(root)
     inventory = derived_inventory(record)
     for item in record["artifacts"]:
+        if item["state"] == "pending-fetch":
+            # Nothing to verify and nothing to claim: the absence is already
+            # named in the record and travels out in the inventory's `pending`.
+            continue
         manifest_path = _under(root, item["manifest"])
         manifest = read_manifest(
             manifest_path, expected_digest=item["digest_manifest"], chair=item["artifact"]
@@ -348,50 +407,51 @@ def _validate_record(raw: Mapping[str, Any]) -> None:
     items = raw["artifacts"]
     if not isinstance(items, list) or len(items) != 6:
         raise DigestMismatchRefusal(
-            "model-store", "download record must name exactly six unique model snapshots"
+            "model-store",
+            "download record must name exactly six unique roster artifacts, each either "
+            "present or pending-fetch",
         )
     seen: set[str] = set()
     for item in items:
-        if not isinstance(item, Mapping) or set(item) != {
-            "artifact",
-            "source",
-            "repo",
-            "revision",
-            "snapshot",
-            "manifest",
-            "digest_manifest",
-            "license",
-            "carried",
-        }:
-            raise DigestMismatchRefusal("model-store", "artifact entry has an invalid shape")
-        if not isinstance(item["artifact"], str) or item["artifact"] in seen:
+        if not isinstance(item, Mapping):
+            raise DigestMismatchRefusal("model-store", "artifact entry is not a table")
+        if not isinstance(item.get("artifact"), str) or item["artifact"] in seen:
             raise DigestMismatchRefusal("model-store", "artifact names must be unique")
         seen.add(item["artifact"])
-        if item["source"] not in {"huggingface", "local-repository"} or not is_sha256(
-            item["digest_manifest"]
-        ):
+        state = item.get("state")
+        if state == "pending-fetch":
+            if set(item) != PENDING_FIELDS:
+                raise DigestMismatchRefusal(
+                    item["artifact"],
+                    "a pending-fetch entry carries exactly "
+                    f"{sorted(PENDING_FIELDS)}: no snapshot, manifest, pin, licence or "
+                    "carried content exists for bytes that are not on disk",
+                )
+            if not isinstance(item["reason"], str) or not item["reason"].strip():
+                raise DigestMismatchRefusal(
+                    item["artifact"],
+                    "a pending-fetch entry must say why the artifact is not on disk yet",
+                )
+            _validate_origin(item)
+            continue
+        if state != "present" or set(item) != PRESENT_FIELDS:
+            raise DigestMismatchRefusal(
+                item["artifact"],
+                f"artifact entry state must be 'present' (with exactly {sorted(PRESENT_FIELDS)}) "
+                f"or 'pending-fetch' (with exactly {sorted(PENDING_FIELDS)})",
+            )
+        _validate_origin(item)
+        if not is_sha256(item["digest_manifest"]):
             raise DigestMismatchRefusal(
                 "model-store",
                 f"artifact {item['artifact']!r} has an invalid source or manifest pin",
             )
-        if item["source"] == "huggingface":
-            if (
-                not isinstance(item["repo"], str)
-                or not is_hf_revision(item["revision"])
-                or not str(item["snapshot"]).startswith("hf/")
-            ):
-                raise DigestMismatchRefusal(
-                    "model-store",
-                    f"Hugging Face artifact {item['artifact']!r} has no pinned hf snapshot",
-                )
-        elif (
-            item["repo"] is not None
-            or item["revision"] is not None
-            or not str(item["snapshot"]).startswith("local/")
-        ):
+        prefix = "hf/" if item["source"] == "huggingface" else "local/"
+        if not str(item["snapshot"]).startswith(prefix):
             raise DigestMismatchRefusal(
                 "model-store",
-                f"local artifact {item['artifact']!r} must have no git pin and live under local/",
+                f"artifact {item['artifact']!r} is sourced from {item['source']!r} and its "
+                f"snapshot must live under {prefix!r}",
             )
         for field in ("snapshot", "manifest", "license"):
             _safe(item[field], field)
@@ -421,6 +481,33 @@ def _validate_record(raw: Mapping[str, Any]) -> None:
             raise DigestMismatchRefusal(
                 item["artifact"], "only DAI prompt files are carried content in this roster"
             )
+
+
+def _validate_origin(item: Mapping[str, Any]) -> None:
+    """Check where an artifact comes from, which a pending entry knows as well.
+
+    Source, repository and revision are decided when the roster is, not when the
+    bytes land, so they are checked identically in both entry shapes — a
+    pending-fetch entry that named no revision could not be reconciled against
+    :data:`REQUIRED_ARTIFACTS` at all.
+    """
+
+    if item["source"] not in {"huggingface", "local-repository"}:
+        raise DigestMismatchRefusal(
+            "model-store",
+            f"artifact {item['artifact']!r} has an invalid source or manifest pin",
+        )
+    if item["source"] == "huggingface":
+        if not isinstance(item["repo"], str) or not is_hf_revision(item["revision"]):
+            raise DigestMismatchRefusal(
+                "model-store",
+                f"Hugging Face artifact {item['artifact']!r} has no pinned repo and revision",
+            )
+    elif item["repo"] is not None or item["revision"] is not None:
+        raise DigestMismatchRefusal(
+            "model-store",
+            f"local artifact {item['artifact']!r} must have no git pin",
+        )
 
 
 def _safe(value: object, label: str) -> None:

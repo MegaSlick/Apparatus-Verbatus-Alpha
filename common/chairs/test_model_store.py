@@ -2,6 +2,7 @@
 
 import copy
 import json
+import shutil
 
 import pytest
 
@@ -16,6 +17,7 @@ from common.chairs.model_store import (
     load_download_record,
     promote_verified_snapshot,
     read_derived_inventory,
+    require_complete_store,
     verify_store,
     write_derived_inventory,
     write_download_record,
@@ -44,6 +46,7 @@ def _store(tmp_path):
         pin = write_manifest(build_manifest(root), manifest_path)
         artifacts[requirement.artifact] = {
             "artifact": requirement.artifact,
+            "state": "present",
             "source": requirement.source,
             "repo": requirement.repo,
             "revision": requirement.revision,
@@ -199,6 +202,7 @@ def test_write_download_record_round_trips_through_load_download_record(tmp_path
         pin = write_manifest(build_manifest(root), manifest_path)
         artifacts[requirement.artifact] = {
             "artifact": requirement.artifact,
+            "state": "present",
             "source": requirement.source,
             "repo": requirement.repo,
             "revision": requirement.revision,
@@ -339,3 +343,99 @@ def test_derived_inventory_refuses_a_unicode_artifact_name_as_a_required_artifac
 
     with pytest.raises(DigestMismatchRefusal, match="is absent"):
         derived_inventory(record)
+
+
+# --- O1: a half-materialized store is representable, and visibly partial --------
+
+
+def _mark_pending(tmp_path, record, artifact, reason):
+    """Rewrite one entry in the pending-fetch shape and remove its bytes.
+
+    This is the store's real state today: five Hugging Face snapshots fetched,
+    the Surya bundle not yet on disk.
+    """
+    required = next(item for item in REQUIRED_ARTIFACTS if item.artifact == artifact)
+    for index, item in enumerate(record["artifacts"]):
+        if item["artifact"] == artifact:
+            shutil.rmtree(tmp_path / item["snapshot"])
+            (tmp_path / item["manifest"]).unlink()
+            record["artifacts"][index] = {
+                "artifact": artifact,
+                "state": "pending-fetch",
+                "source": required.source,
+                "repo": required.repo,
+                "revision": required.revision,
+                "reason": reason,
+            }
+    (tmp_path / "download_record.json").write_bytes(canonical_bytes(record))
+    return record
+
+
+def test_a_store_whose_surya_bundle_has_not_landed_verifies_and_says_so(tmp_path):
+    record = _mark_pending(
+        tmp_path, _store(tmp_path), "surya2-detection", "s3 bundle not yet fetched by the host"
+    )
+
+    inventory = verify_store(tmp_path)
+
+    assert inventory["complete"] is False
+    assert inventory["pending"] == ["surya2-detection"]
+    rows = {row["chair"]: row for row in inventory["artifacts"]}
+    assert len(rows) == 7
+    assert rows["proposer_surya2"]["state"] == "pending-fetch"
+    assert rows["proposer_surya2"]["reason"] == "s3 bundle not yet fetched by the host"
+    assert "snapshot" not in rows["proposer_surya2"]
+    # The five artifacts that did land are verified exactly as before.
+    assert all(rows[chair]["state"] == "present" for chair in rows if chair != "proposer_surya2")
+    assert inventory == derived_inventory(record)
+
+
+def test_require_complete_store_refuses_a_partial_store_by_name(tmp_path):
+    record = _mark_pending(tmp_path, _store(tmp_path), "surya2-detection", "not fetched yet")
+
+    with pytest.raises(DigestMismatchRefusal, match="surya2-detection"):
+        require_complete_store(derived_inventory(record))
+
+
+def test_require_complete_store_accepts_a_store_with_every_roster_artifact(tmp_path):
+    _store(tmp_path)
+
+    inventory = verify_store(tmp_path)
+
+    assert inventory["complete"] is True
+    assert inventory["pending"] == []
+    require_complete_store(inventory)
+
+
+def test_a_pending_entry_may_not_carry_evidence_for_bytes_that_are_not_there(tmp_path):
+    record = _mark_pending(tmp_path, _store(tmp_path), "surya2-detection", "not fetched yet")
+    entry = next(item for item in record["artifacts"] if item["artifact"] == "surya2-detection")
+    entry["snapshot"] = "local/surya2-detection"
+
+    with pytest.raises(DigestMismatchRefusal, match="pending-fetch entry carries exactly"):
+        derived_inventory(record)
+
+
+def test_a_pending_entry_must_say_why_the_artifact_is_not_on_disk(tmp_path):
+    record = _mark_pending(tmp_path, _store(tmp_path), "surya2-detection", "   ")
+
+    with pytest.raises(DigestMismatchRefusal, match="must say why"):
+        derived_inventory(record)
+
+
+def test_a_pending_entry_is_held_to_the_same_roster_origin_as_a_present_one(tmp_path):
+    record = _mark_pending(tmp_path, _store(tmp_path), "surya2-detection", "not fetched yet")
+    entry = next(item for item in record["artifacts"] if item["artifact"] == "surya2-detection")
+    entry["repo"] = "someone/surya2"
+
+    with pytest.raises(DigestMismatchRefusal, match="must have no git pin"):
+        derived_inventory(record)
+
+
+def test_write_download_record_can_express_a_partial_store(tmp_path):
+    record = _mark_pending(tmp_path, _store(tmp_path), "surya2-detection", "not fetched yet")
+    elsewhere = tmp_path / "second-root"
+
+    write_download_record(record, elsewhere)
+
+    assert load_download_record(elsewhere) == record
