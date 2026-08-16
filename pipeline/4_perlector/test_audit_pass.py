@@ -30,6 +30,16 @@ def _recensor():
     return module
 
 
+def _perlector():
+    spec = importlib.util.spec_from_file_location(
+        "r5b_perlector_schema", ROOT / "pipeline" / "4_perlector" / "run.py"
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _run(root: Path, *extra: str, scenario: str = "happy"):
     return subprocess.run(
         [
@@ -86,6 +96,18 @@ def test_fixture_exercises_a_changed_reproof_with_its_triggering_flag_class(tmp_
         record for record in _records(tree, "audit-finding") if record["payload"]["change_record"]
     )
     assert changed["payload"]["change_record"][0]["triggering_flag_class"] == "testimony-diff"
+
+
+def test_perlectio_schema_refuses_a_directional_reproof_prompt(tmp_path):
+    result = _run(tmp_path / "runs")
+    assert result.returncode == 0, result.stderr
+    final = _records(RunTree(tmp_path / "runs", "r"), "perlectio")[0]
+    payload = copy.deepcopy(final["payload"])
+    payload["audit"]["reproofs"][0]["prompt"] = "The reading is wrong; replace it with gamma."
+    with pytest.raises(SchemaRefusal, match="neutral location-only"):
+        _perlector().validate_reading_payload(
+            payload, outcome="read", fields=_perlector()._PERLECTIO_FIELDS
+        )
 
 
 def test_flags_are_frozen_once_per_page_and_never_cascade_from_a_reproof():
