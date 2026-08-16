@@ -153,3 +153,16 @@ def test_a_witness_confidence_integer_ordinal_outside_any_declared_scale_is_refu
         "an integer confidence value with no declared closed-ordinal scale was accepted "
         "verbatim; R0's closed-ordinal confidence rule is not enforced on the base commit"
     )
+
+
+def test_a_nested_confidence_cannot_bypass_the_closed_ordinal_rule():
+    """The rule applies to confidence claims anywhere in retained self-report JSON."""
+    row = {
+        "payload": "SYNTHETIC ACT ONE alpha beta gamma",
+        "witness_reported": {"metadata": {"confidence": 999_999}},
+    }
+    *_, recording_problem = attestatores_run.prepared_response(row)
+    assert recording_problem is not None, (
+        "a confidence ordinal nested below witness_reported.metadata bypassed the "
+        "top-level closed-set check"
+    )

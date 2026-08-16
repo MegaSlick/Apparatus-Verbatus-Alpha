@@ -63,6 +63,28 @@ DEFAULT_FORMAT_CAPABILITIES = {
     "can_express_layout": False,
 }
 
+
+def _confidence_problem(value: Any, path: str = "witness_reported") -> str | None:
+    """Validate every confidence claim in retained witness self-report JSON."""
+    if isinstance(value, dict):
+        for key in sorted(value):
+            item = value[key]
+            if key == "confidence" and (
+                not isinstance(item, str) or item not in WITNESS_CONFIDENCE_ORDINALS
+            ):
+                return (
+                    f"{path}.confidence is not a member of the closed ordinal set "
+                    f"{sorted(WITNESS_CONFIDENCE_ORDINALS)}"
+                )
+            if problem := _confidence_problem(item, f"{path}.{key}"):
+                return problem
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            if problem := _confidence_problem(item, f"{path}[{index}]"):
+                return problem
+    return None
+
+
 # The two write paths this program implements, checked against by name because
 # `--operation` carries no argparse `choices` — the same parser serves every
 # stage — so an unrecognized one otherwise falls through to the whole pass and a
@@ -477,17 +499,8 @@ def prepared_response(
         return None, None, None, health, str(health["truncation_basis"])
     witness_reported = row.get("witness_reported")
     report_problem = _native_problem(witness_reported, "witness_reported")
-    if (
-        report_problem is None
-        and isinstance(witness_reported, dict)
-        and "confidence" in witness_reported
-    ):
-        confidence = witness_reported["confidence"]
-        if not isinstance(confidence, str) or confidence not in WITNESS_CONFIDENCE_ORDINALS:
-            report_problem = (
-                "witness_reported.confidence is not a member of the closed ordinal set "
-                f"{sorted(WITNESS_CONFIDENCE_ORDINALS)}"
-            )
+    if report_problem is None:
+        report_problem = _confidence_problem(witness_reported)
     if report_problem is not None:
         witness_reported = None
     try:
