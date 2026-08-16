@@ -554,7 +554,8 @@ def test_perlector_refuses_an_attachment_describing_a_superseded_attempt(tmp_pat
     fixture_data = load_fixture(str(FIXTURE_ROOT))
     act_a2_id = act_identity(fixture_data, act_by_key(fixture_data, "a2"))
     _through_attestatores(root, "superseded", "reread-success")
-    assert invoke_stage(root, "superseded", "reread-success", "pipeline/4_perlector/run.py")
+    first_read = invoke_stage(root, "superseded", "reread-success", "pipeline/4_perlector/run.py")
+    assert first_read.returncode == 0, first_read.stderr
 
     reread = _reread(root, "superseded", "reread-success", act_a2_id, "attestator_1")
     assert reread.returncode == 0, reread.stderr
