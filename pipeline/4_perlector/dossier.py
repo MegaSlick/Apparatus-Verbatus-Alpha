@@ -326,7 +326,26 @@ def build_dossier(
         "testimonia": testimonia_rows,
     }
     if act_attachment is not None:
-        dossier["act_attachment"] = act_attachment
+        # `act_attachment["comparison_views"]` is keyed by real chair name
+        # upstream (`pipeline/4_perlector/run.py::act_attachment_view`) so the
+        # Perlector's own dissent machinery can match it back to a chair's
+        # Testimonium. That real name is exactly what blinding exists to
+        # withhold from the dossier -- the one object every reader actually
+        # sees -- so it is relabeled here through the same `witness_label`
+        # every other dossier identity already goes through, never carried
+        # verbatim into what gets shown.
+        dossier["act_attachment"] = {
+            **act_attachment,
+            "comparison_views": {
+                witness_label(
+                    chair,
+                    regime=regime,
+                    run_id=context.tree.run_id,
+                    config_digest=context.config_digest,
+                ): text
+                for chair, text in act_attachment["comparison_views"].items()
+            },
+        }
     if prior_draft is not None:
         if prior_draft_view not in {"fed", "withheld"}:
             raise SchemaRefusal("a prior draft requires a named fed or withheld view")
