@@ -11,6 +11,7 @@ from .config import (
     ServingRecipes,
     load_serving_recipes,
     parse_serving_recipes,
+    profile_preflight_digest,
     verify_recipes_cover_chairs,
 )
 from .manager import (
@@ -40,5 +41,6 @@ __all__ = [
     "assemble_serving_smoke_reader",
     "load_serving_recipes",
     "parse_serving_recipes",
+    "profile_preflight_digest",
     "verify_recipes_cover_chairs",
 ]

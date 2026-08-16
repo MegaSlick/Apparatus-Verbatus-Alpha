@@ -10,6 +10,10 @@ one complete vLLM flag profile.  That three-part lookup is deliberate: a
 deliberately per profile because an engine version alone cannot establish
 whether a model-support package changed under the same launch command.
 
+A ``proven`` preflight mark carries ``preflight_digest``, the canonical digest
+of every other field in that profile row. Editing a runtime field while leaving
+the mark in place therefore refuses at catalogue load, before launch.
+
 A profile declares its ``kind``.  ``vllm`` is a complete flag profile for a
 chair that really is launched; ``fixture`` is the offline walking skeleton's
 stand-in and carries no flags at all.  ``manager._launchable`` refuses a
@@ -28,7 +32,7 @@ from types import MappingProxyType
 from typing import Any, Iterable, Mapping
 
 from common.chairs.models import AbsentChair, ChairIdentity, ModelsConfig, is_hf_revision, is_sha256
-from common.contracts.canonical import digest_bytes
+from common.contracts.canonical import canonical_bytes, digest_bytes
 from common.contracts.serving import SERVING_CONFIG_INPUTS_FIELDS
 from common.contracts.serving import SERVING_CONFIG_INPUTS_SCHEMA as CONFIG_INPUTS_SCHEMA
 
@@ -67,6 +71,7 @@ _PROFILE_FIELDS = {
     "readiness_probe",
     "preflight_state",
 }
+_PREFLIGHT_DIGEST_FIELD = "preflight_digest"
 _PROBE_FIELDS = {"kind", "request_json"}
 _PACKAGE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
@@ -145,6 +150,7 @@ class ServingProfile:
     poll_interval_seconds: int
     readiness_probe: ProbeSpec
     preflight_state: str
+    preflight_digest: str | None
     kind: str = "vllm"
 
     def __post_init__(self) -> None:
@@ -330,6 +336,31 @@ def model_and_tokenizer_pins(identity: ChairIdentity) -> tuple[str, str] | None:
     return identity.revision, identity.revision
 
 
+def profile_preflight_digest(raw: Mapping[str, Any]) -> str:
+    """Digest a vLLM profile's canonical fields other than its proof mark.
+
+    ``preflight_state`` and ``preflight_digest`` are the mark, so neither may
+    attest to itself. TOML permits a decimal to arrive as a float; normalize
+    that one accepted decimal field to the same text the typed profile uses
+    before passing the row through the repository's canonical serializer.
+    """
+
+    profile = {
+        key: value
+        for key, value in raw.items()
+        if key not in {"preflight_state", _PREFLIGHT_DIGEST_FIELD}
+    }
+    fraction = profile.get("gpu_memory_utilization")
+    if isinstance(fraction, float):
+        profile["gpu_memory_utilization"] = str(Decimal(str(fraction)))
+    try:
+        return digest_bytes(canonical_bytes(profile))
+    except (RecursionError, TypeError, ValueError) as error:
+        raise ServingConfigurationError(
+            "serving profile cannot be canonically digested for preflight"
+        ) from error
+
+
 def _parse_profile(raw: Any) -> "ServingProfile | FixtureProfile":
     if not isinstance(raw, dict):
         raise ServingConfigurationError("each serving profile must be a table")
@@ -340,7 +371,7 @@ def _parse_profile(raw: Any) -> "ServingProfile | FixtureProfile":
         )
     if kind == "fixture":
         return _parse_fixture_profile(raw)
-    unknown = sorted(set(raw) - _PROFILE_FIELDS)
+    unknown = sorted(set(raw) - (_PROFILE_FIELDS | {_PREFLIGHT_DIGEST_FIELD}))
     missing = sorted(_PROFILE_FIELDS - set(raw))
     if unknown or missing:
         raise ServingConfigurationError(
@@ -386,6 +417,25 @@ def _parse_profile(raw: Any) -> "ServingProfile | FixtureProfile":
     preflight_state = _text(raw["preflight_state"], "preflight_state")
     if preflight_state not in {"unproven", "proven"}:
         raise ServingConfigurationError("preflight_state must be 'unproven' or 'proven'")
+    profile_name = f"recipe={recipe!r}, chair={chair!r}, tier={tier!r}"
+    preflight_digest: str | None = None
+    if preflight_state == "proven":
+        preflight_digest = raw.get(_PREFLIGHT_DIGEST_FIELD)
+        if not is_sha256(preflight_digest):
+            raise ServingConfigurationError(
+                f"serving profile {profile_name} is marked proven without a lowercase "
+                "SHA-256 preflight_digest"
+            )
+        expected_preflight_digest = profile_preflight_digest(raw)
+        if preflight_digest != expected_preflight_digest:
+            raise ServingConfigurationError(
+                f"serving profile {profile_name} has a stale preflight_digest; its canonical "
+                "fields changed after this profile was proven"
+            )
+    elif _PREFLIGHT_DIGEST_FIELD in raw:
+        raise ServingConfigurationError(
+            f"serving profile {profile_name} is unproven and must not carry a preflight_digest"
+        )
     timeout = _positive_int(raw["startup_timeout_seconds"], "startup_timeout_seconds")
     poll = _positive_int(raw["poll_interval_seconds"], "poll_interval_seconds")
     if poll > timeout:
@@ -418,6 +468,7 @@ def _parse_profile(raw: Any) -> "ServingProfile | FixtureProfile":
         poll_interval_seconds=poll,
         readiness_probe=_probe(raw["readiness_probe"]),
         preflight_state=preflight_state,
+        preflight_digest=preflight_digest,
         kind="vllm",
     )
 

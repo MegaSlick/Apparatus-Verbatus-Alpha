@@ -10,6 +10,10 @@ provider API, download a model, or claim a GPU fit.
 `ServingManager.start(identity, tier)` requires exactly one profile for
 `(identity.serving_recipe, identity.role, measured placement tier)` from
 `config/serving_recipes.toml`. Zero or multiple matches refuse before launch.
+A real row marked `preflight_state = "proven"` must also carry the
+`preflight_digest` of all its other canonical fields. A stale digest names and
+refuses the edited profile during catalogue load; the manager independently
+retains its launch-time refusal of every state other than `proven`.
 `verify_recipes_cover_chairs` proves that lookup offline for every configured
 chair at every configured tier and refuses extra stale rows, so a misspelt
 `serving_recipe`, an unconfigured chair profile, or a newly added placement tier
