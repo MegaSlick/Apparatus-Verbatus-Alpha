@@ -418,6 +418,42 @@ def test_real_serving_profile_is_structurally_unproven_until_preflight():
     assert profile.preflight_state == "unproven"
 
 
+def test_a_real_serving_profile_missing_preflight_state_refuses_by_name():
+    """Migration honesty: an older row that predates this field is not silently proven."""
+
+    row = profile_row(recipe="reader", chair="perlector", served_model_id="reader", port=8100)
+    del row["preflight_state"]
+
+    with pytest.raises(ServingConfigurationError, match="preflight_state"):
+        recipes(row)
+
+
+def test_start_refuses_a_serving_profile_that_is_not_preflight_proven(tmp_path: Path) -> None:
+    """A structurally 'unproven' profile must refuse launch, not merely round-trip.
+
+    ``test_real_serving_profile_is_structurally_unproven_until_preflight`` only
+    proves parsing preserves the value; this proves ``manager.start`` actually
+    enforces it before any process, lease, or endpoint action.
+    """
+
+    chair = identity("reader", "reader-v1")
+    row = profile_row(recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000)
+    row["preflight_state"] = "unproven"
+    manager, _, _, launcher, registry, publisher = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(row,),
+        model_ids=("reader-api",),
+    )
+
+    with pytest.raises(ServingRecipeRefusal, match="preflight"):
+        manager.start(chair, TIER)
+
+    assert launcher.processes == []
+    assert publisher.calls == []
+    assert not (tmp_path / "logs").exists()
+
+
 def measured_gpu(dtype: str = "bfloat16") -> GpuProfile:
     return GpuProfile("fake GPU", "12.4", "550", (8, 0), "48", "100", dtype)
 
