@@ -451,8 +451,8 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # `by_chair`/`shortfall` plus a reason. Neither acceptance scenario exercises that
 # unavailable shape -- every reviewed page has reported page-witness text -- so
 # both digest literals remain byte-identical, with file counts still 64/71.
-HAPPY_RUN_TREE_DIGEST = "59605960127ef8740b9acf838e6c355d6d15e3e4cd0613fb33ef0a133bde5cc5"
-REVIEW_RUN_TREE_DIGEST = "cdf4dc49ef2a93fdf5509aebc9ec912cc29d6de1d57b1d55fad2cb6468435976"
+HAPPY_RUN_TREE_DIGEST = "e09904d63d008c18a3357df0b52dca28e47b73fd79d274aae32949bec605ab25"
+REVIEW_RUN_TREE_DIGEST = "c7331e5f089f5df96d4d6bf7aa344ebaee30942fe45f5b8339b00b3ae0a3fe28"
 
 
 def orchestrate(
@@ -2823,7 +2823,7 @@ def test_repeating_the_identical_command_leaves_every_byte_unchanged(tmp_path):
 
     # R0 adds two retained page Testimonia and two derived act attachments to
     # the happy walking skeleton; repeatability still compares every byte.
-    assert len(before) == 64
+    assert len(before) == 60
     assert semantic_snapshot_digest(root) == HAPPY_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "happy").returncode == 0
     after = snapshot(root)
@@ -2870,7 +2870,7 @@ def test_repeating_the_review_scenario_also_changes_nothing(tmp_path):
 
     # R0 adds the same four retained page/attachment artifacts before review's
     # recovery loop; its append-only invariant is unchanged.
-    assert len(before) == 71
+    assert len(before) == 65
     assert semantic_snapshot_digest(root) == REVIEW_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "review").returncode == 3
     assert snapshot(root) == before
@@ -3101,11 +3101,10 @@ def test_the_capability_scenario_leaves_one_chair_uncompared_while_happy_compare
     with witnesses rather than to read ink."
 
     Spec 07's fixture declares that capability on chair 2 of act a1 in the
-    dedicated `witness-capabilities` scenario. R0 left both page-witness chairs
-    unknown until R4 provided act-anchored comparison views; now that R4's
-    alignment lands a comparison view for both, only the capability-declared
-    chair stays unknown, and the reference happy run — where no chair declares
-    the capability — compares all three.
+    dedicated `witness-capabilities` scenario. R0 additionally leaves both
+    page-witness chairs unknown until R4 provides act-anchored comparison views.
+    The reference happy run therefore has those two honest unknown rows while
+    its act-scoped chair remains comparable.
     """
     root = tmp_path / "runs"
     result = orchestrate(root, "r", "witness-capabilities")
@@ -3120,7 +3119,7 @@ def test_the_capability_scenario_leaves_one_chair_uncompared_while_happy_compare
     assert set(by_chair) == {"attestator_1", "attestator_2", "attestator_3"}
     assert by_chair["attestator_2"]["compared"] == "unknown"
     assert "cannot be reduced to a plain comparison view" in by_chair["attestator_2"]["reason"]
-    assert [row["compared"] for row in reading["payload"]["dissent"]].count("unknown") == 1
+    assert [row["compared"] for row in reading["payload"]["dissent"]].count("unknown") == 3
 
     testimonium = next(
         record
@@ -3150,7 +3149,10 @@ def test_the_capability_scenario_leaves_one_chair_uncompared_while_happy_compare
         "attestator_2",
         "attestator_3",
     }
-    assert {row["chair"] for row in happy_dissent if row["compared"] == "unknown"} == set()
+    assert {row["chair"] for row in happy_dissent if row["compared"] == "unknown"} == {
+        "attestator_1",
+        "attestator_3",
+    }
 
 
 def test_a_delivered_act_still_links_back_to_the_exact_ink(review_run):
