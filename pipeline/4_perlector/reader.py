@@ -5,12 +5,8 @@ implementation of this protocol. This chamber has no pod and no GPU, so the
 only implementation here is `FixtureReader`, and the protocol is the seam that
 lets a real reader replace it without `run.py`'s orchestration changing at all.
 
-`primed` distinguishes the establishing pass (all testimonia in the dossier)
-from Lectio nuda (none) -- one call shape, so a real reader has no second code
-path to keep in sync. **This fixture reader cannot produce a genuinely
-different unprimed reading**: there is no model behind it to diverge, so what
-this build proves is the wiring and the module boundary keeping nuda out of the
-Archetypus's reach, never the witness-dependence signal itself.
+`pass_kind` names every pass explicitly. A boolean could not distinguish the
+production prior, the sampled control, nuda, and the production Perlectio.
 """
 
 from __future__ import annotations
@@ -44,7 +40,7 @@ class Reader(Protocol):
         self,
         dossier: dict[str, Any],
         *,
-        primed: bool,
+        pass_kind: str,
         delivered_pixels: DeliveredPixels | None = None,
     ) -> LectioResult:
         """Produce one Lectio over one dossier."""
@@ -62,17 +58,23 @@ class FixtureReader:
         self,
         dossier: dict[str, Any],
         *,
-        primed: bool,
+        pass_kind: str,
         delivered_pixels: DeliveredPixels | None = None,
     ) -> LectioResult:
         act_key = dossier["act_key"]
         return {
-            "text": self._reading_text(dossier, delivered_pixels=delivered_pixels),
+            "text": self._reading_text(
+                dossier, pass_kind=pass_kind, delivered_pixels=delivered_pixels
+            ),
             "stop_reason": self._declared_stop_reason(act_key),
         }
 
     def _reading_text(
-        self, dossier: dict[str, Any], *, delivered_pixels: DeliveredPixels | None
+        self,
+        dossier: dict[str, Any],
+        *,
+        pass_kind: str,
+        delivered_pixels: DeliveredPixels | None,
     ) -> str:
         act_key = dossier["act_key"]
         if self._is_page_fallback(dossier):
@@ -82,6 +84,16 @@ class FixtureReader:
             return self._observed_page_fallback_text(dossier, delivered_pixels)
         for act in self._fixture["act"]:
             if act["key"] == act_key:
+                if pass_kind == "lectio-prior":
+                    for prior in self._fixture.get("prior_reading", []):
+                        if prior["scenario"] == self._scenario and prior["act_key"] == act_key:
+                            return prior["text"]
+                    for prior in self._fixture.get("prior_reading", []):
+                        if prior["scenario"] == "happy" and prior["act_key"] == act_key:
+                            return prior["text"]
+                    raise KeyError(
+                        f"the fixture declares no prior reading for {self._scenario!r}/{act_key!r}"
+                    )
                 return act["text"]
         raise KeyError(f"the fixture declares no act {act_key!r}")
 

@@ -33,6 +33,9 @@ DEFAULT_HARD_FAILURE_CONFIG_PATH: Final = (
 # third stops. Unlike the recovery budget, the hard-failure threshold was not
 # delegated for downward tuning, so configuration cannot move it either way.
 RULED_THRESHOLD: Final = 2
+PERLECTOR_INSTRUMENT_KINDS: Final = frozenset(
+    {"lectio-nuda", "lectio-prior", "primed-without-prior"}
+)
 
 
 def _reason_code(text: Any) -> str | None:
@@ -201,23 +204,52 @@ def tally_hard_failures(tree, policy: dict[str, Any]) -> dict[str, Any]:
         return reasons_seen[key]
 
     by_kind: dict[str, list[str]] = {}
+    instrument_by_kind: dict[str, list[str]] = {}
     subjects: set[tuple[str, str]] = set()
     for stage, outcome in sorted(policy["kinds"]):
-        matches = sorted(
-            {entry["subject_id"] for entry in artifacts(stage) if entry["outcome"] == outcome}
+        candidates = [entry for entry in artifacts(stage) if entry["outcome"] == outcome]
+        instrument_matches = sorted(
+            {
+                entry["subject_id"]
+                for entry in candidates
+                if stage == "perlector" and entry["kind"] in PERLECTOR_INSTRUMENT_KINDS
+            }
         )
-        by_kind[f"{stage}:{outcome}"] = matches
-        subjects.update((stage, subject_id) for subject_id in matches)
-
-    for stage, outcome, reason in sorted(policy.get("reason_kinds") or ()):
         matches = sorted(
             {
                 entry["subject_id"]
-                for entry in artifacts(stage)
-                if entry["outcome"] == outcome and reason_of(stage, entry) == reason
+                for entry in candidates
+                if not (stage == "perlector" and entry["kind"] in PERLECTOR_INSTRUMENT_KINDS)
+            }
+        )
+        by_kind[f"{stage}:{outcome}"] = matches
+        if instrument_matches:
+            instrument_by_kind[f"{stage}:{outcome}"] = instrument_matches
+        subjects.update((stage, subject_id) for subject_id in matches)
+
+    for stage, outcome, reason in sorted(policy.get("reason_kinds") or ()):
+        candidates = [
+            entry
+            for entry in artifacts(stage)
+            if entry["outcome"] == outcome and reason_of(stage, entry) == reason
+        ]
+        instrument_matches = sorted(
+            {
+                entry["subject_id"]
+                for entry in candidates
+                if stage == "perlector" and entry["kind"] in PERLECTOR_INSTRUMENT_KINDS
+            }
+        )
+        matches = sorted(
+            {
+                entry["subject_id"]
+                for entry in candidates
+                if not (stage == "perlector" and entry["kind"] in PERLECTOR_INSTRUMENT_KINDS)
             }
         )
         by_kind[f"{stage}:{outcome}:{reason}"] = matches
+        if instrument_matches:
+            instrument_by_kind[f"{stage}:{outcome}:{reason}"] = instrument_matches
         subjects.update((stage, subject_id) for subject_id in matches)
 
     count = len(subjects)
@@ -226,5 +258,9 @@ def tally_hard_failures(tree, policy: dict[str, Any]) -> dict[str, Any]:
         "count": count,
         "breached": count > policy["threshold"],
         "by_kind": by_kind,
+        "instrument_by_kind": instrument_by_kind,
+        "instrument_count": len(
+            {subject for matches in instrument_by_kind.values() for subject in matches}
+        ),
         "subjects": sorted(f"{stage}:{subject_id}" for stage, subject_id in subjects),
     }

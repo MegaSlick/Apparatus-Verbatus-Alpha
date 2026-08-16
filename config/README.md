@@ -14,6 +14,15 @@ The knobs. One question per planned file, each answerable without reading code.
 | `pod_placement.toml` | present — planning-only single-resident GPU resource tiers, dtype capability floors, and the reviewed price sheet for the cards this project rents |
 | `serving_recipes.toml` | present — the complete vLLM flag profile for one configured chair at one measured GPU tier |
 | `formats.toml` | present — which Armarium product projections are written and whether verified pixels are embedded |
+| `perlector_protocol.toml` | present — the sealed prior-draft protocol: Pass-B neutral fragment, page-shared-prefix policy, and control selection-rule name |
+
+## R5a toggle register
+
+| Knob | Default | Who changes it | What retires it |
+|---|---|---|---|
+| `--draft-fed` | fed | Tyrel through B5a | a recorded B5a decision replacing draft-feeding |
+| `--perlector-instrument-per-mille` | 0 | Tyrel, with `--perlector-instrument-approval-ref` | a replacement approved instrument design |
+| Perlector protocol selection-rule name | `digest-threshold-over-frame-page-seed-act.v1` | ordinary engineering with recorded evidence | a replacement rule recorded with its coverage evidence |
 
 Decoder routing is deliberately not configuration. Tyrel ruled that an uncorrupted
 image is never declined by policy, and there is exactly one valid route map: every

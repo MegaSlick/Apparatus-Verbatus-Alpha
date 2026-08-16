@@ -91,6 +91,7 @@ from common.recovery import load_recovery_policy  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
 from common.stage import (  # noqa: E402
     DEFAULT_CORPUS_FRAME_CONFIG_PATH,
+    DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH,
     DEFAULT_WITNESS_CONTEXT_CONFIG_PATH,
     EXIT_COMPLETE,
     StageContext,
@@ -1083,6 +1084,10 @@ def fixture_submission(args, registry) -> int:
         witness_context_config_path=args.witness_context_config,
         nuda_per_mille=args.nuda_per_mille,
         nuda_approval_ref=args.nuda_approval_ref,
+        perlector_instrument_per_mille=args.perlector_instrument_per_mille,
+        perlector_instrument_approval_ref=args.perlector_instrument_approval_ref,
+        perlector_protocol_config_path=args.perlector_protocol_config,
+        draft_fed=args.draft_fed,
     )
     require_corpus_frame_shard(len(pages), bindings["sealed_config_digests"])
 
@@ -1226,6 +1231,10 @@ def real_submission(args, registry) -> int:
         witness_context_config_path=args.witness_context_config,
         nuda_per_mille=args.nuda_per_mille,
         nuda_approval_ref=args.nuda_approval_ref,
+        perlector_instrument_per_mille=args.perlector_instrument_per_mille,
+        perlector_instrument_approval_ref=args.perlector_instrument_approval_ref,
+        perlector_protocol_config_path=args.perlector_protocol_config,
+        draft_fed=args.draft_fed,
     )
     # Real ingress binds the same bounded shard policy before its RunTree exists.
     require_corpus_frame_shard(len(sources), bindings["sealed_config_digests"])
@@ -1332,6 +1341,10 @@ def _real_bindings(
     witness_context_config_path: str | Path = DEFAULT_WITNESS_CONTEXT_CONFIG_PATH,
     nuda_per_mille: int = 0,
     nuda_approval_ref: str = "",
+    perlector_instrument_per_mille: int = 0,
+    perlector_instrument_approval_ref: str = "",
+    perlector_protocol_config_path=DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH,
+    draft_fed: bool = True,
 ) -> dict[str, Any]:
     """The sealed configuration facts for a real submission.
 
@@ -1351,6 +1364,8 @@ def _real_bindings(
         witness_context_config_path=witness_context_config_path,
         nuda_per_mille=nuda_per_mille,
         nuda_approval_ref=nuda_approval_ref,
+        perlector_instrument_per_mille=perlector_instrument_per_mille,
+        perlector_instrument_approval_ref=perlector_instrument_approval_ref,
     )
     adapter_recipes = dict(sorted(models.adapter_recipes.items()))
     adapter_recipes[DOOR] = REAL_DOOR_ADAPTER_REVISION
@@ -1393,6 +1408,12 @@ def _real_bindings(
                 "witness_context_declaration_sha256": witness_context_declaration_sha256,
                 "nuda_per_mille": nuda_per_mille,
                 "nuda_approval_ref": nuda_approval_ref,
+                "perlector_instrument_per_mille": perlector_instrument_per_mille,
+                "perlector_instrument_approval_ref": perlector_instrument_approval_ref,
+                "perlector_protocol_config_sha256": digest_bytes(
+                    Path(perlector_protocol_config_path).read_bytes()
+                ),
+                "draft_fed": draft_fed,
             }
         ),
         "adapter_recipes": adapter_recipes,
@@ -1411,6 +1432,7 @@ def _real_bindings(
         "sealed_config_digests": {
             "designator-padding": designator_padding_config_sha256,
             "corpus-frame-shard": corpus_frame_config_sha256,
+            "perlector-protocol": digest_bytes(Path(perlector_protocol_config_path).read_bytes()),
         },
     }
 

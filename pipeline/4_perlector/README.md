@@ -1,5 +1,11 @@
 # Perlector
 
+R5a adds the retained prior-draft protocol: universal `lectio-prior`, optional
+`primed-without-prior` control, and the production Perlectio. They are separate
+artifact kinds and attempt operations. Nuda remains its own un-fed instrument.
+Only the explicitly `primed-with-prior` Perlectio may cross the Archetypus
+boundary.
+
 Reads the ink and establishes the text.
 
 Reads the ink itself, using the testimonia as clues that sharpen its own reading and never as options to choose between. Where it produces several readings it reconciles them itself, against the image. It reads through to the end — truncation is a failure, not an output.

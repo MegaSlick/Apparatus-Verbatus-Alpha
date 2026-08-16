@@ -76,6 +76,9 @@ DEFAULT_PDF_RENDER_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" 
 DEFAULT_WITNESS_CONTEXT_CONFIG_PATH = (
     Path(__file__).resolve().parents[1] / "config" / "witness_context.toml"
 )
+DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH = (
+    Path(__file__).resolve().parents[1] / "config" / "perlector_protocol.toml"
+)
 
 # Spec 08's run-level blind/named toggle, from Tyrel's 2026-07-30 ruling
 # (courtroom_doctrine.md, formalized in spec_08 — not ARCHITECTURE.md, which
@@ -86,6 +89,7 @@ DEFAULT_WITNESS_CONTEXT_CONFIG_PATH = (
 # refused for. It is provenance, so invariant #42 governs it.
 WITNESS_CONTEXT_REGIMES: Final = ("named", "blinded")
 MAX_NUDA_PER_MILLE: Final = 1000
+MAX_PERLECTOR_INSTRUMENT_PER_MILLE: Final = 1000
 
 # The Designator's capture padding decides how many pixels a witness is actually
 # shown around each act, so two runs under different padding produce different
@@ -273,6 +277,22 @@ class StageContext:
         rate that carries none, so a populated rate always has one.
         """
         return self.args.nuda_approval_ref
+
+    @property
+    def perlector_instrument_per_mille(self) -> int:
+        return self.args.perlector_instrument_per_mille
+
+    @property
+    def perlector_instrument_approval_ref(self) -> str:
+        return self.args.perlector_instrument_approval_ref
+
+    @property
+    def draft_fed(self) -> bool:
+        return self.args.draft_fed
+
+    @property
+    def perlector_protocol_config_path(self) -> str:
+        return self.args.perlector_protocol_config
 
     def publish(
         self,
@@ -542,6 +562,28 @@ def stage_parser(description: str, *, accepts_chair: bool = False) -> argparse.A
     parser.add_argument(
         "--designator-padding-config", default=str(DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH)
     )
+    parser.add_argument(
+        "--perlector-instrument-per-mille",
+        type=int,
+        default=0,
+        help="the sealed prior-draft control rate in thousandths (0 disables the control)",
+    )
+    parser.add_argument(
+        "--perlector-instrument-approval-ref",
+        default="",
+        help="Tyrel's reference for the predeclared prior-draft instrument design",
+    )
+    parser.add_argument(
+        "--perlector-protocol-config",
+        default=str(DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH),
+        help="the sealed Perlector prior-draft protocol declaration",
+    )
+    parser.add_argument(
+        "--draft-fed",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="whether Pass B receives the prior draft (default: fed)",
+    )
     parser.add_argument("--formats-config", default=str(DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH))
     parser.add_argument("--recovery-config", default=str(DEFAULT_RECOVERY_CONFIG_PATH))
     parser.add_argument("--hard-failure-config", default=str(DEFAULT_HARD_FAILURE_CONFIG_PATH))
@@ -613,6 +655,8 @@ def validate_witness_context_bindings(
     witness_context_config_path: str | Path,
     nuda_per_mille: int,
     nuda_approval_ref: str,
+    perlector_instrument_per_mille: int,
+    perlector_instrument_approval_ref: str,
 ) -> str:
     """Refuse a bad spec-08 binding before a run tree exists, on every path.
 
@@ -646,6 +690,24 @@ def validate_witness_context_bindings(
         raise ContractError(
             f"a Lectio nuda rate of {nuda_per_mille}/1000 needs Tyrel's predeclared sampling "
             "design reference in --nuda-approval-ref; an unapproved instrument sample is a "
+            "decision this pipeline does not get to make for him"
+        )
+    if (
+        not isinstance(perlector_instrument_per_mille, int)
+        or isinstance(perlector_instrument_per_mille, bool)
+        or not (0 <= perlector_instrument_per_mille <= MAX_PERLECTOR_INSTRUMENT_PER_MILLE)
+    ):
+        raise ContractError(
+            "perlector_instrument_per_mille must be an integer in [0, 1000], got "
+            f"{perlector_instrument_per_mille!r}"
+        )
+    if not isinstance(perlector_instrument_approval_ref, str):
+        raise ContractError("perlector_instrument_approval_ref must be a string")
+    if perlector_instrument_per_mille and not perlector_instrument_approval_ref.strip():
+        raise ContractError(
+            f"a Perlector prior-draft control rate of {perlector_instrument_per_mille}/1000 "
+            "needs Tyrel's predeclared sampling design reference in "
+            "--perlector-instrument-approval-ref; an unapproved instrument sample is a "
             "decision this pipeline does not get to make for him"
         )
     try:
@@ -718,6 +780,10 @@ def run_config_bindings(
     witness_context_config_path: str | Path = DEFAULT_WITNESS_CONTEXT_CONFIG_PATH,
     nuda_per_mille: int = 0,
     nuda_approval_ref: str = "",
+    perlector_instrument_per_mille: int = 0,
+    perlector_instrument_approval_ref: str = "",
+    perlector_protocol_config_path: str | Path = DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH,
+    draft_fed: bool = True,
     serving_recipes_config_path: str | Path = DEFAULT_SERVING_RECIPES_CONFIG_PATH,
     pod_placement_config_path: str | Path = DEFAULT_POD_PLACEMENT_CONFIG_PATH,
     corpus_frame_config_path: str | Path = DEFAULT_CORPUS_FRAME_CONFIG_PATH,
@@ -747,6 +813,15 @@ def run_config_bindings(
     except OSError as error:
         raise ContractError(
             f"the PDF render configuration binding at {pdf_render_config_path} could not be read"
+        ) from error
+    try:
+        perlector_protocol_config_digest = digest_bytes(
+            Path(perlector_protocol_config_path).read_bytes()
+        )
+    except OSError as error:
+        raise ContractError(
+            "the Perlector protocol configuration binding at "
+            f"{perlector_protocol_config_path} could not be read"
         ) from error
     try:
         padding_config_digest = digest_bytes(Path(designator_padding_config_path).read_bytes())
@@ -786,6 +861,8 @@ def run_config_bindings(
         witness_context_config_path=witness_context_config_path,
         nuda_per_mille=nuda_per_mille,
         nuda_approval_ref=nuda_approval_ref,
+        perlector_instrument_per_mille=perlector_instrument_per_mille,
+        perlector_instrument_approval_ref=perlector_instrument_approval_ref,
     )
     return {
         "witness_chairs": list(models.witness_chairs),
@@ -814,6 +891,10 @@ def run_config_bindings(
                 "witness_context_declaration_sha256": witness_context_config_digest,
                 "nuda_per_mille": nuda_per_mille,
                 "nuda_approval_ref": nuda_approval_ref,
+                "perlector_instrument_per_mille": perlector_instrument_per_mille,
+                "perlector_instrument_approval_ref": perlector_instrument_approval_ref,
+                "perlector_protocol_config_sha256": perlector_protocol_config_digest,
+                "draft_fed": draft_fed,
                 "serving_config_inputs": serving_config_inputs,
             }
         ),
@@ -831,6 +912,7 @@ def run_config_bindings(
         "sealed_config_digests": {
             "designator-padding": padding_config_digest,
             "corpus-frame-shard": corpus_frame_config_digest,
+            "perlector-protocol": perlector_protocol_config_digest,
         },
         "armarium_formats": armarium_formats,
     }
@@ -1751,6 +1833,10 @@ def open_context(
         witness_context_config_path=args.witness_context_config,
         nuda_per_mille=args.nuda_per_mille,
         nuda_approval_ref=args.nuda_approval_ref,
+        perlector_instrument_per_mille=args.perlector_instrument_per_mille,
+        perlector_instrument_approval_ref=args.perlector_instrument_approval_ref,
+        perlector_protocol_config_path=args.perlector_protocol_config,
+        draft_fed=args.draft_fed,
     )
     tree = RunTree(Path(args.run_root), args.run_id)
     run = tree.read_run()

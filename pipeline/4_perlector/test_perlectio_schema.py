@@ -98,7 +98,12 @@ def _reblinded(payload, *, run_id, config_digest):
     body = {key: value for key, value in reading_dossier.items() if key != "dossier_digest"}
     reading_dossier["dossier_digest"] = perlector.digest_of(body)
     identity = perlector.ChairIdentity(**blinded["provenance"]["resolved_identity"])
-    blinded["prompt"] = perlector.prompts.prompt_evidence(identity, reading_dossier)
+    protocol_config, protocol_sha256 = perlector.protocol.load(
+        ROOT / "config" / "perlector_protocol.toml"
+    )
+    blinded["prompt"] = perlector.prompts.prompt_evidence(
+        identity, reading_dossier, protocol_config, protocol_sha256
+    )
     return blinded
 
 

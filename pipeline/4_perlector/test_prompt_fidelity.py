@@ -26,12 +26,13 @@ def _dossier():
 def test_the_fixture_recipe_reproduces_its_declared_template_byte_for_byte():
     built = prompts.build_prompt("fake-perlector-v0", "perlector", _dossier())
     assert built == (
-        "role: perlector\n"
-        "act: a1\n"
+        "page_shared_prefix_policy: page-shared-prefix-first.v1\n"
         "witness_regime: named\n"
         "testimonia:\n"
         "  - attestator_1 (a synthetic fixture witness): 'alpha beta gamma'; "
-        'model=\'fixture/attestator-1\'; provenance={"resolved_revision":"fixture-v1"}'
+        'model=\'fixture/attestator-1\'; provenance={"resolved_revision":"fixture-v1"}\n'
+        "role: perlector\n"
+        "act: a1"
     )
 
 
@@ -91,8 +92,8 @@ def test_prompt_evidence_binds_the_builders_own_bytes_not_only_its_name(monkeypa
         "builder_sha256 must be the digest of the whole prompt module's source"
     )
 
-    def _mutated_builder(chair_role, dossier):
-        return prompts._fake_perlector_v0(chair_role, dossier) + "\n"
+    def _mutated_builder(chair_role, dossier, protocol_config):
+        return prompts._fake_perlector_v0(chair_role, dossier, protocol_config) + "\n"
 
     monkeypatch.setitem(prompts._BUILDERS, "fake-perlector-v0", _mutated_builder)
     after = prompts.prompt_evidence(chair, dossier)

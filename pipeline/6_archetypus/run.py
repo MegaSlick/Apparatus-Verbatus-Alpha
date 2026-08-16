@@ -494,14 +494,8 @@ def accepted_primed_perlectio(
     if not isinstance(payload, dict):
         raise SchemaRefusal(f"the accepted Perlectio for {act_id} has no object payload")
 
-    # No Perlectio in this build records primed/unprimed; that field is the
-    # Perlector lane's to add. So an unlabeled reading is accepted and an
-    # explicitly unprimed one refused, and the check is already in place when the
-    # producer starts writing it. Until then the retained Testimonium basis below
-    # stands in — a compatibility assumption, not proof, named as one here
-    # because everything else in this function is proof.
     lectio_kind = payload.get("lectio_kind")
-    if lectio_kind is not None and lectio_kind != "primed":
+    if lectio_kind != "primed-with-prior":
         raise SchemaRefusal(
             f"act {act_id} names lectio_kind {lectio_kind!r}; only an explicitly primed "
             "Lectio may establish, and a Lectio nuda is an instrument record, never an "

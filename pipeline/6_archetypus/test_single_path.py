@@ -9,15 +9,9 @@ names `salvage-promotion` as a future approval action and nothing more), so the
 second test forges a plausible one — otherwise the check could be passing by
 special-casing Testimonium and nobody would know.
 
-**A Lectio nuda, and what can honestly be claimed about it.** ARCHITECTURE and
-GLOSSARY define one as an unprimed Perlectio, an instrument record that must
-never establish. Today's Perlectio schema records no primed/unprimed
-discriminator at all — adding it is Perlector-lane scope — so the boundary
-refuses an *explicitly* unprimed reading and treats a retained Testimonium basis
-as the transitional indication that a reading was primed. The refusals are real
-and tested; the positive claim "this reading was primed" rests on the producer
-eventually writing the field, and is named as an assumption rather than dressed
-up as a proof.
+R5a's Perlectio records the closed `lectio_kind="primed-with-prior"` marker.
+The constructor requires that exact production marker; controls and un-fed
+instruments are distinct artifact kinds and cannot establish by a relabel.
 """
 
 import subprocess
@@ -220,7 +214,6 @@ def test_an_explicitly_unprimed_lectio_kind_cannot_establish(tmp_path):
 
 
 def test_an_unrecognised_lectio_kind_cannot_establish_either(tmp_path):
-    """Unlabeled is tolerated while the producer has no field; *mislabeled* is not."""
     result = _archetypus_after(tmp_path, lambda payload: payload.update(lectio_kind="unlabeled"))
     assert result.returncode == 2, result.stderr
     assert "Traceback" not in result.stderr

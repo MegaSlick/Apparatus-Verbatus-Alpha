@@ -271,6 +271,8 @@ def build_dossier(
     page_renders: list[dict[str, Any]],
     witness_context: dict[str, dict[str, str]],
     act_attachment: dict[str, Any] | None = None,
+    prior_draft: dict[str, Any] | None = None,
+    prior_draft_view: str | None = None,
 ) -> dict[str, Any]:
     """Assemble one act's dossier. Deterministic: the same evidence in any order
     produces identical bytes, and nothing in the result may express a
@@ -325,6 +327,13 @@ def build_dossier(
     }
     if act_attachment is not None:
         dossier["act_attachment"] = act_attachment
+    if prior_draft is not None:
+        if prior_draft_view not in {"fed", "withheld"}:
+            raise SchemaRefusal("a prior draft requires a named fed or withheld view")
+        dossier["prior_draft"] = prior_draft
+        dossier["prior_draft_view"] = prior_draft_view
+    elif prior_draft_view is not None:
+        raise SchemaRefusal("a prior-draft view cannot exist without its referenced draft")
     # Swept before the digest is taken: a preference-bearing field sealed into
     # the digest is already in the record by the time anyone could object. This
     # is the guard standing over GOVERNANCE 3, so it runs on the production path
@@ -379,6 +388,8 @@ def build_reader_dossier(
     page_renders: list[dict[str, Any]],
     witness_context: dict[str, dict[str, str]],
     act_attachment: dict[str, Any] | None = None,
+    prior_draft: dict[str, Any] | None = None,
+    prior_draft_view: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, list[bytes]]]:
     """Build the persisted dossier and its transient, digest-checked pixels."""
     dossier = build_dossier(
@@ -391,6 +402,8 @@ def build_reader_dossier(
         page_renders=page_renders,
         witness_context=witness_context,
         act_attachment=act_attachment,
+        prior_draft=prior_draft,
+        prior_draft_view=prior_draft_view,
     )
     delivered_pixels = {
         "region_images": _delivered_images(context, dossier["regions"], kind="region"),

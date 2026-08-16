@@ -37,16 +37,17 @@ import annotations  # noqa: E402
 import dossier as dossier_module  # noqa: E402
 import nuda  # noqa: E402
 import prompts  # noqa: E402
+import protocol  # noqa: E402
 import regime  # noqa: E402
 import truncation  # noqa: E402
-from dissent import dissent_against, validate_dissent  # noqa: E402
+from dissent import departures, dissent_against, validate_dissent  # noqa: E402
 from reader import FixtureReader  # noqa: E402
 
 from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.canonical import digest_of  # noqa: E402
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal  # noqa: E402
-from common.contracts.identities import attempt_id  # noqa: E402
+from common.contracts.identities import artifact_id, perlector_attempt_id  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, PERLECTOR  # noqa: E402
 from common.exemplar_boundary import verify_exemplar_crop_lineage  # noqa: E402
 from common.stage import (  # noqa: E402
@@ -613,6 +614,9 @@ _PERLECTIO_FIELDS: Final = frozenset(
         "uncertain_spans",
         "gaps",
         "provenance",
+        "lectio_kind",
+        "self_revision",
+        "protocol",
     }
 )
 
@@ -632,6 +636,42 @@ _LECTIO_NUDA_FIELDS: Final = frozenset(
         "uncertain_spans",
         "gaps",
         "provenance",
+    }
+)
+
+_LECTIO_PRIOR_FIELDS: Final = frozenset(
+    {
+        "act_key",
+        "attempt_ordinal",
+        "text",
+        "dossier",
+        "prompt",
+        "dissent",
+        "truncation",
+        "uncertain_spans",
+        "gaps",
+        "provenance",
+        "protocol",
+    }
+)
+
+_PRIMED_WITHOUT_PRIOR_FIELDS: Final = frozenset(
+    {
+        "act_key",
+        "attempt_ordinal",
+        "text",
+        "basis",
+        "dossier",
+        "prompt",
+        "sampling",
+        "dissent",
+        "truncation",
+        "uncertain_spans",
+        "gaps",
+        "provenance",
+        "lectio_kind",
+        "protocol",
+        "membership",
     }
 )
 
@@ -670,6 +710,8 @@ def validate_reading_payload(
     fields: frozenset,
     run_id: str | None = None,
     config_digest: str | None = None,
+    protocol_config: dict[str, str] | None = None,
+    protocol_sha256: str | None = None,
 ) -> None:
     """Refuse a reading payload that is missing part of the record it claims.
 
@@ -727,6 +769,8 @@ def validate_reading_payload(
     if not isinstance(reading_dossier, dict) or set(reading_dossier) not in (
         dossier_fields,
         dossier_fields | {"act_attachment"},
+        dossier_fields | {"prior_draft", "prior_draft_view"},
+        dossier_fields | {"act_attachment", "prior_draft", "prior_draft_view"},
     ):
         raise SchemaRefusal("a Perlector reading carries no closed dossier record")
     if reading_dossier["act_key"] != payload["act_key"]:
@@ -748,6 +792,10 @@ def validate_reading_payload(
             or attachment["page_witness_count"] < 0
         ):
             raise SchemaRefusal("a Perlector dossier has malformed act-attachment evidence")
+        if is_nuda:
+            raise SchemaRefusal(
+                "a Lectio nuda dossier cannot carry witness-derived act attachment metadata"
+            )
     dossier_testimonia = reading_dossier["testimonia"]
     if not isinstance(dossier_testimonia, list):
         raise SchemaRefusal("a Perlector dossier has no Testimonium list")
@@ -791,7 +839,25 @@ def validate_reading_payload(
         identity = ChairIdentity(**identity_record)
     except TypeError as error:
         raise SchemaRefusal("a Perlector prompt carries a malformed chair identity") from error
-    if prompt_record != prompts.prompt_evidence(identity, reading_dossier):
+    protocol_record = payload.get("protocol")
+    if protocol_record is not None and (
+        not isinstance(protocol_record, dict)
+        or set(protocol_record) != {"selection_rule", "page_shared_prefix_policy", "draft_fed"}
+    ):
+        raise SchemaRefusal("a prior-draft protocol record is not its closed schema")
+    if protocol_config is None and protocol_record is not None:
+        protocol_config, observed_protocol_sha256 = protocol.load("config/perlector_protocol.toml")
+        protocol_sha256 = protocol_sha256 or observed_protocol_sha256
+    if protocol_config is None:
+        protocol_config = {
+            "page_shared_prefix_policy": protocol.PAGE_SHARED_PREFIX_POLICY,
+            "pass_b_fragment": "",
+        }
+    if protocol_sha256 is None:
+        protocol_sha256 = "unsealed-test"
+    if prompt_record != prompts.prompt_evidence(
+        identity, reading_dossier, protocol_config, protocol_sha256
+    ):
         raise SchemaRefusal(
             "a Perlector prompt record does not reproduce from its resolved chair and dossier"
         )
@@ -864,6 +930,8 @@ def _publish_lectio_nuda(
     reader: FixtureReader,
     region_pixels: int,
     witness_context_table: dict,
+    protocol_config: dict[str, str],
+    protocol_sha256: str,
 ) -> None:
     """Publish the unprimed instrument reading.
 
@@ -884,8 +952,8 @@ def _publish_lectio_nuda(
         page_renders=page_renders,
         witness_context=witness_context_table,
     )
-    prompt = prompts.prompt_evidence(chair, nuda_dossier)
-    result = reader.read(nuda_dossier, primed=False, delivered_pixels=delivered_pixels)
+    prompt = prompts.prompt_evidence(chair, nuda_dossier, protocol_config, protocol_sha256)
+    result = reader.read(nuda_dossier, pass_kind="lectio-nuda", delivered_pixels=delivered_pixels)
     truncation_record = truncation.classify(
         result["text"], region_pixels=region_pixels, stop_reason=result["stop_reason"]
     )
@@ -912,13 +980,201 @@ def _publish_lectio_nuda(
         "gaps": _whole_act_gap([], {}) if outcome == "no-readable-text" else [],
         "provenance": provenance_for(context, chair, attempted=True),
     }
-    validate_reading_payload(payload, outcome=outcome, fields=_LECTIO_NUDA_FIELDS)
+    validate_reading_payload(
+        payload,
+        outcome=outcome,
+        fields=_LECTIO_NUDA_FIELDS,
+        protocol_config=protocol_config,
+        protocol_sha256=protocol_sha256,
+    )
     context.publish(
         kind=nuda.LECTIO_NUDA_KIND,
         subject_id=act_id,
         outcome=outcome,
-        attempt=attempt_id(act_id, "lectio-nuda", ordinal),
+        attempt=perlector_attempt_id(act_id, "lectio-nuda", ordinal),
         inputs=_reading_image_inputs(context, bases, page_renders),
+        payload=payload,
+    )
+
+
+def _publish_lectio_prior(
+    context,
+    *,
+    act,
+    act_id,
+    ordinal,
+    chair,
+    bases,
+    page_renders,
+    reader,
+    region_pixels,
+    witness_context_table,
+    protocol_config,
+    protocol_sha256,
+) -> dict:
+    """Pass A is universal and un-fed; it is a retained draft, never a Perlectio."""
+    prior_dossier, delivered_pixels = dossier_module.build_reader_dossier(
+        context,
+        act_id=act_id,
+        act_key=act["act_key"],
+        regions=bases,
+        testimonia=[],
+        regime=context.witness_context,
+        page_renders=page_renders,
+        witness_context=witness_context_table,
+    )
+    prompt = prompts.prompt_evidence(chair, prior_dossier, protocol_config, protocol_sha256)
+    result = reader.read(prior_dossier, pass_kind="lectio-prior", delivered_pixels=delivered_pixels)
+    truncation_record = truncation.classify(
+        result["text"], region_pixels=region_pixels, stop_reason=result["stop_reason"]
+    )
+    outcome = _resolve_outcome(
+        declared_failure=None, truncation_record=truncation_record, text=result["text"]
+    )
+    text = "" if outcome == "no-readable-text" else result["text"]
+    payload = {
+        "act_key": act["act_key"],
+        "attempt_ordinal": ordinal,
+        "text": text,
+        "dossier": prior_dossier,
+        "prompt": prompt,
+        "dissent": [],
+        "truncation": truncation_record,
+        "uncertain_spans": [],
+        "gaps": _whole_act_gap([], {}) if outcome == "no-readable-text" else [],
+        "provenance": provenance_for(context, chair, attempted=True),
+        "protocol": {
+            "selection_rule": protocol_config["selection_rule"],
+            "page_shared_prefix_policy": protocol_config["page_shared_prefix_policy"],
+            "draft_fed": context.draft_fed,
+        },
+    }
+    validate_reading_payload(
+        payload,
+        outcome=outcome,
+        fields=_LECTIO_PRIOR_FIELDS,
+        protocol_config=protocol_config,
+        protocol_sha256=protocol_sha256,
+    )
+    context.publish(
+        kind="lectio-prior",
+        subject_id=act_id,
+        outcome=outcome,
+        attempt=perlector_attempt_id(act_id, "lectio-prior", ordinal),
+        inputs=_reading_image_inputs(context, bases, page_renders),
+        payload=payload,
+    )
+    prior_artifact_id = artifact_id(
+        PERLECTOR, "lectio-prior", act_id, perlector_attempt_id(act_id, "lectio-prior", ordinal)
+    )
+    return {
+        "reference": context.artifact_ref(PERLECTOR, "lectio-prior", prior_artifact_id),
+        "text": text,
+    }
+
+
+def _publish_primed_without_prior(
+    context,
+    *,
+    act,
+    act_id,
+    ordinal,
+    chair,
+    bases,
+    page_renders,
+    reader,
+    region_pixels,
+    testimonia,
+    attachment_view,
+    witness_context_table,
+    protocol_config,
+    protocol_sha256,
+) -> None:
+    """The sampled control sees witnesses but never the Pass-A draft."""
+    control_dossier, delivered_pixels = dossier_module.build_reader_dossier(
+        context,
+        act_id=act_id,
+        act_key=act["act_key"],
+        regions=bases,
+        testimonia=testimonia,
+        regime=context.witness_context,
+        page_renders=page_renders,
+        witness_context=witness_context_table,
+        act_attachment=attachment_view,
+    )
+    prompt = prompts.prompt_evidence(chair, control_dossier, protocol_config, protocol_sha256)
+    result = reader.read(
+        control_dossier, pass_kind="primed-without-prior", delivered_pixels=delivered_pixels
+    )
+    truncation_record = truncation.classify(
+        result["text"], region_pixels=region_pixels, stop_reason=result["stop_reason"]
+    )
+    outcome = _resolve_outcome(
+        declared_failure=None, truncation_record=truncation_record, text=result["text"]
+    )
+    text = "" if outcome == "no-readable-text" else result["text"]
+    testimonium_references = {
+        record["artifact_id"]: context.artifact_ref(
+            ATTESTATORES, "testimonium", record["artifact_id"]
+        )
+        for record in testimonia
+    }
+    membership = context.tree.read_run()["corpus_frame_membership"]
+    payload = {
+        "act_key": act["act_key"],
+        "attempt_ordinal": ordinal,
+        "text": text,
+        "basis": {
+            "regions": bases,
+            "testimonia": [
+                {
+                    "chair": record["payload"]["chair"],
+                    "artifact_id": record["artifact_id"],
+                    "outcome": record["outcome"],
+                    "reference": testimonium_references[record["artifact_id"]],
+                }
+                for record in testimonia
+            ],
+        },
+        "dossier": control_dossier,
+        "prompt": prompt,
+        "sampling": {
+            "perlector_instrument_per_mille": context.perlector_instrument_per_mille,
+            "selection_rule": protocol_config["selection_rule"],
+            "approval_ref": context.perlector_instrument_approval_ref,
+        },
+        "membership": {**membership, "act_id": act_id, "protocol_sha256": protocol_sha256},
+        "dissent": dissent_against(text, testimonia),
+        "truncation": truncation_record,
+        "uncertain_spans": [],
+        "gaps": _whole_act_gap(testimonia, testimonium_references)
+        if outcome == "no-readable-text"
+        else [],
+        "provenance": provenance_for(context, chair, attempted=True),
+        "lectio_kind": "primed-without-prior",
+        "protocol": {
+            "selection_rule": protocol_config["selection_rule"],
+            "page_shared_prefix_policy": protocol_config["page_shared_prefix_policy"],
+            "draft_fed": context.draft_fed,
+        },
+    }
+    validate_reading_payload(
+        payload,
+        outcome=outcome,
+        fields=_PRIMED_WITHOUT_PRIOR_FIELDS,
+        run_id=context.tree.run_id,
+        config_digest=context.config_digest,
+        protocol_config=protocol_config,
+        protocol_sha256=protocol_sha256,
+    )
+    context.publish(
+        kind="primed-without-prior",
+        subject_id=act_id,
+        outcome=outcome,
+        attempt=perlector_attempt_id(act_id, "primed-without-prior", ordinal),
+        inputs=_reading_image_inputs(context, bases, page_renders)
+        + list(testimonium_references.values())
+        + [attachment_view["reference"]],
         payload=payload,
     )
 
@@ -935,6 +1191,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     witness_context_table = dossier_module.load_witness_context(
         Path(context.witness_context_config_path)
     )
+    protocol_config, protocol_sha256 = protocol.load(context.perlector_protocol_config_path)
+    context.require_sealed_config("perlector-protocol", protocol_sha256)
 
     # A recovery re-reads only the acts that were recovered. Re-reading the rest
     # would add an attempt nobody requested to an act nothing happened to, and an
@@ -971,7 +1229,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 kind="perlectio",
                 subject_id=act_id,
                 outcome="not-run",
-                attempt=attempt_id(act_id, "perlegere", 1),
+                attempt=perlector_attempt_id(act_id, "perlegere", 1),
                 payload=payload,
             )
             acknowledged += 1
@@ -995,7 +1253,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 kind="perlectio",
                 subject_id=act_id,
                 outcome="not-run",
-                attempt=attempt_id(act_id, "perlegere", ordinal),
+                attempt=perlector_attempt_id(act_id, "perlegere", ordinal),
                 payload=payload,
             )
             acknowledged += 1
@@ -1039,6 +1297,48 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 reader=reader,
                 region_pixels=region_pixels,
                 witness_context_table=witness_context_table,
+                protocol_config=protocol_config,
+                protocol_sha256=protocol_sha256,
+            )
+
+        prior = _publish_lectio_prior(
+            context,
+            act=act,
+            act_id=act_id,
+            ordinal=ordinal,
+            chair=chair,
+            bases=bases,
+            page_renders=page_renders,
+            reader=reader,
+            region_pixels=region_pixels,
+            witness_context_table=witness_context_table,
+            protocol_config=protocol_config,
+            protocol_sha256=protocol_sha256,
+        )
+
+        frame_membership = context.tree.read_run()["corpus_frame_membership"]
+        if protocol.is_control_sampled(
+            act_id,
+            frame_digest=frame_membership["frame_digest"],
+            page_digest=frame_membership["page_digest"],
+            seed=frame_membership["seed"],
+            per_mille=context.perlector_instrument_per_mille,
+        ):
+            _publish_primed_without_prior(
+                context,
+                act=act,
+                act_id=act_id,
+                ordinal=ordinal,
+                chair=chair,
+                bases=bases,
+                page_renders=page_renders,
+                reader=reader,
+                region_pixels=region_pixels,
+                testimonia=testimonia,
+                attachment_view=attachment_view,
+                witness_context_table=witness_context_table,
+                protocol_config=protocol_config,
+                protocol_sha256=protocol_sha256,
             )
 
         # The establishing read: every testimonium in the dossier, verbatim.
@@ -1052,12 +1352,16 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             page_renders=page_renders,
             witness_context=witness_context_table,
             act_attachment=attachment_view,
+            prior_draft=prior,
+            prior_draft_view="fed" if context.draft_fed else "withheld",
         )
         # Built before the reader is called, from the dossier the reader is
         # about to be shown, so what is recorded is the prompt this reading was
         # produced through rather than one reconstructed afterwards.
-        prompt = prompts.prompt_evidence(chair, primed_dossier)
-        result = reader.read(primed_dossier, primed=True, delivered_pixels=delivered_pixels)
+        prompt = prompts.prompt_evidence(chair, primed_dossier, protocol_config, protocol_sha256)
+        result = reader.read(
+            primed_dossier, pass_kind="perlectio", delivered_pixels=delivered_pixels
+        )
 
         # The scenario's declared engine behaviour stands in for a real
         # engine's own report and, when present, decides `reading` and
@@ -1114,6 +1418,13 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             "uncertain_spans": [],
             "gaps": gaps,
             "provenance": provenance,
+            "lectio_kind": "primed-with-prior",
+            "self_revision": departures(reading, prior["text"]),
+            "protocol": {
+                "selection_rule": protocol_config["selection_rule"],
+                "page_shared_prefix_policy": protocol_config["page_shared_prefix_policy"],
+                "draft_fed": context.draft_fed,
+            },
         }
         validate_reading_payload(
             payload,
@@ -1121,15 +1432,17 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             fields=_PERLECTIO_FIELDS,
             run_id=context.tree.run_id,
             config_digest=context.config_digest,
+            protocol_config=protocol_config,
+            protocol_sha256=protocol_sha256,
         )
         context.publish(
             kind="perlectio",
             subject_id=act_id,
             outcome=outcome,
-            attempt=attempt_id(act_id, "perlegere", ordinal),
+            attempt=perlector_attempt_id(act_id, "perlegere", ordinal),
             inputs=_reading_image_inputs(context, bases, page_renders)
             + list(testimonium_references.values())
-            + [attachment_view["reference"]],
+            + [attachment_view["reference"], prior["reference"]],
             payload=payload,
         )
         read += 1

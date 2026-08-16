@@ -57,6 +57,16 @@ ACTS = (
     },
 )
 
+# Pass A is independently declared per scenario and act. Both core scenarios
+# deliberately contain one real departure and one equality: the instrument is
+# capable of measuring a self-revision without treating disagreement as success.
+PRIOR_READINGS = (
+    {"scenario": "happy", "act_key": "a1", "text": "SYNTHETIC ACT ONE alpha beta ganna"},
+    {"scenario": "happy", "act_key": "a2", "text": "SYNTHETIC ACT TWO delta epsilon zeta eta"},
+    {"scenario": "review", "act_key": "a1", "text": "SYNTHETIC ACT ONE alpha beta ganna"},
+    {"scenario": "review", "act_key": "a2", "text": "SYNTHETIC ACT TWO delta epsilon zeta eta"},
+)
+
 # What each witness reports. Chair 1 agrees with the established reading, chair 2
 # differs in one token and chair 3 stops short — so the recorded dissent is
 # structural and non-trivial rather than uniformly empty. Dissent is not a
@@ -329,6 +339,15 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
             f"w = {bounds['w']}",
             f"h = {bounds['h']}",
             f"text = {toml_string(act['text'])}",
+        ]
+
+    for prior in PRIOR_READINGS:
+        lines += [
+            "",
+            "[[prior_reading]]",
+            f"scenario = {toml_string(prior['scenario'])}",
+            f"act_key = {toml_string(prior['act_key'])}",
+            f"text = {toml_string(prior['text'])}",
         ]
 
     # One act runs across the page break. The continuation is a region of the

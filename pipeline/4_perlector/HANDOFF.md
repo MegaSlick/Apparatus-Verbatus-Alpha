@@ -295,6 +295,25 @@ whatever reading now sorts latest. This prevents an unreviewed recovery reading
 from becoming established text.
 
 **A `lectio-nuda` record is never a valid Perlectio reference for any consumer,**
+
+## R5a prior-draft protocol
+
+Every readable act now emits a `kind="lectio-prior"` Pass-A draft under the
+`lectio-prior` attempt operation. It sees the images and no Testimonia; it is
+not Lectio nuda and cannot establish text. The production `kind="perlectio"`
+is explicitly `lectio_kind="primed-with-prior"`, carries equality-only
+`self_revision` spans against that draft, and is the only R5a reading kind the
+Archetypus accepts.
+
+The optional `kind="primed-without-prior"` control is gated by the run-sealed
+Perlector instrument rate and approval reference. Its digest draw uses corpus
+frame, page, seed, and act identity; it never uses a run identifier. It is a
+control artifact and cannot establish. The control and prior are separately
+tallied when failed; they do not consume the ruled production hard-failure cap.
+
+The Pass-B dossier contains a digest-checked reference to the Pass-A draft and
+records whether its text was `fed` or `withheld`. The `--draft-fed` default is
+fed; B5a remains Tyrel's routed production decision.
 by construction: its `kind` differs, and its `attempt_id` derives from a
 different operation than any reference a Recensor review or Archetypus would
 ever have recorded for a real reading.

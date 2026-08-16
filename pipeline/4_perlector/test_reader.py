@@ -45,7 +45,7 @@ def test_fallback_text_is_derived_from_the_dossier_identity_not_its_key():
 
     result = reader.read(
         _dossier(act_id=fallback_id, act_key="misleading-key"),
-        primed=True,
+        pass_kind="perlectio",
         delivered_pixels=_delivered_pixels(_blank_rows()),
     )
 
@@ -65,7 +65,7 @@ def test_fallback_text_refuses_when_a_delivered_crop_contains_faint_ink():
     with pytest.raises(ContractError, match="cannot invent a reading for ink"):
         reader.read(
             _dossier(act_id=fallback_id, act_key="page-fallback:3"),
-            primed=True,
+            pass_kind="perlectio",
             delivered_pixels=_delivered_pixels(rows),
         )
 
@@ -77,7 +77,7 @@ def test_a_fallback_act_without_delivered_pixels_is_refused_not_blanked():
     with pytest.raises(ContractError, match="without its pixels"):
         reader.read(
             _dossier(act_id=fallback_id, act_key="page-fallback:3"),
-            primed=True,
+            pass_kind="perlectio",
         )
 
 
@@ -90,7 +90,7 @@ def test_a_fallback_act_missing_one_delivered_crop_is_refused():
     with pytest.raises(ContractError, match="every delivered page-fallback crop"):
         reader.read(
             _dossier(act_id=fallback_id, act_key="page-fallback:3"),
-            primed=True,
+            pass_kind="perlectio",
             delivered_pixels=delivered,
         )
 
@@ -100,4 +100,6 @@ def test_a_fallback_shaped_key_cannot_blank_a_non_fallback_act():
     non_fallback_id = derive_act_id(PAGE_ID, 0, BOUNDS)
 
     with pytest.raises(KeyError, match="declares no act"):
-        reader.read(_dossier(act_id=non_fallback_id, act_key="page-fallback:3"), primed=True)
+        reader.read(
+            _dossier(act_id=non_fallback_id, act_key="page-fallback:3"), pass_kind="perlectio"
+        )

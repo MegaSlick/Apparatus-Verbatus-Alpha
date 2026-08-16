@@ -123,7 +123,14 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
         str(args.nuda_per_mille),
         "--nuda-approval-ref",
         str(args.nuda_approval_ref),
+        "--perlector-instrument-per-mille",
+        str(args.perlector_instrument_per_mille),
+        "--perlector-instrument-approval-ref",
+        str(args.perlector_instrument_approval_ref),
+        "--perlector-protocol-config",
+        str(args.perlector_protocol_config),
     ]
+    command.append("--draft-fed" if args.draft_fed else "--no-draft-fed")
     for key, value in extra.items():
         command += [f"--{key.replace('_', '-')}", str(value)]
 
@@ -183,6 +190,10 @@ def main() -> int:
         default="config/models.toml",
         help="the sealed model-chair roster and recipes for this run",
     )
+    parser.add_argument("--perlector-instrument-per-mille", type=int, default=0)
+    parser.add_argument("--perlector-instrument-approval-ref", default="")
+    parser.add_argument("--perlector-protocol-config", default="config/perlector_protocol.toml")
+    parser.add_argument("--draft-fed", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument(
         "--pdf-render-config",
         default="config/pdf_render.toml",
@@ -331,6 +342,11 @@ def checkpoint(args, checkpoint_name: str, hard_failure_policy: dict) -> dict | 
     """
     tree = RunTree(Path(args.run_root), args.run_id)
     tally = tally_hard_failures(tree, hard_failure_policy)
+    if tally["instrument_count"]:
+        print(
+            f"run {args.run_id}: {tally['instrument_count']} Perlector instrument failure(s) "
+            "retained separately; they do not consume Tyrel's production hard-failure cap"
+        )
     if tally["count"] == tally["threshold"] and tally["count"] > 0:
         print(
             f"run {args.run_id}: {tally['count']} hard failure(s) so far — Tyrel's ruling "

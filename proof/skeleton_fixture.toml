@@ -54,6 +54,26 @@ w = 160
 h = 100
 text = "SYNTHETIC ACT TWO delta epsilon zeta eta"
 
+[[prior_reading]]
+scenario = "happy"
+act_key = "a1"
+text = "SYNTHETIC ACT ONE alpha beta ganna"
+
+[[prior_reading]]
+scenario = "happy"
+act_key = "a2"
+text = "SYNTHETIC ACT TWO delta epsilon zeta eta"
+
+[[prior_reading]]
+scenario = "review"
+act_key = "a1"
+text = "SYNTHETIC ACT ONE alpha beta ganna"
+
+[[prior_reading]]
+scenario = "review"
+act_key = "a2"
+text = "SYNTHETIC ACT TWO delta epsilon zeta eta"
+
 [[continuation]]
 act_key = "a2"
 page_ordinal = 2

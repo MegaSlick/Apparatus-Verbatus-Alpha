@@ -31,13 +31,18 @@ from common.contracts.canonical import canonical_text, digest_bytes, digest_of
 # loads, before any act is read, rather than per prompt mid-run as
 # `inspect.getsource` would.
 _MODULE_SOURCE_DIGEST: Final[str] = digest_bytes(Path(__file__).resolve().read_bytes())
+_DEFAULT_PROTOCOL: Final = {
+    "page_shared_prefix_policy": "page-shared-prefix-first.v1",
+    "pass_b_fragment": "",
+}
 
 
-def _fake_perlector_v0(chair_role: str, dossier: dict[str, Any]) -> str:
+def _fake_perlector_v0(
+    chair_role: str, dossier: dict[str, Any], protocol_config: dict[str, str]
+) -> str:
     """The declared byte template for the walking skeleton's fixture recipe."""
     lines = [
-        f"role: {chair_role}",
-        f"act: {dossier['act_key']}",
+        f"page_shared_prefix_policy: {protocol_config['page_shared_prefix_policy']}",
         f"witness_regime: {dossier['witness_regime']}",
         "testimonia:",
     ]
@@ -48,15 +53,24 @@ def _fake_perlector_v0(chair_role: str, dossier: dict[str, Any]) -> str:
             f"model={testimonium['model_name']!r}; "
             f"provenance={canonical_text(testimonium['resolved_provenance'])}"
         )
+    if dossier.get("prior_draft_view") == "fed":
+        lines.extend(
+            [
+                "prior_draft:",
+                dossier["prior_draft"]["text"],
+                protocol_config["pass_b_fragment"],
+            ]
+        )
+    lines.extend((f"role: {chair_role}", f"act: {dossier['act_key']}"))
     return "\n".join(lines)
 
 
-_BUILDERS: Final[dict[str, Callable[[str, dict[str, Any]], str]]] = {
+_BUILDERS: Final[dict[str, Callable[[str, dict[str, Any], dict[str, str]], str]]] = {
     "fake-perlector-v0": _fake_perlector_v0,
 }
 
 
-def _builder_for(serving_recipe: str) -> Callable[[str, dict[str, Any]], str]:
+def _builder_for(serving_recipe: str) -> Callable[[str, dict[str, Any], dict[str, str]], str]:
     builder = _BUILDERS.get(serving_recipe)
     if builder is None:
         raise ValueError(
@@ -66,12 +80,22 @@ def _builder_for(serving_recipe: str) -> Callable[[str, dict[str, Any]], str]:
     return builder
 
 
-def build_prompt(serving_recipe: str, chair_role: str, dossier: dict[str, Any]) -> str:
+def build_prompt(
+    serving_recipe: str,
+    chair_role: str,
+    dossier: dict[str, Any],
+    protocol_config: dict[str, str] | None = None,
+) -> str:
     """Build one chair's declared prompt, byte-exact, or refuse by name."""
-    return _builder_for(serving_recipe)(chair_role, dossier)
+    return _builder_for(serving_recipe)(chair_role, dossier, protocol_config or _DEFAULT_PROTOCOL)
 
 
-def prompt_evidence(chair: ChairIdentity, dossier: dict[str, Any]) -> dict[str, str]:
+def prompt_evidence(
+    chair: ChairIdentity,
+    dossier: dict[str, Any],
+    protocol_config: dict[str, str] | None = None,
+    protocol_sha256: str = "unsealed-test",
+) -> dict[str, str]:
     """The record of the prompt one reading was actually produced through.
 
     A builder nothing calls proves only that a builder exists; invariant #49 is
@@ -102,11 +126,14 @@ def prompt_evidence(chair: ChairIdentity, dossier: dict[str, Any]) -> dict[str, 
     one nothing can detect.
     """
     builder = _builder_for(chair.serving_recipe)
-    rendered = builder(chair.role, dossier)
+    protocol_config = protocol_config or _DEFAULT_PROTOCOL
+    rendered = builder(chair.role, dossier, protocol_config)
     return {
         "serving_recipe": chair.serving_recipe,
         "chair_identity_sha256": digest_of(chair.to_record()),
         "dossier_digest": dossier["dossier_digest"],
         "rendered_sha256": digest_bytes(rendered.encode("utf-8")),
         "builder_sha256": _MODULE_SOURCE_DIGEST,
+        "protocol_sha256": protocol_sha256,
+        "page_shared_prefix_policy": protocol_config["page_shared_prefix_policy"],
     }
