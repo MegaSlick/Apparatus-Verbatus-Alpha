@@ -9,10 +9,18 @@ one of those two sets and ranks pages within their own stratum.  A quota that th
 partition cannot fill is refused; the sampler never crosses the boundary.
 
 `ingest-manual` accepts Tyrel's `gold-manual-pick.v1` record, which has
-`selection_basis`, the bound page/stratum, and the derived set.  It records that
-selection unchanged; it does not choose a replacement page.  `bind-instrument`
-creates an append-only `gold-instrument-membership.v1` record carrying a sample
-digest, an R0 act identity, and a protocol digest.
+`selection_basis`, the bound page/stratum, and his stated set.  It records that
+selection unchanged; it does not choose a replacement page.  The persisted
+sample's `set` is always the seed-derived partition — calibration/locked-acceptance
+disjointness is enforced by construction, never by policing a human's claim — but
+B1 picks are made in week one, before the R0 frame or its seed exist, so his stated
+set can honestly disagree with it. That disagreement is never silently resolved
+either way: it is carried unchanged as `claimed_set` alongside the true `set`, so a
+predates-the-seed pick is ingested, not refused and sent back for a re-pick.
+Automatically sampled records carry `claimed_set: null` (no human claim was made).
+
+`bind-instrument` creates an append-only `gold-instrument-membership.v1` record
+carrying a sample digest, an R0 act identity, and a protocol digest.
 
 The layout schema embeds its source `gold-page-sample.v1` and has closed
 `act`, `non-act-text`, `occlusion`, and `true-blank` rectangle kinds.  The padding

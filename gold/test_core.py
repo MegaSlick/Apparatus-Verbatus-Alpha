@@ -102,7 +102,7 @@ def test_sample_refuses_a_page_or_frame_restated_differently_than_r0_authority(t
         validate_sample(record, path)
 
 
-def test_manual_pick_is_ingested_without_reselection_and_cannot_cross_partition(tmp_path):
+def test_manual_pick_is_ingested_without_reselection_and_records_claimed_set(tmp_path):
     path, frame, pages = run_file(tmp_path)
     page = catalog(pages)[0]
     pick = {
@@ -114,9 +114,39 @@ def test_manual_pick_is_ingested_without_reselection_and_cannot_cross_partition(
     result = ingest_manual_pick(path, pick)
     assert result["method"] == "manual"
     assert result["page"] == page
-    pick["set"] = "locked-acceptance" if pick["set"] == "calibration" else "calibration"
-    with pytest.raises(SchemaRefusal, match="seed-derived"):
-        ingest_manual_pick(path, pick)
+    assert result["claimed_set"] == result["set"] == pick["set"]
+
+
+def test_manual_pick_predating_the_seed_is_still_ingested_with_an_honest_disagreement(tmp_path):
+    """Tyrel's B1 picks are made in week one, before the R0 frame/seed exist, so his
+    stated set can honestly disagree with the seed-derived partition once it is
+    known. Ingestion must not refuse and force a re-pick (that would discard real
+    annotation hours); it must record the disagreement, never silently resolve it
+    either way (GOVERNANCE 2)."""
+    path, frame, pages = run_file(tmp_path)
+    page = catalog(pages)[0]
+    true_set = set_for_page(frame, page["sha256"])
+    claimed_set = "locked-acceptance" if true_set == "calibration" else "calibration"
+    pick = {
+        "schema": MANUAL_PICK_SCHEMA,
+        "selection_basis": "Tyrel B1 pick recorded before R0 froze",
+        "page": page,
+        "set": claimed_set,
+    }
+    result = ingest_manual_pick(path, pick)
+    assert result["set"] == true_set
+    assert result["claimed_set"] == claimed_set
+    assert result["claimed_set"] != result["set"]
+    # Disjointness stays enforced by construction: the persisted set is never the
+    # disputed one, whatever the pick claimed.
+    assert validate_sample(result, path) == result
+
+
+def test_stratified_samples_carry_no_claimed_set(tmp_path):
+    path, frame, pages = run_file(tmp_path)
+    rows = catalog(pages)
+    record = sample_stratified(path, rows, plan_for(frame, rows))[0]
+    assert record["claimed_set"] is None
 
 
 def test_layout_padding_and_instrument_records_are_closed_and_self_hashed(tmp_path):

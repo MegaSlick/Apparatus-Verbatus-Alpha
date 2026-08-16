@@ -154,13 +154,31 @@ def _catalog(rows: Any, source: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def build_sample(
-    frame: dict[str, str], page: dict[str, Any], *, selection_basis: str, method: str
+    frame: dict[str, str],
+    page: dict[str, Any],
+    *,
+    selection_basis: str,
+    method: str,
+    claimed_set: str | None = None,
 ) -> dict[str, Any]:
-    """Build the source-derived restatement once; validation replays it exactly."""
+    """Build the source-derived restatement once; validation replays it exactly.
+
+    `set` is always the seed-derived partition — never a caller's assertion — so
+    calibration/locked-acceptance disjointness stays enforced by construction
+    (U14/U18) no matter which method produced the sample. `claimed_set` is the
+    separate, honest record of what a manual picker believed the set was at pick
+    time; it is carried unchanged even when it disagrees with `set`, so a pick
+    made before the frame/seed existed is never silently corrected or discarded
+    (GOVERNANCE 2).
+    """
     _refuse(method not in {"stratified-seed", "manual"}, "sample method is not recognized")
     _refuse(
         not isinstance(selection_basis, str) or not selection_basis.strip(),
         "selection_basis is empty",
+    )
+    _refuse(
+        claimed_set is not None and claimed_set not in SETS,
+        "claimed_set is not a recognized gold set",
     )
     page_sha = page["sha256"]
     gold_set = set_for_page(frame, page_sha)
@@ -171,6 +189,7 @@ def build_sample(
         "frame": dict(frame),
         "page": {"ordinal": page["ordinal"], "sha256": page_sha, "stratum": page["stratum"]},
         "set": gold_set,
+        "claimed_set": claimed_set,
     }
     record["sample_digest"] = digest_bytes(canonical_bytes(record))
     record["self_hash"] = self_hash(record)
@@ -215,7 +234,19 @@ def sample_stratified(run_path: str | Path, catalog_rows: Any, plan: Any) -> lis
 
 
 def ingest_manual_pick(run_path: str | Path, pick: Any) -> dict[str, Any]:
-    """Record Tyrel's choice without selecting or replacing it."""
+    """Record Tyrel's choice without selecting or replacing it.
+
+    A manual pick's stated `set` is his provenance, not an assertion this
+    function polices: B1 picks are made in week one, before the R0 frame or
+    its seed exist, so there is no partition to check them against yet. The
+    persisted sample's `set` is always the seed-derived partition (disjointness
+    stays enforced by construction, per U14/U18 and the unconditional "calibration
+    data disjoint from locked acceptance gold" in three_stage_reading_design.md
+    §6); his original stated set is kept alongside as `claimed_set` so a pick
+    that turns out to land in the other set is an honest, visible, recorded
+    disagreement — never a silent reclassification and never a refusal that
+    would force him to redo real annotation hours.
+    """
     frame, source = load_run_frame(run_path)
     _refuse(
         not isinstance(pick, dict) or set(pick) != {"schema", "selection_basis", "page", "set"},
@@ -246,12 +277,13 @@ def ingest_manual_pick(run_path: str | Path, pick: Any) -> dict[str, Any]:
         "manual pick page is outside the sealed corpus frame",
     )
     _refuse(pick["set"] not in SETS, "manual pick set is not recognized")
-    expected_set = set_for_page(frame, page["sha256"])
-    _refuse(
-        pick["set"] != expected_set,
-        "manual pick set conflicts with the seed-derived disjoint partition",
+    sample = build_sample(
+        frame,
+        page,
+        selection_basis=pick["selection_basis"],
+        method="manual",
+        claimed_set=pick["set"],
     )
-    sample = build_sample(frame, page, selection_basis=pick["selection_basis"], method="manual")
     return validate_sample(sample, run_path)
 
 
@@ -309,6 +341,7 @@ def validate_sample(record: Any, run_path: str | Path | None = None) -> dict[str
             "frame",
             "page",
             "set",
+            "claimed_set",
             "sample_digest",
             "self_hash",
         },
@@ -346,6 +379,10 @@ def validate_sample(record: Any, run_path: str | Path | None = None) -> dict[str
     _refuse(
         record["set"] not in SETS or record["set"] != set_for_page(frame, page["sha256"]),
         "sample set conflicts with the seed-derived partition",
+    )
+    _refuse(
+        record["claimed_set"] is not None and record["claimed_set"] not in SETS,
+        "sample claimed_set is not a recognized gold set",
     )
     without = {
         key: value for key, value in record.items() if key not in {"sample_digest", "self_hash"}
