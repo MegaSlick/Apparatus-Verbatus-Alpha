@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from common.alignment import markup_text_view
 from common.chairs.registry import ChairRegistry
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.contracts.errors import FatalAccounting, SchemaRefusal
@@ -353,3 +354,36 @@ def test_dissent_compares_a_genuinely_empty_witness():
             "comparison_loss": {"reading_dropped_characters": 0, "witness_dropped_characters": 0},
         }
     ]
+
+
+def test_an_act_comparison_view_is_sliced_in_the_space_its_span_was_measured_in():
+    """F-X3. `witness_span` indexes the markup-stripped page view that
+    `common.alignment.align_to_anchor` actually aligned, so the slice must come
+    from that view and not from the raw report.
+
+    Chandra emits HTML and Churro emits XML; the two coordinate spaces agree
+    only where stripping removes nothing, which is this repository's ASCII
+    fixture and no real witness. A raw slice at these offsets lands mid-tag,
+    and it falsifies the premise `dissent.is_comparable` now rests on -- that
+    `comparison_reported` is a markup-stripped view and therefore safe to diff.
+    """
+    page = "<p>SYNTHETIC ACT ONE</p><p>SYNTHETIC ACT TWO</p>"
+    stripped = markup_text_view(page)["text"]
+    assert stripped == "SYNTHETIC ACT ONESYNTHETIC ACT TWO"
+
+    first = perlector.act_comparison_view(page, {"start": 0, "end": 17})
+    second = perlector.act_comparison_view(page, {"start": 17, "end": 34})
+
+    assert first == "SYNTHETIC ACT ONE"
+    assert second == "SYNTHETIC ACT TWO"
+    # The defect this closes, stated as the thing that must not happen again.
+    assert page[0:17] != first
+    for view in (first, second):
+        assert "<" not in view and ">" not in view
+
+
+def test_an_act_comparison_view_past_the_page_reading_is_refused():
+    """A span longer than the view it indexes is malformed evidence, not a
+    silently truncated slice."""
+    with pytest.raises(SchemaRefusal, match="past its own comparison view"):
+        perlector.act_comparison_view("<p>alpha</p>", {"start": 0, "end": 99})

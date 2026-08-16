@@ -43,6 +43,7 @@ import truncation  # noqa: E402
 from dissent import departures, dissent_against, validate_dissent  # noqa: E402
 from reader import FixtureReader  # noqa: E402
 
+from common.alignment import markup_text_view  # noqa: E402
 from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.canonical import digest_of  # noqa: E402
@@ -438,7 +439,20 @@ def act_attachment_view(context, act: dict[str, Any], testimonia: list[dict]) ->
                 witness_span = alignment["witness_span"]
                 if not isinstance(page_text, str):
                     raise SchemaRefusal("an attached page witness has no textual comparison view")
-                comparison_views[chair] = page_text[witness_span["start"] : witness_span["end"]]
+                # `witness_span` indexes the MARKUP-STRIPPED, whitespace-collapsed
+                # view of the page reading -- `align_to_anchor` computes it from
+                # `markup_text_view(page_text)["text"]`, never from the raw bytes.
+                # Slicing `page_text` itself with those offsets is a
+                # coordinate-space error: it agrees only where stripping happens
+                # to remove nothing, which is exactly the ASCII fixture and
+                # exactly not Chandra's HTML or Churro's XML, where the slice
+                # would land mid-tag. It also falsified the premise
+                # `dissent.is_comparable` now rests on -- that
+                # `comparison_reported` is a markup-stripped view and therefore
+                # safe to diff -- since a raw slice carries whatever markup it
+                # cut through. Re-derived in the space the span was measured in.
+                # Found in audit; F-X3.
+                comparison_views[chair] = act_comparison_view(page_text, witness_span)
             elif not isinstance(alignment, dict) or alignment.get("status") != "unaligned":
                 raise SchemaRefusal("an unattached page witness has no explicit unaligned result")
             page_witness_count += 1
@@ -462,6 +476,21 @@ def act_attachment_view(context, act: dict[str, Any], testimonia: list[dict]) ->
         "page_witness_count": page_witness_count,
         "comparison_views": comparison_views,
     }
+
+
+def act_comparison_view(page_text: str, witness_span: dict[str, int]) -> str:
+    """One act's slice of a page reading, in the space the span was measured in.
+
+    `witness_span` indexes the markup-stripped, whitespace-collapsed view
+    `common.alignment.align_to_anchor` aligned -- never the raw page bytes --
+    so the slice is taken from that same view. Slicing the raw report with
+    these offsets agrees only where stripping removed nothing, which is the
+    ASCII fixture and not Chandra's HTML or Churro's XML. Found in audit; F-X3.
+    """
+    normalized = markup_text_view(page_text)["text"]
+    if witness_span["end"] > len(normalized):
+        raise SchemaRefusal("an attached page witness claims a span past its own comparison view")
+    return normalized[witness_span["start"] : witness_span["end"]]
 
 
 def dissent_testimonia(testimonia: list[dict], attachment_view: dict[str, Any]) -> list[dict]:

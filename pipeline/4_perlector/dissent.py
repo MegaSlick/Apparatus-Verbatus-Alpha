@@ -199,6 +199,16 @@ def is_comparable(record: dict[str, Any]) -> bool:
     # never the raw `reported`). Most capability-declared chairs never get
     # one and stay honestly unknown; a page witness that does gets to rejoin
     # the instrument through the safe view rather than by declaration alone.
+    #
+    # Said exactly: `markup_text_view` removes TAG markup (`<...>`) and
+    # decodes entities. A notation that is not tag-shaped -- DAI's bracketed
+    # `[UNCERTAIN]` most plainly -- survives it, so the view does not make
+    # every capability-declared format safe. It happens to line up today
+    # because the tag-emitting chairs (Chandra HTML, Churro XML) are the page
+    # witnesses that get views, and the bracket-emitting chair is act-scoped
+    # and gets none. If a bracket-notation chair ever becomes page-scoped, the
+    # view alone is not the safety this exemption is claiming. Named rather
+    # than assumed away (GOVERNANCE 10). R4 audit, F-X3.
     return isinstance(payload.get("comparison_reported"), str)
 
 
