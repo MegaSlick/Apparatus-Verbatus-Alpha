@@ -54,9 +54,14 @@ def run_file(tmp_path):
         "seed": _sha("f"),
     }
     path = tmp_path / "run.json"
-    path.write_text(
-        json.dumps({"source_manifest": pages, "corpus_frame_membership": frame}), encoding="utf-8"
-    )
+    record = {
+        "schema": "skeleton.v1",
+        "run_id": "gold-fixture",
+        "source_manifest": pages,
+        "corpus_frame_membership": frame,
+    }
+    record["self_hash"] = self_hash(record)
+    path.write_text(json.dumps(record), encoding="utf-8")
     return path, frame, pages
 
 
@@ -111,6 +116,7 @@ def test_sample_refuses_a_page_or_frame_restated_differently_than_r0_authority(t
         validate_sample(forged, path)
     broken_run = json.loads(path.read_text())
     broken_run["corpus_frame_membership"]["page_digest"] = _sha("0")
+    broken_run["self_hash"] = self_hash(broken_run)
     path.write_text(json.dumps(broken_run), encoding="utf-8")
     with pytest.raises(SchemaRefusal, match="diverges"):
         validate_sample(record, path)
@@ -183,6 +189,17 @@ def test_stratified_samples_carry_no_claimed_set(tmp_path):
     rows = catalog(pages)
     record = sample_stratified(path, rows, plan_for(frame, rows))[0]
     assert record["claimed_set"] is None
+
+
+def test_a_tampered_sampling_seed_is_refused_as_an_edited_run_authority(tmp_path):
+    path, frame, pages = run_file(tmp_path)
+    rows = catalog(pages)
+    sample_stratified(path, rows, plan_for(frame, rows))
+    edited = json.loads(path.read_text())
+    edited["corpus_frame_membership"]["seed"] = _sha("0")
+    path.write_text(json.dumps(edited), encoding="utf-8")
+    with pytest.raises(SchemaRefusal, match="fails its self-hash"):
+        sample_stratified(path, rows, plan_for(frame, rows))
 
 
 def test_a_method_cannot_carry_another_methods_provenance(tmp_path):
@@ -557,10 +574,14 @@ def test_a_gold_corpus_assembled_across_two_frames_is_refused(tmp_path):
         "frame_digest": digest_bytes(canonical_bytes({"pages": source})),
         "seed": _sha("e"),
     }
-    wider.write_text(
-        json.dumps({"source_manifest": extra, "corpus_frame_membership": wider_frame}),
-        encoding="utf-8",
-    )
+    wider_record = {
+        "schema": "skeleton.v1",
+        "run_id": "wider-gold-fixture",
+        "source_manifest": extra,
+        "corpus_frame_membership": wider_frame,
+    }
+    wider_record["self_hash"] = self_hash(wider_record)
+    wider.write_text(json.dumps(wider_record), encoding="utf-8")
     flipped = [
         page
         for page in pages

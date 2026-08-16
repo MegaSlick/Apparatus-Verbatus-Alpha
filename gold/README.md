@@ -80,6 +80,8 @@ for a sample, layout, or padding record, pass `--run` to prove the derived page 
 frame facts against the R0 authority again (an embedded sample is otherwise only
 checked for internal self-consistency, not that it names a real run).
 `bind-instrument` accepts the same optional `--run`.
+The run authority's schema and self-hash are checked before its frame or seed is
+used; an edited seed cannot silently define a different draw.
 
 `validate-corpus records/ [--run RUN.json]` checks what no single record can. A
 page's set is derived from its own frame's seed, and the seed is derived from that

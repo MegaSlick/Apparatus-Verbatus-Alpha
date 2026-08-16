@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from common.contracts.canonical import (
+    SCHEMA_LABEL,
     canonical_bytes,
     digest_bytes,
     is_sha256,
@@ -86,6 +87,11 @@ def read_transcription_text(path: str | Path) -> str:
 
 def _frame_from_run(run: dict[str, Any]) -> tuple[dict[str, str], list[dict[str, Any]]]:
     _refuse(not isinstance(run, dict), "run authority is not an object")
+    _refuse(
+        not verify_self_hash(run),
+        "run authority fails its self-hash; its recorded seed and membership cannot be trusted",
+    )
+    _refuse(run.get("schema") != SCHEMA_LABEL, "run authority is not the current R0 schema")
     pages = run.get("source_manifest")
     membership = run.get("corpus_frame_membership")
     _refuse(not isinstance(pages, list), "run authority has no source_manifest")
