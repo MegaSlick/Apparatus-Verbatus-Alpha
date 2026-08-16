@@ -309,9 +309,18 @@ def act_attachment_view(context, act: dict[str, Any], testimonia: list[dict]) ->
                 f"act {act_id} attachment for chair {chair!r} disagrees with that chair's "
                 "current Testimonium outcome"
             )
-        if not attachment["page_witness"] and attachment["content_health"] != chair_testimonium[
-            "payload"
-        ].get("content_health"):
+        # NOT exempted for a page witness, unlike the `attached`/outcome check just
+        # above: `content_health` is recorded from this act's own per-chair attempt
+        # (`attempts_by_pair` in `pipeline/3_attestatores/run.py`) for every chair,
+        # page witness or not -- a targeted reread (`reread_pass`) appends a new
+        # attempt to that exact same per-(act, chair) `testimonium` stream whether
+        # or not the chair is page-scoped, so a page witness's attachment can go
+        # stale after a reread exactly as an act-scoped one can (REOPENED F-O1):
+        # `attached` legitimately differs from the chair's outcome for a page
+        # witness (alignment can honestly fail against live text), but the health
+        # of the attempt the attachment actually describes must always still be
+        # this chair's current one.
+        if attachment["content_health"] != chair_testimonium["payload"].get("content_health"):
             raise SchemaRefusal(
                 f"act {act_id} attachment for chair {chair!r} describes an attempt that is no "
                 "longer this chair's current Testimonium"

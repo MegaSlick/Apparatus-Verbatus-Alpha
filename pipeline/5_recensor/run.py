@@ -110,6 +110,23 @@ def chair_outcomes(context, act_id: str) -> dict[str, str]:
     }
 
 
+def chair_content_health(context, act_id: str) -> dict[str, dict | None]:
+    """The current `content_health` per chair, from the same latest-attempt
+    collapse `chair_outcomes` uses over the same artifacts.
+
+    A page witness's act-attachment `content_health` is recorded from this
+    exact per-(act, chair) attempt stream (`pipeline/3_attestatores/run.py`'s
+    `attempts_by_pair`), not from its page-level Testimonium -- a targeted
+    reread appends to this stream whether or not the chair is page-scoped, so
+    this is a staleness signal for every chair alike (REOPENED F-O1).
+    """
+    records = artifacts_for(context, ATTESTATORES, "testimonium", act_id)
+    return {
+        record["payload"]["chair"]: record["payload"].get("content_health")
+        for record in latest_per_chair(records, f"testimonium for {act_id}")
+    }
+
+
 def act_attachment_facts(context, act_id: str) -> dict[str, dict]:
     """Read R0's derived attachment record before counting the witness floor."""
     records = artifacts_for(context, ATTESTATORES, "act-attachment", act_id)
@@ -157,6 +174,8 @@ def act_attachment_facts(context, act_id: str) -> dict[str, dict]:
             "attached": entry["attached"],
             "truncated": truncated,
             "health_unrecorded": truncated is None,
+            "page_witness": entry.get("page_witness") is True,
+            "content_health": health,
         }
     return facts
 
@@ -238,14 +257,60 @@ def validate_chair_coverage(context, act_id: str, floor: int) -> dict[str, objec
             "chairs and nothing may add one after the seal"
         )
     attachments = act_attachment_facts(context, act_id)
-    # R4's attachment is an independent computed fact.  It must not be forced
-    # back into the act attempt outcome: a page witness can have read its page
-    # while the bounded text-to-anchor calculation honestly remains unaligned.
+    # R4's attachment is an independent computed fact for a PAGE witness.  It
+    # must not be forced back into the act attempt outcome there: a page
+    # witness can have read its page while the bounded text-to-anchor
+    # calculation honestly remains unaligned, and `act_attachment_facts`
+    # already checks that fact for internal consistency against its own
+    # computed alignment.
     unaccounted = sorted(set(outcomes) - set(attachments))
     if unaccounted:
         raise FatalAccounting(
             f"act {act_id}'s derived act-attachment records no fact for configured "
             f"chair(s) {unaccounted}; an absent fact would silently read as unattached"
+        )
+    # An ACT-SCOPED chair carries no independent computed fact: its `attached`
+    # is a restatement of that chair's own current Testimonium outcome, not a
+    # second measurement of anything. `reread_pass` (`pipeline/3_attestatores/
+    # run.py`) appends a new act-scoped attempt without writing a new
+    # attachment record, so the derived attachment is a THIRD consumer of the
+    # same artifacts as `chair_outcomes`/`testimonia_of` and can drift from
+    # both exactly as it did before R4 (F-O1): a targeted reread would
+    # otherwise count the witness floor from an attempt the reread already
+    # superseded. Restored on R4's audit (REOPENED F-O1) after removing it
+    # here left this hole open for every act-scoped chair; page witnesses are
+    # exempted because their own alignment-consistency check above is the
+    # genuinely independent fact this check would otherwise wrongly demand
+    # agreement from.
+    superseded = sorted(
+        chair
+        for chair, outcome in outcomes.items()
+        if not attachments[chair]["page_witness"]
+        and attachments[chair]["attached"] != (outcome in WITNESS_READING_OUTCOMES)
+    )
+    if superseded:
+        raise FatalAccounting(
+            f"act {act_id}'s derived act-attachment disagrees with the current Testimonium "
+            f"outcome for chair(s) {superseded}; the witness floor may not be counted from "
+            "a superseded attempt"
+        )
+    # NOT scoped to act-scoped chairs, unlike the outcome check just above: a
+    # page witness's attachment `content_health` is recorded from this exact
+    # per-(act, chair) attempt stream, not from page-level text, so it is a
+    # valid staleness signal for every chair (`chair_content_health`'s
+    # docstring; mirrors `pipeline/4_perlector/run.py::act_attachment_view`'s
+    # identical, symmetric check -- REOPENED F-O1).
+    current_health = chair_content_health(context, act_id)
+    stale_health = sorted(
+        chair
+        for chair, fact in attachments.items()
+        if fact["content_health"] != current_health.get(chair)
+    )
+    if stale_health:
+        raise FatalAccounting(
+            f"act {act_id}'s derived act-attachment describes an attempt that is no longer "
+            f"the current Testimonium for chair(s) {stale_health}; the witness floor may not "
+            "be counted from a superseded attempt"
         )
     return witness_coverage(outcomes, floor, attachments=attachments)
 

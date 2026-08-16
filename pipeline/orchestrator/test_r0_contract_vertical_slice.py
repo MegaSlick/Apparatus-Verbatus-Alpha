@@ -572,15 +572,25 @@ def test_perlector_refuses_an_act_scoped_testimonium_wearing_a_page_witness_flag
 # on what current means". The attachment was a third consumer that did drift.
 
 
-def test_perlector_never_rewrites_an_existing_reading_after_a_targeted_reread(tmp_path):
-    """F-O1: a targeted reread leaves the attachment describing the old attempt.
+def test_perlector_refuses_an_attachment_describing_a_superseded_attempt(tmp_path):
+    """F-O1 (REOPENED on R4's audit): a targeted reread leaves the attachment
+    describing the old attempt, for a page witness exactly as for an act-scoped
+    one.
 
-    `reread-success` declares a second, longer response for attestator_1 on act
-    a2. Before this fix the run continued in silence with the attachment still
-    claiming `span 0..40` and the ordinal-1 `content_health`, while that chair's
-    current Testimonium delivered 48 characters -- a positive alignment claim over
-    text that is no longer the reading, which is precisely the dishonesty F-S2 and
-    F-P2 closed on the first-pass path.
+    `reread-success` declares a second, longer response for attestator_1 (a
+    page witness) on act a2. Before this fix the run continued in silence with
+    the attachment still claiming `span 0..40` and the ordinal-1
+    `content_health`, while that chair's current Testimonium delivered 48
+    characters -- a positive alignment claim over text that is no longer the
+    reading, which is precisely the dishonesty F-S2 and F-P2 closed on the
+    first-pass path. R4's alignment made `attached` legitimately diverge from
+    a page witness's own outcome (alignment can honestly fail against live
+    text), and a repair scoped that divergence away entirely instead of to
+    just the `attached`/outcome comparison it applies to -- `content_health`
+    staleness is unconditional in `pipeline/4_perlector/run.py::
+    act_attachment_view` again, since it is recorded from the same per-(act,
+    chair) attempt stream a reread appends to whether or not the chair is
+    page-scoped.
     """
     root = tmp_path / "runs"
     fixture_data = load_fixture(str(FIXTURE_ROOT))
@@ -597,11 +607,18 @@ def test_perlector_never_rewrites_an_existing_reading_after_a_targeted_reread(tm
         "the Perlector accepted an act-attachment describing an attempt that is no longer "
         "the chair's current Testimonium"
     )
-    assert "Artifacts are immutable" in result.stderr, result.stderr
+    assert "no longer this chair's current Testimonium" in result.stderr, result.stderr
 
 
 def test_the_witness_floor_is_not_counted_from_a_superseded_attachment(tmp_path):
-    """F-O1: the floor may not be counted from an attachment the reread outdated.
+    """F-O1 (REOPENED on R4's audit): the floor may not be counted from an
+    attachment the reread outdated -- for attestator_3, a page witness, exactly
+    as for an act-scoped chair. `pipeline/5_recensor/run.py::
+    chair_content_health` gives the Recensor the same per-chair staleness
+    signal `act_attachment_view` uses, since R4 removed this file's own
+    outcome-based version of the check for every page witness rather than only
+    exempting the narrower comparison that alignment legitimately disagrees
+    with.
 
     Drives the natural order -- whole pass, targeted reread, Perlector, Recensor.
     `reread-failure` declares attestator_3's second attempt on act a1 as a
@@ -632,10 +649,19 @@ def test_the_witness_floor_is_not_counted_from_a_superseded_attachment(tmp_path)
     assert reread.returncode == 0, reread.stderr
 
     perlector = invoke_stage(root, "stale-floor", "reread-failure", "pipeline/4_perlector/run.py")
-    assert perlector.returncode == 0, perlector.stderr
+    assert perlector.returncode != 0, (
+        "the Perlector read on over an act-attachment describing a superseded attempt"
+    )
     recensor = invoke_stage(root, "stale-floor", "reread-failure", "pipeline/5_recensor/run.py")
-    assert recensor.returncode in (0, 3), recensor.stderr
-    assert tree.resolve(RECENSOR_PARTITION_RECEIPT_FILE).exists()
+    assert recensor.returncode != 0, (
+        "the Recensor counted the witness floor from an act-attachment describing a "
+        "superseded attempt"
+    )
+    assert "superseded attempt" in recensor.stderr, recensor.stderr
+    assert not tree.resolve(RECENSOR_PARTITION_RECEIPT_FILE).exists(), (
+        "a partition receipt was written from a coverage count the reread had already "
+        "superseded; the denominator is validated before this stage publishes anything"
+    )
 
 
 def test_page_testimony_names_a_reading_the_join_could_not_carry(tmp_path, fixture):
