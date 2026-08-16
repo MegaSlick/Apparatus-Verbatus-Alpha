@@ -220,6 +220,43 @@ def test_an_unrecognised_lectio_kind_cannot_establish_either(tmp_path):
     assert "only an explicitly primed" in result.stderr
 
 
+def test_primed_with_prior_claim_without_a_prior_reference_cannot_establish(tmp_path):
+    def remove_prior_reference(payload):
+        dossier = dict(payload["dossier"])
+        dossier.pop("prior_draft")
+        dossier.pop("prior_draft_view")
+        payload["dossier"] = dossier
+
+    result = _archetypus_after(tmp_path, remove_prior_reference)
+    assert result.returncode == 2, result.stderr
+    assert "Traceback" not in result.stderr
+    assert "claims primed-with-prior but carries no prior-draft reference" in result.stderr
+
+
+def test_primed_without_prior_claim_with_a_prior_reference_cannot_establish(tmp_path):
+    result = _archetypus_after(
+        tmp_path,
+        lambda payload: payload.update(lectio_kind="primed-without-prior"),
+    )
+    assert result.returncode == 2, result.stderr
+    assert "Traceback" not in result.stderr
+    assert "claims primed-without-prior but carries a prior-draft reference" in result.stderr
+
+
+def test_embedded_prior_text_must_match_the_referenced_lectio_prior(tmp_path):
+    def diverge_prior_text(payload):
+        dossier = dict(payload["dossier"])
+        prior_draft = dict(dossier["prior_draft"])
+        prior_draft["text"] += " forged"
+        dossier["prior_draft"] = prior_draft
+        payload["dossier"] = dossier
+
+    result = _archetypus_after(tmp_path, diverge_prior_text)
+    assert result.returncode == 2, result.stderr
+    assert "Traceback" not in result.stderr
+    assert "disagrees with its referenced lectio-prior" in result.stderr
+
+
 def test_a_primed_false_flag_cannot_establish(tmp_path):
     result = _archetypus_after(tmp_path, lambda payload: payload.update(primed=False))
     assert result.returncode == 2, result.stderr

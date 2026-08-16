@@ -46,6 +46,7 @@ from reader import FixtureReader  # noqa: E402
 from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.canonical import digest_of  # noqa: E402
+from common.contracts.envelope import validate_input_refs  # noqa: E402
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal  # noqa: E402
 from common.contracts.identities import artifact_id, perlector_attempt_id  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, PERLECTOR  # noqa: E402
@@ -781,6 +782,24 @@ def validate_reading_payload(
     if reading_dossier["dossier_digest"] != digest_of(dossier_body):
         raise SchemaRefusal("a Perlector dossier digest does not match the dossier it seals")
     dossier_module.assert_no_order_bearing_field(dossier_body)
+    lectio_kind = payload.get("lectio_kind")
+    prior_draft = reading_dossier.get("prior_draft")
+    if lectio_kind == "primed-with-prior":
+        if (
+            not isinstance(prior_draft, dict)
+            or set(prior_draft) != {"reference", "text"}
+            or not isinstance(prior_draft["text"], str)
+            or reading_dossier.get("prior_draft_view") not in {"fed", "withheld"}
+        ):
+            raise SchemaRefusal(
+                "a Perlectio claims primed-with-prior but carries no closed prior-draft "
+                "reference and view"
+            )
+        validate_input_refs([prior_draft["reference"]])
+    elif lectio_kind == "primed-without-prior" and prior_draft is not None:
+        raise SchemaRefusal(
+            "a Perlectio claims primed-without-prior but carries a prior-draft reference"
+        )
     if "act_attachment" in reading_dossier:
         attachment = reading_dossier["act_attachment"]
         if (

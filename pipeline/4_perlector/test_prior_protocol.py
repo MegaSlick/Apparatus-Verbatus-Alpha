@@ -300,6 +300,15 @@ def published_lectio_prior_payload(tmp_path_factory):
 
 
 @pytest.fixture(scope="module")
+def published_perlectio_payload(tmp_path_factory):
+    """A real production payload for prior-reference relation forgeries."""
+    root = tmp_path_factory.mktemp("perlectio-prior-relation") / "runs"
+    result = _run(root, "r", "happy")
+    assert result.returncode == 0, result.stderr
+    return _records(RunTree(root, "r"), "perlectio")[0]["payload"]
+
+
+@pytest.fixture(scope="module")
 def published_primed_without_prior_payload(tmp_path_factory):
     """A real published control-arm payload."""
     root = tmp_path_factory.mktemp("control-schema") / "runs"
@@ -347,6 +356,45 @@ def test_validator_refuses_a_protocol_record_without_threaded_sealed_config(
             copy.deepcopy(published_lectio_prior_payload),
             outcome="read",
             fields=perlector._LECTIO_PRIOR_FIELDS,
+        )
+
+
+def test_producer_refuses_primed_with_prior_without_a_prior_reference(
+    published_perlectio_payload, _sealed_protocol
+):
+    payload = copy.deepcopy(published_perlectio_payload)
+    payload["dossier"].pop("prior_draft")
+    payload["dossier"].pop("prior_draft_view")
+    dossier_body = {
+        key: value for key, value in payload["dossier"].items() if key != "dossier_digest"
+    }
+    payload["dossier"]["dossier_digest"] = perlector.digest_of(dossier_body)
+    protocol_config, protocol_sha256 = _sealed_protocol
+
+    with pytest.raises(SchemaRefusal, match="claims primed-with-prior"):
+        perlector.validate_reading_payload(
+            payload,
+            outcome="read",
+            fields=perlector._PERLECTIO_FIELDS,
+            protocol_config=protocol_config,
+            protocol_sha256=protocol_sha256,
+        )
+
+
+def test_producer_refuses_primed_without_prior_with_a_prior_reference(
+    published_perlectio_payload, _sealed_protocol
+):
+    payload = copy.deepcopy(published_perlectio_payload)
+    payload["lectio_kind"] = "primed-without-prior"
+    protocol_config, protocol_sha256 = _sealed_protocol
+
+    with pytest.raises(SchemaRefusal, match="claims primed-without-prior"):
+        perlector.validate_reading_payload(
+            payload,
+            outcome="read",
+            fields=perlector._PERLECTIO_FIELDS,
+            protocol_config=protocol_config,
+            protocol_sha256=protocol_sha256,
         )
 
 

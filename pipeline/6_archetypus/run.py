@@ -495,6 +495,14 @@ def accepted_primed_perlectio(
         raise SchemaRefusal(f"the accepted Perlectio for {act_id} has no object payload")
 
     lectio_kind = payload.get("lectio_kind")
+    claimed_dossier = payload.get("dossier")
+    claimed_prior_draft = (
+        claimed_dossier.get("prior_draft") if isinstance(claimed_dossier, dict) else None
+    )
+    if lectio_kind == "primed-without-prior" and claimed_prior_draft is not None:
+        raise SchemaRefusal(
+            f"act {act_id} claims primed-without-prior but carries a prior-draft reference"
+        )
     if lectio_kind != "primed-with-prior":
         raise SchemaRefusal(
             f"act {act_id} names lectio_kind {lectio_kind!r}; only an explicitly primed "
@@ -552,6 +560,34 @@ def accepted_primed_perlectio(
         kind="act-attachment",
         subject_id=act_id,
     )
+    prior_draft = claimed_prior_draft
+    if lectio_kind == "primed-with-prior":
+        prior_reference = prior_draft.get("reference") if isinstance(prior_draft, dict) else None
+        if not _is_ref_shaped(prior_reference):
+            raise SchemaRefusal(
+                f"act {act_id} claims primed-with-prior but carries no prior-draft reference"
+            )
+        if prior_reference not in reading.get("inputs", []):
+            raise SchemaRefusal(
+                f"act {act_id} carries a prior-draft reference that is not a digest-checked "
+                "direct input of the reading"
+            )
+        prior_record = context.tree.read_artifact_reference(
+            prior_reference,
+            stage=PERLECTOR,
+            kind="lectio-prior",
+            subject_id=act_id,
+        )
+        prior_payload = prior_record.get("payload")
+        if (
+            not isinstance(prior_payload, dict)
+            or not isinstance(prior_draft.get("text"), str)
+            or prior_draft["text"] != prior_payload.get("text")
+        ):
+            raise SchemaRefusal(
+                f"act {act_id} embeds prior-draft text that disagrees with its referenced "
+                "lectio-prior"
+            )
     witnesses: dict[tuple[str, str], str | None] = {}
     for index, item in enumerate(testimonia):
         if not isinstance(item, dict):
