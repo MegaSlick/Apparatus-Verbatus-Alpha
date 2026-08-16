@@ -532,9 +532,34 @@ def run_aggregate(
     for act in sorted(coverage):
         record = coverage[act]
         if record.get("under_witnessed"):
+            # Not unconditionally `record["by_class"]["completed"]`: that is the
+            # wider ATTESTATORES COMPLETED class (it also holds `excluded`, and --
+            # since R4 -- a page witness that read its page but did not align
+            # into this act), while `under_witnessed` above is decided from the
+            # narrower attached-reading count. The two were equal before per-act
+            # alignment existed, so this message could get away with the class
+            # count; they can now diverge, and printing the wider number produced
+            # a floor-satisfying count next to an under-witnessed verdict.
+            # Rederived from `by_outcome` and `page_granularity_only` exactly as
+            # `common/recensor_receipt.py` already does for the same reason
+            # (including its same v1/v2 branch: `page_granularity_only` is
+            # optional on a pre-R0 schema-v1 record, where `by_class['completed']`
+            # is the whole answer with no page-granularity distinction to draw).
+            # Deliberately raw indexing, not `.get(..., default)`: a record
+            # claiming `under_witnessed` without the fields that justify it is
+            # not a zero to report, it is malformed evidence, and
+            # `pipeline/7_armarium/armarium_export.py::_run_aggregate` already
+            # converts exactly that `KeyError` into a named refusal rather than
+            # let a fabricated count stand in for one nothing measured.
+            if "page_granularity_only" in record:
+                reading_chairs = sum(
+                    record["by_outcome"].get(outcome, 0) for outcome in WITNESS_READING_OUTCOMES
+                )
+                completed = reading_chairs - record["page_granularity_only"]
+            else:
+                completed = record["by_class"]["completed"]
             reasons.append(
-                f"act {act} is under-witnessed "
-                f"({record['by_class']['completed']} of a floor of {record['floor']})"
+                f"act {act} is under-witnessed ({completed} of a floor of {record['floor']})"
             )
         if record.get("unresolved_chairs"):
             reasons.append(

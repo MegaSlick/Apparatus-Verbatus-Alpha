@@ -331,6 +331,17 @@ def no_response_health(*, reason: str) -> dict[str, Any]:
     return {**NO_RESPONSE_HEALTH, "truncation_basis": reason}
 
 
+# A `genuinely-empty` reading has no witness text at all -- there is nothing to
+# locate in the anchor, so nothing was lost finding it either. Shared by the
+# trivial-attachment branch below so a zero-length alignment always reads as
+# exactly as empty as it is.
+_ZERO_ALIGNMENT_LOSS: dict[str, int] = {
+    "markup_characters": 0,
+    "whitespace_characters": 0,
+    "unicode_reencoded_characters": 0,
+}
+
+
 def content_health(native_payload: Any, *, completed: bool | None = None) -> dict[str, Any]:
     """Compute deterministic channel facts from native output alone.
 
@@ -1438,47 +1449,82 @@ def publish_page_testimonia_and_attachments(
             alignment: dict[str, Any] | None = None
             attached = act["outcome"] == "proposed" and attempt.outcome in WITNESS_READING_OUTCOMES
             if page_witness:
-                page_text = page_texts.get((act["page_ordinal"], chair))
-                anchor_text = page_texts.get((act["page_ordinal"], "chandra-anchor"))
                 act_anchor = anchor_ranges.get((act["page_ordinal"], act["act_id"]))
-                if page_text is None or anchor_text is None or act_anchor is None:
-                    result = {"status": "unaligned", "reason": "missing-chandra-page-anchor"}
-                else:
-                    result = align_to_anchor(page_text, anchor_text, limits)
-                if result["status"] == "aligned":
-                    overlaps = [
-                        span
-                        for span in result["spans"]
-                        if span["anchor"]["end"] > act_anchor["start"]
-                        and span["anchor"]["start"] < act_anchor["end"]
-                    ]
-                    if overlaps:
-                        witness_start = min(span["witness"]["start"] for span in overlaps)
-                        witness_end = max(span["witness"]["end"] for span in overlaps)
-                        alignment = {
-                            "status": "aligned",
-                            "anchor_span": {key: act_anchor[key] for key in ("start", "end")},
-                            "witness_span": {"start": witness_start, "end": witness_end},
-                            "line_geometry": [
+                if attempt.outcome == "genuinely-empty":
+                    # There is no witness text to place, which is a different fact
+                    # from text that was placed and searched for in vain: bounded
+                    # alignment can never succeed against an empty string (an empty
+                    # `SequenceMatcher` sequence has no matching block of positive
+                    # size), so running it here would turn an honest "nothing was
+                    # here" into a permanent, unrecoverable "unaligned" -- silently
+                    # dropping a genuine blank corroboration below the witness
+                    # floor (GOVERNANCE 2/10). Attach trivially at a zero-length
+                    # span instead, exactly as the act-scoped branch below already
+                    # does for the same outcome.
+                    alignment = {
+                        "status": "aligned",
+                        "anchor_span": (
+                            {"start": act_anchor["start"], "end": act_anchor["start"]}
+                            if act_anchor is not None
+                            else {"start": 0, "end": 0}
+                        ),
+                        "witness_span": {"start": 0, "end": 0},
+                        "line_geometry": (
+                            [
                                 {
                                     "bbox": {
                                         key: act_anchor["bbox"][key] for key in ("x", "y", "w", "h")
                                     }
                                 }
-                            ],
-                            "loss": {
-                                "witness": result["witness"]["loss"],
-                                "anchor": result["anchor"]["loss"],
-                            },
-                            "offset_maps": {
-                                "witness": result["witness"]["offset_map"],
-                                "anchor": result["anchor"]["offset_map"],
-                            },
-                        }
+                            ]
+                            if act_anchor is not None
+                            else []
+                        ),
+                        "loss": {"witness": _ZERO_ALIGNMENT_LOSS, "anchor": _ZERO_ALIGNMENT_LOSS},
+                        "offset_maps": {"witness": [], "anchor": []},
+                    }
+                else:
+                    page_text = page_texts.get((act["page_ordinal"], chair))
+                    anchor_text = page_texts.get((act["page_ordinal"], "chandra-anchor"))
+                    if page_text is None or anchor_text is None or act_anchor is None:
+                        result = {"status": "unaligned", "reason": "missing-chandra-page-anchor"}
                     else:
-                        result = {"status": "unaligned", "reason": "no-overlap-with-act-anchor"}
-                if result["status"] == "unaligned":
-                    alignment = {"status": "unaligned", "reason": result["reason"]}
+                        result = align_to_anchor(page_text, anchor_text, limits)
+                    if result["status"] == "aligned":
+                        overlaps = [
+                            span
+                            for span in result["spans"]
+                            if span["anchor"]["end"] > act_anchor["start"]
+                            and span["anchor"]["start"] < act_anchor["end"]
+                        ]
+                        if overlaps:
+                            witness_start = min(span["witness"]["start"] for span in overlaps)
+                            witness_end = max(span["witness"]["end"] for span in overlaps)
+                            alignment = {
+                                "status": "aligned",
+                                "anchor_span": {key: act_anchor[key] for key in ("start", "end")},
+                                "witness_span": {"start": witness_start, "end": witness_end},
+                                "line_geometry": [
+                                    {
+                                        "bbox": {
+                                            key: act_anchor["bbox"][key]
+                                            for key in ("x", "y", "w", "h")
+                                        }
+                                    }
+                                ],
+                                "loss": {
+                                    "witness": result["witness"]["loss"],
+                                    "anchor": result["anchor"]["loss"],
+                                },
+                                "offset_maps": {
+                                    "witness": result["witness"]["offset_map"],
+                                    "anchor": result["anchor"]["offset_map"],
+                                },
+                            }
+                        else:
+                            result = {"status": "unaligned", "reason": "no-overlap-with-act-anchor"}
+                    if result["status"] == "unaligned":
+                        alignment = {"status": "unaligned", "reason": result["reason"]}
                 attached = (
                     alignment["status"] == "aligned" and attempt.outcome in WITNESS_READING_OUTCOMES
                 )

@@ -1180,7 +1180,7 @@ def test_the_final_export_keeps_each_original_filename_and_digest_link(happy_run
 def test_a_genuinely_empty_testimonium_counts_as_a_witnessed_read(tmp_path):
     root = tmp_path / "runs"
     result = orchestrate(root, "r", "genuinely-empty-witness")
-    assert result.returncode == 3, result.stderr
+    assert result.returncode == 0, result.stderr
     tree = RunTree(root, "r")
     empty = next(
         tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
@@ -1208,14 +1208,14 @@ def test_a_genuinely_empty_testimonium_counts_as_a_witnessed_read(tmp_path):
         if entry["kind"] == "perlectio" and entry["subject_id"] == empty["subject_id"]
     )
     assert all(region["witness_covered"] for region in reading["payload"]["basis"]["regions"])
-    assert export_of(tree)["aggregate"]["status"] == "partial"
+    assert export_of(tree)["aggregate"]["status"] == "complete"
 
 
 def test_an_ink_free_page_fallback_is_witnessed_and_read_end_to_end(tmp_path):
     """A Designator-minted act reaches both reader stages without fixture-key lookup failure."""
     root = tmp_path / "runs"
     result = orchestrate(root, "r", "ink-free-page")
-    assert result.returncode == 3, result.stderr
+    assert result.returncode == 0, result.stderr
     tree = RunTree(root, "r")
 
     testimonia = []
