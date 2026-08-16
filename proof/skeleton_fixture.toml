@@ -54,6 +54,11 @@ w = 160
 h = 100
 text = "SYNTHETIC ACT TWO delta epsilon zeta eta"
 
+[[chandra_anchor]]
+page_ordinal = 1
+html = "<p>SYNTHETIC ACT ONE alpha beta gamma </p><p>SYNTHETIC ACT TWO delta epsilon zeta eta</p>"
+lines = [{ act_key = "a1", h = 80, text = "SYNTHETIC ACT ONE alpha beta gamma", w = 160, x = 20, y = 20 }, { act_key = "a2", h = 100, text = "SYNTHETIC ACT TWO delta epsilon zeta eta", w = 160, x = 20, y = 120 }]
+
 [[prior_reading]]
 scenario = "happy"
 act_key = "a1"

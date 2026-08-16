@@ -114,6 +114,17 @@ TESTIMONY = {
     },
 }
 
+# R4's fixture-only Chandra view.  The HTML is deliberately retained as markup
+# so the alignment path proves stripping and offset accounting before mapping
+# the named anchor lines into their declared geometry.
+CHANDRA_ANCHORS = (
+    {
+        "page_ordinal": 1,
+        "html": "<p>SYNTHETIC ACT ONE alpha beta gamma </p><p>SYNTHETIC ACT TWO delta epsilon zeta eta</p>",
+        "lines": ("a1", "a2"),
+    },
+)
+
 # The first two rows are the pair spec 07's `format_capabilities` exists for: "a
 # witness that cannot say 'unsure' must not be read as confident". Their own
 # `witness-capabilities` scenario keeps that distinction exercised without
@@ -369,6 +380,29 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
             f"h = {bounds['h']}",
             f"text = {toml_string(act['text'])}",
         ]
+
+    for anchor in CHANDRA_ANCHORS:
+        lines += [
+            "",
+            "[[chandra_anchor]]",
+            f"page_ordinal = {anchor['page_ordinal']}",
+            f"html = {toml_string(anchor['html'])}",
+        ]
+        anchor_lines = []
+        for act_key in anchor["lines"]:
+            act = next(row for row in ACTS if row["key"] == act_key)
+            bounds = act_descriptor(act["page_ordinal"], act["proposal_ordinal"])["bounds"]
+            anchor_lines.append(
+                {
+                    "act_key": act_key,
+                    "text": act["text"],
+                    "x": bounds["x"],
+                    "y": bounds["y"],
+                    "w": bounds["w"],
+                    "h": bounds["h"],
+                }
+            )
+        lines.append("lines = " + toml_value(anchor_lines))
 
     for prior in PRIOR_READINGS:
         lines += [

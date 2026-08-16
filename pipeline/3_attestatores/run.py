@@ -29,7 +29,7 @@ from typing import Any, NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from common.alignment import align_to_anchor, load_alignment_limits  # noqa: E402
+from common.alignment import align_to_anchor, load_alignment_limits, markup_text_view  # noqa: E402
 from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal  # noqa: E402
@@ -1406,21 +1406,29 @@ def publish_page_testimonia_and_attachments(
                 "page-testimonium",
                 artifact_id(ATTESTATORES, "page-testimonium", page_subject, page_attempt),
             )
-        # Fixture Chandra is chair 1. Its retained page text is the textual
-        # anchor; Designator rectangles are the fixture's line geometry. The
-        # offsets derive from the retained joined text, not the act key or an
-        # outcome proxy.
-        anchor_chair = "attestator_1"
-        if anchor_chair in page_chairs:
-            cursor = 0
-            for index, act in enumerate(page_acts):
-                attempt = attempts_by_pair[(act["act_id"], anchor_chair)]
-                text = attempt.native_payload if isinstance(attempt.native_payload, str) else ""
-                anchor_ranges[(page_ordinal, act["act_id"])] = {
-                    "start": cursor,
-                    "end": cursor + len(text),
-                }
-                cursor += len(text) + (1 if index < len(page_acts) - 1 else 0)
+        anchors = [
+            row
+            for row in context.fixture.get("chandra_anchor", [])
+            if row.get("page_ordinal") == page_ordinal
+        ]
+        if len(anchors) == 1 and isinstance(anchors[0].get("html"), str):
+            anchor = anchors[0]
+            page_texts[(page_ordinal, "chandra-anchor")] = anchor["html"]
+            normalized_anchor = markup_text_view(anchor["html"])["text"]
+            for line in anchor.get("lines", []):
+                if not isinstance(line, dict) or not isinstance(line.get("act_key"), str):
+                    continue
+                source = line.get("text")
+                if not isinstance(source, str):
+                    continue
+                start = normalized_anchor.find(source)
+                act = next((item for item in page_acts if item["act_key"] == line["act_key"]), None)
+                if start >= 0 and act is not None:
+                    anchor_ranges[(page_ordinal, act["act_id"])] = {
+                        "start": start,
+                        "end": start + len(source),
+                        "bbox": {key: line.get(key) for key in ("x", "y", "w", "h")},
+                    }
 
     for act in acts:
         entries: list[dict[str, Any]] = []
@@ -1431,7 +1439,7 @@ def publish_page_testimonia_and_attachments(
             attached = act["outcome"] == "proposed" and attempt.outcome in WITNESS_READING_OUTCOMES
             if page_witness:
                 page_text = page_texts.get((act["page_ordinal"], chair))
-                anchor_text = page_texts.get((act["page_ordinal"], "attestator_1"))
+                anchor_text = page_texts.get((act["page_ordinal"], "chandra-anchor"))
                 act_anchor = anchor_ranges.get((act["page_ordinal"], act["act_id"]))
                 if page_text is None or anchor_text is None or act_anchor is None:
                     result = {"status": "unaligned", "reason": "missing-chandra-page-anchor"}
@@ -1449,17 +1457,12 @@ def publish_page_testimonia_and_attachments(
                         witness_end = max(span["witness"]["end"] for span in overlaps)
                         alignment = {
                             "status": "aligned",
-                            "anchor_span": act_anchor,
+                            "anchor_span": {key: act_anchor[key] for key in ("start", "end")},
                             "witness_span": {"start": witness_start, "end": witness_end},
                             "line_geometry": [
                                 {
                                     "bbox": {
-                                        key: next(
-                                            row[key]
-                                            for row in context.fixture["act"]
-                                            if row["key"] == act["act_key"]
-                                        )
-                                        for key in ("x", "y", "w", "h")
+                                        key: act_anchor["bbox"][key] for key in ("x", "y", "w", "h")
                                     }
                                 }
                             ],
