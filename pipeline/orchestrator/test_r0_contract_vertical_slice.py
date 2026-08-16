@@ -326,12 +326,22 @@ def test_page_testimony_excludes_text_from_an_act_the_same_chair_failed(tmp_path
         and record.get("payload", {}).get("page_ordinal") == 1
     ]
     assert page_records, "no page-testimonium found for attestator_3 on page 1"
-    page_text = page_records[0]["payload"]["payload"]
+    page_payload = page_records[0]["payload"]
+    page_text = page_payload["payload"]
     assert failed_text not in (page_text or ""), (
         f"attestator_3's page-1 testimony {page_text!r} contains the text of its own "
         f"failed act-a1 attempt {failed_text!r}; a recorded failure must never be folded "
         "into a page witness's 'read' testimony (F-S1)"
     )
+    unjoined = page_payload.get("unjoined_act_attempts")
+    assert isinstance(unjoined, list) and len(unjoined) == 1, (
+        "a page Testimonium whose synthetic join omitted a failed act must name "
+        f"that omission; got {unjoined!r}"
+    )
+    assert unjoined[0]["act_id"] == act_a1_id
+    assert unjoined[0]["act_key"] == "a1"
+    assert unjoined[0]["outcome"] == "failed"
+    assert isinstance(unjoined[0]["reason"], str) and unjoined[0]["reason"].strip()
 
 
 def test_act_attachment_span_reflects_this_chairs_own_delivered_text_not_the_act_key(

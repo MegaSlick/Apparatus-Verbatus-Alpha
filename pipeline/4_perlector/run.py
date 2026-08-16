@@ -275,13 +275,35 @@ def act_attachment_view(context, act: dict[str, Any]) -> dict[str, Any]:
                 subject_id=act["page_id"],
             )
             page_payload = testimonium.get("payload")
+            unjoined = (
+                page_payload.get("unjoined_act_attempts")
+                if isinstance(page_payload, dict)
+                else None
+            )
             if (
                 not isinstance(page_payload, dict)
                 or page_payload.get("chair") != chair
                 or page_payload.get("scope") != "page"
                 or page_payload.get("page_ordinal") != act["page_ordinal"]
+                or not isinstance(unjoined, list)
+                or any(
+                    not isinstance(row, dict)
+                    or set(row) != {"act_id", "act_key", "outcome", "reason"}
+                    or not isinstance(row["act_id"], str)
+                    or not isinstance(row["act_key"], str)
+                    or not isinstance(row["outcome"], str)
+                    or not isinstance(row["reason"], str)
+                    or not row["reason"].strip()
+                    for row in unjoined
+                )
             ):
                 raise SchemaRefusal(f"act {act_id} attachment points to the wrong page Testimonium")
+            current_unjoined = [row for row in unjoined if row["act_id"] == act_id]
+            if len(current_unjoined) > 1 or bool(current_unjoined) == attachment["attached"]:
+                raise SchemaRefusal(
+                    f"act {act_id} attachment disagrees with its page Testimonium's "
+                    "unjoined-attempt record"
+                )
             page_witness_count += 1
         else:
             testimonium = context.tree.read_artifact_reference(

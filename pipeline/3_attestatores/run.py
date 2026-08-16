@@ -1287,6 +1287,16 @@ def publish_page_testimonia_and_attachments(
                 if attempt.outcome in WITNESS_READING_OUTCOMES
                 and isinstance(attempt.native_payload, str)
             ]
+            unjoined_act_attempts = [
+                {
+                    "act_id": act["act_id"],
+                    "act_key": act["act_key"],
+                    "outcome": attempt.outcome,
+                    "reason": attempt.reason,
+                }
+                for act, attempt in zip(page_acts, attempts, strict=True)
+                if attempt.outcome not in WITNESS_READING_OUTCOMES
+            ]
             native_payload = "\n".join(readable)
             outcome = "read" if readable else "failed"
             health = content_health(native_payload, completed=outcome == "read")
@@ -1317,6 +1327,11 @@ def publish_page_testimonia_and_attachments(
                     ),
                     "scope": "page",
                     "page_ordinal": page_ordinal,
+                    # R0 synthesizes this fixture page record by joining the
+                    # chair's successful act attempts. The joined text's own
+                    # content_health cannot reveal which acts were omitted, so
+                    # retain every unjoined attempt explicitly (GOVERNANCE 2).
+                    "unjoined_act_attempts": unjoined_act_attempts,
                 },
             )
             page_records[(page_ordinal, chair)] = context.artifact_ref(
