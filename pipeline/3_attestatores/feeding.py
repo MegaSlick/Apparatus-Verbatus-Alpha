@@ -24,6 +24,26 @@ CHURRO_OUTPUT_TOKENS = 24_000
 DAI_MAX_WIDTH_PX = 1_500
 DAI_MAX_HEIGHT_PX = 4_096
 DAI_MAX_TOTAL_PIXELS = 2_359_296
+# Two of these three ceilings are read off something; one is chosen. Sealing them
+# side by side as bare integers made all three read as measured model bounds, and
+# a number nobody can trace is exactly what GOVERNANCE 10 refuses -- so each one
+# carries its own provenance into the record it seals, and a chosen ceiling says
+# out loud that it was chosen.
+DAI_LIMIT_SOURCES = {
+    "max_width_px": ("design v2.1 section 2: DAI is fed act crops at most 1500 px wide"),
+    "max_height_px": (
+        "R3 policy, no model source: nothing in the design, the roster or DAI's own "
+        "serving flags names a pixel height (the serving script's 4096 is "
+        "--max-model-len, a token count). Chosen so the sealed pixel budget still "
+        "affords 576 px of width at the ceiling (4096 x 576 = 2359296 exactly); "
+        "below it the total-pixel ceiling governs, so it binds only strips past "
+        "about 7:1 that carry too little width to read"
+    ),
+    "max_total_pixels": (
+        "DAI's own serving profile max_pixels (the old pipeline's serve_dai.sh), "
+        "already recorded in this repository at operations/serving/preflight.py"
+    ),
+}
 SCHEDULING_POLICY = "chair-outer-act-inner.stage-major-parish.v1"
 _UNCERTAINTY_TOKENS = ("[UNCERTAIN]", "[CROSSED_OUT]")
 _REPETITION_WINDOW = 24
@@ -132,10 +152,11 @@ def dai_model_view(
     if not resized and source_image_ref != model_image_ref:
         raise SchemaRefusal("DAI identity transform does not retain the source image bytes exactly")
     limits = {
-        "schema": "dai-image-limits.v1",
+        "schema": "dai-image-limits.v2",
         "max_width_px": DAI_MAX_WIDTH_PX,
         "max_height_px": DAI_MAX_HEIGHT_PX,
         "max_total_pixels": DAI_MAX_TOTAL_PIXELS,
+        "sources": dict(DAI_LIMIT_SOURCES),
     }
     return {
         "adapter": "dai-atr.v1",

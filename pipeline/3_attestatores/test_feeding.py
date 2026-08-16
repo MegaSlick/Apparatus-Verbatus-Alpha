@@ -181,6 +181,31 @@ def test_dai_retains_resize_and_manifest_references_not_carried_prompt_bytes():
     assert set(view["prompts"]["system"]) == {"relative_path", "sha256"}
 
 
+def test_every_dai_ceiling_seals_where_it_came_from():
+    """A sealed ceiling states its source, and a chosen one says it was chosen."""
+    view = dai_model_view(
+        source_image_ref=_ref("designator/crops/a.png"),
+        model_image_ref=_ref("attestatores/model-views/a.jpg", "b" * 64),
+        width_px=3_000,
+        height_px=1_001,
+        system_prompt_ref=_ref("models/dai/system.txt"),
+        query_prompt_ref=_ref("models/dai/query.txt"),
+        generation_config_ref=_ref("models/dai/generation_config.json"),
+    )
+    limits = view["image_limits"]
+    assert limits["schema"] == "dai-image-limits.v2"
+    ceilings = set(limits) - {"schema", "sources"}
+    assert ceilings == set(limits["sources"]), "every ceiling names a source, and only ceilings do"
+    assert all(limits["sources"][name].strip() for name in ceilings)
+    # The two sourced ceilings name where they were read; the chosen one names
+    # itself as chosen and the arithmetic that fixes its value.
+    assert "serve_dai.sh" in limits["sources"]["max_total_pixels"]
+    assert "design v2.1" in limits["sources"]["max_width_px"]
+    assert "no model source" in limits["sources"]["max_height_px"]
+    assert DAI_MAX_HEIGHT_PX * 576 == DAI_MAX_TOTAL_PIXELS
+    assert view["image_limits_sha256"] == digest_of(limits)
+
+
 @pytest.mark.parametrize(
     ("width_px", "height_px", "expected"),
     [(500, 10_000, (204, 4_080)), (1_500, 3_000, (1_086, 2_172))],
