@@ -409,6 +409,113 @@ def test_recensor_refuses_a_forged_audit_reference(tmp_path):
         _recensor().audit_state(SimpleNamespace(tree=tree), forged, final["subject_id"])
 
 
+def test_the_order_flag_fires_from_real_crop_geometry_not_the_declared_order():
+    """H1's repair, red-proved: `geometry_order` must be an independent fact.
+
+    While the production wiring set `geometry_order = row["order"]`, declared and
+    geometric order agreed by construction and the `order` class could never
+    fire — a check that reports agreement it manufactured itself (R0 freeze note
+    #2, the derived-record pattern). Nothing in the suite noticed the difference,
+    so the repair is pinned here: two acts declared in the seal's order but cut
+    the other way up the page must both raise `order`.
+    """
+    perlector = _perlector()
+
+    def row(act_id, *, order, y):
+        return perlector._audit_semi_final(
+            act_id=act_id,
+            page_id="p1",
+            order=order,
+            text=f"text of {act_id}",
+            regions=[
+                {"source_page_id": "p1", "transform": {"bounds": {"x": 12, "y": y, "w": 9, "h": 9}}}
+            ],
+            dossier={"testimonia": []},
+        )
+
+    # Declared first, but cut lower down the page than the act declared second.
+    first = row("a1", order=0, y=200)
+    second = row("a2", order=1, y=10)
+    assert (first["geometry_order"], second["geometry_order"]) == ((200, 12), (10, 12))
+
+    flags = audit.flags_once_per_page([first, second])
+    assert [flag["class"] for flag in flags["a1"]] == ["order"]
+    assert [flag["class"] for flag in flags["a2"]] == ["order"]
+
+    # Same acts, cut in their declared order: the class stays silent.
+    agreeing = audit.flags_once_per_page([row("a1", order=0, y=10), row("a2", order=1, y=200)])
+    assert agreeing == {"a1": [], "a2": []}
+
+
+def test_the_chain_refuses_an_audit_pair_belonging_to_another_act(tmp_path):
+    """`act_key` is a restatement; `subject_id` is the binding that holds.
+
+    Two acts on one page can carry the same `act_key` text — the fixture's keys
+    are distinct, but nothing in the seal makes them globally unique — so the
+    draft/finding restatement equality `validate_chain` checks cannot tell one
+    act's audit pair from another's. What can is the envelope subject the
+    reference resolves to, and that is the check pinned here.
+    """
+    result = _run(tmp_path / "runs")
+    assert result.returncode == 0, result.stderr
+    tree = RunTree(tmp_path / "runs", "r")
+    finals = _records(tree, "perlectio")
+    mine, theirs = finals[0], finals[1]
+    assert mine["subject_id"] != theirs["subject_id"]
+
+    forged = copy.deepcopy(mine)
+    forged["payload"]["audit"] = copy.deepcopy(theirs["payload"]["audit"])
+    forged["inputs"] = theirs["inputs"]
+    with pytest.raises(SchemaRefusal, match="not required '" + mine["subject_id"] + "'"):
+        audit.validate_chain(tree, forged, mine["subject_id"])
+
+
+def test_the_chain_refuses_a_second_attempt_that_reuses_the_first_attempts_audit(tmp_path):
+    """One audit draft and finding per attempt, bound to that attempt's ordinal.
+
+    A recovery reread reads a new crop, so its Pass-C flags are located in a new
+    semi-final. Letting attempt 2's Perlectio point back at attempt 1's pair
+    would republish the superseded audit as the current one — and the pair is
+    the only evidence the Recensor routes on.
+    """
+    result = _run(tmp_path / "runs", scenario="review")
+    assert result.returncode == 3, result.stderr
+    tree = RunTree(tmp_path / "runs", "r")
+    by_attempt = {}
+    for record in _records(tree, "perlectio"):
+        by_attempt.setdefault(record["subject_id"], {})[record["payload"]["attempt_ordinal"]] = (
+            record
+        )
+    recovered = next(records for records in by_attempt.values() if len(records) == 2)
+
+    reused = copy.deepcopy(recovered[2])
+    reused["payload"]["audit"] = copy.deepcopy(recovered[1]["payload"]["audit"])
+    reused["inputs"] = recovered[1]["inputs"]
+    with pytest.raises(SchemaRefusal, match="disagrees with its audit identity"):
+        audit.validate_chain(tree, reused, reused["subject_id"])
+
+
+def test_the_chain_refuses_perlectio_uncertainty_the_finding_did_not_establish(tmp_path):
+    """The Perlectio layer projects the finding's spans; it may not add its own.
+
+    R8 reconciles these two layers, so the projection is the seam that has to
+    hold: an export-facing `uncertain_spans` entry with no exhausted-cap finding
+    behind it would arrive at the canonical layer as uncertainty nobody measured.
+    """
+    result = _run(tmp_path / "runs")
+    assert result.returncode == 0, result.stderr
+    tree = RunTree(tmp_path / "runs", "r")
+    final = _records(tree, "perlectio")[0]
+    assert final["payload"]["uncertain_spans"] == []
+
+    invented = copy.deepcopy(final)
+    invented["payload"]["uncertain_spans"] = [
+        {"start": 0, "end": 3, "alternatives": [], "confidence": "low"}
+    ]
+    with pytest.raises(SchemaRefusal, match="audit uncertainty projection"):
+        audit.validate_chain(tree, invented, final["subject_id"])
+
+
 def test_shared_chain_refuses_draft_finding_restatement_drift(tmp_path):
     result = _run(tmp_path / "runs")
     assert result.returncode == 0, result.stderr
