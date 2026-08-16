@@ -278,6 +278,7 @@ def test_the_scenarios_are_exactly_the_declared_ones(skeleton):
         "happy",
         "witness-capabilities",
         "review",
+        "audit-change",
         "refused-page",
         "refused-first-page",
         "truncated-reading",
