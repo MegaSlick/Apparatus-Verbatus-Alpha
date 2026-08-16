@@ -1,6 +1,7 @@
 """Synthetic-store tests for R1 acquisition; no network or real weights are used."""
 
 import copy
+import hashlib
 import json
 import os
 import shutil
@@ -23,6 +24,7 @@ from common.chairs.model_store import (
     promote_verified_snapshot,
     read_derived_inventory,
     require_complete_store,
+    require_store_artifact,
     verify_store,
     write_derived_inventory,
     write_download_record,
@@ -70,7 +72,13 @@ def _store(tmp_path):
         }
     record = {
         "schema": STORE_SCHEMA,
-        "layout": {"hf": "hf", "local": "local", "manifests": "manifests", "staging": "staging"},
+        "layout": {
+            "hf": "hf",
+            "local": "local",
+            "manifests": "manifests",
+            "records": "records",
+            "staging": "staging",
+        },
         "capacity": {
             "snapshot_bytes": 51_000_000_000,
             "promotion_headroom_bytes": 51_000_000_000,
@@ -79,7 +87,7 @@ def _store(tmp_path):
         },
         "artifacts": [artifacts[key] for key in sorted(artifacts)],
     }
-    (tmp_path / "download_record.json").write_bytes(canonical_bytes(record))
+    write_download_record(record, tmp_path)
     return record
 
 
@@ -245,7 +253,13 @@ def test_write_download_record_round_trips_through_load_download_record(tmp_path
         }
     record = {
         "schema": STORE_SCHEMA,
-        "layout": {"hf": "hf", "local": "local", "manifests": "manifests", "staging": "staging"},
+        "layout": {
+            "hf": "hf",
+            "local": "local",
+            "manifests": "manifests",
+            "records": "records",
+            "staging": "staging",
+        },
         "capacity": {
             "snapshot_bytes": 1,
             "promotion_headroom_bytes": 1,
@@ -268,6 +282,100 @@ def test_load_download_record_refuses_hand_formatted_bytes_by_name(tmp_path):
 
     with pytest.raises(DigestMismatchRefusal, match="not canonical bytes"):
         load_download_record(tmp_path)
+
+
+def test_download_record_update_preserves_both_immutable_versions(tmp_path):
+    complete = _store(tmp_path)
+    pending = _mark_pending(
+        tmp_path,
+        copy.deepcopy(complete),
+        "surya2-detection",
+        "s3 bundle not yet fetched by the host",
+    )
+    pending_digest = write_download_record(pending, tmp_path)
+    present = next(item for item in complete["artifacts"] if item["artifact"] == "surya2-detection")
+    snapshot = tmp_path / present["snapshot"]
+    snapshot.mkdir(parents=True)
+    (snapshot / "config.json").write_text('{"fixture":true}', encoding="utf-8")
+    (snapshot / "LICENSE").write_text("license for surya2-detection\n", encoding="utf-8")
+    (snapshot / "model.safetensors").write_bytes(b"weights for surya2-detection\n")
+    assert (
+        write_manifest(build_manifest(snapshot), tmp_path / present["manifest"])
+        == present["digest_manifest"]
+    )
+
+    present_digest = write_download_record(complete, tmp_path)
+
+    assert load_download_record(tmp_path) == complete
+    assert pending_digest != present_digest
+    assert (tmp_path / "records" / f"{pending_digest}.json").read_bytes() == canonical_bytes(
+        pending
+    )
+    assert (tmp_path / "records" / f"{present_digest}.json").read_bytes() == canonical_bytes(
+        complete
+    )
+
+
+def test_fetched_artifact_cannot_be_relabelled_pending_fetch(tmp_path):
+    record = _store(tmp_path)
+    replacement = copy.deepcopy(record)
+    required = next(item for item in REQUIRED_ARTIFACTS if item.artifact == "surya2-detection")
+    index = next(
+        index
+        for index, item in enumerate(replacement["artifacts"])
+        if item["artifact"] == "surya2-detection"
+    )
+    replacement["artifacts"][index] = {
+        "artifact": required.artifact,
+        "state": "pending-fetch",
+        "source": required.source,
+        "repo": required.repo,
+        "revision": required.revision,
+        "reason": "pretend it was never fetched",
+    }
+
+    with pytest.raises(DigestMismatchRefusal, match="fetched-and-lost"):
+        write_download_record(replacement, tmp_path)
+
+    assert load_download_record(tmp_path) == record
+    rejected_digest = hashlib.sha256(canonical_bytes(replacement)).hexdigest()
+    assert not (tmp_path / "records" / f"{rejected_digest}.json").exists()
+
+
+def test_active_record_swap_does_not_rewrite_its_immutable_version(tmp_path):
+    record = _store(tmp_path)
+    original_bytes = canonical_bytes(record)
+    original_digest = hashlib.sha256(original_bytes).hexdigest()
+    archive = tmp_path / "records" / f"{original_digest}.json"
+    swapped = copy.deepcopy(record)
+    swapped["capacity"]["available_bytes"] += 1
+
+    (tmp_path / "download_record.json").write_bytes(canonical_bytes(swapped))
+
+    assert archive.read_bytes() == original_bytes
+    with pytest.raises(DigestMismatchRefusal, match="immutable version"):
+        load_download_record(tmp_path)
+
+
+def test_writer_archives_the_legacy_host_record_before_migration(tmp_path):
+    record = _store(tmp_path)
+    (tmp_path / "download_record.json").unlink()
+    shutil.rmtree(tmp_path / "records")
+    legacy = canonical_bytes(
+        {
+            "datalab-to/chandra-ocr-2": {
+                "revision": "af93b47dba1b47b6640c86ccf487ed2260ab9a09",
+                "path": "hf/chandra-ocr-2",
+            }
+        }
+    )
+    (tmp_path / "download_record.json").write_bytes(legacy)
+
+    write_download_record(record, tmp_path)
+
+    legacy_digest = hashlib.sha256(legacy).hexdigest()
+    assert (tmp_path / "records" / f"{legacy_digest}.json").read_bytes() == legacy
+    assert load_download_record(tmp_path) == record
 
 
 # --- S3: symlink escape is refused in both directions ---------------------------
@@ -400,7 +508,12 @@ def _mark_pending(tmp_path, record, artifact, reason):
                 "revision": required.revision,
                 "reason": reason,
             }
-    (tmp_path / "download_record.json").write_bytes(canonical_bytes(record))
+    # Most pending-state tests need a pending genesis, not the forbidden claim
+    # that a fetched artifact later became "not yet fetched". Reset only this
+    # synthetic fixture's record history before publishing that genesis.
+    (tmp_path / "download_record.json").unlink()
+    shutil.rmtree(tmp_path / "records")
+    write_download_record(record, tmp_path)
     return record
 
 
@@ -439,6 +552,30 @@ def test_require_complete_store_accepts_a_store_with_every_roster_artifact(tmp_p
     assert inventory["pending"] == []
 
 
+def test_required_artifact_refuses_not_yet_fetched_by_name(tmp_path):
+    _mark_pending(tmp_path, _store(tmp_path), "surya2-detection", "s3 fetch is pending")
+
+    with pytest.raises(DigestMismatchRefusal, match="pending-fetch: s3 fetch is pending"):
+        require_store_artifact(tmp_path, "surya2-detection")
+
+
+def test_required_artifact_refuses_fetched_and_lost_bytes_by_filename(tmp_path):
+    record = _store(tmp_path)
+    entry = next(item for item in record["artifacts"] if item["artifact"] == "qwen3.5-9B")
+    (tmp_path / entry["snapshot"] / "model.safetensors").unlink()
+
+    with pytest.raises(DigestMismatchRefusal, match="model.safetensors: missing file"):
+        require_store_artifact(tmp_path, "qwen3.5-9B")
+
+
+def test_surya_ocr_is_not_required_and_use_refuses_with_its_escape_hatch(tmp_path):
+    _store(tmp_path)
+
+    assert SURYA_OCR_2_REFUSAL["state"] == "not-required"
+    with pytest.raises(DigestMismatchRefusal, match="recorded-bench-need"):
+        require_store_artifact(tmp_path, "surya-ocr-2")
+
+
 def test_require_complete_store_cannot_be_satisfied_by_a_forged_inventory(tmp_path):
     record = _mark_pending(tmp_path, _store(tmp_path), "surya2-detection", "not fetched yet")
     forged = derived_inventory(record)
@@ -459,10 +596,8 @@ def test_a_pending_entry_may_not_carry_evidence_for_bytes_that_are_not_there(tmp
 
 
 def test_a_pending_entry_must_say_why_the_artifact_is_not_on_disk(tmp_path):
-    record = _mark_pending(tmp_path, _store(tmp_path), "surya2-detection", "   ")
-
     with pytest.raises(DigestMismatchRefusal, match="must say why"):
-        derived_inventory(record)
+        _mark_pending(tmp_path, _store(tmp_path), "surya2-detection", "   ")
 
 
 def test_a_pending_entry_is_held_to_the_same_roster_origin_as_a_present_one(tmp_path):
@@ -579,7 +714,7 @@ def test_store_refuses_a_licence_snapshot_with_no_text(tmp_path):
     entry["digest_manifest"] = write_manifest(
         build_manifest(snapshot), tmp_path / entry["manifest"]
     )
-    (tmp_path / "download_record.json").write_bytes(canonical_bytes(record))
+    write_download_record(record, tmp_path)
 
     with pytest.raises(DigestMismatchRefusal, match="is empty"):
         verify_store(tmp_path)
@@ -661,7 +796,7 @@ def test_a_capacity_refusal_names_the_four_fields_a_migrating_operator_must_writ
 
 
 def test_a_digest_manifest_must_live_under_the_declared_manifests_root(tmp_path):
-    """The record declares a four-root layout; snapshots obeyed it and manifests did not."""
+    """The record declares named roots; snapshots obeyed them and manifests did not."""
 
     record = _store(tmp_path)
     entry = next(item for item in record["artifacts"] if item["artifact"] == "churro-3B")
@@ -686,7 +821,7 @@ def test_store_refuses_a_required_weight_absent_from_a_rewritten_manifest(tmp_pa
     entry["digest_manifest"] = write_manifest(
         build_manifest(snapshot), tmp_path / entry["manifest"]
     )
-    (tmp_path / "download_record.json").write_bytes(canonical_bytes(record))
+    write_download_record(record, tmp_path)
 
     with pytest.raises(DigestMismatchRefusal, match="required file 'model.safetensors'"):
         verify_store(tmp_path)
@@ -709,7 +844,7 @@ def test_store_refuses_an_empty_required_model_payload(tmp_path):
     entry["digest_manifest"] = write_manifest(
         build_manifest(snapshot), tmp_path / entry["manifest"]
     )
-    (tmp_path / "download_record.json").write_bytes(canonical_bytes(record))
+    write_download_record(record, tmp_path)
 
     with pytest.raises(DigestMismatchRefusal, match="required file 'model.safetensors' is empty"):
         verify_store(tmp_path)

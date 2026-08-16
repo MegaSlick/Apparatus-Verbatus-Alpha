@@ -3,10 +3,10 @@
 This module deliberately has no downloader, HTTP client, or cache-fill path.  A
 host operator materializes the pinned bytes once; consumers then use this module
 to prove the store and its derived records still agree.  It never fetches, and
-its few writers (the canonical download record, the derived inventory, a
-promoted manifest) only ever publish once: identical bytes already on disk are
-reused silently, differing bytes are refused, and an existing file is never
-overwritten (GOVERNANCE 4).  The documented store root is
+its few writers preserve every evidence version: inventories and manifests
+publish once, while each download-record version is digest-addressed and only
+its active copy moves. Differing evidence is never overwritten (GOVERNANCE 4).
+The documented store root is
 ``/Users/tyrel/verbatus-models`` (for example only, never a default).
 """
 
@@ -135,7 +135,7 @@ CHAIRS_WITHOUT_ROSTER_ROLE = {
 }
 SURYA_OCR_2_REFUSAL = {
     "artifact": "surya-ocr-2",
-    "state": "not-fetched",
+    "state": "not-required",
     "reason": "detector only; no OCR artifact is needed",
     "escape_hatch": "recorded-bench-need",
 }
@@ -147,7 +147,7 @@ MODEL_PAYLOAD_SUFFIXES = {".bin", ".gguf", ".onnx", ".pt", ".pth", ".safetensors
 
 
 def load_download_record(store_root: str | Path) -> dict[str, Any]:
-    """Load the canonical host record without contacting any remote service."""
+    """Load the canonical active record and prove its immutable version exists."""
 
     root = Path(store_root)
     try:
@@ -165,26 +165,72 @@ def load_download_record(store_root: str | Path) -> dict[str, Any]:
             "write_download_record rather than by hand",
         )
     _validate_record(raw)
+    digest = digest_bytes(raw_bytes)
+    archive = root / "records" / f"{digest}.json"
+    try:
+        archived_bytes = archive.read_bytes()
+    except OSError as error:
+        raise DigestMismatchRefusal(
+            "model-store",
+            f"active download record has no readable immutable version {archive}: {error}",
+        ) from error
+    if archived_bytes != raw_bytes:
+        raise DigestMismatchRefusal(
+            "model-store",
+            f"active download record differs from immutable version {archive}",
+        )
     return raw
 
 
 def write_download_record(record: Mapping[str, Any], store_root: str | Path) -> str:
-    """Publish the host record in its one canonical serialization, once.
+    """Version the host record immutably and move its active copy atomically.
 
     The host operator assembles ``record`` from what was actually fetched; this
     function only guarantees the bytes on disk are the exact canonical form
     :func:`load_download_record` requires, so a hand-formatted file never earns
-    a "not canonical bytes" refusal that names no cause. Publication follows the
-    rest of this module's custody rule (GOVERNANCE 4): identical bytes already
-    on disk are reused silently, differing bytes are refused, and an existing
-    file is never overwritten.
+    a "not canonical bytes" refusal that names no cause. A store evolves from
+    ``pending-fetch`` to ``present``. Each canonical record is therefore
+    published once at ``records/<sha256>.json``; only the active copy
+    ``download_record.json`` moves. Previous record bytes remain at
+    their digest-addressed names (GOVERNANCE 4), including the old ad-hoc record
+    this migration replaces. A present artifact may never move backwards to
+    pending-fetch: missing bytes after acquisition are fetched-and-lost, not
+    not-yet-fetched.
     """
 
     _validate_record(record)
-    destination = Path(store_root) / "download_record.json"
+    root = Path(store_root)
+    destination = root / "download_record.json"
     payload = canonical_bytes(record)
-    _publish_once(destination, payload, chair="model-store", label="download_record.json")
-    return digest_bytes(payload)
+    digest = digest_bytes(payload)
+    if destination.exists():
+        try:
+            previous_bytes = destination.read_bytes()
+        except OSError as error:
+            raise DigestMismatchRefusal(
+                "model-store", f"cannot read active download_record.json: {error}"
+            ) from error
+        if previous_bytes == payload:
+            # Reuse only an already-custodied v1 record. A caller cannot make a
+            # direct write authoritative merely by handing the same mapping to
+            # this writer afterwards.
+            _current_v1_record(root, previous_bytes)
+            return digest
+        previous_digest = digest_bytes(previous_bytes)
+        previous = _current_v1_record(root, previous_bytes)
+        if previous is not None:
+            _validate_record_transition(previous, record)
+        _publish_once(
+            root / "records" / f"{previous_digest}.json",
+            previous_bytes,
+            chair="model-store",
+            label="previous or legacy download record",
+        )
+
+    archive = root / "records" / f"{digest}.json"
+    _publish_once(archive, payload, chair="model-store", label="download record version")
+    _move_active_record(destination, archive)
+    return digest
 
 
 def derived_inventory(record: Mapping[str, Any]) -> dict[str, Any]:
@@ -224,7 +270,7 @@ def derived_inventory(record: Mapping[str, Any]) -> dict[str, Any]:
         "complete": not pending,
         "artifacts": rows,
         "pending": pending,
-        "refusals": [SURYA_OCR_2_REFUSAL],
+        "refusals": [dict(SURYA_OCR_2_REFUSAL)],
     }
 
 
@@ -301,6 +347,25 @@ def require_complete_store(store_root: str | Path) -> dict[str, Any]:
             f"model store is not complete; still pending fetch: {', '.join(inventory['pending'])}",
         )
     return inventory
+
+
+def require_store_artifact(store_root: str | Path, artifact: str) -> dict[str, Any]:
+    """Return a byte-verified present artifact or refuse its exact absence class."""
+
+    if artifact == SURYA_OCR_2_REFUSAL["artifact"]:
+        raise DigestMismatchRefusal(
+            artifact,
+            f"artifact is {SURYA_OCR_2_REFUSAL['state']}: "
+            f"{SURYA_OCR_2_REFUSAL['reason']}; the only escape hatch is a "
+            f"{SURYA_OCR_2_REFUSAL['escape_hatch']}",
+        )
+    inventory = verify_store(store_root)
+    rows = [row for row in inventory["artifacts"] if row["artifact"] == artifact]
+    if not rows:
+        raise DigestMismatchRefusal(artifact, "artifact is not part of the required roster")
+    if rows[0]["state"] == "pending-fetch":
+        raise DigestMismatchRefusal(artifact, f"artifact is pending-fetch: {rows[0]['reason']}")
+    return rows[0]
 
 
 def write_derived_inventory(record: Mapping[str, Any], path: str | Path) -> str:
@@ -476,6 +541,54 @@ def _publish_once(destination: Path, payload: bytes, *, chair: str, label: str) 
         temporary.unlink(missing_ok=True)
 
 
+def _move_active_record(destination: Path, archive: Path) -> None:
+    """Atomically point the active name at an already-immutable record version."""
+
+    temporary = destination.with_name(f".{destination.name}.active-{os.getpid()}")
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary.unlink(missing_ok=True)
+        temporary.write_bytes(archive.read_bytes())
+        os.replace(temporary, destination)
+    except OSError as error:
+        raise DigestMismatchRefusal(
+            "model-store", f"cannot publish active download_record.json: {error}"
+        ) from error
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _current_v1_record(root: Path, raw_bytes: bytes) -> dict[str, Any] | None:
+    """Return a current v1 record, while allowing the one legacy migration input."""
+
+    try:
+        raw = json.loads(raw_bytes)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if isinstance(raw, Mapping) and raw.get("schema") == STORE_SCHEMA:
+        # This also proves canonical bytes and the immutable archived version. A
+        # damaged v1 record is not silently treated as legacy and replaced.
+        return load_download_record(root)
+    return None
+
+
+def _validate_record_transition(
+    previous: Mapping[str, Any], replacement: Mapping[str, Any]
+) -> None:
+    """Keep not-yet-fetched distinct from fetched-and-lost across versions."""
+
+    old = {item["artifact"]: item for item in previous["artifacts"]}
+    new = {item["artifact"]: item for item in replacement["artifacts"]}
+    for artifact, old_item in old.items():
+        if old_item["state"] == "present" and new[artifact]["state"] == "pending-fetch":
+            raise DigestMismatchRefusal(
+                artifact,
+                "a fetched artifact cannot return to pending-fetch; if its bytes are "
+                "missing, the present record must remain and verification reports it "
+                "as fetched-and-lost",
+            )
+
+
 def _validate_record(raw: Mapping[str, Any]) -> None:
     if not isinstance(raw, Mapping):
         raise DigestMismatchRefusal("model-store", "download record is not a table")
@@ -496,10 +609,12 @@ def _validate_record(raw: Mapping[str, Any]) -> None:
         "hf": "hf",
         "local": "local",
         "manifests": "manifests",
+        "records": "records",
         "staging": "staging",
     }:
         raise DigestMismatchRefusal(
-            "model-store", "store layout must name hf, local, manifests, and staging roots"
+            "model-store",
+            "store layout must name hf, local, manifests, records, and staging roots",
         )
     # `capacity` is a self-declared plan, exactly like a ServingProfile's GPU
     # figures (operations/serving/config.py) are "configuration/planning values,
@@ -599,7 +714,7 @@ def _validate_record(raw: Mapping[str, Any]) -> None:
             )
         for field in ("snapshot", "manifest", "license"):
             _safe(item[field], field)
-        # The record declares a four-root layout and then had to be obeyed for
+        # The record declares a named-root layout and then had to be obeyed for
         # snapshots only, which left `manifests` decorative: a manifest could sit
         # anywhere under the root, including beside a snapshot it does not
         # describe. A layout half-enforced is a layout a consumer cannot rely on.

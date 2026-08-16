@@ -11,7 +11,7 @@ in code.
 | `models.py` | the typed values: `ChairIdentity`, `AbsentChair`, the digest manifest, `VerifiedSnapshot`, `ServingDetails`, `ServingReceipt`, `ModelsConfig` |
 | `config.py` | the one schema `config/models.toml` must match, and every refusal a malformed pin earns |
 | `manifests.py` | building, writing, reading and verifying the per-file digest manifest |
-| `model_store.py` | validation of the host's durable model store, its derived seven-chair inventory, licence snapshots, carried DAI prompts, and capacity record; publishes the canonical download record, derived inventory, and promoted manifests once each, never overwriting a difference |
+| `model_store.py` | validation of the host's durable model store, its derived seven-chair inventory, licence snapshots, carried DAI prompts, and capacity record; versions canonical download records immutably and publishes derived inventories and promoted manifests once, never overwriting evidence |
 | `registry.py` | resolution and verification against the filesystem and Hugging Face |
 | `receipts.py` | what a serving receipt must carry before it is one |
 | `errors.py` | the closed refusal taxonomy — one member per door "Resolution refuses; it never substitutes" names |
@@ -77,10 +77,15 @@ integration doors for spec 04's manager; neither chooses how a stage obtains
 its serving details.
 
 The durable host model store is intentionally outside this repository. Its
-caller-supplied root contains canonical `download_record.json`, `hf/`, `local/`,
-`manifests/`, and `staging/`; `model_store.py` only verifies existing bytes and
-never fetches. `model_root` in `config/models.toml` remains local-repository
-only and relative to that file.
+caller-supplied root contains canonical `download_record.json`, `records/`,
+`hf/`, `local/`, `manifests/`, and `staging/`; `model_store.py` only verifies
+existing bytes and never fetches. Each canonical record version is immutable at
+`records/<sha256>.json`; `download_record.json` is an atomically moved copy
+to the active version, so a pending artifact can later become present without
+erasing its earlier state. A present artifact cannot return to pending: missing
+bytes after acquisition remain visibly fetched-and-lost and fail verification.
+`model_root` in `config/models.toml` remains local-repository only and relative
+to that file.
 
 The store is shared with the future pod, and the two sides key their directories
 differently: a store directory is per **artifact** (chandra-ocr-2 fills two
@@ -101,6 +106,11 @@ inventory `complete: false` with every pending artifact named;
 `require_complete_store` is the door for a consumer that needs the whole roster
 on disk. A half-fetched store is therefore recordable and visibly partial rather
 than unrepresentable (GOVERNANCE 2).
+
+`require_store_artifact` preserves the three absence meanings at the consumer
+door: `pending-fetch` means not yet fetched, a `present` entry whose bytes are
+gone refuses as fetched-and-lost, and `surya-ocr-2` is `not-required` because
+only detection is in the roster (with the recorded-bench-need escape hatch).
 
 Every `present` entry also names `required_files`. The digest manifest remains
 the exact allow-list used when a chair cache fills, while `required_files` is
