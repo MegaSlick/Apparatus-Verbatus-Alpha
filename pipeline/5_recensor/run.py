@@ -24,9 +24,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "4_perlector"))
 
-import audit  # noqa: E402
 from residual_ink import page_residual_ink  # noqa: E402
 
 from common.chairs.registry import ChairRegistry  # noqa: E402
@@ -47,6 +45,7 @@ from common.contracts.stages import (  # noqa: E402
     RECENSOR,
 )
 from common.exemplar_boundary import verify_sealed_page_pixels  # noqa: E402
+from common.perlector_audit import audit_digest, validate_draft, validate_finding  # noqa: E402
 from common.recensor_receipt import build_recensor_partition_receipt  # noqa: E402
 from common.recovery import (  # noqa: E402
     FALLBACK_RECROP,
@@ -119,8 +118,8 @@ def audit_state(context, reading: dict, act_id: str) -> bool:
     finding = context.tree.read_artifact_reference(
         record["finding_ref"], stage=PERLECTOR, kind="audit-finding", subject_id=act_id
     )
-    audit.validate_draft(draft.get("payload"))
-    audit.validate_finding(finding.get("payload"), text=payload.get("text", ""))
+    validate_draft(draft.get("payload"))
+    validate_finding(finding.get("payload"), text=payload.get("text", ""))
     if (
         draft["payload"]["semi_final_text"] != payload["text"]
         and not finding["payload"]["change_record"]
@@ -128,7 +127,7 @@ def audit_state(context, reading: dict, act_id: str) -> bool:
         raise FatalAccounting(
             f"reading of {act_id} changed after its audit draft without a change record"
         )
-    if record["finding_digest"] != audit.audit_digest(finding["payload"]):
+    if record["finding_digest"] != audit_digest(finding["payload"]):
         raise FatalAccounting(
             f"reading of {act_id} names an audit finding with a mismatched digest"
         )
