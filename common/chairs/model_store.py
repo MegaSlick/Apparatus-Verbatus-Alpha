@@ -388,7 +388,17 @@ def verify_store(store_root: str | Path) -> dict[str, Any]:
 
 
 def promote_verified_snapshot(store_root: str | Path, artifact: Mapping[str, Any]) -> str:
-    """Host-side promotion primitive: stage, verify, then publish a manifest once.
+    """Host-side promotion primitive: hash a staged snapshot, publish its manifest once.
+
+    This is where a pin is *born*, and it is the one place in this package that
+    derives one from bytes rather than checking bytes against one.  That is not
+    an exception to "a pin is a constant the artifact must match" (harvest #43,
+    `README.md`): the first manifest of a fetch has nothing to be checked
+    against, which is why `config/models.toml` leaves `digest_manifest` unfilled
+    until a verified fetch exists.  Every later use of that manifest — a second
+    promotion, `verify_store`, `ChairRegistry.ensure` — is a constant the
+    artifact must match, and a second promotion of differing bytes is refused
+    below rather than repinned.
 
     The caller supplies an already-created staging directory.  This function does
     not copy or download bytes; capacity must therefore reserve source + staging
@@ -572,6 +582,16 @@ def _validate_record(raw: Mapping[str, Any]) -> None:
             )
         for field in ("snapshot", "manifest", "license"):
             _safe(item[field], field)
+        # The record declares a four-root layout and then had to be obeyed for
+        # snapshots only, which left `manifests` decorative: a manifest could sit
+        # anywhere under the root, including beside a snapshot it does not
+        # describe. A layout half-enforced is a layout a consumer cannot rely on.
+        if not str(item["manifest"]).startswith("manifests/"):
+            raise DigestMismatchRefusal(
+                "model-store",
+                f"artifact {item['artifact']!r} declares a digest manifest outside the "
+                "store's 'manifests/' root",
+            )
         carried = item["carried"]
         if not isinstance(carried, list):
             raise DigestMismatchRefusal("model-store", "carried content must be a list")

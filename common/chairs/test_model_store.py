@@ -616,3 +616,16 @@ def test_a_capacity_refusal_names_the_four_fields_a_migrating_operator_must_writ
 
     with pytest.raises(DigestMismatchRefusal, match="'snapshot_bytes'"):
         derived_inventory(record)
+
+
+def test_a_digest_manifest_must_live_under_the_declared_manifests_root(tmp_path):
+    """The record declares a four-root layout; snapshots obeyed it and manifests did not."""
+
+    record = _store(tmp_path)
+    entry = next(item for item in record["artifacts"] if item["artifact"] == "churro-3B")
+    stray = tmp_path / "hf" / "churro-3B-manifest.json"
+    stray.write_bytes((tmp_path / entry["manifest"]).read_bytes())
+    entry["manifest"] = "hf/churro-3B-manifest.json"
+
+    with pytest.raises(DigestMismatchRefusal, match="outside the store's 'manifests/' root"):
+        derived_inventory(record)
