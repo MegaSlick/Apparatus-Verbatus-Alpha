@@ -1,0 +1,258 @@
+"""R0 falsification tests: the vertical slice exit criterion.
+
+Written blind, from /out/R0_CONTRACT_NOTE.md (v2) before the R0 build chamber runs.
+Every test here must fail RED on the chamber's base commit (main 176b09e) because the
+feature it checks is not yet built, and must keep collecting cleanly regardless.
+
+Exit criterion (R0_CONTRACT_NOTE.md, binding): "The fixture/walking-skeleton path
+produces and consumes at least one page-scoped Testimonium and its derived act
+attachment end-to-end through the real stage programs in both scenarios (`happy` and
+`review` in proof/skeleton_fixture.toml)."
+
+Drives the REAL orchestrator as a subprocess over the REAL synthetic fixture, exactly
+as `pipeline/orchestrator/test_orchestrator_acceptance.py`'s own `orchestrate` helper
+does -- meta-invariant #86 ("a fix proven only on a fixture is not proven") applies to
+a falsification test as much as to an implementation one.
+
+NEW test file only; nothing here modifies `proof/skeleton_fixture.toml`,
+`proof/build_fixture.py`, or any existing test.
+"""
+
+from __future__ import annotations
+
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+from common.chairs.registry import ChairRegistry
+from common.contracts.stages import ATTESTATORES, PERLECTOR
+from common.runtree.store import RunTree
+from common.stage import act_by_key, act_identity, load_fixture, page_identity, run_config_bindings
+
+ROOT = Path(__file__).resolve().parents[2]
+ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
+FIXTURE_ROOT = ROOT / "proof"
+FIXTURE = "synthetic-two-page-v0"
+
+# R0_CONTRACT_NOTE.md kind table: "Fixture chairs attestator_1 and attestator_3 become
+# page-witnesses (mirroring Chandra/Churro); real attestatores program writes them in
+# both scenarios."
+PAGE_WITNESS_CHAIRS = ("attestator_1", "attestator_3")
+
+# D1: "attestator_2 stays act-scoped (mirrors DAI, an act-crop witness by design §2).
+# The migration ADDS page scope; it does not replace act scope."
+RETAINED_ACT_WITNESS_CHAIR = "attestator_2"
+
+
+def orchestrate(run_root: Path, run_id: str, scenario: str) -> subprocess.CompletedProcess:
+    """Run the pipeline the way a person would, mirroring the acceptance suite's helper."""
+    command = [
+        sys.executable,
+        str(ORCHESTRATOR),
+        "--fixture",
+        FIXTURE,
+        "--scenario",
+        scenario,
+        "--run-id",
+        run_id,
+        "--run-root",
+        str(run_root),
+    ]
+    return subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
+
+
+@pytest.fixture(scope="module", params=["happy", "review"])
+def run_tree(tmp_path_factory, request):
+    """One real end-to-end orchestrator run per fixture scenario, per the exit criterion."""
+    scenario = request.param
+    root = tmp_path_factory.mktemp(f"r0-vslice-{scenario}")
+    result = orchestrate(root, "r", scenario)
+    assert result.returncode in (0, 3), f"scenario {scenario!r}: {result.stderr}"
+    return scenario, RunTree(root, "r")
+
+
+@pytest.fixture(scope="module")
+def fixture():
+    return load_fixture(str(FIXTURE_ROOT))
+
+
+def _attestatores_artifacts(tree: RunTree) -> list[dict]:
+    manifest = tree.build_manifest(ATTESTATORES)
+    return [
+        tree.read_artifact(ATTESTATORES, entry["kind"], entry["artifact_id"])
+        for entry in manifest["artifacts"]
+    ]
+
+
+def _latest_completed_reading(tree: RunTree, act_id: str) -> dict:
+    """The highest-attempt-ordinal `read` Perlectio for one act, from real artifacts."""
+    entries = [
+        entry
+        for entry in tree.build_manifest(PERLECTOR)["artifacts"]
+        if entry["kind"] == "perlectio" and entry["subject_id"] == act_id
+    ]
+    records = [
+        tree.read_artifact(PERLECTOR, "perlectio", entry["artifact_id"]) for entry in entries
+    ]
+    completed = [record for record in records if record["outcome"] == "read"]
+    assert completed, f"act {act_id} has no completed Perlectio in this run's tree"
+    return max(completed, key=lambda record: record["payload"]["attempt_ordinal"])
+
+
+# --- 1. The vertical slice itself -----------------------------------------------
+
+
+def test_page_scoped_testimonium_is_produced_while_act_scope_is_retained_for_attestator_2(
+    run_tree, fixture
+):
+    """R0_CONTRACT_NOTE.md kind table + D1, in both scenarios.
+
+    On the base commit every Attestatores Testimonium -- for all three configured
+    chairs, including attestator_1 and attestator_3 -- has `subject_id == act_id`.
+    Nothing writes a page-scoped Testimonium (`subject_id == page_id`) at all, so the
+    first assertion below fails red for the exit criterion's own reason. The second
+    assertion (attestator_2 stays act-scoped) is expected to keep passing through a
+    correct build -- D1 says the migration ADDS page scope, it does not remove act
+    scope from the chair that never had it.
+    """
+    scenario, tree = run_tree
+    target_page_ids = {page_identity(fixture, ordinal) for ordinal in (1, 2)}
+    target_act_ids = {
+        act_identity(fixture, act_by_key(fixture, key)) for key in ("a1", "a2")
+    }
+
+    page_scoped_chairs_found: set[str] = set()
+    act_2_subjects: set[str] = set()
+    for record in _attestatores_artifacts(tree):
+        payload = record.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        chair = payload.get("chair")
+        subject_id = record.get("subject_id")
+        if chair in PAGE_WITNESS_CHAIRS and subject_id in target_page_ids:
+            page_scoped_chairs_found.add(chair)
+        if chair == RETAINED_ACT_WITNESS_CHAIR and record.get("kind") == "testimonium":
+            act_2_subjects.add(subject_id)
+
+    missing_page_witnesses = set(PAGE_WITNESS_CHAIRS) - page_scoped_chairs_found
+    assert not missing_page_witnesses, (
+        f"scenario {scenario!r}: no Attestatores artifact was found whose subject_id is a "
+        f"page identity ({sorted(target_page_ids)}) for chair(s) {sorted(missing_page_witnesses)}; "
+        "R0's kind table requires attestator_1 and attestator_3 to become page-witnesses, "
+        "writing a page-scoped Testimonium (subject_id == page_id, never act_id) in both "
+        "the happy and review scenarios"
+    )
+    assert act_2_subjects and act_2_subjects <= target_act_ids, (
+        f"scenario {scenario!r}: attestator_2's testimonium subject_id(s) {act_2_subjects} are "
+        f"not exactly among the expected act identities {target_act_ids}; D1 requires "
+        "attestator_2 to stay act-scoped (kind='testimonium', subject_id == act_id) unchanged"
+    )
+
+
+def test_derived_act_attachment_record_is_written_by_attestatores_for_every_proposed_act(
+    run_tree, fixture
+):
+    """D1: the derived act-attachment record is written by the Attestatores stage
+    program, in the same stage invocation that writes page testimony -- so it must
+    already be present in the ATTESTATORES manifest, not created by a later stage.
+    """
+    scenario, tree = run_tree
+    expected_act_ids = {
+        act_identity(fixture, act_by_key(fixture, key)) for key in ("a1", "a2")
+    }
+    attachment_act_ids = {
+        record["subject_id"]
+        for record in _attestatores_artifacts(tree)
+        if record.get("kind") == "act-attachment"
+    }
+    missing = expected_act_ids - attachment_act_ids
+    assert not missing, (
+        f"scenario {scenario!r}: the Attestatores stage wrote no 'act-attachment' artifact "
+        f"for act(s) {sorted(missing)} (found kinds "
+        f"{sorted({record.get('kind') for record in _attestatores_artifacts(tree)})}); "
+        "R0_CONTRACT_NOTE.md D1 requires a derived act-attachment record per act, written by "
+        "the Attestatores stage program in the same invocation that writes page testimony"
+    )
+
+
+def test_dissent_names_a_page_witness_row_as_compared_unknown_with_a_named_reason(
+    run_tree, fixture
+):
+    """D5: page-witness rows emit compared:"unknown" with a named reason (alignment
+    views are R4's), per the existing is_comparable doctrine in
+    `pipeline/4_perlector/dissent.py`.
+
+    On the base commit attestator_1 and attestator_3 are ordinary act-scoped
+    witnesses, so their dissent rows for act a1 compare normally
+    (`compared: True`) rather than carrying D5's page-witness `unknown` reason --
+    this fails red independently of whether page-scoped Testimonium exists yet.
+    """
+    scenario, tree = run_tree
+    act_a1_id = act_identity(fixture, act_by_key(fixture, "a1"))
+    reading = _latest_completed_reading(tree, act_a1_id)
+    dissent_rows = reading["payload"].get("dissent", [])
+    page_witness_rows = [row for row in dissent_rows if row.get("chair") in PAGE_WITNESS_CHAIRS]
+    assert page_witness_rows, (
+        f"scenario {scenario!r}: act a1's established reading carries no dissent row at all "
+        f"for chair(s) {PAGE_WITNESS_CHAIRS}"
+    )
+    for row in page_witness_rows:
+        reason = row.get("reason")
+        assert row.get("compared") == "unknown" and isinstance(reason, str) and reason.strip(), (
+            f"scenario {scenario!r}: dissent row for chair {row.get('chair')!r} is {row!r}; D5 "
+            "requires a page-witness row to emit compared:'unknown' with a non-blank named "
+            "reason, since act-anchored alignment views belong to R4"
+        )
+
+
+# --- 2. Corpus-frame binding -----------------------------------------------------
+
+
+def test_run_creation_records_corpus_frame_membership(run_tree):
+    """R0_CONTRACT_NOTE.md: "Bound at run creation: every orchestrator run records
+    corpus-frame membership (frame digest + page digest + seed)."
+
+    `common/runtree/store.py::RunTree._BOUND_FIELDS` is exactly
+    `("source_manifest", "config_digest", "adapter_recipes", "witness_chairs")` on the
+    base commit -- no frame/page/seed membership fact is recorded in `run.json` at all.
+    """
+    scenario, tree = run_tree
+    run = tree.read_run()
+    candidate_keys = ("corpus_frame", "corpus_frame_membership", "frame_membership")
+    present = [key for key in candidate_keys if key in run]
+    assert present, (
+        f"scenario {scenario!r}: run.json carries none of {candidate_keys} (top-level keys: "
+        f"{sorted(run)}); R0_CONTRACT_NOTE.md requires every orchestrator run to record "
+        "corpus-frame membership (frame digest + page digest + seed) at run creation"
+    )
+    membership = run[present[0]]
+    required_facts = {"frame_digest", "page_digest", "seed"}
+    assert isinstance(membership, dict) and required_facts <= set(membership), (
+        f"scenario {scenario!r}: run.json's {present[0]!r} is {membership!r}, which does not "
+        f"carry all of {required_facts}"
+    )
+
+
+def test_shard_size_knob_is_sealed_with_a_point_of_use_recheck_entry():
+    """R0_CONTRACT_NOTE.md: "shard size <=1,000 is R0's own sealed knob in
+    config_digest with point-of-use recheck."
+
+    Mirrors the existing `designator-padding` entry in
+    `run_config_bindings(...)["sealed_config_digests"]`
+    (`common/stage.py::StageContext.require_sealed_config` is the point-of-use
+    recheck mechanism already built for that entry). On the base commit
+    `sealed_config_digests` carries exactly one key, `designator-padding`; nothing
+    names a shard-size knob at all.
+    """
+    fixture_data = load_fixture(str(FIXTURE_ROOT))
+    registry = ChairRegistry.from_toml(str(ROOT / "config" / "models.toml"))
+    bindings = run_config_bindings(registry.config, fixture_data, "happy")
+    sealed = bindings["sealed_config_digests"]
+    shard_keys = [key for key in sealed if "shard" in key]
+    assert shard_keys, (
+        f"run_config_bindings()'s sealed_config_digests is {sorted(sealed)}, which names no "
+        "shard-size entry; R0's shard-size knob must be sealed into config_digest with a "
+        "point-of-use recheck, exactly as 'designator-padding' already is"
+    )
