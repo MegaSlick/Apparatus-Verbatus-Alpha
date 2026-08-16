@@ -929,13 +929,19 @@ def testimony_content_findings(context) -> dict[int, dict]:
         if not isinstance(ordinal, int) or not isinstance(chair, str):
             raise FatalAccounting("page Testimonium has no textual page identity")
         if "reported" not in payload:
+            if record.get("outcome") in WITNESS_READING_OUTCOMES:
+                raise FatalAccounting(
+                    "reading page Testimonium has no reported text for content coverage"
+                )
             # A page witness that read nothing across every act on this page --
             # every configured act was `dead`, `not-run`, or otherwise non-reading
             # for this chair -- carries no `reported` text: `testimonium_payload`'s
             # reading-only bridge (pipeline/3_attestatores/run.py) never sets it for
-            # a non-reading outcome. There is no witness content to diff against
-            # attachments; the chair's absence stays visible through its own
-            # act-scoped Testimonia and the act's witness-coverage floor.
+            # a non-reading outcome. The outcome check above distinguishes that
+            # legitimate absence from a malformed producer that claims it read the
+            # page but lost the text. There is no witness content to diff against
+            # attachments in the former case; the chair's absence stays visible
+            # through its act-scoped Testimonia and the act's witness-coverage floor.
             continue
         text = payload.get("reported")
         if not isinstance(text, str):
