@@ -331,12 +331,24 @@ def verify_store(store_root: str | Path) -> dict[str, Any]:
         manifest = read_manifest(
             manifest_path, expected_digest=item["digest_manifest"], chair=item["artifact"]
         )
-        if item["license"] not in {row.path for row in manifest.rows}:
+        rows = {row.path: row for row in manifest.rows}
+        license_row = rows.get(item["license"])
+        if license_row is None:
             raise DigestMismatchRefusal(
                 item["artifact"], "license snapshot is absent from its digest manifest"
             )
+        # U17 asks for the licence *text* of the pinned revision. An empty file
+        # satisfies "a licence snapshot exists" and carries no terms at all, and
+        # three of this roster's licences are the reason the check is here:
+        # revenue-capped, non-commercial, and one repository that declares none.
+        if license_row.size == 0:
+            raise DigestMismatchRefusal(
+                item["artifact"],
+                f"license snapshot {item['license']!r} is empty; the pinned revision's "
+                "licence text is the artifact, not a file of that name",
+            )
         for carried in item["carried"]:
-            if carried["path"] not in {row.path for row in manifest.rows}:
+            if carried["path"] not in rows:
                 raise DigestMismatchRefusal(
                     item["artifact"],
                     f"carried content {carried['path']!r} is absent from its digest manifest",
@@ -396,23 +408,34 @@ def _publish_once(destination: Path, payload: bytes, *, chair: str, label: str) 
     the identical-bytes-reuse, differing-bytes-refusal custody rule
     ``common/runtree/store.py::_atomic_create`` already applies to run artifacts,
     so the model store's evidence keeps the one rule this system settled on.
+
+    Every filesystem failure along that path is a refusal against a named chair,
+    not a bare ``OSError``: a read-only store, a full disk, and a name already
+    taken by a directory are exactly the conditions this writer exists to fail
+    on, and ``errors.py`` calls its list "the complete public taxonomy" —
+    ``manifests.file_size`` records the same reasoning for the read side.
     """
 
-    destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_name(f".{destination.name}.candidate-{os.getpid()}")
     try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
         temporary.write_bytes(payload)
         try:
             os.link(temporary, destination)
         except FileExistsError:
+            # `read_bytes` may raise in its own right — the taken name can be a
+            # directory — and that is caught below as the publication failure
+            # it is.
             if destination.read_bytes() != payload:
                 raise DigestMismatchRefusal(
                     chair,
                     f"{label} {destination} already exists with different bytes; "
                     "publication never overwrites existing evidence",
                 ) from None
-        except OSError as error:
-            raise DigestMismatchRefusal(chair, f"cannot publish {label}: {error}") from error
+    except OSError as error:
+        raise DigestMismatchRefusal(
+            chair, f"cannot publish {label} at {destination}: {error}"
+        ) from error
     finally:
         temporary.unlink(missing_ok=True)
 

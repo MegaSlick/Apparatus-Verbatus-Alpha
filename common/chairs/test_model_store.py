@@ -2,6 +2,7 @@
 
 import copy
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -521,3 +522,51 @@ def test_verify_store_refuses_a_snapshot_used_directly_as_a_cache_entry(tmp_path
 
     with pytest.raises(DigestMismatchRefusal, match="is not a cache_root entry"):
         verify_store(tmp_path)
+
+
+# --- O4: a licence snapshot with no text, and publication failures ---------------
+
+
+def test_store_refuses_a_licence_snapshot_with_no_text(tmp_path):
+    """U17 pins the licence text of the revision, not a file with the right name."""
+
+    record = _store(tmp_path)
+    entry = next(item for item in record["artifacts"] if item["artifact"] == "churro-3B")
+    snapshot = tmp_path / entry["snapshot"]
+    (snapshot / "LICENSE").write_bytes(b"")
+    entry["digest_manifest"] = write_manifest(
+        build_manifest(snapshot), tmp_path / entry["manifest"]
+    )
+    (tmp_path / "download_record.json").write_bytes(canonical_bytes(record))
+
+    with pytest.raises(DigestMismatchRefusal, match="is empty"):
+        verify_store(tmp_path)
+
+
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root ignores file modes")
+def test_publication_into_a_read_only_store_refuses_inside_the_taxonomy(tmp_path):
+    """A full disk or a locked store is what this writer exists to fail on.
+
+    Sonnet's S4 argument leaves `_publish_once` as the real backstop against a
+    store that cannot be written. A bare OSError escaping it would leave a
+    caller that catches ChairRefusal — the complete public taxonomy — with an
+    unhandled crash naming no chair.
+    """
+
+    record = _store(tmp_path)
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    locked.chmod(0o500)
+    try:
+        with pytest.raises(DigestMismatchRefusal, match="cannot publish"):
+            write_derived_inventory(record, locked / "inventory.json")
+    finally:
+        locked.chmod(0o700)
+
+
+def test_publication_onto_a_name_already_taken_by_a_directory_refuses(tmp_path):
+    record = _store(tmp_path)
+    (tmp_path / "inventory.json").mkdir()
+
+    with pytest.raises(DigestMismatchRefusal, match="cannot publish"):
+        write_derived_inventory(record, tmp_path / "inventory.json")
