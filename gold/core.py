@@ -43,7 +43,13 @@ def _sha(value: Any, field: str) -> str:
     return value
 
 
-def _read_json(path: str | Path) -> Any:
+def read_json(path: str | Path) -> Any:
+    """Read one JSON file, refusing unreadable or malformed input by name.
+
+    Public so every caller — this module's own frame loader and the CLI's
+    argument parsing alike — raises the same named `SchemaRefusal` instead of
+    a bare traceback for a malformed catalog, plan, pick, or record file.
+    """
     try:
         return json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
@@ -89,7 +95,7 @@ def _frame_from_run(run: dict[str, Any]) -> tuple[dict[str, str], list[dict[str,
 
 def load_run_frame(path: str | Path) -> tuple[dict[str, str], list[dict[str, Any]]]:
     """Read the source authority once and reject a forged derived frame record."""
-    return _frame_from_run(_read_json(path))
+    return _frame_from_run(read_json(path))
 
 
 def set_for_page(frame: dict[str, str], page_sha256: str) -> str:

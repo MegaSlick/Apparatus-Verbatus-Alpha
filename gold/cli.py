@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 
 from .core import (
     bind_instrument,
     ingest_manual_pick,
+    read_json,
     sample_stratified,
     validate_layout,
     validate_measurement,
@@ -16,10 +16,6 @@ from .core import (
     validate_sample,
     write_append_only,
 )
-
-
-def _json(path: str):
-    return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -44,17 +40,17 @@ def main(argv: list[str] | None = None) -> int:
     validate.add_argument("--run")
     args = parser.parse_args(argv)
     if args.command == "sample":
-        for record in sample_stratified(args.run, _json(args.catalog), _json(args.plan)):
+        for record in sample_stratified(args.run, read_json(args.catalog), read_json(args.plan)):
             write_append_only(Path(args.output_dir) / f"{record['sample_digest']}.json", record)
     elif args.command == "ingest-manual":
-        write_append_only(args.output, ingest_manual_pick(args.run, _json(args.pick)))
+        write_append_only(args.output, ingest_manual_pick(args.run, read_json(args.pick)))
     elif args.command == "bind-instrument":
         write_append_only(
             args.output,
-            bind_instrument(_json(args.sample), args.act_identity, args.protocol_digest),
+            bind_instrument(read_json(args.sample), args.act_identity, args.protocol_digest),
         )
     else:
-        record = _json(args.record)
+        record = read_json(args.record)
         schema = record.get("schema") if isinstance(record, dict) else None
         validators = {
             "gold-page-sample.v1": validate_sample,

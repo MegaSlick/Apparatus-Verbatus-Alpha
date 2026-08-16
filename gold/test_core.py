@@ -9,6 +9,7 @@ import pytest
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.identities import act_id
+from gold import cli
 from gold.core import (
     LAYOUT_SCHEMA,
     MANUAL_PICK_SCHEMA,
@@ -153,3 +154,28 @@ def test_append_only_writer_refuses_overwrite(tmp_path):
     write_append_only(target, record)
     with pytest.raises(ContractError, match="already exists"):
         write_append_only(target, record)
+
+
+def test_cli_malformed_json_input_is_a_named_refusal_not_a_traceback(tmp_path):
+    """gold/cli.py's own JSON reading used to bypass core._read_json's SchemaRefusal
+    wrapping, so a malformed catalog/plan/pick/record crashed with a raw parser
+    traceback instead of a named refusal."""
+    path, _frame, _pages = run_file(tmp_path)
+    bad = tmp_path / "not-json.json"
+    bad.write_text("{not valid json", encoding="utf-8")
+    with pytest.raises(SchemaRefusal, match="not readable JSON"):
+        cli.main(
+            [
+                "sample",
+                "--run",
+                str(path),
+                "--catalog",
+                str(bad),
+                "--plan",
+                str(bad),
+                "--output-dir",
+                str(tmp_path / "out"),
+            ]
+        )
+    with pytest.raises(SchemaRefusal, match="not readable JSON"):
+        cli.main(["validate", str(bad)])
