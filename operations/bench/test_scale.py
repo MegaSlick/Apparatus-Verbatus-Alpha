@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 import operations.bench.scale as scale
 from operations.bench.scale import cleanup_scale, run_scale
 
@@ -38,12 +40,8 @@ def test_scale_runner_creates_resumes_censuses_and_cleans_up_at_small_cardinalit
         assert result[field] >= 0
     assert (root / "aggregate-census.json").exists()
 
-    try:
+    with pytest.raises(FileExistsError, match="scale root already exists"):
         run_scale(root, shards=2, pages_per_shard=3)
-    except FileExistsError:
-        pass
-    else:
-        raise AssertionError("scale runner silently reused an existing target root")
 
     cleanup_scale(root)
     assert not root.exists()
