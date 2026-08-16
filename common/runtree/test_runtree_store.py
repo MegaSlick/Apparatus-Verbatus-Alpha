@@ -133,6 +133,10 @@ def make_recensor_partition_receipt():
                     "by_class": {"completed": 3, "unresolved": 0, "failed": 0},
                     "under_witnessed": False,
                     "unresolved_chairs": 0,
+                    "page_granularity_only": 0,
+                    "health_unrecorded": 0,
+                    "shortfalls": {"failed": 0, "truncated": 0, "unaligned": 0},
+                    "granularity_basis": "act-outcome-proxy-before-alignment",
                 },
             }
         ],
