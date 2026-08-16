@@ -90,6 +90,14 @@ page in calibration *and* in locked acceptance. Records under two different corp
 frames are refused by name, as is a page stratified or numbered two ways across
 records.
 
+Gold is therefore drawn **per corpus frame**: one run's sealed manifest is the
+frame, and R0 shards a corpus at its sealed shard limit, so a corpus split across
+shards is sampled shard by shard and its records are validated shard by shard.
+Uniting several frames into one gold corpus is deliberately not built — the union
+would need its own seed, and inventing one now, before any corpus of that size has
+been measured, would put the disjointness property on an untested footing.  The
+refusal makes the boundary visible at the moment it is reached.
+
 The layout schema requires at least one region and the padding schema at least one
 rectangle: a page with nothing on it is annotated `true-blank`, and a record that
 measured nothing may not carry a calibration verdict.
