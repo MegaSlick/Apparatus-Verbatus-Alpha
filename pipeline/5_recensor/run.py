@@ -45,7 +45,7 @@ from common.contracts.stages import (  # noqa: E402
     RECENSOR,
 )
 from common.exemplar_boundary import verify_sealed_page_pixels  # noqa: E402
-from common.perlector_audit import audit_digest, validate_draft, validate_finding  # noqa: E402
+from common.perlector_audit import validate_chain  # noqa: E402
 from common.recensor_receipt import build_recensor_partition_receipt  # noqa: E402
 from common.recovery import (  # noqa: E402
     FALLBACK_RECROP,
@@ -102,42 +102,8 @@ def audit_state(context, reading: dict, act_id: str) -> bool:
     this consumer proves they name the matching act, exact kinds, and the exact
     finding bytes whose unresolved state governs review routing.
     """
-    payload = _payload(reading, f"reading of {act_id}")
-    record = payload.get("audit")
-    if not isinstance(record, dict) or set(record) != {
-        "draft_ref",
-        "finding_ref",
-        "finding_digest",
-        "unresolved",
-        "reproofs",
-    }:
-        raise FatalAccounting(f"reading of {act_id} has no closed Pass-C audit record")
-    draft = context.tree.read_artifact_reference(
-        record["draft_ref"], stage=PERLECTOR, kind="audit-draft", subject_id=act_id
-    )
-    finding = context.tree.read_artifact_reference(
-        record["finding_ref"], stage=PERLECTOR, kind="audit-finding", subject_id=act_id
-    )
-    validate_draft(draft.get("payload"))
-    validate_finding(finding.get("payload"), text=payload.get("text", ""))
-    if (
-        draft["payload"]["semi_final_text"] != payload["text"]
-        and not finding["payload"]["change_record"]
-    ):
-        raise FatalAccounting(
-            f"reading of {act_id} changed after its audit draft without a change record"
-        )
-    if record["finding_digest"] != audit_digest(finding["payload"]):
-        raise FatalAccounting(
-            f"reading of {act_id} names an audit finding with a mismatched digest"
-        )
-    if record["unresolved"] != finding["payload"]["unresolved"]:
-        raise FatalAccounting(
-            f"reading of {act_id} contradicts its audit finding's unresolved state"
-        )
-    if finding["inputs"] != [record["draft_ref"]]:
-        raise FatalAccounting(f"audit finding for {act_id} does not bind exactly its audit draft")
-    return record["unresolved"]
+    chain = validate_chain(context.tree, reading, act_id)
+    return chain["record"]["unresolved"]
 
 
 def chair_current_attempts(context, act_id: str) -> dict[str, dict]:

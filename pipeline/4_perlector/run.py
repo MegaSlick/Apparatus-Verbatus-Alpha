@@ -1082,44 +1082,11 @@ def validate_reading_payload(
     if "audit" not in fields:
         annotations.validate_annotations(payload, outcome=outcome)
         return
-    audit_record = payload.get("audit")
-    if not isinstance(audit_record, dict) or set(audit_record) != {
-        "draft_ref",
-        "finding_ref",
-        "finding_digest",
-        "unresolved",
-        "reproofs",
-    }:
-        raise SchemaRefusal("a Perlectio has no closed Pass-C audit record")
-    for reference_name in ("draft_ref", "finding_ref"):
-        reference = audit_record[reference_name]
-        if (
-            not isinstance(reference, dict)
-            or set(reference) != {"relative_path", "sha256"}
-            or not all(isinstance(value, str) and value for value in reference.values())
-        ):
-            raise SchemaRefusal("a Perlectio audit record has a malformed artifact reference")
-    if (
-        not isinstance(audit_record["finding_digest"], str)
-        or not isinstance(audit_record["unresolved"], bool)
-        or not isinstance(audit_record["reproofs"], list)
-    ):
-        raise SchemaRefusal("a Perlectio audit record has malformed resolution facts")
-    for reproof in audit_record["reproofs"]:
-        if not isinstance(reproof, dict) or set(reproof) != {"class", "location", "prompt"}:
-            raise SchemaRefusal("a Perlectio audit re-proof is not its closed schema")
-        location = reproof["location"]
-        if (
-            reproof["class"] not in audit.FLAG_CLASSES
-            or not isinstance(location, dict)
-            or set(location) != {"start", "end"}
-            or not isinstance(reproof["prompt"], str)
-            or reproof["prompt"]
-            != audit.neutral_prompt(
-                start=location["start"], end=location["end"], text_length=len(payload["text"])
-            )
-        ):
-            raise SchemaRefusal("a Perlectio audit re-proof is not a neutral location-only prompt")
+    # The re-proof locations are offsets in the frozen semi-final, which may
+    # be longer than the corrected final after a deletion. The full shared
+    # chain check binds them to the audit draft before publication; this
+    # payload-only shape check therefore does not guess a bound from final text.
+    audit.validate_perlectio_audit(payload.get("audit"), text_length=None)
     annotations.validate_annotations(payload, outcome=outcome)
 
 
@@ -1253,29 +1220,11 @@ def _sealed_sibling_semi_finals(
             protocol_config=protocol_config,
             protocol_sha256=protocol_sha256,
         )
-        audit_record = payload["audit"]
-        draft = context.tree.read_artifact_reference(
-            audit_record["draft_ref"], stage=PERLECTOR, kind="audit-draft", subject_id=act_id
-        )
-        finding = context.tree.read_artifact_reference(
-            audit_record["finding_ref"],
-            stage=PERLECTOR,
-            kind="audit-finding",
-            subject_id=act_id,
-        )
-        draft_payload = audit.validate_draft(draft.get("payload"))
-        finding_payload = audit.validate_finding(finding.get("payload"), text=payload["text"])
+        chain = audit.validate_chain(context.tree, reading, act_id)
+        draft_payload = chain["draft"]["payload"]
+        finding_payload = chain["finding"]["payload"]
         expected_page = expected[order_by_id[act_id]]["page_id"]
-        if (
-            draft_payload["page_id"] != expected_page
-            or finding_payload["page_id"] != expected_page
-            or draft_payload["act_key"] != payload["act_key"]
-            or finding_payload["act_key"] != payload["act_key"]
-            or draft_payload["attempt_ordinal"] != payload["attempt_ordinal"]
-            or finding_payload["attempt_ordinal"] != payload["attempt_ordinal"]
-            or audit_record["finding_digest"] != audit.audit_digest(finding_payload)
-            or finding["inputs"] != [audit_record["draft_ref"]]
-        ):
+        if draft_payload["page_id"] != expected_page or finding_payload["page_id"] != expected_page:
             raise FatalAccounting(
                 f"sealed sibling Perlectio for {act_id} does not reconcile with its audit chain"
             )
@@ -1957,7 +1906,11 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             "uncertain_spans": uncertainty,
             "unresolved": unresolved,
         }
-        audit.validate_finding(finding_payload, text=final_text)
+        audit.validate_finding(
+            finding_payload,
+            text=final_text,
+            flag_text=draft_payload["semi_final_text"],
+        )
         finding = context.publish(
             kind="audit-finding",
             subject_id=act_id,
@@ -1982,6 +1935,15 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             "unresolved": unresolved,
             "reproofs": reproofs,
         }
+        reading_inputs = row["inputs"] + [draft_ref, finding_ref]
+        # The producer and every later consumer use the same cross-record
+        # validation. Run it before the Perlectio is published so a drifted
+        # draft/finding relationship never becomes an unreadable artifact.
+        audit.validate_chain(
+            context.tree,
+            {"payload": payload, "inputs": reading_inputs},
+            act_id,
+        )
         validate_reading_payload(
             payload,
             outcome=row["outcome"],
@@ -1996,7 +1958,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             subject_id=act_id,
             outcome=row["outcome"],
             attempt=perlector_attempt_id(act_id, "perlegere", payload["attempt_ordinal"]),
-            inputs=row["inputs"] + [draft_ref, finding_ref],
+            inputs=reading_inputs,
             payload=payload,
         )
 

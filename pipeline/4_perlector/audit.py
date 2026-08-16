@@ -25,13 +25,17 @@ from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.perlector_audit import (  # noqa: F401  (re-export)
     FLAG_CLASSES,
+    SCHEMA,
     audit_digest,
+    change_record,
     neutral_prompt,
+    text_change_span,
+    validate_chain,
     validate_draft,
     validate_finding,
+    validate_perlectio_audit,
 )
 
-SCHEMA: Final = "perlector-audit.v1"
 _CONFIG_FIELDS: Final = frozenset(
     {"schema", "default_round_cap", "absolute_round_cap", "round_cap", "approval_ref"}
 )
@@ -72,20 +76,6 @@ def load(path: str | Path) -> tuple[dict[str, Any], str]:
     return policy, digest_bytes(raw)
 
 
-def _span(text: str, other: str) -> tuple[int, int]:
-    """Smallest semi-final span affected by an exact textual comparison."""
-    start = 0
-    limit = min(len(text), len(other))
-    while start < limit and text[start] == other[start]:
-        start += 1
-    end = len(text)
-    other_end = len(other)
-    while end > start and other_end > start and text[end - 1] == other[other_end - 1]:
-        end -= 1
-        other_end -= 1
-    return start, end
-
-
 def _flag(flag_class: str, start: int, end: int) -> dict[str, Any]:
     if flag_class not in FLAG_CLASSES:
         raise SchemaRefusal(f"unknown audit flag class {flag_class!r}")
@@ -120,7 +110,7 @@ def flags_once_per_page(semi_finals: list[dict[str, Any]]) -> dict[str, list[dic
                 if not isinstance(testimony, str):
                     raise SchemaRefusal("an audit testimony comparison is not text")
                 if testimony != text:
-                    start, end = _span(text, testimony)
+                    start, end = text_change_span(text, testimony)
                     output[row["act_id"]].append(_flag("testimony-diff", start, end))
             repeated = re.search(r"\b(\w+)\s+\1\b", text, flags=re.IGNORECASE)
             if repeated:
@@ -154,23 +144,3 @@ def flags_once_per_page(semi_finals: list[dict[str, Any]]) -> dict[str, list[dic
 
 def policy_record(policy: dict[str, Any], sha256: str) -> dict[str, str]:
     return {"schema": SCHEMA, "sha256": sha256, "approval_ref": policy["approval_ref"]}
-
-
-def change_record(before: str, after: str, flags: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    if before == after:
-        return []
-    start, end = _span(before, after)
-    triggering = next(
-        (
-            flag["class"]
-            for flag in flags
-            # Both ends, not just the start (audit finding H8): a change that
-            # starts inside a flagged location but runs past its end is not a
-            # location-scoped re-proof answer, whatever character it began at.
-            if flag["location"]["start"] <= start and end <= flag["location"]["end"]
-        ),
-        None,
-    )
-    if triggering is None:
-        raise SchemaRefusal("an audit re-proof changed text outside every flagged location")
-    return [{"start": start, "end": end, "triggering_flag_class": triggering}]

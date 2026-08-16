@@ -12,8 +12,17 @@ import sys
 from pathlib import Path
 
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
+from common.contracts.envelope import validate_envelope
 from common.contracts.identities import artifact_id, attempt_id
 from common.contracts.stages import DESIGNATOR, PERLECTOR, RECENSOR
+from common.perlector_audit import (
+    audit_digest,
+    neutral_prompt,
+    validate_chain,
+    validate_draft,
+    validate_finding,
+    validate_perlectio_audit,
+)
 from common.recovery import FALLBACK_RECROP
 from common.runtree.store import RunTree
 
@@ -215,22 +224,47 @@ def test_an_empty_completed_reading_is_held_not_accepted(tmp_path):
     draft_path = tree.resolve(draft_relative)
     draft = json.loads(draft_path.read_text())
     draft["payload"]["semi_final_text"] = ""
+    blank_flags = [
+        {"class": flag["class"], "location": {"start": 0, "end": 0}}
+        for flag in draft["payload"]["flags"]
+    ]
+    draft["payload"]["flags"] = blank_flags
+    validate_draft(draft["payload"])
     draft["self_hash"] = self_hash(draft)
+    validate_envelope(draft)
     draft_bytes = canonical_bytes(draft)
     draft_path.write_bytes(draft_bytes)
     draft_digest = digest_bytes(draft_bytes)
+    tree.read_artifact(PERLECTOR, "audit-draft", draft["artifact_id"])
 
     finding_relative = audit_record["finding_ref"]["relative_path"]
     finding_path = tree.resolve(finding_relative)
     finding = json.loads(finding_path.read_text())
     finding["inputs"] = [{"relative_path": draft_relative, "sha256": draft_digest}]
+    finding["payload"]["flags"] = blank_flags
+    finding["payload"]["change_record"] = []
+    finding["payload"]["uncertain_spans"] = []
+    finding["payload"]["unresolved"] = False
+    validate_finding(finding["payload"], text="")
     finding["self_hash"] = self_hash(finding)
+    validate_envelope(finding)
     finding_bytes = canonical_bytes(finding)
     finding_path.write_bytes(finding_bytes)
+    tree.read_artifact(PERLECTOR, "audit-finding", finding["artifact_id"])
 
     finding_digest = digest_bytes(finding_bytes)
     changed = copy.deepcopy(reading)
     changed["payload"]["text"] = ""
+    changed["payload"]["audit"]["finding_digest"] = audit_digest(finding["payload"])
+    changed["payload"]["audit"]["unresolved"] = False
+    changed["payload"]["audit"]["reproofs"] = [
+        {
+            "class": flag["class"],
+            "location": flag["location"],
+            "prompt": neutral_prompt(start=0, end=0, text_length=0),
+        }
+        for flag in blank_flags
+    ]
     changed["payload"]["audit"]["draft_ref"]["sha256"] = draft_digest
     changed["payload"]["audit"]["finding_ref"]["sha256"] = finding_digest
     # The reading's own envelope-level `inputs` also names the draft and
@@ -241,9 +275,16 @@ def test_an_empty_completed_reading_is_held_not_accepted(tmp_path):
             reference["sha256"] = draft_digest
         elif reference["relative_path"] == finding_relative:
             reference["sha256"] = finding_digest
+    validate_perlectio_audit(changed["payload"]["audit"], text_length=0)
     changed["self_hash"] = self_hash(changed)
+    validate_envelope(changed)
     path.write_bytes(canonical_bytes(changed))
     tree.write_manifest(PERLECTOR)
+    validate_chain(
+        tree,
+        tree.read_artifact(PERLECTOR, "perlectio", reading["artifact_id"]),
+        reading["subject_id"],
+    )
 
     result = invoke(root, "empty-reading", "happy", "pipeline/5_recensor/run.py")
     assert result.returncode == 3, result.stderr

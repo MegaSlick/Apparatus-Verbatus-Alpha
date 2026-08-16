@@ -97,6 +97,39 @@ def test_fixture_exercises_a_changed_reproof_with_its_triggering_flag_class(tmp_
         record for record in _records(tree, "audit-finding") if record["payload"]["change_record"]
     )
     assert changed["payload"]["change_record"][0]["triggering_flag_class"] == "testimony-diff"
+    final = next(
+        record
+        for record in _records(tree, "perlectio")
+        if record["subject_id"] == changed["subject_id"]
+    )
+    prior = next(
+        record
+        for record in _records(tree, "lectio-prior")
+        if record["subject_id"] == changed["subject_id"]
+    )
+    draft = tree.read_artifact_reference(
+        final["payload"]["audit"]["draft_ref"],
+        stage=PERLECTOR,
+        kind="audit-draft",
+        subject_id=changed["subject_id"],
+    )
+    assert final["payload"]["text"] != draft["payload"]["semi_final_text"]
+    perlector = _perlector()
+    assert final["payload"]["self_revision"] == perlector.departures(
+        final["payload"]["text"], prior["payload"]["text"]
+    )
+    assert final["payload"]["self_revision"] != perlector.departures(
+        draft["payload"]["semi_final_text"], prior["payload"]["text"]
+    )
+    agreeing_witness = next(
+        row for row in final["payload"]["dissent"] if row["chair"] == "attestator_1"
+    )
+    assert [departure["reading_span"] for departure in agreeing_witness["departures"]] == [
+        {
+            "start": len(draft["payload"]["semi_final_text"]),
+            "end": len(final["payload"]["text"]),
+        }
+    ]
 
 
 def test_perlectio_schema_refuses_a_directional_reproof_prompt(tmp_path):
@@ -224,6 +257,12 @@ def test_recovery_sibling_context_is_sealed_and_never_republished(tmp_path):
         )
 
 
+def test_change_record_refuses_a_change_extending_past_the_flag_end():
+    flags = [{"class": "testimony-diff", "location": {"start": 1, "end": 2}}]
+    with pytest.raises(SchemaRefusal, match="outside every flagged location"):
+        audit.change_record("abcd", "aXYZ", flags)
+
+
 def test_raised_cap_needs_tyrels_reference_and_exhaustion_routes_review(tmp_path):
     raised = tmp_path / "raised.toml"
     raised.write_text(
@@ -239,7 +278,21 @@ def test_raised_cap_needs_tyrels_reference_and_exhaustion_routes_review(tmp_path
     result = _run(tmp_path / "exhausted-runs", "--perlector-audit-config", str(exhausted))
     assert result.returncode == 3, result.stderr
     tree = RunTree(tmp_path / "exhausted-runs", "r")
-    assert all(record["payload"]["unresolved"] for record in _records(tree, "audit-finding"))
+    findings = _records(tree, "audit-finding")
+    assert all(record["payload"]["unresolved"] for record in findings)
+    finals = {record["subject_id"]: record for record in _records(tree, "perlectio")}
+    for finding in findings:
+        spans = finding["payload"]["uncertain_spans"]
+        assert all(span["reason"] == "audit-round-cap-exhausted" for span in spans)
+        assert finals[finding["subject_id"]]["payload"]["uncertain_spans"] == [
+            {
+                "start": span["start"],
+                "end": span["end"],
+                "alternatives": [],
+                "confidence": "low",
+            }
+            for span in spans
+        ]
 
 
 def test_recensor_refuses_a_forged_audit_reference(tmp_path):
@@ -252,3 +305,33 @@ def test_recensor_refuses_a_forged_audit_reference(tmp_path):
 
     with pytest.raises(SchemaRefusal, match="not required 'perlector'/'audit-finding'"):
         _recensor().audit_state(SimpleNamespace(tree=tree), forged, final["subject_id"])
+
+
+def test_shared_chain_refuses_draft_finding_restatement_drift(tmp_path):
+    result = _run(tmp_path / "runs")
+    assert result.returncode == 0, result.stderr
+    tree = RunTree(tmp_path / "runs", "r")
+    final = _records(tree, "perlectio")[0]
+    draft = tree.read_artifact_reference(
+        final["payload"]["audit"]["draft_ref"],
+        stage=PERLECTOR,
+        kind="audit-draft",
+        subject_id=final["subject_id"],
+    )
+    finding = tree.read_artifact_reference(
+        final["payload"]["audit"]["finding_ref"],
+        stage=PERLECTOR,
+        kind="audit-finding",
+        subject_id=final["subject_id"],
+    )
+    drifted_finding = copy.deepcopy(finding)
+    drifted_finding["payload"]["page_id"] = "pg_drifted"
+    audit.validate_finding(drifted_finding["payload"], text=final["payload"]["text"])
+
+    class DriftedTree:
+        def read_artifact_reference(self, _reference, *, stage, kind, subject_id):
+            assert stage == PERLECTOR and subject_id == final["subject_id"]
+            return draft if kind == "audit-draft" else drifted_finding
+
+    with pytest.raises(SchemaRefusal, match="restate different frozen facts"):
+        audit.validate_chain(DriftedTree(), final, final["subject_id"])
