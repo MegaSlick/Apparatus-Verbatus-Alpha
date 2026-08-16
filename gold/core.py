@@ -133,12 +133,16 @@ def load_run_frame(path: str | Path) -> tuple[dict[str, str], list[dict[str, Any
 
 
 def set_for_page(frame: dict[str, str], page_sha256: str) -> str:
-    """A seed-driven partition: a page has exactly one possible gold set."""
+    """A content-driven partition: a page has one set across every corpus frame.
+
+    The frame seed still drives the within-stratum draw order in `_rank`. It must
+    not drive this boundary: R0 derives a new seed whenever frame membership
+    changes, so a seed-partitioned page could otherwise move from calibration to
+    locked acceptance when the same source page appeared in a later frame.
+    """
     _sha(page_sha256, "page sha256")
     _sha(frame.get("seed"), "corpus frame seed")
-    rank = digest_bytes(
-        canonical_bytes({"seed": frame["seed"], "page_sha256": page_sha256, "purpose": "gold-set"})
-    )
+    rank = digest_bytes(canonical_bytes({"page_sha256": page_sha256, "purpose": "gold-set-v1"}))
     return "calibration" if int(rank[0], 16) < 8 else "locked-acceptance"
 
 
@@ -226,7 +230,7 @@ def build_sample(
 ) -> dict[str, Any]:
     """Build the source-derived restatement once; validation replays it exactly.
 
-    `set` is always the seed-derived partition — never a caller's assertion — so
+    `set` is always the page-derived partition — never a caller's assertion — so
     calibration/locked-acceptance disjointness stays enforced by construction
     (U14/U18) no matter which method produced the sample. `claimed_set` is the
     separate, honest record of what a manual picker believed the set was at pick
@@ -369,7 +373,7 @@ def ingest_manual_pick(run_path: str | Path, pick: Any) -> dict[str, Any]:
     A manual pick's stated `set` is his provenance, not an assertion this
     function polices: B1 picks are made in week one, before the R0 frame or
     its seed exist, so there is no partition to check them against yet. The
-    persisted sample's `set` is always the seed-derived partition (disjointness
+    persisted sample's `set` is always the page-derived partition (disjointness
     stays enforced by construction, per U14/U18 and the unconditional "calibration
     data disjoint from locked acceptance gold" in three_stage_reading_design.md
     §6); his original stated set is kept alongside as `claimed_set` so a pick
@@ -766,7 +770,7 @@ def validate_sample(record: Any, run_path: str | Path | None = None) -> dict[str
     )
     _refuse(
         record["set"] not in SETS or record["set"] != set_for_page(frame, page["sha256"]),
-        "sample set conflicts with the seed-derived partition",
+        "sample set conflicts with the page-derived partition",
     )
     without = {
         key: value for key, value in record.items() if key not in {"sample_digest", "self_hash"}
@@ -875,15 +879,12 @@ def validate_record(record: Any, run_path: str | Path | None = None) -> dict[str
 def validate_corpus(records: Any, run_path: str | Path | None = None) -> list[dict[str, Any]]:
     """Validate a whole gold corpus, which one record at a time cannot establish.
 
-    Disjointness is enforced by construction *within one corpus frame*: `set` is
-    `set_for_page`, and that is a function of the frame's seed. The seed is derived
-    from the frame's own page digest (`common/runtree/store.py`), so a corpus
-    re-framed — a page added, a shard resplit — reshuffles roughly half the pages
-    into the other set. Records made before and after both validate against their
-    own frame, and a gold corpus assembled from both can hold the same page in
-    calibration *and* in locked acceptance. That is exactly the leak U14/U18 and
-    "calibration data disjoint from locked acceptance gold" forbid, and no
-    single-record check can see it.
+    Disjointness is enforced by construction across corpus frames: `set_for_page`
+    is a function of the sealed page digest, so the same source page cannot move
+    from calibration to locked acceptance when a page is added or a shard is
+    resplit. Frame mixing is still refused below: each frame has its own seed and
+    therefore its own ranking and quota universe, so combining their draws would
+    assert a sampling design that no one predeclared.
 
     The strata are the same kind of fact: the catalog is human-supplied and bound
     to no authority, so one page described as `adverse` in a sample and `ordinary`
@@ -900,9 +901,8 @@ def validate_corpus(records: Any, run_path: str | Path | None = None) -> list[di
     _refuse(
         len(frames) > 1,
         f"these gold records were built under {len(frames)} different corpus frames "
-        f"({', '.join(sorted(frames))}); a page's set is derived from its own frame's "
-        "seed, so a corpus assembled across frames can hold one page in calibration "
-        "and in locked acceptance at once",
+        f"({', '.join(sorted(frames))}); each frame has its own ranked sampling universe, "
+        "so their records cannot be combined as one predeclared draw",
     )
     pages: dict[str, dict[str, Any]] = {}
     for sample in samples:

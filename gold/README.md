@@ -7,9 +7,11 @@ plan carries a quota for both `calibration` and `locked-acceptance` for **every*
 stratum the catalog declares.  A stratum the plan does not name would drop out of
 gold without saying so, so an unnamed one is refused; quota `0` is how a stratum
 is deliberately left unsampled, and it stays visible in the plan file.  The R0
-frame's existing `seed` deterministically partitions pages into
-one of those two sets and ranks pages within their own stratum.  A quota that the
-partition cannot fill is refused; the sampler never crosses the boundary.
+sealed page digest deterministically partitions pages into one of those two sets;
+the frame's existing `seed` ranks pages within their own stratum. Keeping the
+partition independent of the frame means the same page cannot switch sets when a
+page is added or a shard is resplit. A quota that the partition cannot fill is
+refused; the sampler never crosses the boundary.
 
 A drawn sample records the catalog and plan digests it came from, and carries no
 `claimed_set`; a manual pick carries a `claimed_set` and no catalog or plan.  A
@@ -24,7 +26,7 @@ re-described after the fact all fail the replay by name.
 `ingest-manual` accepts Tyrel's `gold-manual-pick.v1` record, which has
 `selection_basis`, the bound page/stratum, and his stated set.  It records that
 selection unchanged; it does not choose a replacement page.  The persisted
-sample's `set` is always the seed-derived partition — calibration/locked-acceptance
+sample's `set` is always the page-derived partition — calibration/locked-acceptance
 disjointness is enforced by construction, never by policing a human's claim — but
 B1 picks are made in week one, before the R0 frame or its seed exist, so his stated
 set can honestly disagree with it. That disagreement is never silently resolved
@@ -84,13 +86,11 @@ The run authority's schema and self-hash are checked before its frame or seed is
 used; an edited seed cannot silently define a different draw.
 
 `validate-corpus records/ [--run RUN.json]` checks what no single record can. A
-page's set is derived from its own frame's seed, and the seed is derived from that
-frame's page digest, so re-framing the corpus — a page added, a shard resplit —
-moves about half the pages to the other set. Records written before and after both
-validate against their own frame, and a gold corpus holding both would place one
-page in calibration *and* in locked acceptance. Records under two different corpus
-frames are refused by name, as is a page stratified or numbered two ways across
-records. Collection validation also resolves every transcription, adjudication,
+page's set is stable across frames by construction, but every frame has its own
+seeded ranking and quota universe. Records under two different corpus frames are
+therefore refused by name rather than combined into a draw nobody predeclared, as
+is a page stratified or numbered two ways across records. Collection validation
+also resolves every transcription, adjudication,
 and instrument membership back to a sample in that same corpus. An adjudication
 must embed exactly the two independently stored transcription records for its act;
 two readings by one transcriber or two adjudications establishing different text

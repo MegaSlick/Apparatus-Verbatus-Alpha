@@ -48,10 +48,11 @@ def run_file(tmp_path):
         for ordinal, character in enumerate("12345678", 1)
     ]
     source = [{"ordinal": page["ordinal"], "sha256": page["sha256"]} for page in pages]
+    page_digest = digest_bytes(canonical_bytes(source))
     frame = {
-        "page_digest": digest_bytes(canonical_bytes(source)),
+        "page_digest": page_digest,
         "frame_digest": digest_bytes(canonical_bytes({"pages": source})),
-        "seed": _sha("f"),
+        "seed": digest_bytes(canonical_bytes({"page_digest": page_digest, "purpose": "frame"})),
     }
     path = tmp_path / "run.json"
     record = {
@@ -97,7 +98,7 @@ def test_seeded_stratification_is_reproducible_and_sets_are_disjoint_by_construc
     forged = dict(first[0])
     forged["set"] = "locked-acceptance" if forged["set"] == "calibration" else "calibration"
     forged["self_hash"] = self_hash(forged)
-    with pytest.raises(SchemaRefusal, match="seed-derived partition"):
+    with pytest.raises(SchemaRefusal, match="page-derived partition"):
         validate_sample(forged, path)
 
 
@@ -139,7 +140,7 @@ def test_manual_pick_is_ingested_without_reselection_and_records_claimed_set(tmp
 
 def test_manual_pick_predating_the_seed_is_still_ingested_with_an_honest_disagreement(tmp_path):
     """Tyrel's B1 picks are made in week one, before the R0 frame/seed exist, so his
-    stated set can honestly disagree with the seed-derived partition once it is
+    stated set can honestly disagree with the page-derived partition once it is
     known. Ingestion must not refuse and force a re-pick (that would discard real
     annotation hours); it must record the disagreement, never silently resolve it
     either way (GOVERNANCE 2)."""
@@ -247,7 +248,7 @@ def test_a_method_cannot_carry_another_methods_provenance(tmp_path):
 
 def test_a_selection_that_the_draw_did_not_produce_is_refused_on_replay(tmp_path):
     """Every individual record below validates: right frame, right corpus page,
-    set matching the seed-derived partition, self-hash intact. Only replaying the
+    set matching the page-derived partition, self-hash intact. Only replaying the
     draw from the bound catalog and plan shows that a page was swapped for one the
     seed did not choose."""
     path, frame, pages = run_file(tmp_path)
@@ -558,59 +559,62 @@ def test_bind_instrument_can_recheck_its_sample_against_run_authority(tmp_path):
         bind_instrument(forged, act, _sha("e"), path)
 
 
-def test_a_gold_corpus_assembled_across_two_frames_is_refused(tmp_path):
-    """Disjointness by construction holds inside one corpus frame, because `set` is
-    a function of that frame's seed — and the seed is derived from the frame's own
-    page digest. Add a page to the corpus and roughly half the pages change sides.
-    Records from before and after both validate against their own frame, so only a
-    corpus-level check can see that one page now sits in both sets."""
+def test_a_shared_manual_pick_has_one_set_across_three_frames(tmp_path):
+    """The partition itself, not only the corpus validator, prevents F-O2.
+
+    R0 gives each frame a different seed. The same manually picked page must still
+    have one set before the validator refuses combining the three distinct ranked
+    sampling universes.
+    """
     first, frame, pages = run_file(tmp_path)
-    wider = tmp_path / "wider.json"
-    extra = [*pages, {"ordinal": 9, "sha256": _sha("9")}]
-    source = [{"ordinal": page["ordinal"], "sha256": page["sha256"]} for page in extra]
-    page_digest = digest_bytes(canonical_bytes(source))
-    wider_frame = {
-        "page_digest": page_digest,
-        "frame_digest": digest_bytes(canonical_bytes({"pages": source})),
-        "seed": _sha("e"),
-    }
-    wider_record = {
-        "schema": "skeleton.v1",
-        "run_id": "wider-gold-fixture",
-        "source_manifest": extra,
-        "corpus_frame_membership": wider_frame,
-    }
-    wider_record["self_hash"] = self_hash(wider_record)
-    wider.write_text(json.dumps(wider_record), encoding="utf-8")
-    flipped = [
-        page
-        for page in pages
-        if set_for_page(frame, page["sha256"]) != set_for_page(wider_frame, page["sha256"])
+    paths_and_frames = [(first, frame)]
+    for size in (9, 10):
+        path = tmp_path / f"frame-{size}.json"
+        source_pages = [
+            *pages,
+            *(
+                {"ordinal": ordinal, "sha256": str(ordinal)[-1] * 64}
+                for ordinal in range(9, size + 1)
+            ),
+        ]
+        source = [
+            {"ordinal": source_page["ordinal"], "sha256": source_page["sha256"]}
+            for source_page in source_pages
+        ]
+        page_digest = digest_bytes(canonical_bytes(source))
+        later_frame = {
+            "page_digest": page_digest,
+            "frame_digest": digest_bytes(canonical_bytes({"pages": source})),
+            "seed": digest_bytes(canonical_bytes({"page_digest": page_digest, "purpose": "frame"})),
+        }
+        authority = {
+            "schema": "skeleton.v1",
+            "run_id": f"gold-frame-{size}",
+            "source_manifest": source_pages,
+            "corpus_frame_membership": later_frame,
+        }
+        authority["self_hash"] = self_hash(authority)
+        path.write_text(json.dumps(authority), encoding="utf-8")
+        paths_and_frames.append((path, later_frame))
+
+    assert len({item[1]["seed"] for item in paths_and_frames}) == 3
+    page = {**pages[0], "stratum": "adverse"}
+    records = [
+        ingest_manual_pick(
+            path,
+            {
+                "schema": MANUAL_PICK_SCHEMA,
+                "selection_basis": f"shared page under frame {index}",
+                "page": page,
+                "set": set_for_page(bound_frame, page["sha256"]),
+            },
+        )
+        for index, (path, bound_frame) in enumerate(paths_and_frames, 1)
     ]
-    assert flipped, "the two frames must disagree about some page for this to be a test"
-    page = {**flipped[0], "stratum": "adverse"}
-    before = ingest_manual_pick(
-        first,
-        {
-            "schema": MANUAL_PICK_SCHEMA,
-            "selection_basis": "picked before the corpus grew",
-            "page": page,
-            "set": set_for_page(frame, page["sha256"]),
-        },
-    )
-    after = ingest_manual_pick(
-        wider,
-        {
-            "schema": MANUAL_PICK_SCHEMA,
-            "selection_basis": "picked after the corpus grew",
-            "page": page,
-            "set": set_for_page(wider_frame, page["sha256"]),
-        },
-    )
-    assert before["set"] != after["set"]
-    assert validate_corpus([before]) and validate_corpus([after])
+    assert len({record["set"] for record in records}) == 1
+    assert all(validate_corpus([record]) for record in records)
     with pytest.raises(SchemaRefusal, match="different corpus frames"):
-        validate_corpus([before, after])
+        validate_corpus(records)
 
 
 def test_a_page_restratified_between_records_is_refused(tmp_path):
