@@ -12,32 +12,56 @@ from __future__ import annotations
 import re
 import xml.etree.ElementTree as ET
 from collections.abc import Iterable
-from typing import Any
+from contextlib import contextmanager
+from itertools import groupby
+from threading import RLock
+from typing import Any, Callable, Iterator
 
-from common.contracts.canonical import digest_bytes
+from common.contracts.canonical import digest_bytes, digest_of
 from common.contracts.errors import SchemaRefusal
 
 CHURRO_OUTPUT_TOKENS = 24_000
 DAI_MAX_WIDTH_PX = 1_500
+DAI_MAX_HEIGHT_PX = 4_096
+DAI_MAX_TOTAL_PIXELS = 2_359_296
 SCHEDULING_POLICY = "chair-outer-act-inner.stage-major-parish.v1"
 _UNCERTAINTY_TOKENS = ("[UNCERTAIN]", "[CROSSED_OUT]")
 _REPETITION_WINDOW = 24
 _REPETITION_MIN_REPEATS = 3
 
 
-def churro_prompt() -> str:
-    """The trained XML framing, retained verbatim in every Churro model view."""
-    return (
+def churro_prompt() -> dict[str, str]:
+    """The trained two-message XML framing, retained verbatim.
+
+    These strings are carried from the quarantined prior adapter's explicit
+    ``prompts/ocr.py`` transcription. They are split by role because joining or
+    summarizing them changes the actual chat-template bytes the model receives.
+    """
+    system = (
         "You are an expert in diplomatic transcription of historical documents from various "
         "languages. Your task is to extract the full text from a given page. Only output the "
-        "transcribed text between <output> and </output> tags.\n\n"
-        "Follow these instructions:\n"
-        "1. Transcribe the entirety of the scanned document page, including handwritten and "
-        "printed text, tables, captions, headers, and main text.\n"
-        "2. Skip non-text elements without describing them.\n"
-        "3. Do not modernize, standardize, or translate text.\n"
-        "4. Return exactly <output>\\nextracted text\\n</output>."
+        "transcribed text between <output> and </output> tags."
     )
+    user = (
+        "Follow these instructions:\n\n"
+        "1. You will be provided with a scanned document page.\n\n"
+        "2. Perform transcription on the entirety of the page, converting all visible text into "
+        "the following format. Include handwritten and print text, if any. Include tables, "
+        "captions, headers, main text and all other visible text.\n\n"
+        "3. If you encounter any non-text elements, simply skip them without attempting to "
+        "describe them.\n\n"
+        "4. Do not modernize or standardize the text. For example, if the transcription is using "
+        '"ſ" instead of "s" or "а" instead of "a", keep it that way.\n\n'
+        "5. When you come across text in languages other than English, transcribe it as "
+        "accurately as possible without translation.\n\n"
+        "6. Output the OCR result in the following format:\n\n"
+        "<output>\nextracted text here\n</output>\n\n"
+        "Remember, your goal is to accurately transcribe the text from the scanned page as much "
+        "as possible. Process the entire page, even if it contains a large amount of text, and "
+        "provide clear, well-formatted output. Pay attention to the appropriate reading order "
+        "and layout of the text."
+    )
+    return {"system": system, "user": user}
 
 
 def churro_generation() -> dict[str, int]:
@@ -79,7 +103,8 @@ def detect_repetition(raw: bytes) -> dict[str, Any] | None:
 
 def dai_model_view(
     *,
-    image_ref: dict[str, str],
+    source_image_ref: dict[str, str],
+    model_image_ref: dict[str, str],
     width_px: int,
     height_px: int,
     system_prompt_ref: dict[str, str],
@@ -88,7 +113,8 @@ def dai_model_view(
 ) -> dict[str, Any]:
     """Build DAI's crop view, referencing carried prompt/config bytes by manifest."""
     for name, reference in (
-        ("image", image_ref),
+        ("source image", source_image_ref),
+        ("model image", model_image_ref),
         ("system prompt", system_prompt_ref),
         ("query prompt", query_prompt_ref),
         ("generation config", generation_config_ref),
@@ -99,22 +125,61 @@ def dai_model_view(
         for value in (width_px, height_px)
     ):
         raise SchemaRefusal("DAI input dimensions must be positive integers")
-    resized_width = min(width_px, DAI_MAX_WIDTH_PX)
-    resized_height = (height_px * resized_width + width_px - 1) // width_px
+    resized_width, resized_height = _dai_dimensions(width_px, height_px)
+    resized = (resized_width, resized_height) != (width_px, height_px)
+    if resized and source_image_ref["sha256"] == model_image_ref["sha256"]:
+        raise SchemaRefusal("DAI resized model image is not distinct from its source bytes")
+    if not resized and source_image_ref != model_image_ref:
+        raise SchemaRefusal("DAI identity transform does not retain the source image bytes exactly")
+    limits = {
+        "schema": "dai-image-limits.v1",
+        "max_width_px": DAI_MAX_WIDTH_PX,
+        "max_height_px": DAI_MAX_HEIGHT_PX,
+        "max_total_pixels": DAI_MAX_TOTAL_PIXELS,
+    }
     return {
         "adapter": "dai-atr.v1",
-        "image_ref": image_ref,
+        "source_image_ref": source_image_ref,
+        "model_image_ref": model_image_ref,
         "transform": {
-            "kind": "resize-preserve-aspect",
+            "kind": "resize-preserve-aspect" if resized else "identity",
+            "resampler": "pillow-lanczos" if resized else None,
+            "dimension_rounding": "floor" if resized else None,
             "source_width_px": width_px,
             "source_height_px": height_px,
             "target_width_px": resized_width,
             "target_height_px": resized_height,
         },
+        "image_limits": limits,
+        "image_limits_sha256": digest_of(limits),
         "prompts": {"system": system_prompt_ref, "query": query_prompt_ref},
         "generation_config_ref": generation_config_ref,
         "uncertainty_tokens_preserved": list(_UNCERTAINTY_TOKENS),
     }
+
+
+def _dai_dimensions(width_px: int, height_px: int) -> tuple[int, int]:
+    """Largest integer aspect-preserving view within every DAI ceiling."""
+    upper_width = min(
+        width_px,
+        DAI_MAX_WIDTH_PX,
+        width_px * DAI_MAX_HEIGHT_PX // height_px,
+    )
+    if upper_width < 1:
+        raise SchemaRefusal("DAI image aspect cannot fit the sealed height ceiling")
+    low, high = 1, upper_width
+    while low < high:
+        candidate = (low + high + 1) // 2
+        candidate_height = max(1, height_px * candidate // width_px)
+        if candidate * candidate_height <= DAI_MAX_TOTAL_PIXELS:
+            low = candidate
+        else:
+            high = candidate - 1
+    target_width = low
+    target_height = max(1, height_px * target_width // width_px)
+    if target_height > DAI_MAX_HEIGHT_PX:
+        raise SchemaRefusal("DAI image aspect cannot fit the sealed height ceiling")
+    return target_width, target_height
 
 
 def chandra_capture_intake(
@@ -229,6 +294,80 @@ def stage_major_schedule(
         for chair in ordered_chairs
         for act in ordered_acts
     ]
+
+
+class SingleChairResidency:
+    """Fail-closed ownership of the one model resource an orchestrator may load.
+
+    The resident name is reserved before ``load`` runs and is cleared only after
+    ``unload`` succeeds. A failed unload therefore blocks every later acquire;
+    it can never be mistaken for proof that the resource became vacant.
+    """
+
+    def __init__(
+        self,
+        load: Callable[[str], Any],
+        unload: Callable[[str, Any], None],
+    ) -> None:
+        self._load = load
+        self._unload = unload
+        self._resident: str | None = None
+        self._lock = RLock()
+
+    @property
+    def resident(self) -> str | None:
+        with self._lock:
+            return self._resident
+
+    @contextmanager
+    def occupy(self, chair: str) -> Iterator[Any]:
+        if not isinstance(chair, str) or not chair:
+            raise SchemaRefusal("residency chair identity is blank")
+        with self._lock:
+            if self._resident is not None:
+                raise SchemaRefusal(
+                    f"cannot load chair {chair!r} while chair {self._resident!r} is resident"
+                )
+            self._resident = chair
+        resource = self._load(chair)
+        try:
+            yield resource
+        finally:
+            self._unload(chair, resource)
+            with self._lock:
+                if self._resident != chair:
+                    raise SchemaRefusal("single-chair residency state diverged during unload")
+                self._resident = None
+
+
+def execute_stage_major_schedule(
+    schedule: Iterable[dict[str, str]],
+    *,
+    residency: SingleChairResidency,
+    serve: Callable[[Any, dict[str, str]], Any],
+) -> list[Any]:
+    """Execute only contiguous chair blocks through the shared residency guard."""
+    rows = list(schedule)
+    expected_fields = {"policy", "parish_id", "chair", "act_id"}
+    if any(
+        not isinstance(row, dict)
+        or set(row) != expected_fields
+        or row["policy"] != SCHEDULING_POLICY
+        or any(not isinstance(row[field], str) or not row[field] for field in expected_fields)
+        for row in rows
+    ):
+        raise SchemaRefusal("stage-major execution received a malformed schedule row")
+    chairs = [row["chair"] for row in rows]
+    chair_blocks = [chair for chair, _ in groupby(chairs)]
+    if len(chair_blocks) != len(set(chair_blocks)):
+        raise SchemaRefusal("stage-major execution schedule returns to an unloaded chair")
+    if len({row["parish_id"] for row in rows}) > 1:
+        raise SchemaRefusal("stage-major execution schedule mixes parish identities")
+    results = []
+    for chair, chair_rows in groupby(rows, key=lambda row: row["chair"]):
+        with residency.occupy(chair) as resource:
+            results.extend(serve(resource, row) for row in chair_rows)
+    return results
 
 
 def _reference(value: object, name: str) -> None:

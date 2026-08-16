@@ -4,21 +4,26 @@ from __future__ import annotations
 
 import json
 
+import feeding
 import pytest
 from feeding import (
     CHURRO_OUTPUT_TOKENS,
+    DAI_MAX_HEIGHT_PX,
+    DAI_MAX_TOTAL_PIXELS,
     DAI_MAX_WIDTH_PX,
     SCHEDULING_POLICY,
+    SingleChairResidency,
     chandra_capture_intake,
     churro_generation,
     churro_prompt,
     dai_model_view,
+    execute_stage_major_schedule,
     retain_model_view,
     stage_major_schedule,
 )
 
 from common.chandra_custody import retain_chandra_response
-from common.contracts.canonical import digest_bytes
+from common.contracts.canonical import digest_bytes, digest_of
 from common.contracts.errors import SchemaRefusal
 from common.contracts.stages import DESIGNATOR, writing_directory
 
@@ -26,8 +31,8 @@ PAGE_ID = "pg_fixture"
 PAGE_ORDINAL = 0
 
 
-def _ref(path: str) -> dict[str, str]:
-    return {"relative_path": path, "sha256": "a" * 64}
+def _ref(path: str, digest: str = "a" * 64) -> dict[str, str]:
+    return {"relative_path": path, "sha256": digest}
 
 
 class _Tree:
@@ -88,6 +93,19 @@ def test_churro_records_a_24k_bound_and_detects_repetition_after_complete_captur
     assert tree.blobs[record["raw_response_ref"]["relative_path"]] == raw
 
 
+def test_churro_prompt_retains_the_trained_two_message_xml_bytes():
+    prompt = churro_prompt()
+    assert set(prompt) == {"system", "user"}
+    assert digest_bytes(prompt["system"].encode("utf-8")) == (
+        "ee91b159b30493ae43ee035079114debdf20d651b40c4cd59d70c645d02ff704"
+    )
+    assert digest_bytes(prompt["user"].encode("utf-8")) == (
+        "048a11aafd9fdac9e28a82d86b0554d43b22937f016246292bbc0c1250c318ea"
+    )
+    assert "<output>\nextracted text here\n</output>" in prompt["user"]
+    assert "ſ" in prompt["user"] and "а" in prompt["user"]
+
+
 def test_churro_validates_xml_without_discarding_the_raw_response():
     tree = _Tree()
     record = retain_model_view(
@@ -102,9 +120,48 @@ def test_churro_validates_xml_without_discarding_the_raw_response():
     assert record["stop_reason"] == "length"
 
 
+def test_churro_parse_normalization_is_harmless_because_raw_bytes_are_retained():
+    tree = _Tree()
+    raw = b"<output>line one\r\nRen&#233;</output>"
+    record = retain_model_view(
+        tree,
+        adapter="churro.v1",
+        view={"prompt": churro_prompt(), "generation": churro_generation()},
+        raw_response=raw,
+        transport_stop_reason="eos",
+        parser="xml",
+    )
+    assert record["parse"]["text"] == "line one\nRené"
+    assert tree.blobs[record["raw_response_ref"]["relative_path"]] == raw
+
+
+def test_repetition_detection_observes_only_bytes_already_captured(monkeypatch):
+    tree = _Tree()
+    raw = b"completed response bytes before any detector runs"
+    observations = []
+
+    def detector(observed):
+        observations.append(observed)
+        assert observed is raw
+        assert raw in tree.blobs.values(), "capture must precede every detector call"
+        return {"kind": "post-hoc-repetition", "unit_characters": 24, "repeats": 3}
+
+    monkeypatch.setattr(feeding, "detect_repetition", detector)
+    record = retain_model_view(
+        tree,
+        adapter="churro.v1",
+        view={"prompt": churro_prompt(), "generation": churro_generation()},
+        raw_response=raw,
+        transport_stop_reason="eos",
+    )
+    assert observations == [raw]
+    assert tree.blobs[record["raw_response_ref"]["relative_path"]] == raw
+
+
 def test_dai_retains_resize_and_manifest_references_not_carried_prompt_bytes():
     view = dai_model_view(
-        image_ref=_ref("designator/crops/a.png"),
+        source_image_ref=_ref("designator/crops/a.png"),
+        model_image_ref=_ref("attestatores/model-views/a.jpg", "b" * 64),
         width_px=3_000,
         height_px=1_001,
         system_prompt_ref=_ref("models/dai/system.txt"),
@@ -112,11 +169,62 @@ def test_dai_retains_resize_and_manifest_references_not_carried_prompt_bytes():
         generation_config_ref=_ref("models/dai/generation_config.json"),
     )
     assert DAI_MAX_WIDTH_PX == 1_500
+    assert DAI_MAX_HEIGHT_PX == 4_096
+    assert DAI_MAX_TOTAL_PIXELS == 2_359_296
     assert view["transform"]["target_width_px"] == 1_500
-    assert view["transform"]["target_height_px"] == 501
+    assert view["transform"]["target_height_px"] == 500
+    assert view["model_image_ref"] == _ref("attestatores/model-views/a.jpg", "b" * 64)
+    assert view["transform"]["resampler"] == "pillow-lanczos"
+    assert view["image_limits_sha256"] == digest_of(view["image_limits"])
     assert view["uncertainty_tokens_preserved"] == ["[UNCERTAIN]", "[CROSSED_OUT]"]
     assert view["prompts"]["system"] == _ref("models/dai/system.txt")
     assert set(view["prompts"]["system"]) == {"relative_path", "sha256"}
+
+
+@pytest.mark.parametrize(
+    ("width_px", "height_px", "expected"),
+    [(500, 10_000, (204, 4_080)), (1_500, 3_000, (1_086, 2_172))],
+)
+def test_dai_resize_applies_height_and_total_pixel_ceilings(width_px, height_px, expected):
+    view = dai_model_view(
+        source_image_ref=_ref("designator/crops/tall.png"),
+        model_image_ref=_ref("attestatores/model-views/tall.jpg", "b" * 64),
+        width_px=width_px,
+        height_px=height_px,
+        system_prompt_ref=_ref("models/dai/system.txt"),
+        query_prompt_ref=_ref("models/dai/query.txt"),
+        generation_config_ref=_ref("models/dai/generation_config.json"),
+    )
+    target = (view["transform"]["target_width_px"], view["transform"]["target_height_px"])
+    assert target == expected
+    assert target[0] <= DAI_MAX_WIDTH_PX
+    assert target[1] <= DAI_MAX_HEIGHT_PX
+    assert target[0] * target[1] <= DAI_MAX_TOTAL_PIXELS
+
+
+def test_dai_identity_view_requires_the_exact_source_image_reference():
+    source = _ref("designator/crops/small.png")
+    view = dai_model_view(
+        source_image_ref=source,
+        model_image_ref=source,
+        width_px=1_000,
+        height_px=1_000,
+        system_prompt_ref=_ref("models/dai/system.txt"),
+        query_prompt_ref=_ref("models/dai/query.txt"),
+        generation_config_ref=_ref("models/dai/generation_config.json"),
+    )
+    assert view["transform"]["kind"] == "identity"
+    assert view["model_image_ref"] == source
+    with pytest.raises(SchemaRefusal, match="identity transform"):
+        dai_model_view(
+            source_image_ref=source,
+            model_image_ref=_ref("attestatores/model-views/different.jpg", "b" * 64),
+            width_px=1_000,
+            height_px=1_000,
+            system_prompt_ref=_ref("models/dai/system.txt"),
+            query_prompt_ref=_ref("models/dai/query.txt"),
+            generation_config_ref=_ref("models/dai/generation_config.json"),
+        )
 
 
 def test_chandra_intake_consumes_the_r2_blob_under_its_original_receipt():
@@ -224,7 +332,7 @@ def test_chandra_intake_refuses_a_non_designator_receipt_chair():
         _intake(tree, stored, receipt)
 
 
-def test_schedule_is_stage_major_chair_outer_act_inner_and_single_resident():
+def test_schedule_is_stage_major_chair_outer_act_inner_and_refuses_duplicate_chairs():
     schedule = stage_major_schedule(
         "parish-7",
         [{"act_id": "a2", "page_ordinal": 1}, {"act_id": "a1", "page_ordinal": 0}],
@@ -258,3 +366,120 @@ def test_schedule_is_stage_major_chair_outer_act_inner_and_single_resident():
     ]
     with pytest.raises(SchemaRefusal, match="repeats a chair"):
         stage_major_schedule("parish-7", [{"act_id": "a1"}], ["attestator_1", "attestator_1"])
+
+
+def test_stage_major_execution_never_exposes_two_resident_chairs():
+    schedule = stage_major_schedule(
+        "parish-7",
+        [{"act_id": "a2", "page_ordinal": 1}, {"act_id": "a1", "page_ordinal": 0}],
+        ["attestator_2", "attestator_1"],
+    )
+    loaded = set()
+    events = []
+
+    def load(chair):
+        assert not loaded
+        loaded.add(chair)
+        events.append(("load", chair))
+        return {"chair": chair}
+
+    def unload(chair, resource):
+        assert resource["chair"] == chair
+        assert loaded == {chair}
+        loaded.remove(chair)
+        events.append(("unload", chair))
+
+    residency = SingleChairResidency(load, unload)
+
+    def serve(resource, row):
+        assert residency.resident == row["chair"] == resource["chair"]
+        assert loaded == {row["chair"]}
+        with pytest.raises(SchemaRefusal, match="while chair"):
+            with residency.occupy("attestator_9"):
+                raise AssertionError("a nested second chair must never load")
+        events.append(("serve", row["chair"], row["act_id"]))
+        return row["act_id"]
+
+    assert execute_stage_major_schedule(schedule, residency=residency, serve=serve) == [
+        "a1",
+        "a2",
+        "a1",
+        "a2",
+    ]
+    assert loaded == set()
+    assert residency.resident is None
+    assert events == [
+        ("load", "attestator_1"),
+        ("serve", "attestator_1", "a1"),
+        ("serve", "attestator_1", "a2"),
+        ("unload", "attestator_1"),
+        ("load", "attestator_2"),
+        ("serve", "attestator_2", "a1"),
+        ("serve", "attestator_2", "a2"),
+        ("unload", "attestator_2"),
+    ]
+
+
+@pytest.mark.parametrize("failing_act", ["a1", "a2"])
+def test_stage_major_execution_unloads_before_propagating_an_act_failure(failing_act):
+    schedule = stage_major_schedule(
+        "parish-7",
+        [{"act_id": "a1", "page_ordinal": 0}, {"act_id": "a2", "page_ordinal": 1}],
+        ["attestator_1"],
+    )
+    loaded = set()
+
+    def load(chair):
+        loaded.add(chair)
+        return chair
+
+    def unload(chair, resource):
+        assert resource == chair
+        loaded.remove(chair)
+
+    residency = SingleChairResidency(load, unload)
+
+    def serve(_resource, row):
+        if row["act_id"] == failing_act:
+            raise RuntimeError("fixture act failure")
+
+    with pytest.raises(RuntimeError, match="fixture act failure"):
+        execute_stage_major_schedule(schedule, residency=residency, serve=serve)
+    assert loaded == set()
+    assert residency.resident is None
+
+
+def test_stage_major_execution_refuses_reentry_and_fails_closed_on_unload_failure():
+    loaded = set()
+
+    def load(chair):
+        assert not loaded
+        loaded.add(chair)
+        return chair
+
+    def unload(_chair, _resource):
+        raise RuntimeError("unload not verified")
+
+    residency = SingleChairResidency(load, unload)
+    schedule = stage_major_schedule("parish-7", [{"act_id": "a1"}], ["attestator_1"])
+    with pytest.raises(RuntimeError, match="unload not verified"):
+        execute_stage_major_schedule(schedule, residency=residency, serve=lambda *_: None)
+    assert residency.resident == "attestator_1"
+    assert loaded == {"attestator_1"}
+    with pytest.raises(SchemaRefusal, match="while chair 'attestator_1' is resident"):
+        execute_stage_major_schedule(
+            stage_major_schedule("parish-7", [{"act_id": "a1"}], ["attestator_2"]),
+            residency=residency,
+            serve=lambda *_: None,
+        )
+
+
+def test_stage_major_execution_refuses_a_schedule_that_returns_to_a_prior_chair():
+    schedule = stage_major_schedule(
+        "parish-7", [{"act_id": "a1"}, {"act_id": "a2"}], ["attestator_1", "attestator_2"]
+    )
+    tampered = [schedule[0], schedule[2], schedule[1], schedule[3]]
+    residency = SingleChairResidency(lambda chair: chair, lambda *_: None)
+    with pytest.raises(SchemaRefusal, match="returns to an unloaded chair"):
+        execute_stage_major_schedule(tampered, residency=residency, serve=lambda *_: None)
+    assert residency.resident is None
