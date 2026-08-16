@@ -16,6 +16,7 @@ from gold.core import (
     MANUAL_PICK_SCHEMA,
     PADDING_SCHEMA,
     bind_instrument,
+    build_sample,
     ingest_manual_pick,
     sample_stratified,
     set_for_page,
@@ -23,6 +24,7 @@ from gold.core import (
     validate_measurement,
     validate_padding,
     validate_sample,
+    verify_stratified_selection,
     write_append_only,
 )
 
@@ -174,6 +176,104 @@ def test_stratified_samples_carry_no_claimed_set(tmp_path):
     assert record["claimed_set"] is None
 
 
+def test_a_method_cannot_carry_another_methods_provenance(tmp_path):
+    """A sample claims one origin and must carry that origin's evidence: a seeded
+    draw has no human claim and names its catalog and plan; a manual pick states a
+    set and names neither."""
+    path, frame, pages = run_file(tmp_path)
+    rows = catalog(pages)
+    page = rows[0]
+    sampling = {"catalog_digest": _sha("a"), "plan_digest": _sha("b")}
+    with pytest.raises(SchemaRefusal, match="must name the catalog and plan"):
+        build_sample(frame, page, selection_basis="basis", method="stratified-seed")
+    with pytest.raises(SchemaRefusal, match="no human claimed_set"):
+        build_sample(
+            frame,
+            page,
+            selection_basis="basis",
+            method="stratified-seed",
+            claimed_set="calibration",
+            sampling=sampling,
+        )
+    with pytest.raises(SchemaRefusal, match="must record the set its picker stated"):
+        build_sample(frame, page, selection_basis="basis", method="manual")
+    with pytest.raises(SchemaRefusal, match="not drawn from a catalog and plan"):
+        build_sample(
+            frame,
+            page,
+            selection_basis="basis",
+            method="manual",
+            claimed_set="calibration",
+            sampling=sampling,
+        )
+    # And the same coherence holds on read, not only at construction.
+    record = sample_stratified(path, rows, plan_for(frame, rows))[0]
+    forged = json.loads(json.dumps(record))
+    forged["claimed_set"] = "calibration"
+    without = {
+        key: value for key, value in forged.items() if key not in {"sample_digest", "self_hash"}
+    }
+    forged["sample_digest"] = digest_bytes(canonical_bytes(without))
+    forged["self_hash"] = self_hash(forged)
+    with pytest.raises(SchemaRefusal, match="no human claimed_set"):
+        validate_sample(forged, path)
+
+
+def test_a_selection_that_the_draw_did_not_produce_is_refused_on_replay(tmp_path):
+    """Every individual record below validates: right frame, right corpus page,
+    set matching the seed-derived partition, self-hash intact. Only replaying the
+    draw from the bound catalog and plan shows that a page was swapped for one the
+    seed did not choose."""
+    path, frame, pages = run_file(tmp_path)
+    rows = catalog(pages)
+    plan = plan_for(frame, rows)
+    drawn = sample_stratified(path, rows, plan)
+    assert verify_stratified_selection(drawn, path, rows, plan) == sorted(
+        drawn, key=lambda record: record["sample_digest"]
+    )
+    chosen = {record["page"]["sha256"] for record in drawn}
+    substitute = next(row for row in rows if row["sha256"] not in chosen)
+    hand_picked = build_sample(
+        frame,
+        substitute,
+        selection_basis="seeded-stratified-v1",
+        method="stratified-seed",
+        sampling=drawn[0]["sampling"],
+    )
+    validate_sample(hand_picked, path)  # indistinguishable one record at a time
+    swapped = [
+        record
+        for record in drawn
+        if record["set"] != hand_picked["set"]
+        or record["page"]["stratum"] != hand_picked["page"]["stratum"]
+    ] + [hand_picked]
+    with pytest.raises(SchemaRefusal, match="does not replay"):
+        verify_stratified_selection(swapped, path, rows, plan)
+    with pytest.raises(SchemaRefusal, match="does not replay"):
+        verify_stratified_selection(drawn[1:], path, rows, plan)
+    with pytest.raises(SchemaRefusal, match="appears twice"):
+        verify_stratified_selection([*drawn, drawn[0]], path, rows, plan)
+
+
+def test_a_sample_names_the_catalog_and_plan_it_was_drawn_from(tmp_path):
+    """The binding is what makes the replay meaningful: re-describing the catalog
+    (here, restratifying one page) changes the digest the records carry, so records
+    and stratification cannot be silently mismatched afterwards."""
+    path, frame, pages = run_file(tmp_path)
+    rows = catalog(pages)
+    plan = plan_for(frame, rows)
+    drawn = sample_stratified(path, rows, plan)
+    assert {record["sampling"]["catalog_digest"] for record in drawn} == {
+        digest_bytes(canonical_bytes(sorted(rows, key=lambda r: (r["stratum"], r["ordinal"]))))
+    }
+    reordered = sample_stratified(path, list(reversed(rows)), plan)
+    assert [record["sampling"] for record in reordered] == [record["sampling"] for record in drawn]
+    restratified = [dict(row) for row in rows]
+    restratified[0]["stratum"] = "ordinary"
+    changed = sample_stratified(path, restratified, plan_for(frame, restratified))
+    assert changed[0]["sampling"]["catalog_digest"] != drawn[0]["sampling"]["catalog_digest"]
+
+
 def test_layout_padding_and_instrument_records_are_closed_and_self_hashed(tmp_path):
     path, frame, pages = run_file(tmp_path)
     sample = sample_stratified(path, catalog(pages), plan_for(frame, catalog(pages)))[0]
@@ -273,6 +373,34 @@ def test_bind_instrument_can_recheck_its_sample_against_run_authority(tmp_path):
     assert bind_instrument(forged, act, _sha("e"))["sample_digest"] == forged["sample_digest"]
     with pytest.raises(SchemaRefusal, match="outside the R0"):
         bind_instrument(forged, act, _sha("e"), path)
+
+
+def test_cli_verify_sampling_replays_what_the_sampler_wrote(tmp_path):
+    """The operator-facing half of the replay: point `verify-sampling` at the
+    directory `sample` wrote and it re-derives the draw from the same run, catalog,
+    and plan. A record removed from the directory — the quiet failure, since each
+    remaining record still validates on its own — is refused."""
+    path, frame, pages = run_file(tmp_path)
+    rows, output = catalog(pages), tmp_path / "records"
+    plan = plan_for(frame, rows)
+    files = {"catalog": rows, "plan": plan}
+    for name, payload in files.items():
+        (tmp_path / f"{name}.json").write_text(json.dumps(payload), encoding="utf-8")
+    common = [
+        "--run",
+        str(path),
+        "--catalog",
+        str(tmp_path / "catalog.json"),
+        "--plan",
+        str(tmp_path / "plan.json"),
+    ]
+    assert cli.main(["sample", *common, "--output-dir", str(output)]) == 0
+    written = sorted(output.glob("*.json"))
+    assert len(written) == sum(sum(quotas.values()) for quotas in plan.values())
+    assert cli.main(["verify-sampling", str(output), *common]) == 0
+    written[0].unlink()
+    with pytest.raises(SchemaRefusal, match="does not replay"):
+        cli.main(["verify-sampling", str(output), *common])
 
 
 def test_cli_malformed_json_input_is_a_named_refusal_not_a_traceback(tmp_path):

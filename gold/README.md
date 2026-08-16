@@ -11,6 +11,16 @@ frame's existing `seed` deterministically partitions pages into
 one of those two sets and ranks pages within their own stratum.  A quota that the
 partition cannot fill is refused; the sampler never crosses the boundary.
 
+A drawn sample records the catalog and plan digests it came from, and carries no
+`claimed_set`; a manual pick carries a `claimed_set` and no catalog or plan.  A
+record cannot claim one origin while carrying the other's evidence.  That binding
+is what `python -m gold.cli verify-sampling records/ --run RUN.json --catalog
+catalog.json --plan plan.json` replays: validating one record proves its page is a
+real corpus page in the set the seed assigns it, but only replaying the whole draw
+shows that the *sampler* chose those pages.  A hand-picked page minted as
+`stratified-seed`, a record quietly removed from the directory, and a catalog
+re-described after the fact all fail the replay by name.
+
 `ingest-manual` accepts Tyrel's `gold-manual-pick.v1` record, which has
 `selection_basis`, the bound page/stratum, and his stated set.  It records that
 selection unchanged; it does not choose a replacement page.  The persisted

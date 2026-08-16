@@ -153,6 +153,40 @@ def _catalog(rows: Any, source: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(result, key=lambda row: (row["stratum"], row["ordinal"]))
 
 
+def _method_facts(method: Any, claimed_set: Any, sampling: Any) -> None:
+    """Refuse a sample whose method and its provenance fields disagree.
+
+    Each method produces exactly one shape, so a record cannot claim one origin
+    while carrying another's evidence. A seeded draw has no human claim to record
+    and must name the catalog and plan it was drawn from; a manual pick has a
+    stated set and no catalog or plan behind it. Without this, a page chosen by
+    hand could be minted as `stratified-seed`, and "the gold was drawn by the
+    seed" would be an unfalsifiable label rather than a replayable fact
+    (GOVERNANCE 10; U18's *provably*).
+    """
+    _refuse(method not in {"stratified-seed", "manual"}, "sample method is not recognized")
+    _refuse(
+        claimed_set is not None and claimed_set not in SETS,
+        "claimed_set is not a recognized gold set",
+    )
+    if method == "stratified-seed":
+        _refuse(claimed_set is not None, "an automatic draw carries no human claimed_set")
+        _refuse(
+            sampling is None,
+            "a stratified-seed sample must name the catalog and plan it was drawn from",
+        )
+    else:
+        _refuse(claimed_set is None, "a manual pick must record the set its picker stated")
+        _refuse(sampling is not None, "a manual pick is not drawn from a catalog and plan")
+    if sampling is not None:
+        _refuse(
+            not isinstance(sampling, dict) or set(sampling) != {"catalog_digest", "plan_digest"},
+            "sampling provenance has the wrong closed schema",
+        )
+        for field in sorted(sampling):
+            _sha(sampling[field], f"sampling {field}")
+
+
 def build_sample(
     frame: dict[str, str],
     page: dict[str, Any],
@@ -160,6 +194,7 @@ def build_sample(
     selection_basis: str,
     method: str,
     claimed_set: str | None = None,
+    sampling: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Build the source-derived restatement once; validation replays it exactly.
 
@@ -169,16 +204,14 @@ def build_sample(
     separate, honest record of what a manual picker believed the set was at pick
     time; it is carried unchanged even when it disagrees with `set`, so a pick
     made before the frame/seed existed is never silently corrected or discarded
-    (GOVERNANCE 2).
+    (GOVERNANCE 2). `sampling` binds a seeded draw to the exact catalog and plan
+    that produced it, so `verify_stratified_selection` can replay the draw
+    instead of taking `method` at its word.
     """
-    _refuse(method not in {"stratified-seed", "manual"}, "sample method is not recognized")
+    _method_facts(method, claimed_set, sampling)
     _refuse(
         not isinstance(selection_basis, str) or not selection_basis.strip(),
         "selection_basis is empty",
-    )
-    _refuse(
-        claimed_set is not None and claimed_set not in SETS,
-        "claimed_set is not a recognized gold set",
     )
     page_sha = page["sha256"]
     gold_set = set_for_page(frame, page_sha)
@@ -190,6 +223,7 @@ def build_sample(
         "page": {"ordinal": page["ordinal"], "sha256": page_sha, "stratum": page["stratum"]},
         "set": gold_set,
         "claimed_set": claimed_set,
+        "sampling": dict(sampling) if sampling is not None else None,
     }
     record["sample_digest"] = digest_bytes(canonical_bytes(record))
     record["self_hash"] = self_hash(record)
@@ -233,6 +267,12 @@ def sample_stratified(run_path: str | Path, catalog_rows: Any, plan: Any) -> lis
     frame, source = load_run_frame(run_path)
     catalog = _catalog(catalog_rows, source)
     plan = _quotas(plan, {row["stratum"] for row in catalog})
+    # The normalized catalog and plan, so a row or key reordering of the same
+    # stratification digests the same and a replay of the draw still matches.
+    sampling = {
+        "catalog_digest": digest_bytes(canonical_bytes(catalog)),
+        "plan_digest": digest_bytes(canonical_bytes(plan)),
+    }
     selected = []
     for gold_set in sorted(SETS):
         for stratum, quota in sorted(plan[gold_set].items()):
@@ -248,11 +288,51 @@ def sample_stratified(run_path: str | Path, catalog_rows: Any, plan: Any) -> lis
             )
             selected.extend(
                 build_sample(
-                    frame, page, selection_basis="seeded-stratified-v1", method="stratified-seed"
+                    frame,
+                    page,
+                    selection_basis="seeded-stratified-v1",
+                    method="stratified-seed",
+                    sampling=sampling,
                 )
                 for page in eligible[:quota]
             )
     return selected
+
+
+def verify_stratified_selection(
+    records: Any, run_path: str | Path, catalog_rows: Any, plan: Any
+) -> list[dict[str, Any]]:
+    """Replay the draw and refuse a set of samples that is not exactly its result.
+
+    A valid sample record proves its page belongs to the sealed corpus and lands
+    in the set the seed puts it in. It does not, by itself, prove the *sampler*
+    chose it: `build_sample` will mint any page in the frame. This replays the
+    seeded draw from the same three inputs and compares the whole selection, so a
+    hand-picked page wearing `method: stratified-seed`, a dropped page, and a
+    catalog re-described after the fact are all refused by name.
+    """
+    expected = {
+        record["sample_digest"]: record
+        for record in sample_stratified(run_path, catalog_rows, plan)
+    }
+    _refuse(not isinstance(records, list), "sample records are not a list")
+    present = {}
+    for record in records:
+        validate_sample(record, run_path)
+        _refuse(
+            record["sample_digest"] in present,
+            f"sample {record['sample_digest']} appears twice in the selection",
+        )
+        present[record["sample_digest"]] = record
+    missing = sorted(set(expected) - set(present))
+    unexplained = sorted(set(present) - set(expected))
+    _refuse(
+        bool(missing) or bool(unexplained),
+        f"the selection does not replay: {len(missing)} record(s) the draw produced are "
+        f"absent and {len(unexplained)} present record(s) the draw did not produce "
+        f"(first absent {missing[:1]}, first unexplained {unexplained[:1]})",
+    )
+    return [present[digest] for digest in sorted(present)]
 
 
 def ingest_manual_pick(run_path: str | Path, pick: Any) -> dict[str, Any]:
@@ -378,15 +458,14 @@ def validate_sample(record: Any, run_path: str | Path | None = None) -> dict[str
             "page",
             "set",
             "claimed_set",
+            "sampling",
             "sample_digest",
             "self_hash",
         },
         "sample has the wrong closed schema",
     )
     _refuse(record["schema"] != SAMPLE_SCHEMA, "sample schema is not recognized")
-    _refuse(
-        record["method"] not in {"stratified-seed", "manual"}, "sample method is not recognized"
-    )
+    _method_facts(record["method"], record["claimed_set"], record["sampling"])
     _refuse(
         not isinstance(record["selection_basis"], str) or not record["selection_basis"].strip(),
         "sample selection_basis is empty",
@@ -415,10 +494,6 @@ def validate_sample(record: Any, run_path: str | Path | None = None) -> dict[str
     _refuse(
         record["set"] not in SETS or record["set"] != set_for_page(frame, page["sha256"]),
         "sample set conflicts with the seed-derived partition",
-    )
-    _refuse(
-        record["claimed_set"] is not None and record["claimed_set"] not in SETS,
-        "sample claimed_set is not a recognized gold set",
     )
     without = {
         key: value for key, value in record.items() if key not in {"sample_digest", "self_hash"}
