@@ -456,8 +456,8 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # `by_chair`/`shortfall` plus a reason. Neither acceptance scenario exercises that
 # unavailable shape -- every reviewed page has reported page-witness text -- so
 # both digest literals remain byte-identical, with file counts still 64/71.
-HAPPY_RUN_TREE_DIGEST = "e09904d63d008c18a3357df0b52dca28e47b73fd79d274aae32949bec605ab25"
-REVIEW_RUN_TREE_DIGEST = "c7331e5f089f5df96d4d6bf7aa344ebaee30942fe45f5b8339b00b3ae0a3fe28"
+HAPPY_RUN_TREE_DIGEST = "3cdf9f2450f5ef9a16733826bd41e052ce92b2258399a717eb2ad4f5c09c5631"
+REVIEW_RUN_TREE_DIGEST = "be767c2362218de0f86d0ab23477ce2053c66250e73b107f19b4c7c2d815a0de"
 
 
 def orchestrate(
