@@ -40,3 +40,29 @@ def test_result_cannot_move_its_own_goalposts_or_claim_observations():
     record["definition_digest"] = definition("B0.5")["definition_digest"]
     with pytest.raises(SchemaRefusal, match="frozen definition"):
         validate_result(record)
+
+
+def test_not_run_reason_names_the_actual_blocker_per_cell():
+    pod_cells = {"B0", "B0.5"}
+    for cell in (record["cell"] for record in all_definitions()):
+        reason = not_run(cell, fixture_verified=True)["reason"]
+        if cell in pod_cells:
+            assert "authorized pod session" in reason
+        else:
+            assert "authorized pod session" not in reason
+            assert "runner execution against gold" in reason
+
+
+def test_forged_measured_result_and_tampered_row_are_both_refused():
+    forged = not_run("B0", fixture_verified=True)
+    forged["state"] = "measured"
+    forged["observations"] = [{"correct_feeding_rate_permille": 990}]
+    # self_hash intentionally left stale: a forger who also recomputes it is
+    # still caught by the explicit not-run state check.
+    with pytest.raises(SchemaRefusal, match="not-run state"):
+        validate_result(forged)
+
+    tampered = not_run("B2", fixture_verified=True)
+    tampered["fixture_verified"] = False
+    with pytest.raises(SchemaRefusal, match="self-hash"):
+        validate_result(tampered)

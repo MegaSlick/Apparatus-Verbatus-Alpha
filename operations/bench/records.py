@@ -210,8 +210,21 @@ def validate_definition(record: Any) -> dict[str, Any]:
     return record
 
 
+_NOT_RUN_REASON: Final = {
+    "authorized-pod-session": "no authorized pod session and no real-model execution",
+    "runner-and-gold-inputs": "no runner execution against gold/layout inputs",
+}
+
+
 def not_run(cell: str, *, fixture_verified: bool) -> dict[str, Any]:
-    """Make a non-green result for an unexecuted real bench cell."""
+    """Make a non-green result for an unexecuted real bench cell.
+
+    The reason names the actual blocker for *this* cell's execution
+    requirement — B0/B0.5 wait on a pod session; B2-B6 wait on a runner fed
+    by gold/layout inputs. A single shared string would misname the blocker
+    for six of the eight cells, which is exactly the restated-fact failure
+    this record's self-hash exists to make checkable.
+    """
     sealed = definition(cell)
     record: dict[str, Any] = {
         "schema": RESULT_SCHEMA,
@@ -219,7 +232,7 @@ def not_run(cell: str, *, fixture_verified: bool) -> dict[str, Any]:
         "cell": cell,
         "state": "not-run",
         "fixture_verified": fixture_verified,
-        "reason": "no authorized pod session and no real-model execution",
+        "reason": _NOT_RUN_REASON[sealed["execution_requirement"]],
         "observations": [],
     }
     record["self_hash"] = self_hash(record)
