@@ -22,10 +22,17 @@ Automatically sampled records carry `claimed_set: null` (no human claim was made
 `bind-instrument` creates an append-only `gold-instrument-membership.v1` record
 carrying a sample digest, an R0 act identity, and a protocol digest.
 
+The act identity `bind-instrument` carries is checked for shape only (well-formed
+and `act_`-prefixed); R7a has no act-producing stage before it in the build order,
+so it cannot check that the act actually exists anywhere.
+
 The layout schema embeds its source `gold-page-sample.v1` and has closed
 `act`, `non-act-text`, `occlusion`, and `true-blank` rectangle kinds.  The padding
 schema also embeds its source sample and carries only rectangles plus the required
 `calibrated_for_this_corpus` flag.  `validate` checks all schemas and self-hashes;
-for a sample, pass `--run` to prove the derived page and frame facts against the
-R0 authority again.  Every writer creates a new file atomically and refuses an
-existing pathname, preserving append-only custody.
+for a sample, layout, or padding record, pass `--run` to prove the derived page and
+frame facts against the R0 authority again (an embedded sample is otherwise only
+checked for internal self-consistency, not that it names a real run).
+`bind-instrument` accepts the same optional `--run`.  Every writer creates a new
+file atomically and refuses an existing pathname, preserving append-only custody;
+a filesystem that refuses hard links is a named refusal, not a bare traceback.

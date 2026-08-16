@@ -198,6 +198,58 @@ def test_append_only_writer_names_a_no_hard_link_filesystem(tmp_path, monkeypatc
         write_append_only(tmp_path / "records" / "one.json", {"example": "evidence"})
 
 
+def _forge_sample_outside_authority(sample):
+    forged = json.loads(json.dumps(sample))
+    forged["page"]["sha256"] = _sha("9")
+    forged["set"] = set_for_page(forged["frame"], forged["page"]["sha256"])
+    without = {
+        key: value for key, value in forged.items() if key not in {"sample_digest", "self_hash"}
+    }
+    forged["sample_digest"] = digest_bytes(canonical_bytes(without))
+    forged["self_hash"] = self_hash(forged)
+    return forged
+
+
+def test_layout_and_padding_can_recheck_their_embedded_sample_against_run_authority(tmp_path):
+    """A layout or padding record's embedded sample is only checked for internal
+    self-consistency by default — it can restate a page/frame belonging to no real
+    R0 run and still validate. Passing --run (validate_layout/validate_padding's
+    run_path) closes that derived-record gap the same way it already does for a
+    bare sample."""
+    path, frame, pages = run_file(tmp_path)
+    sample = sample_stratified(path, catalog(pages), plan_for(frame, catalog(pages)))[0]
+    forged = _forge_sample_outside_authority(sample)
+    layout = {
+        "schema": LAYOUT_SCHEMA,
+        "sample": forged,
+        "regions": [{"kind": "true-blank", "rect": {"x": 0, "y": 0, "w": 1, "h": 1}}],
+    }
+    layout["self_hash"] = self_hash(layout)
+    assert validate_layout(layout) == layout
+    with pytest.raises(SchemaRefusal, match="outside the R0"):
+        validate_layout(layout, path)
+    padding = {
+        "schema": PADDING_SCHEMA,
+        "sample": forged,
+        "rectangles": [{"x": 0, "y": 0, "w": 1, "h": 1}],
+        "calibrated_for_this_corpus": False,
+    }
+    padding["self_hash"] = self_hash(padding)
+    assert validate_padding(padding) == padding
+    with pytest.raises(SchemaRefusal, match="outside the R0"):
+        validate_padding(padding, path)
+
+
+def test_bind_instrument_can_recheck_its_sample_against_run_authority(tmp_path):
+    path, frame, pages = run_file(tmp_path)
+    sample = sample_stratified(path, catalog(pages), plan_for(frame, catalog(pages)))[0]
+    forged = _forge_sample_outside_authority(sample)
+    act = act_id("pg_0123456789abcdef", 0, {"x": 1})
+    assert bind_instrument(forged, act, _sha("e"))["sample_digest"] == forged["sample_digest"]
+    with pytest.raises(SchemaRefusal, match="outside the R0"):
+        bind_instrument(forged, act, _sha("e"), path)
+
+
 def test_cli_malformed_json_input_is_a_named_refusal_not_a_traceback(tmp_path):
     """gold/cli.py's own JSON reading used to bypass core._read_json's SchemaRefusal
     wrapping, so a malformed catalog/plan/pick/record crashed with a raw parser

@@ -287,9 +287,21 @@ def ingest_manual_pick(run_path: str | Path, pick: Any) -> dict[str, Any]:
     return validate_sample(sample, run_path)
 
 
-def bind_instrument(sample: Any, act_identity: str, protocol_digest: str) -> dict[str, Any]:
-    """Append a measurement binding; the source sample remains immutable."""
-    validate_sample(sample)
+def bind_instrument(
+    sample: Any, act_identity: str, protocol_digest: str, run_path: str | Path | None = None
+) -> dict[str, Any]:
+    """Append a measurement binding; the source sample remains immutable.
+
+    `act_identity` is checked for shape only: well-formed and specifically
+    `act_`-prefixed, per `common/contracts/identities.py`. It is not, and at
+    R7a cannot be, verified against a real Designator proposal's bindings —
+    no stage in the build order before R2 produces an act, so R7a has no act
+    authority to invent or check against (see TERRA_BUILD_REPORT.md). A
+    syntactically well-formed but never-derived act id will pass. Pass
+    `run_path` to additionally re-check the bound sample's frame and page
+    against the R0 run authority; it does not and cannot reach act existence.
+    """
+    validate_sample(sample, run_path)
     _refuse(
         not is_well_formed(act_identity) or not act_identity.startswith("act_"),
         "instrument act_identity is not an act identity",
@@ -319,13 +331,15 @@ def _rectangle(value: Any, label: str) -> None:
     _refuse(value["w"] == 0 or value["h"] == 0, f"{label} has zero area")
 
 
-def _validate_page_bound_record(record: Any, schema: str, extra: set[str]) -> dict[str, Any]:
+def _validate_page_bound_record(
+    record: Any, schema: str, extra: set[str], run_path: str | Path | None = None
+) -> dict[str, Any]:
     _refuse(
         not isinstance(record, dict) or set(record) != {"schema", "sample", *extra, "self_hash"},
         "gold record has the wrong closed schema",
     )
     _refuse(record["schema"] != schema, "gold record schema is not recognized")
-    validate_sample(record["sample"])
+    validate_sample(record["sample"], run_path)
     _refuse(not verify_self_hash(record), "gold record fails its self-hash")
     return record
 
@@ -402,8 +416,12 @@ def validate_sample(record: Any, run_path: str | Path | None = None) -> dict[str
     return record
 
 
-def validate_layout(record: Any) -> dict[str, Any]:
-    result = _validate_page_bound_record(record, LAYOUT_SCHEMA, {"regions"})
+def validate_layout(record: Any, run_path: str | Path | None = None) -> dict[str, Any]:
+    """Validate a page-layout gold record; pass `run_path` to also re-check its
+    embedded sample against the R0 run authority (the same re-check `validate_sample`
+    offers standalone) rather than trusting the embedded sample's self-consistency
+    alone."""
+    result = _validate_page_bound_record(record, LAYOUT_SCHEMA, {"regions"}, run_path)
     regions = result["regions"]
     _refuse(not isinstance(regions, list), "layout regions is not a list")
     for region in regions:
@@ -416,9 +434,11 @@ def validate_layout(record: Any) -> dict[str, Any]:
     return result
 
 
-def validate_padding(record: Any) -> dict[str, Any]:
+def validate_padding(record: Any, run_path: str | Path | None = None) -> dict[str, Any]:
+    """Validate a padding-rectangles gold record; `run_path` re-checks the embedded
+    sample against the R0 run authority, as `validate_layout` does."""
     result = _validate_page_bound_record(
-        record, PADDING_SCHEMA, {"rectangles", "calibrated_for_this_corpus"}
+        record, PADDING_SCHEMA, {"rectangles", "calibrated_for_this_corpus"}, run_path
     )
     _refuse(
         not isinstance(result["calibrated_for_this_corpus"], bool),

@@ -35,6 +35,7 @@ def main(argv: list[str] | None = None) -> int:
     bind.add_argument("--act-identity", required=True)
     bind.add_argument("--protocol-digest", required=True)
     bind.add_argument("--output", required=True)
+    bind.add_argument("--run")
     validate = commands.add_parser("validate")
     validate.add_argument("record")
     validate.add_argument("--run")
@@ -47,7 +48,9 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "bind-instrument":
         write_append_only(
             args.output,
-            bind_instrument(read_json(args.sample), args.act_identity, args.protocol_digest),
+            bind_instrument(
+                read_json(args.sample), args.act_identity, args.protocol_digest, args.run
+            ),
         )
     else:
         record = read_json(args.record)
@@ -60,8 +63,8 @@ def main(argv: list[str] | None = None) -> int:
         }
         if schema not in validators:
             parser.error("record schema is not a gold schema")
-        if schema == "gold-page-sample.v1":
-            validate_sample(record, args.run)
+        if schema in ("gold-page-sample.v1", "gold-page-layout.v1", "gold-padding-rectangles.v1"):
+            validators[schema](record, args.run)
         else:
             validators[schema](record)
     return 0
