@@ -46,9 +46,9 @@ from common.stage import (  # noqa: E402
     fixture_serving_details,
     latest_attempt,
     open_context,
+    page_identity,
     run_stage,
     stage_parser,
-    page_identity,
     validate_serving_provenance,
 )
 

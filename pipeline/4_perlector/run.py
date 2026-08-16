@@ -28,8 +28,7 @@ and zero dissent there is the correct output.
 
 import sys
 from pathlib import Path
-from typing import Any
-from typing import Final
+from typing import Any, Final
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
