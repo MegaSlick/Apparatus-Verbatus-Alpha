@@ -1893,14 +1893,22 @@ def _export_manifest(
             },
             # Labelled a proposal because it is one: spec 11 leaves the choice of
             # convention to Tyrel at this gate, and nothing hashed depends on it.
+            # `renders_canonical_uncertainty` is the declaration R8 owes: the
+            # record DOES carry the layer now, the `uncertainty:` field beside each
+            # literal carries it into the product, and this rendering deliberately
+            # does not -- said here rather than left for a reader to infer from a
+            # `display:` line that looks like a complete reading.
             "display": {
                 "convention": DISPLAY_CONVENTION,
                 "status": "proposed-pending-tyrels-choice",
                 "alters_stored_text": False,
+                "renders_canonical_uncertainty": False,
                 "exercised_against_real_spans": False,
                 "reason": (
-                    "the Archetypus record carries no uncertainty or gap layer yet, so "
-                    "every rendering in this build is the established text unchanged"
+                    "the rendering is not fed this package's canonical uncertainty "
+                    "layer, which travels beside each literal instead; marking spans "
+                    "inside a displayed reading would exercise a convention that "
+                    "remains Tyrel's choice at this gate"
                 ),
             },
             "salvage": salvage_claim,
@@ -2887,6 +2895,7 @@ def _verify_display_claim(manifest: dict[str, Any]) -> None:
         or display.get("convention") != DISPLAY_CONVENTION
         or display.get("status") != "proposed-pending-tyrels-choice"
         or display.get("alters_stored_text") is not False
+        or display.get("renders_canonical_uncertainty") is not False
         or display.get("exercised_against_real_spans") is not False
     ):
         raise SchemaRefusal("the package display claim is not the verified claim")

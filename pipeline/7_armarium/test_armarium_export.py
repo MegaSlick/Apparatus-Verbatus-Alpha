@@ -1486,15 +1486,40 @@ def test_the_manifest_says_the_display_convention_is_only_proposed(tmp_path):
         "convention": DISPLAY_CONVENTION,
         "status": "proposed-pending-tyrels-choice",
         "alters_stored_text": False,
+        "renders_canonical_uncertainty": False,
         "exercised_against_real_spans": False,
         "reason": (
-            "the Archetypus record carries no uncertainty or gap layer yet, so "
-            "every rendering in this build is the established text unchanged"
+            "the rendering is not fed this package's canonical uncertainty "
+            "layer, which travels beside each literal instead; marking spans "
+            "inside a displayed reading would exercise a convention that "
+            "remains Tyrel's choice at this gate"
         ),
     }
+    # The same package says, two claims above, that it carries the canonical
+    # layer. Both statements are about this build's uncertainty; a manifest whose
+    # display claim contradicted its uncertainty claim would be a package arguing
+    # with itself about what it contains.
+    assert manifest["claims"]["uncertainty"]["status"] == "canonical-unicode-codepoint-offsets"
     members = _members(bundle.data)
     manifest["claims"]["display"]["status"] = "chosen"
     _refresh_manifest(members, manifest)
+    with pytest.raises(SchemaRefusal, match="display claim is not the verified claim"):
+        verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
+
+
+def test_the_manifest_may_not_claim_the_rendering_carries_the_canonical_layer(tmp_path):
+    """The non-carriage declaration is verified, not merely written.
+
+    A package whose display claim said the rendering carried the layer would be
+    describing a `display:` line this build does not produce -- the failure mode
+    the claim exists to prevent, one field over from the convention itself.
+    """
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    manifest = json.loads(members[EXPORT_MANIFEST_NAME])
+    manifest["claims"]["display"]["renders_canonical_uncertainty"] = True
+    _refresh_manifest(members, manifest)
+
     with pytest.raises(SchemaRefusal, match="display claim is not the verified claim"):
         verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
 
