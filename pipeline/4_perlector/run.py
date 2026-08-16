@@ -250,6 +250,7 @@ def act_attachment_view(context, act: dict[str, Any], testimonia: list[dict]) ->
             f"act {act_id} attachment chairs do not equal this run's configured witnesses"
         )
     page_witness_count = 0
+    comparison_views: dict[str, str] = {}
     for attachment in attachments:
         if (
             not isinstance(attachment, dict)
@@ -260,6 +261,7 @@ def act_attachment_view(context, act: dict[str, Any], testimonia: list[dict]) ->
                 "testimonium_ref",
                 "attached",
                 "content_health",
+                "alignment",
                 "span",
             }
             or not isinstance(attachment.get("chair"), str)
@@ -270,7 +272,7 @@ def act_attachment_view(context, act: dict[str, Any], testimonia: list[dict]) ->
             raise SchemaRefusal("an act-attachment record has a malformed attachment")
         span = attachment["span"]
         characters = attachment["content_health"].get("characters")
-        if attachment["attached"]:
+        if attachment["attached"] and not attachment["page_witness"]:
             expected_end = (
                 characters
                 if isinstance(characters, int) and not isinstance(characters, bool)
@@ -280,7 +282,7 @@ def act_attachment_view(context, act: dict[str, Any], testimonia: list[dict]) ->
                 raise SchemaRefusal(
                     "an attached act view does not span its complete delivered reading"
                 )
-        elif span is not None:
+        elif not attachment["attached"] and span is not None:
             raise SchemaRefusal("an unattached act view claims an alignment span")
         chair = attachment["chair"]
         # The attachment describes one attempt, and the reread path
@@ -300,12 +302,16 @@ def act_attachment_view(context, act: dict[str, Any], testimonia: list[dict]) ->
             raise FatalAccounting(
                 f"act {act_id} attachment names chair {chair!r}, which has no current Testimonium"
             )
-        if attachment["attached"] != (chair_testimonium["outcome"] in WITNESS_READING_OUTCOMES):
+        if not attachment["page_witness"] and attachment["attached"] != (
+            chair_testimonium["outcome"] in WITNESS_READING_OUTCOMES
+        ):
             raise SchemaRefusal(
                 f"act {act_id} attachment for chair {chair!r} disagrees with that chair's "
                 "current Testimonium outcome"
             )
-        if attachment["content_health"] != chair_testimonium["payload"].get("content_health"):
+        if not attachment["page_witness"] and attachment["content_health"] != chair_testimonium[
+            "payload"
+        ].get("content_health"):
             raise SchemaRefusal(
                 f"act {act_id} attachment for chair {chair!r} describes an attempt that is no "
                 "longer this chair's current Testimonium"
@@ -392,13 +398,44 @@ def act_attachment_view(context, act: dict[str, Any], testimonia: list[dict]) ->
             # Found in audit; F-O7.
             row = current_unjoined[0] if current_unjoined else None
             disclosed = row["outcome"] in WITNESS_READING_OUTCOMES if row is not None else True
-            if disclosed != attachment["attached"]:
+            # Joining a response into the retained page body only proves that
+            # the bytes arrived. It does not prove a bounded text alignment can
+            # attach them to this act (notably a genuine empty response has no
+            # span). An omitted response can never be attached; a joined one may
+            # still be explicitly unaligned.
+            if not disclosed and attachment["attached"]:
                 raise SchemaRefusal(
                     f"act {act_id} attachment disagrees with its page Testimonium's "
                     "unjoined-attempt record"
                 )
+            alignment = attachment["alignment"]
+            if attachment["attached"]:
+                if (
+                    not isinstance(alignment, dict)
+                    or set(alignment)
+                    != {
+                        "status",
+                        "anchor_span",
+                        "witness_span",
+                        "line_geometry",
+                        "loss",
+                        "offset_maps",
+                    }
+                    or alignment.get("status") != "aligned"
+                    or span != alignment.get("witness_span")
+                ):
+                    raise SchemaRefusal("an attached page witness has no computed alignment")
+                page_text = page_payload.get("reported")
+                witness_span = alignment["witness_span"]
+                if not isinstance(page_text, str):
+                    raise SchemaRefusal("an attached page witness has no textual comparison view")
+                comparison_views[chair] = page_text[witness_span["start"] : witness_span["end"]]
+            elif not isinstance(alignment, dict) or alignment.get("status") != "unaligned":
+                raise SchemaRefusal("an unattached page witness has no explicit unaligned result")
             page_witness_count += 1
         else:
+            if attachment["alignment"] is not None:
+                raise SchemaRefusal("an act-scoped witness carries page alignment evidence")
             testimonium = context.tree.read_artifact_reference(
                 reference,
                 stage=ATTESTATORES,
@@ -414,7 +451,21 @@ def act_attachment_view(context, act: dict[str, Any], testimonia: list[dict]) ->
         # A blinded dossier may show that page evidence exists, but not the
         # chair names embedded in its retained attachment artifact.
         "page_witness_count": page_witness_count,
+        "comparison_views": comparison_views,
     }
+
+
+def dissent_testimonia(testimonia: list[dict], attachment_view: dict[str, Any]) -> list[dict]:
+    """Give dissent an act-anchored page slice without changing retained testimony."""
+    views = attachment_view["comparison_views"]
+    result = []
+    for record in testimonia:
+        copied = {**record, "payload": dict(record["payload"])}
+        chair = copied["payload"]["chair"]
+        if copied["payload"].get("page_witness") and chair in views:
+            copied["payload"]["comparison_reported"] = views[chair]
+        result.append(copied)
+    return result
 
 
 def verify_region(context, region: dict) -> dict:
@@ -826,11 +877,12 @@ def validate_reading_payload(
         attachment = reading_dossier["act_attachment"]
         if (
             not isinstance(attachment, dict)
-            or set(attachment) != {"reference", "page_witness_count"}
+            or set(attachment) != {"reference", "page_witness_count", "comparison_views"}
             or not isinstance(attachment["reference"], dict)
             or not isinstance(attachment["page_witness_count"], int)
             or isinstance(attachment["page_witness_count"], bool)
             or attachment["page_witness_count"] < 0
+            or not isinstance(attachment["comparison_views"], dict)
         ):
             raise SchemaRefusal("a Perlector dossier has malformed act-attachment evidence")
         if is_unprimed:
@@ -1223,7 +1275,7 @@ def _publish_primed_without_prior(
             "approval_ref": context.perlector_instrument_approval_ref,
         },
         "membership": {**membership, "act_id": act_id, "protocol_sha256": protocol_sha256},
-        "dissent": dissent_against(text, testimonia),
+        "dissent": dissent_against(text, dissent_testimonia(testimonia, attachment_view)),
         "truncation": truncation_record,
         "uncertain_spans": [],
         "gaps": _whole_act_gap(testimonia, testimonium_references)
@@ -1492,7 +1544,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             },
             "dossier": primed_dossier,
             "prompt": prompt,
-            "dissent": dissent_against(reading, testimonia),
+            "dissent": dissent_against(reading, dissent_testimonia(testimonia, attachment_view)),
             "truncation": truncation_record,
             "uncertain_spans": [],
             "gaps": gaps,

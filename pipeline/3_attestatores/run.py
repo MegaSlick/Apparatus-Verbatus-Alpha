@@ -29,6 +29,7 @@ from typing import Any, NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from common.alignment import align_to_anchor, load_alignment_limits  # noqa: E402
 from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal  # noqa: E402
@@ -1300,7 +1301,11 @@ def publish_page_testimonia_and_attachments(
     to the immutable page Testimonium that supplied it.
     """
     page_chairs = declared_page_witness_chairs(context) & set(context.witness_chairs)
+    limits, limits_digest = load_alignment_limits(context.args.alignment_config)
+    context.require_sealed_config("alignment", limits_digest)
     page_records: dict[tuple[int, str], dict[str, str]] = {}
+    page_texts: dict[tuple[int, str], str] = {}
+    anchor_ranges: dict[tuple[int, str], dict[str, int]] = {}
     by_page: dict[int, list[dict[str, Any]]] = {}
     for act in acts:
         if act["outcome"] == "proposed":
@@ -1359,6 +1364,7 @@ def publish_page_testimonia_and_attachments(
                 for act, attempt in unjoined
             ]
             native_payload = "\n".join(readable)
+            page_texts[(page_ordinal, chair)] = native_payload
             outcome = "read" if readable else "failed"
             health = content_health(native_payload, completed=outcome == "read")
             resolved = context.registry.resolve(chair)
@@ -1400,13 +1406,79 @@ def publish_page_testimonia_and_attachments(
                 "page-testimonium",
                 artifact_id(ATTESTATORES, "page-testimonium", page_subject, page_attempt),
             )
+        # Fixture Chandra is chair 1. Its retained page text is the textual
+        # anchor; Designator rectangles are the fixture's line geometry. The
+        # offsets derive from the retained joined text, not the act key or an
+        # outcome proxy.
+        anchor_chair = "attestator_1"
+        if anchor_chair in page_chairs:
+            cursor = 0
+            for index, act in enumerate(page_acts):
+                attempt = attempts_by_pair[(act["act_id"], anchor_chair)]
+                text = attempt.native_payload if isinstance(attempt.native_payload, str) else ""
+                anchor_ranges[(page_ordinal, act["act_id"])] = {
+                    "start": cursor,
+                    "end": cursor + len(text),
+                }
+                cursor += len(text) + (1 if index < len(page_acts) - 1 else 0)
 
     for act in acts:
         entries: list[dict[str, Any]] = []
         for chair in context.witness_chairs:
             attempt = attempts_by_pair[(act["act_id"], chair)]
             page_witness = chair in page_chairs and act["outcome"] == "proposed"
+            alignment: dict[str, Any] | None = None
             attached = act["outcome"] == "proposed" and attempt.outcome in WITNESS_READING_OUTCOMES
+            if page_witness:
+                page_text = page_texts.get((act["page_ordinal"], chair))
+                anchor_text = page_texts.get((act["page_ordinal"], "attestator_1"))
+                act_anchor = anchor_ranges.get((act["page_ordinal"], act["act_id"]))
+                if page_text is None or anchor_text is None or act_anchor is None:
+                    result = {"status": "unaligned", "reason": "missing-chandra-page-anchor"}
+                else:
+                    result = align_to_anchor(page_text, anchor_text, limits)
+                if result["status"] == "aligned":
+                    overlaps = [
+                        span
+                        for span in result["spans"]
+                        if span["anchor"]["end"] > act_anchor["start"]
+                        and span["anchor"]["start"] < act_anchor["end"]
+                    ]
+                    if overlaps:
+                        witness_start = min(span["witness"]["start"] for span in overlaps)
+                        witness_end = max(span["witness"]["end"] for span in overlaps)
+                        alignment = {
+                            "status": "aligned",
+                            "anchor_span": act_anchor,
+                            "witness_span": {"start": witness_start, "end": witness_end},
+                            "line_geometry": [
+                                {
+                                    "bbox": {
+                                        key: next(
+                                            row[key]
+                                            for row in context.fixture["act"]
+                                            if row["key"] == act["act_key"]
+                                        )
+                                        for key in ("x", "y", "w", "h")
+                                    }
+                                }
+                            ],
+                            "loss": {
+                                "witness": result["witness"]["loss"],
+                                "anchor": result["anchor"]["loss"],
+                            },
+                            "offset_maps": {
+                                "witness": result["witness"]["offset_map"],
+                                "anchor": result["anchor"]["offset_map"],
+                            },
+                        }
+                    else:
+                        result = {"status": "unaligned", "reason": "no-overlap-with-act-anchor"}
+                if result["status"] == "unaligned":
+                    alignment = {"status": "unaligned", "reason": result["reason"]}
+                attached = (
+                    alignment["status"] == "aligned" and attempt.outcome in WITNESS_READING_OUTCOMES
+                )
             reference = page_records.get((act["page_ordinal"], chair)) if page_witness else None
             if reference is None:
                 act_attempt = attempt_id(act["act_id"], f"read:{chair}", ordinal)
@@ -1422,6 +1494,7 @@ def publish_page_testimonia_and_attachments(
                     "testimonium_ref": reference,
                     "attached": attached,
                     "content_health": attempt.health,
+                    "alignment": alignment,
                     # Interim span, NOT fixture-declared (the fixture declares no
                     # span anywhere): until R4's alignment computes the true
                     # covered span, this treats this chair's own entire delivered
@@ -1432,13 +1505,20 @@ def publish_page_testimonia_and_attachments(
                     # a provenance claim nothing backed. Found in audit; F-S2.
                     "span": (
                         {
-                            "start": 0,
-                            "end": len(attempt.native_payload)
-                            if isinstance(attempt.native_payload, str)
-                            else 0,
+                            "start": alignment["witness_span"]["start"],
+                            "end": alignment["witness_span"]["end"],
                         }
-                        if attached
-                        else None
+                        if page_witness and attached
+                        else (
+                            {
+                                "start": 0,
+                                "end": len(attempt.native_payload)
+                                if isinstance(attempt.native_payload, str)
+                                else 0,
+                            }
+                            if attached
+                            else None
+                        )
                     ),
                 }
             )

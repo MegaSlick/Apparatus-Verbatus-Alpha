@@ -37,6 +37,7 @@ import unicodedata
 from difflib import SequenceMatcher
 from typing import Any, Final
 
+from common.alignment import markup_text_view
 from common.contracts.errors import SchemaRefusal
 from common.stage import WITNESS_READING_OUTCOMES
 
@@ -187,8 +188,10 @@ def is_comparable(record: dict[str, Any]) -> bool:
     rather than disappear into a coverage count.
     """
     payload = record.get("payload", {})
-    capabilities = payload.get("format_capabilities", {})
-    return not bool(capabilities.get("can_express_uncertainty", False))
+    # Capability declarations no longer exempt an entire chair. A completed
+    # record missing text is still a schema error at the caller, not an excuse
+    # to make that chair permanently unmeasurable.
+    return "comparison_reported" not in payload or isinstance(payload["comparison_reported"], str)
 
 
 def dissent_against(reading: str, testimonia: list[dict]) -> list[dict]:
@@ -209,7 +212,7 @@ def dissent_against(reading: str, testimonia: list[dict]) -> list[dict]:
         if record["outcome"] not in WITNESS_READING_OUTCOMES:
             rows.append({"chair": chair, "compared": False, "reason": record["outcome"]})
             continue
-        reported = record["payload"].get("reported")
+        reported = record["payload"].get("comparison_reported", record["payload"].get("reported"))
         if not isinstance(reported, str):
             # Deliberately BEFORE the page-witness branch (F-P2, pinned by the
             # acceptance suite's structured-witness scenario): a structured
@@ -231,7 +234,10 @@ def dissent_against(reading: str, testimonia: list[dict]) -> list[dict]:
                 }
             )
             continue
-        if record["payload"].get("page_witness") is True:
+        if (
+            record["payload"].get("page_witness") is True
+            and "comparison_reported" not in record["payload"]
+        ):
             rows.append(
                 {
                     "chair": chair,
@@ -270,7 +276,8 @@ def dissent_against(reading: str, testimonia: list[dict]) -> list[dict]:
                 }
             )
             continue
-        witness_view = comparison_view(reported)
+        markup_view = markup_text_view(reported)
+        witness_view = comparison_view(markup_view["text"])
         rows.append(
             {
                 "chair": chair,
@@ -285,7 +292,8 @@ def dissent_against(reading: str, testimonia: list[dict]) -> list[dict]:
                 "departures": spans,
                 "comparison_loss": {
                     "reading_dropped_characters": reading_view["dropped_characters"],
-                    "witness_dropped_characters": witness_view["dropped_characters"],
+                    "witness_dropped_characters": witness_view["dropped_characters"]
+                    + sum(markup_view["loss"].values()),
                 },
             }
         )

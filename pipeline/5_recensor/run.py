@@ -140,6 +140,19 @@ def act_attachment_facts(context, act_id: str) -> dict[str, dict]:
         if health is not None and not isinstance(health, dict):
             raise FatalAccounting(f"act {act_id} has malformed derived act-attachment entry")
         truncated = health.get("truncated") if isinstance(health, dict) else None
+        if entry.get("page_witness") is True:
+            alignment = entry.get("alignment")
+            if not isinstance(alignment, dict) or alignment.get("status") not in {
+                "aligned",
+                "unaligned",
+            }:
+                raise FatalAccounting(
+                    f"act {act_id} page witness {chair!r} has no computed alignment fact"
+                )
+            if entry["attached"] != (alignment["status"] == "aligned"):
+                raise FatalAccounting(
+                    f"act {act_id} page witness {chair!r} contradicts its computed alignment"
+                )
         facts[chair] = {
             "attached": entry["attached"],
             "truncated": truncated,
@@ -225,33 +238,14 @@ def validate_chair_coverage(context, act_id: str, floor: int) -> dict[str, objec
             "chairs and nothing may add one after the seal"
         )
     attachments = act_attachment_facts(context, act_id)
-    # `chair_outcomes` above collapses each chair to its current attempt, and its
-    # docstring names the reason the two consumers share that derivation: they
-    # "cannot drift on what current means". The derived act-attachment is a third
-    # consumer of the same artifacts and does drift — a targeted reread appends a
-    # new act-scoped attempt and writes no new attachment record — so the floor
-    # would otherwise be counted from facts describing a superseded attempt: a
-    # recovered read silently dropped from `completed` and reported as a
-    # `page_granularity_only` contribution that never happened (GOVERNANCE 2 and
-    # 10). R0's declared `granularity_basis` is that `attached` IS the current act
-    # outcome before R4 alignment; that identity is checked here rather than
-    # assumed, and R4 replaces both together. Found in audit; F-O1.
+    # R4's attachment is an independent computed fact.  It must not be forced
+    # back into the act attempt outcome: a page witness can have read its page
+    # while the bounded text-to-anchor calculation honestly remains unaligned.
     unaccounted = sorted(set(outcomes) - set(attachments))
     if unaccounted:
         raise FatalAccounting(
             f"act {act_id}'s derived act-attachment records no fact for configured "
             f"chair(s) {unaccounted}; an absent fact would silently read as unattached"
-        )
-    superseded = sorted(
-        chair
-        for chair, outcome in outcomes.items()
-        if attachments[chair]["attached"] != (outcome in WITNESS_READING_OUTCOMES)
-    )
-    if superseded:
-        raise FatalAccounting(
-            f"act {act_id}'s derived act-attachment disagrees with the current Testimonium "
-            f"outcome for chair(s) {superseded}; the witness floor may not be counted from "
-            "a superseded attempt"
         )
     return witness_coverage(outcomes, floor, attachments=attachments)
 

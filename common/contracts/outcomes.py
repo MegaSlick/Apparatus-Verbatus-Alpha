@@ -73,7 +73,7 @@ _A = ArmariumCategory
 # closed set, and a second literal spelling of it beside the floor arithmetic
 # that depends on it is a silent divergence waiting to happen.
 WITNESS_READING_OUTCOMES: Final = frozenset({"read", "genuinely-empty"})
-INTERIM_GRANULARITY_BASIS: Final = "act-outcome-proxy-before-alignment"
+INTERIM_GRANULARITY_BASIS: Final = "computed-act-attachment-alignment"
 LEGACY_GRANULARITY_BASIS: Final = "legacy-class-only"
 
 # --- The vocabularies: outcome -> class, one closed set per stage ---------------
@@ -366,11 +366,8 @@ def witness_coverage(
         ),
         "health_unrecorded": health_unrecorded,
         "shortfalls": shortfalls,
-        # R0 has no independent alignment state: attached is still derived from
-        # this act's outcome, so page_granularity_only cannot become non-zero
-        # until R4. Name that measurement limit instead of presenting zero as a
-        # measured absence. The legacy path is named separately and is refused
-        # by the v2 receipt boundary.
+        # Attachments are computed facts: page testimony counts only where its
+        # retained text aligned through Chandra's anchor into act geometry.
         "granularity_basis": (
             INTERIM_GRANULARITY_BASIS if attachments is not None else LEGACY_GRANULARITY_BASIS
         ),
