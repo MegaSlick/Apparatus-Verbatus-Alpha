@@ -925,12 +925,20 @@ def testimony_content_findings(context) -> dict[int, dict]:
             continue
         record = context.tree.read_artifact(ATTESTATORES, "page-testimonium", entry["artifact_id"])
         payload = _payload(record, f"page Testimonium {record['artifact_id']}")
-        ordinal, chair, text = (
-            payload.get("page_ordinal"),
-            payload.get("chair"),
-            payload.get("reported"),
-        )
-        if not isinstance(ordinal, int) or not isinstance(chair, str) or not isinstance(text, str):
+        ordinal, chair = payload.get("page_ordinal"), payload.get("chair")
+        if not isinstance(ordinal, int) or not isinstance(chair, str):
+            raise FatalAccounting("page Testimonium has no textual page identity")
+        if "reported" not in payload:
+            # A page witness that read nothing across every act on this page --
+            # every configured act was `dead`, `not-run`, or otherwise non-reading
+            # for this chair -- carries no `reported` text: `testimonium_payload`'s
+            # reading-only bridge (pipeline/3_attestatores/run.py) never sets it for
+            # a non-reading outcome. There is no witness content to diff against
+            # attachments; the chair's absence stays visible through its own
+            # act-scoped Testimonia and the act's witness-coverage floor.
+            continue
+        text = payload.get("reported")
+        if not isinstance(text, str):
             raise FatalAccounting("page Testimonium has no textual page identity")
         spans = []
         for act in expected_acts(context):
