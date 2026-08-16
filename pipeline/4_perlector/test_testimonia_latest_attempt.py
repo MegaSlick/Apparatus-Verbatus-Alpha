@@ -357,27 +357,27 @@ def test_dissent_compares_a_genuinely_empty_witness():
 
 
 def test_an_act_comparison_view_is_sliced_in_the_space_its_span_was_measured_in():
-    """F-X3. `witness_span` indexes the markup-stripped page view that
-    `common.alignment.align_to_anchor` actually aligned, so the slice must come
-    from that view and not from the raw report.
-
-    Chandra emits HTML and Churro emits XML; the two coordinate spaces agree
-    only where stripping removes nothing, which is this repository's ASCII
-    fixture and no real witness. A raw slice at these offsets lands mid-tag,
-    and it falsifies the premise `dissent.is_comparable` now rests on -- that
-    `comparison_reported` is a markup-stripped view and therefore safe to diff.
+    """F-X3 under the wave's composed span semantics. `witness_span` is stored
+    RAW at the one storage point (the attestatores clip-then-translate), so
+    the slice comes from the raw report at raw offsets -- and the safety F-X3
+    demands (a comparison view a diff may consume without reading markup as
+    disagreement) is provided by stripping the SLICE, not by slicing a
+    stripped page with offsets from another space.
     """
     page = "<p>SYNTHETIC ACT ONE</p><p>SYNTHETIC ACT TWO</p>"
     stripped = markup_text_view(page)["text"]
     assert stripped == "SYNTHETIC ACT ONESYNTHETIC ACT TWO"
 
-    first = perlector.act_comparison_view(page, {"start": 0, "end": 17})
-    second = perlector.act_comparison_view(page, {"start": 17, "end": 34})
+    # Raw spans, as the storage point now records them: each act's slice of
+    # the raw page report, tags included in the covered range.
+    first = perlector.act_comparison_view(page, {"start": 0, "end": 24})
+    second = perlector.act_comparison_view(page, {"start": 24, "end": 48})
 
     assert first == "SYNTHETIC ACT ONE"
     assert second == "SYNTHETIC ACT TWO"
-    # The defect this closes, stated as the thing that must not happen again.
-    assert page[0:17] != first
+    # The defect F-X3 closed, restated for the composed contract: the raw
+    # slice is never handed onward carrying the markup it cut through.
+    assert page[0:24] != first
     for view in (first, second):
         assert "<" not in view and ">" not in view
 

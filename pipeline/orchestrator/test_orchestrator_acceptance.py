@@ -2729,7 +2729,7 @@ def test_repeating_the_identical_command_leaves_every_byte_unchanged(tmp_path):
 
     # R0 adds two retained page Testimonia and two derived act attachments to
     # the happy walking skeleton; repeatability still compares every byte.
-    assert len(before) == 60
+    assert len(before) == 64
     assert semantic_snapshot_digest(root) == HAPPY_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "happy").returncode == 0
     after = snapshot(root)
@@ -2776,7 +2776,7 @@ def test_repeating_the_review_scenario_also_changes_nothing(tmp_path):
 
     # R0 adds the same four retained page/attachment artifacts before review's
     # recovery loop; its append-only invariant is unchanged.
-    assert len(before) == 65
+    assert len(before) == 71
     assert semantic_snapshot_digest(root) == REVIEW_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "review").returncode == 3
     assert snapshot(root) == before
