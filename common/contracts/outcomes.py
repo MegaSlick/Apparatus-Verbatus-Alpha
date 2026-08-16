@@ -320,7 +320,9 @@ def witness_coverage(
             if truncated is True:
                 shortfalls["truncated"] += 1
             elif truncated not in (False, None):
-                raise FatalAccounting(f"act attachment fact for {chair!r} has invalid truncated state")
+                raise FatalAccounting(
+                    f"act attachment fact for {chair!r} has invalid truncated state"
+                )
             if outcome == "failed":
                 shortfalls["failed"] += 1
             if not fact["attached"]:

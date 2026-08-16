@@ -236,7 +236,9 @@ def _validate_coverage(
     page_only = coverage.get("page_granularity_only", 0)
     act_completed = by_class[OutcomeClass.COMPLETED.value] - page_only
     if page_only > by_class[OutcomeClass.COMPLETED.value]:
-        raise SchemaRefusal("Recensor partition receipt has more page-only contributions than completed chairs")
+        raise SchemaRefusal(
+            "Recensor partition receipt has more page-only contributions than completed chairs"
+        )
     # Standalone schema callers may be validating one newly introduced field
     # at a time; only a complete v2 coverage record claims the derived floor.
     has_complete_granularity = granularity_fields <= set(coverage)
@@ -245,7 +247,9 @@ def _validate_coverage(
         if has_complete_granularity
         else by_class[OutcomeClass.COMPLETED.value] < coverage["floor"]
     )
-    if (not present_granularity or has_complete_granularity) and coverage["under_witnessed"] != expected_under_witnessed:
+    if (not present_granularity or has_complete_granularity) and coverage[
+        "under_witnessed"
+    ] != expected_under_witnessed:
         raise SchemaRefusal(
             f"Recensor partition receipt claims under_witnessed="
             f"{coverage['under_witnessed']}, but {act_completed} act-level completed read(s) "
@@ -282,7 +286,10 @@ def _validate_coverage(
         if (
             not isinstance(shortfalls, dict)
             or set(shortfalls) != {"failed", "truncated", "unaligned"}
-            or any(not isinstance(value, int) or isinstance(value, bool) or value < 0 for value in shortfalls.values())
+            or any(
+                not isinstance(value, int) or isinstance(value, bool) or value < 0
+                for value in shortfalls.values()
+            )
         ):
             raise SchemaRefusal("Recensor partition receipt has malformed shortfalls")
 

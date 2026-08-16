@@ -56,9 +56,7 @@ from common.stage import (  # noqa: E402
 # as testimony about its own response, never promoted into a model ranking or
 # used to choose a witness. Five plain levels keep fixture and future adapters
 # interoperable while refusing an unbounded integer scale or invented prose.
-WITNESS_CONFIDENCE_ORDINALS = frozenset(
-    {"certain", "high", "medium", "low", "uncertain", "unsure"}
-)
+WITNESS_CONFIDENCE_ORDINALS = frozenset({"certain", "high", "medium", "low", "uncertain", "unsure"})
 
 DEFAULT_FORMAT_CAPABILITIES = {
     "can_express_uncertainty": False,
@@ -479,7 +477,11 @@ def prepared_response(
         return None, None, None, health, str(health["truncation_basis"])
     witness_reported = row.get("witness_reported")
     report_problem = _native_problem(witness_reported, "witness_reported")
-    if report_problem is None and isinstance(witness_reported, dict) and "confidence" in witness_reported:
+    if (
+        report_problem is None
+        and isinstance(witness_reported, dict)
+        and "confidence" in witness_reported
+    ):
         confidence = witness_reported["confidence"]
         if not isinstance(confidence, str) or confidence not in WITNESS_CONFIDENCE_ORDINALS:
             report_problem = (
@@ -553,7 +555,9 @@ TESTIMONIUM_FIELDS = frozenset(
         "content_health",
     }
 )
-OPTIONAL_TESTIMONIUM_FIELDS = frozenset({"reason", "reported", "page_witness", "scope", "page_ordinal"})
+OPTIONAL_TESTIMONIUM_FIELDS = frozenset(
+    {"reason", "reported", "page_witness", "scope", "page_ordinal"}
+)
 
 
 def testimonium_payload(
@@ -1269,7 +1273,11 @@ def publish_page_testimonia_and_attachments(
         page_subject = page_identity(context.fixture, page_ordinal)
         for chair in sorted(page_chairs):
             attempts = [attempts_by_pair[(act["act_id"], chair)] for act in page_acts]
-            readable = [attempt.native_payload for attempt in attempts if isinstance(attempt.native_payload, str)]
+            readable = [
+                attempt.native_payload
+                for attempt in attempts
+                if isinstance(attempt.native_payload, str)
+            ]
             native_payload = "\n".join(readable)
             outcome = "read" if readable else "failed"
             health = content_health(native_payload, completed=outcome == "read")
@@ -1290,9 +1298,13 @@ def publish_page_testimonia_and_attachments(
                         format_capabilities=DEFAULT_FORMAT_CAPABILITIES,
                         native_payload=native_payload if outcome == "read" else None,
                         witness_reported=None,
-                        health=health if outcome == "read" else no_response_health(reason="page witness had no recordable response"),
+                        health=health
+                        if outcome == "read"
+                        else no_response_health(reason="page witness had no recordable response"),
                         outcome=outcome,
-                        reason=None if outcome == "read" else "page witness had no recordable response",
+                        reason=None
+                        if outcome == "read"
+                        else "page witness had no recordable response",
                     ),
                     "scope": "page",
                     "page_ordinal": page_ordinal,
@@ -1322,7 +1334,8 @@ def publish_page_testimonia_and_attachments(
                     "chair": chair,
                     "page_witness": page_witness,
                     "testimonium_ref": reference,
-                    "attached": act["outcome"] == "proposed" and attempt.outcome in WITNESS_READING_OUTCOMES,
+                    "attached": act["outcome"] == "proposed"
+                    and attempt.outcome in WITNESS_READING_OUTCOMES,
                     "content_health": attempt.health,
                     # Fixture-declared interim span: R4 replaces this with the
                     # loss-accounted alignment result without changing the kind.

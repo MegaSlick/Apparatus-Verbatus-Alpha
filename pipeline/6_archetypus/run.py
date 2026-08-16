@@ -530,7 +530,11 @@ def accepted_primed_perlectio(
             f"act {act_id} reached the Archetypus constructor with no retained Testimonium "
             "basis; a reading shown no witness at all is a Lectio nuda by any other name"
         )
-    attachment = payload.get("dossier", {}).get("act_attachment") if isinstance(payload.get("dossier"), dict) else None
+    attachment = (
+        payload.get("dossier", {}).get("act_attachment")
+        if isinstance(payload.get("dossier"), dict)
+        else None
+    )
     if attachment is not None:
         reference = attachment.get("reference") if isinstance(attachment, dict) else None
         if not _is_ref_shaped(reference) or reference not in reading.get("inputs", []):

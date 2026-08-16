@@ -72,9 +72,7 @@ def test_coverage_schema_distinguishes_health_unrecorded_from_a_healthy_read():
     the receipt must still record it as health-unrecorded -- distinct from an
     ordinary healthy completed read, which the six pre-R0 fields cannot express.
     """
-    coverage = _base_coverage(
-        by_outcome={"read": 2, "genuinely-empty": 1}, health_unrecorded=1
-    )
+    coverage = _base_coverage(by_outcome={"read": 2, "genuinely-empty": 1}, health_unrecorded=1)
     try:
         _validate_coverage(coverage)
     except SchemaRefusal as error:

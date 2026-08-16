@@ -119,9 +119,7 @@ def test_page_scoped_testimonium_is_produced_while_act_scope_is_retained_for_att
     """
     scenario, tree = run_tree
     target_page_ids = {page_identity(fixture, ordinal) for ordinal in (1, 2)}
-    target_act_ids = {
-        act_identity(fixture, act_by_key(fixture, key)) for key in ("a1", "a2")
-    }
+    target_act_ids = {act_identity(fixture, act_by_key(fixture, key)) for key in ("a1", "a2")}
 
     page_scoped_chairs_found: set[str] = set()
     act_2_subjects: set[str] = set()
@@ -159,9 +157,7 @@ def test_derived_act_attachment_record_is_written_by_attestatores_for_every_prop
     already be present in the ATTESTATORES manifest, not created by a later stage.
     """
     scenario, tree = run_tree
-    expected_act_ids = {
-        act_identity(fixture, act_by_key(fixture, key)) for key in ("a1", "a2")
-    }
+    expected_act_ids = {act_identity(fixture, act_by_key(fixture, key)) for key in ("a1", "a2")}
     attachment_act_ids = {
         record["subject_id"]
         for record in _attestatores_artifacts(tree)

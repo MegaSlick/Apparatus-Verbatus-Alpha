@@ -66,7 +66,10 @@ def test_a_receipt_still_declaring_the_v1_schema_is_refused_once_coverage_carrie
     schema label and a version-mismatch refusal, satisfies floor honesty but not
     D9's versioning half.
     """
-    proposal_seal_ref = {"relative_path": "designator/proposal-seal/art_seal.json", "sha256": "0" * 64}
+    proposal_seal_ref = {
+        "relative_path": "designator/proposal-seal/art_seal.json",
+        "sha256": "0" * 64,
+    }
     review_ref = {"relative_path": "recensor/review/art_review.json", "sha256": "1" * 64}
     item = {
         "act_id": "act_0000000000000000",

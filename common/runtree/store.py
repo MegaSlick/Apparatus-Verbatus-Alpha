@@ -258,6 +258,7 @@ class RunTree:
                 ) from None
             return tree
         return tree
+
     def read_run(self) -> dict[str, Any]:
         """The run authority, refused if it was edited after it was sealed."""
         run_file = self.root / RUN_FILE
@@ -1033,7 +1034,11 @@ def _default_corpus_frame_membership(source_manifest: list[dict[str, Any]]) -> d
 
 
 def _validate_corpus_frame_membership(membership: Any) -> None:
-    if not isinstance(membership, dict) or set(membership) != {"frame_digest", "page_digest", "seed"}:
+    if not isinstance(membership, dict) or set(membership) != {
+        "frame_digest",
+        "page_digest",
+        "seed",
+    }:
         raise SchemaRefusal(
             "corpus_frame_membership must be the closed {frame_digest, page_digest, seed} record"
         )

@@ -94,7 +94,9 @@ MAX_NUDA_PER_MILLE: Final = 1000
 DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH = (
     Path(__file__).resolve().parents[1] / "config" / "designator_padding.toml"
 )
-DEFAULT_CORPUS_FRAME_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "corpus_frame.toml"
+DEFAULT_CORPUS_FRAME_CONFIG_PATH = (
+    Path(__file__).resolve().parents[1] / "config" / "corpus_frame.toml"
+)
 DEFAULT_SERVING_RECIPES_CONFIG_PATH = (
     Path(__file__).resolve().parents[1] / "config" / "serving_recipes.toml"
 )
@@ -833,7 +835,9 @@ def load_corpus_frame_policy(path: str | Path) -> tuple[dict[str, int], str]:
         raw = Path(path).read_bytes()
         record = tomllib.loads(raw.decode("utf-8"))
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
-        raise ContractError(f"corpus-frame shard configuration at {path} could not be read") from error
+        raise ContractError(
+            f"corpus-frame shard configuration at {path} could not be read"
+        ) from error
     if set(record) != {"max_pages_per_shard"}:
         raise ContractError("corpus-frame shard configuration has the wrong closed schema")
     limit = record["max_pages_per_shard"]
