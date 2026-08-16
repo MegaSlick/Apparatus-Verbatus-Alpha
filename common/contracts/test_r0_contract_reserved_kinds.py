@@ -7,7 +7,7 @@ the R0 build chamber runs. Every test here must fail RED on the chamber's base c
 Kind table (R0_CONTRACT_NOTE.md "Kind-by-kind table"):
     lectio-prior, primed-without-prior         ACCEPTED by R5a (R0 transfer closed)
     audit-draft, audit-finding                 DEFERRED -> R5b
-    raw-proposal, occlusion (U7 kinds)         DEFERRED -> R2
+    raw-proposal, occlusion (U7 kinds)         ACCEPTED by R2 (R0 transfer closed)
     Closed-ordinal confidence rule             EXERCISED narrowly (R0 owns it)
 
 "Refusals, not absences" (brief priority 3): the point of R0 is not that these kinds
@@ -27,7 +27,7 @@ import pytest
 
 from common.contracts.envelope import build_envelope
 from common.contracts.errors import ContractError
-from common.contracts.stages import DESIGNATOR, PERLECTOR
+from common.contracts.stages import PERLECTOR
 
 # Every kind name the contract note defers past R0, by name, mapped to a stage whose
 # outcome vocabulary it could plausibly ride (so `classify()` inside `build_envelope`
@@ -38,8 +38,6 @@ from common.contracts.stages import DESIGNATOR, PERLECTOR
 DEFERRED_KINDS = (
     (PERLECTOR, "read", "audit-draft"),
     (PERLECTOR, "read", "audit-finding"),
-    (DESIGNATOR, "proposed", "raw-proposal"),
-    (DESIGNATOR, "proposed", "occlusion"),
 )
 
 
