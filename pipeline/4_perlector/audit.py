@@ -73,6 +73,24 @@ def load(path: str | Path) -> tuple[dict[str, Any], str]:
             "an audit round cap above the default needs Tyrel's approval reference; "
             "the audit loop may not raise itself"
         )
+    if policy["round_cap"] > 1:
+        # `absolute_round_cap` is the sealed declaration of how far the cap may
+        # ever be raised; this is what the code can currently honour. Pass C runs
+        # exactly ONE span-scoped re-proof (design v2.1 §3: "ONE span-scoped
+        # re-proof pass ... no cascade re-opening"; two seats read GOVERNANCE
+        # 7/11 against multi-round text-changing loops), so a second round has no
+        # implementation to run. Accepting `round_cap = 2` would seal that number
+        # into every audit draft and finding on the run while still performing one
+        # round: a recorded budget nothing measured (GOVERNANCE 10), and an
+        # approval Tyrel granted for work that never happens. Refuse it here
+        # rather than in the config file, so the sealed ceiling stays the standing
+        # declaration and this refusal is what a multi-round build lifts.
+        raise ContractError(
+            "this build performs exactly one span-scoped audit re-proof, so an audit round "
+            f"cap of {policy['round_cap']} would be sealed into every audit record without "
+            "ever being run; raising it needs the multi-round pass, not only an approval "
+            "reference"
+        )
     return policy, digest_bytes(raw)
 
 

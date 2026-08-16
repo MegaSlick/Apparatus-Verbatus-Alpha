@@ -287,6 +287,20 @@ def test_change_record_names_the_narrowest_flag_that_located_the_change():
     assert whole_act == [{"start": 8, "end": 9, "triggering_flag_class": "date-sequence"}]
 
 
+def test_an_audit_round_cap_above_one_is_refused_because_no_second_round_exists(tmp_path):
+    """A sealed cap of 2 with Tyrel's reference would be recorded but never run."""
+    approved = tmp_path / "approved.toml"
+    approved.write_text(
+        'schema = "perlector-audit.v1"\n'
+        "default_round_cap = 1\n"
+        "absolute_round_cap = 2\n"
+        "round_cap = 2\n"
+        'approval_ref = "tyrel-2026-08-16-raised-audit-cap"\n'
+    )
+    with pytest.raises(ContractError, match="exactly one span-scoped audit re-proof"):
+        audit.load(approved)
+
+
 def test_raised_cap_needs_tyrels_reference_and_exhaustion_routes_review(tmp_path):
     raised = tmp_path / "raised.toml"
     raised.write_text(
