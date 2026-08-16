@@ -196,24 +196,46 @@ def build_sample(
     return record
 
 
-def sample_stratified(run_path: str | Path, catalog_rows: Any, plan: Any) -> list[dict[str, Any]]:
-    """Select quota pages by seed ranking only after the structural set partition."""
-    frame, source = load_run_frame(run_path)
-    catalog = _catalog(catalog_rows, source)
+def _quotas(plan: Any, strata: set[str]) -> dict[str, dict[str, int]]:
+    """The plan, checked to account for every stratum the catalog declares.
+
+    A stratum the plan does not name contributes nothing to gold, and does so
+    without saying anything — the exact silent shortfall U18 ("the draw provably
+    covers the adverse strata") and GOVERNANCE 2 forbid. So the plan must name
+    every stratum in both sets, and a quota of 0 is how a stratum is deliberately
+    left unsampled: still a declaration, still visible in the plan file.
+    """
     _refuse(
         not isinstance(plan, dict) or set(plan) != SETS,
         "sampling plan must contain exactly both gold sets",
     )
+    quotas = {}
+    for gold_set in sorted(SETS):
+        declared = plan[gold_set]
+        _refuse(not isinstance(declared, dict), f"{gold_set} plan is not an object")
+        _refuse(
+            set(declared) != strata,
+            f"{gold_set} plan names {sorted(declared)} but the catalog stratifies the "
+            f"corpus into {sorted(strata)}; every stratum is quota'd in both sets, and "
+            "0 is how one is deliberately left unsampled",
+        )
+        for quota in declared.values():
+            _refuse(
+                not isinstance(quota, int) or isinstance(quota, bool) or quota < 0,
+                "sample quota is not a non-negative integer",
+            )
+        quotas[gold_set] = dict(declared)
+    return quotas
+
+
+def sample_stratified(run_path: str | Path, catalog_rows: Any, plan: Any) -> list[dict[str, Any]]:
+    """Select quota pages by seed ranking only after the structural set partition."""
+    frame, source = load_run_frame(run_path)
+    catalog = _catalog(catalog_rows, source)
+    plan = _quotas(plan, {row["stratum"] for row in catalog})
     selected = []
     for gold_set in sorted(SETS):
-        quotas = plan[gold_set]
-        _refuse(not isinstance(quotas, dict) or not quotas, f"{gold_set} plan is empty")
-        for stratum, quota in quotas.items():
-            _refuse(not isinstance(stratum, str) or not stratum, "plan stratum is empty")
-            _refuse(
-                not isinstance(quota, int) or isinstance(quota, bool) or quota < 1,
-                "sample quota is not a positive integer",
-            )
+        for stratum, quota in sorted(plan[gold_set].items()):
             eligible = [
                 page
                 for page in catalog

@@ -3,8 +3,11 @@
 `python -m gold.cli sample --run RUN.json --catalog catalog.json --plan plan.json
 --output-dir records/` creates a stratified, page-only human-gold sample.  The
 catalog has one `{ordinal, sha256, stratum}` row for every R0 source page; the
-plan contains positive quotas for both `calibration` and `locked-acceptance`, by
-stratum.  The R0 frame's existing `seed` deterministically partitions pages into
+plan carries a quota for both `calibration` and `locked-acceptance` for **every**
+stratum the catalog declares.  A stratum the plan does not name would drop out of
+gold without saying so, so an unnamed one is refused; quota `0` is how a stratum
+is deliberately left unsampled, and it stays visible in the plan file.  The R0
+frame's existing `seed` deterministically partitions pages into
 one of those two sets and ranks pages within their own stratum.  A quota that the
 partition cannot fill is refused; the sampler never crosses the boundary.
 

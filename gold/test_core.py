@@ -54,14 +54,17 @@ def catalog(pages):
 
 
 def plan_for(frame, rows):
+    """A plan naming every stratum in both sets: 1 where the partition can fill it,
+    0 (a declared skip) where it cannot."""
     result = {"calibration": {}, "locked-acceptance": {}}
     for gold_set in result:
         for stratum in {row["stratum"] for row in rows}:
-            if any(
-                row["stratum"] == stratum and set_for_page(frame, row["sha256"]) == gold_set
-                for row in rows
-            ):
-                result[gold_set][stratum] = 1
+            result[gold_set][stratum] = int(
+                any(
+                    row["stratum"] == stratum and set_for_page(frame, row["sha256"]) == gold_set
+                    for row in rows
+                )
+            )
     return result
 
 
@@ -140,6 +143,28 @@ def test_manual_pick_predating_the_seed_is_still_ingested_with_an_honest_disagre
     # Disjointness stays enforced by construction: the persisted set is never the
     # disputed one, whatever the pick claimed.
     assert validate_sample(result, path) == result
+
+
+def test_a_plan_that_leaves_a_stratum_unnamed_is_refused(tmp_path):
+    """A stratum the plan does not name contributes no gold and says nothing about
+    it — the silent shortfall U18 and GOVERNANCE 2 forbid. Naming it with quota 0
+    is the declared way to skip it."""
+    path, frame, pages = run_file(tmp_path)
+    rows = catalog(pages)
+    full = plan_for(frame, rows)
+    partial = {gold_set: dict(quotas) for gold_set, quotas in full.items()}
+    partial["calibration"].pop("ordinary")
+    with pytest.raises(SchemaRefusal, match="deliberately left unsampled"):
+        sample_stratified(path, rows, partial)
+    declared_skip = {gold_set: dict(quotas) for gold_set, quotas in full.items()}
+    declared_skip["calibration"]["ordinary"] = 0
+    kept = sample_stratified(path, rows, declared_skip)
+    assert not [
+        record
+        for record in kept
+        if record["set"] == "calibration" and record["page"]["stratum"] == "ordinary"
+    ]
+    assert len(kept) == sum(sum(quotas.values()) for quotas in declared_skip.values())
 
 
 def test_stratified_samples_carry_no_claimed_set(tmp_path):
