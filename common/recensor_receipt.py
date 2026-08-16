@@ -13,7 +13,7 @@ from typing import Any, Final
 
 from common.contracts.canonical import self_hash, verify_self_hash
 from common.contracts.errors import FatalAccounting, ReceiptVersionMismatch, SchemaRefusal
-from common.contracts.outcomes import OutcomeClass, classify
+from common.contracts.outcomes import INTERIM_GRANULARITY_BASIS, OutcomeClass, classify
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, RECENSOR
 
 RECENSOR_PARTITION_RECEIPT_SCHEMA: Final = "recensor-partition-receipt.v1"
@@ -142,11 +142,18 @@ def _validate_item(item: Any, *, schema: str = RECENSOR_PARTITION_RECEIPT_SCHEMA
             f"derives {expected_class!r}"
         )
     _validate_reference(item["review_ref"], "review reference")
-    _validate_coverage(item["coverage"], schema=schema)
+    _validate_coverage(
+        item["coverage"],
+        schema=schema,
+        require_complete_granularity=schema == RECENSOR_PARTITION_RECEIPT_SCHEMA_V2,
+    )
 
 
 def _validate_coverage(
-    coverage: Any, *, schema: str = RECENSOR_PARTITION_RECEIPT_SCHEMA_V2
+    coverage: Any,
+    *,
+    schema: str = RECENSOR_PARTITION_RECEIPT_SCHEMA_V2,
+    require_complete_granularity: bool = False,
 ) -> None:
     required = {
         "configured",
@@ -156,7 +163,12 @@ def _validate_coverage(
         "under_witnessed",
         "unresolved_chairs",
     }
-    granularity_fields = {"page_granularity_only", "health_unrecorded", "shortfalls"}
+    granularity_fields = {
+        "page_granularity_only",
+        "health_unrecorded",
+        "shortfalls",
+        "granularity_basis",
+    }
     if not isinstance(coverage, dict):
         raise SchemaRefusal("Recensor partition receipt has malformed witness coverage")
     present_granularity = set(coverage) & granularity_fields
@@ -167,6 +179,10 @@ def _validate_coverage(
     allowed = required | granularity_fields
     if set(coverage) - allowed or not required <= set(coverage):
         raise SchemaRefusal("Recensor partition receipt has malformed witness coverage")
+    if require_complete_granularity and not granularity_fields <= set(coverage):
+        raise SchemaRefusal(
+            "Recensor partition receipt v2 omits one or more required granularity facts"
+        )
     # One fault, one message. These were a single `or` chain of about a dozen
     # independent checks all raising the same sentence, so a refusal on a real
     # run told an operator only that "some number in the witness coverage is
@@ -302,6 +318,18 @@ def _validate_coverage(
             )
         ):
             raise SchemaRefusal("Recensor partition receipt has malformed shortfalls")
+        if "granularity_basis" in coverage and (
+            coverage["granularity_basis"] != INTERIM_GRANULARITY_BASIS
+        ):
+            raise SchemaRefusal(
+                "Recensor partition receipt v2 does not name R0's honest interim "
+                "granularity measurement basis"
+            )
+        if shortfalls["failed"] != by_outcome.get("failed", 0):
+            raise SchemaRefusal(
+                "Recensor partition receipt's failed shortfall does not derive from "
+                "its own failed witness outcomes"
+            )
 
 
 def _validate_reference(reference: Any, what: str) -> None:

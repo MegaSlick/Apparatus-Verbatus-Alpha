@@ -84,6 +84,9 @@ def test_happy_recensor_pass_writes_a_complete_scoped_partition_receipt(tmp_path
     assert receipt["by_partition_class"] == {"completed": 2, "unresolved": 0, "failed": 0}
     assert len({item["act_id"] for item in receipt["items"]}) == 2
     assert all(item["review_outcome"] == "accepted" for item in receipt["items"])
+    assert {item["coverage"]["granularity_basis"] for item in receipt["items"]} == {
+        "act-outcome-proxy-before-alignment"
+    }
 
 
 def test_recovery_replaces_the_current_partition_snapshot_without_erasing_history(tmp_path):
@@ -205,6 +208,10 @@ def _valid_coverage() -> dict:
         "by_class": {"completed": 2, "unresolved": 1, "failed": 0},
         "under_witnessed": True,
         "unresolved_chairs": 1,
+        "page_granularity_only": 0,
+        "health_unrecorded": 1,
+        "shortfalls": {"failed": 0, "truncated": 0, "unaligned": 1},
+        "granularity_basis": "act-outcome-proxy-before-alignment",
     }
 
 
@@ -585,3 +592,47 @@ def test_a_failed_act_scoped_attempt_produces_a_real_failed_and_unaligned_shortf
         "receipt's shortfalls must name it real -- not the all-zero shape a call to "
         "witness_coverage() with no attachments= argument would silently produce"
     )
+
+
+def test_v2_receipt_refuses_zero_failed_shortfalls_for_a_failed_attempt(tmp_path):
+    """A v2 label cannot turn an observed failed attempt into all-zero shortfalls."""
+    root = tmp_path / "runs"
+    through_perlector(root, "forged-shortfalls", "malformed-capabilities")
+    result = invoke(
+        root,
+        "forged-shortfalls",
+        "malformed-capabilities",
+        "pipeline/5_recensor/run.py",
+    )
+    assert result.returncode in (0, 3), result.stderr
+    receipt = RunTree(root, "forged-shortfalls").read_recensor_partition_receipt()
+    item = next(item for item in receipt["items"] if item["act_key"] == "a1")
+    item["coverage"]["shortfalls"] = {"failed": 0, "truncated": 0, "unaligned": 0}
+    from common.contracts.canonical import self_hash
+
+    receipt["self_hash"] = self_hash(
+        {key: value for key, value in receipt.items() if key != "self_hash"}
+    )
+    with pytest.raises(SchemaRefusal, match="failed shortfall"):
+        from common.recensor_receipt import validate_recensor_partition_receipt
+
+        validate_recensor_partition_receipt(receipt)
+
+
+def test_v2_receipt_cannot_omit_its_granularity_measurement_basis(tmp_path):
+    """P1: zero is not an honest metric unless the receipt names how it was derived."""
+    root = tmp_path / "runs"
+    through_perlector(root, "missing-basis", "happy")
+    result = invoke(root, "missing-basis", "happy", "pipeline/5_recensor/run.py")
+    assert result.returncode == 0, result.stderr
+    receipt = RunTree(root, "missing-basis").read_recensor_partition_receipt()
+    del receipt["items"][0]["coverage"]["granularity_basis"]
+    from common.contracts.canonical import self_hash
+
+    receipt["self_hash"] = self_hash(
+        {key: value for key, value in receipt.items() if key != "self_hash"}
+    )
+    with pytest.raises(SchemaRefusal, match="omits.*granularity"):
+        from common.recensor_receipt import validate_recensor_partition_receipt
+
+        validate_recensor_partition_receipt(receipt)
