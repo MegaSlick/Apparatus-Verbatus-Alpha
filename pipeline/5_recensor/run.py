@@ -857,6 +857,135 @@ def page_coverage_for(act_regions: list[dict], findings: dict[int, dict]) -> dic
     }
 
 
+def geometry_coverage_inputs(context) -> dict[int, dict]:
+    """Consume, and independently reconcile, R2's conservation denominator.
+
+    A conservation record is not a conclusion this stage may copy into its own
+    review.  Its residual components must have become exactly the held residual
+    acts in the proposal seal.  Reading both sides here makes a broken R2
+    invariant-8 partition a refusal, rather than a reassuring Recensor record.
+    """
+    acts = expected_acts(context)
+    residual_keys = {act["act_key"] for act in acts if act["act_key"].startswith("residual:")}
+    findings: dict[int, dict] = {}
+    for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]:
+        if entry["kind"] != "conservation":
+            continue
+        record = context.tree.read_artifact(DESIGNATOR, "conservation", entry["artifact_id"])
+        payload = _payload(record, f"Designator conservation {record['artifact_id']}")
+        ordinal = payload.get("page_ordinal")
+        measurable = payload.get("ink_measurable")
+        components = payload.get("residual_components")
+        if (
+            not isinstance(ordinal, int)
+            or isinstance(ordinal, bool)
+            or not isinstance(measurable, bool)
+            or not isinstance(components, list)
+            or ordinal in findings
+        ):
+            raise FatalAccounting("Designator conservation has malformed or duplicate page facts")
+        expected = {f"residual:{ordinal}:{index}" for index in range(len(components))}
+        actual = {key for key in residual_keys if key.startswith(f"residual:{ordinal}:")}
+        if measurable and actual != expected:
+            raise FatalAccounting(
+                f"Designator conservation page {ordinal} has residual components whose "
+                "invariant-8 held-act partition diverges from the components it measured"
+            )
+        if not measurable and actual:
+            raise FatalAccounting(
+                f"unmeasured Designator conservation page {ordinal} minted residual acts"
+            )
+        findings[ordinal] = {
+            "ink_measurable": measurable,
+            "residual_component_count": len(components),
+            "residual_act_count": len(actual),
+        }
+    return findings
+
+
+def testimony_content_findings(context) -> dict[int, dict]:
+    """Compare each page witness's text to its own aligned act attachments.
+
+    This is deliberately testimony-to-testimony: no Perlectio text participates
+    until R5b's Pass-C output exists.  The retained alignment spans are the loss
+    map; a non-whitespace page character outside their ordered union is a visible
+    coverage shortfall, never a verdict about which witness is right.
+    """
+    attachments = {
+        record["subject_id"]: record
+        for entry in context.tree.build_manifest(ATTESTATORES)["artifacts"]
+        if entry["kind"] == "act-attachment"
+        for record in [
+            context.tree.read_artifact(ATTESTATORES, "act-attachment", entry["artifact_id"])
+        ]
+    }
+    findings: dict[int, dict] = {}
+    for entry in context.tree.build_manifest(ATTESTATORES)["artifacts"]:
+        if entry["kind"] != "page-testimonium":
+            continue
+        record = context.tree.read_artifact(ATTESTATORES, "page-testimonium", entry["artifact_id"])
+        payload = _payload(record, f"page Testimonium {record['artifact_id']}")
+        ordinal, chair, text = (
+            payload.get("page_ordinal"),
+            payload.get("chair"),
+            payload.get("reported"),
+        )
+        if not isinstance(ordinal, int) or not isinstance(chair, str) or not isinstance(text, str):
+            raise FatalAccounting("page Testimonium has no textual page identity")
+        spans = []
+        for act in expected_acts(context):
+            if act["page_ordinal"] != ordinal:
+                continue
+            attachment = attachments.get(act["act_id"])
+            if attachment is None:
+                raise FatalAccounting(f"act {act['act_id']} has no attachment for content coverage")
+            rows = _payload(attachment, f"attachment for {act['act_id']}").get("attachments")
+            if not isinstance(rows, list):
+                raise FatalAccounting(f"attachment for {act['act_id']} has no rows")
+            for row in rows:
+                if (
+                    not isinstance(row, dict)
+                    or row.get("chair") != chair
+                    or not row.get("page_witness")
+                ):
+                    continue
+                if row.get("testimonium_ref") != context.artifact_ref(
+                    ATTESTATORES, "page-testimonium", record["artifact_id"]
+                ):
+                    raise FatalAccounting("act attachment points to a different page Testimonium")
+                alignment = row.get("alignment")
+                if (
+                    row.get("attached")
+                    and isinstance(alignment, dict)
+                    and alignment.get("status") == "aligned"
+                ):
+                    span = alignment.get("witness_span")
+                    if not isinstance(span, dict) or not all(
+                        isinstance(span.get(k), int) for k in ("start", "end")
+                    ):
+                        raise FatalAccounting("attached page witness has malformed alignment span")
+                    spans.append((span["start"], span["end"], act["act_id"]))
+        covered = [False] * len(text)
+        for start, end, _ in spans:
+            if start < 0 or end < start or end > len(text):
+                raise FatalAccounting("act attachment span lies outside its page Testimonium")
+            for index in range(start, end):
+                covered[index] = True
+        uncovered = [
+            index for index, char in enumerate(text) if not covered[index] and not char.isspace()
+        ]
+        finding = findings.setdefault(ordinal, {"by_chair": {}, "shortfall": False})
+        finding["by_chair"][chair] = {
+            "attached_spans": [
+                {"start": start, "end": end, "act_id": act_id}
+                for start, end, act_id in sorted(spans)
+            ],
+            "uncovered_non_whitespace_offsets": uncovered,
+        }
+        finding["shortfall"] = finding["shortfall"] or bool(uncovered)
+    return findings
+
+
 def _reconcile_reading_regions(reading: dict, regions: list[dict], act_id: str) -> list[dict]:
     """Require a completed Perlectio to name exactly every region currently cut."""
     basis = reading_basis_regions(reading, f"reading of {act_id}")
@@ -1034,12 +1163,21 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     preflight_review_evidence(context, budget)
 
     page_findings = page_coverage_findings(context)
+    geometry_inputs = geometry_coverage_inputs(context)
+    content_findings = testimony_content_findings(context)
 
     held = 0
     for act in expected_acts(context):
         act_id, act_key = act["act_id"], act["act_key"]
 
         coverage = validate_chair_coverage(context, act_id, floor)
+        content_coverage = content_findings.get(
+            act["page_ordinal"], {"by_chair": {}, "shortfall": False}
+        )
+        geometry_coverage = geometry_inputs.get(
+            act["page_ordinal"],
+            {"ink_measurable": False, "residual_component_count": 0, "residual_act_count": 0},
+        )
 
         if act["outcome"] == "held":
             # The Designator could not mark this act out. There is no reading to
@@ -1070,6 +1208,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     "attempt_ordinal": 1,
                     "reason": f"the Designator held this act: {hold['payload']['reason']}",
                     "coverage": coverage,
+                    "geometry_coverage": geometry_coverage,
+                    "testimony_content_coverage": content_coverage,
                     "continuation": recensor_continuation_link(hold_regions, act_id),
                     "page_coverage": page_coverage_for(hold_regions, page_findings),
                     "recoveries_used": 0,
@@ -1169,6 +1309,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     "kind_budget_allowed": allowed_fallback,
                     "kind_budget_used": used_fallback,
                     "coverage": coverage,
+                    "geometry_coverage": geometry_coverage,
+                    "testimony_content_coverage": content_coverage,
                     "perlectio_ref": reading_ref,
                     "recovery_policy": budget,
                 },
@@ -1287,6 +1429,17 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "the Perlector exhausted its sealed audit re-proof cap with unresolved span(s); "
                 "they remain explicit uncertainty rather than a silent retry",
             )
+        elif content_coverage["shortfall"]:
+            outcome, reason = (
+                "held-for-review",
+                "a page Testimonium contains non-whitespace text outside the ordered union "
+                "of that witness's aligned act attachments; testimony coverage is incomplete",
+            )
+        elif coverage["under_witnessed"]:
+            outcome, reason = (
+                "held-for-review",
+                "the configured act-level witness floor is not met; a witness failure is not coverage",
+            )
         elif act_key in scenario["hold_acts"]:
             outcome, reason = "held-for-review", "the act did not reconcile and needs a human"
         elif wants_recovery:
@@ -1324,6 +1477,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "attempt_ordinal": ordinal,
                 "reason": reason,
                 "coverage": coverage,
+                "geometry_coverage": geometry_coverage,
+                "testimony_content_coverage": content_coverage,
                 "continuation": continuation_link,
                 "recoveries_used": used_total,
                 "budget_allowed": budget["allowed"],

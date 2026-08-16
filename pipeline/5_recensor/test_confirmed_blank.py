@@ -91,7 +91,10 @@ def test_unanimous_absence_seals_confirmed_blank(tmp_path):
     three configured witnesses independently reporting `genuinely-empty`."""
     root = tmp_path / "runs"
     result = _run_through_recensor(root, "r", "confirmed-blank")
-    assert result.returncode == 0, result.stderr
+    # R6 also checks the other act's page Testimonium against its aligned
+    # attachments.  Its uncovered trailing text is a separate coverage finding,
+    # so the run is partial while this act can still be correctly sealed blank.
+    assert result.returncode == 3, result.stderr
 
     tree = RunTree(root, "r")
     review = _review_of(tree, "a1")
@@ -109,10 +112,11 @@ def test_unanimous_absence_seals_confirmed_blank(tmp_path):
         "pages_without_residual_ink_outside_coverage": [1],
     }
 
-    # The act this scenario does not touch reads and accepts exactly as ever --
-    # blank confirmation is additive, not a change to the ordinary path.
+    # The other act is held by the independent testimony coverage diff, not by
+    # blank confirmation or a text-quality judgment.
     other = _review_of(tree, "a2")
-    assert other["outcome"] == "accepted"
+    assert other["outcome"] == "held-for-review"
+    assert other["payload"]["testimony_content_coverage"]["shortfall"] is True
 
 
 def test_a_dissenting_witness_holds_instead_of_confirming_blank(tmp_path):
@@ -133,10 +137,9 @@ def test_a_dissenting_witness_holds_instead_of_confirming_blank(tmp_path):
     assert "blank_evidence" not in review["payload"]
 
 
-def test_confirmed_blank_is_a_completed_class_terminal_outcome(tmp_path):
-    """`confirmed-blank` does not hold the run -- unlike `held-for-review`, it is
-    COMPLETED-class (`common/contracts/outcomes.py`) and the run reaches EXIT_COMPLETE
-    when it is the only unusual act."""
+def test_confirmed_blank_remains_a_completed_terminal_when_another_act_is_held(tmp_path):
+    """The R6 content shortfall makes this two-act fixture partial, but does not
+    recategorize the independently established `confirmed-blank` outcome."""
     root = tmp_path / "runs"
     result = subprocess.run(
         [
@@ -155,8 +158,9 @@ def test_confirmed_blank_is_a_completed_class_terminal_outcome(tmp_path):
         capture_output=True,
         text=True,
     )
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "run r: complete" in result.stdout
+    assert result.returncode == 3, result.stdout + result.stderr
+    assert "act a2 is held-for-review" in result.stdout
+    assert "act a1 is under-witnessed" in result.stdout
 
 
 # --- blank_corroboration: the pure gate, exercised directly -----------------
