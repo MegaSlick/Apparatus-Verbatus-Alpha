@@ -221,3 +221,46 @@ def test_cleanroom_gate_fails_when_git_cannot_list(tmp_path):
     result = run_shell(step_run("The cleanroom is empty"), loose, gate_env(tmp_path))
     assert result.returncode == 2
     assert "git ls-files failed" in result.stderr
+
+
+def test_every_third_party_import_in_the_gate_suite_is_inside_what_the_audit_reads():
+    """The sibling above covers the project's runtime dependencies. This covers
+    the gate's own: a package these hook tests import, but nothing declares,
+    reaches the gate only as some other dependency's transitive -- unpinned,
+    unrecorded, and one upstream trim away from turning collection red with a
+    message about the wrong thing.
+
+    Found in audit (R0): `.githooks/test_r0_contract_ci_matrix.py` imports
+    `yaml`, which appeared in no requirements file, no pyproject entry and no
+    workflow step; it was present only because `huggingface_hub` requires
+    PyYAML.
+    """
+    import ast
+    import sys
+
+    roots: set[str] = set()
+    for path in sorted((ROOT / ".githooks").glob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, ast.Import):
+                roots.update(alias.name.split(".")[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                roots.add(node.module.split(".")[0])
+
+    audited = {
+        re.split(r"[=<>!~\[]", line.strip(), maxsplit=1)[0].strip().lower()
+        for line in (ROOT / "requirements-dev.txt").read_text().splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+    # Import name to distribution name, for the few that differ.
+    distribution = {"yaml": "pyyaml"}
+    undeclared = sorted(
+        root
+        for root in roots
+        if root not in sys.stdlib_module_names
+        and distribution.get(root, root).lower() not in audited
+    )
+    assert not undeclared, (
+        f"the gate's own suite imports {undeclared}, which requirements-dev.txt does not "
+        "declare, so `pip_audit --requirement requirements-dev.txt` never looks at them "
+        "and nothing pins the version the gate actually runs"
+    )
