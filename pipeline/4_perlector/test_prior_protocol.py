@@ -1,5 +1,7 @@
 """R5a prior-draft protocol: distinct passes, refusal gate, and fixture signal."""
 
+import copy
+import importlib.util
 import subprocess
 import sys
 from pathlib import Path
@@ -7,13 +9,24 @@ from pathlib import Path
 import protocol
 import pytest
 
-from common.contracts.errors import SchemaRefusal
+from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.identities import perlector_attempt_id
 from common.contracts.stages import PERLECTOR
 from common.runtree.store import RunTree
 
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
+
+
+def _load_perlector():
+    path = Path(__file__).resolve().parent / "run.py"
+    spec = importlib.util.spec_from_file_location("perlector_prior_protocol_under_test", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+perlector = _load_perlector()
 
 
 def _run(root, run_id="r", scenario="happy", *extra):
@@ -101,11 +114,87 @@ def test_draft_fed_toggle_records_both_states_and_withholds_prompt_text(tmp_path
     assert final["dossier"]["prior_draft_view"] == "withheld"
 
 
-def test_control_selection_is_run_id_independent():
-    facts = {"frame_digest": "a" * 64, "page_digest": "b" * 64, "seed": "c" * 64}
-    first = protocol.is_control_sampled("act-1", per_mille=500, **facts)
-    second = protocol.is_control_sampled("act-1", per_mille=500, **facts)
-    assert first == second
+def test_control_selection_has_no_run_id_input_at_all():
+    """Structural, not behavioural: a signature that never accepts run_id cannot
+    depend on it, whatever the draw itself does."""
+    import inspect
+
+    assert "run_id" not in inspect.signature(protocol.is_control_sampled).parameters
+
+
+def test_two_different_run_ids_over_the_same_corpus_facts_sample_the_control_identically(
+    tmp_path,
+):
+    """The behavioural half U18 actually names: two runs that only differ by
+    run ID, over the same corpus, draw the same control-arm membership."""
+    root = tmp_path / "runs"
+    extra = (
+        "--perlector-instrument-per-mille",
+        "500",
+        "--perlector-instrument-approval-ref",
+        "fixture/prior",
+    )
+    first = _run(root, "run-one", "happy", *extra)
+    second = _run(root, "run-two", "happy", *extra)
+    assert first.returncode == 0, first.stderr
+    assert second.returncode == 0, second.stderr
+
+    def _control_sample(run_id):
+        return {
+            entry["subject_id"]
+            for entry in RunTree(root, run_id).build_manifest(PERLECTOR)["artifacts"]
+            if entry["kind"] == "primed-without-prior"
+        }
+
+    assert _control_sample("run-one") == _control_sample("run-two")
+
+
+def test_changing_the_seed_changes_the_draw_for_some_act():
+    """The draw is not a constant that happens to be reproducible: sweeping the
+    seed alone, holding every other fact fixed, must move at least one act
+    across the sampling threshold."""
+    outcomes = {
+        seed: protocol.is_control_sampled(
+            "act-1",
+            frame_digest="a" * 64,
+            page_digest="b" * 64,
+            seed=f"seed-{seed}",
+            per_mille=500,
+        )
+        for seed in range(50)
+    }
+    assert len(set(outcomes.values())) == 2, (
+        "50 distinct seeds at a 500/1000 rate produced only one outcome; the seed is "
+        "not moving the draw"
+    )
+
+
+def test_changing_the_act_id_changes_the_draw_for_some_seed():
+    """Symmetric check: at a fixed corpus/seed, sweeping the act moves the draw
+    too, so membership is not secretly constant across a page."""
+    outcomes = {
+        act: protocol.is_control_sampled(
+            f"act-{act}",
+            frame_digest="a" * 64,
+            page_digest="b" * 64,
+            seed="c" * 64,
+            per_mille=500,
+        )
+        for act in range(50)
+    }
+    assert len(set(outcomes.values())) == 2
+
+
+def test_the_modulo_bias_stays_negligible():
+    """`int(digest[:8], 16) % 1000` draws from 2**32 values, not a multiple of
+    1000. The per-threshold bias this leaves is recorded in the function's own
+    docstring; this test is the canary that catches it silently growing if the
+    digest truncation width ever changes."""
+    space = 2**32
+    remainder = space % 1000
+    assert remainder != 0, "no bias to record if this ever becomes exact -- update the docstring"
+    relative_bias = 1 / (space // 1000)
+    assert relative_bias < 1e-5
 
 
 def test_each_prior_protocol_pass_has_a_distinct_closed_attempt_operation():
@@ -159,3 +248,171 @@ def test_a_control_reference_forged_as_a_perlectio_is_refused(tmp_path):
             kind="perlectio",
             subject_id=control["subject_id"],
         )
+
+
+def test_a_prior_reference_forged_as_a_perlectio_is_refused(tmp_path):
+    """The sibling of the control's forged-reference refusal, for the other
+    retired-and-reaccepted kind: a Pass-A draft is never a Perlectio either."""
+    root = tmp_path / "runs"
+    result = _run(root)
+    assert result.returncode == 0, result.stderr
+    tree = RunTree(root, "r")
+    prior = _records(tree, "lectio-prior")[0]
+    entry = next(
+        item
+        for item in tree.build_manifest(PERLECTOR)["artifacts"]
+        if item["artifact_id"] == prior["artifact_id"]
+    )
+    with pytest.raises(SchemaRefusal, match="not required 'perlector'/'perlectio'"):
+        tree.read_artifact_reference(
+            {"relative_path": entry["relative_path"], "sha256": entry["sha256"]},
+            stage=PERLECTOR,
+            kind="perlectio",
+            subject_id=prior["subject_id"],
+        )
+
+
+@pytest.fixture(scope="module")
+def published_lectio_prior_payload(tmp_path_factory):
+    """A real published lectio-prior payload, not a hand-built stand-in --
+    matching test_perlectio_schema.py's published_payload pattern for the
+    kind that fixture only covers by inheritance until now."""
+    root = tmp_path_factory.mktemp("lectio-prior-schema") / "runs"
+    result = _run(root, "r", "happy")
+    assert result.returncode == 0, result.stderr
+    return _records(RunTree(root, "r"), "lectio-prior")[0]["payload"]
+
+
+@pytest.fixture(scope="module")
+def published_primed_without_prior_payload(tmp_path_factory):
+    """A real published control-arm payload."""
+    root = tmp_path_factory.mktemp("control-schema") / "runs"
+    result = _run(
+        root,
+        "r",
+        "happy",
+        "--perlector-instrument-per-mille",
+        "1000",
+        "--perlector-instrument-approval-ref",
+        "fixture/prior",
+    )
+    assert result.returncode == 0, result.stderr
+    return _records(RunTree(root, "r"), "primed-without-prior")[0]["payload"]
+
+
+@pytest.fixture(scope="module")
+def _sealed_protocol():
+    return protocol.load(ROOT / "config" / "perlector_protocol.toml")
+
+
+def test_a_real_published_lectio_prior_satisfies_its_closed_schema(
+    published_lectio_prior_payload, _sealed_protocol
+):
+    protocol_config, protocol_sha256 = _sealed_protocol
+    perlector.validate_reading_payload(
+        copy.deepcopy(published_lectio_prior_payload),
+        outcome="read",
+        fields=perlector._LECTIO_PRIOR_FIELDS,
+        protocol_config=protocol_config,
+        protocol_sha256=protocol_sha256,
+    )
+
+
+@pytest.mark.parametrize("field", sorted(perlector._LECTIO_PRIOR_FIELDS))
+def test_a_lectio_prior_missing_any_field_of_its_record_is_refused(
+    published_lectio_prior_payload, _sealed_protocol, field
+):
+    protocol_config, protocol_sha256 = _sealed_protocol
+    payload = copy.deepcopy(published_lectio_prior_payload)
+    del payload[field]
+    with pytest.raises(SchemaRefusal, match="not its closed schema"):
+        perlector.validate_reading_payload(
+            payload,
+            outcome="read",
+            fields=perlector._LECTIO_PRIOR_FIELDS,
+            protocol_config=protocol_config,
+            protocol_sha256=protocol_sha256,
+        )
+
+
+def test_a_real_published_control_satisfies_its_closed_schema(
+    published_primed_without_prior_payload, _sealed_protocol
+):
+    protocol_config, protocol_sha256 = _sealed_protocol
+    perlector.validate_reading_payload(
+        copy.deepcopy(published_primed_without_prior_payload),
+        outcome="read",
+        fields=perlector._PRIMED_WITHOUT_PRIOR_FIELDS,
+        protocol_config=protocol_config,
+        protocol_sha256=protocol_sha256,
+    )
+
+
+@pytest.mark.parametrize("field", sorted(perlector._PRIMED_WITHOUT_PRIOR_FIELDS))
+def test_a_control_missing_any_field_of_its_record_is_refused(
+    published_primed_without_prior_payload, _sealed_protocol, field
+):
+    protocol_config, protocol_sha256 = _sealed_protocol
+    payload = copy.deepcopy(published_primed_without_prior_payload)
+    del payload[field]
+    with pytest.raises(SchemaRefusal, match="not its closed schema"):
+        perlector.validate_reading_payload(
+            payload,
+            outcome="read",
+            fields=perlector._PRIMED_WITHOUT_PRIOR_FIELDS,
+            protocol_config=protocol_config,
+            protocol_sha256=protocol_sha256,
+        )
+
+
+def test_the_sealed_protocol_declaration_reproduces(_sealed_protocol):
+    protocol_config, protocol_sha256 = _sealed_protocol
+    assert protocol_config["selection_rule"] == protocol.SELECTION_RULE
+    assert protocol_config["page_shared_prefix_policy"] == protocol.PAGE_SHARED_PREFIX_POLICY
+    assert len(protocol_sha256) == 64
+
+
+def _write_protocol(tmp_path, **overrides):
+    fields = {
+        "selection_rule": protocol.SELECTION_RULE,
+        "page_shared_prefix_policy": protocol.PAGE_SHARED_PREFIX_POLICY,
+        "pass_b_fragment": "Independently reread the image.",
+    }
+    fields.update(overrides)
+    path = tmp_path / "perlector_protocol.toml"
+    path.write_text("\n".join(f'{key} = "{value}"' for key, value in fields.items()))
+    return path
+
+
+def test_a_pass_b_fragment_asserting_the_prior_was_wrong_is_refused(tmp_path):
+    """GOVERNANCE-3's control (iterative_reader.md:46-51, GOV 10): the protocol
+    declaration cannot ship a fragment that forces a change, only one that
+    reports the finding."""
+    path = _write_protocol(tmp_path, pass_b_fragment="The prior reading was wrong; correct it.")
+    with pytest.raises(ContractError, match="protocol is neutral"):
+        protocol.load(path)
+
+
+def test_a_blank_pass_b_fragment_is_refused(tmp_path):
+    path = _write_protocol(tmp_path, pass_b_fragment="   ")
+    with pytest.raises(ContractError, match="blank Pass-B fragment"):
+        protocol.load(path)
+
+
+def test_an_unknown_selection_rule_is_refused(tmp_path):
+    path = _write_protocol(tmp_path, selection_rule="stratified-v1")
+    with pytest.raises(ContractError, match="unknown selection rule"):
+        protocol.load(path)
+
+
+def test_an_unknown_page_shared_prefix_policy_is_refused(tmp_path):
+    path = _write_protocol(tmp_path, page_shared_prefix_policy="witness-order-first.v1")
+    with pytest.raises(ContractError, match="unknown page-shared-prefix policy"):
+        protocol.load(path)
+
+
+def test_a_protocol_declaration_missing_a_field_is_refused(tmp_path):
+    path = tmp_path / "perlector_protocol.toml"
+    path.write_text(f'selection_rule = "{protocol.SELECTION_RULE}"')
+    with pytest.raises(ContractError, match="not its closed string schema"):
+        protocol.load(path)

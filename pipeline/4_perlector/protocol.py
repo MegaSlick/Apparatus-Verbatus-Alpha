@@ -43,7 +43,16 @@ def load(path: str | Path) -> tuple[dict[str, str], str]:
 def is_control_sampled(
     act_id: str, *, frame_digest: str, page_digest: str, seed: str, per_mille: int
 ) -> bool:
-    """Uniform digest threshold over run-stable corpus and act facts only."""
+    """Uniform digest threshold over run-stable corpus and act facts only.
+
+    `int(digest[:8], 16) % 1000` draws from 2**32 = 4294967296 possible values,
+    which is not a multiple of 1000 (4294967296 % 1000 == 296): the low 296
+    thresholds each get one more input value than the other 704. The resulting
+    bias is 1 part in about 4.29 million per threshold (~2.3e-5%) -- negligible
+    at any corpus size this pipeline will ever sample, and recorded here rather
+    than corrected with a rejection-sampling threshold because a threshold adds
+    a retry path for a bias no real run could detect.
+    """
     if not isinstance(per_mille, int) or isinstance(per_mille, bool) or not 0 <= per_mille <= 1000:
         raise ValueError(
             f"perlector_instrument_per_mille must be an integer in [0, 1000], got {per_mille!r}"
