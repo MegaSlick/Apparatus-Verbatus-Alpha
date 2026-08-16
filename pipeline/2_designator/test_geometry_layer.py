@@ -109,7 +109,8 @@ def test_surya_runs_both_half_offset_tilings_and_unions_without_discarding_pass_
     assert [call["y"] for call in calls] == [0, 1400, 700, 2100]
     assert len(proposals) == 1
     assert proposals[0]["source"] == "surya"
-    assert proposals[0]["observed_passes"] == [0, 1]
+    assert proposals[0]["observation_unit"] == "surya-tiling-pass"
+    assert proposals[0]["observed_ordinals"] == [0, 1]
     validate_raw_proposal(proposals[0])
 
 
@@ -450,9 +451,9 @@ def test_proposal_identity_is_reproducible_without_first_seen_pass_provenance():
             }
         ],
     )[0]
-    assert proposal["observed_passes"] == [0, 1]
-    for passes in ([0], [1], [0, 1]):
-        validate_raw_proposal({**proposal, "observed_passes": passes})
+    assert proposal["observed_ordinals"] == [0, 1]
+    for ordinals in ([0], [1], [0, 1]):
+        validate_raw_proposal({**proposal, "observed_ordinals": ordinals})
 
     with pytest.raises(SchemaRefusal, match="identity does not derive"):
         validate_raw_proposal({**proposal, "proposal_id": "proposal_forged000000"})
@@ -477,7 +478,8 @@ def test_content_identity_unions_exact_duplicate_single_call_detections():
         detections=[{"obb": obb, "score_bp": 8000}, {"obb": obb, "score_bp": 8000}],
     )
     assert len(yolo) == 1
-    assert yolo[0]["observed_passes"] == [0, 1]
+    assert yolo[0]["observation_unit"] == "response-detection"
+    assert yolo[0]["observed_ordinals"] == [0, 1]
 
     region = {"bbox_1000": [100, 100, 500, 500], "score_bp": 9000}
     chandra = chandra_layout(
@@ -491,7 +493,8 @@ def test_content_identity_unions_exact_duplicate_single_call_detections():
         regions=[region, region],
     )
     assert len(chandra) == 1
-    assert chandra[0]["observed_passes"] == [0, 1]
+    assert chandra[0]["observation_unit"] == "response-detection"
+    assert chandra[0]["observed_ordinals"] == [0, 1]
 
 
 def test_raw_proposal_transform_refuses_a_non_identity_scale_in_page_pixel_space():
@@ -808,3 +811,24 @@ def test_chandra_bbox_rounding_never_inverts_for_a_thin_real_region():
         regions=[{"bbox_1000": [0, 0, 1000, 1000], "score_bp": 9000}],
     )[0]
     assert full_width["aabb"] == {"x": 0, "y": 0, "w": 2000, "h": 2000}
+
+
+def test_a_raw_proposal_must_name_what_its_observation_ordinals_count():
+    """`[0, 1]` means two tiling passes for Surya and two detections in one
+    response for YOLO/Chandra; the record says which rather than leaving a reader
+    to guess from the source name."""
+    proposal = chandra_layout(
+        page_id="pg_fixture",
+        page_ordinal=0,
+        page_w=100,
+        page_h=100,
+        config_sha256="c" * 64,
+        receipt_ref=RECEIPT,
+        response_ref=RESPONSE,
+        regions=[{"bbox_1000": [0, 0, 500, 500], "score_bp": 9000}],
+    )[0]
+    assert proposal["observation_unit"] == "response-detection"
+    with pytest.raises(SchemaRefusal, match="what its observation ordinals count"):
+        validate_raw_proposal({**proposal, "observation_unit": "pass"})
+    with pytest.raises(SchemaRefusal, match="observed ordinals"):
+        validate_raw_proposal({**proposal, "observed_ordinals": [1, 0]})

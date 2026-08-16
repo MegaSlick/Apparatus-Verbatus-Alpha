@@ -27,6 +27,13 @@ DEFAULT_POLICY_PATH: Final = (
     Path(__file__).resolve().parents[2] / "config" / "designator_geometry.toml"
 )
 _SOURCES: Final = frozenset({"surya", "yolo-obb", "chandra-layout"})
+# What a raw proposal's `observed_ordinals` count. Surya's tiling issues the same
+# page twice at a half-tile vertical offset, so its ordinals index those passes;
+# YOLO and Chandra are each one call, so their ordinals index the detections
+# within that one retained response.
+_TILING_PASS: Final = "surya-tiling-pass"
+_RESPONSE_DETECTION: Final = "response-detection"
+_OBSERVATION_UNITS: Final = frozenset({_TILING_PASS, _RESPONSE_DETECTION})
 
 
 class Bounds(TypedDict):
@@ -190,7 +197,8 @@ def validate_raw_proposal(payload: object) -> dict[str, Any]:
         "receipt_ref",
         "response_ref",
         "adapter_config_sha256",
-        "observed_passes",
+        "observation_unit",
+        "observed_ordinals",
         "crop_policy",
     }
     record = _closed(payload, fields, "raw proposal")
@@ -254,14 +262,24 @@ def validate_raw_proposal(payload: object) -> dict[str, Any]:
     _ref(record["receipt_ref"], "receipts/sha256/", "raw proposal receipt reference")
     _ref(record["response_ref"], "designator/blobs/sha256/", "raw proposal response reference")
     _sha(record["adapter_config_sha256"], "raw proposal adapter config")
+    # Observation provenance says WHICH of a source's observations produced this
+    # record, and the unit says what those ordinals count. One field named
+    # `observed_passes` used to carry both meanings: Surya's tiling-pass ordinal
+    # and, for YOLO and Chandra, the detection's index within one response. A
+    # retained record whose provenance means a different thing depending on which
+    # adapter wrote it cannot be read honestly by anything downstream
+    # (GOVERNANCE 6; GLOSSARY's one concept per word), so the record now names
+    # its own unit.
+    if record["observation_unit"] not in _OBSERVATION_UNITS:
+        raise SchemaRefusal("raw proposal does not name what its observation ordinals count")
     if (
-        not isinstance(record["observed_passes"], list)
-        or not record["observed_passes"]
-        or any(not _integer(value) or value < 0 for value in record["observed_passes"])
-        or record["observed_passes"] != sorted(set(record["observed_passes"]))
+        not isinstance(record["observed_ordinals"], list)
+        or not record["observed_ordinals"]
+        or any(not _integer(value) or value < 0 for value in record["observed_ordinals"])
+        or record["observed_ordinals"] != sorted(set(record["observed_ordinals"]))
     ):
         raise SchemaRefusal(
-            "raw proposal observed passes are not sorted unique non-negative integers"
+            "raw proposal observed ordinals are not sorted unique non-negative integers"
         )
     crop_policy = record["crop_policy"]
     if crop_policy is not None:
@@ -320,9 +338,9 @@ def validate_occlusion(payload: object) -> dict[str, Any]:
 
 
 def _proposal_id(source: str, page_id: str, geometry: list[dict[str, int]], score_bp: int) -> str:
-    # Identity contains only stable final-record facts. observed_passes is
-    # provenance accumulated as tilings union, so including its first-seen value
-    # made an id impossible to reproduce from the final record. Score remains
+    # Identity contains only stable final-record facts. Observation provenance is
+    # accumulated as tilings union, so including its first-seen value made an id
+    # impossible to reproduce from the final record. Score remains
     # identity-bearing: differently scored observations are distinct raw signals.
     return f"proposal_{digest_of({'source': source, 'page_id': page_id, 'geometry': geometry, 'score_bp': score_bp})[:16]}"
 
@@ -338,7 +356,8 @@ def _raw(
     receipt_ref: dict[str, str],
     response_ref: dict[str, str],
     config_sha: str,
-    passes: list[int],
+    observation_unit: str,
+    ordinals: list[int],
     kind: str,
 ) -> dict[str, Any]:
     payload = {
@@ -355,7 +374,8 @@ def _raw(
         "receipt_ref": receipt_ref,
         "response_ref": response_ref,
         "adapter_config_sha256": config_sha,
-        "observed_passes": passes,
+        "observation_unit": observation_unit,
+        "observed_ordinals": ordinals,
         "crop_policy": None,
     }
     return validate_raw_proposal(payload)
@@ -368,16 +388,12 @@ def _retain_by_content_identity(union: dict[str, dict[str, Any]], proposal: dict
     if existing is None:
         union[proposal_id] = proposal
         return
-    existing_without_passes = {
-        key: value for key, value in existing.items() if key != "observed_passes"
-    }
-    proposal_without_passes = {
-        key: value for key, value in proposal.items() if key != "observed_passes"
-    }
-    if existing_without_passes != proposal_without_passes:
+    existing_content = {key: value for key, value in existing.items() if key != "observed_ordinals"}
+    proposal_content = {key: value for key, value in proposal.items() if key != "observed_ordinals"}
+    if existing_content != proposal_content:
         raise SchemaRefusal("raw proposal content identity collides across different records")
-    existing["observed_passes"] = sorted(
-        set(existing["observed_passes"] + proposal["observed_passes"])
+    existing["observed_ordinals"] = sorted(
+        set(existing["observed_ordinals"] + proposal["observed_ordinals"])
     )
 
 
@@ -434,12 +450,13 @@ def surya_double_pass(
                             receipt_ref,
                             response_ref,
                             checked["config_sha256"],
+                            _TILING_PASS,
                             [pass_ordinal],
                             "polygon",
                         )
                     else:
-                        union[key]["observed_passes"] = sorted(
-                            set(union[key]["observed_passes"] + [pass_ordinal])
+                        union[key]["observed_ordinals"] = sorted(
+                            set(union[key]["observed_ordinals"] + [pass_ordinal])
                         )
     return [union[key] for key in sorted(union)]
 
@@ -474,6 +491,7 @@ def yolo_obb(
             receipt_ref,
             response_ref,
             checked["config_sha256"],
+            _RESPONSE_DETECTION,
             [ordinal],
             "obb",
         )
@@ -481,7 +499,10 @@ def yolo_obb(
             "mode": "rectify" if checked["yolo_obb"]["rectify"] else "aabb-enclose",
             "loss_recorded": checked["yolo_obb"]["rectify"],
         }
-        _retain_by_content_identity(union, raw)
+        # The sealed crop policy is attached after `_raw` built the record, so the
+        # record leaving this adapter is re-validated whole rather than validated
+        # in the one shape no caller ever receives.
+        _retain_by_content_identity(union, validate_raw_proposal(raw))
     return [union[proposal_id] for proposal_id in sorted(union)]
 
 
@@ -532,6 +553,7 @@ def chandra_layout(
                 receipt_ref,
                 response_ref,
                 config_sha256,
+                _RESPONSE_DETECTION,
                 [ordinal],
                 "aabb",
             ),
