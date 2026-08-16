@@ -43,6 +43,49 @@ def test_alignment_carries_matching_spans_through_markup_normalization():
     ]
 
 
+# --- F-X1 (R4 audit, Opus seat 3): the ampersand that ate the markup ---------
+
+
+def test_a_literal_ampersand_does_not_swallow_the_markup_after_it():
+    """`&` is ordinary ink ("Jean & Marie", "&c.") and a later `;` is ordinary
+    punctuation. Reading the pair as one entity handed every tag between them
+    back as stripped text, so dissent counted `</p><p>` as witness
+    disagreement and `loss.markup_characters` under-reported what was removed.
+    """
+    raw = "<p>Jean & Marie</p><p>born 1688</p><i>note; here</i>"
+    view = markup_text_view(raw)
+
+    # Tags are removed without substituting a separator -- a separate, recorded
+    # normalization property, symmetric across witness and anchor, which is why
+    # `Marie` and `born` meet here. What matters is that no markup survives.
+    assert view["text"] == "Jean & Marieborn 1688note; here"
+    assert "<" not in view["text"] and ">" not in view["text"]
+    # Every tag character, counted rather than quietly carried through.
+    assert view["loss"]["markup_characters"] == sum(
+        len(tag) for tag in ("<p>", "</p>", "<p>", "</p>", "<i>", "</i>")
+    )
+
+
+def test_a_genuine_entity_still_decodes_to_one_character_at_its_ampersand():
+    """The narrowing must not cost the case the branch exists for."""
+    raw = "<p>A &amp; B &#233; C</p>"
+    view = markup_text_view(raw)
+
+    assert view["text"] == "A & B é C"
+    assert view["offset_map"][view["text"].index("&")] == raw.index("&amp;")
+    assert view["offset_map"][view["text"].index("é")] == raw.index("&#233;")
+
+
+def test_an_ampersand_terminated_far_past_any_entity_stays_a_literal_ampersand():
+    """A semicolon 200 characters later never began an entity, however valid
+    the intervening bytes look."""
+    raw = "&" + "x" * 200 + ";"
+    view = markup_text_view(raw)
+
+    assert view["text"] == raw
+    assert view["loss"]["markup_characters"] == 0
+
+
 # --- BREAKER battery (R4 audit, Sonnet seat 1) ------------------------------
 
 

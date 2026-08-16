@@ -15,7 +15,7 @@ import unicodedata
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
@@ -32,6 +32,15 @@ class AlignmentLimits:
 
 class _TimedOut(Exception):
     pass
+
+
+# The longest HTML5 named entity is `&CounterClockwiseContourIntegral;` at 33
+# characters; numeric references are shorter still. The bound matters because
+# the terminator is searched for, not assumed: without it a literal ampersand
+# in the ink ("Jean & Marie", "&c.") swallowed every character up to the next
+# semicolon anywhere later in the document -- tags included -- and handed them
+# back as "stripped" text. See `markup_text_view`.
+_MAX_ENTITY_CHARACTERS: Final = 40
 
 
 def _alarm(signum: int, frame: Any) -> None:
@@ -68,9 +77,21 @@ def markup_text_view(raw: str) -> dict[str, Any]:
             in_tag = False
         elif not in_tag:
             if char == "&":
-                end = raw.find(";", i + 1)
-                if end != -1:
-                    decoded = html.unescape(raw[i : end + 1])
+                # Two conditions, and both are load-bearing. The terminator must
+                # be inside `_MAX_ENTITY_CHARACTERS`, and the candidate must
+                # actually decode to something else -- `html.unescape` returns a
+                # non-entity unchanged, so that equality is the test for "this
+                # ampersand began an entity" rather than "a semicolon exists
+                # somewhere ahead". Without them `<p>Jean & Marie</p><p>born
+                # 1688</p><i>note; here</i>` normalized to
+                # `Jean & Marie</p><p>born 1688</p><i>note; here`: raw markup
+                # inside the markup-stripped view, `loss.markup_characters`
+                # under-reporting it, and every intervening tag then read as
+                # witness disagreement by dissent. Found in audit; F-X1.
+                end = raw.find(";", i + 1, i + _MAX_ENTITY_CHARACTERS)
+                candidate = raw[i : end + 1] if end != -1 else ""
+                decoded = html.unescape(candidate) if candidate else ""
+                if candidate and decoded != candidate:
                     plain.extend(decoded)
                     offsets.extend([i] * len(decoded))
                     i = end
