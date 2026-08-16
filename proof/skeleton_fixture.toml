@@ -229,6 +229,11 @@ scenario = "malformed-capabilities"
 act_key = "a2"
 text = "SYNTHETIC ACT TWO delta epsilon zeta eta"
 
+[[audit_reproof]]
+scenario = "audit-change"
+act_key = "a1"
+text = "SYNTHETIC ACT ONE alpha beta gamma!"
+
 [[continuation]]
 act_key = "a2"
 page_ordinal = 2
@@ -335,6 +340,11 @@ hold_acts = []
 name = "review"
 recover_acts = ["a1"]
 hold_acts = ["a2"]
+
+[[scenario]]
+name = "audit-change"
+recover_acts = []
+hold_acts = []
 
 [[scenario]]
 name = "refused-page"

@@ -111,6 +111,10 @@ class FixtureReader:
             if act["key"] == act_key:
                 if pass_kind == "lectio-prior":
                     return self._declared_prior_reading(act_key)
+                if pass_kind == "audit-reproof":
+                    for reproof in self._fixture.get("audit_reproof", []):
+                        if reproof["scenario"] == self._scenario and reproof["act_key"] == act_key:
+                            return reproof["text"]
                 return act["text"]
         raise KeyError(f"the fixture declares no act {act_key!r}")
 

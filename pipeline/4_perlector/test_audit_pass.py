@@ -30,7 +30,7 @@ def _recensor():
     return module
 
 
-def _run(root: Path, *extra: str):
+def _run(root: Path, *extra: str, scenario: str = "happy"):
     return subprocess.run(
         [
             sys.executable,
@@ -38,7 +38,7 @@ def _run(root: Path, *extra: str):
             "--fixture",
             "synthetic-two-page-v0",
             "--scenario",
-            "happy",
+            scenario,
             "--run-id",
             "r",
             "--run-root",
@@ -76,6 +76,16 @@ def test_fixture_produces_each_audit_kind_and_records_unchanged_reproof(tmp_path
             assert "wrong" not in prompt
             assert "expected" not in prompt
             assert "confirmed unchanged" in prompt
+
+
+def test_fixture_exercises_a_changed_reproof_with_its_triggering_flag_class(tmp_path):
+    result = _run(tmp_path / "runs", scenario="audit-change")
+    assert result.returncode == 0, result.stderr
+    tree = RunTree(tmp_path / "runs", "r")
+    changed = next(
+        record for record in _records(tree, "audit-finding") if record["payload"]["change_record"]
+    )
+    assert changed["payload"]["change_record"][0]["triggering_flag_class"] == "testimony-diff"
 
 
 def test_flags_are_frozen_once_per_page_and_never_cascade_from_a_reproof():
