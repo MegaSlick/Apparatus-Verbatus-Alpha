@@ -1,0 +1,155 @@
+"""Attack the R7a gold-record custody boundaries through real JSON records."""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
+from common.contracts.errors import ContractError, SchemaRefusal
+from common.contracts.identities import act_id
+from gold.core import (
+    LAYOUT_SCHEMA,
+    MANUAL_PICK_SCHEMA,
+    PADDING_SCHEMA,
+    bind_instrument,
+    ingest_manual_pick,
+    sample_stratified,
+    set_for_page,
+    validate_layout,
+    validate_measurement,
+    validate_padding,
+    validate_sample,
+    write_append_only,
+)
+
+
+def _sha(character: str) -> str:
+    return character * 64
+
+
+def run_file(tmp_path):
+    pages = [
+        {"ordinal": ordinal, "sha256": _sha(character)}
+        for ordinal, character in enumerate("12345678", 1)
+    ]
+    source = [{"ordinal": page["ordinal"], "sha256": page["sha256"]} for page in pages]
+    frame = {
+        "page_digest": digest_bytes(canonical_bytes(source)),
+        "frame_digest": digest_bytes(canonical_bytes({"pages": source})),
+        "seed": _sha("f"),
+    }
+    path = tmp_path / "run.json"
+    path.write_text(
+        json.dumps({"source_manifest": pages, "corpus_frame_membership": frame}), encoding="utf-8"
+    )
+    return path, frame, pages
+
+
+def catalog(pages):
+    return [{**page, "stratum": "adverse" if page["ordinal"] % 2 else "ordinary"} for page in pages]
+
+
+def plan_for(frame, rows):
+    result = {"calibration": {}, "locked-acceptance": {}}
+    for gold_set in result:
+        for stratum in {row["stratum"] for row in rows}:
+            if any(
+                row["stratum"] == stratum and set_for_page(frame, row["sha256"]) == gold_set
+                for row in rows
+            ):
+                result[gold_set][stratum] = 1
+    return result
+
+
+def test_seeded_stratification_is_reproducible_and_sets_are_disjoint_by_construction(tmp_path):
+    path, frame, pages = run_file(tmp_path)
+    rows = catalog(pages)
+    first = sample_stratified(path, rows, plan_for(frame, rows))
+    second = sample_stratified(path, rows, plan_for(frame, rows))
+    assert first == second
+    by_page = {record["page"]["sha256"]: record["set"] for record in first}
+    assert len(by_page) == len(first)
+    assert all(record["set"] == set_for_page(frame, record["page"]["sha256"]) for record in first)
+    # Attack the only way a page could cross sets: forge its stated membership.
+    forged = dict(first[0])
+    forged["set"] = "locked-acceptance" if forged["set"] == "calibration" else "calibration"
+    forged["self_hash"] = self_hash(forged)
+    with pytest.raises(SchemaRefusal, match="seed-derived partition"):
+        validate_sample(forged, path)
+
+
+def test_sample_refuses_a_page_or_frame_restated_differently_than_r0_authority(tmp_path):
+    path, frame, pages = run_file(tmp_path)
+    record = sample_stratified(path, catalog(pages), plan_for(frame, catalog(pages)))[0]
+    forged = json.loads(json.dumps(record))
+    forged["page"]["sha256"] = _sha("9")
+    forged["set"] = set_for_page(forged["frame"], forged["page"]["sha256"])
+    without = {
+        key: value for key, value in forged.items() if key not in {"sample_digest", "self_hash"}
+    }
+    forged["sample_digest"] = digest_bytes(canonical_bytes(without))
+    forged["self_hash"] = self_hash(forged)
+    with pytest.raises(SchemaRefusal, match="outside the R0"):
+        validate_sample(forged, path)
+    broken_run = json.loads(path.read_text())
+    broken_run["corpus_frame_membership"]["page_digest"] = _sha("0")
+    path.write_text(json.dumps(broken_run), encoding="utf-8")
+    with pytest.raises(SchemaRefusal, match="diverges"):
+        validate_sample(record, path)
+
+
+def test_manual_pick_is_ingested_without_reselection_and_cannot_cross_partition(tmp_path):
+    path, frame, pages = run_file(tmp_path)
+    page = catalog(pages)[0]
+    pick = {
+        "schema": MANUAL_PICK_SCHEMA,
+        "selection_basis": "Tyrel B1 parish/condition stratification",
+        "page": page,
+        "set": set_for_page(frame, page["sha256"]),
+    }
+    result = ingest_manual_pick(path, pick)
+    assert result["method"] == "manual"
+    assert result["page"] == page
+    pick["set"] = "locked-acceptance" if pick["set"] == "calibration" else "calibration"
+    with pytest.raises(SchemaRefusal, match="seed-derived"):
+        ingest_manual_pick(path, pick)
+
+
+def test_layout_padding_and_instrument_records_are_closed_and_self_hashed(tmp_path):
+    path, frame, pages = run_file(tmp_path)
+    sample = sample_stratified(path, catalog(pages), plan_for(frame, catalog(pages)))[0]
+    base = {"sample": sample}
+    layout = {
+        "schema": LAYOUT_SCHEMA,
+        **base,
+        "regions": [
+            {"kind": "act", "rect": {"x": 1, "y": 2, "w": 3, "h": 4}},
+            {"kind": "true-blank", "rect": {"x": 5, "y": 6, "w": 7, "h": 8}},
+        ],
+    }
+    layout["self_hash"] = self_hash(layout)
+    assert validate_layout(layout) == layout
+    padding = {
+        "schema": PADDING_SCHEMA,
+        **base,
+        "rectangles": [{"x": 0, "y": 0, "w": 10, "h": 10}],
+        "calibrated_for_this_corpus": False,
+    }
+    padding["self_hash"] = self_hash(padding)
+    assert validate_padding(padding) == padding
+    measurement = bind_instrument(sample, act_id("pg_0123456789abcdef", 0, {"x": 1}), _sha("e"))
+    assert validate_measurement(measurement) == measurement
+    layout["regions"][0]["kind"] = "free-text-label"
+    layout["self_hash"] = self_hash(layout)
+    with pytest.raises(SchemaRefusal, match="recognized"):
+        validate_layout(layout)
+
+
+def test_append_only_writer_refuses_overwrite(tmp_path):
+    record = {"example": "evidence"}
+    target = tmp_path / "records" / "one.json"
+    write_append_only(target, record)
+    with pytest.raises(ContractError, match="already exists"):
+        write_append_only(target, record)
