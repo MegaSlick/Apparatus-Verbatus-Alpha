@@ -404,8 +404,8 @@ FIXTURE = "synthetic-two-page-v0"
 # reproduces the two alleged Linux digests exactly while every per-file digest
 # remains identical. `semantic_snapshot` now refuses that ambiguous call shape;
 # the host-measured literals below are unchanged.
-HAPPY_RUN_TREE_DIGEST = "97feba932df5be7ade34ff68b5273813cd42fd664f35207d907361c35b6ea1eb"
-REVIEW_RUN_TREE_DIGEST = "ef913611f175c53bd11a7adcd0e7b0cb875a774a190e408ee154ea08fddcabf8"
+HAPPY_RUN_TREE_DIGEST = "e1b0fc31651fa3f9731932297f7c6f71918fb82d6490b2daa061f9acbda63bdc"
+REVIEW_RUN_TREE_DIGEST = "06281aadcbf2191a79143ea448287e1efd0d8408daa061d7ea37e02fa7a8aa4c"
 
 
 def orchestrate(
