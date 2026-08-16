@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from common.contracts.canonical import self_hash
 from common.contracts.errors import SchemaRefusal
 from operations.bench.records import (
     all_definitions,
@@ -56,9 +57,7 @@ def test_not_run_reason_names_the_actual_blocker_per_cell():
 def test_forged_measured_result_and_tampered_row_are_both_refused():
     forged = not_run("B0", fixture_verified=True)
     forged["state"] = "measured"
-    forged["observations"] = [{"correct_feeding_rate_permille": 990}]
-    # self_hash intentionally left stale: a forger who also recomputes it is
-    # still caught by the explicit not-run state check.
+    forged["self_hash"] = self_hash(forged)
     with pytest.raises(SchemaRefusal, match="not-run state"):
         validate_result(forged)
 
@@ -66,3 +65,23 @@ def test_forged_measured_result_and_tampered_row_are_both_refused():
     tampered["fixture_verified"] = False
     with pytest.raises(SchemaRefusal, match="self-hash"):
         validate_result(tampered)
+
+
+def test_rehashed_reason_and_rehashed_extra_fields_do_not_forge_sealed_records():
+    result = not_run("B2", fixture_verified=True)
+    result["reason"] = "operator chose not to run this cell"
+    result["self_hash"] = self_hash(result)
+    with pytest.raises(SchemaRefusal, match="sealed execution blocker"):
+        validate_result(result)
+
+    result = not_run("B2", fixture_verified=True)
+    result["claimed_pass"] = True
+    result["self_hash"] = self_hash(result)
+    with pytest.raises(SchemaRefusal, match="wrong closed schema"):
+        validate_result(result)
+
+    frozen = definition("B2")
+    frozen["threshold"] = "forged after output"
+    frozen["self_hash"] = self_hash(frozen)
+    with pytest.raises(SchemaRefusal, match="wrong closed schema"):
+        validate_definition(frozen)

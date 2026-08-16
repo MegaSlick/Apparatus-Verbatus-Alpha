@@ -253,12 +253,16 @@ def validate_result(record: Any) -> dict[str, Any]:
         raise SchemaRefusal("bench-cell result has the wrong closed schema")
     if record["schema"] != RESULT_SCHEMA or record["state"] != "not-run":
         raise SchemaRefusal("R7b fixture runner may publish only the visible not-run state")
-    if record["definition_digest"] != definition(record["cell"])["definition_digest"]:
+    sealed = definition(record["cell"])
+    if record["definition_digest"] != sealed["definition_digest"]:
         raise SchemaRefusal("bench-cell result is not bound to its frozen definition")
     if record["observations"] != [] or not isinstance(record["fixture_verified"], bool):
         raise SchemaRefusal(
             "a not-run bench result has no observations and a boolean fixture marker"
         )
+    expected_reason = _NOT_RUN_REASON[sealed["execution_requirement"]]
+    if record["reason"] != expected_reason:
+        raise SchemaRefusal("a not-run bench result does not name its sealed execution blocker")
     if not verify_self_hash(record):
         raise SchemaRefusal("bench-cell result fails its self-hash")
     return record
