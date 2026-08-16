@@ -63,6 +63,24 @@ def orchestrate(run_root: Path, run_id: str, scenario: str) -> subprocess.Comple
     return subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
 
 
+def invoke_stage(run_root: Path, run_id: str, scenario: str, program: str):
+    return subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / program),
+            "--run-root",
+            str(run_root),
+            "--run-id",
+            run_id,
+            "--scenario",
+            scenario,
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+
+
 @pytest.fixture(scope="module", params=["happy", "review"])
 def run_tree(tmp_path_factory, request):
     """One real end-to-end orchestrator run per fixture scenario, per the exit criterion."""
@@ -356,3 +374,44 @@ def test_act_attachment_span_reflects_this_chairs_own_delivered_text_not_the_act
     assert checked_attached_entries, (
         f"scenario {scenario!r}: no attached entry had a character count to check"
     )
+
+
+def test_perlector_consumes_the_page_testimonium_named_by_an_act_attachment(tmp_path):
+    """The R0 exit criterion says page testimony is consumed, not merely written.
+
+    Removing a page Testimonium after Attestatores has sealed an attachment to it
+    must stop Perlector at that reference.  Before F-new-3, every downstream stage
+    validated only the outer act-attachment; its nested ``testimonium_ref`` values
+    were write-only, so Perlector returned success over evidence that no longer
+    existed.
+    """
+    root = tmp_path / "runs"
+    for program in (
+        "pipeline/1_exemplar/door.py",
+        "pipeline/1_exemplar/run.py",
+        "pipeline/2_designator/run.py",
+        "pipeline/3_attestatores/run.py",
+    ):
+        result = invoke_stage(root, "page-custody", "happy", program)
+        assert result.returncode == 0, f"{program}: {result.stderr}"
+
+    tree = RunTree(root, "page-custody")
+    page_entry = next(
+        entry
+        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
+        if entry["kind"] == "page-testimonium"
+    )
+    page_path = tree.resolve(page_entry["relative_path"])
+    moved = page_path.with_suffix(".json.moved")
+    page_path.rename(moved)
+    try:
+        result = invoke_stage(root, "page-custody", "happy", "pipeline/4_perlector/run.py")
+    finally:
+        moved.rename(page_path)
+
+    assert result.returncode != 0, (
+        "Perlector returned success after a page Testimonium referenced by the "
+        "act-attachment disappeared; R0's page-scoped evidence was written but "
+        "never consumed"
+    )
+    assert "referenced artifact" in result.stderr and "could not be read" in result.stderr

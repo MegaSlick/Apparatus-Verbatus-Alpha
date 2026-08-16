@@ -57,6 +57,7 @@ from common.stage import (  # noqa: E402
     WITNESS_READING_OUTCOMES,
     expected_acts,
     fixture_serving_details,
+    latest_attempt,
     latest_per_chair,
     open_context,
     run_stage,
@@ -201,13 +202,14 @@ def testimonia_of(context, act_id: str, proposal_regions: list[dict]) -> list[di
     return current
 
 
-def act_attachment_view(context, act_id: str) -> dict[str, Any]:
+def act_attachment_view(context, act: dict[str, Any]) -> dict[str, Any]:
     """Validate the R0 attachment that makes a page witness act-addressable.
 
     R4 owns alignment; until then this is a declared span view, retained beside
     the page Testimonium and surfaced in the dossier rather than silently
     treating page completion as an act-level read.
     """
+    act_id = act["act_id"]
     entries = [
         entry
         for entry in context.tree.build_manifest(ATTESTATORES)["artifacts"]
@@ -219,18 +221,79 @@ def act_attachment_view(context, act_id: str) -> dict[str, Any]:
         context.tree.read_artifact(ATTESTATORES, "act-attachment", entry["artifact_id"])
         for entry in entries
     ]
-    records.sort(key=lambda record: record.get("payload", {}).get("attempt_ordinal", 0))
-    record = records[-1]
+    record = latest_attempt(records, f"act-attachment for {act_id}", operation="act-attachment")
     payload = record.get("payload")
     attachments = payload.get("attachments") if isinstance(payload, dict) else None
-    if not isinstance(attachments, list):
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != {"act_key", "attempt_ordinal", "attachments"}
+        or payload.get("act_key") != act["act_key"]
+        or not isinstance(attachments, list)
+    ):
         raise SchemaRefusal("an act-attachment record has no attachment list")
+    configured = set(context.witness_chairs)
+    chairs = [
+        attachment.get("chair") if isinstance(attachment, dict) else None
+        for attachment in attachments
+    ]
+    if len(chairs) != len(set(chairs)) or set(chairs) != configured:
+        raise FatalAccounting(
+            f"act {act_id} attachment chairs do not equal this run's configured witnesses"
+        )
     page_witness_count = 0
     for attachment in attachments:
-        if not isinstance(attachment, dict) or not isinstance(attachment.get("chair"), str):
+        if (
+            not isinstance(attachment, dict)
+            or set(attachment)
+            != {
+                "chair",
+                "page_witness",
+                "testimonium_ref",
+                "attached",
+                "content_health",
+                "span",
+            }
+            or not isinstance(attachment.get("chair"), str)
+            or not isinstance(attachment.get("page_witness"), bool)
+            or not isinstance(attachment.get("attached"), bool)
+            or not isinstance(attachment.get("content_health"), dict)
+            or not isinstance(attachment.get("span"), dict)
+        ):
             raise SchemaRefusal("an act-attachment record has a malformed attachment")
-        if attachment.get("page_witness") is True:
+        chair = attachment["chair"]
+        expected_page_witness = chair in set(context.fixture.get("page_witness_chairs", []))
+        if attachment["page_witness"] != expected_page_witness:
+            raise SchemaRefusal(
+                f"act {act_id} attachment changes page-witness scope for chair {chair!r}"
+            )
+        reference = attachment.get("testimonium_ref")
+        if attachment["page_witness"]:
+            testimonium = context.tree.read_artifact_reference(
+                reference,
+                stage=ATTESTATORES,
+                kind="page-testimonium",
+                subject_id=act["page_id"],
+            )
+            page_payload = testimonium.get("payload")
+            if (
+                not isinstance(page_payload, dict)
+                or page_payload.get("chair") != chair
+                or page_payload.get("scope") != "page"
+                or page_payload.get("page_ordinal") != act["page_ordinal"]
+            ):
+                raise SchemaRefusal(f"act {act_id} attachment points to the wrong page Testimonium")
             page_witness_count += 1
+        else:
+            testimonium = context.tree.read_artifact_reference(
+                reference,
+                stage=ATTESTATORES,
+                kind="testimonium",
+                subject_id=act_id,
+            )
+            if testimonium.get("payload", {}).get("chair") != chair:
+                raise SchemaRefusal(
+                    f"act {act_id} attachment points to another chair's Testimonium"
+                )
     return {
         "reference": context.artifact_ref(ATTESTATORES, "act-attachment", record["artifact_id"]),
         # A blinded dossier may show that page evidence exists, but not the
@@ -830,7 +893,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         # up to the fold would be truncated, which is a failure and not an output.
         bases = [verify_region(context, region) for region in regions]
         testimonia = testimonia_of(context, act_id, proposal_regions)
-        attachment_view = act_attachment_view(context, act_id)
+        attachment_view = act_attachment_view(context, act)
 
         # Which regions any witness actually saw. Ink uncovered by a recovery
         # recrop was never shown to a witness, and saying so is the difference
