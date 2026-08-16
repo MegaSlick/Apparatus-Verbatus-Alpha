@@ -9,15 +9,18 @@ from pathlib import Path
 from common.contracts.errors import ContractError, SchemaRefusal
 
 from .core import (
+    DRAW_SCHEMA,
+    SAMPLE_SCHEMA,
     adjudicate,
     bind_instrument,
+    build_sampling_draw,
     ingest_manual_pick,
     read_json,
     read_transcription_text,
-    sample_stratified,
     transcribe,
     validate_corpus,
     validate_record,
+    verify_recorded_draw,
     verify_stratified_selection,
     write_append_only,
 )
@@ -65,8 +68,8 @@ def main(argv: list[str] | None = None) -> int:
     verify = commands.add_parser("verify-sampling")
     verify.add_argument("directory")
     verify.add_argument("--run", required=True)
-    verify.add_argument("--catalog", required=True)
-    verify.add_argument("--plan", required=True)
+    verify.add_argument("--catalog")
+    verify.add_argument("--plan")
     corpus = commands.add_parser("validate-corpus")
     corpus.add_argument("directory")
     corpus.add_argument("--run")
@@ -75,8 +78,12 @@ def main(argv: list[str] | None = None) -> int:
     validate.add_argument("--run")
     args = parser.parse_args(argv)
     if args.command == "sample":
-        for record in sample_stratified(args.run, read_json(args.catalog), read_json(args.plan)):
+        draw, selected = build_sampling_draw(
+            args.run, read_json(args.catalog), read_json(args.plan)
+        )
+        for record in selected:
             write_append_only(Path(args.output_dir) / f"{record['sample_digest']}.json", record)
+        write_append_only(Path(args.output_dir) / f"draw-{draw['self_hash']}.json", draw)
     elif args.command == "ingest-manual":
         record = ingest_manual_pick(args.run, read_json(args.pick))
         output = Path(args.output)
@@ -117,12 +124,34 @@ def main(argv: list[str] | None = None) -> int:
             ),
         )
     elif args.command == "verify-sampling":
-        verify_stratified_selection(
-            _records_in(args.directory),
-            args.run,
-            read_json(args.catalog),
-            read_json(args.plan),
-        )
+        records = _records_in(args.directory)
+        draws = [record for record in records if record.get("schema") == DRAW_SCHEMA]
+        samples = [record for record in records if record.get("schema") == SAMPLE_SCHEMA]
+        if len(draws) == 1:
+            verify_recorded_draw(samples, draws[0], args.run)
+            if (args.catalog is None) != (args.plan is None):
+                raise SchemaRefusal("--catalog and --plan must be supplied together")
+            if args.catalog is not None:
+                verify_stratified_selection(
+                    samples,
+                    args.run,
+                    read_json(args.catalog),
+                    read_json(args.plan),
+                )
+        else:
+            if len(draws) > 1:
+                raise SchemaRefusal("the record directory contains more than one sampling draw")
+            if (args.catalog is None) != (args.plan is None) or args.catalog is None:
+                raise SchemaRefusal(
+                    "no recorded sampling draw exists; both --catalog and --plan are required "
+                    "to verify legacy sample records"
+                )
+            verify_stratified_selection(
+                samples,
+                args.run,
+                read_json(args.catalog),
+                read_json(args.plan),
+            )
     elif args.command == "validate-corpus":
         validate_corpus(_records_in(args.directory), args.run)
     else:

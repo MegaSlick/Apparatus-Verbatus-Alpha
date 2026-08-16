@@ -28,6 +28,7 @@ from common.contracts.errors import IncompatibleReuse, SchemaRefusal
 from common.contracts.identities import is_well_formed
 
 SAMPLE_SCHEMA = "gold-page-sample.v1"
+DRAW_SCHEMA = "gold-sampling-draw.v1"
 MANUAL_PICK_SCHEMA = "gold-manual-pick.v1"
 LAYOUT_SCHEMA = "gold-page-layout.v1"
 PADDING_SCHEMA = "gold-padding-rectangles.v1"
@@ -299,6 +300,13 @@ def sample_stratified(run_path: str | Path, catalog_rows: Any, plan: Any) -> lis
     frame, source = load_run_frame(run_path)
     catalog = _catalog(catalog_rows, source)
     plan = _quotas(plan, {row["stratum"] for row in catalog})
+    return _select_stratified(frame, catalog, plan)
+
+
+def _select_stratified(
+    frame: dict[str, str], catalog: list[dict[str, Any]], plan: dict[str, dict[str, int]]
+) -> list[dict[str, Any]]:
+    """Pure selection from already-normalized, retained draw inputs."""
     # The normalized catalog and plan, so a row or key reordering of the same
     # stratification digests the same and a replay of the draw still matches.
     sampling = {
@@ -329,6 +337,97 @@ def sample_stratified(run_path: str | Path, catalog_rows: Any, plan: Any) -> lis
                 for page in eligible[:quota]
             )
     return selected
+
+
+def build_sampling_draw(
+    run_path: str | Path, catalog_rows: Any, plan: Any
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Retain every input and selected member needed to replay one seeded draw."""
+    frame, source = load_run_frame(run_path)
+    catalog = _catalog(catalog_rows, source)
+    normalized_plan = _quotas(plan, {row["stratum"] for row in catalog})
+    selected = _select_stratified(frame, catalog, normalized_plan)
+    record = {
+        "schema": DRAW_SCHEMA,
+        "frame": frame,
+        "catalog": catalog,
+        "plan": normalized_plan,
+        "members": sorted(sample["sample_digest"] for sample in selected),
+    }
+    record["self_hash"] = self_hash(record)
+    return validate_sampling_draw(record, run_path), selected
+
+
+def validate_sampling_draw(record: Any, run_path: str | Path | None = None) -> dict[str, Any]:
+    """Recompute selected membership; no restated member count is trusted."""
+    _refuse(
+        not isinstance(record, dict)
+        or set(record) != {"schema", "frame", "catalog", "plan", "members", "self_hash"},
+        "sampling draw has the wrong closed schema",
+    )
+    _refuse(record["schema"] != DRAW_SCHEMA, "sampling draw schema is not recognized")
+    frame = record["frame"]
+    _refuse(
+        not isinstance(frame, dict) or set(frame) != {"frame_digest", "page_digest", "seed"},
+        "sampling draw frame has the wrong closed schema",
+    )
+    for field in frame:
+        _sha(frame[field], f"sampling draw frame {field}")
+    raw_catalog = record["catalog"]
+    _refuse(not isinstance(raw_catalog, list), "sampling draw catalog is not a list")
+    source = []
+    for row in raw_catalog:
+        _refuse(not isinstance(row, dict), "sampling draw catalog row is not an object")
+        source.append({"ordinal": row.get("ordinal"), "sha256": row.get("sha256")})
+    source.sort(key=lambda page: page["ordinal"] if isinstance(page["ordinal"], int) else -1)
+    catalog = _catalog(raw_catalog, source)
+    page_digest = digest_bytes(canonical_bytes(source))
+    _refuse(
+        frame["page_digest"] != page_digest
+        or frame["frame_digest"] != digest_bytes(canonical_bytes({"pages": source})),
+        "sampling draw frame diverges from its retained catalog membership",
+    )
+    plan = _quotas(record["plan"], {row["stratum"] for row in catalog})
+    _refuse(catalog != record["catalog"], "sampling draw catalog is not in canonical order")
+    _refuse(plan != record["plan"], "sampling draw plan is not normalized")
+    members = record["members"]
+    _refuse(not isinstance(members, list), "sampling draw members is not a list")
+    for member in members:
+        _sha(member, "sampling draw member")
+    _refuse(len(set(members)) != len(members), "sampling draw repeats a selected member")
+    _refuse(members != sorted(members), "sampling draw members are not in canonical order")
+    expected = sorted(
+        sample["sample_digest"] for sample in _select_stratified(frame, catalog, plan)
+    )
+    _refuse(
+        members != expected, "sampling draw membership diverges from its seed, catalog, and plan"
+    )
+    if run_path is not None:
+        run_frame, run_source = load_run_frame(run_path)
+        _refuse(frame != run_frame, "sampling draw frame diverges from the R0 run authority")
+        _refuse(source != run_source, "sampling draw catalog diverges from the R0 run membership")
+    _refuse(not verify_self_hash(record), "sampling draw fails its self-hash")
+    return record
+
+
+def verify_recorded_draw(records: Any, draw: Any, run_path: str | Path) -> list[dict[str, Any]]:
+    """Verify a draw only from its retained inputs, sample records, and R0 authority."""
+    validate_sampling_draw(draw, run_path)
+    _refuse(not isinstance(records, list), "sample records are not a list")
+    samples = []
+    for record in records:
+        validate_sample(record, run_path)
+        _refuse(
+            record["method"] != "stratified-seed",
+            "recorded draw membership contains a sample that was not seed-selected",
+        )
+        samples.append(record)
+    present = sorted(sample["sample_digest"] for sample in samples)
+    _refuse(
+        present != draw["members"],
+        "sample records diverge from the membership retained by the sampling draw",
+    )
+    return sorted(samples, key=lambda sample: sample["sample_digest"])
 
 
 def verify_stratified_selection(
@@ -863,6 +962,8 @@ def validate_record(record: Any, run_path: str | Path | None = None) -> dict[str
     schema = record.get("schema") if isinstance(record, dict) else None
     if schema == SAMPLE_SCHEMA:
         return validate_sample(record, run_path)
+    if schema == DRAW_SCHEMA:
+        return validate_sampling_draw(record, run_path)
     if schema == LAYOUT_SCHEMA:
         return validate_layout(record, run_path)
     if schema == PADDING_SCHEMA:

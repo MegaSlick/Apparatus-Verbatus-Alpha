@@ -13,6 +13,12 @@ partition independent of the frame means the same page cannot switch sets when a
 page is added or a shard is resplit. A quota that the partition cannot fill is
 refused; the sampler never crosses the boundary.
 
+The same command writes one `gold-sampling-draw.v1` record beside the selected
+sample records. It retains the normalized whole-frame catalog, predeclared plan,
+and selected sample digests, so `verify-sampling records/ --run RUN.json` needs no
+unrecorded catalog or plan bytes. Selected membership is recomputed from those
+retained facts; there is no stored member count to trust.
+
 A drawn sample records the catalog and plan digests it came from, and carries no
 `claimed_set`; a manual pick carries a `claimed_set` and no catalog or plan.  A
 record cannot claim one origin while carrying the other's evidence.  That binding

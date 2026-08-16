@@ -23,6 +23,7 @@ from gold.core import (
     adjudicate,
     bind_instrument,
     build_sample,
+    build_sampling_draw,
     ingest_manual_pick,
     sample_stratified,
     set_for_page,
@@ -33,6 +34,7 @@ from gold.core import (
     validate_measurement,
     validate_padding,
     validate_sample,
+    validate_sampling_draw,
     verify_stratified_selection,
     write_append_only,
 )
@@ -348,6 +350,59 @@ def test_a_sample_names_the_catalog_and_plan_it_was_drawn_from(tmp_path):
     restratified[0]["stratum"] = "ordinary"
     changed = sample_stratified(path, restratified, plan_for(frame, restratified))
     assert changed[0]["sampling"]["catalog_digest"] != drawn[0]["sampling"]["catalog_digest"]
+
+
+def test_recorded_draw_recomputes_independently_from_seed_membership_and_plan(tmp_path):
+    """Replay without calling gold's sampler or its set/rank helper.
+
+    The retained catalog is the complete frame membership plus human strata; the
+    retained plan supplies the predeclared quota. Direct SHA-256 ranking over those
+    bytes must select exactly the recorded member pages.
+    """
+    path, frame, pages = run_file(tmp_path)
+    rows = catalog(pages)
+    plan = plan_for(frame, rows)
+    draw, selected = build_sampling_draw(path, rows, plan)
+
+    independently_selected = []
+    for gold_set in sorted(plan):
+        for stratum, quota in sorted(plan[gold_set].items()):
+            eligible = []
+            for page in rows:
+                page_partition = digest_bytes(
+                    canonical_bytes({"page_sha256": page["sha256"], "purpose": "gold-set-v1"})
+                )
+                independently_derived_set = (
+                    "calibration" if int(page_partition[0], 16) < 8 else "locked-acceptance"
+                )
+                if page["stratum"] != stratum or independently_derived_set != gold_set:
+                    continue
+                rank = digest_bytes(
+                    canonical_bytes(
+                        {
+                            "seed": draw["frame"]["seed"],
+                            "page_sha256": page["sha256"],
+                            "stratum": stratum,
+                            "purpose": "gold-sample",
+                        }
+                    )
+                )
+                eligible.append((rank, page["sha256"]))
+            independently_selected.extend(page_sha for _rank, page_sha in sorted(eligible)[:quota])
+
+    assert sorted(independently_selected) == sorted(sample["page"]["sha256"] for sample in selected)
+    assert validate_sampling_draw(draw, path) == draw
+
+    forged = json.loads(json.dumps(draw))
+    forged["members"] = forged["members"][:-1]
+    forged["self_hash"] = self_hash(forged)
+    with pytest.raises(SchemaRefusal, match="membership diverges"):
+        validate_sampling_draw(forged, path)
+
+    with_count = {**draw, "member_count": len(draw["members"])}
+    with_count["self_hash"] = self_hash(with_count)
+    with pytest.raises(SchemaRefusal, match="wrong closed schema"):
+        validate_sampling_draw(with_count, path)
 
 
 def test_layout_padding_and_instrument_records_are_closed_and_self_hashed(tmp_path):
@@ -829,11 +884,14 @@ def test_cli_verify_sampling_replays_what_the_sampler_wrote(tmp_path):
     ]
     assert cli.main(["sample", *common, "--output-dir", str(output)]) == 0
     written = sorted(output.glob("*.json"))
-    assert len(written) == sum(sum(quotas.values()) for quotas in plan.values())
-    assert cli.main(["verify-sampling", str(output), *common]) == 0
-    written[0].unlink()
-    with pytest.raises(SchemaRefusal, match="does not replay"):
-        cli.main(["verify-sampling", str(output), *common])
+    assert len(written) == sum(sum(quotas.values()) for quotas in plan.values()) + 1
+    assert cli.main(["verify-sampling", str(output), "--run", str(path)]) == 0
+    sample_file = next(
+        item for item in written if json.loads(item.read_text())["schema"] == "gold-page-sample.v1"
+    )
+    sample_file.unlink()
+    with pytest.raises(SchemaRefusal, match="diverge.*membership|membership.*diverge"):
+        cli.main(["verify-sampling", str(output), "--run", str(path)])
 
 
 def test_cli_entry_point_states_the_refusal_instead_of_printing_a_traceback(tmp_path):
