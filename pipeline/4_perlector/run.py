@@ -1677,6 +1677,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             {
                 "act": act,
                 "act_id": act_id,
+                "order": len(pending),
                 "bases": bases,
                 "payload": payload,
                 "outcome": outcome,
@@ -1701,8 +1702,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             {
                 "act_id": row["act_id"],
                 "page_id": bases[0]["source_page_id"],
-                "order": row["act"]["proposal_ordinal"],
-                "geometry_order": row["act"]["proposal_ordinal"],
+                "order": row["order"],
+                "geometry_order": row["order"],
                 "text": payload["text"],
                 "testimonia": [
                     record["reported"]
