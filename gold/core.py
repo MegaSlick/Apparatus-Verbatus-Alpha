@@ -8,6 +8,7 @@ identify exactly the human sample it used.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import tempfile
@@ -31,6 +32,11 @@ PADDING_SCHEMA = "gold-padding-rectangles.v1"
 MEASUREMENT_SCHEMA = "gold-instrument-membership.v1"
 SETS = frozenset({"calibration", "locked-acceptance"})
 REGION_KINDS = frozenset({"act", "non-act-text", "occlusion", "true-blank"})
+
+# What a filesystem that will not hard-link answers with. Named so `write_append_only`
+# can say which setup fact is wrong instead of letting a bare OSError about `link`
+# escape as a traceback (mirrors common/runtree/store.py's `_atomic_create`).
+_NO_HARD_LINKS = frozenset({errno.EPERM, errno.EOPNOTSUPP, errno.ENOSYS})
 
 
 def _refuse(condition: bool, message: str) -> None:
@@ -427,6 +433,15 @@ def write_append_only(path: str | Path, record: dict[str, Any]) -> Path:
         os.link(temporary, target)
     except FileExistsError as error:
         raise ContractError(f"gold artifact already exists: {target}") from error
+    except OSError as error:
+        if error.errno in _NO_HARD_LINKS:
+            raise SchemaRefusal(
+                f"the gold output root at {target.parent} is on a filesystem that "
+                f"refuses hard links ({error.strerror}); gold records are published by "
+                "atomic link so a partly written file can never take its final name, "
+                "and the output root has to be on a filesystem that supports it"
+            ) from error
+        raise
     finally:
         Path(temporary).unlink(missing_ok=True)
     return target

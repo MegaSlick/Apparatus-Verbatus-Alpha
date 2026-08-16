@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 
 import pytest
@@ -154,6 +155,17 @@ def test_append_only_writer_refuses_overwrite(tmp_path):
     write_append_only(target, record)
     with pytest.raises(ContractError, match="already exists"):
         write_append_only(target, record)
+
+
+def test_append_only_writer_names_a_no_hard_link_filesystem(tmp_path, monkeypatch):
+    import gold.core as core_module
+
+    def refuse_link(_source, _target):
+        raise OSError(errno.EPERM, "Operation not permitted")
+
+    monkeypatch.setattr(core_module.os, "link", refuse_link)
+    with pytest.raises(SchemaRefusal, match="refuses hard links"):
+        write_append_only(tmp_path / "records" / "one.json", {"example": "evidence"})
 
 
 def test_cli_malformed_json_input_is_a_named_refusal_not_a_traceback(tmp_path):
