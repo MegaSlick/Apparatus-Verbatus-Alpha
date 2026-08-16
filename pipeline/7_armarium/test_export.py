@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import shutil
 import subprocess
@@ -14,6 +15,7 @@ import pytest
 from armarium_export import verify_export_bundle, verify_projection_identity
 
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
+from common.contracts.errors import FatalAccounting
 from common.contracts.identities import artifact_id
 from common.contracts.stages import ARCHETYPUS, ARMARIUM, PERLECTOR, RECENSOR
 from common.runtree.store import RunTree
@@ -414,3 +416,37 @@ def test_a_damaged_witness_receipt_hard_stops_rather_than_refusing_only_its_act(
     assert not tree.has_artifact(
         ARMARIUM, "export", artifact_id(ARMARIUM, "export", "export", None)
     )
+
+
+# --- The act-attachment view is required at export, not merely checked ----------
+#
+# Opus audit-and-repair seat 3, R0. F-O2: `export_witnesses` rechecked R0's
+# act-attachment dossier view only `if attachment is not None`, so an established
+# reading that had dropped the field exported with its page-witness custody never
+# rechecked here. The retained witness basis beside it was already required.
+
+
+def _armarium_module():
+    """Load the stage program under a unique name.
+
+    Never a bare ``import run``: several stage directories define a module by that
+    name, and the import cache would decide which one this test got.
+    """
+    spec = importlib.util.spec_from_file_location("armarium_run_under_test_export", ARMARIUM_CLI)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_an_established_reading_without_its_act_attachment_view_is_refused_at_export():
+    """R0's exit criterion says the attachment is consumed, not consumed-if-present."""
+    armarium = _armarium_module()
+    reading = {
+        "inputs": [],
+        "payload": {
+            "basis": {"testimonia": [{"chair": "attestator_1"}]},
+            "dossier": {"act_key": "a1", "dossier_digest": "d" * 64},
+        },
+    }
+    with pytest.raises(FatalAccounting, match="no act-attachment evidence"):
+        armarium.export_witnesses(None, reading, "act_0000000000000001")
