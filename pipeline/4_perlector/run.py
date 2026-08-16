@@ -202,15 +202,21 @@ def testimonia_of(context, act_id: str, proposal_regions: list[dict]) -> list[di
     return current
 
 
-def act_attachment_view(context, act: dict[str, Any]) -> dict[str, Any]:
+def act_attachment_view(context, act: dict[str, Any], testimonia: list[dict]) -> dict[str, Any]:
     """Validate the R0 attachment that makes a page witness act-addressable.
 
     R4 owns alignment; until then this is the chair's complete delivered act
     reading as an interim span, retained beside the page Testimonium and surfaced
     in the dossier rather than silently treating page completion as an act-level
     read.
+
+    `testimonia` is this act's *current* attempt per chair, already collapsed by
+    `testimonia_of`. The attachment is a derived view of one attempt, so it is
+    checked against that collapse rather than trusted on its own: see the
+    per-chair reconciliation below.
     """
     act_id = act["act_id"]
+    current = {record["payload"]["chair"]: record for record in testimonia}
     entries = [
         entry
         for entry in context.tree.build_manifest(ATTESTATORES)["artifacts"]
@@ -275,6 +281,33 @@ def act_attachment_view(context, act: dict[str, Any]) -> dict[str, Any]:
         elif span is not None:
             raise SchemaRefusal("an unattached act view claims an alignment span")
         chair = attachment["chair"]
+        # The attachment describes one attempt, and the reread path
+        # (`pipeline/3_attestatores/run.py::reread_pass`) appends a new act-scoped
+        # attempt without rewriting it — D8 leaves page-witness reread addressing
+        # to R3. Unchecked, the record then presents a superseded attempt's
+        # outcome and delivered-character count as this act's live attachment,
+        # which is exactly what `testimonia_of`'s latest-attempt collapse exists
+        # to stop ("cannot see a superseded attempt as though it were still
+        # live"), and what R0's own `granularity_basis` claims is impossible:
+        # `attached` IS the current act outcome before R4 alignment. Refuse the
+        # divergence rather than count a stale span or a stale reading as
+        # current. R4 replaces this reconciliation with real alignment. Found in
+        # audit; F-O1.
+        chair_testimonium = current.get(chair)
+        if chair_testimonium is None:
+            raise FatalAccounting(
+                f"act {act_id} attachment names chair {chair!r}, which has no current Testimonium"
+            )
+        if attachment["attached"] != (chair_testimonium["outcome"] in WITNESS_READING_OUTCOMES):
+            raise SchemaRefusal(
+                f"act {act_id} attachment for chair {chair!r} disagrees with that chair's "
+                "current Testimonium outcome"
+            )
+        if attachment["content_health"] != chair_testimonium["payload"].get("content_health"):
+            raise SchemaRefusal(
+                f"act {act_id} attachment for chair {chair!r} describes an attempt that is no "
+                "longer this chair's current Testimonium"
+            )
         expected_page_witness = chair in set(context.fixture.get("page_witness_chairs", []))
         if attachment["page_witness"] != expected_page_witness:
             raise SchemaRefusal(
@@ -929,7 +962,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         # up to the fold would be truncated, which is a failure and not an output.
         bases = [verify_region(context, region) for region in regions]
         testimonia = testimonia_of(context, act_id, proposal_regions)
-        attachment_view = act_attachment_view(context, act)
+        attachment_view = act_attachment_view(context, act, testimonia)
 
         # Which regions any witness actually saw. Ink uncovered by a recovery
         # recrop was never shown to a witness, and saying so is the difference

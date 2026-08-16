@@ -29,7 +29,7 @@ import pytest
 from common.chairs.registry import ChairRegistry
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.contracts.stages import ATTESTATORES, PERLECTOR
-from common.runtree.store import RunTree
+from common.runtree.store import RECENSOR_PARTITION_RECEIPT_FILE, RunTree
 from common.stage import act_by_key, act_identity, load_fixture, page_identity, run_config_bindings
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -441,16 +441,41 @@ def test_perlector_consumes_the_page_testimonium_named_by_an_act_attachment(tmp_
     assert "referenced artifact" in result.stderr and "could not be read" in result.stderr
 
 
-def _through_attestatores(root: Path, run_id: str) -> RunTree:
+def _through_attestatores(root: Path, run_id: str, scenario: str = "happy") -> RunTree:
     for program in (
         "pipeline/1_exemplar/door.py",
         "pipeline/1_exemplar/run.py",
         "pipeline/2_designator/run.py",
         "pipeline/3_attestatores/run.py",
     ):
-        result = invoke_stage(root, run_id, "happy", program)
+        result = invoke_stage(root, run_id, scenario, program)
         assert result.returncode == 0, f"{program}: {result.stderr}"
     return RunTree(root, run_id)
+
+
+def _reread(root: Path, run_id: str, scenario: str, act_id: str, chair: str):
+    """One targeted Attestatores reread: the append-only second attempt path."""
+    return subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "pipeline" / "3_attestatores" / "run.py"),
+            "--run-root",
+            str(root),
+            "--run-id",
+            run_id,
+            "--scenario",
+            scenario,
+            "--operation",
+            "reread",
+            "--act",
+            act_id,
+            "--chair",
+            chair,
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
 
 
 def _reseal(path: Path, record: dict) -> None:
@@ -502,3 +527,88 @@ def test_perlector_refuses_a_referenced_page_ordinal_outside_the_fixture(tmp_pat
     result = invoke_stage(root, "forged-page", "happy", "pipeline/4_perlector/run.py")
     assert result.returncode != 0
     assert "wrong page Testimonium" in result.stderr
+
+
+# --- 4. Audit-and-repair regression (F-O1): the reread path ----------------------
+#
+# Opus audit-and-repair seat 3, R0. The derived act-attachment is written only by
+# the whole-pass path; `reread_pass` appends a new act-scoped attempt and writes no
+# new attachment. Every other consumer of these artifacts collapses each chair to
+# its latest attempt on purpose -- `testimonia_of` says so in its own docstring
+# ("cannot see a superseded attempt as though it were still live"), and
+# `chair_outcomes` says the two derivations are shared so consumers "cannot drift
+# on what current means". The attachment was a third consumer that did drift.
+
+
+def test_perlector_refuses_an_attachment_describing_a_superseded_attempt(tmp_path):
+    """F-O1: a targeted reread leaves the attachment describing the old attempt.
+
+    `reread-success` declares a second, longer response for attestator_1 on act
+    a2. Before this fix the run continued in silence with the attachment still
+    claiming `span 0..40` and the ordinal-1 `content_health`, while that chair's
+    current Testimonium delivered 48 characters -- a positive alignment claim over
+    text that is no longer the reading, which is precisely the dishonesty F-S2 and
+    F-P2 closed on the first-pass path.
+    """
+    root = tmp_path / "runs"
+    fixture_data = load_fixture(str(FIXTURE_ROOT))
+    act_a2_id = act_identity(fixture_data, act_by_key(fixture_data, "a2"))
+    _through_attestatores(root, "superseded", "reread-success")
+    assert invoke_stage(root, "superseded", "reread-success", "pipeline/4_perlector/run.py")
+
+    reread = _reread(root, "superseded", "reread-success", act_a2_id, "attestator_1")
+    assert reread.returncode == 0, reread.stderr
+
+    result = invoke_stage(root, "superseded", "reread-success", "pipeline/4_perlector/run.py")
+    assert result.returncode != 0, (
+        "the Perlector accepted an act-attachment describing an attempt that is no longer "
+        "the chair's current Testimonium"
+    )
+    assert "no longer this chair's current Testimonium" in result.stderr, result.stderr
+
+
+def test_the_witness_floor_is_not_counted_from_a_superseded_attachment(tmp_path):
+    """F-O1: the floor may not be counted from an attachment the reread outdated.
+
+    Drives the natural order -- whole pass, targeted reread, Perlector, Recensor.
+    `reread-failure` declares attestator_3's second attempt on act a1 as a
+    failure, so that chair's current Testimonium is `failed` while its ordinal-1
+    attachment still says `attached: true` with the successful attempt's health.
+
+    Before this fix both stages exited 0 and the real partition receipt for act a1
+    recorded `by_outcome {failed: 1, read: 2}` beside `shortfalls {failed: 1,
+    truncated: 0, unaligned: 0}` and `health_unrecorded: 0` -- the outcome half
+    describing the current failed attempt and the attachment half describing the
+    superseded successful one, in one self-contradictory record. (Compare
+    `test_a_failed_act_scoped_attempt_produces_a_real_failed_and_unaligned_
+    shortfall`, which pins `unaligned: 1` for exactly this situation on the
+    first-pass path.) The same staleness in the other direction -- failed first,
+    read on the reread -- drops a recovered read out of `completed` and reports it
+    as a `page_granularity_only` contribution that never happened.
+
+    Both consumers are asserted, because either can be reached first by hand: the
+    Perlector refuses the stale custody record, and the Recensor refuses to count
+    a floor from it before it publishes any review.
+    """
+    root = tmp_path / "runs"
+    fixture_data = load_fixture(str(FIXTURE_ROOT))
+    act_a1_id = act_identity(fixture_data, act_by_key(fixture_data, "a1"))
+    tree = _through_attestatores(root, "stale-floor", "reread-failure")
+
+    reread = _reread(root, "stale-floor", "reread-failure", act_a1_id, "attestator_3")
+    assert reread.returncode == 0, reread.stderr
+
+    perlector = invoke_stage(root, "stale-floor", "reread-failure", "pipeline/4_perlector/run.py")
+    assert perlector.returncode != 0, (
+        "the Perlector read on over an act-attachment describing a superseded attempt"
+    )
+    recensor = invoke_stage(root, "stale-floor", "reread-failure", "pipeline/5_recensor/run.py")
+    assert recensor.returncode != 0, (
+        "the Recensor counted the witness floor from an act-attachment describing a "
+        "superseded attempt"
+    )
+    assert "superseded attempt" in recensor.stderr, recensor.stderr
+    assert not tree.resolve(RECENSOR_PARTITION_RECEIPT_FILE).exists(), (
+        "a partition receipt was written from a coverage count the reread had already "
+        "superseded; the denominator is validated before this stage publishes anything"
+    )
