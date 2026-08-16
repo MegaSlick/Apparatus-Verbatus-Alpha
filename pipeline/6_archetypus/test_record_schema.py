@@ -318,6 +318,66 @@ def test_record_validation_refuses_a_resealed_malformed_annotation(note, expecte
         archetypus.validate_record(seal_record(annotations=[note], text_status="partial"))
 
 
+@pytest.mark.parametrize(
+    ("gap", "expected"),
+    [
+        (
+            {"position": "not-a-real-position", "start": 2, "end": 2, "witness_evidence": []},
+            "is not one of",
+        ),
+        (
+            {"position": "leading", "start": 3, "end": 3, "witness_evidence": []},
+            "declared leading but does not start at 0",
+        ),
+        (
+            {"position": "trailing", "start": 2, "end": 2, "witness_evidence": []},
+            "declared trailing but does not end at len\\(text\\)",
+        ),
+        (
+            {"position": "internal", "start": 0, "end": 0, "witness_evidence": []},
+            "declared internal but is not strictly inside",
+        ),
+    ],
+)
+def test_record_validation_refuses_a_gap_whose_position_label_lies_about_its_own_bounds(
+    gap, expected
+):
+    """The canonical uncertainty layer's gap position is a claim, not free text.
+
+    U2: the closed field-set check alone accepted any `position` value and never
+    checked a labelled gap's bounds against what that label means, so a resealed
+    record could claim `leading` three characters in, or `internal` at the very
+    edge of the text. Both are checked the same way `pipeline/4_perlector/
+    annotations.py`'s producer-side `validate_gaps` already checks them, so the
+    canonical projection layer does not trust a restatement its own producer
+    would have refused to write.
+    """
+    with pytest.raises(SchemaRefusal, match=expected):
+        archetypus.validate_record(
+            seal_record(uncertainty={"uncertain_spans": [], "gaps": [gap], "self_revisions": []})
+        )
+
+
+def test_record_validation_refuses_a_self_revision_with_a_negative_prior_offset():
+    """A prior-draft offset can never be negative, whatever draft it indexes.
+
+    U2: `prior_span` anchors into the Perlector's prior draft, a string this
+    layer never sees, so it cannot bound-check the offset against that draft's
+    length -- but a negative offset is nonsensical regardless of which string
+    it indexes, and was previously accepted uncaught.
+    """
+    revision = {
+        "reading_span": {"start": 0, "end": 0},
+        "prior_span": {"start": -5, "end": -1},
+    }
+    with pytest.raises(SchemaRefusal, match="negative offset"):
+        archetypus.validate_record(
+            seal_record(
+                uncertainty={"uncertain_spans": [], "gaps": [], "self_revisions": [revision]}
+            )
+        )
+
+
 def test_record_validation_refuses_an_annotation_short_of_its_validated_form():
     """A gap with no `witness_evidence` key validates, but not as what is stored.
 

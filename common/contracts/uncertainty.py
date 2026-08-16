@@ -12,6 +12,12 @@ from common.contracts.errors import SchemaRefusal
 
 _FIELDS = frozenset({"uncertain_spans", "gaps", "self_revisions"})
 _CONFIDENCE = frozenset({"low", "medium", "high"})
+# Mirrors pipeline/4_perlector/annotations.py's GAP_POSITIONS exactly (as
+# `_CONFIDENCE` above already mirrors that module's CONFIDENCE_LEVELS): the
+# producer's vocabulary already excludes anything this canonical projection
+# layer would need to invent, and importing pipeline code from common/ would
+# invert the dependency direction.
+_GAP_POSITIONS = frozenset({"leading", "internal", "trailing", "whole-act"})
 
 
 def from_perlectio(payload: dict[str, Any]) -> dict[str, Any]:
@@ -69,6 +75,21 @@ def validate(layer: Any, text: Any) -> dict[str, Any]:
         _range(gap, text, f"gaps[{index}]", nonempty=False)
         if gap["start"] != gap["end"] or not isinstance(gap["witness_evidence"], list):
             raise SchemaRefusal(f"gaps[{index}] is not a zero-width canonical gap")
+        position = gap["position"]
+        if position not in _GAP_POSITIONS:
+            raise SchemaRefusal(
+                f"gaps[{index}] position {position!r} is not one of {sorted(_GAP_POSITIONS)}"
+            )
+        if position == "leading" and gap["start"] != 0:
+            raise SchemaRefusal(f"gaps[{index}] is declared leading but does not start at 0")
+        if position == "trailing" and gap["end"] != len(text):
+            raise SchemaRefusal(f"gaps[{index}] is declared trailing but does not end at len(text)")
+        if position == "internal" and not 0 < gap["start"] < len(text):
+            raise SchemaRefusal(
+                f"gaps[{index}] is declared internal but is not strictly inside the text"
+            )
+        if position == "whole-act" and (text != "" or gap["start"] != 0):
+            raise SchemaRefusal(f"gaps[{index}] is declared whole-act but the text is not empty")
     for index, revision in enumerate(revisions):
         if not isinstance(revision, dict) or set(revision) != {"reading_span", "prior_span"}:
             raise SchemaRefusal(f"self_revisions[{index}] is not the canonical revision schema")
@@ -79,6 +100,8 @@ def validate(layer: Any, text: Any) -> dict[str, Any]:
         if not isinstance(prior, dict) or set(prior) != {"start", "end"}:
             raise SchemaRefusal(f"self_revisions[{index}].prior_span is malformed")
         _integers(prior, f"self_revisions[{index}].prior_span")
+        if prior["start"] < 0:
+            raise SchemaRefusal(f"self_revisions[{index}].prior_span has a negative offset")
         if prior["start"] > prior["end"]:
             raise SchemaRefusal(f"self_revisions[{index}].prior_span is reversed")
     return layer
