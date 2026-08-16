@@ -699,6 +699,41 @@ def test_cli_walks_one_act_from_two_transcriptions_to_an_adjudication(tmp_path):
     assert cli.main(["validate-corpus", str(records), "--run", str(path)]) == 0
 
 
+def test_corpus_refuses_orphaned_or_conflicting_adjudication_custody(tmp_path):
+    """An adjudication must resolve the exact two independently stored readings.
+
+    Self-hashing one record cannot establish collection custody: without this
+    reconciliation an adjudication can embed transcriptions never retained as their
+    own evidence, and two different adjudicators can establish two texts for one act
+    while every record remains individually valid.
+    """
+    path, frame, pages = run_file(tmp_path)
+    sample = sample_stratified(path, catalog(pages), plan_for(frame, catalog(pages)))[0]
+    first, second = _pair(sample, "Marie Anne", "Marie Jeanne", path)
+    established = adjudicate(first, second, adjudicator="hand-c", text="Marie Anne")
+
+    with pytest.raises(SchemaRefusal, match="absent as independent gold records"):
+        validate_corpus([sample, established], path)
+    assert validate_corpus([sample, first, second, established], path)
+
+    conflict = adjudicate(first, second, adjudicator="hand-d", text="Marie Jeanne")
+    with pytest.raises(SchemaRefusal, match="two conflicting adjudications"):
+        validate_corpus([sample, first, second, established, conflict], path)
+
+    revised = transcribe(sample, _act(), "hand-a", "Marie Annette", path)
+    with pytest.raises(SchemaRefusal, match="supplied two different readings"):
+        validate_corpus([sample, first, revised], path)
+
+
+def test_corpus_refuses_an_instrument_membership_without_its_sample(tmp_path):
+    path, frame, pages = run_file(tmp_path)
+    sample = sample_stratified(path, catalog(pages), plan_for(frame, catalog(pages)))[0]
+    membership = bind_instrument(sample, _act(), _sha("e"), path)
+    with pytest.raises(SchemaRefusal, match="sample is absent"):
+        validate_corpus([membership], path)
+    assert validate_corpus([sample, membership], path)
+
+
 def test_cli_verify_sampling_replays_what_the_sampler_wrote(tmp_path):
     """The operator-facing half of the replay: point `verify-sampling` at the
     directory `sample` wrote and it re-derives the draw from the same run, catalog,

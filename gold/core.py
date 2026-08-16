@@ -912,6 +912,75 @@ def validate_corpus(records: Any, run_path: str | Path | None = None) -> list[di
             f"page {page['sha256']} is page {first['ordinal']} in one record and "
             f"{page['ordinal']} in another",
         )
+
+    samples_by_digest: dict[str, dict[str, Any]] = {}
+    for sample in samples:
+        prior = samples_by_digest.setdefault(sample["sample_digest"], sample)
+        _refuse(
+            prior != sample,
+            f"sample digest {sample['sample_digest']} describes two different samples",
+        )
+
+    transcriptions_by_digest: dict[str, dict[str, Any]] = {}
+    transcription_keys: dict[tuple[str, str, str], str] = {}
+    transcriptions_by_act: dict[tuple[str, str], set[str]] = {}
+    for record in validated:
+        if record["schema"] != TRANSCRIPTION_SCHEMA:
+            continue
+        sample_digest = record["sample_digest"]
+        _refuse(
+            sample_digest not in samples_by_digest,
+            f"transcription {record['self_hash']} names sample {sample_digest}, but that "
+            "sample is absent from the gold corpus",
+        )
+        key = (sample_digest, record["act_identity"], record["transcriber"])
+        prior_digest = transcription_keys.setdefault(key, record["self_hash"])
+        _refuse(
+            prior_digest != record["self_hash"],
+            f"transcriber {record['transcriber']!r} supplied two different readings for "
+            f"act {record['act_identity']} in sample {sample_digest}",
+        )
+        transcriptions_by_digest[record["self_hash"]] = record
+        transcriptions_by_act.setdefault((sample_digest, record["act_identity"]), set()).add(
+            record["self_hash"]
+        )
+
+    adjudications: dict[tuple[str, str], str] = {}
+    for record in validated:
+        schema = record["schema"]
+        if schema == MEASUREMENT_SCHEMA:
+            _refuse(
+                record["sample_digest"] not in samples_by_digest,
+                f"instrument membership {record['self_hash']} names sample "
+                f"{record['sample_digest']}, but that sample is absent from the gold corpus",
+            )
+            continue
+        if schema != ADJUDICATION_SCHEMA:
+            continue
+        key = (record["sample_digest"], record["act_identity"])
+        _refuse(
+            record["sample_digest"] not in samples_by_digest,
+            f"adjudication {record['self_hash']} names sample {record['sample_digest']}, but "
+            "that sample is absent from the gold corpus",
+        )
+        embedded = {item["self_hash"] for item in record["transcriptions"]}
+        absent = sorted(embedded - set(transcriptions_by_digest))
+        _refuse(
+            bool(absent),
+            f"adjudication {record['self_hash']} embeds {len(absent)} transcription(s) that "
+            f"are absent as independent gold records (first absent {absent[:1]})",
+        )
+        _refuse(
+            transcriptions_by_act.get(key, set()) != embedded,
+            f"act {record['act_identity']} in sample {record['sample_digest']} does not have "
+            "exactly the two independent transcriptions embedded by its adjudication",
+        )
+        prior_digest = adjudications.setdefault(key, record["self_hash"])
+        _refuse(
+            prior_digest != record["self_hash"],
+            f"act {record['act_identity']} in sample {record['sample_digest']} has two "
+            "conflicting adjudications; gold has one established reading per act",
+        )
     return validated
 
 

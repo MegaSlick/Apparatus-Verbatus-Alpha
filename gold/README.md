@@ -88,7 +88,11 @@ moves about half the pages to the other set. Records written before and after bo
 validate against their own frame, and a gold corpus holding both would place one
 page in calibration *and* in locked acceptance. Records under two different corpus
 frames are refused by name, as is a page stratified or numbered two ways across
-records.
+records. Collection validation also resolves every transcription, adjudication,
+and instrument membership back to a sample in that same corpus. An adjudication
+must embed exactly the two independently stored transcription records for its act;
+two readings by one transcriber or two adjudications establishing different text
+for one act are refused instead of leaving a consumer to choose by file order.
 
 Gold is therefore drawn **per corpus frame**: one run's sealed manifest is the
 frame, and R0 shards a corpus at its sealed shard limit, so a corpus split across
