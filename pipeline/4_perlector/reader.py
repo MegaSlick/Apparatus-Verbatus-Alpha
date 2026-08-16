@@ -85,12 +85,7 @@ class FixtureReader:
         for act in self._fixture["act"]:
             if act["key"] == act_key:
                 if pass_kind == "lectio-prior":
-                    for prior in self._fixture.get("prior_reading", []):
-                        if prior["scenario"] == self._scenario and prior["act_key"] == act_key:
-                            return prior["text"]
-                    raise KeyError(
-                        f"the fixture declares no prior reading for {self._scenario!r}/{act_key!r}"
-                    )
+                    return self._declared_prior_reading(act_key)
                 return act["text"]
         raise KeyError(f"the fixture declares no act {act_key!r}")
 
@@ -196,6 +191,40 @@ class FixtureReader:
             expected = derive_act_id(source_page_id, FALLBACK_PAGE_ACT_ORDINAL, page_bounds)
             return dossier.get("act_id") == expected
         return False
+
+    def _declared_prior_reading(self, act_key: str) -> str:
+        """Pass A's declared draft for *this* scenario, or a named refusal.
+
+        The whole table validates before any row is selected, for the reason
+        `_declared_stop_reason` gives below: a row naming a scenario or act
+        nobody declared, or a second row for a pair already written, would
+        otherwise sit unnoticed while the first match answered. Here that would
+        hand one scenario's prior draft to another scenario's `self_revision`
+        measurement -- the silent cross-scenario borrow this table exists to
+        end. There is deliberately no fallback: a scenario whose acts reach
+        Pass A and declares no prior is a fixture gap, and an instrument
+        measuring a departure from a draft nobody wrote is worse than a stop.
+        """
+        declared_scenarios = {scenario["name"] for scenario in self._fixture["scenario"]}
+        declared_acts = {act["key"] for act in self._fixture["act"]}
+        rows = self._fixture.get("prior_reading", [])
+        seen: set[tuple[str, str]] = set()
+        for row in rows:
+            key = (row["scenario"], row["act_key"])
+            if key in seen:
+                raise KeyError(
+                    f"prior_reading declares {key!r} twice; two contradictory drafts would "
+                    "publish whichever is written first and discard the other silently"
+                )
+            seen.add(key)
+            if row["scenario"] not in declared_scenarios:
+                raise KeyError(f"prior_reading row names undeclared scenario {row['scenario']!r}")
+            if row["act_key"] not in declared_acts:
+                raise KeyError(f"prior_reading row names undeclared act {row['act_key']!r}")
+        for row in rows:
+            if row["scenario"] == self._scenario and row["act_key"] == act_key:
+                return row["text"]
+        raise KeyError(f"the fixture declares no prior reading for {self._scenario!r}/{act_key!r}")
 
     def _declared_stop_reason(self, act_key: str) -> str | None:
         """The engine's own word on why it stopped.
