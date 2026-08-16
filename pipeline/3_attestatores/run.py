@@ -1316,6 +1316,7 @@ def publish_page_testimonia_and_attachments(
     context.require_sealed_config("alignment", limits_digest)
     page_records: dict[tuple[int, str], dict[str, str]] = {}
     page_texts: dict[tuple[int, str], str] = {}
+    page_alignments: dict[tuple[int, str], dict[str, Any]] = {}
     anchor_ranges: dict[tuple[int, str], dict[str, int]] = {}
     by_page: dict[int, list[dict[str, Any]]] = {}
     for act in acts:
@@ -1498,17 +1499,46 @@ def publish_page_testimonia_and_attachments(
                     if page_text is None or anchor_text is None or act_anchor is None:
                         result = {"status": "unaligned", "reason": "missing-chandra-page-anchor"}
                     else:
-                        result = align_to_anchor(page_text, anchor_text, limits)
+                        # One alignment per (page, chair), not per (act, chair):
+                        # the inputs do not depend on the act, and the design
+                        # doc's own measurement puts a scattered-difference
+                        # `SequenceMatcher` near CUBIC in length. Recomputing it
+                        # once per act turned a page of forty acts into forty
+                        # identical full-page alignments per page witness.
+                        result = page_alignments.get((act["page_ordinal"], chair))
+                        if result is None:
+                            result = align_to_anchor(page_text, anchor_text, limits)
+                            page_alignments[(act["page_ordinal"], chair)] = result
                     if result["status"] == "aligned":
-                        overlaps = [
-                            span
-                            for span in result["spans"]
-                            if span["anchor"]["end"] > act_anchor["start"]
-                            and span["anchor"]["start"] < act_anchor["end"]
-                        ]
-                        if overlaps:
-                            witness_start = min(span["witness"]["start"] for span in overlaps)
-                            witness_end = max(span["witness"]["end"] for span in overlaps)
+                        # CLIPPED to this act's anchor range, then carried back
+                        # through each block's own witness/anchor offset, rather
+                        # than hulling whole overlapping blocks. A witness whose
+                        # page text matches the anchor exactly produces ONE
+                        # matching block covering the page, which overlaps every
+                        # act on it -- so the hull handed each act the chair's
+                        # entire page reading as its "act-anchored" span. The
+                        # better the witness, the wider the error: attestator_1
+                        # (an exact match) recorded span 0..75 for BOTH fixture
+                        # acts, two acts claiming the identical bytes, and its
+                        # dissent row for act a1 then recorded all forty-one
+                        # characters of act a2 as a departure. That inverts the
+                        # one instrument ARCHITECTURE names for catching a chair
+                        # that "learned to agree with witnesses rather than to
+                        # read ink" ("a metric that rewards disagreement rewards
+                        # hallucination"), and it is R0's freeze note 2 again: a
+                        # restatement computed by a second predicate agreed with
+                        # what it restated only by coincidence. Found in audit;
+                        # F-X2.
+                        clipped = []
+                        for span in result["spans"]:
+                            start = max(span["anchor"]["start"], act_anchor["start"])
+                            end = min(span["anchor"]["end"], act_anchor["end"])
+                            if start < end:
+                                shift = span["witness"]["start"] - span["anchor"]["start"]
+                                clipped.append((start + shift, end + shift))
+                        if clipped:
+                            witness_start = min(start for start, _ in clipped)
+                            witness_end = max(end for _, end in clipped)
                             alignment = {
                                 "status": "aligned",
                                 "anchor_span": {key: act_anchor[key] for key in ("start", "end")},

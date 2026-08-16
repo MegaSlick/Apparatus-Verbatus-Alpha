@@ -207,6 +207,64 @@ def test_dissent_compares_each_page_witness_against_its_act_anchored_view(run_tr
         assert row.get("compared") is True, row
 
 
+def test_a_page_witness_matching_the_ink_exactly_records_no_departure(run_tree, fixture):
+    """F-X2. The act-anchored view must be THIS act's slice, not the chair's
+    whole page reading.
+
+    `attestator_1` reproduces both fixture acts exactly, so its dissent row for
+    each act must be empty: "a metric that rewards disagreement rewards
+    hallucination" (ARCHITECTURE, on dissent), and this is the one instrument
+    that catches a chair which learned to agree with witnesses rather than read
+    ink. Hulling whole overlapping matching blocks handed act a1 the entire
+    page -- so the chair that agreed with the ink perfectly was recorded as
+    departing over the whole of act a2, and the better the witness the larger
+    the false departure.
+    """
+    scenario, tree = run_tree
+    for act_key in ("a1", "a2"):
+        act_id = act_identity(fixture, act_by_key(fixture, act_key))
+        reading = _latest_completed_reading(tree, act_id)
+        row = next(
+            row for row in reading["payload"]["dissent"] if row.get("chair") == "attestator_1"
+        )
+        assert row["compared"] is True, row
+        assert row["departed"] is False, (
+            f"scenario {scenario!r}: act {act_key} records a departure against a page witness "
+            f"whose text reproduces the reading exactly: {row!r}"
+        )
+        assert row["departures"] == [], row
+
+
+def test_two_acts_on_one_page_never_claim_the_same_page_witness_bytes(run_tree, fixture):
+    """F-X2. A span is a provenance claim about which of this chair's characters
+    belong to this act. Two acts asserting the identical range of one page
+    reading is not a partition of that reading, it is the same claim made
+    twice, and GOALS 5 asks every result to return to the exact ink it came
+    from."""
+    scenario, tree = run_tree
+    spans: dict[str, list[tuple[str, dict]]] = {}
+    for entry in tree.build_manifest(ATTESTATORES)["artifacts"]:
+        if entry["kind"] != "act-attachment":
+            continue
+        record = tree.read_artifact(ATTESTATORES, "act-attachment", entry["artifact_id"])
+        for attachment in record["payload"]["attachments"]:
+            if attachment["page_witness"] and attachment["attached"]:
+                spans.setdefault(attachment["chair"], []).append(
+                    (record["subject_id"], attachment["span"])
+                )
+    assert spans, f"scenario {scenario!r}: no attached page-witness span to check"
+    for chair, rows in spans.items():
+        seen: dict[tuple[int, int], str] = {}
+        for act_id, span in rows:
+            key = (span["start"], span["end"])
+            clash = seen.get(key)
+            assert clash is None, (
+                f"scenario {scenario!r}: acts {clash} and {act_id} both claim characters "
+                f"{key} of chair {chair}'s page reading"
+            )
+            seen[key] = act_id
+
+
 # --- 2. Corpus-frame binding -----------------------------------------------------
 
 
@@ -378,8 +436,14 @@ def test_act_attachment_span_reflects_this_chairs_own_delivered_text_not_the_act
                 continue
             span = entry["span"]
             if entry.get("page_witness"):
+                # A page witness's span is a slice of its PAGE reading, so it is
+                # not this act's own character count -- but it must still be a
+                # well-formed, non-empty range that agrees with the computed
+                # alignment it is derived from, never a wider hull carried over
+                # from another act's text (F-X2).
                 assert span["end"] > span["start"], entry
                 assert entry["alignment"]["status"] == "aligned"
+                assert span == entry["alignment"]["witness_span"], entry
                 continue
             assert span == {"start": 0, "end": characters}, (
                 f"scenario {scenario!r}: attachment entry for chair {entry.get('chair')!r} on "
