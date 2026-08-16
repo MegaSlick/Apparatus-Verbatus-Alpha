@@ -538,3 +538,50 @@ def test_an_empty_receipt_may_not_claim_to_be_complete():
     forged["self_hash"] = self_hash({k: v for k, v in forged.items() if k != "self_hash"})
     with pytest.raises(SchemaRefusal, match="does not derive from its items"):
         validate_recensor_partition_receipt(forged)
+
+
+# --- Audit-and-repair regression (F-new-2, mutation-of-mechanisms pass) ----------
+#
+# Sonnet audit-and-repair seat 1, R0. Mutation check: `pipeline/5_recensor/run.py
+# ::validate_chair_coverage` wires `act_attachment_facts(context, act_id)` into
+# `witness_coverage(...)` as its `attachments=` argument -- the one production call
+# site for D2/D3's act-granularity floor accounting (S3's audit question: "can any
+# production caller reach the legacy path... and silently claim act-level coverage
+# without attachment facts?"). Deleting that one keyword argument (falling back to
+# the pre-R0 legacy arithmetic) left the FULL in-repo suite green: no test anywhere
+# asserted a real run's receipt `shortfalls`/`health_unrecorded` values, and
+# `under_witnessed`/`page_granularity_only` happen to come out identical either way
+# for every outcome combination R0's interim (pre-R4-alignment) design can produce
+# (verified: `attached` is definitionally `outcome in WITNESS_READING_OUTCOMES` in
+# R0 today, so `page_granularity_only` is structurally always 0 regardless of
+# whether attachment facts are wired in at all). Only the two host-only semantic
+# pins would have caught it, and those are deselected from the in-chamber gate
+# pending host remeasurement. This test closes that gap directly.
+
+
+def test_a_failed_act_scoped_attempt_produces_a_real_failed_and_unaligned_shortfall(tmp_path):
+    """D2/D3 wired end-to-end: a chair that fails act a1 specifically (while still
+    contributing to its own page-1 testimony via act a2) must show up in the real
+    Recensor receipt's `shortfalls`, not just in `under_witnessed`.
+
+    `malformed-capabilities` declares attestator_3's response to act a1 with a
+    non-object `format_capabilities`; the whole attempt fails
+    (`prepared_response`), so attestator_3 is not attached to act a1 at all.
+    """
+    root = tmp_path / "runs"
+    through_perlector(root, "malformed-capabilities", "malformed-capabilities")
+    result = invoke(
+        root, "malformed-capabilities", "malformed-capabilities", "pipeline/5_recensor/run.py"
+    )
+    assert result.returncode in (0, 3), result.stderr
+
+    receipt = RunTree(root, "malformed-capabilities").read_recensor_partition_receipt()
+    item = next(item for item in receipt["items"] if item["act_key"] == "a1")
+    coverage = item["coverage"]
+    assert coverage["under_witnessed"] is True
+    assert coverage["shortfalls"] == {"failed": 1, "truncated": 0, "unaligned": 1}, (
+        f"act a1's real coverage record is {coverage!r}; attestator_3's act-scoped attempt "
+        "failed for this act specifically (a non-object format_capabilities), so the "
+        "receipt's shortfalls must name it real -- not the all-zero shape a call to "
+        "witness_coverage() with no attachments= argument would silently produce"
+    )
