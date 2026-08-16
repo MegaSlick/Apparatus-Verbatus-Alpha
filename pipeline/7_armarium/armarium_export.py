@@ -417,8 +417,16 @@ def verify_delivered_bundle(data: bytes, clean_root) -> dict[str, Any]:
 
 
 def _compare_literal_projections(root: Path, formats: ArmariumFormats) -> dict[str, str]:
-    """Compare already-verified literal members without extracting the package again."""
-    projections: dict[str, dict[str, tuple[str, str]]] = {}
+    """Compare already-verified literal members without extracting the package again.
+
+    Each format's rows carry ``(text, digest, uncertainty)``: the uncertainty layer
+    rides in the same equality check as the text it anchors to, so a format that
+    silently diverged on its uncertainty carriage -- present, well-formed, but
+    *different* from what the other formats say -- fails identity exactly as a
+    diverging literal would (U3: uncertainty is a projected reading like the text
+    it sits beside, and GOVERNANCE 5 does not stop at the characters).
+    """
+    projections: dict[str, dict[str, tuple[str, str, dict[str, Any]]]] = {}
     selected_literal_formats = [name for name in _LITERAL_TEXT_FORMATS if name in formats.formats]
     if len(selected_literal_formats) < 2:
         raise SchemaRefusal("projection identity needs at least two selected literal-text formats")
@@ -435,9 +443,10 @@ def _compare_literal_projections(root: Path, formats: ArmariumFormats) -> dict[s
     for name, records in projections.items():
         if records != baseline:
             raise SchemaRefusal(
-                f"canonical clean-text projection differs between {baseline_name} and {name}"
+                f"canonical clean-text or uncertainty projection differs between "
+                f"{baseline_name} and {name}"
             )
-    return {act_id: text for act_id, (text, _digest) in baseline.items()}
+    return {act_id: text for act_id, (text, _digest, _uncertainty) in baseline.items()}
 
 
 def _validate_projection(projection: ArmariumProjection) -> None:
@@ -1355,11 +1364,12 @@ def _text_bundle_records(
             _require_sha256(digest, "a text-bundle source citation digest")
             known_pages.add((path, digest))
 
-    records: dict[str, tuple[str, str, tuple[tuple[str, str], ...]]] = {}
+    records: dict[str, tuple[str, str, tuple[tuple[str, str], ...], dict[str, Any]]] = {}
     for path in sorted((root / "text").rglob("readings.txt")) if (root / "text").exists() else []:
         lines = _package_lines(path, "text bundle")
         current_id: str | None = None
         pending: tuple[str, str, tuple[tuple[str, str], ...]] | None = None
+        pending_uncertainty: dict[str, Any] | None = None
         citations: list[tuple[str, str]] = []
         for index, line in enumerate(lines):
             if line.startswith("act-id: "):
@@ -1370,6 +1380,7 @@ def _text_bundle_records(
                     raise SchemaRefusal("a text-bundle section has an empty act identity")
                 citations = []
                 pending = None
+                pending_uncertainty = None
             elif line.startswith("source-page: "):
                 if current_id is None or index + 1 >= len(lines):
                     raise SchemaRefusal(
@@ -1408,12 +1419,32 @@ def _text_bundle_records(
                 ):
                     raise SchemaRefusal("a text-bundle literal identity or hash is invalid")
                 pending = (literal, digest, tuple(citations))
+            elif line == "uncertainty:":
+                # Read back beside the literal it anchors to, exactly like
+                # `canonical_clean_text:` above -- a text-bundle uncertainty
+                # layer that cannot re-validate against its own act's literal
+                # text is not a member `_compare_literal_projections` may treat
+                # as this act's one uncertainty record.
+                if current_id is None or pending is None or index + 1 >= len(lines):
+                    raise SchemaRefusal(
+                        "a text-bundle uncertainty layer has no literal to anchor to"
+                    )
+                try:
+                    uncertainty = json.loads(lines[index + 1])
+                except json.JSONDecodeError as error:
+                    raise SchemaRefusal("a text-bundle uncertainty layer is not JSON") from error
+                pending_uncertainty = validate_uncertainty(uncertainty, pending[0])
             elif line == "display:":
                 # Spec 11 test 2's second half, checked on the written product:
                 # render -> strip -> hash. The rendered display is a reading aid and
                 # stripping it must return the canonical field exactly, so a display
                 # convention can never become characters in the hashed text.
-                if current_id is None or pending is None or index + 1 >= len(lines):
+                if (
+                    current_id is None
+                    or pending is None
+                    or pending_uncertainty is None
+                    or index + 1 >= len(lines)
+                ):
                     raise SchemaRefusal("a text-bundle display has no literal to render")
                 convention_line = lines[index - 1] if index else ""
                 if convention_line != f"display_convention: {DISPLAY_CONVENTION}":
@@ -1434,17 +1465,17 @@ def _text_bundle_records(
                     raise SchemaRefusal(
                         "a text-bundle display does not strip back to its canonical clean text"
                     )
-                records[current_id] = pending
-                current_id, pending = None, None
+                records[current_id] = (*pending, pending_uncertainty)
+                current_id, pending, pending_uncertainty = None, None, None
         if current_id is not None:
             raise SchemaRefusal("a text-bundle section has no completed literal record")
     return records
 
 
-def _text_bundle_literals(root) -> dict[str, tuple[str, str]]:
+def _text_bundle_literals(root) -> dict[str, tuple[str, str, dict[str, Any]]]:
     return {
-        act_id: (literal, digest)
-        for act_id, (literal, digest, _citations) in _text_bundle_records(root).items()
+        act_id: (literal, digest, uncertainty)
+        for act_id, (literal, digest, _citations, uncertainty) in _text_bundle_records(root).items()
     }
 
 
@@ -1490,13 +1521,13 @@ def _open_acts_database(path) -> sqlite3.Connection:
     return connection
 
 
-def _database_literals(path) -> dict[str, tuple[str, str]]:
+def _database_literals(path) -> dict[str, tuple[str, str, dict[str, Any]]]:
     connection: sqlite3.Connection | None = None
     try:
         connection = _open_acts_database(path)
         rows = connection.execute(
             """
-            SELECT act_id, canonical_clean_text, canonical_text_sha256
+            SELECT act_id, canonical_clean_text, canonical_text_sha256, uncertainty_spans_json
             FROM acts
             WHERE canonical_clean_text IS NOT NULL
             ORDER BY act_id
@@ -1507,22 +1538,27 @@ def _database_literals(path) -> dict[str, tuple[str, str]]:
     finally:
         if connection is not None:
             connection.close()
-    records: dict[str, tuple[str, str]] = {}
-    for act_id, literal, digest in rows:
+    records: dict[str, tuple[str, str, dict[str, Any]]] = {}
+    for act_id, literal, digest, uncertainty_json in rows:
         if (
             not isinstance(act_id, str)
             or not isinstance(literal, str)
             or not isinstance(digest, str)
+            or not isinstance(uncertainty_json, str)
         ):
             raise SchemaRefusal("the acts database has an untyped literal row")
         if digest != canonical_text_sha256(literal) or act_id in records:
             raise SchemaRefusal("the acts database literal identity or hash is invalid")
-        records[act_id] = (literal, digest)
+        try:
+            uncertainty = json.loads(uncertainty_json)
+        except json.JSONDecodeError as error:
+            raise SchemaRefusal("the acts database uncertainty layer is not JSON") from error
+        records[act_id] = (literal, digest, validate_uncertainty(uncertainty, literal))
     return records
 
 
-def _jsonl_literals(path) -> dict[str, tuple[str, str]]:
-    records: dict[str, tuple[str, str]] = {}
+def _jsonl_literals(path) -> dict[str, tuple[str, str, dict[str, Any]]]:
+    records: dict[str, tuple[str, str, dict[str, Any]]] = {}
     for line in _package_lines(path, "acts JSONL"):
         if not line:
             continue
@@ -1541,7 +1577,11 @@ def _jsonl_literals(path) -> dict[str, tuple[str, str]]:
             raise SchemaRefusal("an acts JSONL literal row is untyped")
         if digest != canonical_text_sha256(literal) or act_id in records:
             raise SchemaRefusal("an acts JSONL literal identity or hash is invalid")
-        records[act_id] = (literal, digest)
+        records[act_id] = (
+            literal,
+            digest,
+            validate_uncertainty(record.get("uncertainty"), literal),
+        )
     return records
 
 
@@ -2670,7 +2710,7 @@ def _verify_product_accounting(
             raise SchemaRefusal(
                 "the text bundle does not contain exactly the manifest's delivered acts"
             )
-        for act_id, (_literal, _digest, text_citations) in text_records.items():
+        for act_id, (_literal, _digest, text_citations, _uncertainty) in text_records.items():
             expected_citations = tuple(
                 (region["declared_path"], region["declared_sha256"])
                 for region in citations[act_id]["source_regions"]

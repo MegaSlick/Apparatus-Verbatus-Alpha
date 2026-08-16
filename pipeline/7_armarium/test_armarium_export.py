@@ -289,6 +289,37 @@ def test_projection_identity_refuses_a_self_consistent_package_with_one_drifted_
         verify_projection_identity(tampered, tmp_path / "identity")
 
 
+def test_projection_identity_refuses_a_self_consistent_package_with_drifted_uncertainty(tmp_path):
+    """The same drift class as the sibling test above, one field over.
+
+    A writer that changed only `uncertainty` -- never touching `canonical_clean_text`
+    or its hash -- would pass the literal-text identity check by construction: the
+    text is untouched. Uncertainty is a projected reading beside that text, not a
+    decoration outside GOVERNANCE 5's reach, so a format that silently drifted on it
+    alone must fail identity exactly as a drifted literal would (U3).
+    """
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    records = [json.loads(line) for line in members["acts.jsonl"].decode("utf-8").splitlines()]
+    records[0]["uncertainty"] = {
+        "uncertain_spans": [{"start": 0, "end": 1, "alternatives": ["X"], "confidence": "low"}],
+        "gaps": [],
+        "self_revisions": [],
+    }
+    members["acts.jsonl"] = b"".join(canonical_bytes(record) + b"\n" for record in records)
+    _refresh_manifest_member(members, "acts.jsonl")
+
+    # The member digests now agree and every format's own uncertainty layer is
+    # independently well-formed against its own literal text, so package
+    # verification alone is green. The identity guard is the independent
+    # assertion that catches a writer which changes one format's uncertainty
+    # while leaving the other formats' at their original (also valid) value.
+    tampered = _zip_bytes(members)
+    verify_export_bundle(tampered, tmp_path / "clean")
+    with pytest.raises(SchemaRefusal, match="projection differs"):
+        verify_projection_identity(tampered, tmp_path / "identity")
+
+
 def test_the_delivered_gate_asks_both_questions_the_manifest_claims_were_asked(tmp_path):
     """GOVERNANCE 5 on the path the product actually leaves by.
 
