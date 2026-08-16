@@ -1001,6 +1001,35 @@ def testimony_content_findings(context) -> dict[int, dict]:
     return findings
 
 
+NO_PAGE_CONSERVATION = {
+    "ink_measurable": None,
+    "residual_component_count": None,
+    "residual_act_count": None,
+    "reason": (
+        "the Designator published no conservation record for this page, so nothing on it "
+        "was measured; its acts are held for the reason the page itself carries"
+    ),
+}
+
+
+def geometry_coverage_for(findings: dict[int, dict], ordinal: int) -> dict:
+    """Return one review's private copy of a page's geometry-coverage fact.
+
+    A page with no conservation record at all is **not** a page the Designator
+    measured and found unmeasurable. It publishes one record per page it sealed,
+    unmeasurable pages included, precisely "because a page with no conservation
+    record at all is the silent gap this artifact exists to close"
+    (`pipeline/2_designator/run.py::_publish_conservation_and_secondary`), so an
+    absent record means the page never reached that stage — a door refusal, whose
+    acts are already held for the page loss itself. Defaulting to
+    `ink_measurable: False` here would restate a measurement nobody took, in a
+    record byte-identical to a real unmeasurable page's (GOVERNANCE 10). The
+    absence is recorded as absence instead, and every act gets its own object for
+    the reason `testimony_content_for_page` does.
+    """
+    return copy.deepcopy(findings.get(ordinal, NO_PAGE_CONSERVATION))
+
+
 def testimony_content_for_page(findings: dict[int, dict], ordinal: int) -> dict:
     """Return one review's private copy of a page-level content finding.
 
@@ -1229,10 +1258,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
 
         coverage = validate_chair_coverage(context, act_id, floor)
         content_coverage = testimony_content_for_page(content_findings, act["page_ordinal"])
-        geometry_coverage = geometry_inputs.get(
-            act["page_ordinal"],
-            {"ink_measurable": False, "residual_component_count": 0, "residual_act_count": 0},
-        )
+        geometry_coverage = geometry_coverage_for(geometry_inputs, act["page_ordinal"])
         findings_route = review_route_from_findings(
             testimony_shortfall=content_coverage["shortfall"],
             # WAVE WIRING (was the pre-wave seam `False`): R5b's Pass-C

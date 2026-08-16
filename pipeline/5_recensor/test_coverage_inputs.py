@@ -233,6 +233,39 @@ def test_unmeasured_geometry_cannot_mint_a_residual_act(monkeypatch):
         RUN.geometry_coverage_inputs(context)
 
 
+def test_a_page_with_no_conservation_record_is_not_recorded_as_measured():
+    """F-O1: an absent record may not read as `ink_measurable: False`.
+
+    `refused-first-page` reaches this exactly: page 1 never sealed, so the
+    Designator published no conservation record for it, and both its acts are
+    reviewed anyway.
+    """
+    measured = {
+        1: {"ink_measurable": False, "residual_component_count": 0, "residual_act_count": 0}
+    }
+
+    absent = RUN.geometry_coverage_for(measured, 2)
+
+    assert absent["ink_measurable"] is None
+    assert absent["residual_component_count"] is None
+    assert absent["residual_act_count"] is None
+    assert "no conservation record" in absent["reason"]
+    assert absent != RUN.geometry_coverage_for(measured, 1)
+
+
+def test_each_act_gets_a_private_copy_of_its_pages_geometry_finding():
+    """F-O1: the sibling-aliasing fix covers every once-per-page finding."""
+    findings = {1: {"ink_measurable": True, "residual_component_count": 1, "residual_act_count": 1}}
+
+    first = RUN.geometry_coverage_for(findings, 1)
+    sibling = RUN.geometry_coverage_for(findings, 1)
+    first["residual_act_count"] = 99
+
+    assert sibling["residual_act_count"] == 1
+    assert findings[1]["residual_act_count"] == 1
+    assert RUN.geometry_coverage_for({}, 7) is not RUN.NO_PAGE_CONSERVATION
+
+
 def test_content_and_audit_holds_compose_in_stable_recorded_order():
     """V5: R6 coverage wins precedence, but neither active cause disappears."""
     outcome, reason = RUN.review_route_from_findings(
