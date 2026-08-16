@@ -407,10 +407,11 @@ FIXTURE = "synthetic-two-page-v0"
 #
 # The literals below are re-measured on this change, and each re-measurement
 # names what moved them. A mismatch here is evidence about the recorded
-# artifacts, never about the platform. R5b's Pass-C build moved them over
-# R4's values: every completed Perlectio now carries its sealed audit record.
-HAPPY_RUN_TREE_DIGEST = "cd87e597c257434e4cda7818a5504389ee36e0c2632b9bdebe9eb4792faf4571"
-REVIEW_RUN_TREE_DIGEST = "7e1ee2ad9face52ebae1ec8686f442691e749f92d0df09fab2e432c70cb2b023"
+# artifacts, never about the platform. Re-measured after R5b's wave restack
+# (the R5a/R5b seam closure threads the sealed protocol through the audit
+# pass), over the Pass-C build's own values.
+HAPPY_RUN_TREE_DIGEST = "4af59adf0b607f41f48e585b32f81fbf66f997ffaf1e85f85effedd4e5d6a78a"
+REVIEW_RUN_TREE_DIGEST = "1a414773221e733e30c0bf81c467fc001365e489c5c6c484aab3f9425d7bac42"
 
 
 def orchestrate(
