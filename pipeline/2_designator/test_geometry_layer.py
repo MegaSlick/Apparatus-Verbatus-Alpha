@@ -973,3 +973,60 @@ def test_a_detection_wider_than_the_overlap_keeps_its_complete_sighting_and_its_
     )
     assert len(resolved["partition"]) == len(proposals), "invariant 8: one row per proposal"
     assert {row["disposition"] for row in resolved["partition"]} == {"accepted-coverage"}
+
+
+def test_two_proposals_with_the_same_box_are_an_ambiguity_not_an_invented_hierarchy():
+    """Coincident AABBs each 'contain' the other, so publishing one as the outer
+    one invents a parent-child relation out of the proposal_id sort order."""
+    policy = load_geometry_policy()
+    proposals = surya_double_pass(
+        page_id="pg_coincident",
+        page_ordinal=0,
+        page_w=100,
+        page_h=2600,
+        policy=policy,
+        receipt_ref=RECEIPT,
+        response_ref=RESPONSE,
+        detect=_detector_that_only_sees_its_own_tile(
+            BOTH_PASS_POLYGON, score=lambda tile: 9000 if tile["y"] == 0 else 7000
+        ),
+    )
+    assert len(proposals) == 2
+    assert proposals[0]["aabb"] == proposals[1]["aabb"]
+
+    envelopes = [_raw_envelope(row) for row in proposals]
+    resolved = resolve(envelopes, [])
+    assert resolved["containment"] == [], "equal boxes are not a hierarchy"
+    assert [row["state"] for row in resolved["ambiguities"]] == ["coincident-aabb"]
+    assert {resolved["ambiguities"][0]["left"], resolved["ambiguities"][0]["right"]} == {
+        row["proposal_id"] for row in proposals
+    }
+    assert resolve(list(reversed(envelopes)), []) == resolved
+
+    # A strictly larger box still contains each of them: containment survives as a
+    # relation, it just stops being asserted between equals.
+    bigger = yolo_obb(
+        page_id="pg_coincident",
+        page_ordinal=0,
+        page_w=100,
+        page_h=2600,
+        policy=policy,
+        receipt_ref=RECEIPT,
+        response_ref=RESPONSE,
+        detections=[
+            {
+                "obb": [
+                    {"x": 0, "y": 800},
+                    {"x": 20, "y": 800},
+                    {"x": 20, "y": 820},
+                    {"x": 0, "y": 820},
+                ],
+                "score_bp": 8000,
+            }
+        ],
+    )[0]
+    with_outer = resolve(envelopes + [_raw_envelope(bigger)], [])
+    assert {row["inner"] for row in with_outer["containment"]} == {
+        row["proposal_id"] for row in proposals
+    }
+    assert {row["outer"] for row in with_outer["containment"]} == {bigger["proposal_id"]}

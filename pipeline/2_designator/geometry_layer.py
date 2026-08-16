@@ -823,7 +823,25 @@ def _derive_resolution(
     containment, overlaps = [], []
     for index, (_envelope, left) in enumerate(ordered):
         for _other_envelope, right in ordered[index + 1 :]:
-            if _contains(left["aabb"], right["aabb"]):
+            # Two proposals with the SAME box each "contain" the other, so the
+            # containment test recorded whichever the proposal_id sort happened to
+            # reach first as the outer one. That published a page->act->region
+            # hierarchy the sources never supported, invented by a hash ordering,
+            # and it swallowed the ambiguity: coincident geometry is exactly the
+            # case a reader must be shown, not a parent-child claim. It is
+            # reachable now that identical geometry at two scores is deliberately
+            # retained as two raw signals (R2 seat 1's proposal_id repair), and
+            # wherever two sources' boxes coincide. Recorded as an ambiguity;
+            # containment below stays a strict relation.
+            if left["aabb"] == right["aabb"]:
+                overlaps.append(
+                    {
+                        "left": left["proposal_id"],
+                        "right": right["proposal_id"],
+                        "state": "coincident-aabb",
+                    }
+                )
+            elif _contains(left["aabb"], right["aabb"]):
                 containment.append({"outer": left["proposal_id"], "inner": right["proposal_id"]})
             elif _contains(right["aabb"], left["aabb"]):
                 containment.append({"outer": right["proposal_id"], "inner": left["proposal_id"]})
