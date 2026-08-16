@@ -19,7 +19,7 @@ from common.chairs.model_store import (
     SURYA_OCR_2_REFUSAL,
     derived_inventory,
     load_download_record,
-    pod_binding,
+    pod_materialization_plan,
     promote_verified_snapshot,
     read_derived_inventory,
     require_complete_store,
@@ -101,6 +101,19 @@ def test_derived_inventory_cannot_restate_divergent_store_facts(tmp_path):
     path.write_bytes(canonical_bytes(raw))
 
     with pytest.raises(DigestMismatchRefusal, match="diverges"):
+        read_derived_inventory(tmp_path, path)
+
+
+def test_derived_inventory_reader_reverifies_snapshot_bytes(tmp_path):
+    record = _store(tmp_path)
+    path = tmp_path / "inventory.json"
+    write_derived_inventory(record, path)
+    entry = next(item for item in record["artifacts"] if item["artifact"] == "chandra-ocr-2")
+    (tmp_path / entry["snapshot"] / "config.json").write_text(
+        '{"fixture":"swapped"}', encoding="utf-8"
+    )
+
+    with pytest.raises(DigestMismatchRefusal, match="config.json"):
         read_derived_inventory(tmp_path, path)
 
 
@@ -399,20 +412,29 @@ def test_a_store_whose_surya_bundle_has_not_landed_verifies_and_says_so(tmp_path
 
 
 def test_require_complete_store_refuses_a_partial_store_by_name(tmp_path):
-    record = _mark_pending(tmp_path, _store(tmp_path), "surya2-detection", "not fetched yet")
+    _mark_pending(tmp_path, _store(tmp_path), "surya2-detection", "not fetched yet")
 
     with pytest.raises(DigestMismatchRefusal, match="surya2-detection"):
-        require_complete_store(derived_inventory(record))
+        require_complete_store(tmp_path)
 
 
 def test_require_complete_store_accepts_a_store_with_every_roster_artifact(tmp_path):
     _store(tmp_path)
 
-    inventory = verify_store(tmp_path)
+    inventory = require_complete_store(tmp_path)
 
     assert inventory["complete"] is True
     assert inventory["pending"] == []
-    require_complete_store(inventory)
+
+
+def test_require_complete_store_cannot_be_satisfied_by_a_forged_inventory(tmp_path):
+    record = _mark_pending(tmp_path, _store(tmp_path), "surya2-detection", "not fetched yet")
+    forged = derived_inventory(record)
+    forged["complete"] = True
+    forged["pending"] = []
+
+    with pytest.raises(DigestMismatchRefusal, match="surya2-detection"):
+        require_complete_store(tmp_path)
 
 
 def test_a_pending_entry_may_not_carry_evidence_for_bytes_that_are_not_there(tmp_path):
@@ -472,15 +494,15 @@ def test_every_store_chair_is_a_models_toml_role_or_one_recorded_exception():
 # --- O3: the pod-sharing contract, encoded rather than described ----------------
 
 
-def test_pod_binding_splits_the_store_into_cache_root_and_model_root_halves(tmp_path):
+def test_pod_materialization_plan_splits_verified_store_halves(tmp_path):
     record = _store(tmp_path)
 
-    binding = pod_binding(record)
+    plan = pod_materialization_plan(tmp_path)
 
     # Six Hugging Face chairs over five snapshots: the two chandra chairs each
     # need their own role-keyed cache entry, both made from the one stored
     # snapshot, because a cache entry is keyed by role and a store is not.
-    assert binding["cache_root_entries"] == {
+    assert {chair: row["snapshot"] for chair, row in plan["cache_root_entries"].items()} == {
         "designator_structure": "hf/chandra-ocr-2",
         "attestator_1": "hf/chandra-ocr-2",
         "attestator_2": "hf/dai-recordgold-atr",
@@ -488,21 +510,29 @@ def test_pod_binding_splits_the_store_into_cache_root_and_model_root_halves(tmp_
         "secondary_proposer": "hf/yolo26-detection",
         "perlector": "hf/qwen3.5-9B",
     }
-    assert len(set(binding["cache_root_entries"].values())) == 5
+    assert len({row["snapshot"] for row in plan["cache_root_entries"].values()}) == 5
     # model_root is local-repository only; it is not a second cache.
-    assert binding["model_root_entries"] == {"proposer_surya2": "local/surya2-detection"}
-    assert binding["pending_chairs"] == {}
-    assert binding["complete"] is True
+    assert plan["model_root_entries"]["proposer_surya2"]["snapshot"] == ("local/surya2-detection")
+    assert plan["download_record_sha256"] == derived_inventory(record)["download_record_sha256"]
+    assert plan["provenance_scope"] == "verified-store-source-only"
 
 
-def test_pod_binding_reports_a_chair_whose_artifact_is_not_fetched_yet(tmp_path):
-    record = _mark_pending(tmp_path, _store(tmp_path), "surya2-detection", "not fetched yet")
+def test_pod_materialization_plan_refuses_a_chair_not_fetched_yet(tmp_path):
+    _mark_pending(tmp_path, _store(tmp_path), "surya2-detection", "not fetched yet")
 
-    binding = pod_binding(record)
+    with pytest.raises(DigestMismatchRefusal, match="surya2-detection"):
+        pod_materialization_plan(tmp_path)
 
-    assert binding["model_root_entries"] == {}
-    assert binding["pending_chairs"] == {"proposer_surya2": "surya2-detection"}
-    assert binding["complete"] is False
+
+def test_pod_materialization_plan_reverifies_source_bytes(tmp_path):
+    record = _store(tmp_path)
+    entry = next(item for item in record["artifacts"] if item["artifact"] == "qwen3.5-9B")
+    (tmp_path / entry["snapshot"] / "config.json").write_text(
+        '{"fixture":"swapped"}', encoding="utf-8"
+    )
+
+    with pytest.raises(DigestMismatchRefusal, match="config.json"):
+        pod_materialization_plan(tmp_path)
 
 
 def test_verify_store_refuses_a_snapshot_used_directly_as_a_cache_entry(tmp_path):

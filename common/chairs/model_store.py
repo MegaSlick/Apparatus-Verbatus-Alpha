@@ -226,8 +226,8 @@ def derived_inventory(record: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def pod_binding(record: Mapping[str, Any]) -> dict[str, Any]:
-    """The role-keyed view a pod needs of this artifact-keyed store.
+def pod_materialization_plan(store_root: str | Path) -> dict[str, Any]:
+    """Return a byte-verified source plan for materializing a complete pod cache.
 
     The store is "durable, off-repository, and shared with the future pod", and
     the two sides key their directories differently.  ``ChairRegistry`` reads a
@@ -247,45 +247,58 @@ def pod_binding(record: Mapping[str, Any]) -> dict[str, Any]:
     through any cache.
 
     This function states which roles need which half and where each one's bytes
-    are in the store.  It copies nothing: materializing a cache entry is a host
-    action, and a chair still verifies against its own pinned manifest after it.
+    are in the store. It accepts a store root, not a caller-supplied record, and
+    re-verifies every source byte before returning. A pending artifact therefore
+    cannot satisfy it, and a claimed manifest digest is never enough by itself.
+
+    It copies nothing and proves nothing about a pod: materializing a cache entry
+    is a host action, the destination chair verifies its own pinned manifest, and
+    only a :class:`ServingReceipt` proves which weights actually served a call.
+    The explicit ``provenance_scope`` keeps this plan from masquerading as that
+    receipt.
     """
 
-    inventory = derived_inventory(record)
-    cache_root_entries: dict[str, str] = {}
-    model_root_entries: dict[str, str] = {}
-    pending_chairs: dict[str, str] = {}
+    inventory = require_complete_store(store_root)
+    cache_root_entries: dict[str, dict[str, Any]] = {}
+    model_root_entries: dict[str, dict[str, Any]] = {}
     for row in inventory["artifacts"]:
-        if row["state"] == "pending-fetch":
-            pending_chairs[row["chair"]] = row["artifact"]
-        elif row["source"] == "huggingface":
-            cache_root_entries[row["chair"]] = row["snapshot"]
+        source = {
+            "artifact": row["artifact"],
+            "snapshot": row["snapshot"],
+            "manifest": row["manifest"],
+            "digest_manifest": row["digest_manifest"],
+            "revision": row["revision"],
+        }
+        if row["source"] == "huggingface":
+            cache_root_entries[row["chair"]] = source
         else:
-            model_root_entries[row["chair"]] = row["snapshot"]
+            model_root_entries[row["chair"]] = source
     return {
+        "provenance_scope": "verified-store-source-only",
+        "download_record_sha256": inventory["download_record_sha256"],
         "cache_root_entries": cache_root_entries,
         "model_root_entries": model_root_entries,
-        "pending_chairs": pending_chairs,
-        "complete": inventory["complete"],
     }
 
 
-def require_complete_store(inventory: Mapping[str, Any]) -> None:
-    """Refuse an inventory that is honest about being partial, by name.
+def require_complete_store(store_root: str | Path) -> dict[str, Any]:
+    """Verify the store's real bytes and refuse a partial result by name.
 
     ``verify_store`` proves the bytes that exist; it never invents the ones that
     do not, so it returns a partial inventory rather than refusing outright.
-    This is the door for the consumer that genuinely needs every roster artifact
-    on disk — S8 roster activation, a pod assembly — and it names each artifact
-    still to be fetched rather than reporting a count.
+    This is the door for a consumer that genuinely needs every roster artifact
+    on disk — S8 roster activation or a pod materialization plan. It accepts the
+    store root rather than an inventory-shaped mapping so a caller cannot flip a
+    derived ``complete`` flag while bytes are pending or missing.
     """
 
-    if not inventory.get("complete"):
+    inventory = verify_store(store_root)
+    if not inventory["complete"]:
         raise DigestMismatchRefusal(
             "model-store",
-            "model store is not complete; still pending fetch: "
-            f"{', '.join(inventory.get('pending') or ['(unknown)'])}",
+            f"model store is not complete; still pending fetch: {', '.join(inventory['pending'])}",
         )
+    return inventory
 
 
 def write_derived_inventory(record: Mapping[str, Any], path: str | Path) -> str:
@@ -302,16 +315,15 @@ def write_derived_inventory(record: Mapping[str, Any], path: str | Path) -> str:
 
 
 def read_derived_inventory(store_root: str | Path, path: str | Path) -> dict[str, Any]:
-    """Refuse an inventory that merely claims, rather than derives, store facts."""
+    """Refuse an inventory not backed by the store's current verified bytes."""
 
-    record = load_download_record(store_root)
     try:
         actual = Path(path).read_bytes()
     except OSError as error:
         raise DigestMismatchRefusal(
             "model-store", f"cannot read derived inventory: {error}"
         ) from error
-    expected = canonical_bytes(derived_inventory(record))
+    expected = canonical_bytes(verify_store(store_root))
     if actual != expected:
         raise DigestMismatchRefusal(
             "model-store", "derived inventory diverges from download_record.json"
@@ -369,7 +381,8 @@ def verify_store(store_root: str | Path) -> dict[str, Any]:
                 f"the chair registry's cache descriptor {CACHE_DESCRIPTOR!r} is inside this "
                 "store snapshot: a store directory is keyed by artifact and is not a "
                 "cache_root entry, which is keyed by chair role. Materialize "
-                "cache_root/<role> from this snapshot instead — see pod_binding",
+                "cache_root/<role> from this snapshot instead — see "
+                "pod_materialization_plan",
             )
         identity = ChairIdentity(
             role=item["artifact"],
