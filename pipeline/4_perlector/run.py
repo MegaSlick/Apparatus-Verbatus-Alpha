@@ -1684,6 +1684,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "delivered_pixels": delivered_pixels,
                 "testimonia": testimonia,
                 "attachment_view": attachment_view,
+                "prior_text": prior["text"],
                 "inputs": _reading_image_inputs(context, bases, page_renders)
                 + list(testimonium_references.values())
                 + [attachment_view["reference"], prior["reference"]],
@@ -1703,7 +1704,16 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "act_id": row["act_id"],
                 "page_id": bases[0]["source_page_id"],
                 "order": row["order"],
-                "geometry_order": row["order"],
+                # The act's own crop position, independent of the sequence it
+                # was declared and processed in -- reusing `order` here would
+                # make declared and geometric identical by construction, so
+                # the "order" flag class could never fire (audit finding H1).
+                # Top-to-bottom, then left-to-right, ties broken downstream by
+                # act_id exactly as the declared-order sort already is.
+                "geometry_order": (
+                    bases[0]["transform"]["bounds"]["y"],
+                    bases[0]["transform"]["bounds"]["x"],
+                ),
                 "text": payload["text"],
                 "testimonia": [
                     record["reported"]
@@ -1771,6 +1781,12 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 payload["dissent"] = dissent_against(
                     final_text, dissent_testimonia(row["testimonia"], row["attachment_view"])
                 )
+                # self_revision was computed against the pre-audit Pass-B
+                # reading (audit finding H6); an audit-changed text is the one
+                # actually published, so the recorded self-revision must
+                # describe *its* departure from Pass A, not a reading that
+                # never left the Perlector.
+                payload["self_revision"] = departures(final_text, row["prior_text"])
         if unresolved:
             for flag in flags:
                 start, end = flag["location"]["start"], flag["location"]["end"]

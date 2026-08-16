@@ -104,6 +104,10 @@ def flags_once_per_page(semi_finals: list[dict[str, Any]]) -> dict[str, list[dic
             raise SchemaRefusal("an audit semi-final has no act or page identity")
         if not isinstance(row.get("text"), str) or not isinstance(row.get("testimonia"), list):
             raise SchemaRefusal("an audit semi-final has no text or testimonia")
+        if not isinstance(row.get("order"), int) or isinstance(row.get("order"), bool):
+            raise SchemaRefusal("an audit semi-final has no integer declared order")
+        if "geometry_order" not in row:
+            raise SchemaRefusal("an audit semi-final has no geometry order")
         by_page[row["page_id"]].append(row)
     output: dict[str, list[dict[str, Any]]] = {row["act_id"]: [] for row in semi_finals}
     for rows in by_page.values():
@@ -160,7 +164,10 @@ def change_record(before: str, after: str, flags: list[dict[str, Any]]) -> list[
         (
             flag["class"]
             for flag in flags
-            if flag["location"]["start"] <= start <= flag["location"]["end"]
+            # Both ends, not just the start (audit finding H8): a change that
+            # starts inside a flagged location but runs past its end is not a
+            # location-scoped re-proof answer, whatever character it began at.
+            if flag["location"]["start"] <= start and end <= flag["location"]["end"]
         ),
         None,
     )
