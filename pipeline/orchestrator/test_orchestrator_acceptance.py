@@ -407,11 +407,11 @@ FIXTURE = "synthetic-two-page-v0"
 #
 # The literals below are re-measured on this change, and each re-measurement
 # names what moved them. A mismatch here is evidence about the recorded
-# artifacts, never about the platform. Re-measured after R5b's wave restack
-# (the R5a/R5b seam closure threads the sealed protocol through the audit
-# pass), over the Pass-C build's own values.
-HAPPY_RUN_TREE_DIGEST = "4af59adf0b607f41f48e585b32f81fbf66f997ffaf1e85f85effedd4e5d6a78a"
-REVIEW_RUN_TREE_DIGEST = "1a414773221e733e30c0bf81c467fc001365e489c5c6c484aab3f9425d7bac42"
+# artifacts, never about the platform. Re-measured at the R5a/R5b seam
+# closure: audit-change priors declared, the sealed protocol threaded
+# through the audit pass.
+HAPPY_RUN_TREE_DIGEST = "b0b4b46273ddfb7609ccb9f89f301c3d1016cd4e0f644ae047e4d56e75051770"
+REVIEW_RUN_TREE_DIGEST = "2c846186d5b976f401badaa44f4f7c13c4e80ebe0e9edcc8e70d719450f81bed"
 
 
 def orchestrate(

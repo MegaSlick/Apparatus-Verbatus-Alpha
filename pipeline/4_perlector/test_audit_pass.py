@@ -138,9 +138,20 @@ def test_perlectio_schema_refuses_a_directional_reproof_prompt(tmp_path):
     final = _records(RunTree(tmp_path / "runs", "r"), "perlectio")[0]
     payload = copy.deepcopy(final["payload"])
     payload["audit"]["reproofs"][0]["prompt"] = "The reading is wrong; replace it with gamma."
+    perlector = _perlector()
+    # Thread the sealed protocol: since R5a, a payload carrying a protocol
+    # record refuses an unthreaded validation call before this test's own
+    # boundary is reached.
+    protocol_config, protocol_sha256 = perlector.protocol.load(
+        ROOT / "config" / "perlector_protocol.toml"
+    )
     with pytest.raises(SchemaRefusal, match="neutral location-only"):
-        _perlector().validate_reading_payload(
-            payload, outcome="read", fields=_perlector()._PERLECTIO_FIELDS
+        perlector.validate_reading_payload(
+            payload,
+            outcome="read",
+            fields=perlector._PERLECTIO_FIELDS,
+            protocol_config=protocol_config,
+            protocol_sha256=protocol_sha256,
         )
 
 
@@ -235,10 +246,15 @@ def test_recovery_sibling_context_is_sealed_and_never_republished(tmp_path):
     context = SimpleNamespace(tree=tree, config_digest=tree.read_run()["config_digest"])
     before = [entry for entry in tree.build_manifest(PERLECTOR)["artifacts"]]
 
+    protocol_config, protocol_sha256 = perlector.protocol.load(
+        ROOT / "config" / "perlector_protocol.toml"
+    )
     merged = perlector._sealed_sibling_semi_finals(
         context,
         [{"act_id": recovered["subject_id"], "page_id": page_id}],
         expected=expected,
+        protocol_config=protocol_config,
+        protocol_sha256=protocol_sha256,
     )
 
     assert [row["act_id"] for row in merged] == [sibling["subject_id"]]

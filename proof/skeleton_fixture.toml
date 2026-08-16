@@ -90,6 +90,16 @@ act_key = "a2"
 text = "SYNTHETIC ACT TWO delta epsilon zeta eta"
 
 [[prior_reading]]
+scenario = "audit-change"
+act_key = "a1"
+text = "SYNTHETIC ACT ONE alpha beta ganna"
+
+[[prior_reading]]
+scenario = "audit-change"
+act_key = "a2"
+text = "SYNTHETIC ACT TWO delta epsilon zeta eta"
+
+[[prior_reading]]
 scenario = "refused-page"
 act_key = "a1"
 text = "SYNTHETIC ACT ONE alpha beta ganna"

@@ -76,6 +76,10 @@ _PRIOR_READING_SCENARIOS = (
     "happy",
     "witness-capabilities",
     "review",
+    # R5b's audit-change scenario reaches ordinary Pass A like the seventeen
+    # above it, so under R5a's no-borrowing rule it must declare its own
+    # priors; its DECLARED audit re-proof (AUDIT_REPROOFS) is what departs.
+    "audit-change",
     "refused-page",
     "truncated-reading",
     "genuinely-empty-witness",
