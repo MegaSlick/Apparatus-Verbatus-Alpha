@@ -8,7 +8,7 @@ import json
 import pytest
 
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
-from common.contracts.errors import ContractError, SchemaRefusal
+from common.contracts.errors import IncompatibleReuse, SchemaRefusal
 from common.contracts.identities import act_id
 from gold import cli
 from gold.core import (
@@ -305,12 +305,44 @@ def test_layout_padding_and_instrument_records_are_closed_and_self_hashed(tmp_pa
         validate_layout(layout)
 
 
-def test_append_only_writer_refuses_overwrite(tmp_path):
+def test_a_page_layout_or_padding_record_may_not_be_empty(tmp_path):
+    """A record whose annotation list is empty says nothing while reading as a
+    completed annotation. A page with nothing on it is annotated `true-blank`, and
+    a padding record with no rectangles has measured nothing to be calibrated
+    against (GOVERNANCE 2)."""
+    path, frame, pages = run_file(tmp_path)
+    sample = sample_stratified(path, catalog(pages), plan_for(frame, catalog(pages)))[0]
+    layout = {"schema": LAYOUT_SCHEMA, "sample": sample, "regions": []}
+    layout["self_hash"] = self_hash(layout)
+    with pytest.raises(SchemaRefusal, match="annotated as true-blank"):
+        validate_layout(layout, path)
+    padding = {
+        "schema": PADDING_SCHEMA,
+        "sample": sample,
+        "rectangles": [],
+        "calibrated_for_this_corpus": True,
+    }
+    padding["self_hash"] = self_hash(padding)
+    with pytest.raises(SchemaRefusal, match="measured nothing"):
+        validate_padding(padding, path)
+
+
+def test_append_only_writer_reuses_identical_bytes_and_refuses_different_ones(tmp_path):
+    """Republishing the same record is reuse, not a rewrite — `sample` writes one
+    file per page, so an interruption partway through must not leave a directory
+    the same command can never finish. Different bytes under one name are still
+    refused, and the file already there is never touched
+    (`common/runtree/store.py::_publish_bytes`'s rule)."""
     record = {"example": "evidence"}
     target = tmp_path / "records" / "one.json"
     write_append_only(target, record)
-    with pytest.raises(ContractError, match="already exists"):
-        write_append_only(target, record)
+    original = target.read_bytes()
+    assert write_append_only(target, record) == target
+    assert target.read_bytes() == original
+    with pytest.raises(IncompatibleReuse, match="already holds different bytes"):
+        write_append_only(target, {"example": "a different record"})
+    assert target.read_bytes() == original
+    assert not [path for path in target.parent.iterdir() if path.name.startswith(".gold-")]
 
 
 def test_append_only_writer_names_a_no_hard_link_filesystem(tmp_path, monkeypatch):

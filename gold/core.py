@@ -22,7 +22,7 @@ from common.contracts.canonical import (
     self_hash,
     verify_self_hash,
 )
-from common.contracts.errors import ContractError, SchemaRefusal
+from common.contracts.errors import IncompatibleReuse, SchemaRefusal
 from common.contracts.identities import is_well_formed
 
 SAMPLE_SCHEMA = "gold-page-sample.v1"
@@ -521,6 +521,15 @@ def validate_layout(record: Any, run_path: str | Path | None = None) -> dict[str
     result = _validate_page_bound_record(record, LAYOUT_SCHEMA, {"regions"}, run_path)
     regions = result["regions"]
     _refuse(not isinstance(regions, list), "layout regions is not a list")
+    # Page-layout gold accounts for the whole page, so "no regions" is not a
+    # finding — it is an annotation that never happened, and an empty list would
+    # let it read as a completed one (GOVERNANCE 2). A page with nothing on it is
+    # annotated as such: that is what the `true-blank` kind is for.
+    _refuse(
+        not regions,
+        "page-layout gold has no regions; an empty page is annotated as true-blank, "
+        "not as an empty annotation",
+    )
     for region in regions:
         _refuse(
             not isinstance(region, dict) or set(region) != {"kind", "rect"},
@@ -542,6 +551,11 @@ def validate_padding(record: Any, run_path: str | Path | None = None) -> dict[st
         "padding calibration flag is not boolean",
     )
     _refuse(not isinstance(result["rectangles"], list), "padding rectangles is not a list")
+    _refuse(
+        not result["rectangles"],
+        "padding gold has no rectangles; a record that measured nothing may not carry "
+        "a calibration verdict about this corpus",
+    )
     for rectangle in result["rectangles"]:
         _rectangle(rectangle, "padding rectangle")
     return result
@@ -631,7 +645,17 @@ def validate_corpus(records: Any, run_path: str | Path | None = None) -> list[di
 
 
 def write_append_only(path: str | Path, record: dict[str, Any]) -> Path:
-    """Atomically create a record; any existing path is a named refusal."""
+    """Atomically create a record. Identical bytes are reuse; different bytes refuse.
+
+    Refusing an existing pathname outright made a draw unrepeatable rather than
+    immutable: `sample` writes one file per selected page, so an interruption
+    partway through left a directory the same command could never finish — the
+    first already-written record aborted the rerun and the unwritten ones stayed
+    unwritten. Byte-for-byte republication changes no evidence, and this is the
+    rule `common/runtree/store.py::_publish_bytes` already applies to every
+    artifact in the pipeline: identical content is reuse, different content under
+    one name is `IncompatibleReuse`, and the existing file is never touched.
+    """
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     data = canonical_bytes(record) + b"\n"
@@ -649,7 +673,19 @@ def write_append_only(path: str | Path, record: dict[str, Any]) -> Path:
         # immutable bytes, never a partially written target.
         os.link(temporary, target)
     except FileExistsError as error:
-        raise ContractError(f"gold artifact already exists: {target}") from error
+        try:
+            existing = target.read_bytes()
+        except OSError as read_error:
+            raise IncompatibleReuse(
+                f"gold artifact {target} appeared while it was being written and could "
+                "not be read back; the existing file was not replaced"
+            ) from read_error
+        if existing != data:
+            raise IncompatibleReuse(
+                f"gold artifact {target} already holds different bytes; gold records are "
+                "immutable, so one name may not describe two records, and the existing "
+                "file was not touched"
+            ) from error
     except OSError as error:
         if error.errno in _NO_HARD_LINKS:
             raise SchemaRefusal(

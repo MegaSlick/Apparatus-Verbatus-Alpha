@@ -57,6 +57,13 @@ page in calibration *and* in locked acceptance. Records under two different corp
 frames are refused by name, as is a page stratified or numbered two ways across
 records.
 
-Every writer creates a new
-file atomically and refuses an existing pathname, preserving append-only custody;
-a filesystem that refuses hard links is a named refusal, not a bare traceback.
+The layout schema requires at least one region and the padding schema at least one
+rectangle: a page with nothing on it is annotated `true-blank`, and a record that
+measured nothing may not carry a calibration verdict.
+
+Every writer creates its file atomically, so a partly written record can never
+take its final name.  Republishing byte-identical content is reuse — `sample`
+writes one file per page, and an interrupted draw has to be finishable by the same
+command — while different bytes under a name already taken are refused and the
+existing file is left untouched.  A filesystem that refuses hard links is a named
+refusal, not a bare traceback.
