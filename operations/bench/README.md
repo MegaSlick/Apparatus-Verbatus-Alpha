@@ -26,9 +26,13 @@ printed result into the task report before removing the scratch tree.
 The later branch that introduces real bench execution must extend the result
 schema deliberately, rather than relaxing the fixture validator:
 
-- A measured B0 or B0.5 result carries the serving profile's
-  `preflight_state`, and validation refuses measured output from an unproven
-  profile.
+- A measured B0 or B0.5 result carries the whole proof mark of the serving
+  profile it was measured through — `preflight_state`, `preflight_digest`, and
+  `preflight_identity_digest` — and validation refuses measured output from an
+  unproven profile. Carrying `preflight_state` alone is not enough: the word
+  `proven` is only worth what those two digests bind it to, and a bench that
+  reported numbers off a profile `operations/serving/manager.py::_launchable`
+  would have refused to launch would be a second path to the same false claim.
 - Every real cell defines and validates visible failed, partial, and
   interrupted states. A runner may not omit such a cell or present it as
   complete; the exact state fields are settled with that runner's result
