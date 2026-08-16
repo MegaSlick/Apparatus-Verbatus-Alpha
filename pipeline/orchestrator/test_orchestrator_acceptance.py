@@ -407,13 +407,10 @@ FIXTURE = "synthetic-two-page-v0"
 #
 # The literals below are re-measured on this change, and each re-measurement
 # names what moved them. A mismatch here is evidence about the recorded
-# artifacts, never about the platform. R4's PR loop moved them twice over the
-# wave-time values: every aligned page-witness alignment now carries
-# `anchor_basis`, and a non-reading page attempt (review's attestator_3 on a2)
-# now records its explicit `non-reading-page-attempt-failed` reason instead of
-# running the page alignment. File counts stayed 60/65.
-HAPPY_RUN_TREE_DIGEST = "f0db48b213bf725f6da497228b49871ff390f55c09d2105aefb6f7c0eb8cd6cb"
-REVIEW_RUN_TREE_DIGEST = "3652502dd5bd55f30a83116b8591348eb6d5852f2e5ff305b8af1236e8e5e394"
+# artifacts, never about the platform. R5b's Pass-C build moved them over
+# R4's values: every completed Perlectio now carries its sealed audit record.
+HAPPY_RUN_TREE_DIGEST = "cd87e597c257434e4cda7818a5504389ee36e0c2632b9bdebe9eb4792faf4571"
+REVIEW_RUN_TREE_DIGEST = "7e1ee2ad9face52ebae1ec8686f442691e749f92d0df09fab2e432c70cb2b023"
 
 
 def orchestrate(
