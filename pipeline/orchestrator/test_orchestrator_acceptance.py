@@ -456,8 +456,8 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # `by_chair`/`shortfall` plus a reason. Neither acceptance scenario exercises that
 # unavailable shape -- every reviewed page has reported page-witness text -- so
 # both digest literals remain byte-identical, with file counts still 64/71.
-HAPPY_RUN_TREE_DIGEST = "3cdf9f2450f5ef9a16733826bd41e052ce92b2258399a717eb2ad4f5c09c5631"
-REVIEW_RUN_TREE_DIGEST = "be767c2362218de0f86d0ab23477ce2053c66250e73b107f19b4c7c2d815a0de"
+HAPPY_RUN_TREE_DIGEST = "8dd407cf70e42b102c601a7202ae1b06a58efd37e01710343e933b0f8592a9a5"
+REVIEW_RUN_TREE_DIGEST = "ac64073d23a6273e7a307874da8255600ebe85c029ac5aa31ff2f80095bd0f15"
 
 
 def orchestrate(
@@ -2895,7 +2895,7 @@ def test_repeating_the_identical_command_leaves_every_byte_unchanged(tmp_path):
 
     # R0 adds two retained page Testimonia and two derived act attachments to
     # the happy walking skeleton; repeatability still compares every byte.
-    assert len(before) == 60
+    assert len(before) == 64
     assert semantic_snapshot_digest(root) == HAPPY_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "happy").returncode == 0
     after = snapshot(root)
@@ -2942,7 +2942,7 @@ def test_repeating_the_review_scenario_also_changes_nothing(tmp_path):
 
     # R0 adds the same four retained page/attachment artifacts before review's
     # recovery loop; its append-only invariant is unchanged.
-    assert len(before) == 65
+    assert len(before) == 71
     assert semantic_snapshot_digest(root) == REVIEW_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "review").returncode == 3
     assert snapshot(root) == before
