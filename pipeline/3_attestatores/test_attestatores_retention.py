@@ -1731,3 +1731,42 @@ def test_main_does_not_turn_a_fatal_manifest_outcome_into_a_hold(tmp_path):
     assert retry.returncode == 2
     assert "outside-the-closed-vocabulary" in retry.stderr
     assert "attempt tally UNKNOWN" not in retry.stderr
+
+
+# --- Audit-and-repair regression (F-O5) -----------------------------------------
+#
+# Opus audit-and-repair seat 3, R0. The act-level tally walk filters on
+# `kind == "testimonium"`, so the `payload["scope"] == "page"` skip inside the loop
+# was unreachable. Had anything reached it, one self-reported field would have
+# carried an act-scoped record past every check in `attempt_tally` -- its closed
+# field set, its named chair, its content health, and `validate_tallied_testimonium`.
+# `scope` and `page_ordinal` were also listed as optional act-level payload fields,
+# which is what made the disguise well-formed in the first place.
+
+
+def test_an_act_scoped_testimonium_cannot_wear_page_scope_to_skip_the_tally(tmp_path):
+    """A field nothing validates is a field nothing downstream can trust.
+
+    This is the file's own rule about its closed payload, applied to the two
+    fields that belong to the page-scoped kind. A resealed act-scoped record
+    claiming `scope: "page"` must make the count UNKNOWN, not disappear from it.
+    """
+    run_root, tree = run_to_designator(tmp_path, "happy")
+    assert (
+        invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py").returncode
+        == 0
+    )
+    record = _testimonium_for(tree, act_key="a1", chair="attestator_2", ordinal=1)
+    changed = copy.deepcopy(record)
+    changed["payload"]["scope"] = "page"
+    changed["payload"]["page_ordinal"] = 1
+    changed["self_hash"] = self_hash(changed)
+    path = tree.resolve(tree.artifact_path(ATTESTATORES, "testimonium", record["artifact_id"]))
+    path.write_bytes(canonical_bytes(changed))
+    tree.write_manifest(ATTESTATORES)
+
+    tally = attestatores.attempt_tally(tree)
+
+    assert tally["state"] == "UNKNOWN"
+    assert tally["hold"] is True
+    assert "unknown field(s) ['page_ordinal', 'scope']" in tally["reason"], tally["reason"]

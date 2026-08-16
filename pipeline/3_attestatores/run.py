@@ -568,9 +568,11 @@ TESTIMONIUM_FIELDS = frozenset(
         "content_health",
     }
 )
-OPTIONAL_TESTIMONIUM_FIELDS = frozenset(
-    {"reason", "reported", "page_witness", "scope", "page_ordinal"}
-)
+# `page_witness` marks a page chair's act-scoped compatibility record and is
+# validated here. `scope` and `page_ordinal` are deliberately NOT listed: they
+# belong to the page-scoped kind, which this closed act-level payload never
+# carries, and allowing them here let a resealed act record wear page clothing.
+OPTIONAL_TESTIMONIUM_FIELDS = frozenset({"reason", "reported", "page_witness"})
 
 
 def testimonium_payload(
@@ -959,6 +961,13 @@ def attempt_tally(
             "reason": "the stored Attestatores manifest does not equal its rebuilt inventory",
         }
 
+    # Page-scoped Testimonia are independently retained source evidence under their
+    # own kind, so this act-level walk never sees one: the act denominator is
+    # rebuilt from the derived attachments instead of by pretending a page record
+    # is an act attempt. There was also a `payload["scope"] == "page"` skip inside
+    # the loop below, which this filter made unreachable -- and which, had anything
+    # reached it, would have carried an act-scoped record past every check in this
+    # function on the strength of one self-reported field. Found in audit; F-O5.
     testimonia = [entry for entry in rebuilt["artifacts"] if entry["kind"] == "testimonium"]
     by_act = {act["act_id"]: act for act in acts or ()}
     try:
@@ -969,13 +978,6 @@ def attempt_tally(
             payload = record.get("payload")
             if not isinstance(payload, dict):
                 raise SchemaRefusal("a Testimonium carries no object payload")
-            # Page-scoped Testimonia are independently retained source evidence.
-            # The act-level denominator below is rebuilt from their derived
-            # attachments, not by pretending a page record is an act attempt.
-            if payload.get("scope") == "page":
-                if not isinstance(payload.get("page_ordinal"), int):
-                    raise SchemaRefusal("a page-scoped Testimonium has no page ordinal")
-                continue
             if missing := sorted(TESTIMONIUM_FIELDS - set(payload)):
                 raise SchemaRefusal(f"a Testimonium carries no required field(s) {missing}")
             allowed = TESTIMONIUM_FIELDS | OPTIONAL_TESTIMONIUM_FIELDS
