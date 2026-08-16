@@ -588,6 +588,19 @@ def accepted_primed_perlectio(
                 f"act {act_id} embeds prior-draft text that disagrees with its referenced "
                 "lectio-prior"
             )
+        # The reference is bound to stage, kind, subject and digest above -- and
+        # not, until here, to the attempt. A recovered act carries one Pass-A
+        # draft per attempt, and a Perlectio citing a superseded one would
+        # publish `self_revision` measured against a draft its reader never saw.
+        # Where the two drafts happen to read alike (the ordinary case: recovery
+        # recovers coverage, not text) every other check above passes, so this
+        # is the binding that makes the citation the reading's own.
+        if prior_payload.get("attempt_ordinal") != payload.get("attempt_ordinal"):
+            raise SchemaRefusal(
+                f"act {act_id} cites a prior draft from reading attempt "
+                f"{prior_payload.get('attempt_ordinal')!r}, not its own "
+                f"{payload.get('attempt_ordinal')!r}"
+            )
     witnesses: dict[tuple[str, str], str | None] = {}
     for index, item in enumerate(testimonia):
         if not isinstance(item, dict):

@@ -14,18 +14,20 @@ The constructor requires that exact production marker; controls and un-fed
 instruments are distinct artifact kinds and cannot establish by a relabel.
 """
 
+import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 import reseal_chain
 import stage_driver
 
-from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
+from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of, self_hash
 from common.contracts.envelope import build_envelope
 from common.contracts.errors import FatalAccounting
 from common.contracts.identities import artifact_id
-from common.contracts.stages import ARCHETYPUS, ATTESTATORES, RECENSOR
+from common.contracts.stages import ARCHETYPUS, ATTESTATORES, PERLECTOR, RECENSOR
 from common.runtree.store import RunTree
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -49,6 +51,28 @@ def accepted_review(tree: RunTree) -> dict:
 # One shared reseal chain for every forgery in this directory; three private
 # copies would drift apart the first time the envelope gains a bound field.
 _repoint_review = reseal_chain.repoint_review
+
+
+def _orchestrate(root: Path, run_id: str, scenario: str) -> subprocess.CompletedProcess:
+    """A whole run, recovery drain included, for the one test that needs a
+    second reading attempt to exist before it can forge anything."""
+    return subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "pipeline" / "orchestrator" / "run.py"),
+            "--fixture",
+            "synthetic-two-page-v0",
+            "--scenario",
+            scenario,
+            "--run-id",
+            run_id,
+            "--run-root",
+            str(root),
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
 
 
 def test_a_testimonium_cannot_substitute_for_a_perlectio_reference(tmp_path):
@@ -255,6 +279,81 @@ def test_embedded_prior_text_must_match_the_referenced_lectio_prior(tmp_path):
     assert result.returncode == 2, result.stderr
     assert "Traceback" not in result.stderr
     assert "disagrees with its referenced lectio-prior" in result.stderr
+
+
+def test_a_prior_draft_from_another_reading_attempt_cannot_establish(tmp_path):
+    """The last unbound relation in the series above.
+
+    The prior reference is bound to stage, kind, subject and digest, and its
+    embedded text must equal the referenced record's. None of that bound the
+    *attempt*. A recovered act carries one Pass-A draft per attempt, and the two
+    drafts ordinarily read alike -- recovery recovers coverage, not text -- so a
+    Perlectio citing the superseded draft satisfied every other check while
+    publishing `self_revision` against a draft its reader never saw. This uses
+    the `review` scenario because it is the one that genuinely reads an act
+    twice; the stale reference here is a real sibling artifact, not a forgery
+    of a shape the pipeline never writes.
+    """
+    root = tmp_path / "runs"
+    # The orchestrator, not the raw stage sequence: `review`'s second attempt
+    # only exists after the recovery drain, and that drain is the orchestrator's.
+    assert _orchestrate(root, "r", "review").returncode == 3
+    tree = RunTree(root, "r")
+    # The orchestrator already established this act honestly. Clear that record
+    # so stage 6 re-derives from the forged chain on a clean slate: otherwise a
+    # regression here would be stopped by artifact immutability rather than by
+    # the refusal under test, and the red proof would not distinguish them.
+    for entry in tree.build_manifest(ARCHETYPUS)["artifacts"]:
+        tree.resolve(entry["relative_path"]).unlink()
+    review = accepted_review(tree)
+    act_id = review["subject_id"]
+
+    reading_ref = review["payload"]["perlectio_ref"]
+    reading_path = tree.resolve(reading_ref["relative_path"])
+    reading = json.loads(reading_path.read_text(encoding="utf-8"))
+    assert reading["payload"]["attempt_ordinal"] == 2, "review's reviewed reading is the reread"
+
+    priors = [
+        tree.read_artifact(PERLECTOR, "lectio-prior", entry["artifact_id"])
+        for entry in tree.build_manifest(PERLECTOR)["artifacts"]
+        if entry["kind"] == "lectio-prior" and entry["subject_id"] == act_id
+    ]
+    stale = next(prior for prior in priors if prior["payload"]["attempt_ordinal"] == 1)
+    stale_path = tree.resolve(tree.artifact_path(PERLECTOR, "lectio-prior", stale["artifact_id"]))
+    stale_ref = {
+        "relative_path": tree.artifact_path(PERLECTOR, "lectio-prior", stale["artifact_id"]),
+        "sha256": digest_bytes(stale_path.read_bytes()),
+    }
+    embedded = reading["payload"]["dossier"]["prior_draft"]
+    assert stale["payload"]["text"] == embedded["text"], (
+        "the two attempts' drafts must read alike here, or the text-equality check "
+        "would fire and this test would prove nothing about the attempt binding"
+    )
+
+    current_ref = embedded["reference"]
+    embedded["reference"] = stale_ref
+    dossier = reading["payload"]["dossier"]
+    dossier["dossier_digest"] = digest_of(
+        {key: value for key, value in dossier.items() if key != "dossier_digest"}
+    )
+    reading["inputs"] = [
+        stale_ref if reference == current_ref else reference for reference in reading["inputs"]
+    ]
+    reading["self_hash"] = self_hash(reading)
+    reading_path.write_bytes(canonical_bytes(reading))
+    _repoint_review(
+        tree,
+        review,
+        {
+            "relative_path": reading_ref["relative_path"],
+            "sha256": digest_bytes(reading_path.read_bytes()),
+        },
+    )
+
+    result = invoke(root, "r", "review", "pipeline/6_archetypus/run.py")
+    assert result.returncode == 2, result.stderr
+    assert "Traceback" not in result.stderr
+    assert "cites a prior draft from reading attempt 1, not its own 2" in result.stderr
 
 
 def test_a_primed_false_flag_cannot_establish(tmp_path):
