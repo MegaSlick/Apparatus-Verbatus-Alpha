@@ -2,13 +2,7 @@
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import pytest
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "2_designator"))
-
 from feeding import (
     CHURRO_OUTPUT_TOKENS,
     DAI_MAX_WIDTH_PX,
@@ -20,8 +14,8 @@ from feeding import (
     retain_model_view,
     stage_major_schedule,
 )
-from geometry_layer import retain_chandra_response
 
+from common.chandra_custody import retain_chandra_response
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import SchemaRefusal
 

@@ -122,10 +122,11 @@ def chandra_capture_intake(
 ) -> dict[str, Any]:
     """Consume R2's one-receipt raw response without re-serving Chandra.
 
-    Imports R2 at this narrow custody boundary only.  The result intentionally
-    carries the two original references alongside the exact raw bytes' digest.
+    The shared custody rule lives in common/chandra_custody.py (a stage may not
+    import another stage's module).  The result intentionally carries the two
+    original references alongside the exact raw bytes' digest.
     """
-    from geometry_layer import read_retained_chandra_response
+    from common.chandra_custody import read_retained_chandra_response
 
     raw = read_retained_chandra_response(tree, response_ref, receipt_ref)
     return {
