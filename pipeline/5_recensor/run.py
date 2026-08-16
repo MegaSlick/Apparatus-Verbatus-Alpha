@@ -946,7 +946,11 @@ def testimony_content_findings(context) -> dict[int, dict]:
             continue
         text = payload.get("reported")
         if not isinstance(text, str):
-            raise FatalAccounting("page Testimonium has no textual page identity")
+            # Deliberately not the identity refusal above. A record that names its
+            # page and chair but carries a non-textual `reported` is a different
+            # fault from one that names neither, and one string for two faults
+            # sends whoever reads the exit to the wrong producer.
+            raise FatalAccounting("page Testimonium's reported page text is not text")
         spans = []
         for act in expected_acts(context):
             if act["page_ordinal"] != ordinal:

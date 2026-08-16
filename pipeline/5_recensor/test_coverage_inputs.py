@@ -266,6 +266,14 @@ def test_each_act_gets_a_private_copy_of_its_pages_geometry_finding():
     assert RUN.geometry_coverage_for({}, 7) is not RUN.NO_PAGE_CONSERVATION
 
 
+def test_a_non_textual_reported_page_body_is_named_as_its_own_fault():
+    """F-O2: two distinct producer faults may not share one refusal string."""
+    context = _context(_page_testimonium(outcome="read", reported={"lines": []}))
+
+    with pytest.raises(FatalAccounting, match="reported page text is not text"):
+        RUN.testimony_content_findings(context)
+
+
 def test_content_and_audit_holds_compose_in_stable_recorded_order():
     """V5: R6 coverage wins precedence, but neither active cause disappears."""
     outcome, reason = RUN.review_route_from_findings(
