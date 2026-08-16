@@ -44,8 +44,16 @@ class _ArtifactTree:
         return record
 
 
+class _Context(SimpleNamespace):
+    def artifact_ref(self, stage, kind, artifact_id):
+        return {
+            "relative_path": f"stages/{stage}/{kind}/{artifact_id}.json",
+            "sha256": "0" * 64,
+        }
+
+
 def _context(*records):
-    return SimpleNamespace(tree=_ArtifactTree(records))
+    return _Context(tree=_ArtifactTree(records))
 
 
 def _page_testimonium(*, outcome, reported=...):
@@ -58,6 +66,45 @@ def _page_testimonium(*, outcome, reported=...):
         "subject_id": "page-1",
         "outcome": outcome,
         "payload": payload,
+    }
+
+
+def _conservation(artifact_id, *, ordinal=1, measurable=True, components=None):
+    return {
+        "artifact_id": artifact_id,
+        "kind": "conservation",
+        "subject_id": f"page-{artifact_id}",
+        "outcome": "measured",
+        "payload": {
+            "page_ordinal": ordinal,
+            "ink_measurable": measurable,
+            "residual_components": [] if components is None else components,
+        },
+    }
+
+
+def _attachment(context, *, end):
+    return {
+        "artifact_id": "attachment-1",
+        "kind": "act-attachment",
+        "subject_id": "act-1",
+        "outcome": "attached",
+        "payload": {
+            "attachments": [
+                {
+                    "chair": "attestator_1",
+                    "page_witness": True,
+                    "testimonium_ref": context.artifact_ref(
+                        RUN.ATTESTATORES, "page-testimonium", "page-witness-1"
+                    ),
+                    "attached": True,
+                    "alignment": {
+                        "status": "aligned",
+                        "witness_span": {"start": 0, "end": end},
+                    },
+                }
+            ]
+        },
     }
 
 
@@ -97,3 +144,96 @@ def test_each_act_gets_a_private_copy_of_its_pages_content_finding():
     assert sibling["by_chair"]["attestator_1"]["uncovered_non_whitespace_offsets"] == [5]
     assert sibling["shortfall"] is True
     assert findings[1]["by_chair"]["attestator_1"]["uncovered_non_whitespace_offsets"] == [5]
+
+
+def test_a_real_uncovered_testimony_character_routes_to_review(monkeypatch):
+    """V2a: a genuine content shortfall is measured and reaches the hold route."""
+    page = _page_testimonium(outcome="read", reported="alphaX")
+    context = _context(page)
+    context.tree.records["attachment-1"] = _attachment(context, end=5)
+    monkeypatch.setattr(
+        RUN,
+        "expected_acts",
+        lambda unused: [{"act_id": "act-1", "act_key": "a1", "page_ordinal": 1}],
+    )
+
+    finding = RUN.testimony_content_findings(context)[1]
+
+    assert finding["by_chair"]["attestator_1"]["uncovered_non_whitespace_offsets"] == [5]
+    assert finding["shortfall"] is True
+    outcome, reason = RUN.review_route_from_findings(
+        testimony_shortfall=finding["shortfall"],
+        audit_unresolved=False,
+        under_witnessed=False,
+    )
+    assert outcome == "held-for-review"
+    assert "testimony coverage is incomplete" in reason
+
+
+def test_geometry_coverage_accepts_a_matching_residual_partition(monkeypatch):
+    context = _context(_conservation("conservation-1", components=[{"bounds": {}}]))
+    monkeypatch.setattr(
+        RUN,
+        "expected_acts",
+        lambda unused: [{"act_key": "residual:1:0"}],
+    )
+
+    assert RUN.geometry_coverage_inputs(context) == {
+        1: {
+            "ink_measurable": True,
+            "residual_component_count": 1,
+            "residual_act_count": 1,
+        }
+    }
+
+
+def test_geometry_coverage_refuses_a_divergent_residual_partition(monkeypatch):
+    context = _context(_conservation("conservation-1", components=[{"bounds": {}}]))
+    monkeypatch.setattr(RUN, "expected_acts", lambda unused: [])
+
+    with pytest.raises(FatalAccounting, match="held-act partition diverges"):
+        RUN.geometry_coverage_inputs(context)
+
+
+def test_geometry_coverage_refuses_malformed_page_facts(monkeypatch):
+    context = _context(_conservation("conservation-1", ordinal=True))
+    monkeypatch.setattr(RUN, "expected_acts", lambda unused: [])
+
+    with pytest.raises(FatalAccounting, match="malformed or duplicate page facts"):
+        RUN.geometry_coverage_inputs(context)
+
+
+def test_geometry_coverage_refuses_duplicate_page_facts(monkeypatch):
+    context = _context(
+        _conservation("conservation-1"),
+        _conservation("conservation-2"),
+    )
+    monkeypatch.setattr(RUN, "expected_acts", lambda unused: [])
+
+    with pytest.raises(FatalAccounting, match="malformed or duplicate page facts"):
+        RUN.geometry_coverage_inputs(context)
+
+
+def test_unmeasured_geometry_cannot_mint_a_residual_act(monkeypatch):
+    context = _context(_conservation("conservation-1", measurable=False))
+    monkeypatch.setattr(
+        RUN,
+        "expected_acts",
+        lambda unused: [{"act_key": "residual:1:0"}],
+    )
+
+    with pytest.raises(FatalAccounting, match="unmeasured.*minted residual acts"):
+        RUN.geometry_coverage_inputs(context)
+
+
+def test_content_and_audit_holds_compose_in_stable_recorded_order():
+    """V5: R6 coverage wins precedence, but neither active cause disappears."""
+    outcome, reason = RUN.review_route_from_findings(
+        testimony_shortfall=True,
+        audit_unresolved=True,
+        under_witnessed=True,
+    )
+
+    assert outcome == "held-for-review"
+    assert reason.index("testimony coverage") < reason.index("audit re-proof cap")
+    assert reason.index("audit re-proof cap") < reason.index("witness floor")

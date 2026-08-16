@@ -1012,6 +1012,37 @@ def testimony_content_for_page(findings: dict[int, dict], ordinal: int) -> dict:
     return copy.deepcopy(findings.get(ordinal, {"by_chair": {}, "shortfall": False}))
 
 
+def review_route_from_findings(
+    *, testimony_shortfall: bool, audit_unresolved: bool, under_witnessed: bool
+) -> tuple[str, str] | None:
+    """Compose independent review findings without last-writer-wins routing.
+
+    Coverage comes first under GOALS 1, followed by R5b's reading-audit finding,
+    then the witness floor. Every active reason is retained in that stable order;
+    they all map to the same `held-for-review` outcome. `audit_unresolved` is the
+    pre-wave composition seam: this branch has no R5b producer yet, so its current
+    caller supplies `False`; the R5b rebase must supply its verified audit state.
+    """
+    reasons = []
+    if testimony_shortfall:
+        reasons.append(
+            "a page Testimonium contains non-whitespace text outside the ordered union "
+            "of that witness's aligned act attachments; testimony coverage is incomplete"
+        )
+    if audit_unresolved:
+        reasons.append(
+            "the Perlector exhausted its sealed audit re-proof cap with unresolved span(s); "
+            "they remain explicit uncertainty rather than a silent retry"
+        )
+    if under_witnessed:
+        reasons.append(
+            "the configured act-level witness floor is not met; a witness failure is not coverage"
+        )
+    if not reasons:
+        return None
+    return "held-for-review", "; ".join(reasons)
+
+
 def _reconcile_reading_regions(reading: dict, regions: list[dict], act_id: str) -> list[dict]:
     """Require a completed Perlectio to name exactly every region currently cut."""
     basis = reading_basis_regions(reading, f"reading of {act_id}")
@@ -1201,6 +1232,14 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         geometry_coverage = geometry_inputs.get(
             act["page_ordinal"],
             {"ink_measurable": False, "residual_component_count": 0, "residual_act_count": 0},
+        )
+        findings_route = review_route_from_findings(
+            testimony_shortfall=content_coverage["shortfall"],
+            # WAVE WIRING (was the pre-wave seam `False`): R5b's Pass-C
+            # producer now sits below this branch, so the composer receives
+            # the verified audit state the seat-era candidate could not have.
+            audit_unresolved=audit_unresolved,
+            under_witnessed=coverage["under_witnessed"],
         )
 
         if act["outcome"] == "held":
@@ -1447,23 +1486,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "proposal set — GOALS 1: a missed act is worse than a poorly read one); "
                 "accepting this act would leave that ink unaccounted for",
             )
-        elif audit_unresolved:
-            outcome, reason = (
-                "held-for-review",
-                "the Perlector exhausted its sealed audit re-proof cap with unresolved span(s); "
-                "they remain explicit uncertainty rather than a silent retry",
-            )
-        elif content_coverage["shortfall"]:
-            outcome, reason = (
-                "held-for-review",
-                "a page Testimonium contains non-whitespace text outside the ordered union "
-                "of that witness's aligned act attachments; testimony coverage is incomplete",
-            )
-        elif coverage["under_witnessed"]:
-            outcome, reason = (
-                "held-for-review",
-                "the configured act-level witness floor is not met; a witness failure is not coverage",
-            )
+elif findings_route is not None:
+            outcome, reason = findings_route
         elif act_key in scenario["hold_acts"]:
             outcome, reason = "held-for-review", "the act did not reconcile and needs a human"
         elif wants_recovery:
