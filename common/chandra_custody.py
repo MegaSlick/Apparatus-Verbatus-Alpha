@@ -8,15 +8,39 @@ read are one custody rule with two stage-side callers, so the rule lives in
 uniquely named module (`pipeline/test_stage_import_boundaries.py`), and
 duplicating the check would let the two halves drift (the R0 freeze-note
 derived-record pattern).
+
+A serving receipt carries no reference back to any response (`common/chairs/
+receipts.py`'s schema has no such field), so two independently-supplied,
+individually-valid references are not proof they came from the same Chandra
+call. `retain_chandra_response` therefore also writes a small content-addressed
+custody record naming exactly the receipt and response it was given, and
+`read_retained_chandra_response` requires that same record back and refuses a
+response paired with any receipt other than the one recorded here.
 """
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
-from common.contracts.canonical import digest_bytes
+from common.contracts.canonical import canonical_bytes, digest_bytes
 from common.contracts.errors import SchemaRefusal
-from common.contracts.stages import DESIGNATOR
+from common.contracts.stages import DESIGNATOR, writing_directory
+from common.runtree.store import BLOBS_DIR
+
+CUSTODY_BINDING_SCHEMA = "chandra-custody-binding.v1"
+
+# Derived from the run tree's own directory naming (`writing_directory`) rather
+# than written out as a literal: a literal here previously read "designator/…"
+# while `tree.put_blob(DESIGNATOR, …)` actually writes under "2_designator/…"
+# (`common/contracts/stages.STAGE_DIRECTORIES`), so every real response and
+# custody-binding blob failed this module's own prefix check on the first real
+# write. The mismatch was invisible in both existing test suites because their
+# fixture trees fabricated paths from the bare stage name instead of exercising
+# the real numbered layout — the derived-record pattern the R0 freeze note
+# names, reproduced in the test doubles meant to catch it.
+_RESPONSE_PREFIX = f"{writing_directory(DESIGNATOR)}/{BLOBS_DIR}/"
+_RECEIPT_PREFIX = "receipts/sha256/"
 
 
 def _sha(value: object, what: str) -> str:
@@ -40,24 +64,67 @@ def custody_reference(value: object, prefix: str, what: str) -> dict[str, str]:
 
 def retain_chandra_response(
     tree: Any, response: bytes, receipt_ref: dict[str, str]
-) -> dict[str, str]:
-    """Store one raw response blob and bind it jointly to the one serving receipt."""
-    custody_reference(receipt_ref, "receipts/sha256/", "Chandra receipt reference")
+) -> dict[str, Any]:
+    """Store one raw response blob and record its binding to the one serving receipt.
+
+    Returns ``{"response_ref": ..., "custody_ref": ...}``. ``response_ref`` is
+    the plain two-key digest reference geometry proposals also carry;
+    ``custody_ref`` is a separate content-addressed record naming both digests
+    together, which `read_retained_chandra_response` re-verifies rather than
+    trusting that a caller's two loose references belong together.
+    """
+    receipt = custody_reference(receipt_ref, _RECEIPT_PREFIX, "Chandra receipt reference")
     if not isinstance(response, bytes):
         raise SchemaRefusal("Chandra raw response is not bytes")
     digest, published = tree.put_blob(DESIGNATOR, response)
-    reference = {"relative_path": published.relative_path, "sha256": digest}
-    return custody_reference(reference, "designator/blobs/sha256/", "Chandra response reference")
-
-
-def read_retained_chandra_response(tree: Any, response_ref: object, receipt_ref: object) -> bytes:
-    """R3's intake boundary: forged blob or receipt references are refused."""
-    response = custody_reference(
-        response_ref, "designator/blobs/sha256/", "Chandra response reference"
+    response_ref = custody_reference(
+        {"relative_path": published.relative_path, "sha256": digest},
+        _RESPONSE_PREFIX,
+        "Chandra response reference",
     )
-    receipt = custody_reference(receipt_ref, "receipts/sha256/", "Chandra receipt reference")
+    binding = canonical_bytes(
+        {
+            "schema": CUSTODY_BINDING_SCHEMA,
+            "receipt_sha256": receipt["sha256"],
+            "response_sha256": response_ref["sha256"],
+        }
+    )
+    binding_digest, binding_published = tree.put_blob(DESIGNATOR, binding)
+    custody_ref = custody_reference(
+        {"relative_path": binding_published.relative_path, "sha256": binding_digest},
+        _RESPONSE_PREFIX,
+        "Chandra custody binding reference",
+    )
+    return {"response_ref": response_ref, "custody_ref": custody_ref}
+
+
+def read_retained_chandra_response(
+    tree: Any, response_ref: object, receipt_ref: object, custody_ref: object
+) -> bytes:
+    """R3's intake boundary: forged, mismatched, or tampered references are refused."""
+    response = custody_reference(response_ref, _RESPONSE_PREFIX, "Chandra response reference")
+    receipt = custody_reference(receipt_ref, _RECEIPT_PREFIX, "Chandra receipt reference")
+    custody = custody_reference(custody_ref, _RESPONSE_PREFIX, "Chandra custody binding reference")
+    binding_bytes = tree.read_bytes(custody["relative_path"])
+    if digest_bytes(binding_bytes) != custody["sha256"]:
+        raise SchemaRefusal("Chandra custody binding blob differs from its sealed reference")
+    try:
+        recorded = json.loads(binding_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as error:
+        raise SchemaRefusal(f"Chandra custody binding is not valid JSON: {error}") from error
+    if (
+        not isinstance(recorded, dict)
+        or recorded.get("schema") != CUSTODY_BINDING_SCHEMA
+        or recorded.get("receipt_sha256") != receipt["sha256"]
+        or recorded.get("response_sha256") != response["sha256"]
+    ):
+        raise SchemaRefusal(
+            "Chandra response was retained under a different receipt than the one given here"
+        )
     # Receipt validation is delegated to the run tree, which verifies its schema,
-    # path, and bytes.  The response itself is opaque textual custody, never
+    # path, and bytes -- that proves the receipt itself is authentic, not that it
+    # is paired with this response. The custody binding checked above is what
+    # proves the pairing; the response bytes are opaque textual custody, never
     # parsed by this module.
     tree.read_run_receipt(receipt)
     data = tree.read_bytes(response["relative_path"])

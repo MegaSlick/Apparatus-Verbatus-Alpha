@@ -118,21 +118,25 @@ def dai_model_view(
 
 
 def chandra_capture_intake(
-    tree: Any, *, response_ref: object, receipt_ref: object
+    tree: Any, *, response_ref: object, receipt_ref: object, custody_ref: object
 ) -> dict[str, Any]:
     """Consume R2's one-receipt raw response without re-serving Chandra.
 
     The shared custody rule lives in common/chandra_custody.py (a stage may not
-    import another stage's module).  The result intentionally carries the two
-    original references alongside the exact raw bytes' digest.
+    import another stage's module).  ``custody_ref`` is the content-addressed
+    binding record R2's write recorded; without it, two individually-valid
+    references would not be proof they came from the same Chandra call.  The
+    result intentionally carries the original references alongside the exact
+    raw bytes' digest.
     """
     from common.chandra_custody import read_retained_chandra_response
 
-    raw = read_retained_chandra_response(tree, response_ref, receipt_ref)
+    raw = read_retained_chandra_response(tree, response_ref, receipt_ref, custody_ref)
     return {
         "adapter": "chandra-capture.v1",
         "response_ref": response_ref,
         "receipt_ref": receipt_ref,
+        "custody_ref": custody_ref,
         "raw_response_sha256": digest_bytes(raw),
     }
 

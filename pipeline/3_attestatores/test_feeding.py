@@ -18,6 +18,7 @@ from feeding import (
 from common.chandra_custody import retain_chandra_response
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import SchemaRefusal
+from common.contracts.stages import writing_directory
 
 
 def _ref(path: str) -> dict[str, str]:
@@ -25,13 +26,17 @@ def _ref(path: str) -> dict[str, str]:
 
 
 class _Tree:
+    """Mimics the run tree's real numbered stage directories (`writing_directory`),
+    not the bare stage name — see common/chandra_custody.py's module docstring for
+    why that distinction is load-bearing here."""
+
     def __init__(self):
         self.blobs = {}
         self.receipts = []
 
     def put_blob(self, stage, data):
         digest = digest_bytes(data)
-        path = f"{stage}/blobs/sha256/{digest}"
+        path = f"{writing_directory(stage)}/blobs/sha256/{digest}"
         self.blobs[path] = data
         return digest, type("Published", (), {"relative_path": path})()
 
@@ -97,12 +102,67 @@ def test_chandra_intake_consumes_the_r2_blob_under_its_original_receipt():
     tree = _Tree()
     receipt = _ref("receipts/sha256/" + "b" * 64 + ".json")
     raw = b'{"html":"the retained Chandra response"}'
-    response = retain_chandra_response(tree, raw, receipt)
-    intake = chandra_capture_intake(tree, response_ref=response, receipt_ref=receipt)
-    assert intake["response_ref"] == response
+    stored = retain_chandra_response(tree, raw, receipt)
+    intake = chandra_capture_intake(
+        tree,
+        response_ref=stored["response_ref"],
+        receipt_ref=receipt,
+        custody_ref=stored["custody_ref"],
+    )
+    assert intake["response_ref"] == stored["response_ref"]
     assert intake["receipt_ref"] == receipt
+    assert intake["custody_ref"] == stored["custody_ref"]
     assert intake["raw_response_sha256"] == digest_bytes(raw)
     assert tree.receipts == [receipt]
+
+
+def test_chandra_intake_refuses_a_response_retained_under_a_different_receipt():
+    """H3 forgery: two individually-valid references, mismatched pairing."""
+    tree = _Tree()
+    receipt_a = {"relative_path": "receipts/sha256/" + "b" * 64 + ".json", "sha256": "b" * 64}
+    receipt_b = {"relative_path": "receipts/sha256/" + "c" * 64 + ".json", "sha256": "c" * 64}
+    retain_chandra_response(tree, b"call A's response", receipt_a)
+    stored_b = retain_chandra_response(tree, b"call B's unrelated response", receipt_b)
+    with pytest.raises(SchemaRefusal, match="different receipt"):
+        chandra_capture_intake(
+            tree,
+            response_ref=stored_b["response_ref"],
+            receipt_ref=receipt_a,
+            custody_ref=stored_b["custody_ref"],
+        )
+
+
+def test_chandra_intake_refuses_a_receipt_reference_substituted_for_a_response_reference():
+    """H3 forgery: swap the two reference roles."""
+    tree = _Tree()
+    receipt = _ref("receipts/sha256/" + "b" * 64 + ".json")
+    stored = retain_chandra_response(tree, b"a response", receipt)
+    with pytest.raises(SchemaRefusal, match="does not name"):
+        chandra_capture_intake(
+            tree, response_ref=receipt, receipt_ref=receipt, custody_ref=stored["custody_ref"]
+        )
+    with pytest.raises(SchemaRefusal, match="does not name"):
+        chandra_capture_intake(
+            tree,
+            response_ref=stored["response_ref"],
+            receipt_ref=stored["response_ref"],
+            custody_ref=stored["custody_ref"],
+        )
+
+
+def test_chandra_intake_refuses_a_tampered_response_blob():
+    """H3 forgery: the retained bytes no longer match their sealed digest."""
+    tree = _Tree()
+    receipt = _ref("receipts/sha256/" + "b" * 64 + ".json")
+    stored = retain_chandra_response(tree, b"original response bytes", receipt)
+    tree.blobs[stored["response_ref"]["relative_path"]] = b"tampered response bytes"
+    with pytest.raises(SchemaRefusal, match="differs"):
+        chandra_capture_intake(
+            tree,
+            response_ref=stored["response_ref"],
+            receipt_ref=receipt,
+            custody_ref=stored["custody_ref"],
+        )
 
 
 def test_schedule_is_stage_major_chair_outer_act_inner_and_single_resident():
