@@ -25,7 +25,7 @@ from feeding import (
 from common.chandra_custody import retain_chandra_response
 from common.contracts.canonical import digest_bytes, digest_of
 from common.contracts.errors import SchemaRefusal
-from common.contracts.stages import DESIGNATOR, writing_directory
+from common.contracts.stages import ATTESTATORES, DESIGNATOR, writing_directory
 
 PAGE_ID = "pg_fixture"
 PAGE_ORDINAL = 0
@@ -506,6 +506,63 @@ def test_stage_major_execution_refuses_reentry_and_fails_closed_on_unload_failur
             residency=residency,
             serve=lambda *_: None,
         )
+
+
+def test_stage_major_execution_fails_closed_when_the_load_itself_fails():
+    """A chair whose load raised is resident, not vacant: nothing may follow it.
+
+    Distinct from the failed-unload case above. There the resource was known to
+    have been loaded; here it may have been half loaded, and the reservation is
+    deliberately taken before `load` so that the difference cannot be guessed at.
+    """
+    unloads = []
+
+    def load(chair):
+        raise RuntimeError("chair weights did not map")
+
+    def unload(chair, resource):
+        unloads.append((chair, resource))
+
+    residency = SingleChairResidency(load, unload)
+    with pytest.raises(RuntimeError, match="did not map"):
+        execute_stage_major_schedule(
+            stage_major_schedule("parish-7", [{"act_id": "a1"}], ["attestator_1"]),
+            residency=residency,
+            serve=lambda *_: None,
+        )
+    assert residency.resident == "attestator_1"
+    assert unloads == [], "no unload may be claimed for a resource that never loaded"
+    with pytest.raises(SchemaRefusal, match="while chair 'attestator_1' is resident"):
+        execute_stage_major_schedule(
+            stage_major_schedule("parish-7", [{"act_id": "a1"}], ["attestator_2"]),
+            residency=residency,
+            serve=lambda *_: None,
+        )
+
+
+def test_model_view_refuses_a_parser_it_cannot_run_instead_of_recording_pending():
+    tree = _Tree()
+    with pytest.raises(SchemaRefusal, match="does not run for adapter"):
+        retain_model_view(
+            tree,
+            adapter="dai-atr.v1",
+            view={},
+            raw_response=b"native DAI text",
+            transport_stop_reason="eos",
+            parser="xml",
+        )
+    assert tree.blobs == {}
+    unparsed = retain_model_view(
+        tree,
+        adapter="dai-atr.v1",
+        view={},
+        raw_response=b"native DAI text",
+        transport_stop_reason="eos",
+    )
+    assert unparsed["parse"] == {"state": "not-requested", "parser": None}
+    assert unparsed["raw_response_ref"]["relative_path"].startswith(
+        f"{writing_directory(ATTESTATORES)}/blobs/sha256/"
+    )
 
 
 def test_stage_major_execution_refuses_a_schedule_that_returns_to_a_prior_chair():

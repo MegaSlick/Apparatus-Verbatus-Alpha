@@ -19,6 +19,7 @@ from typing import Any, Callable, Iterator
 
 from common.contracts.canonical import digest_bytes, digest_of
 from common.contracts.errors import SchemaRefusal
+from common.contracts.stages import ATTESTATORES
 
 CHURRO_OUTPUT_TOKENS = 24_000
 DAI_MAX_WIDTH_PX = 1_500
@@ -45,6 +46,8 @@ DAI_LIMIT_SOURCES = {
     ),
 }
 SCHEDULING_POLICY = "chair-outer-act-inner.stage-major-parish.v1"
+# The (adapter, parser) pairs `retain_model_view` can actually carry to a state.
+_RUNNABLE_PARSERS = frozenset({("churro.v1", "xml")})
 _UNCERTAINTY_TOKENS = ("[UNCERTAIN]", "[CROSSED_OUT]")
 _REPETITION_WINDOW = 24
 _REPETITION_MIN_REPEATS = 3
@@ -258,7 +261,12 @@ def retain_model_view(
         raise SchemaRefusal("model-view raw response is not bytes")
     if not isinstance(transport_stop_reason, str) or not transport_stop_reason:
         raise SchemaRefusal("model-view transport stop reason is blank")
-    raw_digest, published = tree.put_blob("attestatores", raw_response)
+    # A parser this boundary cannot run would leave `parse.state` at "pending"
+    # forever: a finished attempt wearing the look of one still in progress, which
+    # is the shape GOVERNANCE 2 refuses. Ask for a parse that runs, or ask for none.
+    if parser is not None and (adapter, parser) not in _RUNNABLE_PARSERS:
+        raise SchemaRefusal(f"model-view parser {parser!r} does not run for adapter {adapter!r}")
+    raw_digest, published = tree.put_blob(ATTESTATORES, raw_response)
     record: dict[str, Any] = {
         "schema": "attestatores-model-view.v1",
         "adapter": adapter,
@@ -323,6 +331,15 @@ class SingleChairResidency:
     The resident name is reserved before ``load`` runs and is cleared only after
     ``unload`` succeeds. A failed unload therefore blocks every later acquire;
     it can never be mistaken for proof that the resource became vacant.
+
+    **A failed load blocks them too, and that is the point.** The reservation is
+    taken before ``load``, so a load that raises leaves the chair marked resident
+    with no matching ``unload`` -- a load can fail with weights already mapped,
+    and this guard exists to keep a second chair off a card whose occupancy is
+    unknown. Clearing the reservation would be guessing that nothing was
+    allocated. Recovering from it is an operator act against observed provider
+    state, exactly as GOVERNANCE 8 requires of a shutdown, never an inference
+    this object may make on its own.
     """
 
     def __init__(
