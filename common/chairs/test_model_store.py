@@ -18,6 +18,7 @@ from common.chairs.model_store import (
     SURYA_OCR_2_REFUSAL,
     derived_inventory,
     load_download_record,
+    pod_binding,
     promote_verified_snapshot,
     read_derived_inventory,
     require_complete_store,
@@ -25,6 +26,7 @@ from common.chairs.model_store import (
     write_derived_inventory,
     write_download_record,
 )
+from common.chairs.registry import CACHE_DESCRIPTOR
 from common.contracts.canonical import canonical_bytes
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -464,3 +466,58 @@ def test_every_store_chair_is_a_models_toml_role_or_one_recorded_exception():
     assert store_chairs - set(config.chairs) == set(CHAIRS_WITHOUT_ROSTER_ROLE)
     assert set(CHAIRS_WITHOUT_ROSTER_ROLE) <= store_chairs
     assert all(reason.strip() for reason in CHAIRS_WITHOUT_ROSTER_ROLE.values())
+
+
+# --- O3: the pod-sharing contract, encoded rather than described ----------------
+
+
+def test_pod_binding_splits_the_store_into_cache_root_and_model_root_halves(tmp_path):
+    record = _store(tmp_path)
+
+    binding = pod_binding(record)
+
+    # Six Hugging Face chairs over five snapshots: the two chandra chairs each
+    # need their own role-keyed cache entry, both made from the one stored
+    # snapshot, because a cache entry is keyed by role and a store is not.
+    assert binding["cache_root_entries"] == {
+        "designator_structure": "hf/chandra-ocr-2",
+        "attestator_1": "hf/chandra-ocr-2",
+        "attestator_2": "hf/dai-recordgold-atr",
+        "attestator_3": "hf/churro-3B",
+        "secondary_proposer": "hf/yolo26-detection",
+        "perlector": "hf/qwen3.5-9B",
+    }
+    assert len(set(binding["cache_root_entries"].values())) == 5
+    # model_root is local-repository only; it is not a second cache.
+    assert binding["model_root_entries"] == {"proposer_surya2": "local/surya2-detection"}
+    assert binding["pending_chairs"] == {}
+    assert binding["complete"] is True
+
+
+def test_pod_binding_reports_a_chair_whose_artifact_is_not_fetched_yet(tmp_path):
+    record = _mark_pending(tmp_path, _store(tmp_path), "surya2-detection", "not fetched yet")
+
+    binding = pod_binding(record)
+
+    assert binding["model_root_entries"] == {}
+    assert binding["pending_chairs"] == {"proposer_surya2": "surya2-detection"}
+    assert binding["complete"] is False
+
+
+def test_verify_store_refuses_a_snapshot_used_directly_as_a_cache_entry(tmp_path):
+    """Pointing cache_root at the store makes the registry stamp its descriptor.
+
+    The generic refusal for that ("extra file") names the file but not the
+    cause; a store is keyed by artifact and a cache by role, and the two chairs
+    sharing chandra-ocr-2 would in any case write two different descriptors
+    over the one stored directory.
+    """
+
+    record = _store(tmp_path)
+    entry = next(item for item in record["artifacts"] if item["artifact"] == "chandra-ocr-2")
+    (tmp_path / entry["snapshot"] / CACHE_DESCRIPTOR).write_bytes(
+        canonical_bytes({"role": "attestator_1"})
+    )
+
+    with pytest.raises(DigestMismatchRefusal, match="is not a cache_root entry"):
+        verify_store(tmp_path)

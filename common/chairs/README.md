@@ -82,6 +82,15 @@ caller-supplied root contains canonical `download_record.json`, `hf/`, `local/`,
 never fetches. `model_root` in `config/models.toml` remains local-repository
 only and relative to that file.
 
+The store is shared with the future pod, and the two sides key their directories
+differently: a store directory is per **artifact** (chandra-ocr-2 fills two
+chairs at one revision and is stored once), a `cache_root` entry is per **role**.
+`pod_binding` states which chairs a pod materializes into `cache_root` and which
+into `model_root` — the local-repository half, resolved relative to
+`config/models.toml` and never a second cache — and `verify_store` refuses a
+store snapshot that has been used as a cache entry directly, naming that cause
+rather than reporting an extra file.
+
 A store is materialized one snapshot at a time, so a record entry is either
 `present` — snapshot, manifest, pin, licence and carried content — or
 `pending-fetch`, which names the artifact, its roster origin, and the reason its

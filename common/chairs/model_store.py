@@ -27,6 +27,7 @@ from .manifests import (
     verify_snapshot,
 )
 from .models import ChairIdentity, is_hf_revision, is_sha256
+from .registry import CACHE_DESCRIPTOR
 
 STORE_SCHEMA = "verbatus-model-store.v1"
 INVENTORY_SCHEMA = "verbatus-model-inventory.v1"
@@ -216,6 +217,50 @@ def derived_inventory(record: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def pod_binding(record: Mapping[str, Any]) -> dict[str, Any]:
+    """The role-keyed view a pod needs of this artifact-keyed store.
+
+    The store is "durable, off-repository, and shared with the future pod", and
+    the two sides key their directories differently.  ``ChairRegistry`` reads a
+    Hugging Face chair from ``cache_root/<role>`` — one directory per *role*,
+    carrying the cache's own ``.chair-identity.json`` — while this store holds
+    one directory per *artifact*, because chandra-ocr-2 fills two chairs at one
+    revision and is stored once rather than twice.  So a pod materializes a
+    role-keyed ``cache_root`` from this binding; it never points ``cache_root``
+    at the store's ``hf/``, where five artifact-named directories satisfy none
+    of the seven role lookups, and where the two chairs sharing chandra would
+    write two different cache descriptors over one directory.
+
+    ``model_root`` is the other half and is not interchangeable with the first:
+    it is local-repository only and is resolved relative to
+    ``config/models.toml``'s own directory (``registry._resolve_local_path``),
+    so the Surya bundle is bound by a chair ``path`` beneath that root and never
+    through any cache.
+
+    This function states which roles need which half and where each one's bytes
+    are in the store.  It copies nothing: materializing a cache entry is a host
+    action, and a chair still verifies against its own pinned manifest after it.
+    """
+
+    inventory = derived_inventory(record)
+    cache_root_entries: dict[str, str] = {}
+    model_root_entries: dict[str, str] = {}
+    pending_chairs: dict[str, str] = {}
+    for row in inventory["artifacts"]:
+        if row["state"] == "pending-fetch":
+            pending_chairs[row["chair"]] = row["artifact"]
+        elif row["source"] == "huggingface":
+            cache_root_entries[row["chair"]] = row["snapshot"]
+        else:
+            model_root_entries[row["chair"]] = row["snapshot"]
+    return {
+        "cache_root_entries": cache_root_entries,
+        "model_root_entries": model_root_entries,
+        "pending_chairs": pending_chairs,
+        "complete": inventory["complete"],
+    }
+
+
 def require_complete_store(inventory: Mapping[str, Any]) -> None:
     """Refuse an inventory that is honest about being partial, by name.
 
@@ -297,6 +342,14 @@ def verify_store(store_root: str | Path) -> dict[str, Any]:
                     f"carried content {carried['path']!r} is absent from its digest manifest",
                 )
         snapshot = _under(root, item["snapshot"])
+        if (snapshot / CACHE_DESCRIPTOR).exists():
+            raise DigestMismatchRefusal(
+                item["artifact"],
+                f"the chair registry's cache descriptor {CACHE_DESCRIPTOR!r} is inside this "
+                "store snapshot: a store directory is keyed by artifact and is not a "
+                "cache_root entry, which is keyed by chair role. Materialize "
+                "cache_root/<role> from this snapshot instead — see pod_binding",
+            )
         identity = ChairIdentity(
             role=item["artifact"],
             source=item["source"],
