@@ -72,7 +72,16 @@ def published_payload(tmp_path_factory):
 
 
 def _validate(payload, outcome="read"):
-    perlector.validate_reading_payload(payload, outcome=outcome, fields=perlector._PERLECTIO_FIELDS)
+    protocol_config, protocol_sha256 = perlector.protocol.load(
+        ROOT / "config" / "perlector_protocol.toml"
+    )
+    perlector.validate_reading_payload(
+        payload,
+        outcome=outcome,
+        fields=perlector._PERLECTIO_FIELDS,
+        protocol_config=protocol_config,
+        protocol_sha256=protocol_sha256,
+    )
 
 
 def _reblinded(payload, *, run_id, config_digest):
@@ -104,7 +113,7 @@ def _reblinded(payload, *, run_id, config_digest):
     blinded["prompt"] = perlector.prompts.prompt_evidence(
         identity, reading_dossier, protocol_config, protocol_sha256
     )
-    return blinded
+    return blinded, protocol_config, protocol_sha256
 
 
 def test_a_blinded_dossier_with_a_wrong_witness_label_is_refused(published_payload):
@@ -112,13 +121,17 @@ def test_a_blinded_dossier_with_a_wrong_witness_label_is_refused(published_paylo
     run's own identity, so a swapped or foreign label — invisible to a reader by
     construction — still refuses against the Testimonium basis."""
     run_id, config_digest = "schema-blind-run", "c" * 64
-    blinded = _reblinded(published_payload, run_id=run_id, config_digest=config_digest)
+    blinded, protocol_config, protocol_sha256 = _reblinded(
+        published_payload, run_id=run_id, config_digest=config_digest
+    )
     perlector.validate_reading_payload(
         blinded,
         outcome="read",
         fields=perlector._PERLECTIO_FIELDS,
         run_id=run_id,
         config_digest=config_digest,
+        protocol_config=protocol_config,
+        protocol_sha256=protocol_sha256,
     )
 
     tampered = copy.deepcopy(blinded)
@@ -132,6 +145,8 @@ def test_a_blinded_dossier_with_a_wrong_witness_label_is_refused(published_paylo
             fields=perlector._PERLECTIO_FIELDS,
             run_id=run_id,
             config_digest=config_digest,
+            protocol_config=protocol_config,
+            protocol_sha256=protocol_sha256,
         )
 
 

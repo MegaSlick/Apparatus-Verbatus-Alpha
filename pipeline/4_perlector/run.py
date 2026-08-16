@@ -846,8 +846,11 @@ def validate_reading_payload(
     ):
         raise SchemaRefusal("a prior-draft protocol record is not its closed schema")
     if protocol_config is None and protocol_record is not None:
-        protocol_config, observed_protocol_sha256 = protocol.load("config/perlector_protocol.toml")
-        protocol_sha256 = protocol_sha256 or observed_protocol_sha256
+        raise SchemaRefusal(
+            "a Perlector reading carries a prior-draft protocol record but this validation "
+            "call was not given the sealed protocol bytes it reproduces from -- a cwd-relative "
+            "reload is not a sealed-config recheck"
+        )
     if protocol_config is None:
         protocol_config = {
             "page_shared_prefix_policy": protocol.PAGE_SHARED_PREFIX_POLICY,
