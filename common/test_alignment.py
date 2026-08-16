@@ -1,5 +1,10 @@
 """R4 alignment: markup loss is visible and bounded failures are records."""
 
+import signal
+import time
+
+import pytest
+
 from common.alignment import AlignmentLimits, align_to_anchor, markup_text_view
 
 
@@ -35,3 +40,98 @@ def test_alignment_carries_matching_spans_through_markup_normalization():
     assert result["spans"] == [
         {"witness": {"start": 0, "end": 10}, "anchor": {"start": 0, "end": 10}}
     ]
+
+
+# --- BREAKER battery (R4 audit, Sonnet seat 1) ------------------------------
+
+
+def test_markup_that_decodes_to_the_same_text_keeps_independent_raw_offsets():
+    """Two differently-marked-up strings that normalize to identical text must
+    not share an offset map: each `offset_map` traces back to its OWN raw
+    bytes, never the other's, even though `text` is byte-for-byte equal."""
+    tag_before = markup_text_view("<b>alpha</b> beta")
+    tag_after = markup_text_view("alpha <i>beta</i>")
+
+    assert tag_before["text"] == tag_after["text"] == "alpha beta"
+    assert tag_before["offset_map"][0] == "<b>alpha</b> beta".index("a")
+    assert tag_after["offset_map"][0] == "alpha <i>beta</i>".index("a")
+    # The "beta" half sits at a different raw offset in each source string;
+    # an aliased or cached map would fail exactly here.
+    beta_index_before = tag_before["text"].index("beta")
+    beta_index_after = tag_after["text"].index("beta")
+    assert tag_before["offset_map"][beta_index_before] != tag_after["offset_map"][beta_index_after]
+
+
+def test_an_anchor_that_repeats_the_witness_text_still_aligns_without_crashing():
+    """A phrase appearing twice in the anchor (a repeated formulaic opening,
+    most plainly) must not raise or silently drop the witness: `SequenceMatcher`
+    resolves it to a real, well-formed span selection, never a partial map."""
+    result = align_to_anchor(
+        "alpha beta",
+        "alpha beta gamma alpha beta",
+        AlignmentLimits(max_characters=1000, max_character_pairs=100_000, timeout_seconds=1),
+    )
+
+    assert result["status"] == "aligned"
+    for span in result["spans"]:
+        assert span["witness"]["start"] >= 0
+        assert span["witness"]["end"] <= len("alpha beta")
+        assert span["anchor"]["end"] <= len("alpha beta gamma alpha beta")
+    matched = sum(span["witness"]["end"] - span["witness"]["start"] for span in result["spans"])
+    assert matched == len("alpha beta"), "a real repeated phrase must fully match somewhere"
+
+
+def test_witness_text_exactly_at_the_character_limit_still_aligns():
+    """The bound is `>`, not `>=`: text sized exactly to the sealed limit is
+    still real work, not a refusal in disguise."""
+    text = "a" * 50
+    result = align_to_anchor(
+        text,
+        text,
+        AlignmentLimits(max_characters=50, max_character_pairs=10_000, timeout_seconds=1),
+    )
+    assert result["status"] == "aligned"
+
+
+def test_witness_text_one_character_past_the_limit_is_explicitly_unaligned():
+    text = "a" * 51
+    result = align_to_anchor(
+        text,
+        text,
+        AlignmentLimits(max_characters=50, max_character_pairs=10_000, timeout_seconds=1),
+    )
+    assert result["status"] == "unaligned"
+    assert result["reason"] == "character-limit"
+    # Refused, never clipped: the full retained text is still there to read.
+    assert result["witness"]["text"] == text
+
+
+def test_an_all_markup_input_normalizes_to_a_genuinely_zero_width_offset_map():
+    """Text that is entirely tags and whitespace collapses to nothing -- the
+    offset map must be an honest empty list, not a crash or a fabricated
+    entry standing in for characters that were never there."""
+    view = markup_text_view("<p>   </p><br/>")
+    assert view["text"] == ""
+    assert view["offset_map"] == []
+
+
+@pytest.mark.skipif(
+    not hasattr(signal, "SIGALRM"),
+    reason="the wall-clock backstop is a SIGALRM mechanism; where it cannot exist the "
+    "comparison runs unbounded and this test would hang for minutes to say nothing",
+)
+def test_alignment_deadline_reports_unaligned_honestly_never_a_partial_map():
+    """The timeout path must say `unaligned` -- never return a spans list that
+    stopped partway through and pretend it was complete (GOVERNANCE 2/10)."""
+    witness = "alpha beta gamma " * 400
+    anchor = "alpha beta gamna " * 400
+    limits = AlignmentLimits(max_characters=100_000, max_character_pairs=10**9, timeout_seconds=1)
+
+    started = time.monotonic()
+    result = align_to_anchor(witness, anchor, limits)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 10, "the wall-clock bound must stop the alignment"
+    assert result["status"] == "unaligned"
+    assert result["reason"] == "timeout"
+    assert "spans" not in result, "a timed-out alignment must never carry a partial spans list"
