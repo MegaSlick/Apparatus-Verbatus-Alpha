@@ -1396,7 +1396,22 @@ def _real_bindings(
             }
         ),
         "adapter_recipes": adapter_recipes,
-        "sealed_config_digests": {"corpus-frame-shard": corpus_frame_config_sha256},
+        # Both entries named here exactly as the fixture path's
+        # `run_config_bindings` names them (`common/stage.py`), so the two paths'
+        # `sealed_config_digests` share one shape. `designator-padding`'s bytes
+        # were already folded into `config_digest` above (`_padding_config_digest`
+        # docstring: "sealed anyway... the day a real structure pass exists is the
+        # day crops start depending on it"), but the named point-of-use-recheck
+        # entry itself was missing here -- a real Designator run reaching
+        # `context.require_sealed_config("designator-padding", ...)`
+        # (`pipeline/2_designator/run.py`) over real ingress would have refused
+        # with "this context sealed no digest for the designator-padding
+        # configuration" on every real run, unconditionally, the day R2 lands.
+        # Found in audit (S5); F-S5.
+        "sealed_config_digests": {
+            "designator-padding": designator_padding_config_sha256,
+            "corpus-frame-shard": corpus_frame_config_sha256,
+        },
     }
 
 

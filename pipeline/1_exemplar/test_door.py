@@ -2011,3 +2011,55 @@ def test_a_container_that_cannot_be_counted_still_occupies_exactly_one_ordinal(t
     payload = admissions(tree)[1]["payload"]
     assert payload["declared_path"] == "damaged-scan.pdf"
     assert reason_code(payload["reason"]) is RefusalReason.CORRUPT
+
+
+def test_real_bindings_seal_designator_padding_alongside_the_shard_knob(monkeypatch):
+    """F-S5 (audit finding): `_real_bindings`'s `sealed_config_digests` must name
+    `designator-padding` exactly as `run_config_bindings` (the fixture path) does,
+    not only `corpus-frame-shard`.
+
+    Before this audit's fix, `_real_bindings` returned
+    `sealed_config_digests = {"corpus-frame-shard": ...}` only. The padding
+    config's bytes were already folded into the overall `config_digest`, but the
+    NAMED point-of-use-recheck entry was missing -- so a real Designator run
+    reaching `context.require_sealed_config("designator-padding", ...)`
+    (`pipeline/2_designator/run.py`) over real ingress would refuse every time
+    with "this context sealed no digest for the designator-padding configuration",
+    the day R2 lands a real structure pass. The fixture and real paths must expose
+    the same `sealed_config_digests` shape.
+    """
+
+    class Models:
+        witness_chairs = ("attestator_1", "attestator_2", "attestator_3")
+        adapter_recipes = {"door": "synthetic-door-v0"}
+
+        @staticmethod
+        def to_record():
+            return {"models": "synthetic"}
+
+    ledger = {
+        "files": [{"relative_path": "scan.pdf", "sha256": "a" * 64, "bytes": 12}],
+        "self_hash": "b" * 64,
+    }
+    settings = door.render_config.load_pdf_render_settings(
+        minimum_dpi=door.pdf_render.MIN_RENDER_DPI
+    )
+    padding_digest = door._padding_config_digest(DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH)
+    bindings = door._real_bindings(
+        Models(),
+        ledger,
+        POLICY,
+        settings,
+        door.load_recovery_policy(),
+        door.load_hard_failure_policy(),
+        designator_padding_config_sha256=padding_digest,
+    )
+    sealed = bindings["sealed_config_digests"]
+    assert sealed.get("designator-padding") == padding_digest, (
+        f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing a "
+        "'designator-padding' entry bound to the exact digest passed in; the fixture "
+        "path's run_config_bindings() already seals this name (F-S5)"
+    )
+    assert "corpus-frame-shard" in sealed, (
+        "the pre-existing corpus-frame-shard entry must survive this fix, not be replaced"
+    )
