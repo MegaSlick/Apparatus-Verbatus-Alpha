@@ -216,20 +216,51 @@ def text_change_span(before: str, after: str) -> tuple[int, int]:
 
 
 def change_record(before: str, after: str, flags: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Attribute the re-proof's change to the flag that actually located it.
+
+    The triggering class is the whole point of this record: spec 03's Pass C
+    keeps it so that "witness-diff-triggered changes that moved toward the
+    witness" — the soft-picker signature — is computable from the tree. So the
+    change must be attributed to the *narrowest* flag that contains it, not to
+    whichever flag the caller happened to list first. Flags reach here sorted by
+    `(location.start, class)`, and the cross-act classes (`date-sequence`,
+    `numbering`, `order`) all span the whole text from offset 0, so first-listed
+    meant "the widest flag on the act wins": a correction squarely inside a
+    narrow `testimony-diff` span was recorded as `date-sequence`, and the one
+    measurement this record exists to support silently lost it (GOVERNANCE 10).
+
+    Width ties break on `(start, class)` so the attribution is a function of the
+    frozen flag set alone. Consumers re-derive this record exactly
+    (`validate_chain`), so the rule may use nothing but the recorded facts.
+
+    One re-proof still yields at most one changed span: the span is the
+    prefix/suffix-trimmed envelope of an exact comparison, and a re-proof whose
+    envelope escapes every single flag is refused rather than attributed by
+    guesswork. Decomposing an envelope that covers two disjoint flags would need
+    a real alignment, and this record is recomputed byte-for-byte by every later
+    consumer — a diff heuristic here would make a sealed record's validity depend
+    on the differ. That decomposition belongs with the real reader in R6, which
+    is the first thing that can answer two locations in one pass.
+    """
     if before == after:
         return []
     start, end = text_change_span(before, after)
-    triggering = next(
-        (
-            flag["class"]
-            for flag in flags
-            if flag["location"]["start"] <= start and end <= flag["location"]["end"]
-        ),
-        None,
-    )
-    if triggering is None:
+    containing = [
+        flag
+        for flag in flags
+        if flag["location"]["start"] <= start and end <= flag["location"]["end"]
+    ]
+    if not containing:
         raise SchemaRefusal("an audit re-proof changed text outside every flagged location")
-    return [{"start": start, "end": end, "triggering_flag_class": triggering}]
+    triggering = min(
+        containing,
+        key=lambda flag: (
+            flag["location"]["end"] - flag["location"]["start"],
+            flag["location"]["start"],
+            flag["class"],
+        ),
+    )
+    return [{"start": start, "end": end, "triggering_flag_class": triggering["class"]}]
 
 
 def validate_chain(tree, reading: dict[str, Any], act_id: str) -> dict[str, Any]:

@@ -263,6 +263,30 @@ def test_change_record_refuses_a_change_extending_past_the_flag_end():
         audit.change_record("abcd", "aXYZ", flags)
 
 
+def test_change_record_names_the_narrowest_flag_that_located_the_change():
+    """The triggering class is the soft-picker measurement, not decoration.
+
+    Every cross-act flag class spans the whole act from offset 0, so any act
+    that carries one contains every narrower flag too. Attributing by list
+    order made the widest flag win and recorded a correction that sits squarely
+    inside a `testimony-diff` span as `date-sequence` — the one change the
+    "moved toward the witness" measurement is looking for, filed under a class
+    that has nothing to do with testimony.
+    """
+    text = "No 1 1688 alpha beta gamma"
+    flags = [
+        # Exactly the order `flags_once_per_page` emits: sorted by (start, class).
+        {"class": "date-sequence", "location": {"start": 0, "end": len(text)}},
+        {"class": "testimony-diff", "location": {"start": 21, "end": 26}},
+    ]
+    changes = audit.change_record(text, "No 1 1688 alpha beta gamna", flags)
+    assert changes == [{"start": 24, "end": 25, "triggering_flag_class": "testimony-diff"}]
+
+    # A change the narrow flag does not cover still belongs to the wide one.
+    whole_act = audit.change_record(text, "No 1 1687 alpha beta gamma", flags)
+    assert whole_act == [{"start": 8, "end": 9, "triggering_flag_class": "date-sequence"}]
+
+
 def test_raised_cap_needs_tyrels_reference_and_exhaustion_routes_review(tmp_path):
     raised = tmp_path / "raised.toml"
     raised.write_text(
