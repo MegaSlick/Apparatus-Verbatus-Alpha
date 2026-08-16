@@ -1,9 +1,13 @@
-"""Read-only verification of the durable, off-repository model store.
+"""Verification of the durable, off-repository model store.
 
 This module deliberately has no downloader, HTTP client, or cache-fill path.  A
 host operator materializes the pinned bytes once; consumers then use this module
-to prove the store and its derived records still agree.  The documented store
-root is ``/Users/tyrel/verbatus-models`` (for example only, never a default).
+to prove the store and its derived records still agree.  It never fetches, and
+its few writers (the canonical download record, the derived inventory, a
+promoted manifest) only ever publish once: identical bytes already on disk are
+reused silently, differing bytes are refused, and an existing file is never
+overwritten (GOVERNANCE 4).  The documented store root is
+``/Users/tyrel/verbatus-models`` (for example only, never a default).
 """
 
 from __future__ import annotations
@@ -108,9 +112,33 @@ def load_download_record(store_root: str | Path) -> dict[str, Any]:
             "model-store", f"cannot read download_record.json: {error}"
         ) from error
     if raw_bytes != canonical_bytes(raw):
-        raise DigestMismatchRefusal("model-store", "download_record.json is not canonical bytes")
+        raise DigestMismatchRefusal(
+            "model-store",
+            "download_record.json is not canonical bytes (sorted keys, no "
+            "whitespace, UTF-8, no trailing newline); write it with "
+            "write_download_record rather than by hand",
+        )
     _validate_record(raw)
     return raw
+
+
+def write_download_record(record: Mapping[str, Any], store_root: str | Path) -> str:
+    """Publish the host record in its one canonical serialization, once.
+
+    The host operator assembles ``record`` from what was actually fetched; this
+    function only guarantees the bytes on disk are the exact canonical form
+    :func:`load_download_record` requires, so a hand-formatted file never earns
+    a "not canonical bytes" refusal that names no cause. Publication follows the
+    rest of this module's custody rule (GOVERNANCE 4): identical bytes already
+    on disk are reused silently, differing bytes are refused, and an existing
+    file is never overwritten.
+    """
+
+    _validate_record(record)
+    destination = Path(store_root) / "download_record.json"
+    payload = canonical_bytes(record)
+    _publish_once(destination, payload, chair="model-store", label="download_record.json")
+    return digest_bytes(payload)
 
 
 def derived_inventory(record: Mapping[str, Any]) -> dict[str, Any]:
@@ -144,10 +172,15 @@ def derived_inventory(record: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def write_derived_inventory(record: Mapping[str, Any], path: str | Path) -> str:
-    """Write a derived record; readers must call :func:`read_derived_inventory`."""
+    """Publish a derived record once; readers must call :func:`read_derived_inventory`.
+
+    Identical bytes already at ``path`` are reused silently; differing bytes are
+    refused and the existing file is left untouched (GOVERNANCE 4 — evidence is
+    never overwritten).
+    """
 
     payload = canonical_bytes(derived_inventory(record))
-    Path(path).write_bytes(payload)
+    _publish_once(Path(path), payload, chair="model-store", label="derived inventory")
     return digest_bytes(payload)
 
 
@@ -208,27 +241,54 @@ def verify_store(store_root: str | Path) -> dict[str, Any]:
 
 
 def promote_verified_snapshot(store_root: str | Path, artifact: Mapping[str, Any]) -> str:
-    """Host-side promotion primitive: stage, verify, then atomically publish a manifest.
+    """Host-side promotion primitive: stage, verify, then publish a manifest once.
 
     The caller supplies an already-created staging directory.  This function does
     not copy or download bytes; capacity must therefore reserve source + staging
-    space before it is called.
+    space before it is called.  Publication follows the rest of this module's
+    custody rule (GOVERNANCE 4 — evidence is never overwritten): identical bytes
+    already published are reused silently, a differing manifest already at that
+    name is refused, and the existing file is never touched either way. A picked
+    manifest name is a pin, not a rolling pointer a second promotion may rewrite.
     """
 
     root = Path(store_root).resolve()
     staging = _under(root, artifact["staging"])
     manifest = build_manifest(staging)
     destination = _under(root, artifact["manifest"])
+    payload = canonical_bytes(manifest.to_record())
+    _publish_once(destination, payload, chair="model-store", label="verified manifest")
+    return digest_bytes(payload)
+
+
+def _publish_once(destination: Path, payload: bytes, *, chair: str, label: str) -> None:
+    """Publish ``payload`` at ``destination`` without ever overwriting a difference.
+
+    A hard link is an atomic create on the target filesystem: the temporary is
+    fully written first, then either acquires the final name or the link raises
+    ``FileExistsError`` without touching the competing file. Reused verbatim from
+    the identical-bytes-reuse, differing-bytes-refusal custody rule
+    ``common/runtree/store.py::_atomic_create`` already applies to run artifacts,
+    so the model store's evidence keeps the one rule this system settled on.
+    """
+
     destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_name(f".{destination.name}.candidate")
+    temporary = destination.with_name(f".{destination.name}.candidate-{os.getpid()}")
     try:
-        temporary.write_bytes(canonical_bytes(manifest.to_record()))
-        os.replace(temporary, destination)
-    except OSError as error:
-        raise DigestMismatchRefusal(
-            "model-store", f"cannot publish verified manifest: {error}"
-        ) from error
-    return digest_bytes(canonical_bytes(manifest.to_record()))
+        temporary.write_bytes(payload)
+        try:
+            os.link(temporary, destination)
+        except FileExistsError:
+            if destination.read_bytes() != payload:
+                raise DigestMismatchRefusal(
+                    chair,
+                    f"{label} {destination} already exists with different bytes; "
+                    "publication never overwrites existing evidence",
+                ) from None
+        except OSError as error:
+            raise DigestMismatchRefusal(chair, f"cannot publish {label}: {error}") from error
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _validate_record(raw: Mapping[str, Any]) -> None:
@@ -247,6 +307,16 @@ def _validate_record(raw: Mapping[str, Any]) -> None:
         raise DigestMismatchRefusal(
             "model-store", "store layout must name hf, local, manifests, and staging roots"
         )
+    # `capacity` is a self-declared plan, exactly like a ServingProfile's GPU
+    # figures (operations/serving/config.py) are "configuration/planning values,
+    # never a claim that an unmeasured card can sustain them" (GOVERNANCE 10).
+    # Nothing here calls `shutil.disk_usage`: this module never fetches or
+    # touches the host beyond the bytes a chair's manifest already names, so it
+    # has no more standing to assert free disk space than a human operator's
+    # own accounting does. The arithmetic below only catches an internally
+    # inconsistent plan (headroom or availability that contradicts itself); the
+    # actual backstop against a full disk is `_publish_once` failing loudly when
+    # a write really cannot complete.
     capacity = raw["capacity"]
     if (
         not isinstance(capacity, Mapping)

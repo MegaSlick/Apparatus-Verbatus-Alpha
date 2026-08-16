@@ -11,7 +11,7 @@ in code.
 | `models.py` | the typed values: `ChairIdentity`, `AbsentChair`, the digest manifest, `VerifiedSnapshot`, `ServingDetails`, `ServingReceipt`, `ModelsConfig` |
 | `config.py` | the one schema `config/models.toml` must match, and every refusal a malformed pin earns |
 | `manifests.py` | building, writing, reading and verifying the per-file digest manifest |
-| `model_store.py` | read-only validation of the host's durable model store, its derived seven-chair inventory, licence snapshots, carried DAI prompts, and capacity record |
+| `model_store.py` | validation of the host's durable model store, its derived seven-chair inventory, licence snapshots, carried DAI prompts, and capacity record; publishes the canonical download record, derived inventory, and promoted manifests once each, never overwriting a difference |
 | `registry.py` | resolution and verification against the filesystem and Hugging Face |
 | `receipts.py` | what a serving receipt must carry before it is one |
 | `errors.py` | the closed refusal taxonomy — one member per door "Resolution refuses; it never substitutes" names |

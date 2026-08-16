@@ -33,6 +33,7 @@ from .model_store import (
     read_derived_inventory,
     verify_store,
     write_derived_inventory,
+    write_download_record,
 )
 from .models import (
     AbsentChair,
@@ -108,5 +109,6 @@ __all__ = [
     "verify_snapshot",
     "verify_store",
     "write_derived_inventory",
+    "write_download_record",
     "write_manifest",
 ]
