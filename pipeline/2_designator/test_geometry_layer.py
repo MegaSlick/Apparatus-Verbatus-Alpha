@@ -458,6 +458,42 @@ def test_proposal_identity_is_reproducible_without_first_seen_pass_provenance():
         validate_raw_proposal({**proposal, "proposal_id": "proposal_forged000000"})
 
 
+def test_content_identity_unions_exact_duplicate_single_call_detections():
+    policy = load_geometry_policy()
+    obb = [
+        {"x": 10, "y": 20},
+        {"x": 20, "y": 10},
+        {"x": 30, "y": 20},
+        {"x": 20, "y": 30},
+    ]
+    yolo = yolo_obb(
+        page_id="pg_fixture",
+        page_ordinal=0,
+        page_w=100,
+        page_h=100,
+        policy=policy,
+        receipt_ref=RECEIPT,
+        response_ref=RESPONSE,
+        detections=[{"obb": obb, "score_bp": 8000}, {"obb": obb, "score_bp": 8000}],
+    )
+    assert len(yolo) == 1
+    assert yolo[0]["observed_passes"] == [0, 1]
+
+    region = {"bbox_1000": [100, 100, 500, 500], "score_bp": 9000}
+    chandra = chandra_layout(
+        page_id="pg_fixture",
+        page_ordinal=0,
+        page_w=100,
+        page_h=100,
+        config_sha256=policy["config_sha256"],
+        receipt_ref=RECEIPT,
+        response_ref=RESPONSE,
+        regions=[region, region],
+    )
+    assert len(chandra) == 1
+    assert chandra[0]["observed_passes"] == [0, 1]
+
+
 def test_raw_proposal_transform_refuses_a_non_identity_scale_in_page_pixel_space():
     """Adversarial transform: page-pixels-to-page-pixels can only be 1:1."""
     proposal = yolo_obb(

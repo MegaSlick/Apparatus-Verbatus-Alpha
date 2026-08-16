@@ -361,6 +361,26 @@ def _raw(
     return validate_raw_proposal(payload)
 
 
+def _retain_by_content_identity(union: dict[str, dict[str, Any]], proposal: dict[str, Any]) -> None:
+    """Union exact repeated observations while retaining every observation ordinal."""
+    proposal_id = proposal["proposal_id"]
+    existing = union.get(proposal_id)
+    if existing is None:
+        union[proposal_id] = proposal
+        return
+    existing_without_passes = {
+        key: value for key, value in existing.items() if key != "observed_passes"
+    }
+    proposal_without_passes = {
+        key: value for key, value in proposal.items() if key != "observed_passes"
+    }
+    if existing_without_passes != proposal_without_passes:
+        raise SchemaRefusal("raw proposal content identity collides across different records")
+    existing["observed_passes"] = sorted(
+        set(existing["observed_passes"] + proposal["observed_passes"])
+    )
+
+
 def surya_double_pass(
     *,
     page_id: str,
@@ -437,7 +457,7 @@ def yolo_obb(
 ) -> list[dict[str, Any]]:
     """Adapt OBB fixture output without loss: retain OBB and derive sealed crop policy."""
     checked = load_geometry_policy_record(policy)
-    output = []
+    union: dict[str, dict[str, Any]] = {}
     for ordinal, detection in enumerate(detections):
         item = _closed(detection, {"obb", "score_bp"}, "YOLO OBB detection")
         points = _polygon(item["obb"], page_w, page_h, "YOLO OBB")
@@ -461,8 +481,8 @@ def yolo_obb(
             "mode": "rectify" if checked["yolo_obb"]["rectify"] else "aabb-enclose",
             "loss_recorded": checked["yolo_obb"]["rectify"],
         }
-        output.append(raw)
-    return output
+        _retain_by_content_identity(union, raw)
+    return [union[proposal_id] for proposal_id in sorted(union)]
 
 
 def chandra_layout(
@@ -477,7 +497,7 @@ def chandra_layout(
     regions: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     """Split only geometry from a retained Chandra response; textual fields fail closed."""
-    result = []
+    union: dict[str, dict[str, Any]] = {}
     for ordinal, region in enumerate(regions):
         item = _closed(region, {"bbox_1000", "score_bp"}, "Chandra layout region")
         box = item["bbox_1000"]
@@ -499,7 +519,8 @@ def chandra_layout(
             },
             {"x": x0 * page_w // 1000, "y": min(page_h - 1, (y1 * page_h + 999) // 1000 - 1)},
         ]
-        result.append(
+        _retain_by_content_identity(
+            union,
             _raw(
                 "chandra-layout",
                 page_id,
@@ -513,9 +534,9 @@ def chandra_layout(
                 config_sha256,
                 [ordinal],
                 "aabb",
-            )
+            ),
         )
-    return result
+    return [union[proposal_id] for proposal_id in sorted(union)]
 
 
 def load_geometry_policy_record(policy: object) -> dict[str, Any]:
