@@ -612,3 +612,56 @@ def test_the_witness_floor_is_not_counted_from_a_superseded_attachment(tmp_path)
         "a partition receipt was written from a coverage count the reread had already "
         "superseded; the denominator is validated before this stage publishes anything"
     )
+
+
+def test_page_testimony_names_a_reading_the_join_could_not_carry(tmp_path, fixture):
+    """F-O7: the page record's closed omission list is the join's exact complement.
+
+    The join drops an act two ways -- a non-reading outcome (F-S1) and a reading
+    the join cannot concatenate, because the chair delivered a structured native
+    object rather than text. `unjoined_act_attempts` named only the first, so the
+    second went behind a successful status: in the shipped `structured-witness`
+    scenario, attestator_1's page-1 record reported `read`, carried act a2's text
+    alone, and disclosed an empty omission list while act a1 was simply gone
+    (GOVERNANCE 2). Measured on the real run tree before the fix.
+    """
+    root = tmp_path / "runs"
+    _through_attestatores(root, "structured", "structured-witness")
+    tree = RunTree(root, "structured")
+    act_a1_id = act_identity(fixture, act_by_key(fixture, "a1"))
+
+    act_record = next(
+        record
+        for record in _attestatores_artifacts(tree)
+        if record.get("kind") == "testimonium"
+        and record["subject_id"] == act_a1_id
+        and record.get("payload", {}).get("chair") == "attestator_1"
+    )
+    assert act_record["outcome"] == "read", (
+        "fixture precondition: attestator_1's act-a1 attempt must be a completed reading "
+        f"for this test to exercise the silent-omission path; got {act_record['outcome']!r}"
+    )
+    assert not isinstance(act_record["payload"]["payload"], str), (
+        "fixture precondition: that reading must be a structured native object"
+    )
+
+    page_payload = next(
+        record["payload"]
+        for record in _attestatores_artifacts(tree)
+        if record.get("kind") == "page-testimonium"
+        and record.get("payload", {}).get("chair") == "attestator_1"
+        and record.get("payload", {}).get("page_ordinal") == 1
+    )
+    unjoined = page_payload["unjoined_act_attempts"]
+    named = {row["act_id"]: row for row in unjoined}
+    assert act_a1_id in named, (
+        f"attestator_1's page-1 record joined only {page_payload['payload']!r} and named "
+        f"{unjoined!r} as omitted; act a1's structured reading is absent from both, so the "
+        "record reports a page it did not fully cover and says nothing about the gap"
+    )
+    row = named[act_a1_id]
+    assert row["outcome"] == "read", (
+        "the omission must be disclosed with the attempt outcome that actually happened, "
+        f"not relabelled as a failure; got {row['outcome']!r}"
+    )
+    assert isinstance(row["reason"], str) and row["reason"].strip()

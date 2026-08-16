@@ -1297,21 +1297,45 @@ def publish_page_testimonia_and_attachments(
             # text be silently folded into a page witness's "read" testimony,
             # laundering a recorded failure into apparent coverage (D2/D3;
             # GOVERNANCE 2). Found in audit; F-S1.
-            readable = [
-                attempt.native_payload
-                for attempt in attempts
-                if attempt.outcome in WITNESS_READING_OUTCOMES
-                and isinstance(attempt.native_payload, str)
-            ]
+            #
+            # The disclosure below is the exact complement of this filter, computed
+            # from one partition rather than from a second predicate. They were two
+            # predicates, and they did not agree: the join also dropped an act whose
+            # reading is a structured native object (a dict or list rather than
+            # text), while the closed `unjoined_act_attempts` list named only
+            # non-reading OUTCOMES. In the shipped `structured-witness` scenario
+            # that made attestator_1's page-1 record report `read`, carry act a2's
+            # text alone, and disclose nothing -- act a1 gone behind a successful
+            # status, which is F-P3's own defect through F-S1's own door. Found in
+            # audit; F-O7.
+            joined: list[tuple[dict[str, Any], Attempt]] = []
+            unjoined: list[tuple[dict[str, Any], Attempt]] = []
+            for act, attempt in zip(page_acts, attempts, strict=True):
+                target = (
+                    joined
+                    if attempt.outcome in WITNESS_READING_OUTCOMES
+                    and isinstance(attempt.native_payload, str)
+                    else unjoined
+                )
+                target.append((act, attempt))
+            readable = [attempt.native_payload for _, attempt in joined]
             unjoined_act_attempts = [
                 {
                     "act_id": act["act_id"],
                     "act_key": act["act_key"],
                     "outcome": attempt.outcome,
-                    "reason": attempt.reason,
+                    # A non-reading attempt always carries its own reason. A
+                    # reading the join could not carry has none to borrow, and an
+                    # omission with no reason is the silent loss this list exists
+                    # to refuse -- so the join states its own limit instead.
+                    "reason": attempt.reason
+                    if attempt.outcome not in WITNESS_READING_OUTCOMES
+                    else (
+                        "this chair delivered a structured native reading for the act; R0's "
+                        "synthetic page join concatenates delivered text only"
+                    ),
                 }
-                for act, attempt in zip(page_acts, attempts, strict=True)
-                if attempt.outcome not in WITNESS_READING_OUTCOMES
+                for act, attempt in unjoined
             ]
             native_payload = "\n".join(readable)
             outcome = "read" if readable else "failed"

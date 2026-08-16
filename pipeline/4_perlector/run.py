@@ -346,7 +346,23 @@ def act_attachment_view(context, act: dict[str, Any], testimonia: list[dict]) ->
             ):
                 raise SchemaRefusal(f"act {act_id} attachment points to the wrong page Testimonium")
             current_unjoined = [row for row in unjoined if row["act_id"] == act_id]
-            if len(current_unjoined) > 1 or bool(current_unjoined) == attachment["attached"]:
+            if len(current_unjoined) > 1:
+                raise SchemaRefusal(
+                    f"act {act_id} appears more than once in a page Testimonium's "
+                    "unjoined-attempt record"
+                )
+            # An act the page join omitted is disclosed with the attempt outcome
+            # that explains it, and that outcome must be the one the attachment
+            # records. Not `bool(rows) != attached`, which was this check before:
+            # it read every omission as a failure, so the moment the join could
+            # omit a genuine reading -- a structured native object it cannot
+            # concatenate -- the honest disclosure of that omission became a
+            # refusal, and staying silent stayed legal. Absence of a row still
+            # means the act joined, so an unattached act must always be named.
+            # Found in audit; F-O7.
+            row = current_unjoined[0] if current_unjoined else None
+            disclosed = row["outcome"] in WITNESS_READING_OUTCOMES if row is not None else True
+            if disclosed != attachment["attached"]:
                 raise SchemaRefusal(
                     f"act {act_id} attachment disagrees with its page Testimonium's "
                     "unjoined-attempt record"
