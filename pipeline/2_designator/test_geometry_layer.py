@@ -438,3 +438,225 @@ def test_resolver_refuses_raw_proposals_with_mismatched_page_pixel_extent():
     )[0]
     with pytest.raises(SchemaRefusal, match="page pixel extent"):
         resolve([_raw_envelope(small), _raw_envelope(big)], [])
+
+
+def test_resolve_does_not_mutate_its_inputs_across_the_internal_double_derivation():
+    """S4: resolve() calls _derive_resolution twice (once directly, once inside
+    validate_resolution). Confirm the second derivation sees the same untouched
+    inputs -- no TOCTOU between the two passes."""
+    raw_sources = _geometry_sources()
+    occlusions = [_occlusion_envelope()]
+    before_raw = [dict(item) for item in raw_sources]
+    before_occ = [dict(item) for item in occlusions]
+    first = resolve(raw_sources, occlusions)
+    second = resolve(raw_sources, occlusions)
+    assert first == second
+    assert raw_sources == before_raw
+    assert occlusions == before_occ
+
+
+def test_empty_detections_lists_are_held_as_empty_not_an_error():
+    policy = load_geometry_policy()
+    assert (
+        surya_double_pass(
+            page_id="pg_fixture",
+            page_ordinal=0,
+            page_w=100,
+            page_h=100,
+            policy=policy,
+            receipt_ref=RECEIPT,
+            response_ref=RESPONSE,
+            detect=lambda tile: [],
+        )
+        == []
+    )
+    assert (
+        yolo_obb(
+            page_id="pg_fixture",
+            page_ordinal=0,
+            page_w=100,
+            page_h=100,
+            policy=policy,
+            receipt_ref=RECEIPT,
+            response_ref=RESPONSE,
+            detections=[],
+        )
+        == []
+    )
+
+
+def test_resolver_refuses_a_page_with_zero_raw_proposals_rather_than_an_empty_partition():
+    """Recorded verdict, not a fix: a page with no raw proposal source has no
+    denominator for the resolver to partition at all, so it fails closed instead
+    of silently returning an empty coverage record."""
+    with pytest.raises(SchemaRefusal, match="no raw proposal denominator"):
+        resolve([], [])
+
+
+def test_three_point_collinear_polygon_is_accepted_as_a_thin_one_pixel_region():
+    """Breaker battery: a degenerate 3-point line does not crash the pipeline;
+    the enclosing AABB's half-open-edge rule gives it a real, non-empty crop."""
+    policy = load_geometry_policy()
+    collinear = [{"x": 10, "y": 10}, {"x": 20, "y": 10}, {"x": 30, "y": 10}]  # one horizontal line
+
+    proposals = surya_double_pass(
+        page_id="pg_fixture",
+        page_ordinal=0,
+        page_w=100,
+        page_h=100,
+        policy=policy,
+        receipt_ref=RECEIPT,
+        response_ref=RESPONSE,
+        detect=lambda tile: [{"polygon": collinear, "score_bp": 5000}],
+    )
+    assert proposals[0]["aabb"] == {"x": 10, "y": 10, "w": 21, "h": 1}
+    validate_raw_proposal(proposals[0])
+
+
+def test_degenerate_obb_with_only_three_distinct_corners_is_accepted():
+    """OBB requires exactly four corner points structurally; a real detector may
+    still emit a duplicated corner (rounding collapse). That is still >= 3
+    distinct points, so it is held, not refused."""
+    proposal = yolo_obb(
+        page_id="pg_fixture",
+        page_ordinal=0,
+        page_w=100,
+        page_h=100,
+        policy=load_geometry_policy(),
+        receipt_ref=RECEIPT,
+        response_ref=RESPONSE,
+        detections=[
+            {
+                "obb": [
+                    {"x": 10, "y": 10},
+                    {"x": 10, "y": 10},  # duplicate corner: degenerate but not refused
+                    {"x": 20, "y": 10},
+                    {"x": 30, "y": 10},
+                ],
+                "score_bp": 5000,
+            }
+        ],
+    )
+    assert proposal[0]["aabb"] == {"x": 10, "y": 10, "w": 21, "h": 1}
+
+
+def test_unicode_page_id_round_trips_through_adapter_and_resolver():
+    policy = load_geometry_policy()
+    page_id = "página_église_日本"  # accented + CJK
+    proposal = chandra_layout(
+        page_id=page_id,
+        page_ordinal=0,
+        page_w=100,
+        page_h=100,
+        config_sha256=policy["config_sha256"],
+        receipt_ref=RECEIPT,
+        response_ref=RESPONSE,
+        regions=[{"bbox_1000": [0, 0, 500, 500], "score_bp": 9000}],
+    )[0]
+    assert proposal["page_id"] == page_id
+    resolved = resolve([_raw_envelope(proposal)], [])
+    assert resolved["page_id"] == page_id
+
+
+@pytest.mark.parametrize("score_bp", [0, 10_000])
+def test_score_bp_boundary_values_are_accepted(score_bp):
+    proposal = yolo_obb(
+        page_id="pg_fixture",
+        page_ordinal=0,
+        page_w=100,
+        page_h=100,
+        policy=load_geometry_policy(),
+        receipt_ref=RECEIPT,
+        response_ref=RESPONSE,
+        detections=[
+            {
+                "obb": [
+                    {"x": 10, "y": 20},
+                    {"x": 20, "y": 10},
+                    {"x": 30, "y": 20},
+                    {"x": 20, "y": 30},
+                ],
+                "score_bp": score_bp,
+            }
+        ],
+    )[0]
+    assert proposal["score_bp"] == score_bp
+
+
+@pytest.mark.parametrize("score_bp", [-1, 10_001])
+def test_score_bp_boundary_values_are_refused(score_bp):
+    with pytest.raises(SchemaRefusal, match="score"):
+        yolo_obb(
+            page_id="pg_fixture",
+            page_ordinal=0,
+            page_w=100,
+            page_h=100,
+            policy=load_geometry_policy(),
+            receipt_ref=RECEIPT,
+            response_ref=RESPONSE,
+            detections=[
+                {
+                    "obb": [
+                        {"x": 10, "y": 20},
+                        {"x": 20, "y": 10},
+                        {"x": 30, "y": 20},
+                        {"x": 20, "y": 30},
+                    ],
+                    "score_bp": score_bp,
+                }
+            ],
+        )
+
+
+def test_chandra_bbox_at_a_one_pixel_page_collapses_to_too_few_distinct_points_and_is_refused():
+    """S5 breaker battery, x1=1000/page_w=1 edge: the floor-left and ceil-right
+    formulas both round to the page's only column, so a full-range bbox on a
+    degenerate 1px page yields fewer than three distinct corners. That is a
+    correct fail-closed refusal (GOVERNANCE 2: never silently accepted as a real
+    crop), not a coverage loss -- a 1px page is not a real corpus case."""
+    policy = load_geometry_policy()
+    with pytest.raises(SchemaRefusal, match="fewer than three distinct points"):
+        chandra_layout(
+            page_id="pg_tiny",
+            page_ordinal=0,
+            page_w=1,
+            page_h=1,
+            config_sha256=policy["config_sha256"],
+            receipt_ref=RECEIPT,
+            response_ref=RESPONSE,
+            regions=[{"bbox_1000": [0, 0, 1000, 1000], "score_bp": 9000}],
+        )
+
+
+def test_chandra_bbox_rounding_never_inverts_for_a_thin_real_region():
+    """A genuinely thin but non-degenerate region (a header rule, a signature
+    line) on a realistically sized page: right edge must never land left of the
+    left edge after the ceil-based rounding, and the crop must be non-empty."""
+    policy = load_geometry_policy()
+    thin = chandra_layout(
+        page_id="pg_fixture",
+        page_ordinal=0,
+        page_w=2000,
+        page_h=2000,
+        config_sha256=policy["config_sha256"],
+        receipt_ref=RECEIPT,
+        response_ref=RESPONSE,
+        regions=[{"bbox_1000": [500, 500, 501, 999], "score_bp": 9000}],
+    )
+    aabb = thin[0]["aabb"]
+    assert aabb["w"] >= 1 and aabb["h"] >= 1, "no inverted or zero-area crop for a thin real region"
+
+    # x1 pinned at the maximum normalized coordinate on an ordinary page: the
+    # ceil-based right edge must land exactly at the page's last column, not
+    # past it and not before the left edge.
+    full_width = chandra_layout(
+        page_id="pg_fixture",
+        page_ordinal=0,
+        page_w=2000,
+        page_h=2000,
+        config_sha256=policy["config_sha256"],
+        receipt_ref=RECEIPT,
+        response_ref=RESPONSE,
+        regions=[{"bbox_1000": [0, 0, 1000, 1000], "score_bp": 9000}],
+    )[0]
+    assert full_width["aabb"] == {"x": 0, "y": 0, "w": 2000, "h": 2000}

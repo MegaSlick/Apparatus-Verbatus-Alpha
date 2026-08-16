@@ -160,6 +160,36 @@ def test_row_oriented_u13_reimplementation_is_equivalent_to_the_retired_pixel_se
             ) == _legacy_reference(width, height, rows, claims, gap_tolerance_px)
 
 
+def test_row_oriented_reconciliation_matches_the_oracle_on_a_fully_inked_densely_claimed_page():
+    """S1 breaker case: a fully-inked page with many heavily overlapping claims is
+    the pathological input for _subtract_claims' run-splitting arithmetic -- every
+    row is one giant ink run split by many overlapping intervals at once."""
+    generator = random.Random(20260816)
+    width, height = 25, 25
+    rows = [bytearray([INK] * width) for _ in range(height)]
+    for gap_tolerance_px in (0, 2):
+        claims = [
+            {
+                "x": generator.randrange(width - 1),
+                "y": generator.randrange(height - 1),
+                "w": generator.randrange(1, 12),
+                "h": generator.randrange(1, 12),
+            }
+            for _ in range(10)  # far more overlap than the 4-claim randomized suite
+        ]
+        for bounds in claims:
+            bounds["w"] = min(bounds["w"], width - bounds["x"])
+            bounds["h"] = min(bounds["h"], height - bounds["y"])
+        assert reconcile(
+            width,
+            height,
+            rows,
+            background=BACKGROUND,
+            claimed_bounds=claims,
+            gap_tolerance_px=gap_tolerance_px,
+        ) == _legacy_reference(width, height, rows, claims, gap_tolerance_px)
+
+
 def test_an_empty_page_reconciles_to_all_zeros():
     width, height = 30, 30
     result = reconcile(
