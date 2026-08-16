@@ -397,6 +397,13 @@ FIXTURE = "synthetic-two-page-v0"
 # images, not one 36x36 example. The file is sealed byte-for-byte, so this comment-only config
 # correction moves every dependent artifact. Fresh real runs again measured 54
 # files for happy (exit 0) and 58 for review (exit 3).
+#
+# R4 audit verified that the apparent Linux/macOS divergence was a snapshot-root
+# error, not different recorded bytes. Passing `<runs-root>/r` instead of
+# `<runs-root>` removes the `r/` prefix from every relative inventory key and
+# reproduces the two alleged Linux digests exactly while every per-file digest
+# remains identical. `semantic_snapshot` now refuses that ambiguous call shape;
+# the host-measured literals below are unchanged.
 HAPPY_RUN_TREE_DIGEST = "97feba932df5be7ade34ff68b5273813cd42fd664f35207d907361c35b6ea1eb"
 REVIEW_RUN_TREE_DIGEST = "ef913611f175c53bd11a7adcd0e7b0cb875a774a190e408ee154ea08fddcabf8"
 
@@ -749,6 +756,10 @@ def semantic_snapshot(root: Path) -> dict[str, str]:
     remains byte-bound. The ordinary ``snapshot`` stays byte-exact for all resume
     and no-write assertions.
     """
+    if (root / "run.json").is_file():
+        raise ValueError(
+            "semantic_snapshot requires the runs root, not an individual run directory"
+        )
     files = [(path, path.read_bytes()) for path in sorted(root.rglob("*")) if path.is_file()]
     bundle_paths = {}
     replacements = {}
@@ -815,6 +826,14 @@ def semantic_snapshot(root: Path) -> dict[str, str]:
 def semantic_snapshot_digest(root: Path) -> str:
     """The canonical content pin for the full relative run-tree inventory."""
     return digest_of(semantic_snapshot(root))
+
+
+def test_semantic_snapshot_refuses_an_individual_run_directory(tmp_path):
+    """A missing run-id path prefix must not masquerade as a platform-local pin."""
+    (tmp_path / "run.json").write_text("{}", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="runs root, not an individual run directory"):
+        semantic_snapshot_digest(tmp_path)
 
 
 def test_semantic_snapshot_digest_binds_png_pixels_not_compressor_bytes(tmp_path, monkeypatch):
