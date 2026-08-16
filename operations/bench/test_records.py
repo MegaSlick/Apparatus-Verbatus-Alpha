@@ -37,10 +37,22 @@ def test_fixture_exercise_leaves_real_cells_visibly_not_run_not_green():
 
 
 def test_result_cannot_move_its_own_goalposts_or_claim_observations():
-    record = not_run("B0", fixture_verified=True)
-    record["definition_digest"] = definition("B0.5")["definition_digest"]
+    # Re-keyed *and* resealed, which is the binding's real threat model: a
+    # goalpost swap that leaves a stale self-hash behind is refused by the
+    # self-hash whether the binding is checked or not, so it cannot show this
+    # guard is load-bearing. B2 and B3 share an execution requirement, so their
+    # sealed reasons match too, and this record is well-formed in every respect
+    # except the definition it names.
+    resealed = not_run("B2", fixture_verified=True)
+    resealed["definition_digest"] = definition("B3")["definition_digest"]
+    resealed["self_hash"] = self_hash(resealed)
     with pytest.raises(SchemaRefusal, match="frozen definition"):
-        validate_result(record)
+        validate_result(resealed)
+
+    stale = not_run("B0", fixture_verified=True)
+    stale["definition_digest"] = definition("B0.5")["definition_digest"]
+    with pytest.raises(SchemaRefusal, match="frozen definition"):
+        validate_result(stale)
 
 
 def test_not_run_reason_names_the_actual_blocker_per_cell():
