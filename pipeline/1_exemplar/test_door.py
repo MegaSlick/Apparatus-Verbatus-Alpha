@@ -5,7 +5,9 @@ summary.  Every image/PDF byte is created at test time; no real source material 
 read or checked in.
 """
 
+import ast
 import gc
+import inspect
 import json
 import os
 import struct
@@ -14,6 +16,7 @@ import sys
 import weakref
 from io import BytesIO
 from pathlib import Path
+from textwrap import dedent
 
 import door
 import pytest
@@ -2063,3 +2066,33 @@ def test_real_bindings_seal_designator_padding_alongside_the_shard_knob(monkeypa
     assert "corpus-frame-shard" in sealed, (
         "the pre-existing corpus-frame-shard entry must survive this fix, not be replaced"
     )
+
+
+@pytest.mark.parametrize(
+    "submission,denominator",
+    [
+        (door.fixture_submission, "pages"),
+        (door.real_submission, "sources"),
+    ],
+)
+def test_each_door_path_enforces_the_shard_limit_at_run_creation(submission, denominator):
+    """F-new-1's helper tests must also pin both production call sites.
+
+    Sonnet's four tests invoked ``require_corpus_frame_shard`` directly; deleting
+    both calls from the Door left all four green. This AST assertion binds the
+    already behavior-tested helper to each ingress denominator without needing a
+    1,001-page fixture.
+    """
+    tree = ast.parse(dedent(inspect.getsource(submission)))
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "require_corpus_frame_shard"
+    ]
+    assert len(calls) == 1, (
+        f"{submission.__name__} must enforce the sealed shard boundary exactly once"
+    )
+    assert ast.unparse(calls[0].args[0]) == f"len({denominator})"
+    assert ast.unparse(calls[0].args[1]) == "bindings['sealed_config_digests']"
