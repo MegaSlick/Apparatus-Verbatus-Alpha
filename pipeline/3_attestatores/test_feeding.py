@@ -239,7 +239,8 @@ def test_chandra_intake_consumes_the_r2_blob_under_its_original_receipt():
     assert intake["receipt_ref"] == receipt
     assert intake["custody_ref"] == stored["custody_ref"]
     assert intake["raw_response_sha256"] == digest_bytes(raw)
-    assert tree.receipts == [receipt]
+    # Verified at both ends of custody: once at retain, once at intake.
+    assert tree.receipts == [receipt, receipt]
 
 
 def test_chandra_intake_refuses_a_response_retained_under_a_different_receipt():
@@ -325,9 +326,17 @@ def test_chandra_intake_refuses_custody_bound_to_a_different_page(page_id, page_
 
 
 def test_chandra_intake_refuses_a_non_designator_receipt_chair():
-    tree = _Tree(receipt_chair="attestator_1")
+    """Intake refuses the wrong chair even for custody that was sealed honestly.
+
+    The write half now refuses the same receipt (its own test lives in the R2
+    suite), so this seals the response under the Designator's chair first and
+    then changes what the receipt says -- otherwise the read-side check would be
+    pinned only by a state the writer can no longer produce.
+    """
+    tree = _Tree()
     receipt = _ref("receipts/sha256/" + "b" * 64 + ".json")
     stored = _retain(tree, b"response under the wrong serving role", receipt)
+    tree.receipt_chair = "attestator_1"
     with pytest.raises(SchemaRefusal, match="designator_structure"):
         _intake(tree, stored, receipt)
 

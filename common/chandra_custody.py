@@ -16,6 +16,16 @@ call. `retain_chandra_response` therefore also writes a small content-addressed
 custody record naming exactly the receipt and response it was given, and
 `read_retained_chandra_response` requires that same record back and refuses a
 response paired with any receipt other than the one recorded here.
+
+**Both ends run the same receipt check, from one function.** The reader refuses a
+receipt issued for any chair but the Designator's; the writer has to refuse the
+same receipt for the same reason, or the write half would happily seal a binding
+the read half can never accept -- evidence written into the tree that no stage
+can consume, discovered a stage later than the mis-serving that caused it. The
+check therefore lives in `_validated_designator_receipt` and is called by both,
+which also means the two ends cannot drift apart on what "the Chandra receipt"
+is. Its ordering consequence for the eventual wiring is deliberate: the serving
+receipt must be published before its response is retained.
 """
 
 from __future__ import annotations
@@ -82,6 +92,9 @@ def retain_chandra_response(
     _page_identity(page_id, page_ordinal)
     if not isinstance(response, bytes):
         raise SchemaRefusal("Chandra raw response is not bytes")
+    # Before any bytes are written: a binding sealed under a receipt the reader
+    # will refuse is unreadable custody, not custody.
+    _validated_designator_receipt(tree, receipt)
     digest, published = tree.put_blob(DESIGNATOR, response)
     response_ref = custody_reference(
         {"relative_path": published.relative_path, "sha256": digest},
@@ -157,17 +170,32 @@ def read_retained_chandra_response(
     # is paired with this response. The custody binding checked above is what
     # proves the pairing; the response bytes are opaque textual custody, never
     # parsed by this module.
-    receipt_record = tree.read_run_receipt(receipt)
-    from common.stage import DESIGNATOR_CHAIR
-
-    if receipt_record["chair"] != DESIGNATOR_CHAIR:
-        raise SchemaRefusal(
-            f"Chandra custody receipt was not issued for chair {DESIGNATOR_CHAIR!r}"
-        )
+    _validated_designator_receipt(tree, receipt)
     data = tree.read_bytes(response["relative_path"])
     if digest_bytes(data) != response["sha256"]:
         raise SchemaRefusal("Chandra response blob differs from its sealed reference")
     return data
+
+
+def _validated_designator_receipt(tree: Any, receipt: dict[str, str]) -> dict[str, Any]:
+    """Read the receipt through the run tree and require the Designator's chair.
+
+    The one Chandra inference is served in `designator_structure` and reused by
+    the Attestatores (the design's one-call/two-chairs custody), so a receipt
+    naming any other chair is a different call however honestly it verifies.
+    `common.stage` is imported inside the function, as the read half already did:
+    it is the whole stage-program harness, and a small custody rule two stages
+    share should not drag that in at import time. There is no import cycle --
+    measured, not assumed.
+    """
+    from common.stage import DESIGNATOR_CHAIR
+
+    record = tree.read_run_receipt(receipt)
+    if record["chair"] != DESIGNATOR_CHAIR:
+        raise SchemaRefusal(
+            f"Chandra custody receipt was not issued for chair {DESIGNATOR_CHAIR!r}"
+        )
+    return record
 
 
 def _page_identity(page_id: object, page_ordinal: object) -> None:

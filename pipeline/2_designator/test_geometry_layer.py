@@ -252,9 +252,10 @@ class _FixtureTree:
     this suite — the fixture restated the path scheme instead of deriving it.
     """
 
-    def __init__(self):
+    def __init__(self, *, receipt_chair="designator_structure"):
         self.blobs = {}
         self.receipts = []
+        self.receipt_chair = receipt_chair
 
     def put_blob(self, stage, data):
         digest = digest_bytes(data)
@@ -264,7 +265,7 @@ class _FixtureTree:
 
     def read_run_receipt(self, reference):
         self.receipts.append(reference)
-        return {"chair": "designator_structure"}
+        return {"chair": self.receipt_chair}
 
     def read_bytes(self, path):
         # `RunTree.read_bytes` is `self.resolve(path).read_bytes()`, so a
@@ -293,7 +294,9 @@ def test_one_chandra_response_has_one_receipt_and_two_consumable_references():
         )
         == body
     )
-    assert tree.receipts == [RECEIPT]
+    # The same receipt is verified at both ends of custody: once when the response
+    # is retained, once when it is read back.
+    assert tree.receipts == [RECEIPT, RECEIPT]
     # Geometry itself contains only the sealed blob reference, never the response text.
     geometry = chandra_layout(
         page_id="pg_fixture",
@@ -352,6 +355,20 @@ def test_chandra_custody_refuses_a_forged_blob_reference():
             page_id=PAGE_ID,
             page_ordinal=PAGE_ORDINAL,
         )
+
+
+def test_chandra_custody_refuses_to_retain_under_a_non_designator_receipt():
+    """The write half refuses exactly what the read half refuses, before writing."""
+    tree = _FixtureTree(receipt_chair="attestator_1")
+    with pytest.raises(SchemaRefusal, match="designator_structure"):
+        retain_chandra_response(
+            tree,
+            b"a response served under the wrong chair",
+            RECEIPT,
+            page_id=PAGE_ID,
+            page_ordinal=PAGE_ORDINAL,
+        )
+    assert tree.blobs == {}, "no custody may be sealed that the read half can never accept"
 
 
 def test_chandra_custody_refuses_a_receipt_reused_with_a_different_response():

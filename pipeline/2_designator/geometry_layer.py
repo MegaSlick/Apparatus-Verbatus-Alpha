@@ -646,7 +646,11 @@ def load_geometry_policy_record(policy: object) -> dict[str, Any]:
 # One-receipt Chandra custody now lives in common/chandra_custody.py: the write
 # half is R2's and the read half is R3's Attestatores intake, and a stage may
 # not import another stage's uniquely named module. Re-exported here so this
-# module's public API is unchanged.
+# module keeps naming both halves. The signatures did NOT survive the move
+# unchanged -- both now require the page identity, the write returns a
+# `{"response_ref", "custody_ref"}` pair, and the read takes that custody
+# reference -- so a caller written against the pre-move names has to be updated,
+# not merely re-pointed. There are no such callers yet; see common/chandra_custody.py.
 from common.chandra_custody import (  # noqa: E402, F401  (re-export)
     read_retained_chandra_response,
     retain_chandra_response,
