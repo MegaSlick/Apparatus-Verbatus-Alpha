@@ -33,6 +33,7 @@ from wholesale disagreement.
 from __future__ import annotations
 
 import signal
+import threading
 import unicodedata
 from difflib import SequenceMatcher
 from typing import Any, Final
@@ -82,7 +83,22 @@ def _aligned_within_deadline(reading: str, reported: str, *, seconds: int) -> li
     touched either way -- the alignment simply does not finish, exactly as
     the pair-count bound already declares of itself.
     """
-    if not hasattr(signal, "SIGALRM"):
+    # The same ownership rule `common/alignment.py::align_to_anchor` carries
+    # (R4 audit, F-L3), for the same reason and in the same process: `SIGALRM`
+    # and `ITIMER_REAL` are process-global, so arming unconditionally replaced
+    # a caller's own real-time timer and then cancelled it in `finally` --
+    # destroying a deadline this module never owned. From a non-main thread
+    # `signal.signal` raises outright, so this was also the one of the two
+    # bounded comparisons in the pipeline that could not run off the main
+    # thread at all. Arm only where nothing else owns the timer; otherwise run
+    # unbounded under the caller's deadline, which is the honest degradation
+    # the missing-SIGALRM branch below already takes. Found in audit; F-X4.
+    if (
+        not hasattr(signal, "SIGALRM")
+        or not hasattr(signal, "ITIMER_REAL")
+        or threading.current_thread() is not threading.main_thread()
+        or signal.getitimer(signal.ITIMER_REAL) != (0.0, 0.0)
+    ):
         return departures(reading, reported)
     previous_handler = signal.signal(signal.SIGALRM, _deadline_handler)
     signal.alarm(seconds)

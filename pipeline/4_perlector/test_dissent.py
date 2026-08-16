@@ -4,6 +4,7 @@ metric; a raw-string cross-check beside the normalized one; an honest
 """
 
 import signal
+import threading
 import time
 import unicodedata
 
@@ -334,3 +335,61 @@ def test_this_module_pins_equality_only_and_takes_no_similarity_parameter():
         "threshold -- 'closest match' needs a metric, and refusing metrics is "
         "what keeps a normalization from becoming a fuzzy-match picker"
     )
+
+
+# --- F-X4 (R4 audit, Opus seat 3): the comparison deadline owns its own alarm ---
+
+
+@pytest.mark.skipif(
+    not all(hasattr(signal, name) for name in ("SIGALRM", "ITIMER_REAL")),
+    reason="requires the POSIX real-time alarm this backstop is built on",
+)
+def test_the_comparison_deadline_leaves_a_callers_own_alarm_alone():
+    """`SIGALRM` is process-global. Arming unconditionally replaced a caller's
+    real-time timer and then cancelled it in `finally`, destroying a deadline
+    this module never owned -- the same defect `common/alignment.py` closed as
+    F-L3, still open in its sibling on the same call path."""
+    previous_handler = signal.getsignal(signal.SIGALRM)
+
+    def caller_handler(signum, frame):
+        pass
+
+    signal.signal(signal.SIGALRM, caller_handler)
+    signal.setitimer(signal.ITIMER_REAL, 30.0)
+    try:
+        result = dissent._aligned_within_deadline("alpha beta", "alpha beta", seconds=1)
+
+        assert result == []
+        remaining, _ = signal.getitimer(signal.ITIMER_REAL)
+        assert remaining > 0, "alignment cancelled a timer it did not own"
+        assert signal.getsignal(signal.SIGALRM) is caller_handler
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0.0)
+        signal.signal(signal.SIGALRM, previous_handler)
+
+
+@pytest.mark.skipif(
+    not all(hasattr(signal, name) for name in ("SIGALRM", "ITIMER_REAL")),
+    reason="requires the POSIX real-time alarm this backstop is built on",
+)
+def test_the_comparison_runs_off_the_main_thread_without_touching_signal_state():
+    """`signal.signal` raises outright from a non-main thread, so the bounded
+    comparison could not run there at all. It degrades to an unbounded run --
+    the same honest degradation the missing-SIGALRM platform already takes --
+    rather than crashing the caller."""
+    captured = {}
+
+    def work():
+        try:
+            captured["result"] = dissent._aligned_within_deadline(
+                "alpha beta", "alpha gamma", seconds=1
+            )
+        except BaseException as error:  # noqa: BLE001 - the point of the test
+            captured["error"] = error
+
+    thread = threading.Thread(target=work)
+    thread.start()
+    thread.join()
+
+    assert "error" not in captured, captured.get("error")
+    assert captured["result"], "a real difference must still be reported"
