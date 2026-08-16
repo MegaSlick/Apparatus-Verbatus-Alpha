@@ -542,3 +542,33 @@ def test_armarium_categories_and_vocabulary_cannot_drift_apart():
     """Meta-invariant #91 — drift checks over agreement surfaces: wherever two
     files must agree, a test reads both from source and fails on divergence."""
     assert set(outcomes.VOCABULARIES[ARMARIUM]) == {category.value for category in ArmariumCategory}
+
+
+def test_the_under_witnessed_count_is_the_attached_reads_never_the_wider_class():
+    """F-G2, pinned. `under_witnessed` is decided from the attached-reading
+    count; `by_class["completed"]` is the wider ATTESTATORES COMPLETED class,
+    which also holds `excluded` and -- since R4's per-act alignment -- a page
+    witness that read its page and did not align into this act. Printing the
+    wider number put a floor-satisfying count next to an under-witnessed
+    verdict: "act act_a is under-witnessed (3 of a floor of 3)", a sentence
+    that refutes itself, which is exactly the shape GOVERNANCE 2 and 10 refuse.
+
+    Written on this audit: the repair landed with no named test holding it, and
+    the fixture cannot produce the divergence today.
+    """
+    coverage = witness_coverage(
+        {"s1": "read", "s2": "read", "s3": "read"},
+        3,
+        attachments={"s1": True, "s2": True, "s3": False},
+    )
+    assert coverage["under_witnessed"] is True
+    assert coverage["by_class"]["completed"] == 3, "the wider class still counts all three"
+    assert coverage["page_granularity_only"] == 1
+
+    aggregate = run_aggregate(
+        {"act_a": ArmariumCategory.DELIVERED},
+        {"act_a": coverage},
+        {1: {"outcome": "sealed"}},
+        act_pages={"act_a": [1]},
+    )
+    assert aggregate["reasons"] == ["act act_a is under-witnessed (2 of a floor of 3)"]

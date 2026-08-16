@@ -474,6 +474,18 @@ def act_attachment_view(context, act: dict[str, Any], testimonia: list[dict]) ->
         # A blinded dossier may show that page evidence exists, but not the
         # chair names embedded in its retained attachment artifact.
         "page_witness_count": page_witness_count,
+        # Stated exactly, because the count above was chosen to disclose an
+        # aggregate and this does not: `comparison_views` is keyed per chair,
+        # relabeled through `witness_label` in `dossier.build_dossier`, and
+        # present only for page witnesses. A blinded reader therefore learns
+        # WHICH pseudonyms are page-scoped -- scope, never identity, but with
+        # a roster of three where one chair is act-scoped that narrows a
+        # witness from one-in-three to one-in-two and names the act-scoped
+        # chair outright. U3 requires the act-anchored view and the view has
+        # to be attributable to a label for dissent to use it, so this is the
+        # cost of the instrument rather than an oversight; it is recorded here
+        # so R5a/R5b, which own the dossier's reference-based act views, can
+        # weigh it deliberately. R4 audit, F-X5.
         "comparison_views": comparison_views,
     }
 
