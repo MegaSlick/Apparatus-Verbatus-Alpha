@@ -27,6 +27,8 @@ from common.contracts.stages import writing_directory
 
 RECEIPT = {"relative_path": "receipts/sha256/" + "a" * 64 + ".json", "sha256": "a" * 64}
 RESPONSE = {"relative_path": "2_designator/blobs/sha256/" + "b" * 64, "sha256": "b" * 64}
+PAGE_ID = "pg_fixture"
+PAGE_ORDINAL = 0
 
 # A polygon inside the vertical band both Surya passes tile (the offset-0 pass
 # covers y=0..1400, the offset-700 pass covers y=700..2100), so a physically
@@ -262,7 +264,7 @@ class _FixtureTree:
 
     def read_run_receipt(self, reference):
         self.receipts.append(reference)
-        return {"fixture": True}
+        return {"chair": "designator_structure"}
 
     def read_bytes(self, path):
         # `RunTree.read_bytes` is `self.resolve(path).read_bytes()`, so a
@@ -275,10 +277,22 @@ class _FixtureTree:
 def test_one_chandra_response_has_one_receipt_and_two_consumable_references():
     tree = _FixtureTree()
     body = b'{"regions":[{"text":"R3-only custody"}]}'
-    stored = retain_chandra_response(tree, body, RECEIPT)
+    stored = retain_chandra_response(
+        tree, body, RECEIPT, page_id=PAGE_ID, page_ordinal=PAGE_ORDINAL
+    )
     response_ref, custody_ref = stored["response_ref"], stored["custody_ref"]
     assert response_ref["relative_path"] in tree.blobs
-    assert read_retained_chandra_response(tree, response_ref, RECEIPT, custody_ref) == body
+    assert (
+        read_retained_chandra_response(
+            tree,
+            response_ref,
+            RECEIPT,
+            custody_ref,
+            page_id=PAGE_ID,
+            page_ordinal=PAGE_ORDINAL,
+        )
+        == body
+    )
     assert tree.receipts == [RECEIPT]
     # Geometry itself contains only the sealed blob reference, never the response text.
     geometry = chandra_layout(
@@ -311,34 +325,76 @@ def test_chandra_custody_names_a_missing_blob_instead_of_crashing_on_it():
 
 def test_chandra_custody_refuses_a_forged_blob_reference():
     tree = _FixtureTree()
-    stored = retain_chandra_response(tree, b"fixture", RECEIPT)
+    stored = retain_chandra_response(
+        tree, b"fixture", RECEIPT, page_id=PAGE_ID, page_ordinal=PAGE_ORDINAL
+    )
     # A response reference whose claimed digest disagrees with what the custody
     # binding recorded is refused by the pairing check before any bytes are read.
     forged = {**stored["response_ref"], "sha256": "0" * 64}
     with pytest.raises(SchemaRefusal, match="different receipt"):
-        read_retained_chandra_response(tree, forged, RECEIPT, stored["custody_ref"])
+        read_retained_chandra_response(
+            tree,
+            forged,
+            RECEIPT,
+            stored["custody_ref"],
+            page_id=PAGE_ID,
+            page_ordinal=PAGE_ORDINAL,
+        )
     # Tampering the stored bytes themselves (leaving every reference honest) is
     # refused by the digest check instead.
     tree.blobs[stored["response_ref"]["relative_path"]] = b"tampered"
     with pytest.raises(SchemaRefusal, match="differs"):
-        read_retained_chandra_response(tree, stored["response_ref"], RECEIPT, stored["custody_ref"])
+        read_retained_chandra_response(
+            tree,
+            stored["response_ref"],
+            RECEIPT,
+            stored["custody_ref"],
+            page_id=PAGE_ID,
+            page_ordinal=PAGE_ORDINAL,
+        )
 
 
 def test_chandra_custody_refuses_a_receipt_reused_with_a_different_response():
     tree = _FixtureTree()
-    first = retain_chandra_response(tree, b"the first Chandra call's response", RECEIPT)
+    first = retain_chandra_response(
+        tree,
+        b"the first Chandra call's response",
+        RECEIPT,
+        page_id=PAGE_ID,
+        page_ordinal=PAGE_ORDINAL,
+    )
     other_receipt = {
         **RECEIPT,
         "relative_path": "receipts/sha256/" + "e" * 64 + ".json",
         "sha256": "e" * 64,
     }
-    second = retain_chandra_response(tree, b"a second, unrelated response", other_receipt)
+    second = retain_chandra_response(
+        tree,
+        b"a second, unrelated response",
+        other_receipt,
+        page_id=PAGE_ID,
+        page_ordinal=PAGE_ORDINAL,
+    )
     # Both references are individually well formed and individually retrievable;
     # only their pairing is forged.
     with pytest.raises(SchemaRefusal, match="different receipt"):
-        read_retained_chandra_response(tree, second["response_ref"], RECEIPT, second["custody_ref"])
+        read_retained_chandra_response(
+            tree,
+            second["response_ref"],
+            RECEIPT,
+            second["custody_ref"],
+            page_id=PAGE_ID,
+            page_ordinal=PAGE_ORDINAL,
+        )
     with pytest.raises(SchemaRefusal, match="different receipt"):
-        read_retained_chandra_response(tree, first["response_ref"], RECEIPT, second["custody_ref"])
+        read_retained_chandra_response(
+            tree,
+            first["response_ref"],
+            RECEIPT,
+            second["custody_ref"],
+            page_id=PAGE_ID,
+            page_ordinal=PAGE_ORDINAL,
+        )
 
 
 def _raw_envelope(payload):

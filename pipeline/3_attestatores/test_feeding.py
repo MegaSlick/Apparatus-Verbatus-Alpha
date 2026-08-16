@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from feeding import (
     CHURRO_OUTPUT_TOKENS,
@@ -18,7 +20,10 @@ from feeding import (
 from common.chandra_custody import retain_chandra_response
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import SchemaRefusal
-from common.contracts.stages import writing_directory
+from common.contracts.stages import DESIGNATOR, writing_directory
+
+PAGE_ID = "pg_fixture"
+PAGE_ORDINAL = 0
 
 
 def _ref(path: str) -> dict[str, str]:
@@ -30,9 +35,10 @@ class _Tree:
     not the bare stage name — see common/chandra_custody.py's module docstring for
     why that distinction is load-bearing here."""
 
-    def __init__(self):
+    def __init__(self, *, receipt_chair="designator_structure"):
         self.blobs = {}
         self.receipts = []
+        self.receipt_chair = receipt_chair
 
     def put_blob(self, stage, data):
         digest = digest_bytes(data)
@@ -42,10 +48,25 @@ class _Tree:
 
     def read_run_receipt(self, reference):
         self.receipts.append(reference)
-        return {"fixture": True}
+        return {"chair": self.receipt_chair}
 
     def read_bytes(self, path):
         return self.blobs[path]
+
+
+def _retain(tree, raw, receipt, *, page_id=PAGE_ID, page_ordinal=PAGE_ORDINAL):
+    return retain_chandra_response(tree, raw, receipt, page_id=page_id, page_ordinal=page_ordinal)
+
+
+def _intake(tree, stored, receipt, *, page_id=PAGE_ID, page_ordinal=PAGE_ORDINAL):
+    return chandra_capture_intake(
+        tree,
+        page_id=page_id,
+        page_ordinal=page_ordinal,
+        response_ref=stored["response_ref"],
+        receipt_ref=receipt,
+        custody_ref=stored["custody_ref"],
+    )
 
 
 def test_churro_records_a_24k_bound_and_detects_repetition_after_complete_capture():
@@ -102,13 +123,10 @@ def test_chandra_intake_consumes_the_r2_blob_under_its_original_receipt():
     tree = _Tree()
     receipt = _ref("receipts/sha256/" + "b" * 64 + ".json")
     raw = b'{"html":"the retained Chandra response"}'
-    stored = retain_chandra_response(tree, raw, receipt)
-    intake = chandra_capture_intake(
-        tree,
-        response_ref=stored["response_ref"],
-        receipt_ref=receipt,
-        custody_ref=stored["custody_ref"],
-    )
+    stored = _retain(tree, raw, receipt)
+    intake = _intake(tree, stored, receipt)
+    assert intake["page_id"] == PAGE_ID
+    assert intake["page_ordinal"] == PAGE_ORDINAL
     assert intake["response_ref"] == stored["response_ref"]
     assert intake["receipt_ref"] == receipt
     assert intake["custody_ref"] == stored["custody_ref"]
@@ -121,29 +139,31 @@ def test_chandra_intake_refuses_a_response_retained_under_a_different_receipt():
     tree = _Tree()
     receipt_a = {"relative_path": "receipts/sha256/" + "b" * 64 + ".json", "sha256": "b" * 64}
     receipt_b = {"relative_path": "receipts/sha256/" + "c" * 64 + ".json", "sha256": "c" * 64}
-    retain_chandra_response(tree, b"call A's response", receipt_a)
-    stored_b = retain_chandra_response(tree, b"call B's unrelated response", receipt_b)
+    _retain(tree, b"call A's response", receipt_a)
+    stored_b = _retain(tree, b"call B's unrelated response", receipt_b)
     with pytest.raises(SchemaRefusal, match="different receipt"):
-        chandra_capture_intake(
-            tree,
-            response_ref=stored_b["response_ref"],
-            receipt_ref=receipt_a,
-            custody_ref=stored_b["custody_ref"],
-        )
+        _intake(tree, stored_b, receipt_a)
 
 
 def test_chandra_intake_refuses_a_receipt_reference_substituted_for_a_response_reference():
     """H3 forgery: swap the two reference roles."""
     tree = _Tree()
     receipt = _ref("receipts/sha256/" + "b" * 64 + ".json")
-    stored = retain_chandra_response(tree, b"a response", receipt)
+    stored = _retain(tree, b"a response", receipt)
     with pytest.raises(SchemaRefusal, match="does not name"):
         chandra_capture_intake(
-            tree, response_ref=receipt, receipt_ref=receipt, custody_ref=stored["custody_ref"]
+            tree,
+            page_id=PAGE_ID,
+            page_ordinal=PAGE_ORDINAL,
+            response_ref=receipt,
+            receipt_ref=receipt,
+            custody_ref=stored["custody_ref"],
         )
     with pytest.raises(SchemaRefusal, match="does not name"):
         chandra_capture_intake(
             tree,
+            page_id=PAGE_ID,
+            page_ordinal=PAGE_ORDINAL,
             response_ref=stored["response_ref"],
             receipt_ref=stored["response_ref"],
             custody_ref=stored["custody_ref"],
@@ -154,15 +174,54 @@ def test_chandra_intake_refuses_a_tampered_response_blob():
     """H3 forgery: the retained bytes no longer match their sealed digest."""
     tree = _Tree()
     receipt = _ref("receipts/sha256/" + "b" * 64 + ".json")
-    stored = retain_chandra_response(tree, b"original response bytes", receipt)
+    stored = _retain(tree, b"original response bytes", receipt)
     tree.blobs[stored["response_ref"]["relative_path"]] = b"tampered response bytes"
     with pytest.raises(SchemaRefusal, match="differs"):
-        chandra_capture_intake(
-            tree,
-            response_ref=stored["response_ref"],
-            receipt_ref=receipt,
-            custody_ref=stored["custody_ref"],
-        )
+        _intake(tree, stored, receipt)
+
+
+@pytest.mark.parametrize("variant", ["duplicate-key", "whitespace", "unicode-escape"])
+def test_chandra_intake_refuses_noncanonical_custody_json_bytes(variant):
+    tree = _Tree()
+    receipt = _ref("receipts/sha256/" + "b" * 64 + ".json")
+    stored = _retain(tree, b"raw Chandra response", receipt)
+    original = tree.blobs[stored["custody_ref"]["relative_path"]]
+    parsed = json.loads(original)
+    if variant == "duplicate-key":
+        pair = f'"receipt_sha256":"{parsed["receipt_sha256"]}"'.encode()
+        malformed = original.replace(pair, pair + b"," + pair, 1)
+    elif variant == "whitespace":
+        malformed = json.dumps(parsed, sort_keys=True).encode()
+    else:
+        malformed = original.replace(b'"schema"', b'"sch\\u0065ma"', 1)
+    assert json.loads(malformed) == parsed, "the ordinary JSON reader sees the same object"
+    digest, published = tree.put_blob(DESIGNATOR, malformed)
+    forged = {
+        **stored,
+        "custody_ref": {"relative_path": published.relative_path, "sha256": digest},
+    }
+    with pytest.raises(SchemaRefusal, match="exact canonical JSON bytes"):
+        _intake(tree, forged, receipt)
+
+
+@pytest.mark.parametrize(
+    ("page_id", "page_ordinal"),
+    [("pg_other", PAGE_ORDINAL), (PAGE_ID, PAGE_ORDINAL + 1)],
+)
+def test_chandra_intake_refuses_custody_bound_to_a_different_page(page_id, page_ordinal):
+    tree = _Tree()
+    receipt = _ref("receipts/sha256/" + "b" * 64 + ".json")
+    stored = _retain(tree, b"page-specific response", receipt)
+    with pytest.raises(SchemaRefusal, match="different page"):
+        _intake(tree, stored, receipt, page_id=page_id, page_ordinal=page_ordinal)
+
+
+def test_chandra_intake_refuses_a_non_designator_receipt_chair():
+    tree = _Tree(receipt_chair="attestator_1")
+    receipt = _ref("receipts/sha256/" + "b" * 64 + ".json")
+    stored = _retain(tree, b"response under the wrong serving role", receipt)
+    with pytest.raises(SchemaRefusal, match="designator_structure"):
+        _intake(tree, stored, receipt)
 
 
 def test_schedule_is_stage_major_chair_outer_act_inner_and_single_resident():

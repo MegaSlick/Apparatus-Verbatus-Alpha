@@ -118,7 +118,13 @@ def dai_model_view(
 
 
 def chandra_capture_intake(
-    tree: Any, *, response_ref: object, receipt_ref: object, custody_ref: object
+    tree: Any,
+    *,
+    page_id: str,
+    page_ordinal: int,
+    response_ref: object,
+    receipt_ref: object,
+    custody_ref: object,
 ) -> dict[str, Any]:
     """Consume R2's one-receipt raw response without re-serving Chandra.
 
@@ -131,9 +137,18 @@ def chandra_capture_intake(
     """
     from common.chandra_custody import read_retained_chandra_response
 
-    raw = read_retained_chandra_response(tree, response_ref, receipt_ref, custody_ref)
+    raw = read_retained_chandra_response(
+        tree,
+        response_ref,
+        receipt_ref,
+        custody_ref,
+        page_id=page_id,
+        page_ordinal=page_ordinal,
+    )
     return {
         "adapter": "chandra-capture.v1",
+        "page_id": page_id,
+        "page_ordinal": page_ordinal,
         "response_ref": response_ref,
         "receipt_ref": receipt_ref,
         "custody_ref": custody_ref,

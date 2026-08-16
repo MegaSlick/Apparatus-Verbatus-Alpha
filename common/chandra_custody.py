@@ -63,7 +63,12 @@ def custody_reference(value: object, prefix: str, what: str) -> dict[str, str]:
 
 
 def retain_chandra_response(
-    tree: Any, response: bytes, receipt_ref: dict[str, str]
+    tree: Any,
+    response: bytes,
+    receipt_ref: dict[str, str],
+    *,
+    page_id: str,
+    page_ordinal: int,
 ) -> dict[str, Any]:
     """Store one raw response blob and record its binding to the one serving receipt.
 
@@ -74,6 +79,7 @@ def retain_chandra_response(
     trusting that a caller's two loose references belong together.
     """
     receipt = custody_reference(receipt_ref, _RECEIPT_PREFIX, "Chandra receipt reference")
+    _page_identity(page_id, page_ordinal)
     if not isinstance(response, bytes):
         raise SchemaRefusal("Chandra raw response is not bytes")
     digest, published = tree.put_blob(DESIGNATOR, response)
@@ -85,6 +91,8 @@ def retain_chandra_response(
     binding = canonical_bytes(
         {
             "schema": CUSTODY_BINDING_SCHEMA,
+            "page_id": page_id,
+            "page_ordinal": page_ordinal,
             "receipt_sha256": receipt["sha256"],
             "response_sha256": response_ref["sha256"],
         }
@@ -99,9 +107,16 @@ def retain_chandra_response(
 
 
 def read_retained_chandra_response(
-    tree: Any, response_ref: object, receipt_ref: object, custody_ref: object
+    tree: Any,
+    response_ref: object,
+    receipt_ref: object,
+    custody_ref: object,
+    *,
+    page_id: str,
+    page_ordinal: int,
 ) -> bytes:
     """R3's intake boundary: forged, mismatched, or tampered references are refused."""
+    _page_identity(page_id, page_ordinal)
     response = custody_reference(response_ref, _RESPONSE_PREFIX, "Chandra response reference")
     receipt = custody_reference(receipt_ref, _RECEIPT_PREFIX, "Chandra receipt reference")
     custody = custody_reference(custody_ref, _RESPONSE_PREFIX, "Chandra custody binding reference")
@@ -112,11 +127,27 @@ def read_retained_chandra_response(
         recorded = json.loads(binding_bytes.decode("utf-8"))
     except (UnicodeDecodeError, ValueError) as error:
         raise SchemaRefusal(f"Chandra custody binding is not valid JSON: {error}") from error
+    binding_fields = {
+        "schema",
+        "page_id",
+        "page_ordinal",
+        "receipt_sha256",
+        "response_sha256",
+    }
+    if not isinstance(recorded, dict) or set(recorded) != binding_fields:
+        raise SchemaRefusal("Chandra custody binding is not its closed schema")
+    try:
+        exact_canonical_bytes = canonical_bytes(recorded)
+    except (TypeError, ValueError) as error:
+        raise SchemaRefusal(f"Chandra custody binding is not canonical JSON: {error}") from error
+    if binding_bytes != exact_canonical_bytes:
+        raise SchemaRefusal("Chandra custody binding is not exact canonical JSON bytes")
+    if recorded["page_id"] != page_id or recorded["page_ordinal"] != page_ordinal:
+        raise SchemaRefusal("Chandra custody binding belongs to a different page")
     if (
-        not isinstance(recorded, dict)
-        or recorded.get("schema") != CUSTODY_BINDING_SCHEMA
-        or recorded.get("receipt_sha256") != receipt["sha256"]
-        or recorded.get("response_sha256") != response["sha256"]
+        recorded["schema"] != CUSTODY_BINDING_SCHEMA
+        or recorded["receipt_sha256"] != receipt["sha256"]
+        or recorded["response_sha256"] != response["sha256"]
     ):
         raise SchemaRefusal(
             "Chandra response was retained under a different receipt than the one given here"
@@ -126,8 +157,21 @@ def read_retained_chandra_response(
     # is paired with this response. The custody binding checked above is what
     # proves the pairing; the response bytes are opaque textual custody, never
     # parsed by this module.
-    tree.read_run_receipt(receipt)
+    receipt_record = tree.read_run_receipt(receipt)
+    from common.stage import DESIGNATOR_CHAIR
+
+    if receipt_record["chair"] != DESIGNATOR_CHAIR:
+        raise SchemaRefusal(
+            f"Chandra custody receipt was not issued for chair {DESIGNATOR_CHAIR!r}"
+        )
     data = tree.read_bytes(response["relative_path"])
     if digest_bytes(data) != response["sha256"]:
         raise SchemaRefusal("Chandra response blob differs from its sealed reference")
     return data
+
+
+def _page_identity(page_id: object, page_ordinal: object) -> None:
+    if not isinstance(page_id, str) or not page_id:
+        raise SchemaRefusal("Chandra custody page identity is blank")
+    if not isinstance(page_ordinal, int) or isinstance(page_ordinal, bool) or page_ordinal < 0:
+        raise SchemaRefusal("Chandra custody page ordinal is not a non-negative integer")
