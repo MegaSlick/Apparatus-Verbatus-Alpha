@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import errno
 import json
+import subprocess
+import sys
+import unicodedata
+from pathlib import Path
 
 import pytest
 
@@ -406,7 +410,7 @@ def test_gold_text_is_stored_so_two_identical_readings_compare_equal(tmp_path):
     path, frame, pages = run_file(tmp_path)
     sample = sample_stratified(path, catalog(pages), plan_for(frame, catalog(pages)))[0]
     composed = "Année"
-    decomposed = "Année"
+    decomposed = unicodedata.normalize("NFD", composed)
     assert composed != decomposed
     assert transcribe(sample, _act(), "hand-a", composed, path)["text"] == composed
     for rejected, reason in (
@@ -721,6 +725,23 @@ def test_cli_verify_sampling_replays_what_the_sampler_wrote(tmp_path):
     written[0].unlink()
     with pytest.raises(SchemaRefusal, match="does not replay"):
         cli.main(["verify-sampling", str(output), *common])
+
+
+def test_cli_entry_point_states_the_refusal_instead_of_printing_a_traceback(tmp_path):
+    """`main()` raising the named refusal is only half of it: run as a program, an
+    uncaught `SchemaRefusal` still reached the operator as a stack trace and exit 1.
+    `pipeline/orchestrator/run.py`'s entry point settles the convention."""
+    bad = tmp_path / "not-json.json"
+    bad.write_text("{not valid json", encoding="utf-8")
+    finished = subprocess.run(
+        [sys.executable, "-m", "gold.cli", "validate", str(bad)],
+        capture_output=True,
+        text=True,
+        cwd=Path(__file__).resolve().parents[1],
+    )
+    assert finished.returncode == 2
+    assert finished.stderr.strip() == f"SchemaRefusal: {bad} is not readable JSON"
+    assert "Traceback" not in finished.stderr
 
 
 def test_cli_malformed_json_input_is_a_named_refusal_not_a_traceback(tmp_path):

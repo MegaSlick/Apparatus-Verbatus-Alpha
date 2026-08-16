@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
-from common.contracts.errors import SchemaRefusal
+from common.contracts.errors import ContractError, SchemaRefusal
 
 from .core import (
     adjudicate,
@@ -123,4 +124,12 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    # A refusal is a statement to the operator, not a stack trace: the named
+    # `SchemaRefusal` this module raises everywhere reaches the terminal as its
+    # message and exit 2, exactly as `pipeline/orchestrator/run.py` does it.
+    # `main()` still raises, so callers in-process keep the exception.
+    try:
+        raise SystemExit(main())
+    except ContractError as error:
+        print(f"{type(error).__name__}: {error}", file=sys.stderr)
+        raise SystemExit(2) from error
