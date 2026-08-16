@@ -416,8 +416,8 @@ FIXTURE = "synthetic-two-page-v0"
 # file counts from R4's 60/65 to 64/71 (each act gains an audit draft and an
 # audit finding); the counts then held at 64/71 across every one of this
 # loop's re-measurements while only digests moved.
-HAPPY_RUN_TREE_DIGEST = "1091f933230366310070d48b50cf119d49d0a4bd673f99bc57369229235baef5"
-REVIEW_RUN_TREE_DIGEST = "ea7d49c6969a2fe501c5a5be3fb03858261c2a1d1f0b6554d3cc76c0b74b2ed5"
+HAPPY_RUN_TREE_DIGEST = "735fa1431092462c81a3d9a6bda282ac779873cd1d9385b9ac9720c7799cf756"
+REVIEW_RUN_TREE_DIGEST = "3babc06829db1d2bf51152de7881bebf9aea5b9fbb54b79e712bbff849203474"
 
 
 def orchestrate(

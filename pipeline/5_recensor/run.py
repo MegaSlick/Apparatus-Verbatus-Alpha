@@ -1046,15 +1046,22 @@ def testimony_content_for_page(findings: dict[int, dict], ordinal: int) -> dict:
 
 
 def review_route_from_findings(
-    *, testimony_shortfall: bool, audit_unresolved: bool, under_witnessed: bool
+    *,
+    testimony_shortfall: bool,
+    audit_unresolved: bool,
+    under_witnessed: bool,
+    unreconciled: bool = False,
 ) -> tuple[str, str] | None:
     """Compose independent review findings without last-writer-wins routing.
 
     Coverage comes first under GOALS 1, followed by R5b's reading-audit finding,
     then the witness floor. Every active reason is retained in that stable order;
-    they all map to the same `held-for-review` outcome. `audit_unresolved` is the
-    pre-wave composition seam: this branch has no R5b producer yet, so its current
-    caller supplies `False`; the R5b rebase must supply its verified audit state.
+    they all map to the same `held-for-review` outcome. `audit_unresolved` is
+    wired to the Recensor's verified `audit_state` since the wave restacked R5b
+    below this branch. `unreconciled` folds the scenario hold into the composer
+    (R6 audit F-O5): it was the one preempted cause with no independent field,
+    so an act simultaneously under-witnessed and scenario-held recorded only
+    the floor cause.
     """
     reasons = []
     if testimony_shortfall:
@@ -1071,6 +1078,8 @@ def review_route_from_findings(
         reasons.append(
             "the configured act-level witness floor is not met; a witness failure is not coverage"
         )
+    if unreconciled:
+        reasons.append("the act did not reconcile and needs a human")
     if not reasons:
         return None
     return "held-for-review", "; ".join(reasons)
@@ -1263,14 +1272,6 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         coverage = validate_chair_coverage(context, act_id, floor)
         content_coverage = testimony_content_for_page(content_findings, act["page_ordinal"])
         geometry_coverage = geometry_coverage_for(geometry_inputs, act["page_ordinal"])
-        findings_route = review_route_from_findings(
-            testimony_shortfall=content_coverage["shortfall"],
-            # WAVE WIRING (was the pre-wave seam `False`): R5b's Pass-C
-            # producer now sits below this branch, so the composer receives
-            # the verified audit state the seat-era candidate could not have.
-            audit_unresolved=audit_unresolved,
-            under_witnessed=coverage["under_witnessed"],
-        )
 
         if act["outcome"] == "held":
             # The Designator could not mark this act out. There is no reading to
@@ -1339,6 +1340,18 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         latest = latest_attempt(readings, f"reading of {act_id}", operation="perlegere")
         latest_payload = _payload(latest, f"reading of {act_id}")
         audit_unresolved = audit_state(context, latest, act_id)
+        # WAVE WIRING (was the pre-wave seam `False`): R5b's Pass-C producer
+        # now sits below this branch, so the composer receives the verified
+        # audit state the seat-era candidate could not have. Computed here,
+        # after audit_state, because a held act has no reading and no audit
+        # chain to consult — it takes its own branch above and never reaches
+        # the routing that consumes this.
+        findings_route = review_route_from_findings(
+            testimony_shortfall=content_coverage["shortfall"],
+            audit_unresolved=audit_unresolved,
+            under_witnessed=coverage["under_witnessed"],
+            unreconciled=act_key in scenario["hold_acts"],
+        )
         reading_class = classify(PERLECTOR, latest["outcome"])
         reading_ref = context.artifact_ref(PERLECTOR, "perlectio", latest["artifact_id"])
         basis_regions = (
@@ -1420,6 +1433,11 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     "attempt_ordinal": ordinal,
                     "recovery_kind": FALLBACK_RECROP,
                     "coverage": coverage,
+                    # R6 audit F-O7: this was the only review shape carrying
+                    # neither field, so its consumers could not tell "checked
+                    # and clear" from "never checked".
+                    "geometry_coverage": geometry_coverage,
+                    "testimony_content_coverage": content_coverage,
                     "continuation": continuation_link,
                     "page_coverage": page_coverage,
                     "perlectio_ref": reading_ref,
@@ -1516,10 +1534,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "proposal set — GOALS 1: a missed act is worse than a poorly read one); "
                 "accepting this act would leave that ink unaccounted for",
             )
-elif findings_route is not None:
+        elif findings_route is not None:
             outcome, reason = findings_route
-        elif act_key in scenario["hold_acts"]:
-            outcome, reason = "held-for-review", "the act did not reconcile and needs a human"
         elif wants_recovery:
             outcome, reason = (
                 "held-for-review",

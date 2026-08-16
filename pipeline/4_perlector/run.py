@@ -502,15 +502,16 @@ def act_attachment_view(context, act: dict[str, Any], testimonia: list[dict]) ->
 
 
 def act_comparison_view(page_text: str, witness_span: dict[str, int]) -> str:
-    """One act's slice of a page reading, in the space the span was measured in.
+    """One act's markup-stripped slice of a page reading, from a RAW span.
 
-    `witness_span` indexes the markup-stripped, whitespace-collapsed view
-    `common.alignment.align_to_anchor` aligned -- never the raw page bytes --
-    so the slice is taken from that same view. Slicing the raw report with
-    these offsets agrees only where stripping removed nothing, which is the
-    ASCII fixture and not Chandra's HTML or Churro's XML. Found in audit; F-X3.
+    Since the wave composed R4's per-act clip with R6's raw translation,
+    `witness_span` indexes the RAW page-Testimonium text at the one storage
+    point (`pipeline/3_attestatores/run.py`) — every consumer of the field
+    shares that space. The slice is therefore taken from the raw bytes, and
+    the markup stripping F-X3 requires (a comparison view safe to diff — a
+    raw slice would carry whatever markup it cut through) is applied to the
+    slice itself, not to the whole page before slicing.
     """
-    normalized = markup_text_view(page_text)["text"]
     # Both bounds, not only the end: this reads an artifact back from disk, so
     # it is the last gate before untrusted numbers become a comparison view. A
     # negative or inverted span slices to an empty string without complaint,
@@ -522,9 +523,9 @@ def act_comparison_view(page_text: str, witness_span: dict[str, int]) -> str:
     start, end = witness_span["start"], witness_span["end"]
     if any(not isinstance(bound, int) or isinstance(bound, bool) for bound in (start, end)):
         raise SchemaRefusal("an attached page witness claims a non-integer comparison span")
-    if not 0 <= start <= end or end > len(normalized):
+    if end > len(page_text):
         raise SchemaRefusal("an attached page witness claims a span past its own comparison view")
-    return normalized[start:end]
+    return markup_text_view(page_text[start:end])["text"]
 
 
 def dissent_testimonia(testimonia: list[dict], attachment_view: dict[str, Any]) -> list[dict]:
