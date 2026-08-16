@@ -7,6 +7,7 @@ role = "designator_surya"
 tile_width_px = 1400
 tile_height_px = 1400
 half_tile_vertical_offset_px = 700
+horizontal_overlap_px = 700
 
 [geometry.yolo_obb]
 role = "designator_yolo_obb"

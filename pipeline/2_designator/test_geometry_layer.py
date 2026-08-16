@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from itertools import cycle
 
 import pytest
@@ -9,6 +10,7 @@ from geometry_layer import (
     DEFAULT_POLICY_PATH,
     chandra_layout,
     load_geometry_policy,
+    load_geometry_policy_record,
     occlusion_envelope,
     raw_proposal_envelope,
     read_retained_chandra_response,
@@ -31,6 +33,7 @@ def test_sealed_policy_exposes_integer_surya_sizing_and_yolo_rectification_toggl
     policy = load_geometry_policy()
     assert policy["surya"]["tile_height_px"] == 1400
     assert policy["surya"]["half_tile_vertical_offset_px"] == 700
+    assert policy["surya"]["horizontal_overlap_px"] == 700
     assert policy["yolo_obb"] == {
         "role": "designator_yolo_obb",
         "task": "obb",
@@ -45,6 +48,42 @@ def test_unknown_geometry_policy_knob_is_refused(tmp_path):
     path.write_text(text, encoding="utf-8")
     with pytest.raises(SchemaRefusal, match="closed schema"):
         load_geometry_policy(path)
+
+
+def test_unknown_top_level_geometry_policy_table_is_refused(tmp_path):
+    text = DEFAULT_POLICY_PATH.read_text(encoding="utf-8") + "\n[unread]\nvalue = 1\n"
+    path = tmp_path / "geometry.toml"
+    path.write_text(text, encoding="utf-8")
+    with pytest.raises(SchemaRefusal, match="closed schema"):
+        load_geometry_policy(path)
+
+
+@pytest.mark.parametrize(
+    "field_path",
+    [
+        ("schema",),
+        ("surya", "role"),
+        ("surya", "tile_width_px"),
+        ("surya", "tile_height_px"),
+        ("surya", "half_tile_vertical_offset_px"),
+        ("surya", "horizontal_overlap_px"),
+        ("yolo_obb", "role"),
+        ("yolo_obb", "task"),
+        ("yolo_obb", "crop_policy"),
+        ("yolo_obb", "rectify"),
+        ("provenance", "source"),
+        ("provenance", "calibrated_for_this_corpus"),
+        ("provenance", "caveat"),
+    ],
+)
+def test_point_of_use_policy_refuses_every_missing_sealed_value(field_path):
+    policy = deepcopy(load_geometry_policy())
+    parent = policy
+    for field in field_path[:-1]:
+        parent = parent[field]
+    del parent[field_path[-1]]
+    with pytest.raises(SchemaRefusal, match="closed"):
+        load_geometry_policy_record(policy)
 
 
 def test_surya_runs_both_half_offset_tilings_and_unions_without_discarding_pass_evidence():
@@ -72,6 +111,31 @@ def test_surya_runs_both_half_offset_tilings_and_unions_without_discarding_pass_
     assert proposals[0]["source"] == "surya"
     assert proposals[0]["observed_passes"] == [0, 1]
     validate_raw_proposal(proposals[0])
+
+
+def test_surya_horizontal_overlap_recovers_a_detection_cut_by_the_original_width_seam():
+    """V1: union cannot reconstruct partial boxes, so one tile must see the whole detection."""
+    policy = load_geometry_policy()
+    target = [{"x": 1390, "y": 100}, {"x": 1410, "y": 100}, {"x": 1410, "y": 120}]
+
+    def detect(tile):
+        x1, y1 = tile["x"] + tile["w"], tile["y"] + tile["h"]
+        if all(tile["x"] <= point["x"] < x1 and tile["y"] <= point["y"] < y1 for point in target):
+            return [{"polygon": target, "score_bp": 9000}]
+        return []
+
+    proposals = surya_double_pass(
+        page_id="pg_width_seam",
+        page_ordinal=0,
+        page_w=3000,
+        page_h=1400,
+        policy=policy,
+        receipt_ref=RECEIPT,
+        response_ref=RESPONSE,
+        detect=detect,
+    )
+    assert len(proposals) == 1
+    assert proposals[0]["geometry"] == target
 
 
 def test_yolo_retains_obb_and_derives_aabb_under_default_policy():
@@ -250,6 +314,30 @@ def test_graduated_occlusion_produces_review_partition_and_is_not_silently_read_
     assert {tuple(row["occlusion_ids"]) for row in result["partition"]} == {("occ_fixture",)}
 
 
+def test_page_wide_occlusion_disposition_includes_in_bounds_nonintersecting_geometry():
+    raw_sources = _geometry_sources()
+    distant = occlusion_envelope(
+        run_id="r2-fixture",
+        subject_id="occ_distant",
+        config_digest="d" * 64,
+        adapter_revision="fixture-r2-v1",
+        inputs=[],
+        payload={
+            "schema": "designator-occlusion.v1",
+            "occlusion_id": "occ_distant",
+            "page_id": "pg_fixture",
+            "page_ordinal": 0,
+            "polygon": [{"x": 90, "y": 90}, {"x": 91, "y": 90}, {"x": 91, "y": 91}],
+            "z_relationship": "unknown",
+            "review_state": "open",
+            "receipt_ref": RECEIPT,
+        },
+    )
+    result = resolve(raw_sources, [distant])
+    assert {row["disposition"] for row in result["partition"]} == {"review"}
+    assert {tuple(row["occlusion_ids"]) for row in result["partition"]} == {("occ_distant",)}
+
+
 def test_resolver_consumer_refuses_a_forged_derived_reference_instead_of_trusting_a_restatement():
     raw_sources = _geometry_sources()
     derived = resolve(raw_sources, [])
@@ -344,6 +432,30 @@ def test_surya_union_key_includes_score_so_a_rescored_repeat_is_retained_not_mer
     assert len({p["proposal_id"] for p in proposals}) == 2, (
         "each retained proposal keeps its own id"
     )
+
+
+def test_proposal_identity_is_reproducible_without_first_seen_pass_provenance():
+    proposal = surya_double_pass(
+        page_id="pg_fixture",
+        page_ordinal=0,
+        page_w=100,
+        page_h=2600,
+        policy=load_geometry_policy(),
+        receipt_ref=RECEIPT,
+        response_ref=RESPONSE,
+        detect=lambda tile: [
+            {
+                "polygon": [{"x": 4, "y": 4}, {"x": 8, "y": 4}, {"x": 8, "y": 8}],
+                "score_bp": 9000,
+            }
+        ],
+    )[0]
+    assert proposal["observed_passes"] == [0, 1]
+    for passes in ([0], [1], [0, 1]):
+        validate_raw_proposal({**proposal, "observed_passes": passes})
+
+    with pytest.raises(SchemaRefusal, match="identity does not derive"):
+        validate_raw_proposal({**proposal, "proposal_id": "proposal_forged000000"})
 
 
 def test_raw_proposal_transform_refuses_a_non_identity_scale_in_page_pixel_space():

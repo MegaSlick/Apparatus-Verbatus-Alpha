@@ -63,24 +63,42 @@ def load_geometry_policy(path: str | Path = DEFAULT_POLICY_PATH) -> dict[str, An
         document = tomllib.loads(data.decode("utf-8"))
     except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
         raise SchemaRefusal(f"geometry policy cannot be decoded: {error}") from error
-    geometry = _closed(
-        document.get("geometry"), {"schema", "surya", "yolo_obb", "provenance"}, "geometry policy"
-    )
+    document = _closed(document, {"geometry"}, "geometry policy document")
+    geometry = _validate_geometry_policy(document["geometry"])
+    return {"config_sha256": digest_bytes(data), **geometry}
+
+
+def _validate_geometry_policy(value: object) -> dict[str, Any]:
+    """Validate every named sealed value, including non-behavioural provenance."""
+    geometry = _closed(value, {"schema", "surya", "yolo_obb", "provenance"}, "geometry policy")
     if geometry["schema"] != POLICY_SCHEMA:
         raise SchemaRefusal("geometry policy has an unknown schema")
     surya = _closed(
         geometry["surya"],
-        {"role", "tile_width_px", "tile_height_px", "half_tile_vertical_offset_px"},
+        {
+            "role",
+            "tile_width_px",
+            "tile_height_px",
+            "half_tile_vertical_offset_px",
+            "horizontal_overlap_px",
+        },
         "Surya policy",
     )
     for field in ("role",):
         if not isinstance(surya[field], str) or not surya[field]:
             raise SchemaRefusal(f"Surya policy {field} is blank")
-    for field in ("tile_width_px", "tile_height_px", "half_tile_vertical_offset_px"):
+    for field in (
+        "tile_width_px",
+        "tile_height_px",
+        "half_tile_vertical_offset_px",
+        "horizontal_overlap_px",
+    ):
         if not _integer(surya[field]) or surya[field] <= 0:
             raise SchemaRefusal(f"Surya policy {field} is not a positive integer")
     if surya["half_tile_vertical_offset_px"] * 2 != surya["tile_height_px"]:
-        raise SchemaRefusal("Surya half-tile offset does not equal half the sealed tile height")
+        raise SchemaRefusal("Surya vertical offset does not equal half the sealed tile height")
+    if surya["horizontal_overlap_px"] * 2 != surya["tile_width_px"]:
+        raise SchemaRefusal("Surya horizontal overlap does not equal half the sealed tile width")
     yolo = _closed(
         geometry["yolo_obb"], {"role", "task", "crop_policy", "rectify"}, "YOLO OBB policy"
     )
@@ -104,7 +122,7 @@ def load_geometry_policy(path: str | Path = DEFAULT_POLICY_PATH) -> dict[str, An
         for field in ("source", "caveat")
     ) or not isinstance(provenance["calibrated_for_this_corpus"], bool):
         raise SchemaRefusal("geometry policy provenance is incomplete")
-    return {"config_sha256": digest_bytes(data), **geometry}
+    return geometry
 
 
 def _point(value: object, page_w: int, page_h: int, what: str) -> dict[str, int]:
@@ -228,6 +246,11 @@ def validate_raw_proposal(payload: object) -> dict[str, Any]:
         raise SchemaRefusal("raw proposal AABB does not derive from its source geometry")
     if not _integer(record["score_bp"]) or not 0 <= record["score_bp"] <= 10_000:
         raise SchemaRefusal("raw proposal score is not an integer basis-point confidence")
+    expected_proposal_id = _proposal_id(
+        record["source"], record["page_id"], geometry, record["score_bp"]
+    )
+    if record["proposal_id"] != expected_proposal_id:
+        raise SchemaRefusal("raw proposal identity does not derive from source content")
     _ref(record["receipt_ref"], "receipts/sha256/", "raw proposal receipt reference")
     _ref(record["response_ref"], "designator/blobs/sha256/", "raw proposal response reference")
     _sha(record["adapter_config_sha256"], "raw proposal adapter config")
@@ -296,16 +319,12 @@ def validate_occlusion(payload: object) -> dict[str, Any]:
     return record
 
 
-def _proposal_id(
-    source: str, page_id: str, geometry: list[dict[str, int]], score_bp: int, passes: list[int]
-) -> str:
-    # score_bp is part of identity, not just payload: two detections with the
-    # same geometry, source, page, and first-observed pass but a DIFFERENT score
-    # are two distinct raw signals (surya_double_pass's union key already treats
-    # them that way). Without score_bp here they collided on one proposal_id --
-    # confirmed by
-    # test_surya_union_key_includes_score_so_a_rescored_repeat_is_retained_not_merged.
-    return f"proposal_{digest_of({'source': source, 'page_id': page_id, 'geometry': geometry, 'score_bp': score_bp, 'passes': passes})[:16]}"
+def _proposal_id(source: str, page_id: str, geometry: list[dict[str, int]], score_bp: int) -> str:
+    # Identity contains only stable final-record facts. observed_passes is
+    # provenance accumulated as tilings union, so including its first-seen value
+    # made an id impossible to reproduce from the final record. Score remains
+    # identity-bearing: differently scored observations are distinct raw signals.
+    return f"proposal_{digest_of({'source': source, 'page_id': page_id, 'geometry': geometry, 'score_bp': score_bp})[:16]}"
 
 
 def _raw(
@@ -324,7 +343,7 @@ def _raw(
 ) -> dict[str, Any]:
     payload = {
         "schema": RAW_PROPOSAL_SCHEMA,
-        "proposal_id": _proposal_id(source, page_id, points, score_bp, passes),
+        "proposal_id": _proposal_id(source, page_id, points, score_bp),
         "source": source,
         "page_id": page_id,
         "page_ordinal": page_ordinal,
@@ -358,16 +377,19 @@ def surya_double_pass(
     Tiling covers the full page in BOTH axes -- a page wider than one sealed tile
     is a real corpus case (parish scans vary in width; nothing in the design
     caveats tiling to narrow pages), so every column band is tiled, not only the
-    first. Only the vertical axis carries the half-tile offset pass, matching the
-    sealed policy and the design note's named seam mitigation.
+    first. The vertical axis carries the second half-tile-offset pass; horizontal
+    tiles overlap by the sealed half-tile amount so an original x=1400 boundary
+    lies inside another complete tile rather than splitting a detection into two
+    unrelated proposals.
     """
     checked = load_geometry_policy_record(policy)
     tile_h, tile_w = checked["surya"]["tile_height_px"], checked["surya"]["tile_width_px"]
+    horizontal_step = tile_w - checked["surya"]["horizontal_overlap_px"]
     offsets = (0, checked["surya"]["half_tile_vertical_offset_px"])
     union: dict[str, dict[str, Any]] = {}
     for pass_ordinal, offset in enumerate(offsets):
         for y in range(offset, page_h, tile_h):
-            for x in range(0, page_w, tile_w):
+            for x in range(0, page_w, horizontal_step):
                 tile = {
                     "x": x,
                     "y": y,
@@ -506,28 +528,12 @@ def load_geometry_policy_record(policy: object) -> dict[str, Any]:
         "provenance",
     }:
         raise SchemaRefusal("loaded geometry policy is not a closed record")
-    # Reuse the loader validation by canonicalizing the policy-shaped content;
-    # this prevents adapters accepting an in-memory policy with an unsealed knob.
+    # Recheck every nested value at the adapter boundary; a caller may not remove
+    # a role/provenance field after loading and still use the remaining limits.
     _sha(policy["config_sha256"], "geometry policy digest")
-    if policy["schema"] != POLICY_SCHEMA:
-        raise SchemaRefusal("loaded geometry policy has an unknown schema")
-    surya, yolo = policy["surya"], policy["yolo_obb"]
-    if (
-        not isinstance(surya, dict)
-        or not all(
-            _integer(surya.get(field)) and surya[field] > 0
-            for field in ("tile_width_px", "tile_height_px", "half_tile_vertical_offset_px")
-        )
-        or surya["half_tile_vertical_offset_px"] * 2 != surya["tile_height_px"]
-    ):
-        raise SchemaRefusal("loaded Surya policy is malformed")
-    if (
-        not isinstance(yolo, dict)
-        or yolo.get("task") != "obb"
-        or yolo.get("crop_policy") != "aabb-enclose"
-        or not isinstance(yolo.get("rectify"), bool)
-    ):
-        raise SchemaRefusal("loaded YOLO OBB policy is malformed")
+    _validate_geometry_policy(
+        {field: policy[field] for field in ("schema", "surya", "yolo_obb", "provenance")}
+    )
     return policy
 
 
