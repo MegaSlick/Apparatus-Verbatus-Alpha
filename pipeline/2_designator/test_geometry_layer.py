@@ -23,9 +23,10 @@ from geometry_layer import (
 
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import SchemaRefusal
+from common.contracts.stages import writing_directory
 
 RECEIPT = {"relative_path": "receipts/sha256/" + "a" * 64 + ".json", "sha256": "a" * 64}
-RESPONSE = {"relative_path": "designator/blobs/sha256/" + "b" * 64, "sha256": "b" * 64}
+RESPONSE = {"relative_path": "2_designator/blobs/sha256/" + "b" * 64, "sha256": "b" * 64}
 
 # A polygon inside the vertical band both Surya passes tile (the offset-0 pass
 # covers y=0..1400, the offset-700 pass covers y=700..2100), so a physically
@@ -241,13 +242,21 @@ def test_chandra_split_refuses_text_and_only_preserves_geometry_reference():
 
 
 class _FixtureTree:
+    """Mimics the real run tree's numbered stage directories, not the bare stage name.
+
+    A `put_blob("designator", …)` fixture that wrote to `"designator/blobs/…"`
+    instead of the real `"2_designator/blobs/…"` (`writing_directory`) is exactly
+    what let the matching prefix bug in `retain_chandra_response` go unnoticed by
+    this suite — the fixture restated the path scheme instead of deriving it.
+    """
+
     def __init__(self):
         self.blobs = {}
         self.receipts = []
 
     def put_blob(self, stage, data):
         digest = digest_bytes(data)
-        path = f"{stage}/blobs/sha256/{digest}"
+        path = f"{writing_directory(stage)}/blobs/sha256/{digest}"
         self.blobs[path] = data
         return digest, type("Published", (), {"relative_path": path})()
 
@@ -266,9 +275,10 @@ class _FixtureTree:
 def test_one_chandra_response_has_one_receipt_and_two_consumable_references():
     tree = _FixtureTree()
     body = b'{"regions":[{"text":"R3-only custody"}]}'
-    response_ref = retain_chandra_response(tree, body, RECEIPT)
+    stored = retain_chandra_response(tree, body, RECEIPT)
+    response_ref, custody_ref = stored["response_ref"], stored["custody_ref"]
     assert response_ref["relative_path"] in tree.blobs
-    assert read_retained_chandra_response(tree, response_ref, RECEIPT) == body
+    assert read_retained_chandra_response(tree, response_ref, RECEIPT, custody_ref) == body
     assert tree.receipts == [RECEIPT]
     # Geometry itself contains only the sealed blob reference, never the response text.
     geometry = chandra_layout(
@@ -301,10 +311,34 @@ def test_chandra_custody_names_a_missing_blob_instead_of_crashing_on_it():
 
 def test_chandra_custody_refuses_a_forged_blob_reference():
     tree = _FixtureTree()
-    response_ref = retain_chandra_response(tree, b"fixture", RECEIPT)
-    forged = {**response_ref, "sha256": "0" * 64}
+    stored = retain_chandra_response(tree, b"fixture", RECEIPT)
+    # A response reference whose claimed digest disagrees with what the custody
+    # binding recorded is refused by the pairing check before any bytes are read.
+    forged = {**stored["response_ref"], "sha256": "0" * 64}
+    with pytest.raises(SchemaRefusal, match="different receipt"):
+        read_retained_chandra_response(tree, forged, RECEIPT, stored["custody_ref"])
+    # Tampering the stored bytes themselves (leaving every reference honest) is
+    # refused by the digest check instead.
+    tree.blobs[stored["response_ref"]["relative_path"]] = b"tampered"
     with pytest.raises(SchemaRefusal, match="differs"):
-        read_retained_chandra_response(tree, forged, RECEIPT)
+        read_retained_chandra_response(tree, stored["response_ref"], RECEIPT, stored["custody_ref"])
+
+
+def test_chandra_custody_refuses_a_receipt_reused_with_a_different_response():
+    tree = _FixtureTree()
+    first = retain_chandra_response(tree, b"the first Chandra call's response", RECEIPT)
+    other_receipt = {
+        **RECEIPT,
+        "relative_path": "receipts/sha256/" + "e" * 64 + ".json",
+        "sha256": "e" * 64,
+    }
+    second = retain_chandra_response(tree, b"a second, unrelated response", other_receipt)
+    # Both references are individually well formed and individually retrievable;
+    # only their pairing is forged.
+    with pytest.raises(SchemaRefusal, match="different receipt"):
+        read_retained_chandra_response(tree, second["response_ref"], RECEIPT, second["custody_ref"])
+    with pytest.raises(SchemaRefusal, match="different receipt"):
+        read_retained_chandra_response(tree, first["response_ref"], RECEIPT, second["custody_ref"])
 
 
 def _raw_envelope(payload):

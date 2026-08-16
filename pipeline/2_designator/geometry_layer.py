@@ -17,7 +17,8 @@ from common.contracts.canonical import digest_bytes, digest_of
 from common.contracts.envelope import build_envelope, validate_envelope
 from common.contracts.errors import SchemaRefusal
 from common.contracts.identities import artifact_id
-from common.contracts.stages import DESIGNATOR
+from common.contracts.stages import DESIGNATOR, writing_directory
+from common.runtree.store import BLOBS_DIR
 
 POLICY_SCHEMA: Final = "designator-geometry-policy.v1"
 RAW_PROPOSAL_SCHEMA: Final = "designator-raw-proposal.v1"
@@ -34,6 +35,13 @@ _SOURCES: Final = frozenset({"surya", "yolo-obb", "chandra-layout"})
 _TILING_PASS: Final = "surya-tiling-pass"
 _RESPONSE_DETECTION: Final = "response-detection"
 _OBSERVATION_UNITS: Final = frozenset({_TILING_PASS, _RESPONSE_DETECTION})
+# Derived from the run tree's own directory naming rather than written out as a
+# literal: a literal "designator/blobs/sha256/" here never matched what
+# `tree.put_blob(DESIGNATOR, …)` actually writes ("2_designator/blobs/sha256/…",
+# per `common.contracts.stages.STAGE_DIRECTORIES`), so every raw proposal with a
+# real response reference failed this validator. Found auditing R3's move of the
+# matching Chandra-custody bug to common/chandra_custody.py.
+_RESPONSE_BLOB_PREFIX: Final = f"{writing_directory(DESIGNATOR)}/{BLOBS_DIR}/"
 
 
 class Bounds(TypedDict):
@@ -286,7 +294,7 @@ def validate_raw_proposal(payload: object) -> dict[str, Any]:
     if record["proposal_id"] != expected_proposal_id:
         raise SchemaRefusal("raw proposal identity does not derive from source content")
     _ref(record["receipt_ref"], "receipts/sha256/", "raw proposal receipt reference")
-    _ref(record["response_ref"], "designator/blobs/sha256/", "raw proposal response reference")
+    _ref(record["response_ref"], _RESPONSE_BLOB_PREFIX, "raw proposal response reference")
     _sha(record["adapter_config_sha256"], "raw proposal adapter config")
     # Observation provenance says WHICH of a source's observations produced this
     # record, and the unit says what those ordinals count. One field named
