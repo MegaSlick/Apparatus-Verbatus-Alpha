@@ -349,6 +349,30 @@ def test_fetched_artifact_cannot_be_relabelled_pending_fetch(tmp_path):
     assert not (tmp_path / "records" / f"{rejected_digest}.json").exists()
 
 
+def test_a_recorded_artifact_cannot_be_renamed_out_of_the_next_record_version(tmp_path):
+    """A dropped name must refuse by name, not escape the closed refusal taxonomy.
+
+    Six unique artifacts in, six out, so renaming one drops the old name. The
+    transition check read the replacement by that key directly and raised a bare
+    ``KeyError`` naming no chair — outside ``errors.py``'s "complete public
+    taxonomy", and silent about which artifact left the record.
+    """
+
+    record = _store(tmp_path)
+    replacement = copy.deepcopy(record)
+    entry = next(item for item in replacement["artifacts"] if item["artifact"] == "churro-3B")
+    entry["artifact"] = "churro-3B-renamed"
+    entry["snapshot"] = "hf/churro-3B-renamed"
+    entry["manifest"] = "manifests/churro-3B-renamed.json"
+
+    with pytest.raises(DigestMismatchRefusal, match="does not name this recorded artifact"):
+        write_download_record(replacement, tmp_path)
+
+    assert load_download_record(tmp_path) == record
+    rejected_digest = hashlib.sha256(canonical_bytes(replacement)).hexdigest()
+    assert not (tmp_path / "records" / f"{rejected_digest}.json").exists()
+
+
 def test_active_record_swap_does_not_rewrite_its_immutable_version(tmp_path):
     record = _store(tmp_path)
     original_bytes = canonical_bytes(record)

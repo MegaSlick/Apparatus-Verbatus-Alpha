@@ -615,7 +615,21 @@ def _validate_record_transition(
     old = {item["artifact"]: item for item in previous["artifacts"]}
     new = {item["artifact"]: item for item in replacement["artifacts"]}
     for artifact, old_item in old.items():
-        if old_item["state"] == "present" and new[artifact]["state"] == "pending-fetch":
+        replacement_item = new.get(artifact)
+        if replacement_item is None:
+            # Both records hold exactly six unique artifacts, so a name the
+            # replacement does not carry was renamed or swapped for another.
+            # Reading `new[artifact]` here raised a bare `KeyError` that named
+            # no chair, which is the one thing `errors.py`'s "complete public
+            # taxonomy" forbids; an artifact leaving the record silently is
+            # also what GOVERNANCE 2 forbids.
+            raise DigestMismatchRefusal(
+                artifact,
+                "the replacement download record does not name this recorded artifact; "
+                "an entry is superseded by a new version of itself, never dropped from "
+                "the record",
+            )
+        if old_item["state"] == "present" and replacement_item["state"] == "pending-fetch":
             raise DigestMismatchRefusal(
                 artifact,
                 "a fetched artifact cannot return to pending-fetch; if its bytes are "
