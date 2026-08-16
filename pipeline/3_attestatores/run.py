@@ -1346,9 +1346,20 @@ def publish_page_testimonia_and_attachments(
                     "attached": act["outcome"] == "proposed"
                     and attempt.outcome in WITNESS_READING_OUTCOMES,
                     "content_health": attempt.health,
-                    # Fixture-declared interim span: R4 replaces this with the
-                    # loss-accounted alignment result without changing the kind.
-                    "span": {"start": 0, "end": len(act["act_key"])},
+                    # Interim span, NOT fixture-declared (the fixture declares no
+                    # span anywhere): until R4's alignment computes the true
+                    # covered span, this treats this chair's own entire delivered
+                    # act-scoped reading as the one covered span. The prior
+                    # `len(act["act_key"])` synthesized a constant unrelated to any
+                    # reading (the act key is a short synthetic label like "a1"),
+                    # while the report and D1 both called it "fixture-declared" --
+                    # a provenance claim nothing backed. Found in audit; F-S2.
+                    "span": {
+                        "start": 0,
+                        "end": len(attempt.native_payload)
+                        if isinstance(attempt.native_payload, str)
+                        else 0,
+                    },
                 }
             )
         context.publish(
