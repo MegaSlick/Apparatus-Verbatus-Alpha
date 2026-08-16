@@ -6,6 +6,7 @@ whether a normal restart can publish a new ordinal over a broken history.
 """
 
 import copy
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -200,8 +201,46 @@ def test_an_empty_completed_reading_is_held_not_accepted(tmp_path):
     tree = RunTree(root, "empty-reading")
     reading = records(tree, PERLECTOR, "perlectio")[0]
     path = tree.resolve(tree.artifact_path(PERLECTOR, "perlectio", reading["artifact_id"]))
+
+    # Blanking the reading alone would leave its Pass-C audit draft still
+    # naming the original non-empty semi-final text: audit_state's own
+    # accounting boundary ("changed after its audit draft without a change
+    # record") would refuse the forgery before the test ever reaches the
+    # held-not-accepted boundary it means to exercise. The draft -- and the
+    # finding and references that bind it -- must be forged blank right
+    # alongside the reading, exactly as a genuinely-blank Pass-B reading
+    # would have produced them.
+    audit_record = reading["payload"]["audit"]
+    draft_relative = audit_record["draft_ref"]["relative_path"]
+    draft_path = tree.resolve(draft_relative)
+    draft = json.loads(draft_path.read_text())
+    draft["payload"]["semi_final_text"] = ""
+    draft["self_hash"] = self_hash(draft)
+    draft_bytes = canonical_bytes(draft)
+    draft_path.write_bytes(draft_bytes)
+    draft_digest = digest_bytes(draft_bytes)
+
+    finding_relative = audit_record["finding_ref"]["relative_path"]
+    finding_path = tree.resolve(finding_relative)
+    finding = json.loads(finding_path.read_text())
+    finding["inputs"] = [{"relative_path": draft_relative, "sha256": draft_digest}]
+    finding["self_hash"] = self_hash(finding)
+    finding_bytes = canonical_bytes(finding)
+    finding_path.write_bytes(finding_bytes)
+
+    finding_digest = digest_bytes(finding_bytes)
     changed = copy.deepcopy(reading)
     changed["payload"]["text"] = ""
+    changed["payload"]["audit"]["draft_ref"]["sha256"] = draft_digest
+    changed["payload"]["audit"]["finding_ref"]["sha256"] = finding_digest
+    # The reading's own envelope-level `inputs` also names the draft and
+    # finding it bound (`row["inputs"] + [draft_ref, finding_ref]` in
+    # pipeline/4_perlector/run.py), independent of the payload's copies.
+    for reference in changed["inputs"]:
+        if reference["relative_path"] == draft_relative:
+            reference["sha256"] = draft_digest
+        elif reference["relative_path"] == finding_relative:
+            reference["sha256"] = finding_digest
     changed["self_hash"] = self_hash(changed)
     path.write_bytes(canonical_bytes(changed))
     tree.write_manifest(PERLECTOR)
