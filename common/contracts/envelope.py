@@ -49,8 +49,6 @@ _OPTIONAL: Final = ("approval_ref",)
 # current absence from a run tree (which would be a vacuous promise).
 _RESERVED_KINDS: Final = frozenset(
     {
-        "lectio-prior",
-        "primed-without-prior",
         "audit-draft",
         "audit-finding",
         "raw-proposal",
