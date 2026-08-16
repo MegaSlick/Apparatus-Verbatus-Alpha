@@ -53,6 +53,13 @@ PRESENT_FIELDS = {
     "carried",
 }
 PENDING_FIELDS = {"artifact", "state", "source", "repo", "revision", "reason"}
+RECORD_FIELDS = {"schema", "layout", "capacity", "artifacts"}
+CAPACITY_FIELDS = {
+    "snapshot_bytes",
+    "promotion_headroom_bytes",
+    "available_bytes",
+    "cleanup_owner",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -197,7 +204,9 @@ def derived_inventory(record: Mapping[str, Any]) -> dict[str, Any]:
         ):
             if item.get(field) != expected:
                 raise DigestMismatchRefusal(
-                    "model-store", f"{required.artifact!r} {field} diverges from roster policy"
+                    "model-store",
+                    f"{required.artifact!r} {field} diverges from roster policy: expected "
+                    f"{expected!r}, the record says {item.get(field)!r}",
                 )
         rows.append({"chair": required.chair, **item})
     # An inventory over a half-materialized store is a real inventory of a
@@ -441,11 +450,20 @@ def _publish_once(destination: Path, payload: bytes, *, chair: str, label: str) 
 
 
 def _validate_record(raw: Mapping[str, Any]) -> None:
-    if not isinstance(raw, Mapping) or set(raw) != {"schema", "layout", "capacity", "artifacts"}:
-        raise DigestMismatchRefusal("model-store", "download record has an invalid top-level shape")
+    if not isinstance(raw, Mapping):
+        raise DigestMismatchRefusal("model-store", "download record is not a table")
+    if set(raw) != RECORD_FIELDS:
+        missing = sorted(RECORD_FIELDS - set(raw), key=str)
+        unexpected = sorted(set(raw) - RECORD_FIELDS, key=str)
+        raise DigestMismatchRefusal(
+            "model-store",
+            "download record has an invalid top-level shape: it carries exactly "
+            f"{sorted(RECORD_FIELDS)}; missing={missing}, unexpected={unexpected}",
+        )
     if raw["schema"] != STORE_SCHEMA:
         raise DigestMismatchRefusal(
-            "model-store", f"download record schema must be {STORE_SCHEMA!r}"
+            "model-store",
+            f"download record schema must be {STORE_SCHEMA!r}, not {raw['schema']!r}",
         )
     if raw["layout"] != {
         "hf": "hf",
@@ -469,8 +487,7 @@ def _validate_record(raw: Mapping[str, Any]) -> None:
     capacity = raw["capacity"]
     if (
         not isinstance(capacity, Mapping)
-        or set(capacity)
-        != {"snapshot_bytes", "promotion_headroom_bytes", "available_bytes", "cleanup_owner"}
+        or set(capacity) != CAPACITY_FIELDS
         or not all(
             isinstance(capacity[key], int)
             and not isinstance(capacity[key], bool)
@@ -481,7 +498,10 @@ def _validate_record(raw: Mapping[str, Any]) -> None:
         or not capacity["cleanup_owner"].strip()
     ):
         raise DigestMismatchRefusal(
-            "model-store", "capacity must record bytes, double-space headroom, and cleanup owner"
+            "model-store",
+            "capacity must record bytes, double-space headroom, and cleanup owner: exactly "
+            f"{sorted(CAPACITY_FIELDS)}, the first three nonnegative integers and the last "
+            "a nonblank name",
         )
     if capacity["promotion_headroom_bytes"] < capacity["snapshot_bytes"]:
         raise DigestMismatchRefusal(
@@ -505,8 +525,15 @@ def _validate_record(raw: Mapping[str, Any]) -> None:
     for item in items:
         if not isinstance(item, Mapping):
             raise DigestMismatchRefusal("model-store", "artifact entry is not a table")
-        if not isinstance(item.get("artifact"), str) or item["artifact"] in seen:
-            raise DigestMismatchRefusal("model-store", "artifact names must be unique")
+        if not isinstance(item.get("artifact"), str) or not item["artifact"].strip():
+            raise DigestMismatchRefusal(
+                "model-store", "every artifact entry must name its artifact"
+            )
+        if item["artifact"] in seen:
+            raise DigestMismatchRefusal(
+                "model-store",
+                f"artifact names must be unique; {item['artifact']!r} is named twice",
+            )
         seen.add(item["artifact"])
         state = item.get("state")
         if state == "pending-fetch":

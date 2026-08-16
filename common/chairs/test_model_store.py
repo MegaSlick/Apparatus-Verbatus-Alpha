@@ -570,3 +570,49 @@ def test_publication_onto_a_name_already_taken_by_a_directory_refuses(tmp_path):
 
     with pytest.raises(DigestMismatchRefusal, match="cannot publish"):
         write_derived_inventory(record, tmp_path / "inventory.json")
+
+
+# --- O5: the refusals an operator migrating the real store will actually meet ----
+
+
+def test_the_ad_hoc_download_record_refusal_names_what_the_v1_record_needs(tmp_path):
+    """The host store's real record is the old download script's repo-keyed shape.
+
+    Migrating it is a host action that happens against these refusals and
+    nothing else, so each one has to say what is wrong rather than that
+    something is.
+    """
+
+    ad_hoc = {
+        "datalab-to/chandra-ocr-2": {"revision": "af93b47", "path": "chandra"},
+        "Qwen/Qwen3.5-9B": {"revision": "c202236", "path": "qwen"},
+    }
+    (tmp_path / "download_record.json").write_bytes(canonical_bytes(ad_hoc))
+
+    with pytest.raises(DigestMismatchRefusal) as refusal:
+        load_download_record(tmp_path)
+
+    message = str(refusal.value)
+    assert "missing=['artifacts', 'capacity', 'layout', 'schema']" in message
+    assert "unexpected=['Qwen/Qwen3.5-9B', 'datalab-to/chandra-ocr-2']" in message
+
+
+def test_a_roster_divergence_names_the_pin_it_expected_and_the_one_it_found(tmp_path):
+    record = _store(tmp_path)
+    entry = next(item for item in record["artifacts"] if item["artifact"] == "churro-3B")
+    entry["revision"] = "1" * 40
+
+    with pytest.raises(DigestMismatchRefusal) as refusal:
+        derived_inventory(record)
+
+    message = str(refusal.value)
+    assert "ca2150ea465d5a3d67818c50e234b9422619c75d" in message
+    assert "1" * 40 in message
+
+
+def test_a_capacity_refusal_names_the_four_fields_a_migrating_operator_must_write(tmp_path):
+    record = _store(tmp_path)
+    del record["capacity"]["cleanup_owner"]
+
+    with pytest.raises(DigestMismatchRefusal, match="'snapshot_bytes'"):
+        derived_inventory(record)
