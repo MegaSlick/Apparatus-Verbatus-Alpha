@@ -110,7 +110,14 @@ def _attachment(context, *, end):
 
 def test_a_reading_page_testimonium_cannot_lose_its_reported_text_and_take_the_skip():
     """V4: the no-report skip belongs only to a non-reading page record."""
-    context = _context(_page_testimonium(outcome="read"))
+    act_reading = {
+        "artifact_id": "act-reading-1",
+        "kind": "testimonium",
+        "subject_id": "act-1",
+        "outcome": "read",
+        "payload": {"chair": "attestator_1", "reported": "real act text"},
+    }
+    context = _context(act_reading, _page_testimonium(outcome="read"))
 
     with pytest.raises(FatalAccounting, match="reading page Testimonium has no reported text"):
         RUN.testimony_content_findings(context)
