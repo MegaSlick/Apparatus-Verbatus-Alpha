@@ -188,10 +188,18 @@ def is_comparable(record: dict[str, Any]) -> bool:
     rather than disappear into a coverage count.
     """
     payload = record.get("payload", {})
-    # Capability declarations no longer exempt an entire chair. A completed
-    # record missing text is still a schema error at the caller, not an excuse
-    # to make that chair permanently unmeasurable.
-    return "comparison_reported" not in payload or isinstance(payload["comparison_reported"], str)
+    capabilities = payload.get("format_capabilities", {})
+    if not bool(capabilities.get("can_express_uncertainty", False)):
+        return True
+    # A format that can embed uncertainty markup inline (`[UNCERTAIN]`,
+    # `[CROSSED_OUT]`) is unsafe to diff against its raw report -- the markup
+    # itself would read as disagreement. That is still true here: this chair
+    # stays unmeasurable UNLESS an act-anchored, markup-stripped comparison
+    # view already exists for it (R4's alignment -- `comparison_reported`,
+    # never the raw `reported`). Most capability-declared chairs never get
+    # one and stay honestly unknown; a page witness that does gets to rejoin
+    # the instrument through the safe view rather than by declaration alone.
+    return isinstance(payload.get("comparison_reported"), str)
 
 
 def dissent_against(reading: str, testimonia: list[dict]) -> list[dict]:
