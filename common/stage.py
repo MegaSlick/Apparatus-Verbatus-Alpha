@@ -41,6 +41,7 @@ from common.contracts.errors import (
 from common.contracts.identities import act_bindings, artifact_id, attempt_id
 from common.contracts.identities import act_id as derive_act_id
 from common.contracts.identities import verify as verify_identity
+from common.contracts.outcomes import WITNESS_READING_OUTCOMES as _WITNESS_READING_OUTCOMES
 from common.contracts.outcomes import classify
 from common.contracts.serving import SERVING_CONFIG_INPUTS_FIELDS, SERVING_CONFIG_INPUTS_SCHEMA
 from common.contracts.stages import DESIGNATOR, EXEMPLAR, PERLECTOR, RECENSOR
@@ -116,7 +117,13 @@ ATTEMPTED_WITNESS_OUTCOMES = frozenset({"read", "genuinely-empty", "failed"})
 # certify that its regions were witnessed.  A genuinely-empty Testimonium is
 # different: the chair did read the pixels and found no reportable text.  The
 # Perlector uses this narrower set when it records region coverage.
-WITNESS_READING_OUTCOMES = frozenset({"read", "genuinely-empty"})
+#
+# Re-exported from the vocabulary module rather than spelled a second time.  R0's
+# floor arithmetic (`common/contracts/outcomes.py::witness_coverage`) and this
+# module's writers and consumers have to agree on this exact set or an act is
+# attached without being read; two identical literals in two files agreed only by
+# coincidence.  Found in audit; F-O3.
+WITNESS_READING_OUTCOMES = _WITNESS_READING_OUTCOMES
 
 # Every top-level field a reading's model provenance may carry. A closed set,
 # because invariant #42 refuses *wrong-schema* provenance rather than a list of

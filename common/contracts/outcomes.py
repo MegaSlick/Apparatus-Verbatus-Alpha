@@ -66,7 +66,13 @@ class ArmariumCategory(str, Enum):
 
 _C = OutcomeClass
 _A = ArmariumCategory
-_WITNESS_READING_OUTCOMES: Final = frozenset({"read", "genuinely-empty"})
+# The witness outcomes that ARE a reading. Deliberately narrower than the
+# ATTESTATORES COMPLETED class, which also holds `excluded` — an approval-bound
+# exclusion is completed business, not a chair that looked at the ink. Defined
+# here, in the vocabulary module, and re-exported by `common/stage.py`: it is one
+# closed set, and a second literal spelling of it beside the floor arithmetic
+# that depends on it is a silent divergence waiting to happen.
+WITNESS_READING_OUTCOMES: Final = frozenset({"read", "genuinely-empty"})
 INTERIM_GRANULARITY_BASIS: Final = "act-outcome-proxy-before-alignment"
 LEGACY_GRANULARITY_BASIS: Final = "legacy-class-only"
 
@@ -329,7 +335,7 @@ def witness_coverage(
                 shortfalls["failed"] += 1
             if not fact["attached"]:
                 shortfalls["unaligned"] += 1
-            elif outcome in _WITNESS_READING_OUTCOMES and truncated is not True:
+            elif outcome in WITNESS_READING_OUTCOMES and truncated is not True:
                 attached_chairs.add(chair)
     else:
         # Pre-R0 callers do not carry attachment facts. Preserve their established
@@ -356,7 +362,7 @@ def witness_coverage(
         "page_granularity_only": sum(
             1
             for chair, outcome in chair_outcomes.items()
-            if outcome in _WITNESS_READING_OUTCOMES and chair not in attached_chairs
+            if outcome in WITNESS_READING_OUTCOMES and chair not in attached_chairs
         ),
         "health_unrecorded": health_unrecorded,
         "shortfalls": shortfalls,

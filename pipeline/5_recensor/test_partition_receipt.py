@@ -654,3 +654,58 @@ def test_a_non_integer_page_granularity_count_is_a_named_refusal(value):
     coverage = dict(_valid_coverage(), page_granularity_only=value)
     with pytest.raises(SchemaRefusal, match="invalid page_granularity_only"):
         _validate_coverage(coverage)
+
+
+# --- Audit-and-repair regression (F-O3) -----------------------------------------
+#
+# Opus audit-and-repair seat 3, R0. `witness_coverage` counts a chair toward the
+# act floor only when its outcome IS a reading, but `_validate_coverage`
+# rederived the same number from the ATTESTATORES COMPLETED class -- which is
+# wider, because it also holds `excluded`, an approval-bound exclusion that never
+# looked at the ink. Writer and validator therefore disagreed for any act with an
+# excluded chair, and `build_recensor_partition_receipt` validates every item it
+# builds, so no receipt could be written for such an act at all.
+
+
+def _coverage_with_an_excluded_chair() -> dict:
+    from common.contracts.outcomes import witness_coverage
+
+    outcomes = {"attestator_1": "read", "attestator_2": "read", "attestator_3": "excluded"}
+    attachments = {
+        "attestator_1": {"attached": True, "truncated": False, "health_unrecorded": False},
+        "attestator_2": {"attached": True, "truncated": False, "health_unrecorded": False},
+        "attestator_3": {"attached": False, "truncated": None, "health_unrecorded": True},
+    }
+    return witness_coverage(outcomes, 3, attachments=attachments)
+
+
+def test_an_approval_bound_exclusion_does_not_make_the_receipt_refuse_its_own_writer():
+    """The floor arithmetic and its rederivation must count the same chairs.
+
+    An `excluded` chair is COMPLETED class but is not a reading, so
+    `witness_coverage` records `under_witnessed=True` for two reads against a
+    floor of three. The rederivation must reach the same answer instead of
+    reading three completed chairs off `by_class` and calling the record a liar.
+    """
+    coverage = _coverage_with_an_excluded_chair()
+    assert coverage["under_witnessed"] is True
+    assert coverage["by_class"]["completed"] == 3
+    from common.recensor_receipt import _validate_coverage
+
+    _validate_coverage(coverage)
+
+
+def test_the_reading_outcome_set_has_exactly_one_definition():
+    """A second literal spelling of this closed set beside the floor arithmetic
+    that depends on it is a silent divergence waiting to happen: a member added
+    to one and not the other would attach a chair that never read.
+    """
+    import common.contracts.outcomes as vocabulary
+    import common.stage as stage
+
+    assert stage.WITNESS_READING_OUTCOMES is vocabulary.WITNESS_READING_OUTCOMES
+    assert vocabulary.WITNESS_READING_OUTCOMES < {
+        outcome
+        for outcome, klass in vocabulary.VOCABULARIES[vocabulary.ATTESTATORES].items()
+        if klass is vocabulary.OutcomeClass.COMPLETED
+    }, "a reading outcome is completed-class, but the completed class is wider"

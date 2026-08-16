@@ -13,7 +13,12 @@ from typing import Any, Final
 
 from common.contracts.canonical import self_hash, verify_self_hash
 from common.contracts.errors import FatalAccounting, ReceiptVersionMismatch, SchemaRefusal
-from common.contracts.outcomes import INTERIM_GRANULARITY_BASIS, OutcomeClass, classify
+from common.contracts.outcomes import (
+    INTERIM_GRANULARITY_BASIS,
+    WITNESS_READING_OUTCOMES,
+    OutcomeClass,
+    classify,
+)
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, RECENSOR
 
 RECENSOR_PARTITION_RECEIPT_SCHEMA: Final = "recensor-partition-receipt.v1"
@@ -259,10 +264,22 @@ def _validate_coverage(
     # in audit; F-O4.
     if not isinstance(page_only, int) or isinstance(page_only, bool) or page_only < 0:
         raise SchemaRefusal("Recensor partition receipt has invalid page_granularity_only count")
-    act_completed = by_class[OutcomeClass.COMPLETED.value] - page_only
-    if page_only > by_class[OutcomeClass.COMPLETED.value]:
+    # Rederived from the reading outcomes, not from the COMPLETED class, because
+    # that class is wider: it also holds `excluded`, an approval-bound exclusion
+    # that never looked at the ink (`blank_corroboration` in the Recensor names
+    # the same trap -- "trusting it here would let an excluded chair stand in for
+    # a witness that never looked"). `witness_coverage` counts only chairs whose
+    # outcome IS a reading, so an act with one excluded chair produced a coverage
+    # record this rederivation then refused as self-contradictory: writer and
+    # validator disagreed, and the Recensor validates every item it builds, so
+    # the receipt could not be written at all for such an act. Reading outcomes
+    # minus page-granularity-only contributions is exactly what the writer
+    # counted. Found in audit; F-O3.
+    reading_chairs = sum(by_outcome.get(outcome, 0) for outcome in WITNESS_READING_OUTCOMES)
+    act_completed = reading_chairs - page_only
+    if page_only > reading_chairs:
         raise SchemaRefusal(
-            "Recensor partition receipt has more page-only contributions than completed chairs"
+            "Recensor partition receipt has more page-only contributions than chairs that read"
         )
     # Standalone schema callers may be validating one newly introduced field at a
     # time (page_granularity_only/health_unrecorded/shortfalls need not all land
@@ -377,9 +394,12 @@ def _reasons(items: list[dict[str, Any]]) -> list[str]:
             reasons.append(f"act {act_id} is {item['partition_class']} at the Recensor")
         coverage = item["coverage"]
         if coverage["under_witnessed"]:
+            reading_chairs = sum(
+                coverage["by_outcome"].get(outcome, 0) for outcome in WITNESS_READING_OUTCOMES
+            )
             reasons.append(
                 f"act {act_id} is under-witnessed "
-                f"({coverage['by_class']['completed'] - coverage.get('page_granularity_only', 0)} "
+                f"({reading_chairs - coverage.get('page_granularity_only', 0)} "
                 f"act-level reads of a floor of {coverage['floor']})"
             )
         if coverage["unresolved_chairs"]:
