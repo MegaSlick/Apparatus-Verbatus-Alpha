@@ -1182,7 +1182,7 @@ def _acts_database_bytes(acts: tuple[dict[str, Any], ...]) -> bytes:
                     INSERT INTO acts(
                         act_id, act_key, category, canonical_clean_text,
                         canonical_text_sha256, provenance_json, source_regions_json,
-                    uncertainty_spans_json, uncertainty_status, annotations_json,
+                        uncertainty_spans_json, uncertainty_status, annotations_json,
                         annotation_status, evidence_json, approval_ref, reason
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
