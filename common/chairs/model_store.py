@@ -16,6 +16,7 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from types import MappingProxyType
 from typing import Any, Mapping
 
 from common.contracts.canonical import canonical_bytes, digest_bytes
@@ -126,32 +127,41 @@ REQUIRED_ARTIFACTS = (
 # exception — Surya 2 has no roster role yet, and roster membership is Tyrel's
 # decision at S8 (CLAUDE.md hard rule 1), so this store entry names the artifact
 # R2's Designator geometry adapter is built against and waits for that word.
-CHAIRS_WITHOUT_ROSTER_ROLE = {
-    "proposer_surya2": (
-        "config/models.toml configures no Surya detection chair, in its live "
-        "fixture roster or its commented real roster; roster membership is "
-        "Tyrel's decision at S8"
-    )
-}
-SURYA_OCR_2_REFUSAL = {
-    "artifact": "surya-ocr-2",
-    "state": "not-required",
-    "reason": "detector only; no OCR artifact is needed",
-    "escape_hatch": "recorded-bench-need",
-}
+CHAIRS_WITHOUT_ROSTER_ROLE = MappingProxyType(
+    {
+        "proposer_surya2": (
+            "config/models.toml configures no Surya detection chair, in its live "
+            "fixture roster or its commented real roster; roster membership is "
+            "Tyrel's decision at S8"
+        )
+    }
+)
+SURYA_OCR_2_REFUSAL = MappingProxyType(
+    {
+        "artifact": "surya-ocr-2",
+        "state": "not-required",
+        "reason": "detector only; no OCR artifact is needed",
+        "escape_hatch": "recorded-bench-need",
+    }
+)
 DAI_PROMPT_CITATION = (
     "Teklia, Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR, pinned repository files "
     "system.txt and query.txt"
 )
-MODEL_PAYLOAD_SUFFIXES = {".bin", ".gguf", ".onnx", ".pt", ".pth", ".safetensors"}
+MODEL_PAYLOAD_SUFFIXES = frozenset({".bin", ".gguf", ".onnx", ".pt", ".pth", ".safetensors"})
 
 
 def load_download_record(store_root: str | Path) -> dict[str, Any]:
     """Load the canonical active record and prove its immutable version exists."""
 
-    root = Path(store_root)
+    root = Path(store_root).resolve()
+    active = root / "download_record.json"
+    if active.is_symlink():
+        raise DigestMismatchRefusal(
+            "model-store", "download_record.json must be a regular in-store active copy"
+        )
     try:
-        raw_bytes = (root / "download_record.json").read_bytes()
+        raw_bytes = active.read_bytes()
         raw = json.loads(raw_bytes)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise DigestMismatchRefusal(
@@ -166,7 +176,11 @@ def load_download_record(store_root: str | Path) -> dict[str, Any]:
         )
     _validate_record(raw)
     digest = digest_bytes(raw_bytes)
-    archive = root / "records" / f"{digest}.json"
+    archive = _under(root, f"records/{digest}.json")
+    if archive.is_symlink():
+        raise DigestMismatchRefusal(
+            "model-store", "immutable download record version must not be a symlink"
+        )
     try:
         archived_bytes = archive.read_bytes()
     except OSError as error:
@@ -199,8 +213,12 @@ def write_download_record(record: Mapping[str, Any], store_root: str | Path) -> 
     """
 
     _validate_record(record)
-    root = Path(store_root)
+    root = Path(store_root).resolve()
     destination = root / "download_record.json"
+    if destination.is_symlink():
+        raise DigestMismatchRefusal(
+            "model-store", "download_record.json must be a regular in-store active copy"
+        )
     payload = canonical_bytes(record)
     digest = digest_bytes(payload)
     if destination.exists():
@@ -221,13 +239,13 @@ def write_download_record(record: Mapping[str, Any], store_root: str | Path) -> 
         if previous is not None:
             _validate_record_transition(previous, record)
         _publish_once(
-            root / "records" / f"{previous_digest}.json",
+            _under(root, f"records/{previous_digest}.json"),
             previous_bytes,
             chair="model-store",
             label="previous or legacy download record",
         )
 
-    archive = root / "records" / f"{digest}.json"
+    archive = _under(root, f"records/{digest}.json")
     _publish_once(archive, payload, chair="model-store", label="download record version")
     _move_active_record(destination, archive)
     return digest
@@ -705,24 +723,27 @@ def _validate_record(raw: Mapping[str, Any]) -> None:
                 "model-store",
                 f"artifact {item['artifact']!r} has an invalid source or manifest pin",
             )
+        for field in ("snapshot", "manifest", "license"):
+            _safe(item[field], field)
         prefix = "hf/" if item["source"] == "huggingface" else "local/"
-        if not str(item["snapshot"]).startswith(prefix):
+        expected_snapshot = f"{prefix}{item['artifact']}"
+        if item["snapshot"] != expected_snapshot:
             raise DigestMismatchRefusal(
                 "model-store",
                 f"artifact {item['artifact']!r} is sourced from {item['source']!r} and its "
-                f"snapshot must live under {prefix!r}",
+                f"snapshot must be its artifact-keyed path {expected_snapshot!r}, not "
+                f"{item['snapshot']!r}",
             )
-        for field in ("snapshot", "manifest", "license"):
-            _safe(item[field], field)
         # The record declares a named-root layout and then had to be obeyed for
         # snapshots only, which left `manifests` decorative: a manifest could sit
         # anywhere under the root, including beside a snapshot it does not
         # describe. A layout half-enforced is a layout a consumer cannot rely on.
-        if not str(item["manifest"]).startswith("manifests/"):
+        expected_manifest = f"manifests/{item['artifact']}.json"
+        if item["manifest"] != expected_manifest:
             raise DigestMismatchRefusal(
                 "model-store",
-                f"artifact {item['artifact']!r} declares a digest manifest outside the "
-                "store's 'manifests/' root",
+                f"artifact {item['artifact']!r} digest manifest must be its artifact-keyed "
+                f"path {expected_manifest!r}, not {item['manifest']!r}",
             )
         carried = item["carried"]
         if not isinstance(carried, list):

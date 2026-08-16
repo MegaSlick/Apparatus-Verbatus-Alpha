@@ -90,6 +90,8 @@ to that file.
 The store is shared with the future pod, and the two sides key their directories
 differently: a store directory is per **artifact** (chandra-ocr-2 fills two
 chairs at one revision and is stored once), a `cache_root` entry is per **role**.
+Each present snapshot and manifest is held to its artifact-keyed canonical path,
+so one roster row cannot claim another artifact's verified directory and pin.
 `pod_materialization_plan` re-verifies the complete source store, then states
 which chairs a pod materializes into `cache_root` and which into `model_root` —
 the local-repository half, resolved relative to `config/models.toml` and never a

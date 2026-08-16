@@ -357,6 +357,18 @@ def test_active_record_swap_does_not_rewrite_its_immutable_version(tmp_path):
         load_download_record(tmp_path)
 
 
+def test_active_record_symlink_is_not_accepted_as_in_store_custody(tmp_path):
+    _store(tmp_path)
+    active = tmp_path / "download_record.json"
+    external = tmp_path.parent / f"{tmp_path.name}-active-record"
+    external.write_bytes(active.read_bytes())
+    active.unlink()
+    active.symlink_to(external)
+
+    with pytest.raises(DigestMismatchRefusal, match="regular in-store active copy"):
+        load_download_record(tmp_path)
+
+
 def test_writer_archives_the_legacy_host_record_before_migration(tmp_path):
     record = _store(tmp_path)
     (tmp_path / "download_record.json").unlink()
@@ -482,7 +494,7 @@ def test_derived_inventory_refuses_a_unicode_artifact_name_as_a_required_artifac
     record = _store(tmp_path)
     record["artifacts"][0]["artifact"] = "chandra-ocr-2’"
 
-    with pytest.raises(DigestMismatchRefusal, match="is absent"):
+    with pytest.raises(DigestMismatchRefusal, match="artifact-keyed path"):
         derived_inventory(record)
 
 
@@ -804,8 +816,25 @@ def test_a_digest_manifest_must_live_under_the_declared_manifests_root(tmp_path)
     stray.write_bytes((tmp_path / entry["manifest"]).read_bytes())
     entry["manifest"] = "hf/churro-3B-manifest.json"
 
-    with pytest.raises(DigestMismatchRefusal, match="outside the store's 'manifests/' root"):
+    with pytest.raises(DigestMismatchRefusal, match="artifact-keyed path"):
         derived_inventory(record)
+
+
+def test_artifact_cannot_claim_another_artifacts_verified_snapshot(tmp_path):
+    record = _store(tmp_path)
+    chandra = next(item for item in record["artifacts"] if item["artifact"] == "chandra-ocr-2")
+    qwen = next(item for item in record["artifacts"] if item["artifact"] == "qwen3.5-9B")
+    qwen["snapshot"] = chandra["snapshot"]
+    qwen["manifest"] = chandra["manifest"]
+    qwen["digest_manifest"] = chandra["digest_manifest"]
+
+    with pytest.raises(DigestMismatchRefusal, match="artifact-keyed path 'hf/qwen3.5-9B'"):
+        derived_inventory(record)
+
+
+def test_exported_never_required_policy_cannot_be_mutated():
+    with pytest.raises(TypeError):
+        SURYA_OCR_2_REFUSAL["state"] = "pending-fetch"
 
 
 # --- L2: required files constrain a fetch, not merely the bytes that arrived -------
