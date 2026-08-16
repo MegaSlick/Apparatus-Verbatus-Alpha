@@ -74,6 +74,10 @@ _SOURCE_ACCESS_REQUIRED: Final = "requires-source-access"
 _RUN_ACCESS_REQUIRED: Final = "requires-retained-run-access"
 _EMBEDDED: Final = "embedded"
 _UNCERTAINTY_AVAILABLE: Final = "canonical-unicode-codepoint-offsets"
+# The other half of the same declaration. An act with no established text has no
+# offsets for a layer to anchor to, so its row says so in the one vocabulary a
+# reader of any format can compare against the payload beside it.
+_UNCERTAINTY_NOT_APPLICABLE: Final = "not-applicable"
 _ANNOTATION_NOT_PRODUCED: Final = "not-produced-pending-architecture-approval"
 _LITERAL_TEXT_FORMATS: Final = ("text-bundle", "acts-database", "jsonl")
 _PIXEL_REFERENCE_CLAIM: Final = "reference validity only; pixel resolution requires source access"
@@ -511,6 +515,11 @@ def _validate_projection(projection: ArmariumProjection) -> None:
             utf8_round_trip(act["uncertainty"], literal)
         elif literal is not None:
             raise SchemaRefusal("a non-delivered act may not carry purported clean text")
+        elif act.get("uncertainty") is not None:
+            # The same rule as the line above, for the layer that anchors to that
+            # text: offsets into a text this act does not have are not a reading
+            # the export may carry, and no writer would have anywhere to put them.
+            raise SchemaRefusal("a non-delivered act may not carry an uncertainty layer")
         if category == ArmariumCategory.EXCLUDED_WITH_APPROVAL.value:
             require_approval(ARMARIUM, category, act.get("approval_ref"))
         _reject_act_salvage_namespace(act)
@@ -1186,7 +1195,9 @@ def _acts_database_bytes(acts: tuple[dict[str, Any], ...]) -> bytes:
                         canonical_text(act["provenance"]) if literal is not None else None,
                         canonical_text(act["source_regions"]) if literal is not None else None,
                         canonical_text(act["uncertainty"]) if literal is not None else None,
-                        _UNCERTAINTY_AVAILABLE if literal is not None else "not-applicable",
+                        _UNCERTAINTY_AVAILABLE
+                        if literal is not None
+                        else _UNCERTAINTY_NOT_APPLICABLE,
                         "[]",
                         _ANNOTATION_NOT_PRODUCED,
                         canonical_text(_act_evidence(act)),
@@ -1251,7 +1262,7 @@ def _act_json_records(acts: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
                 "uncertainty": act.get("uncertainty") if literal is not None else None,
                 "uncertainty_status": _UNCERTAINTY_AVAILABLE
                 if literal is not None
-                else "not-applicable",
+                else _UNCERTAINTY_NOT_APPLICABLE,
                 "annotations": [],
                 "annotation_status": _ANNOTATION_NOT_PRODUCED,
                 "witnesses": act.get("witnesses", []),
@@ -1438,7 +1449,12 @@ def _text_bundle_records(
                 except json.JSONDecodeError as error:
                     raise SchemaRefusal("a text-bundle uncertainty layer is not JSON") from error
                 try:
-                    pending_uncertainty = validate_uncertainty(uncertainty, pending[0])
+                    # The round trip, not merely the shape: the text bundle is the
+                    # one format whose layer arrives as decoded UTF-8 text lines, so
+                    # this is where an encoding that changed offset meaning would
+                    # have to be caught.
+                    utf8_round_trip(uncertainty, pending[0])
+                    pending_uncertainty = uncertainty
                 except SchemaRefusal as error:
                     raise SchemaRefusal(
                         "a text-bundle uncertainty layer does not anchor to its own act's literal"
@@ -2368,6 +2384,12 @@ def _jsonl_act_records(
             )
         elif literal is not None or digest is not None:
             raise SchemaRefusal("a non-delivered acts JSONL row carries purported clean text")
+        _verify_carried_uncertainty(
+            record.get("uncertainty"),
+            record.get("uncertainty_status"),
+            literal if category == ArmariumCategory.DELIVERED.value else None,
+            subject="acts JSONL",
+        )
         records[act_id] = {
             "act_key": act_key,
             "category": category,
@@ -2379,6 +2401,54 @@ def _jsonl_act_records(
     return records
 
 
+def _database_uncertainty(encoded: Any) -> Any:
+    """Decode the acts database's one uncertainty column, or refuse its bytes."""
+    if encoded is None:
+        return None
+    if not isinstance(encoded, str):
+        raise SchemaRefusal("the acts database has an untyped uncertainty column")
+    try:
+        return json.loads(encoded)
+    except json.JSONDecodeError as error:
+        raise SchemaRefusal("the acts database uncertainty layer is not JSON") from error
+
+
+def _verify_carried_uncertainty(
+    layer: Any, status: Any, literal: str | None, *, subject: str
+) -> None:
+    """Read one act row's uncertainty declaration and its payload as one statement.
+
+    Cross-format identity (``_compare_literal_projections``) only compares the
+    layers of two or more selected literal formats against each other, so on its
+    own it leaves two things unasked: a package that selects exactly ONE literal
+    format never has its layer read back at all, and ``uncertainty_status`` --
+    the field a recipient reads to learn whether the layer is there -- is
+    compared against nothing in any package. A row may not say
+    ``not-applicable`` while carrying a layer, or claim canonical offsets while
+    carrying none: the declaration and the payload are the same claim said twice,
+    and a verifier that checks only one of them is asserting the other.
+    """
+    if literal is None:
+        if layer is not None:
+            raise SchemaRefusal(f"a non-delivered {subject} row carries an uncertainty layer")
+        if status != _UNCERTAINTY_NOT_APPLICABLE:
+            raise SchemaRefusal(
+                f"a non-delivered {subject} row does not declare uncertainty not-applicable"
+            )
+        return
+    if status != _UNCERTAINTY_AVAILABLE:
+        raise SchemaRefusal(
+            f"a delivered {subject} row does not declare the canonical uncertainty carriage"
+        )
+    try:
+        utf8_round_trip(layer, literal)
+    except SchemaRefusal as error:
+        raise SchemaRefusal(
+            f"a delivered {subject} row's uncertainty layer does not anchor to its own "
+            "act's literal"
+        ) from error
+
+
 def _database_act_records(
     path: Path, source_graph_regions: list[dict[str, Any]]
 ) -> tuple[dict[str, dict[str, Any]], dict[str, tuple[str, str]]]:
@@ -2388,7 +2458,8 @@ def _database_act_records(
         connection = _open_acts_database(path)
         rows = connection.execute(
             "SELECT act_id, act_key, category, canonical_clean_text, canonical_text_sha256, "
-            "provenance_json, source_regions_json, evidence_json, reason FROM acts"
+            "provenance_json, source_regions_json, evidence_json, reason, "
+            "uncertainty_spans_json, uncertainty_status FROM acts"
         ).fetchall()
     except sqlite3.DatabaseError as error:
         raise SchemaRefusal("the acts database cannot be read for product accounting") from error
@@ -2408,6 +2479,8 @@ def _database_act_records(
         source_regions,
         evidence,
         reason,
+        uncertainty_json,
+        uncertainty_status,
     ) in rows:
         if (
             not isinstance(act_id, str)
@@ -2443,6 +2516,12 @@ def _database_act_records(
             _verify_delivered_product_provenance(
                 decoded[0], decoded[1], source_graph_regions, subject="acts database"
             )
+        _verify_carried_uncertainty(
+            _database_uncertainty(uncertainty_json),
+            uncertainty_status,
+            literal if category == ArmariumCategory.DELIVERED.value else None,
+            subject="acts database",
+        )
         records[act_id] = {
             "act_key": act_key,
             "category": category,

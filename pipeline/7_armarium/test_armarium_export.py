@@ -381,6 +381,77 @@ def test_text_bundle_refuses_uncertainty_valid_only_for_a_different_acts_literal
         verify_projection_identity(_zip_bytes(members), tmp_path)
 
 
+def test_jsonl_uncertainty_status_may_not_contradict_the_layer_beside_it(tmp_path):
+    """The declaration a recipient reads is checked against the payload it describes.
+
+    Cross-format identity compares layer to layer; it never reads
+    `uncertainty_status`, so before this guard a delivered JSONL row could carry a
+    valid canonical layer while telling every reader of that row there was none.
+    """
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    records = [json.loads(line) for line in members["acts.jsonl"].decode("utf-8").splitlines()]
+    assert records[0]["uncertainty_status"] == "canonical-unicode-codepoint-offsets"
+    records[0]["uncertainty_status"] = "not-applicable"
+    members["acts.jsonl"] = b"".join(canonical_bytes(record) + b"\n" for record in records)
+    _refresh_manifest_member(members, "acts.jsonl")
+
+    with pytest.raises(SchemaRefusal, match="does not declare the canonical uncertainty carriage"):
+        verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
+
+
+def test_acts_database_uncertainty_status_may_not_contradict_the_layer_beside_it(tmp_path):
+    """The same declaration, in the format whose column a search tool reads first."""
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    database = tmp_path / "tampered.sqlite"
+    database.write_bytes(members["acts.sqlite"])
+    connection = sqlite3.connect(database)
+    connection.execute("UPDATE acts SET uncertainty_status = 'not-applicable'")
+    connection.commit()
+    connection.close()
+    members["acts.sqlite"] = database.read_bytes()
+    _refresh_manifest_member(members, "acts.sqlite")
+
+    with pytest.raises(SchemaRefusal, match="does not declare the canonical uncertainty carriage"):
+        verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
+
+
+def test_a_single_literal_format_package_still_reads_back_its_uncertainty(tmp_path):
+    """One selected literal format has nothing to compare against -- and is still read.
+
+    `_compare_literal_projections` needs two formats to say anything, so a package
+    that selects only `jsonl` was leaving `claims.uncertainty` asserted and never
+    verified: the same defect `verify_delivered_bundle` exists to refuse for the
+    one text.
+    """
+    formats = ArmariumFormats(("jsonl", "review-items", "salvage-tier"), False)
+    bundle = build_armarium_bundle(_projection(), formats, _source_bytes)
+    members = _members(bundle.data)
+    records = [json.loads(line) for line in members["acts.jsonl"].decode("utf-8").splitlines()]
+    records[0]["uncertainty"] = {"nonsense": True}
+    members["acts.jsonl"] = b"".join(canonical_bytes(record) + b"\n" for record in records)
+    _refresh_manifest_member(members, "acts.jsonl")
+
+    with pytest.raises(SchemaRefusal, match="does not anchor to its own act's literal"):
+        verify_delivered_bundle(_zip_bytes(members), tmp_path / "single")
+
+
+def test_a_non_delivered_act_may_not_carry_an_uncertainty_layer(tmp_path):
+    """Offsets into a text this act does not have are not a reading to export."""
+    original = _projection()
+    held = {
+        **original.acts[1],
+        "uncertainty": {"uncertain_spans": [], "gaps": [], "self_revisions": []},
+    }
+    with pytest.raises(SchemaRefusal, match="may not carry an uncertainty layer"):
+        build_armarium_bundle(
+            replace(original, acts=(original.acts[0], held)),
+            _formats(embed_pixels=False),
+            _source_bytes,
+        )
+
+
 def test_the_delivered_gate_asks_both_questions_the_manifest_claims_were_asked(tmp_path):
     """GOVERNANCE 5 on the path the product actually leaves by.
 
@@ -709,6 +780,7 @@ def test_text_bundle_keeps_every_cited_source_folder_when_no_act_is_delivered(tm
         record.update(
             category="held-for-review",
             canonical_clean_text=None,
+            uncertainty=None,
             provenance=None,
             source_regions=[],
         )
@@ -765,6 +837,7 @@ def test_source_root_and_a_named_source_root_folder_cannot_collide(tmp_path):
             **act,
             "category": "held-for-review",
             "canonical_clean_text": None,
+            "uncertainty": None,
             "provenance": None,
             "source_regions": [],
         }
@@ -1270,6 +1343,7 @@ def test_a_held_page_makes_the_bundle_partial_where_the_run_aggregate_reconciles
             **original.acts[0],
             "category": ArmariumCategory.CONFIRMED_BLANK.value,
             "canonical_clean_text": None,
+            "uncertainty": None,
             "provenance": None,
             "source_regions": [],
             "reason": None,
