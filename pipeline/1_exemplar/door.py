@@ -73,6 +73,7 @@ from image_formats import (  # noqa: E402
     sniff,
 )
 
+from common.alignment import DEFAULT_ALIGNMENT_CONFIG_PATH, load_alignment_limits  # noqa: E402
 from common.armarium_formats import (  # noqa: E402
     DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH,
     bind_armarium_formats,
@@ -1229,6 +1230,7 @@ def real_submission(args, registry) -> int:
         args.formats_config,
         designator_padding_config_sha256=_padding_config_digest(args.designator_padding_config),
         designator_geometry_config_sha256=_geometry_config_digest(args.designator_geometry_config),
+        alignment_config_path=args.alignment_config,
         witness_context=args.witness_context,
         witness_context_config_path=args.witness_context_config,
         nuda_per_mille=args.nuda_per_mille,
@@ -1357,6 +1359,7 @@ def _real_bindings(
     *,
     designator_padding_config_sha256: str,
     designator_geometry_config_sha256: str,
+    alignment_config_path=DEFAULT_ALIGNMENT_CONFIG_PATH,
     witness_context: str = "named",
     witness_context_config_path: str | Path = DEFAULT_WITNESS_CONTEXT_CONFIG_PATH,
     nuda_per_mille: int = 0,
@@ -1387,6 +1390,7 @@ def _real_bindings(
         perlector_instrument_per_mille=perlector_instrument_per_mille,
         perlector_instrument_approval_ref=perlector_instrument_approval_ref,
     )
+    _, alignment_config_sha256 = load_alignment_limits(alignment_config_path)
     adapter_recipes = dict(sorted(models.adapter_recipes.items()))
     adapter_recipes[DOOR] = REAL_DOOR_ADAPTER_REVISION
     armarium_formats_digest, armarium_formats = bind_armarium_formats(armarium_formats_config_path)
@@ -1430,6 +1434,7 @@ def _real_bindings(
                 "hard_failure_policy": hard_failure_policy,
                 "designator_padding_config_sha256": designator_padding_config_sha256,
                 "designator_geometry_config_sha256": designator_geometry_config_sha256,
+                "alignment_config_sha256": alignment_config_sha256,
                 "corpus_frame_policy": corpus_frame_policy,
                 "corpus_frame_config_sha256": corpus_frame_config_sha256,
                 "models": models.to_record(),
@@ -1466,6 +1471,7 @@ def _real_bindings(
         "sealed_config_digests": {
             "designator-padding": designator_padding_config_sha256,
             "designator-geometry": designator_geometry_config_sha256,
+            "alignment": alignment_config_sha256,
             "corpus-frame-shard": corpus_frame_config_sha256,
             "perlector-protocol": perlector_protocol_config_sha256,
         },

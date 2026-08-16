@@ -21,6 +21,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Callable, Final, Protocol
 
+from common.alignment import DEFAULT_ALIGNMENT_CONFIG_PATH, load_alignment_limits
 from common.armarium_formats import (
     DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH,
     ArmariumFormats,
@@ -561,6 +562,7 @@ def stage_parser(description: str, *, accepts_chair: bool = False) -> argparse.A
     parser.add_argument("--scenario", default="happy")
     parser.add_argument("--fixture-root", default="proof")
     parser.add_argument("--models-config", default="config/models.toml")
+    parser.add_argument("--alignment-config", default=str(DEFAULT_ALIGNMENT_CONFIG_PATH))
     parser.add_argument("--pdf-render-config", default=str(DEFAULT_PDF_RENDER_CONFIG_PATH))
     parser.add_argument(
         "--designator-padding-config", default=str(DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH)
@@ -779,6 +781,7 @@ def run_config_bindings(
     pdf_render_config_path: str | Path = DEFAULT_PDF_RENDER_CONFIG_PATH,
     designator_padding_config_path: str | Path = DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH,
     designator_geometry_config_path: str | Path = DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH,
+    alignment_config_path: str | Path = DEFAULT_ALIGNMENT_CONFIG_PATH,
     pdf_target_dpi: int | None = None,
     armarium_formats_config_path: str | Path = DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH,
     recovery_config_path: str | Path = DEFAULT_RECOVERY_CONFIG_PATH,
@@ -844,6 +847,7 @@ def run_config_bindings(
             "the Designator geometry configuration binding at "
             f"{designator_geometry_config_path} could not be read"
         ) from error
+    _, alignment_config_digest = load_alignment_limits(alignment_config_path)
     corpus_frame_policy, corpus_frame_config_digest = load_corpus_frame_policy(
         corpus_frame_config_path
     )
@@ -888,6 +892,7 @@ def run_config_bindings(
                 "pdf_render_config_sha256": pdf_render_config_digest,
                 "designator_padding_config_sha256": padding_config_digest,
                 "designator_geometry_config_sha256": geometry_config_digest,
+                "alignment_config_sha256": alignment_config_digest,
                 "corpus_frame_policy": corpus_frame_policy,
                 "corpus_frame_config_sha256": corpus_frame_config_digest,
                 "pdf_target_dpi_override": pdf_target_dpi,
@@ -927,6 +932,7 @@ def run_config_bindings(
         "sealed_config_digests": {
             "designator-padding": padding_config_digest,
             "designator-geometry": geometry_config_digest,
+            "alignment": alignment_config_digest,
             "corpus-frame-shard": corpus_frame_config_digest,
             "perlector-protocol": perlector_protocol_config_digest,
         },
@@ -1842,6 +1848,7 @@ def open_context(
         pdf_render_config_path=args.pdf_render_config,
         designator_padding_config_path=args.designator_padding_config,
         designator_geometry_config_path=args.designator_geometry_config,
+        alignment_config_path=args.alignment_config,
         pdf_target_dpi=args.pdf_target_dpi,
         armarium_formats_config_path=args.formats_config,
         recovery_config_path=args.recovery_config,

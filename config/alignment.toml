@@ -1,0 +1,6 @@
+# R4 alignment limits. These bytes are sealed at run creation and rechecked at
+# the point of use. Values are operational bounds, never similarity thresholds.
+[limits]
+max_characters = 100000
+max_character_pairs = 100000000
+timeout_seconds = 5
