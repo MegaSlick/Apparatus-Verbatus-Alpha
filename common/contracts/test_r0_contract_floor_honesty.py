@@ -54,7 +54,16 @@ def test_coverage_schema_has_no_room_for_a_page_granularity_only_contribution():
     mean structurally: there is nowhere yet for the honest, narrower claim to live,
     so a build that lands D2 must widen this exact schema.
     """
-    coverage = _base_coverage(page_granularity_only=1)
+    # under_witnessed=True is the internally-consistent value here (audit fix,
+    # F-S4): with 3 completed chairs and 1 of them page-granularity-only, only 2
+    # act-level reads meet the floor of 3, so the act IS under-witnessed. The
+    # original fixture left `under_witnessed=False` (from `_base_coverage`'s
+    # default) uncorrected, which happened to validate before this audit's fix
+    # only because the rederivation check was itself skippable for a record
+    # naming just one of the three granularity fields -- exactly the gap F-S4
+    # closes. This test's own assertion (a new field is accepted, not refused)
+    # is unchanged; only its previously-inconsistent input is corrected.
+    coverage = _base_coverage(page_granularity_only=1, under_witnessed=True)
     try:
         _validate_coverage(coverage)
     except SchemaRefusal as error:
@@ -121,3 +130,31 @@ def test_witness_coverage_has_no_signature_room_for_per_act_attachment_facts():
         "distinguish a completed-but-unattached (page-granularity-only) chair from "
         "one that actually attached to this act, and nothing here does that yet"
     )
+
+
+# --- Audit-and-repair regression (F-S4) ------------------------------------------
+#
+# Sonnet audit-and-repair seat 1, R0. S4 prime suspect: "the permissive partial-
+# granularity path (has_complete_granularity guard) skips the under_witnessed
+# rederivation for records carrying SOME granularity fields. Can a dishonest
+# record thread that needle?" -- yes, confirmed before this audit's fix.
+
+
+def test_an_under_witnessed_act_cannot_claim_otherwise_by_omitting_two_of_three_granularity_fields():
+    """F-S4 (tampering battery): "an under-witnessed act whose receipt says
+    otherwise" must be refused, even when the record supplies only
+    `page_granularity_only` and omits `health_unrecorded`/`shortfalls`.
+
+    Before this audit's fix, `_validate_coverage`'s under_witnessed rederivation
+    ran only when a coverage record carried ALL THREE granularity fields
+    (`has_complete_granularity = granularity_fields <= set(coverage)`) or NONE of
+    them. A record naming exactly one or two -- itself never produced by the real
+    writer (`witness_coverage()` always emits all three together), but nothing
+    stopped a hand-built or tampered record from doing so -- skipped the check
+    entirely. This record claims `under_witnessed=False` with 3 completed chairs,
+    a floor of 3, and 1 of them page-granularity-only: only 2 act-level reads
+    actually met the floor, so the act IS under-witnessed, and the record is lying.
+    """
+    coverage = _base_coverage(page_granularity_only=1, under_witnessed=False)
+    with pytest.raises(SchemaRefusal, match="under_witnessed"):
+        _validate_coverage(coverage)

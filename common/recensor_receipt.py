@@ -239,17 +239,27 @@ def _validate_coverage(
         raise SchemaRefusal(
             "Recensor partition receipt has more page-only contributions than completed chairs"
         )
-    # Standalone schema callers may be validating one newly introduced field
-    # at a time; only a complete v2 coverage record claims the derived floor.
-    has_complete_granularity = granularity_fields <= set(coverage)
+    # Standalone schema callers may be validating one newly introduced field at a
+    # time (page_granularity_only/health_unrecorded/shortfalls need not all land
+    # together in one unit-level call), so a record naming none, some, or all of
+    # them is not itself malformed. But the rederivation below must not become
+    # skippable by naming only a *subset* that omits `page_granularity_only`: that
+    # was this check's own gate before this fix (`has_complete_granularity`
+    # required all three), which let a coverage record supply an unrelated
+    # granularity field (or none) while asserting an arbitrary `under_witnessed`
+    # for an actually-under-witnessed act -- `health_unrecorded` and `shortfalls`
+    # play no part in this derivation, so gating on their presence too was never
+    # load-bearing for it, only an accidental door. `page_granularity_only` is the
+    # one field this derivation actually depends on, and its presence alone now
+    # decides which formula applies; the check itself always runs. Found in
+    # audit (S4, "can a dishonest record thread the needle" -- yes); F-S4.
+    has_page_only_fact = "page_granularity_only" in coverage
     expected_under_witnessed = (
         act_completed < coverage["floor"]
-        if has_complete_granularity
+        if has_page_only_fact
         else by_class[OutcomeClass.COMPLETED.value] < coverage["floor"]
     )
-    if (not present_granularity or has_complete_granularity) and coverage[
-        "under_witnessed"
-    ] != expected_under_witnessed:
+    if coverage["under_witnessed"] != expected_under_witnessed:
         raise SchemaRefusal(
             f"Recensor partition receipt claims under_witnessed="
             f"{coverage['under_witnessed']}, but {act_completed} act-level completed read(s) "
