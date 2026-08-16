@@ -250,6 +250,15 @@ def _validate_coverage(
             "not a boolean"
         )
     page_only = coverage.get("page_granularity_only", 0)
+    # Typed before it is subtracted, not after. This count is the one granularity
+    # fact the under_witnessed rederivation below depends on, and the v2 type
+    # checks that were its only guard run further down: a record carrying
+    # `"page_granularity_only": "1"` reached the subtraction first and left this
+    # validator through a raw TypeError, where every other malformed field in
+    # this file is a named refusal a caller can catch as a ContractError. Found
+    # in audit; F-O4.
+    if not isinstance(page_only, int) or isinstance(page_only, bool) or page_only < 0:
+        raise SchemaRefusal("Recensor partition receipt has invalid page_granularity_only count")
     act_completed = by_class[OutcomeClass.COMPLETED.value] - page_only
     if page_only > by_class[OutcomeClass.COMPLETED.value]:
         raise SchemaRefusal(
@@ -278,8 +287,8 @@ def _validate_coverage(
     if coverage["under_witnessed"] != expected_under_witnessed:
         raise SchemaRefusal(
             f"Recensor partition receipt claims under_witnessed="
-            f"{coverage['under_witnessed']}, but {act_completed} act-level completed read(s) "
-            f"completed read(s) against a floor of {coverage['floor']} says otherwise"
+            f"{coverage['under_witnessed']}, but {act_completed} act-level completed "
+            f"read(s) against a floor of {coverage['floor']} says otherwise"
         )
     # Rederived from the outcome counts rather than compared field by field: the
     # per-class summary is the receipt's own arithmetic, and a receipt whose
@@ -300,15 +309,16 @@ def _validate_coverage(
     if schema == RECENSOR_PARTITION_RECEIPT_SCHEMA_V2:
         # The unit validator remains permissive for partial records so a caller
         # can record one new fact at a time; writers always emit all three.
-        page_only = coverage.get("page_granularity_only", 0)
+        # `page_granularity_only` is typed above rather than here, because the
+        # under_witnessed rederivation subtracts it before this block runs.
         health_unrecorded = coverage.get("health_unrecorded", 0)
         shortfalls = coverage.get("shortfalls", {"failed": 0, "truncated": 0, "unaligned": 0})
-        for field, value in (
-            ("page_granularity_only", page_only),
-            ("health_unrecorded", health_unrecorded),
+        if (
+            not isinstance(health_unrecorded, int)
+            or isinstance(health_unrecorded, bool)
+            or health_unrecorded < 0
         ):
-            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-                raise SchemaRefusal(f"Recensor partition receipt has invalid {field} count")
+            raise SchemaRefusal("Recensor partition receipt has invalid health_unrecorded count")
         if (
             not isinstance(shortfalls, dict)
             or set(shortfalls) != {"failed", "truncated", "unaligned"}

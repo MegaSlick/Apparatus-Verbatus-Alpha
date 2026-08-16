@@ -636,3 +636,21 @@ def test_v2_receipt_cannot_omit_its_granularity_measurement_basis(tmp_path):
         from common.recensor_receipt import validate_recensor_partition_receipt
 
         validate_recensor_partition_receipt(receipt)
+
+
+# --- Audit-and-repair regression (F-O4) -----------------------------------------
+#
+# Opus audit-and-repair seat 3, R0. `page_granularity_only` is subtracted from the
+# completed count before the v2 block that typed it ever runs, so a non-integer
+# value left `_validate_coverage` through a raw TypeError -- not a ContractError,
+# and so not something a caller that refuses malformed evidence by name can catch.
+
+
+@pytest.mark.parametrize("value", ["1", 1.0, None, [1]])
+def test_a_non_integer_page_granularity_count_is_a_named_refusal(value):
+    """Every other malformed coverage field in this validator is a named refusal."""
+    from common.recensor_receipt import _validate_coverage
+
+    coverage = dict(_valid_coverage(), page_granularity_only=value)
+    with pytest.raises(SchemaRefusal, match="invalid page_granularity_only"):
+        _validate_coverage(coverage)
