@@ -6,9 +6,11 @@ point of this module, and a test that trusted the same claimed list the
 reconciliation is supposed to be checking would not be testing anything.
 """
 
+import random
+
 import pytest
 from conservation import reconcile
-from structure import PRIMARY_MARGIN, SECONDARY_MARGIN
+from structure import PRIMARY_MARGIN, SECONDARY_MARGIN, ink_pixels, label_components
 
 from common.contracts.errors import ContractError
 
@@ -29,6 +31,35 @@ def paint_rect(rows: list[bytearray], x: int, y: int, w: int, h: int, value: int
 
 def paint_pixel(rows: list[bytearray], x: int, y: int, value: int = INK) -> None:
     rows[y][x] = value
+
+
+def _legacy_reference(width, height, rows, claimed_bounds, gap_tolerance_px):
+    """The old pixel-set algorithm, kept here solely as a U13 equivalence oracle."""
+    pixels = ink_pixels(width, height, rows, background=BACKGROUND, margin=SECONDARY_MARGIN)
+    claimed = {
+        pixel
+        for pixel in pixels
+        if any(
+            bounds["x"] <= pixel[0] < bounds["x"] + bounds["w"]
+            and bounds["y"] <= pixel[1] < bounds["y"] + bounds["h"]
+            for bounds in claimed_bounds
+        )
+    }
+    components = label_components(pixels - claimed, gap_tolerance_px=gap_tolerance_px)
+    return {
+        "total_ink_pixel_count": len(pixels),
+        "claimed_pixel_count": len(claimed),
+        "residual_pixel_count": len(pixels - claimed),
+        "residual_components": [
+            {
+                **component,
+                "review_priority": "high"
+                if max(component["bounds"]["w"], component["bounds"]["h"]) >= 6
+                else "low",
+            }
+            for component in components
+        ],
+    }
 
 
 # --- exact reconciliation -----------------------------------------------------
@@ -94,6 +125,39 @@ def test_claimed_plus_residual_always_equals_total():
     )
     assert result["total_ink_pixel_count"] == 100 + 36 + 1
     assert result["claimed_pixel_count"] == 100
+
+
+def test_row_oriented_u13_reimplementation_is_equivalent_to_the_retired_pixel_set_oracle():
+    """Fixed randomized small pages cover gaps, overlaps, and residual topology."""
+    generator = random.Random(20260816)
+    width, height = 31, 23
+    for gap_tolerance_px in (0, 1, 3):
+        for _case in range(15):
+            rows = blank_rows(width, height)
+            for y in range(height):
+                for x in range(width):
+                    if generator.randrange(7) == 0:
+                        rows[y][x] = INK
+            claims = [
+                {
+                    "x": generator.randrange(width - 1),
+                    "y": generator.randrange(height - 1),
+                    "w": generator.randrange(1, 8),
+                    "h": generator.randrange(1, 8),
+                }
+                for _ in range(4)
+            ]
+            for bounds in claims:
+                bounds["w"] = min(bounds["w"], width - bounds["x"])
+                bounds["h"] = min(bounds["h"], height - bounds["y"])
+            assert reconcile(
+                width,
+                height,
+                rows,
+                background=BACKGROUND,
+                claimed_bounds=claims,
+                gap_tolerance_px=gap_tolerance_px,
+            ) == _legacy_reference(width, height, rows, claims, gap_tolerance_px)
 
 
 def test_an_empty_page_reconciles_to_all_zeros():

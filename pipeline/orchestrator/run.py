@@ -105,6 +105,8 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
         str(args.pdf_render_config),
         "--designator-padding-config",
         str(args.designator_padding_config),
+        "--designator-geometry-config",
+        str(args.designator_geometry_config),
         "--formats-config",
         str(args.formats_config),
         "--recovery-config",
@@ -227,6 +229,11 @@ def main() -> int:
         "--designator-padding-config",
         default=str(DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH),
         help="the capture padding applied to every act crop, sealed into this run",
+    )
+    parser.add_argument(
+        "--designator-geometry-config",
+        default="config/designator_geometry.toml",
+        help="the sealed Surya/YOLO geometry and crop-policy declaration for this run",
     )
     parser.add_argument(
         "--formats-config",

@@ -1,65 +1,21 @@
-"""Conservation: claimed ink plus residual ink equals every ink pixel found.
+"""Independent, row-oriented residual-ink reconciliation (U13).
 
-The old pipeline's own conservation logic proved coverage of units the
-structure model itself had already emitted -- a chunk not claimed by a crop
-was accounted for, but a mark the structure model never emitted as a chunk at
-all had no denominator to be missing from. An independent second read
-(`/stage/70_gpt_review/ASSESSMENT.md:172-173`) named this precisely: "the
-present conservation logic proves coverage of units already emitted by a
-structural model. It cannot prove that the model did not miss ink entirely."
-This module closes exactly that gap: it does not trust the structure pass's own claimed
-regions as the denominator. It rescans the page's actual pixels independently
-and classifies every ink pixel found as claimed (inside some cut crop) or
-residual (not inside any), so a mark the grouping pass never produced a region
-for still appears -- as a residual component, never as an absence.
-
-**Every residual region is accounted regardless of size.** `review_priority`
-below orders which residual a reviewer looks at first; it never decides
-whether a residual exists in the accounting. Deleting the priority threshold
-entirely would only reorder review, never drop a region -- which is the
-property GOVERNANCE 10 requires of any threshold in an instrument: the
-instrument may not constrain what it measures.
-
-**Two ink calibrations exist in this pipeline, by decision rather than drift.**
-This stage conserves a pixel as ink at `background - SECONDARY_MARGIN` (2 levels),
-the most sensitive declared structural threshold available to this stage;
-the Recensor's independent page-coverage check
-(`pipeline/5_recensor/residual_ink.py`) requires `MINIMUM_CONTRAST_BELOW_BACKGROUND`
-(40 levels). They are different instruments: this one is the Designator
-reconciling its own cut and errs sensitive, because a faint mark it dismisses
-here is GOALS 1's worst failure; the Recensor's is an after-the-fact audit of
-the same pages and errs confident, because it exists to catch whole missed
-regions rather than to re-litigate faint pixels a held act already accounts
-for. The asymmetry is safe in exactly one direction, and that direction is the
-invariant: every pixel the Recensor calls ink is ink to this stage too, so the
-audit can never flag ink this accounting silently ignored — while ink only this
-stage sees ends as a held residual act, which is visible, never lost. The
-containment is pinned where the two stages legitimately meet,
-`common/test_designator_recensor_ink_calibration.py`; narrowing this stage's
-margin past the Recensor's contrast would break the safe direction and must be
-a deliberate two-sided change.
-
-**This is a mechanism-scale implementation, not the real-page backend.**
-`reconcile` currently materialises the page's ink, claimed ink, and residual
-ink as Python coordinate sets. That is deliberately legible over the walking
-skeleton's tiny synthetic pages, but it is the substitution boundary before a
-real corpus: replace this classification with a row-oriented bitmap/interval
-or native array implementation, together with `structure.ink_pixels` and
-`structure.label_components`, after measurement on representative pages. A
-rewrite now would optimise an unmeasured skeleton; carrying these three sets
-onto dense high-resolution pages would be equally unjustified.
+The original skeleton built three Python ``set[(x, y)]`` values.  That made the
+proof easy to read, but a dense 600dpi parish page turns every ink pixel into
+several Python objects.  This implementation has the same threshold and
+gap-connectivity semantics while retaining only ink *runs* and the currently
+active claimed rectangles.  It is therefore O(page pixels + ink runs) memory,
+rather than O(ink pixels), and its denominator still comes from page pixels,
+not a proposer-derived mask.
 """
 
+from __future__ import annotations
+
+from collections import defaultdict
 from typing import Final, TypedDict
 
 import geometry
-from structure import (
-    DEFAULT_GAP_TOLERANCE_PX,
-    SECONDARY_MARGIN,
-    Component,
-    ink_pixels,
-    label_components,
-)
+from structure import DEFAULT_GAP_TOLERANCE_PX, SECONDARY_MARGIN, _ink_threshold
 
 from common.contracts.errors import ContractError
 
@@ -71,20 +27,151 @@ class ReconciliationResult(TypedDict):
     residual_components: list[dict]
 
 
-# A residual component at or above this many pixels, on either axis, is
-# reviewed first -- a priority ordering, not a filter. See the module
-# docstring: nothing here may become an inclusion test.
 DEFAULT_REVIEW_PRIORITY_MIN_DIMENSION_PX: Final = 6
 
 
-def _is_claimed(x: int, y: int, claimed_bounds: list[geometry.Bounds]) -> bool:
-    for bounds in claimed_bounds:
-        if (
-            bounds["x"] <= x < bounds["x"] + bounds["w"]
-            and bounds["y"] <= y < bounds["y"] + bounds["h"]
+class _Run(TypedDict):
+    x0: int
+    x1: int  # exclusive, including any blank bridge only in the geometry below
+    ink_count: int
+    y: int
+
+
+def _plain_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _ink_runs(row: object, threshold: int, y: int, gap: int) -> list[_Run]:
+    """Return maximal ink runs, joining only the permitted same-row gaps."""
+    if not isinstance(row, (bytes, bytearray)):
+        raise ContractError(f"scanline {y} is not grayscale bytes")
+    runs: list[_Run] = []
+    start: int | None = None
+    last_ink: int | None = None
+    count = 0
+    for x, value in enumerate(row):
+        if value <= threshold:
+            if start is None:
+                start = x
+            elif last_ink is not None and x - last_ink - 1 > gap:
+                runs.append({"x0": start, "x1": last_ink + 1, "ink_count": count, "y": y})
+                start, count = x, 0
+            last_ink = x
+            count += 1
+    if start is not None and last_ink is not None:
+        runs.append({"x0": start, "x1": last_ink + 1, "ink_count": count, "y": y})
+    return runs
+
+
+def _merged_claim_intervals(active: list[geometry.Bounds]) -> list[tuple[int, int]]:
+    intervals = sorted((bounds["x"], bounds["x"] + bounds["w"]) for bounds in active)
+    merged: list[tuple[int, int]] = []
+    for start, end in intervals:
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _subtract_claims(run: _Run, claims: list[tuple[int, int]]) -> tuple[int, list[_Run]]:
+    """Split an ink run around claims, counting actual ink rather than area."""
+    # A run may span tolerated blank gaps.  Re-scanning just that short row slice
+    # would need the image again, so the caller supplies exact unit runs below.
+    # Here every x represents ink: `_residual_unit_runs` deliberately supplies
+    # those exact runs after the topology scan has formed connectivity runs.
+    residual: list[_Run] = []
+    claimed = 0
+    cursor = run["x0"]
+    for start, end in claims:
+        if end <= cursor:
+            continue
+        if start >= run["x1"]:
+            break
+        if cursor < start:
+            residual.append(
+                {
+                    "x0": cursor,
+                    "x1": min(start, run["x1"]),
+                    "ink_count": min(start, run["x1"]) - cursor,
+                    "y": run["y"],
+                }
+            )
+        covered_start, covered_end = max(cursor, start), min(run["x1"], end)
+        if covered_start < covered_end:
+            claimed += covered_end - covered_start
+            cursor = covered_end
+    if cursor < run["x1"]:
+        residual.append(
+            {"x0": cursor, "x1": run["x1"], "ink_count": run["x1"] - cursor, "y": run["y"]}
+        )
+    return claimed, residual
+
+
+def _unit_ink_runs(row: object, threshold: int, y: int) -> list[_Run]:
+    """Exact contiguous ink runs used for counting and residual topology."""
+    return _ink_runs(row, threshold, y, 0)
+
+
+def _components(runs: list[_Run], gap: int) -> list[dict]:
+    """Label residual runs with the legacy Chebyshev gap rule, without pixels."""
+    if not runs:
+        return []
+    parent = list(range(len(runs)))
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(left: int, right: int) -> None:
+        left_root, right_root = find(left), find(right)
+        if left_root != right_root:
+            parent[right_root] = left_root
+
+    by_row: dict[int, list[int]] = defaultdict(list)
+    for index, run in enumerate(runs):
+        by_row[run["y"]].append(index)
+    radius = gap + 1
+    for y in sorted(by_row):
+        current = by_row[y]
+        # Exact residual runs on the same scanline are separately stored so
+        # claimed intervals can split one original ink run.  Rejoin only the
+        # legacy-permitted blank gap before looking at earlier scanlines.
+        for left, right in (
+            (current[index], current[index + 1]) for index in range(len(current) - 1)
         ):
-            return True
-    return False
+            if runs[right]["x0"] - runs[left]["x1"] <= gap:
+                union(left, right)
+        for previous_y in range(max(0, y - radius), y):
+            for left in current:
+                for right in by_row.get(previous_y, []):
+                    # Two half-open segments have ink pixels within the required
+                    # horizontal Chebyshev radius exactly under this inequality.
+                    if (
+                        runs[left]["x0"] < runs[right]["x1"] + radius
+                        and runs[right]["x0"] < runs[left]["x1"] + radius
+                    ):
+                        union(left, right)
+    groups: dict[int, list[_Run]] = defaultdict(list)
+    for index, run in enumerate(runs):
+        groups[find(index)].append(run)
+    components = []
+    for group in groups.values():
+        x0 = min(run["x0"] for run in group)
+        x1 = max(run["x1"] for run in group)
+        y0 = min(run["y"] for run in group)
+        y1 = max(run["y"] for run in group) + 1
+        components.append(
+            {
+                "bounds": {"x": x0, "y": y0, "w": x1 - x0, "h": y1 - y0},
+                "pixel_count": sum(run["ink_count"] for run in group),
+            }
+        )
+    return sorted(
+        components, key=lambda item: (item["bounds"]["y"], item["bounds"]["x"], item["pixel_count"])
+    )
 
 
 def reconcile(
@@ -98,44 +185,58 @@ def reconcile(
     gap_tolerance_px: int = DEFAULT_GAP_TOLERANCE_PX,
     review_priority_min_dimension_px: int = DEFAULT_REVIEW_PRIORITY_MIN_DIMENSION_PX,
 ) -> ReconciliationResult:
-    """Reconcile one page's ink against the crops actually cut on it.
-
-    `claimed_bounds` is the final, padded crop rectangles this stage actually
-    cut -- not the structure pass's raw proposals -- because a crop's padding
-    is exactly what may already cover ink the raw proposal's own rectangle did
-    not. Every ink pixel is classified once; `claimed_pixel_count +
-    residual_pixel_count == total_ink_pixel_count` always, by construction,
-    because every pixel in the denominator is examined exactly once.
-    """
-    if review_priority_min_dimension_px < 0:
+    """Reconcile every page-ink pixel once against final crop rectangles."""
+    if not _plain_int(width) or not _plain_int(height) or width <= 0 or height <= 0:
+        raise ContractError(f"a {width}x{height} page has no pixels to scan")
+    if len(rows) != height:
+        raise ContractError(f"expected {height} scanlines, got {len(rows)}")
+    if not _plain_int(gap_tolerance_px) or gap_tolerance_px < 0:
+        raise ContractError(f"gap tolerance {gap_tolerance_px} is negative")
+    if not _plain_int(review_priority_min_dimension_px) or review_priority_min_dimension_px < 0:
         raise ContractError(
             f"review priority threshold {review_priority_min_dimension_px} is negative"
         )
     for bounds in claimed_bounds:
         geometry.validate_bounds(bounds, width, height, "claimed bounds")
-
-    pixels = ink_pixels(width, height, rows, background=background, margin=margin)
-    claimed = {pixel for pixel in pixels if _is_claimed(pixel[0], pixel[1], claimed_bounds)}
-    residual = pixels - claimed
-    residual_components: list[Component] = label_components(
-        residual, gap_tolerance_px=gap_tolerance_px
-    )
-
-    accounted: list[dict] = []
-    for component in residual_components:
+    threshold = _ink_threshold(background, margin)
+    starts: dict[int, list[geometry.Bounds]] = defaultdict(list)
+    ends: dict[int, list[geometry.Bounds]] = defaultdict(list)
+    for bounds in claimed_bounds:
+        starts[bounds["y"]].append(bounds)
+        ends[bounds["y"] + bounds["h"]].append(bounds)
+    active: list[geometry.Bounds] = []
+    total = claimed = 0
+    residual_runs: list[_Run] = []
+    for y, row in enumerate(rows):
+        if len(row) != width:
+            raise ContractError(f"scanline {y} has width {len(row)}, expected {width}")
+        for bounds in ends[y]:
+            active.remove(bounds)
+        active.extend(starts[y])
+        intervals = _merged_claim_intervals(active)
+        for run in _unit_ink_runs(row, threshold, y):
+            total += run["ink_count"]
+            covered, residual = _subtract_claims(run, intervals)
+            claimed += covered
+            residual_runs.extend(residual)
+    components = _components(residual_runs, gap_tolerance_px)
+    accounted = []
+    for component in components:
         bounds = component["bounds"]
-        high_priority = max(bounds["w"], bounds["h"]) >= review_priority_min_dimension_px
         accounted.append(
             {
-                "bounds": bounds,
-                "pixel_count": component["pixel_count"],
-                "review_priority": "high" if high_priority else "low",
+                **component,
+                "review_priority": "high"
+                if max(bounds["w"], bounds["h"]) >= review_priority_min_dimension_px
+                else "low",
             }
         )
-
+    residual_count = total - claimed
+    if sum(component["pixel_count"] for component in accounted) != residual_count:
+        raise ContractError("row-oriented residual components do not reconcile to residual ink")
     return {
-        "total_ink_pixel_count": len(pixels),
-        "claimed_pixel_count": len(claimed),
-        "residual_pixel_count": len(residual),
+        "total_ink_pixel_count": total,
+        "claimed_pixel_count": claimed,
+        "residual_pixel_count": residual_count,
         "residual_components": accounted,
     }

@@ -58,6 +58,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import conservation  # noqa: E402
 import geometry  # noqa: E402
+import geometry_layer  # noqa: E402
 import grouping  # noqa: E402
 import structure  # noqa: E402
 
@@ -1750,6 +1751,8 @@ def initial_pass(context) -> bool:
     # policy the run never sealed while every other check still passes.
     padding = geometry.load_padding_config(context.args.designator_padding_config)
     context.require_sealed_config("designator-padding", padding["config_sha256"])
+    geometry_policy = geometry_layer.load_geometry_policy(context.args.designator_geometry_config)
+    context.require_sealed_config("designator-geometry", geometry_policy["config_sha256"])
     provenance = structure_provenance(context)
     secondary = secondary_provenance(context)
     context.publish(
