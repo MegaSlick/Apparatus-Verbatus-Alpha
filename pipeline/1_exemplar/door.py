@@ -90,12 +90,15 @@ from common.hard_failure import load_hard_failure_policy  # noqa: E402
 from common.recovery import load_recovery_policy  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
 from common.stage import (  # noqa: E402
+    DEFAULT_CORPUS_FRAME_CONFIG_PATH,
     DEFAULT_WITNESS_CONTEXT_CONFIG_PATH,
     EXIT_COMPLETE,
     StageContext,
     adapter_recipe_for,
     load_fixture,
     run_config_bindings,
+    require_corpus_frame_shard,
+    load_corpus_frame_policy,
     run_stage,
     scenario_for,
     stage_parser,
@@ -1081,6 +1084,7 @@ def fixture_submission(args, registry) -> int:
         nuda_per_mille=args.nuda_per_mille,
         nuda_approval_ref=args.nuda_approval_ref,
     )
+    require_corpus_frame_shard(len(pages), bindings["sealed_config_digests"])
 
     # The door creates the run: it is the first thing that knows what arrived, so
     # it is the only stage that can bind a run id to its inputs. The manifest
@@ -1223,6 +1227,8 @@ def real_submission(args, registry) -> int:
         nuda_per_mille=args.nuda_per_mille,
         nuda_approval_ref=args.nuda_approval_ref,
     )
+    # Real ingress binds the same bounded shard policy before its RunTree exists.
+    require_corpus_frame_shard(len(sources), bindings["sealed_config_digests"])
     tree = RunTree.create(
         run_root,
         args.run_id,
@@ -1319,6 +1325,7 @@ def _real_bindings(
     recovery_policy,
     hard_failure_policy,
     armarium_formats_config_path=DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH,
+    corpus_frame_config_path=DEFAULT_CORPUS_FRAME_CONFIG_PATH,
     *,
     designator_padding_config_sha256: str,
     witness_context: str = "named",
@@ -1348,6 +1355,9 @@ def _real_bindings(
     adapter_recipes = dict(sorted(models.adapter_recipes.items()))
     adapter_recipes[DOOR] = REAL_DOOR_ADAPTER_REVISION
     armarium_formats_digest, armarium_formats = bind_armarium_formats(armarium_formats_config_path)
+    corpus_frame_policy, corpus_frame_config_sha256 = load_corpus_frame_policy(
+        corpus_frame_config_path
+    )
     return {
         "witness_chairs": list(models.witness_chairs),
         "config_digest": digest_of(
@@ -1369,6 +1379,8 @@ def _real_bindings(
                 "recovery_policy": recovery_policy,
                 "hard_failure_policy": hard_failure_policy,
                 "designator_padding_config_sha256": designator_padding_config_sha256,
+                "corpus_frame_policy": corpus_frame_policy,
+                "corpus_frame_config_sha256": corpus_frame_config_sha256,
                 "models": models.to_record(),
                 # Spec 08's run-level settings, bound on the real path exactly as
                 # `run_config_bindings` binds them on the fixture path: a resumed
@@ -1384,6 +1396,7 @@ def _real_bindings(
             }
         ),
         "adapter_recipes": adapter_recipes,
+        "sealed_config_digests": {"corpus-frame-shard": corpus_frame_config_sha256},
     }
 
 

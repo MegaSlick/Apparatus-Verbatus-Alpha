@@ -21,6 +21,19 @@ class SchemaRefusal(ContractError):
     """
 
 
+class ReservedKindRefusal(SchemaRefusal):
+    """A producer attempted to mint a kind whose owning branch has not landed.
+
+    Reserving a name is deliberately an active contract boundary: an unused name
+    proves nothing, whereas this refusal stops a premature producer from making
+    an artifact that later consumers would be tempted to reinterpret.
+    """
+
+
+class ReceiptVersionMismatch(SchemaRefusal):
+    """A receipt label does not describe the coverage facts it carries."""
+
+
 class IdentityRefusal(SchemaRefusal):
     """An identity does not verify against the bindings it claims.
 

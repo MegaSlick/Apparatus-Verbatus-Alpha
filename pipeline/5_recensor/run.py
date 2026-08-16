@@ -110,6 +110,33 @@ def chair_outcomes(context, act_id: str) -> dict[str, str]:
     }
 
 
+def act_attachment_facts(context, act_id: str) -> dict[str, dict]:
+    """Read R0's derived attachment record before counting the witness floor."""
+    records = artifacts_for(context, ATTESTATORES, "act-attachment", act_id)
+    if not records:
+        raise FatalAccounting(f"act {act_id} has no derived act-attachment record")
+    records.sort(key=lambda record: record.get("payload", {}).get("attempt_ordinal", 0))
+    payload = records[-1].get("payload")
+    entries = payload.get("attachments") if isinstance(payload, dict) else None
+    if not isinstance(entries, list):
+        raise FatalAccounting(f"act {act_id} has malformed derived act-attachment payload")
+    facts: dict[str, dict] = {}
+    for entry in entries:
+        if not isinstance(entry, dict) or not isinstance(entry.get("chair"), str):
+            raise FatalAccounting(f"act {act_id} has malformed derived act-attachment entry")
+        chair = entry["chair"]
+        if chair in facts or not isinstance(entry.get("attached"), bool):
+            raise FatalAccounting(f"act {act_id} has ambiguous derived act-attachment facts")
+        health = entry.get("content_health")
+        truncated = health.get("truncated") if isinstance(health, dict) else None
+        facts[chair] = {
+            "attached": entry["attached"],
+            "truncated": truncated,
+            "health_unrecorded": truncated is None,
+        }
+    return facts
+
+
 def blank_corroboration(
     coverage: dict, outcomes: dict[str, str], *, witness_uncovered: bool = False
 ) -> list[str] | None:
@@ -186,7 +213,7 @@ def validate_chair_coverage(context, act_id: str, floor: int) -> dict[str, objec
             f"which this run was not sealed with. `run.json` names its witness "
             "chairs and nothing may add one after the seal"
         )
-    return witness_coverage(outcomes, floor)
+    return witness_coverage(outcomes, floor, attachments=act_attachment_facts(context, act_id))
 
 
 def preflight_witness_denominator(context, floor: int) -> None:

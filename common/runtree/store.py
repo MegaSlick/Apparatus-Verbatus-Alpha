@@ -77,7 +77,13 @@ RECENSOR_PARTITION_RECEIPT_FILE: Final = "run-health/recensor-partition-receipt.
 
 # The facts a run id is bound to. Changing any of them means this is a different
 # run wearing an old name, and reuse is refused rather than resumed.
-_BOUND_FIELDS: Final = ("source_manifest", "config_digest", "adapter_recipes", "witness_chairs")
+_BOUND_FIELDS: Final = (
+    "source_manifest",
+    "config_digest",
+    "adapter_recipes",
+    "witness_chairs",
+    "corpus_frame_membership",
+)
 _INGRESS_FIELD: Final = "ingress"
 
 # What a filesystem that will not hard-link answers with. Named so `_atomic_create`
@@ -160,6 +166,7 @@ class RunTree:
         config_digest: str,
         adapter_recipes: dict[str, str],
         witness_chairs: list[str],
+        corpus_frame_membership: dict[str, str] | None = None,
         ingress: dict[str, Any] | None = None,
         render_settings: dict[str, Any] | None = None,
     ) -> "RunTree":
@@ -193,6 +200,8 @@ class RunTree:
                 "ordinal names one page, so a repeat leaves the run unable to say "
                 "how many pages it was given"
             )
+        membership = corpus_frame_membership or _default_corpus_frame_membership(source_manifest)
+        _validate_corpus_frame_membership(membership)
         authority = {
             "schema": SCHEMA_LABEL,
             "run_id": tree.run_id,
@@ -202,6 +211,7 @@ class RunTree:
             "config_digest": config_digest,
             "adapter_recipes": dict(sorted(adapter_recipes.items())),
             "witness_chairs": sorted(witness_chairs),
+            "corpus_frame_membership": membership,
         }
         if ingress is not None:
             authority[_INGRESS_FIELD] = ingress
@@ -248,7 +258,6 @@ class RunTree:
                 ) from None
             return tree
         return tree
-
     def read_run(self) -> dict[str, Any]:
         """The run authority, refused if it was edited after it was sealed."""
         run_file = self.root / RUN_FILE
@@ -1007,6 +1016,30 @@ def _is_sha256(value: Any) -> bool:
         and len(value) == 64
         and all(character in "0123456789abcdef" for character in value)
     )
+
+
+def _default_corpus_frame_membership(source_manifest: list[dict[str, Any]]) -> dict[str, str]:
+    """Bind even direct RunTree callers to the one frame they supplied."""
+    pages = [
+        {"ordinal": page.get("ordinal"), "sha256": page.get("sha256")}
+        for page in sorted(source_manifest, key=lambda page: page.get("ordinal", 0))
+    ]
+    page_digest = digest_bytes(canonical_bytes(pages))
+    return {
+        "frame_digest": digest_bytes(canonical_bytes({"pages": pages})),
+        "page_digest": page_digest,
+        "seed": digest_bytes(canonical_bytes({"page_digest": page_digest, "purpose": "frame"})),
+    }
+
+
+def _validate_corpus_frame_membership(membership: Any) -> None:
+    if not isinstance(membership, dict) or set(membership) != {"frame_digest", "page_digest", "seed"}:
+        raise SchemaRefusal(
+            "corpus_frame_membership must be the closed {frame_digest, page_digest, seed} record"
+        )
+    for field, value in membership.items():
+        if not _is_sha256(value):
+            raise SchemaRefusal(f"corpus_frame_membership.{field} is not a sha256 digest")
 
 
 def _receipt_reference(value: RunReceiptReference | dict[str, str]) -> RunReceiptReference:

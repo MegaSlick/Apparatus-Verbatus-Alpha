@@ -2708,7 +2708,9 @@ def test_repeating_the_identical_command_leaves_every_byte_unchanged(tmp_path):
     assert orchestrate(root, "r", "happy").returncode == 0
     before = snapshot(root)
 
-    assert len(before) == 54
+    # R0 adds two retained page Testimonia and two derived act attachments to
+    # the happy walking skeleton; repeatability still compares every byte.
+    assert len(before) == 58
     assert semantic_snapshot_digest(root) == HAPPY_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "happy").returncode == 0
     after = snapshot(root)
@@ -2753,7 +2755,9 @@ def test_repeating_the_review_scenario_also_changes_nothing(tmp_path):
     assert orchestrate(root, "r", "review").returncode == 3
     before = snapshot(root)
 
-    assert len(before) == 58
+    # R0 adds the same four retained page/attachment artifacts before review's
+    # recovery loop; its append-only invariant is unchanged.
+    assert len(before) == 62
     assert semantic_snapshot_digest(root) == REVIEW_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "review").returncode == 3
     assert snapshot(root) == before
@@ -2984,10 +2988,10 @@ def test_the_capability_scenario_leaves_one_chair_uncompared_while_happy_compare
     with witnesses rather than to read ink."
 
     Spec 07's fixture declares that capability on chair 2 of act a1 in the
-    dedicated `witness-capabilities` scenario. The row there says `unknown` with
-    its reason and is exactly one of three chairs. The reference happy run keeps
-    the ordinary declarations, so all three chairs are compared and its dissent
-    record remains able to expose a parroting reader across the full set.
+    dedicated `witness-capabilities` scenario. R0 additionally leaves both
+    page-witness chairs unknown until R4 provides act-anchored comparison views.
+    The reference happy run therefore has those two honest unknown rows while
+    its act-scoped chair remains comparable.
     """
     root = tmp_path / "runs"
     result = orchestrate(root, "r", "witness-capabilities")
@@ -3002,7 +3006,7 @@ def test_the_capability_scenario_leaves_one_chair_uncompared_while_happy_compare
     assert set(by_chair) == {"attestator_1", "attestator_2", "attestator_3"}
     assert by_chair["attestator_2"]["compared"] == "unknown"
     assert "cannot be reduced to a plain comparison view" in by_chair["attestator_2"]["reason"]
-    assert [row["compared"] for row in reading["payload"]["dissent"]].count("unknown") == 1
+    assert [row["compared"] for row in reading["payload"]["dissent"]].count("unknown") == 3
 
     testimonium = next(
         record
@@ -3032,7 +3036,10 @@ def test_the_capability_scenario_leaves_one_chair_uncompared_while_happy_compare
         "attestator_2",
         "attestator_3",
     }
-    assert all(row["compared"] != "unknown" for row in happy_dissent)
+    assert {row["chair"] for row in happy_dissent if row["compared"] == "unknown"} == {
+        "attestator_1",
+        "attestator_3",
+    }
 
 
 def test_a_delivered_act_still_links_back_to_the_exact_ink(review_run):

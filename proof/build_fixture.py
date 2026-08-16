@@ -295,6 +295,9 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
         f"fixture_id = {toml_string(FIXTURE_ID)}",
         "# Model chairs, witness floor, and serving recipes are owned by",
         "# config/models.toml. This fixture contains only synthetic fixture data.",
+        "# R0 declares page witnesses here; the Attestatores derives their page",
+        "# Testimonia and fixture-span act attachments in the same invocation.",
+        'page_witness_chairs = ["attestator_1", "attestator_3"]',
     ]
 
     for ordinal in sorted(rendered):

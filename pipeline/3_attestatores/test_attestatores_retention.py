@@ -688,7 +688,9 @@ def test_a_wiped_attempt_layer_holds_rather_than_silently_restarting_history(tmp
     )
     manifest = tree.resolve(tree.manifest_path(ATTESTATORES))
     stored = json.loads(manifest.read_text(encoding="utf-8"))
-    assert len(stored["artifacts"]) == 7
+    # R0 also retains page-scoped Testimonia and derived act attachments; the
+    # history invariant here is specifically the seven act-scoped attempts.
+    assert len([entry for entry in stored["artifacts"] if entry["kind"] == "testimonium"]) == 7
     assert any(record["payload"]["attempt_ordinal"] == 2 for record in _testimonia(tree))
 
     shutil.rmtree(tree.resolve("3_attestatores/artifacts"))
@@ -922,7 +924,7 @@ def test_no_self_report_can_reach_a_coverage_count_or_an_outcome_class():
     parameter anywhere on that boundary through which a witness's claim about
     itself could reach a count or a class."""
     parameters = inspect.signature(witness_coverage).parameters
-    assert set(parameters) == {"chair_outcomes", "configured_floor"}
+    assert set(parameters) == {"chair_outcomes", "configured_floor", "attachments"}
     assert attestatores.content_health.__doc__ is not None
     assert "witness_reported" not in inspect.signature(attestatores.content_health).parameters
 

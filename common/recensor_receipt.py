@@ -12,11 +12,12 @@ from __future__ import annotations
 from typing import Any, Final
 
 from common.contracts.canonical import self_hash, verify_self_hash
-from common.contracts.errors import FatalAccounting, SchemaRefusal
+from common.contracts.errors import FatalAccounting, ReceiptVersionMismatch, SchemaRefusal
 from common.contracts.outcomes import OutcomeClass, classify
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, RECENSOR
 
 RECENSOR_PARTITION_RECEIPT_SCHEMA: Final = "recensor-partition-receipt.v1"
+RECENSOR_PARTITION_RECEIPT_SCHEMA_V2: Final = "recensor-partition-receipt.v2"
 RECENSOR_PARTITION_RECEIPT_SCOPE: Final = "proposal-acts-and-configured-witnesses"
 _PARTITION_KEYS: Final = tuple(klass.value for klass in OutcomeClass)
 
@@ -39,7 +40,7 @@ def build_recensor_partition_receipt(
         by_partition[item["partition_class"]] += 1
     reasons = _reasons(checked_items)
     record: dict[str, Any] = {
-        "schema": RECENSOR_PARTITION_RECEIPT_SCHEMA,
+        "schema": RECENSOR_PARTITION_RECEIPT_SCHEMA_V2,
         "run_id": run_id,
         "config_digest": config_digest,
         "scope": RECENSOR_PARTITION_RECEIPT_SCOPE,
@@ -72,7 +73,10 @@ def validate_recensor_partition_receipt(record: Any) -> dict[str, Any]:
     }
     if not isinstance(record, dict) or set(record) != required:
         raise SchemaRefusal("Recensor partition receipt has the wrong closed schema")
-    if record["schema"] != RECENSOR_PARTITION_RECEIPT_SCHEMA or not verify_self_hash(record):
+    if record["schema"] not in {
+        RECENSOR_PARTITION_RECEIPT_SCHEMA,
+        RECENSOR_PARTITION_RECEIPT_SCHEMA_V2,
+    } or not verify_self_hash(record):
         raise SchemaRefusal("Recensor partition receipt has an invalid schema or self-hash")
     if (
         not isinstance(record["run_id"], str)
@@ -90,7 +94,7 @@ def validate_recensor_partition_receipt(record: Any) -> dict[str, Any]:
     previous_act_id = ""
     by_partition = {key: 0 for key in _PARTITION_KEYS}
     for item in record["items"]:
-        _validate_item(item)
+        _validate_item(item, schema=record["schema"])
         act_id = item["act_id"]
         if not act_id or act_id <= previous_act_id:
             raise SchemaRefusal(
@@ -108,7 +112,7 @@ def validate_recensor_partition_receipt(record: Any) -> dict[str, Any]:
     return record
 
 
-def _validate_item(item: Any) -> None:
+def _validate_item(item: Any, *, schema: str = RECENSOR_PARTITION_RECEIPT_SCHEMA_V2) -> None:
     required = {
         "act_id",
         "act_key",
@@ -138,10 +142,12 @@ def _validate_item(item: Any) -> None:
             f"derives {expected_class!r}"
         )
     _validate_reference(item["review_ref"], "review reference")
-    _validate_coverage(item["coverage"])
+    _validate_coverage(item["coverage"], schema=schema)
 
 
-def _validate_coverage(coverage: Any) -> None:
+def _validate_coverage(
+    coverage: Any, *, schema: str = RECENSOR_PARTITION_RECEIPT_SCHEMA_V2
+) -> None:
     required = {
         "configured",
         "floor",
@@ -150,7 +156,16 @@ def _validate_coverage(coverage: Any) -> None:
         "under_witnessed",
         "unresolved_chairs",
     }
-    if not isinstance(coverage, dict) or set(coverage) != required:
+    granularity_fields = {"page_granularity_only", "health_unrecorded", "shortfalls"}
+    if not isinstance(coverage, dict):
+        raise SchemaRefusal("Recensor partition receipt has malformed witness coverage")
+    present_granularity = set(coverage) & granularity_fields
+    if schema == RECENSOR_PARTITION_RECEIPT_SCHEMA and present_granularity:
+        raise ReceiptVersionMismatch(
+            "receipt schema v1 cannot carry page-granularity coverage facts; use receipt version v2"
+        )
+    allowed = required | granularity_fields
+    if set(coverage) - allowed or not required <= set(coverage):
         raise SchemaRefusal("Recensor partition receipt has malformed witness coverage")
     # One fault, one message. These were a single `or` chain of about a dozen
     # independent checks all raising the same sentence, so a refusal on a real
@@ -218,10 +233,22 @@ def _validate_coverage(coverage: Any) -> None:
             f"Recensor partition receipt's under_witnessed is {coverage['under_witnessed']!r}, "
             "not a boolean"
         )
-    if coverage["under_witnessed"] != (by_class[OutcomeClass.COMPLETED.value] < coverage["floor"]):
+    page_only = coverage.get("page_granularity_only", 0)
+    act_completed = by_class[OutcomeClass.COMPLETED.value] - page_only
+    if page_only > by_class[OutcomeClass.COMPLETED.value]:
+        raise SchemaRefusal("Recensor partition receipt has more page-only contributions than completed chairs")
+    # Standalone schema callers may be validating one newly introduced field
+    # at a time; only a complete v2 coverage record claims the derived floor.
+    has_complete_granularity = granularity_fields <= set(coverage)
+    expected_under_witnessed = (
+        act_completed < coverage["floor"]
+        if has_complete_granularity
+        else by_class[OutcomeClass.COMPLETED.value] < coverage["floor"]
+    )
+    if (not present_granularity or has_complete_granularity) and coverage["under_witnessed"] != expected_under_witnessed:
         raise SchemaRefusal(
             f"Recensor partition receipt claims under_witnessed="
-            f"{coverage['under_witnessed']}, but {by_class[OutcomeClass.COMPLETED.value]} "
+            f"{coverage['under_witnessed']}, but {act_completed} act-level completed read(s) "
             f"completed read(s) against a floor of {coverage['floor']} says otherwise"
         )
     # Rederived from the outcome counts rather than compared field by field: the
@@ -240,6 +267,24 @@ def _validate_coverage(coverage: Any) -> None:
             f"Recensor partition receipt's by_class {by_class} does not fall out of its own "
             f"per-outcome counts, which classify as {derived_by_class}"
         )
+    if schema == RECENSOR_PARTITION_RECEIPT_SCHEMA_V2:
+        # The unit validator remains permissive for partial records so a caller
+        # can record one new fact at a time; writers always emit all three.
+        page_only = coverage.get("page_granularity_only", 0)
+        health_unrecorded = coverage.get("health_unrecorded", 0)
+        shortfalls = coverage.get("shortfalls", {"failed": 0, "truncated": 0, "unaligned": 0})
+        for field, value in (
+            ("page_granularity_only", page_only),
+            ("health_unrecorded", health_unrecorded),
+        ):
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise SchemaRefusal(f"Recensor partition receipt has invalid {field} count")
+        if (
+            not isinstance(shortfalls, dict)
+            or set(shortfalls) != {"failed", "truncated", "unaligned"}
+            or any(not isinstance(value, int) or isinstance(value, bool) or value < 0 for value in shortfalls.values())
+        ):
+            raise SchemaRefusal("Recensor partition receipt has malformed shortfalls")
 
 
 def _validate_reference(reference: Any, what: str) -> None:
@@ -279,7 +324,8 @@ def _reasons(items: list[dict[str, Any]]) -> list[str]:
         if coverage["under_witnessed"]:
             reasons.append(
                 f"act {act_id} is under-witnessed "
-                f"({coverage['by_class']['completed']} of a floor of {coverage['floor']})"
+                f"({coverage['by_class']['completed'] - coverage.get('page_granularity_only', 0)} "
+                f"act-level reads of a floor of {coverage['floor']})"
             )
         if coverage["unresolved_chairs"]:
             reasons.append(

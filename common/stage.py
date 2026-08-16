@@ -94,6 +94,7 @@ MAX_NUDA_PER_MILLE: Final = 1000
 DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH = (
     Path(__file__).resolve().parents[1] / "config" / "designator_padding.toml"
 )
+DEFAULT_CORPUS_FRAME_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "corpus_frame.toml"
 DEFAULT_SERVING_RECIPES_CONFIG_PATH = (
     Path(__file__).resolve().parents[1] / "config" / "serving_recipes.toml"
 )
@@ -710,6 +711,7 @@ def run_config_bindings(
     nuda_approval_ref: str = "",
     serving_recipes_config_path: str | Path = DEFAULT_SERVING_RECIPES_CONFIG_PATH,
     pod_placement_config_path: str | Path = DEFAULT_POD_PLACEMENT_CONFIG_PATH,
+    corpus_frame_config_path: str | Path = DEFAULT_CORPUS_FRAME_CONFIG_PATH,
 ) -> dict[str, Any]:
     """The three `run.json` bindings, and everything that shapes them.
 
@@ -744,6 +746,9 @@ def run_config_bindings(
             "the Designator padding configuration binding at "
             f"{designator_padding_config_path} could not be read"
         ) from error
+    corpus_frame_policy, corpus_frame_config_digest = load_corpus_frame_policy(
+        corpus_frame_config_path
+    )
     armarium_formats_digest, armarium_formats = bind_armarium_formats(armarium_formats_config_path)
     try:
         serving_recipes_config_digest = digest_bytes(Path(serving_recipes_config_path).read_bytes())
@@ -782,6 +787,8 @@ def run_config_bindings(
                 "models": models.to_record(),
                 "pdf_render_config_sha256": pdf_render_config_digest,
                 "designator_padding_config_sha256": padding_config_digest,
+                "corpus_frame_policy": corpus_frame_policy,
+                "corpus_frame_config_sha256": corpus_frame_config_digest,
                 "pdf_target_dpi_override": pdf_target_dpi,
                 "armarium_formats_config_sha256": armarium_formats_digest,
                 "armarium_formats": armarium_formats.to_record(),
@@ -814,9 +821,45 @@ def run_config_bindings(
         # not actually wired shut. Not this stage's window to close.
         "sealed_config_digests": {
             "designator-padding": padding_config_digest,
+            "corpus-frame-shard": corpus_frame_config_digest,
         },
         "armarium_formats": armarium_formats,
     }
+
+
+def load_corpus_frame_policy(path: str | Path) -> tuple[dict[str, int], str]:
+    """Read R0's bounded corpus-frame policy from the bytes a run seals."""
+    try:
+        raw = Path(path).read_bytes()
+        record = tomllib.loads(raw.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+        raise ContractError(f"corpus-frame shard configuration at {path} could not be read") from error
+    if set(record) != {"max_pages_per_shard"}:
+        raise ContractError("corpus-frame shard configuration has the wrong closed schema")
+    limit = record["max_pages_per_shard"]
+    if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 1000:
+        raise ContractError("corpus-frame max_pages_per_shard must be an integer in [1, 1000]")
+    return {"max_pages_per_shard": limit}, digest_bytes(raw)
+
+
+def require_corpus_frame_shard(
+    page_count: int,
+    sealed_config_digests: Mapping[str, str],
+    path: str | Path = DEFAULT_CORPUS_FRAME_CONFIG_PATH,
+) -> None:
+    """Point-of-use recheck for the sealed ≤1,000-page shard boundary."""
+    policy, observed = load_corpus_frame_policy(path)
+    bound = sealed_config_digests.get("corpus-frame-shard")
+    if bound != observed:
+        raise ContractError(
+            "the corpus-frame shard configuration changed between run binding and its "
+            "run-creation check; a shard may not be created under unsealed bytes"
+        )
+    if page_count > policy["max_pages_per_shard"]:
+        raise ContractError(
+            f"corpus frame has {page_count} pages, above its sealed shard limit "
+            f"of {policy['max_pages_per_shard']}"
+        )
 
 
 # The roles the pipeline addresses by name, beside the Attestator witnesses.

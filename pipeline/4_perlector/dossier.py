@@ -270,6 +270,7 @@ def build_dossier(
     regime: str,
     page_renders: list[dict[str, Any]],
     witness_context: dict[str, dict[str, str]],
+    act_attachment: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Assemble one act's dossier. Deterministic: the same evidence in any order
     produces identical bytes, and nothing in the result may express a
@@ -322,6 +323,8 @@ def build_dossier(
         "page_renders": page_render_rows,
         "testimonia": testimonia_rows,
     }
+    if act_attachment is not None:
+        dossier["act_attachment"] = act_attachment
     # Swept before the digest is taken: a preference-bearing field sealed into
     # the digest is already in the record by the time anyone could object. This
     # is the guard standing over GOVERNANCE 3, so it runs on the production path
@@ -375,6 +378,7 @@ def build_reader_dossier(
     regime: str,
     page_renders: list[dict[str, Any]],
     witness_context: dict[str, dict[str, str]],
+    act_attachment: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], dict[str, list[bytes]]]:
     """Build the persisted dossier and its transient, digest-checked pixels."""
     dossier = build_dossier(
@@ -386,6 +390,7 @@ def build_reader_dossier(
         regime=regime,
         page_renders=page_renders,
         witness_context=witness_context,
+        act_attachment=act_attachment,
     )
     delivered_pixels = {
         "region_images": _delivered_images(context, dossier["regions"], kind="region"),

@@ -28,6 +28,7 @@ and zero dissent there is the correct output.
 
 import sys
 from pathlib import Path
+from typing import Any
 from typing import Final
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -199,6 +200,44 @@ def testimonia_of(context, act_id: str, proposal_regions: list[dict]) -> list[di
             "run was not sealed with"
         )
     return current
+
+
+def act_attachment_view(context, act_id: str) -> dict[str, Any]:
+    """Validate the R0 attachment that makes a page witness act-addressable.
+
+    R4 owns alignment; until then this is a declared span view, retained beside
+    the page Testimonium and surfaced in the dossier rather than silently
+    treating page completion as an act-level read.
+    """
+    entries = [
+        entry
+        for entry in context.tree.build_manifest(ATTESTATORES)["artifacts"]
+        if entry["kind"] == "act-attachment" and entry["subject_id"] == act_id
+    ]
+    if not entries:
+        raise FatalAccounting(f"act {act_id} has no act-attachment record")
+    records = [
+        context.tree.read_artifact(ATTESTATORES, "act-attachment", entry["artifact_id"])
+        for entry in entries
+    ]
+    records.sort(key=lambda record: record.get("payload", {}).get("attempt_ordinal", 0))
+    record = records[-1]
+    payload = record.get("payload")
+    attachments = payload.get("attachments") if isinstance(payload, dict) else None
+    if not isinstance(attachments, list):
+        raise SchemaRefusal("an act-attachment record has no attachment list")
+    page_witness_count = 0
+    for attachment in attachments:
+        if not isinstance(attachment, dict) or not isinstance(attachment.get("chair"), str):
+            raise SchemaRefusal("an act-attachment record has a malformed attachment")
+        if attachment.get("page_witness") is True:
+            page_witness_count += 1
+    return {
+        "reference": context.artifact_ref(ATTESTATORES, "act-attachment", record["artifact_id"]),
+        # A blinded dossier may show that page evidence exists, but not the
+        # chair names embedded in its retained attachment artifact.
+        "page_witness_count": page_witness_count,
+    }
 
 
 def verify_region(context, region: dict) -> dict:
@@ -501,7 +540,7 @@ def validate_reading_payload(
             "a Perlector reading by a configured chair records no resolved identity"
         )
     reading_dossier = payload["dossier"]
-    if not isinstance(reading_dossier, dict) or set(reading_dossier) != {
+    dossier_fields = {
         "act_id",
         "act_key",
         "witness_regime",
@@ -509,7 +548,11 @@ def validate_reading_payload(
         "page_renders",
         "testimonia",
         "dossier_digest",
-    }:
+    }
+    if not isinstance(reading_dossier, dict) or set(reading_dossier) not in (
+        dossier_fields,
+        dossier_fields | {"act_attachment"},
+    ):
         raise SchemaRefusal("a Perlector reading carries no closed dossier record")
     if reading_dossier["act_key"] != payload["act_key"]:
         raise SchemaRefusal("a Perlector reading disagrees with its dossier's act key")
@@ -519,6 +562,15 @@ def validate_reading_payload(
     if reading_dossier["dossier_digest"] != digest_of(dossier_body):
         raise SchemaRefusal("a Perlector dossier digest does not match the dossier it seals")
     dossier_module.assert_no_order_bearing_field(dossier_body)
+    if "act_attachment" in reading_dossier:
+        attachment = reading_dossier["act_attachment"]
+        if (
+            not isinstance(attachment, dict)
+            or set(attachment) != {"reference", "page_witness_count"}
+            or not isinstance(attachment["reference"], dict)
+            or not isinstance(attachment["page_witness_count"], int)
+        ):
+            raise SchemaRefusal("a Perlector dossier has malformed act-attachment evidence")
     dossier_testimonia = reading_dossier["testimonia"]
     if not isinstance(dossier_testimonia, list):
         raise SchemaRefusal("a Perlector dossier has no Testimonium list")
@@ -779,6 +831,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         # up to the fold would be truncated, which is a failure and not an output.
         bases = [verify_region(context, region) for region in regions]
         testimonia = testimonia_of(context, act_id, proposal_regions)
+        attachment_view = act_attachment_view(context, act_id)
 
         # Which regions any witness actually saw. Ink uncovered by a recovery
         # recrop was never shown to a witness, and saying so is the difference
@@ -821,6 +874,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             regime=context.witness_context,
             page_renders=page_renders,
             witness_context=witness_context_table,
+            act_attachment=attachment_view,
         )
         # Built before the reader is called, from the dossier the reader is
         # about to be shown, so what is recorded is the prompt this reading was
@@ -897,7 +951,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             outcome=outcome,
             attempt=attempt_id(act_id, "perlegere", ordinal),
             inputs=_reading_image_inputs(context, bases, page_renders)
-            + list(testimonium_references.values()),
+            + list(testimonium_references.values())
+            + [attachment_view["reference"]],
             payload=payload,
         )
         read += 1

@@ -226,6 +226,15 @@ def dissent_against(reading: str, testimonia: list[dict]) -> list[dict]:
                 }
             )
             continue
+        if record["payload"].get("page_witness") is True:
+            rows.append(
+                {
+                    "chair": chair,
+                    "compared": "unknown",
+                    "reason": "page witness has no act-anchored comparison view before R4 alignment",
+                }
+            )
+            continue
         pairs = len(reading) * len(reported)
         if pairs > MAX_COMPARISON_CHARACTER_PAIRS:
             rows.append(

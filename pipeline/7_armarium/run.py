@@ -265,6 +265,19 @@ def export_witnesses(context, reading: dict, act_id: str) -> list[dict]:
     if not isinstance(testimonia, list) or not testimonia:
         raise FatalAccounting("an established Perlectio has no witness basis to retain at export")
 
+    dossier = payload.get("dossier") if isinstance(payload, dict) else None
+    attachment = dossier.get("act_attachment") if isinstance(dossier, dict) else None
+    if attachment is not None:
+        reference = attachment.get("reference") if isinstance(attachment, dict) else None
+        if not isinstance(reference, dict) or reference not in reading.get("inputs", []):
+            raise FatalAccounting("an established Perlectio has no direct act-attachment evidence")
+        context.tree.read_artifact_reference(
+            reference,
+            stage=ATTESTATORES,
+            kind="act-attachment",
+            subject_id=act_id,
+        )
+
     witnesses: list[dict] = []
     seen_chairs: set[str] = set()
     for item in testimonia:
