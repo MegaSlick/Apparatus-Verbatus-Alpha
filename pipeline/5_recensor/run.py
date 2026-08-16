@@ -19,6 +19,7 @@ characters, and no count of chairs can change a reading.
     python pipeline/5_recensor/run.py --run-root <dir> --run-id <id>
 """
 
+import copy
 import sys
 from pathlib import Path
 
@@ -1000,6 +1001,17 @@ def testimony_content_findings(context) -> dict[int, dict]:
     return findings
 
 
+def testimony_content_for_page(findings: dict[int, dict], ordinal: int) -> dict:
+    """Return one review's private copy of a page-level content finding.
+
+    The measurement is intentionally computed once per page, but review payloads
+    are act-scoped consumers. Giving each consumer its own nested object prevents
+    an in-process mutation made while preparing one act from changing a sibling
+    act's still-to-be-published evidence.
+    """
+    return copy.deepcopy(findings.get(ordinal, {"by_chair": {}, "shortfall": False}))
+
+
 def _reconcile_reading_regions(reading: dict, regions: list[dict], act_id: str) -> list[dict]:
     """Require a completed Perlectio to name exactly every region currently cut."""
     basis = reading_basis_regions(reading, f"reading of {act_id}")
@@ -1185,9 +1197,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         act_id, act_key = act["act_id"], act["act_key"]
 
         coverage = validate_chair_coverage(context, act_id, floor)
-        content_coverage = content_findings.get(
-            act["page_ordinal"], {"by_chair": {}, "shortfall": False}
-        )
+        content_coverage = testimony_content_for_page(content_findings, act["page_ordinal"])
         geometry_coverage = geometry_inputs.get(
             act["page_ordinal"],
             {"ink_measurable": False, "residual_component_count": 0, "residual_act_count": 0},

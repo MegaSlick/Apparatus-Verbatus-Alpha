@@ -73,3 +73,27 @@ def test_a_non_reading_page_testimonium_still_has_no_content_to_compare():
     context = _context(_page_testimonium(outcome="failed"))
 
     assert RUN.testimony_content_findings(context) == {}
+
+
+def test_each_act_gets_a_private_copy_of_its_pages_content_finding():
+    """V3: mutating one act's nested payload cannot corrupt a sibling review."""
+    findings = {
+        1: {
+            "by_chair": {
+                "attestator_1": {
+                    "attached_spans": [{"start": 0, "end": 5, "act_id": "act-1"}],
+                    "uncovered_non_whitespace_offsets": [5],
+                }
+            },
+            "shortfall": True,
+        }
+    }
+
+    first = RUN.testimony_content_for_page(findings, 1)
+    sibling = RUN.testimony_content_for_page(findings, 1)
+    first["by_chair"]["attestator_1"]["uncovered_non_whitespace_offsets"].clear()
+    first["shortfall"] = False
+
+    assert sibling["by_chair"]["attestator_1"]["uncovered_non_whitespace_offsets"] == [5]
+    assert sibling["shortfall"] is True
+    assert findings[1]["by_chair"]["attestator_1"]["uncovered_non_whitespace_offsets"] == [5]
