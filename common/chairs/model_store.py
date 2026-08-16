@@ -430,7 +430,24 @@ def verify_store(store_root: str | Path) -> dict[str, Any]:
     inventory = derived_inventory(record)
     for item in record["artifacts"]:
         if item["state"] == "pending-fetch":
-            # Nothing to verify and nothing to claim: the absence is already
+            prefix = "hf" if item["source"] == "huggingface" else "local"
+            possible_evidence = (
+                root / prefix / item["artifact"],
+                root / "manifests" / f"{item['artifact']}.json",
+            )
+            found = [
+                path.relative_to(root).as_posix()
+                for path in possible_evidence
+                if path.exists() or path.is_symlink()
+            ]
+            if found:
+                raise DigestMismatchRefusal(
+                    item["artifact"],
+                    "pending-fetch conflicts with existing acquisition evidence "
+                    f"{found}; not-yet-fetched cannot describe fetched, partially "
+                    "promoted, or fetched-and-lost bytes",
+                )
+            # Nothing exists to verify and nothing is claimed: the absence is
             # named in the record and travels out in the inventory's `pending`.
             continue
         manifest_path = _under(root, item["manifest"])

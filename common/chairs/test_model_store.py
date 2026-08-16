@@ -315,6 +315,13 @@ def test_download_record_update_preserves_both_immutable_versions(tmp_path):
         complete
     )
 
+    # A byte-valid rollback to the archived pending version cannot make the
+    # already-materialized snapshot become "not yet fetched" again.
+    (tmp_path / "download_record.json").write_bytes(canonical_bytes(pending))
+    assert load_download_record(tmp_path) == pending
+    with pytest.raises(DigestMismatchRefusal, match="existing acquisition evidence"):
+        verify_store(tmp_path)
+
 
 def test_fetched_artifact_cannot_be_relabelled_pending_fetch(tmp_path):
     record = _store(tmp_path)

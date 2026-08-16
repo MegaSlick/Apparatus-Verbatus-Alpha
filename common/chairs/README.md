@@ -107,7 +107,9 @@ bytes are not there yet. `verify_store` proves what exists and marks the derived
 inventory `complete: false` with every pending artifact named;
 `require_complete_store` is the door for a consumer that needs the whole roster
 on disk. A half-fetched store is therefore recordable and visibly partial rather
-than unrepresentable (GOVERNANCE 2).
+than unrepresentable (GOVERNANCE 2). A pending entry also refuses if its
+artifact-keyed snapshot or manifest exists, so replaying an older pending record
+cannot relabel acquired or lost bytes as “not yet fetched.”
 
 `require_store_artifact` preserves the three absence meanings at the consumer
 door: `pending-fetch` means not yet fetched, a `present` entry whose bytes are
