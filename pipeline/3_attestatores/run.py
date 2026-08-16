@@ -1426,13 +1426,21 @@ def publish_page_testimonia_and_attachments(
             anchor = anchors[0]
             page_texts[(page_ordinal, "chandra-anchor")] = anchor["html"]
             normalized_anchor = markup_text_view(anchor["html"])["text"]
+            # `lines` is declared in reading order (ARCHITECTURE: Chandra's own
+            # `ocr_layout` reading flow). Searching each line from where the
+            # previous one ended, rather than from the start of the page every
+            # time, means a phrase repeated across two acts on the same page
+            # (a formulaic register opening, most plainly) resolves to its own
+            # occurrence in order instead of both lines collapsing onto the
+            # first match `str.find` would return from position 0.
+            search_from = 0
             for line in anchor.get("lines", []):
                 if not isinstance(line, dict) or not isinstance(line.get("act_key"), str):
                     continue
                 source = line.get("text")
                 if not isinstance(source, str):
                     continue
-                start = normalized_anchor.find(source)
+                start = normalized_anchor.find(source, search_from)
                 act = next((item for item in page_acts if item["act_key"] == line["act_key"]), None)
                 if start >= 0 and act is not None:
                     anchor_ranges[(page_ordinal, act["act_id"])] = {
@@ -1440,6 +1448,7 @@ def publish_page_testimonia_and_attachments(
                         "end": start + len(source),
                         "bbox": {key: line.get(key) for key in ("x", "y", "w", "h")},
                     }
+                    search_from = start + len(source)
 
     for act in acts:
         entries: list[dict[str, Any]] = []
