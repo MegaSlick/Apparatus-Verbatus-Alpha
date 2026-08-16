@@ -7,7 +7,7 @@ to which anchor characters, or records that it cannot say so.
 
 from __future__ import annotations
 
-import html.parser
+import html
 import signal
 import tomllib
 import unicodedata
@@ -37,21 +37,6 @@ def _alarm(signum: int, frame: Any) -> None:
     raise _TimedOut()
 
 
-class _TextExtractor(html.parser.HTMLParser):
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self.parts: list[str] = []
-        self.offset_map: list[int] = []
-
-    def handle_data(self, data: str) -> None:
-        # HTMLParser exposes source offsets only per token.  The exact character
-        # source offsets are reconstructed by seeking this text from the prior
-        # end; XML/HTML markup is therefore named as loss, never counted as text.
-        start = self.getpos()[1]
-        self.parts.append(data)
-        self.offset_map.extend(range(start, start + len(data)))
-
-
 def markup_text_view(raw: str) -> dict[str, Any]:
     """Return plain text plus a raw-offset map and explicit stripping loss.
 
@@ -62,16 +47,14 @@ def markup_text_view(raw: str) -> dict[str, Any]:
     """
     if not isinstance(raw, str):
         raise SchemaRefusal("alignment input is not text")
-    parser = _TextExtractor()
-    try:
-        parser.feed(raw)
-        parser.close()
-    except Exception as error:  # HTML is intentionally permissive, but never invisible.
-        raise SchemaRefusal(f"markup comparison view could not be parsed: {error}") from error
-    # Rebuild exact raw offsets deterministically. HTMLParser's column is not an
-    # absolute source offset across lines, so token positions cannot be used as a
-    # map. This scanner is deliberately lexical: tags are omitted, entities are
-    # one visible character mapped to their opening ampersand.
+    # Deliberately lexical rather than `html.parser.HTMLParser`: HTMLParser
+    # exposes source offsets only per token, not per character, so its column
+    # cannot seed an exact raw-offset map (and, run first only to catch
+    # malformed markup as a refusal, it never actually raised on any input in
+    # this module's own testing -- HTMLParser is intentionally permissive, so
+    # that pass was dead code pretending to be a validation guarantee it did
+    # not provide). Tags are omitted; entities are one visible character
+    # mapped to their opening ampersand.
     plain: list[str] = []
     offsets: list[int] = []
     in_tag = False
@@ -86,8 +69,6 @@ def markup_text_view(raw: str) -> dict[str, Any]:
             if char == "&":
                 end = raw.find(";", i + 1)
                 if end != -1:
-                    import html
-
                     decoded = html.unescape(raw[i : end + 1])
                     plain.extend(decoded)
                     offsets.extend([i] * len(decoded))
