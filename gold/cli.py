@@ -12,10 +12,8 @@ from .core import (
     ingest_manual_pick,
     read_json,
     sample_stratified,
-    validate_layout,
-    validate_measurement,
-    validate_padding,
-    validate_sample,
+    validate_corpus,
+    validate_record,
     verify_stratified_selection,
     write_append_only,
 )
@@ -52,6 +50,9 @@ def main(argv: list[str] | None = None) -> int:
     verify.add_argument("--run", required=True)
     verify.add_argument("--catalog", required=True)
     verify.add_argument("--plan", required=True)
+    corpus = commands.add_parser("validate-corpus")
+    corpus.add_argument("directory")
+    corpus.add_argument("--run")
     validate = commands.add_parser("validate")
     validate.add_argument("record")
     validate.add_argument("--run")
@@ -75,21 +76,10 @@ def main(argv: list[str] | None = None) -> int:
             read_json(args.catalog),
             read_json(args.plan),
         )
+    elif args.command == "validate-corpus":
+        validate_corpus(_records_in(args.directory), args.run)
     else:
-        record = read_json(args.record)
-        schema = record.get("schema") if isinstance(record, dict) else None
-        validators = {
-            "gold-page-sample.v1": validate_sample,
-            "gold-page-layout.v1": validate_layout,
-            "gold-padding-rectangles.v1": validate_padding,
-            "gold-instrument-membership.v1": validate_measurement,
-        }
-        if schema not in validators:
-            parser.error("record schema is not a gold schema")
-        if schema in ("gold-page-sample.v1", "gold-page-layout.v1", "gold-padding-rectangles.v1"):
-            validators[schema](record, args.run)
-        else:
-            validators[schema](record)
+        validate_record(read_json(args.record), args.run)
     return 0
 
 

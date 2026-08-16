@@ -20,6 +20,7 @@ from gold.core import (
     ingest_manual_pick,
     sample_stratified,
     set_for_page,
+    validate_corpus,
     validate_layout,
     validate_measurement,
     validate_padding,
@@ -373,6 +374,84 @@ def test_bind_instrument_can_recheck_its_sample_against_run_authority(tmp_path):
     assert bind_instrument(forged, act, _sha("e"))["sample_digest"] == forged["sample_digest"]
     with pytest.raises(SchemaRefusal, match="outside the R0"):
         bind_instrument(forged, act, _sha("e"), path)
+
+
+def test_a_gold_corpus_assembled_across_two_frames_is_refused(tmp_path):
+    """Disjointness by construction holds inside one corpus frame, because `set` is
+    a function of that frame's seed — and the seed is derived from the frame's own
+    page digest. Add a page to the corpus and roughly half the pages change sides.
+    Records from before and after both validate against their own frame, so only a
+    corpus-level check can see that one page now sits in both sets."""
+    first, frame, pages = run_file(tmp_path)
+    wider = tmp_path / "wider.json"
+    extra = [*pages, {"ordinal": 9, "sha256": _sha("9")}]
+    source = [{"ordinal": page["ordinal"], "sha256": page["sha256"]} for page in extra]
+    page_digest = digest_bytes(canonical_bytes(source))
+    wider_frame = {
+        "page_digest": page_digest,
+        "frame_digest": digest_bytes(canonical_bytes({"pages": source})),
+        "seed": _sha("e"),
+    }
+    wider.write_text(
+        json.dumps({"source_manifest": extra, "corpus_frame_membership": wider_frame}),
+        encoding="utf-8",
+    )
+    flipped = [
+        page
+        for page in pages
+        if set_for_page(frame, page["sha256"]) != set_for_page(wider_frame, page["sha256"])
+    ]
+    assert flipped, "the two frames must disagree about some page for this to be a test"
+    page = {**flipped[0], "stratum": "adverse"}
+    before = ingest_manual_pick(
+        first,
+        {
+            "schema": MANUAL_PICK_SCHEMA,
+            "selection_basis": "picked before the corpus grew",
+            "page": page,
+            "set": set_for_page(frame, page["sha256"]),
+        },
+    )
+    after = ingest_manual_pick(
+        wider,
+        {
+            "schema": MANUAL_PICK_SCHEMA,
+            "selection_basis": "picked after the corpus grew",
+            "page": page,
+            "set": set_for_page(wider_frame, page["sha256"]),
+        },
+    )
+    assert before["set"] != after["set"]
+    assert validate_corpus([before]) and validate_corpus([after])
+    with pytest.raises(SchemaRefusal, match="different corpus frames"):
+        validate_corpus([before, after])
+
+
+def test_a_page_restratified_between_records_is_refused(tmp_path):
+    """The catalog is human-supplied and bound to no authority, so a page can be
+    described one way in the sample and another in a record embedding a
+    differently-drawn sample. Per-record validation cannot see it."""
+    path, frame, pages = run_file(tmp_path)
+    rows = catalog(pages)
+    drawn = sample_stratified(path, rows, plan_for(frame, rows))[0]
+    restratified = [
+        {**row, "stratum": "occluded"} if row["sha256"] == drawn["page"]["sha256"] else row
+        for row in rows
+    ]
+    other = next(
+        record
+        for record in sample_stratified(path, restratified, plan_for(frame, restratified))
+        if record["page"]["sha256"] == drawn["page"]["sha256"]
+    )
+    layout = {
+        "schema": LAYOUT_SCHEMA,
+        "sample": other,
+        "regions": [{"kind": "occlusion", "rect": {"x": 1, "y": 1, "w": 2, "h": 2}}],
+    }
+    layout["self_hash"] = self_hash(layout)
+    assert validate_sample(drawn, path) and validate_layout(layout, path)
+    with pytest.raises(SchemaRefusal, match="stratified as"):
+        validate_corpus([drawn, layout], path)
 
 
 def test_cli_verify_sampling_replays_what_the_sampler_wrote(tmp_path):

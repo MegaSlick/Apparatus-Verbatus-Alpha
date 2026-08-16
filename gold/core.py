@@ -567,6 +567,69 @@ def validate_measurement(record: Any) -> dict[str, Any]:
     return record
 
 
+def validate_record(record: Any, run_path: str | Path | None = None) -> dict[str, Any]:
+    """Validate any gold record by the schema it declares."""
+    schema = record.get("schema") if isinstance(record, dict) else None
+    if schema == SAMPLE_SCHEMA:
+        return validate_sample(record, run_path)
+    if schema == LAYOUT_SCHEMA:
+        return validate_layout(record, run_path)
+    if schema == PADDING_SCHEMA:
+        return validate_padding(record, run_path)
+    if schema == MEASUREMENT_SCHEMA:
+        return validate_measurement(record)
+    raise SchemaRefusal(f"{schema!r} is not a gold record schema")
+
+
+def validate_corpus(records: Any, run_path: str | Path | None = None) -> list[dict[str, Any]]:
+    """Validate a whole gold corpus, which one record at a time cannot establish.
+
+    Disjointness is enforced by construction *within one corpus frame*: `set` is
+    `set_for_page`, and that is a function of the frame's seed. The seed is derived
+    from the frame's own page digest (`common/runtree/store.py`), so a corpus
+    re-framed — a page added, a shard resplit — reshuffles roughly half the pages
+    into the other set. Records made before and after both validate against their
+    own frame, and a gold corpus assembled from both can hold the same page in
+    calibration *and* in locked acceptance. That is exactly the leak U14/U18 and
+    "calibration data disjoint from locked acceptance gold" forbid, and no
+    single-record check can see it.
+
+    The strata are the same kind of fact: the catalog is human-supplied and bound
+    to no authority, so one page described as `adverse` in a sample and `ordinary`
+    in the layout record that embeds a differently-drawn sample would pass every
+    per-record check while making the stratification unmeasurable.
+    """
+    validated = [validate_record(record, run_path) for record in records]
+    samples = [
+        record if record["schema"] == SAMPLE_SCHEMA else record["sample"]
+        for record in validated
+        if record["schema"] in {SAMPLE_SCHEMA, LAYOUT_SCHEMA, PADDING_SCHEMA}
+    ]
+    frames = {sample["frame"]["frame_digest"]: sample["frame"] for sample in samples}
+    _refuse(
+        len(frames) > 1,
+        f"these gold records were built under {len(frames)} different corpus frames "
+        f"({', '.join(sorted(frames))}); a page's set is derived from its own frame's "
+        "seed, so a corpus assembled across frames can hold one page in calibration "
+        "and in locked acceptance at once",
+    )
+    pages: dict[str, dict[str, Any]] = {}
+    for sample in samples:
+        page = sample["page"]
+        first = pages.setdefault(page["sha256"], page)
+        _refuse(
+            first["stratum"] != page["stratum"],
+            f"page {page['sha256']} is stratified as {first['stratum']!r} in one record "
+            f"and {page['stratum']!r} in another; the catalog was re-described between them",
+        )
+        _refuse(
+            first["ordinal"] != page["ordinal"],
+            f"page {page['sha256']} is page {first['ordinal']} in one record and "
+            f"{page['ordinal']} in another",
+        )
+    return validated
+
+
 def write_append_only(path: str | Path, record: dict[str, Any]) -> Path:
     """Atomically create a record; any existing path is a named refusal."""
     target = Path(path)

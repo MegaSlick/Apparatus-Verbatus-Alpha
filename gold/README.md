@@ -46,6 +46,17 @@ schema also embeds its source sample and carries only rectangles plus the requir
 for a sample, layout, or padding record, pass `--run` to prove the derived page and
 frame facts against the R0 authority again (an embedded sample is otherwise only
 checked for internal self-consistency, not that it names a real run).
-`bind-instrument` accepts the same optional `--run`.  Every writer creates a new
+`bind-instrument` accepts the same optional `--run`.
+
+`validate-corpus records/ [--run RUN.json]` checks what no single record can. A
+page's set is derived from its own frame's seed, and the seed is derived from that
+frame's page digest, so re-framing the corpus — a page added, a shard resplit —
+moves about half the pages to the other set. Records written before and after both
+validate against their own frame, and a gold corpus holding both would place one
+page in calibration *and* in locked acceptance. Records under two different corpus
+frames are refused by name, as is a page stratified or numbered two ways across
+records.
+
+Every writer creates a new
 file atomically and refuses an existing pathname, preserving append-only custody;
 a filesystem that refuses hard links is a named refusal, not a bare traceback.
