@@ -88,9 +88,6 @@ class FixtureReader:
                     for prior in self._fixture.get("prior_reading", []):
                         if prior["scenario"] == self._scenario and prior["act_key"] == act_key:
                             return prior["text"]
-                    for prior in self._fixture.get("prior_reading", []):
-                        if prior["scenario"] == "happy" and prior["act_key"] == act_key:
-                            return prior["text"]
                     raise KeyError(
                         f"the fixture declares no prior reading for {self._scenario!r}/{act_key!r}"
                     )

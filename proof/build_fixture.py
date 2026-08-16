@@ -60,11 +60,40 @@ ACTS = (
 # Pass A is independently declared per scenario and act. Both core scenarios
 # deliberately contain one real departure and one equality: the instrument is
 # capable of measuring a self-revision without treating disagreement as success.
-PRIOR_READINGS = (
-    {"scenario": "happy", "act_key": "a1", "text": "SYNTHETIC ACT ONE alpha beta ganna"},
-    {"scenario": "happy", "act_key": "a2", "text": "SYNTHETIC ACT TWO delta epsilon zeta eta"},
-    {"scenario": "review", "act_key": "a1", "text": "SYNTHETIC ACT ONE alpha beta ganna"},
-    {"scenario": "review", "act_key": "a2", "text": "SYNTHETIC ACT TWO delta epsilon zeta eta"},
+#
+# Every scenario whose acts reach the Perlector at all must declare its own
+# prior reading -- there is no cross-scenario fallback (FixtureReader refuses
+# by name instead of silently borrowing another scenario's declaration, which
+# would let an undeclared scenario measure a self-revision nobody wrote down).
+# `refused-first-page` and `structure-failure` hold every act before the
+# Perlector runs and are the only scenarios that do not need one.
+_DEFAULT_PRIOR_TEXT = {
+    "a1": "SYNTHETIC ACT ONE alpha beta ganna",
+    "a2": "SYNTHETIC ACT TWO delta epsilon zeta eta",
+}
+_PRIOR_READING_SCENARIOS = (
+    "happy",
+    "witness-capabilities",
+    "review",
+    "refused-page",
+    "truncated-reading",
+    "genuinely-empty-witness",
+    "confirmed-blank",
+    "blank-with-dissent",
+    "engine-truncated-reading",
+    "no-readable-text-reading",
+    "ink-free-page",
+    "reread-failure",
+    "reread-success",
+    "not-run-witness",
+    "malformed-witness",
+    "structured-witness",
+    "malformed-capabilities",
+)
+PRIOR_READINGS = tuple(
+    {"scenario": scenario, "act_key": act_key, "text": text}
+    for scenario in _PRIOR_READING_SCENARIOS
+    for act_key, text in _DEFAULT_PRIOR_TEXT.items()
 )
 
 # What each witness reports. Chair 1 agrees with the established reading, chair 2
