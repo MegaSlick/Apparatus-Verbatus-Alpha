@@ -129,6 +129,16 @@ def test_draft_fed_toggle_records_both_states_and_withholds_prompt_text(tmp_path
     )
     assert prior_text not in rendered
 
+    changed_dossier = copy.deepcopy(final["dossier"])
+    changed_dossier["prior_draft"]["text"] = "WITHHELD-PRIOR-SENTINEL-7f4c2e"
+    changed_rendered = perlector.prompts.build_prompt(
+        identity.serving_recipe,
+        identity.role,
+        changed_dossier,
+        protocol_config,
+    )
+    assert changed_rendered == rendered
+
 
 def test_control_selection_has_no_run_id_input_at_all():
     """Structural, not behavioural: a signature that never accepts run_id cannot
