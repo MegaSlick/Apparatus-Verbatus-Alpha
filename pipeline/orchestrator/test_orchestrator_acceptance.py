@@ -1226,6 +1226,41 @@ def test_a_genuinely_empty_testimonium_counts_as_a_witnessed_read(tmp_path):
         for entry in tree.build_manifest(PERLECTOR)["artifacts"]
         if entry["kind"] == "perlectio" and entry["subject_id"] == empty["subject_id"]
     )
+    attachment_record = next(
+        tree.read_artifact(ATTESTATORES, "act-attachment", entry["artifact_id"])
+        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
+        if entry["kind"] == "act-attachment" and entry["subject_id"] == empty["subject_id"]
+    )
+    empty_attachment = next(
+        row
+        for row in attachment_record["payload"]["attachments"]
+        if row["chair"] == empty["payload"]["chair"]
+    )
+    assert empty_attachment["attached"] is True
+    assert empty_attachment["span"] == {"start": 0, "end": 0}
+
+    empty_dissent = next(
+        row for row in reading["payload"]["dissent"] if row["chair"] == empty["payload"]["chair"]
+    )
+    assert empty_dissent["compared"] is True
+    assert empty_dissent["departed"] is True
+    assert empty_dissent["departures"] == [
+        {
+            "reading_span": {"start": 0, "end": len(reading["payload"]["text"])},
+            "testimonium_span": {"start": 0, "end": 0},
+        }
+    ]
+
+    review = next(
+        tree.read_artifact(RECENSOR, "review", entry["artifact_id"])
+        for entry in tree.build_manifest(RECENSOR)["artifacts"]
+        if entry["kind"] == "review" and entry["subject_id"] == empty["subject_id"]
+    )
+    assert review["payload"]["coverage"]["by_outcome"] == {
+        "genuinely-empty": 1,
+        "read": 2,
+    }
+    assert review["payload"]["coverage"]["under_witnessed"] is False
     assert all(region["witness_covered"] for region in reading["payload"]["basis"]["regions"])
     assert export_of(tree)["aggregate"]["status"] == "complete"
 

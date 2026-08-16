@@ -664,6 +664,69 @@ def test_the_witness_floor_is_not_counted_from_a_superseded_attachment(tmp_path)
     )
 
 
+def test_act_scoped_attachment_must_match_the_current_outcome_when_health_is_current(tmp_path):
+    """F-O1's restored outcome guard carries evidence independent of health.
+
+    An act-scoped reread fails after the original successful read. This test then
+    makes the old attachment current in every health-derived respect while leaving
+    its positive ``attached`` fact untouched. Perlector and Recensor must each
+    refuse that one remaining contradiction rather than count a superseded read.
+    """
+    root = tmp_path / "runs"
+    fixture_data = load_fixture(str(FIXTURE_ROOT))
+    act_a1_id = act_identity(fixture_data, act_by_key(fixture_data, "a1"))
+    tree = _through_attestatores(root, "act-scoped-stale", "happy")
+
+    reread = _reread(
+        root,
+        "act-scoped-stale",
+        "happy",
+        act_a1_id,
+        RETAINED_ACT_WITNESS_CHAIR,
+    )
+    assert reread.returncode == 0, reread.stderr
+
+    current = max(
+        (
+            record
+            for record in _attestatores_artifacts(tree)
+            if record.get("kind") == "testimonium"
+            and record.get("subject_id") == act_a1_id
+            and record.get("payload", {}).get("chair") == RETAINED_ACT_WITNESS_CHAIR
+        ),
+        key=lambda record: record["payload"]["attempt_ordinal"],
+    )
+    assert current["outcome"] == "failed"
+
+    attachment_entry = next(
+        entry
+        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
+        if entry["kind"] == "act-attachment" and entry["subject_id"] == act_a1_id
+    )
+    attachment_path = tree.resolve(attachment_entry["relative_path"])
+    attachment_record = tree.read_artifact(
+        ATTESTATORES, "act-attachment", attachment_entry["artifact_id"]
+    )
+    attachment = next(
+        row
+        for row in attachment_record["payload"]["attachments"]
+        if row["chair"] == RETAINED_ACT_WITNESS_CHAIR
+    )
+    assert attachment["page_witness"] is False
+    assert attachment["attached"] is True
+    attachment["content_health"] = current["payload"]["content_health"]
+    attachment["span"] = {"start": 0, "end": 0}
+    _reseal(attachment_path, attachment_record)
+
+    perlector = invoke_stage(root, "act-scoped-stale", "happy", "pipeline/4_perlector/run.py")
+    assert perlector.returncode != 0
+    assert "disagrees with that chair's current Testimonium outcome" in perlector.stderr
+
+    recensor = invoke_stage(root, "act-scoped-stale", "happy", "pipeline/5_recensor/run.py")
+    assert recensor.returncode != 0
+    assert "disagrees with the current Testimonium outcome" in recensor.stderr
+
+
 def test_page_testimony_names_a_reading_the_join_could_not_carry(tmp_path, fixture):
     """F-O7: the page record's closed omission list is the join's exact complement.
 
