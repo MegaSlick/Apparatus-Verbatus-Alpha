@@ -263,11 +263,12 @@ def act_attachment_view(context, act: dict[str, Any]) -> dict[str, Any]:
         span = attachment["span"]
         characters = attachment["content_health"].get("characters")
         if attachment["attached"]:
-            if (
-                not isinstance(characters, int)
-                or isinstance(characters, bool)
-                or span != {"start": 0, "end": characters}
-            ):
+            expected_end = (
+                characters
+                if isinstance(characters, int) and not isinstance(characters, bool)
+                else 0
+            )
+            if span != {"start": 0, "end": expected_end}:
                 raise SchemaRefusal(
                     "an attached act view does not span its complete delivered reading"
                 )
