@@ -14,6 +14,13 @@ A real row marked `preflight_state = "proven"` must also carry the
 `preflight_digest` of all its other canonical fields. A stale digest names and
 refuses the edited profile during catalogue load; the manager independently
 retains its launch-time refusal of every state other than `proven`.
+A preflight proves a flag profile *against a checkpoint*, so a proven row also
+carries `preflight_identity_digest`, the digest of that chair's cache
+descriptor (`chair_preflight_identity_digest`). Repointing the chair in
+`config/models.toml` leaves the catalogue row byte-identical, so the row digest
+cannot see it and the manager refuses the mismatch at launch instead. Both
+halves are stamped after a green preflight and removed together when a row
+returns to `unproven`.
 `verify_recipes_cover_chairs` proves that lookup offline for every configured
 chair at every configured tier and refuses extra stale rows, so a misspelt
 `serving_recipe`, an unconfigured chair profile, or a newly added placement tier

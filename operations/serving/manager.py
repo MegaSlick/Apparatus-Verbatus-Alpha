@@ -45,6 +45,7 @@ from .config import (
     ServingConfigInputs,
     ServingProfile,
     ServingRecipes,
+    chair_preflight_identity_digest,
     model_and_tokenizer_pins,
     seal_json_object,
 )
@@ -1266,6 +1267,22 @@ def _launchable(
             f"chair {identity.role!r} serving profile is structurally marked "
             f"preflight_state={profile.preflight_state!r}; real-silicon preflight must "
             "prove this exact profile before launch"
+        )
+    # The profile row's own digest cannot see this one.  A preflight proves a
+    # flag profile *and* the checkpoint it was measured with; repointing the
+    # chair in `config/models.toml` — other weights, a bumped revision, a
+    # re-verified manifest — leaves the catalogue row byte-identical and its
+    # `preflight_digest` still valid, so a stale proof would otherwise carry
+    # over onto weights nobody preflighted.  Refuse here, where both halves are
+    # in hand, rather than launch on a claim that has quietly stopped being
+    # about the thing being launched.
+    observed_identity_digest = chair_preflight_identity_digest(identity)
+    if profile.preflight_identity_digest != observed_identity_digest:
+        raise ServingConfigurationError(
+            f"chair {identity.role!r} serving profile was preflight-proven against chair "
+            f"identity {profile.preflight_identity_digest!r}, but the configured identity "
+            f"digests to {observed_identity_digest!r}; the checkpoint changed after this "
+            "profile was proven, so it must be preflighted again before launch"
         )
     return profile
 
