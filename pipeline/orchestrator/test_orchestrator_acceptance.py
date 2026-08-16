@@ -2816,6 +2816,49 @@ def test_armarium_refuses_a_resealed_archetypus_text_that_disagrees_with_its_par
     assert snapshot(root) == before
 
 
+def test_armarium_refuses_a_resealed_archetypus_uncertainty_layer_its_parent_never_said(tmp_path):
+    """The text's sibling, for the layer that anchors to it.
+
+    R8's canonical layer is bound to its act by exactly one gate: the Armarium
+    re-derives it from the accepted Perlectio at export and refuses a stored
+    layer that disagrees. Nothing inside a delivered package can catch a layer
+    substituted before the package was built -- a bundle verifies its own
+    internal agreement, and every format would agree on the forgery -- so this
+    is the boundary that makes the exported layer THIS act's uncertainty rather
+    than a well-formed one. The forged span is valid against the established
+    text and leaves it and its hash untouched, so only the re-derivation can
+    refuse it.
+    """
+    root = tmp_path / "runs"
+    assert orchestrate(root, "r", "happy").returncode == 0
+    tree = RunTree(root, "r")
+    entry = next(
+        entry
+        for entry in tree.build_manifest(ARCHETYPUS)["artifacts"]
+        if entry["kind"] == "archetypus"
+    )
+    path = tree.resolve(entry["relative_path"])
+    record = json.loads(path.read_text(encoding="utf-8"))
+    assert record["payload"]["uncertainty"] == {
+        "uncertain_spans": [],
+        "gaps": [],
+        "self_revisions": [],
+    }
+    assert len(record["payload"]["text"]) >= 1
+    record["payload"]["uncertainty"]["uncertain_spans"] = [
+        {"start": 0, "end": 1, "alternatives": ["?"], "confidence": "low"}
+    ]
+    record["payload"]["self_hash"] = self_hash(record["payload"])
+    record["self_hash"] = self_hash(record)
+    path.write_bytes(canonical_bytes(record))
+    before = snapshot(root)
+
+    result = invoke_stage(root, "r", "happy", "pipeline/7_armarium/run.py")
+    assert result.returncode == 2
+    assert "uncertainty layer differs from its accepted Perlectio" in result.stderr
+    assert snapshot(root) == before
+
+
 def test_armarium_refuses_two_established_records_instead_of_selecting_one(tmp_path):
     root = tmp_path / "runs"
     assert orchestrate(root, "r", "happy").returncode == 0
