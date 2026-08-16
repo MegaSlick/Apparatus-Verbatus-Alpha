@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from common.contracts.envelope import validate_input_refs
 from common.contracts.errors import SchemaRefusal
 
 _FIELDS = frozenset({"uncertain_spans", "gaps", "self_revisions"})
@@ -123,6 +124,7 @@ def validate(layer: Any, text: Any) -> dict[str, Any]:
                 or not all(isinstance(value, str) and value for value in reference.values())
             ):
                 raise SchemaRefusal(f"{label} is not the canonical witness-evidence record")
+            validate_input_refs([reference])
     if whole_act_rows and (whole_act_rows != 1 or len(gaps) != 1):
         raise SchemaRefusal(
             "a whole-act gap must be the only gap in canonical uncertainty; a reading "

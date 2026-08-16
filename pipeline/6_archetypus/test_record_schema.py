@@ -419,6 +419,21 @@ def test_record_validation_refuses_unvalidated_gap_witness_evidence():
         )
 
 
+def test_record_validation_refuses_gap_evidence_with_a_non_digest_reference():
+    """Canonical provenance cannot retain an uncheckable digest-shaped claim."""
+    evidence = {
+        "chair": "attestator_1",
+        "testimonium_id": "testimonium-1",
+        "reference": {"relative_path": "3_attestatores/testimonium.json", "sha256": "nope"},
+        "variant": "Maria",
+    }
+    gap = {"position": "internal", "start": 2, "end": 2, "witness_evidence": [evidence]}
+    with pytest.raises(SchemaRefusal, match="has no sha256 digest"):
+        archetypus.validate_record(
+            seal_record(uncertainty={"uncertain_spans": [], "gaps": [gap], "self_revisions": []})
+        )
+
+
 def test_record_validation_refuses_an_open_self_revision_bound():
     """A nested offset object cannot smuggle an unvalidated field through reseal."""
     revision = {
