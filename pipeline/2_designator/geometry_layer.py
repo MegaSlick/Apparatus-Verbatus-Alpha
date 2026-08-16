@@ -405,6 +405,36 @@ def _retain_by_content_identity(union: dict[str, dict[str, Any]], proposal: dict
     )
 
 
+def _within_issued_tile(points: list[dict[str, int]], tile: dict[str, int], what: str) -> None:
+    """Refuse a detection that names page pixels its own tile never contained.
+
+    ``detect`` is contracted to return polygons in PAGE-absolute page pixels.
+    Nothing else in this module can tell a page-absolute polygon from a
+    tile-local one -- both are well-formed page geometry -- so a live adapter
+    that forgot to add the tile origin would place every proposal in the wrong
+    part of the page, silently, and every crop, coverage record, and traceback to
+    the ink would follow it there (GOALS 5).
+
+    It is also the precondition the overlapping tiling now depends on: two tiles
+    that both see one detection collapse to one retained proposal only because
+    they report the *same* page coordinates for it. Under tile-local coordinates
+    that union key would differ per tile, and one physical detection would be
+    retained several times over, each time at a wrong place.
+
+    A detector cannot see ink outside the tile it was handed, so geometry outside
+    that tile is refused rather than trusted. The refusal is loud: the page fails
+    visibly rather than entering the record mislocated (GOVERNANCE 2). If a real
+    detector is ever measured to overshoot its tile by a rounding pixel, the
+    tolerance belongs here, measured -- not in a silently widened contract.
+    """
+    far_x, far_y = tile["x"] + tile["w"], tile["y"] + tile["h"]
+    if any(
+        not (tile["x"] <= point["x"] < far_x and tile["y"] <= point["y"] < far_y)
+        for point in points
+    ):
+        raise SchemaRefusal(f"{what} names page pixels outside the tile it was issued for")
+
+
 def surya_double_pass(
     *,
     page_id: str,
@@ -425,6 +455,16 @@ def surya_double_pass(
     tiles overlap by the sealed half-tile amount so an original x=1400 boundary
     lies inside another complete tile rather than splitting a detection into two
     unrelated proposals.
+
+    ``detect`` receives one issued tile and MUST return polygons in page-absolute
+    page pixels, each lying inside the tile it was given; `_within_issued_tile`
+    holds it to that, because the union below can recognise two tiles' sightings
+    of one detection as one detection only if both name the same page pixels. A
+    detection too wide to fit any single tile still arrives clipped from each
+    tile that saw part of it, and every clipping is retained as its own raw
+    proposal: the resolver publishes the complete sighting as containing its
+    fragments rather than choosing between them. Nothing here selects among
+    sources.
     """
     checked = load_geometry_policy_record(policy)
     tile_h, tile_w = checked["surya"]["tile_height_px"], checked["surya"]["tile_width_px"]
@@ -443,6 +483,7 @@ def surya_double_pass(
                 for detection in detect(tile):
                     item = _closed(detection, {"polygon", "score_bp"}, "Surya detection")
                     points = _polygon(item["polygon"], page_w, page_h, "Surya polygon")
+                    _within_issued_tile(points, tile, "Surya polygon")
                     _score_bp(item["score_bp"], "Surya score")
                     key = digest_of({"geometry": points, "score_bp": item["score_bp"]})
                     if key not in union:

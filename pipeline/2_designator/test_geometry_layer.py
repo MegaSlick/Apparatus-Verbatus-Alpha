@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from itertools import cycle
 
 import pytest
 from geometry_layer import (
@@ -27,6 +26,31 @@ from common.contracts.errors import SchemaRefusal
 
 RECEIPT = {"relative_path": "receipts/sha256/" + "a" * 64 + ".json", "sha256": "a" * 64}
 RESPONSE = {"relative_path": "designator/blobs/sha256/" + "b" * 64, "sha256": "b" * 64}
+
+# A polygon inside the vertical band both Surya passes tile (the offset-0 pass
+# covers y=0..1400, the offset-700 pass covers y=700..2100), so a physically
+# honest detector reports it from one tile in each pass.
+BOTH_PASS_POLYGON = [{"x": 4, "y": 804}, {"x": 8, "y": 804}, {"x": 8, "y": 808}]
+
+
+def _detector_that_only_sees_its_own_tile(polygon, score=lambda tile: 9000):
+    """A detector reports page-absolute geometry, and only for tiles containing it.
+
+    The adapter now holds `detect` to exactly this. A fixture that returned one
+    page-absolute polygon from every tile described a detector that cannot
+    exist -- and it was the only reason the union looked exercised across the two
+    passes.
+    """
+
+    def detect(tile):
+        far_x, far_y = tile["x"] + tile["w"], tile["y"] + tile["h"]
+        if all(
+            tile["x"] <= point["x"] < far_x and tile["y"] <= point["y"] < far_y for point in polygon
+        ):
+            return [{"polygon": polygon, "score_bp": score(tile)}]
+        return []
+
+    return detect
 
 
 def test_sealed_policy_exposes_integer_surya_sizing_and_yolo_rectification_toggle():
@@ -89,12 +113,11 @@ def test_point_of_use_policy_refuses_every_missing_sealed_value(field_path):
 def test_surya_runs_both_half_offset_tilings_and_unions_without_discarding_pass_evidence():
     policy = load_geometry_policy()
     calls = []
+    seeing = _detector_that_only_sees_its_own_tile(BOTH_PASS_POLYGON)
 
     def detect(tile):
         calls.append(tile)
-        return [
-            {"polygon": [{"x": 4, "y": 4}, {"x": 8, "y": 4}, {"x": 8, "y": 8}], "score_bp": 9000}
-        ]
+        return seeing(tile)
 
     proposals = surya_double_pass(
         page_id="pg_fixture",
@@ -109,6 +132,8 @@ def test_surya_runs_both_half_offset_tilings_and_unions_without_discarding_pass_
     assert [call["y"] for call in calls] == [0, 1400, 700, 2100]
     assert len(proposals) == 1
     assert proposals[0]["source"] == "surya"
+    # One physical detection in the band both passes tile: seen once per pass and
+    # unioned, with both pass ordinals retained under their declared unit.
     assert proposals[0]["observation_unit"] == "surya-tiling-pass"
     assert proposals[0]["observed_ordinals"] == [0, 1]
     validate_raw_proposal(proposals[0])
@@ -412,11 +437,9 @@ def test_surya_union_key_includes_score_so_a_rescored_repeat_is_retained_not_mer
     """Union invariant: identical geometry at a different score across passes is
     two honest raw signals, never silently averaged or discarded."""
     policy = load_geometry_policy()
-    polygon = [{"x": 4, "y": 4}, {"x": 8, "y": 4}, {"x": 8, "y": 8}]
-    scores = cycle([9000, 7000])
-
-    def detect(tile):
-        return [{"polygon": polygon, "score_bp": next(scores)}]
+    detect = _detector_that_only_sees_its_own_tile(
+        BOTH_PASS_POLYGON, score=lambda tile: 9000 if tile["y"] == 0 else 7000
+    )
 
     proposals = surya_double_pass(
         page_id="pg_fixture",
@@ -444,12 +467,7 @@ def test_proposal_identity_is_reproducible_without_first_seen_pass_provenance():
         policy=load_geometry_policy(),
         receipt_ref=RECEIPT,
         response_ref=RESPONSE,
-        detect=lambda tile: [
-            {
-                "polygon": [{"x": 4, "y": 4}, {"x": 8, "y": 4}, {"x": 8, "y": 8}],
-                "score_bp": 9000,
-            }
-        ],
+        detect=_detector_that_only_sees_its_own_tile(BOTH_PASS_POLYGON),
     )[0]
     assert proposal["observed_ordinals"] == [0, 1]
     for ordinals in ([0], [1], [0, 1]):
@@ -658,7 +676,7 @@ def test_three_point_collinear_polygon_is_accepted_as_a_thin_one_pixel_region():
         policy=policy,
         receipt_ref=RECEIPT,
         response_ref=RESPONSE,
-        detect=lambda tile: [{"polygon": collinear, "score_bp": 5000}],
+        detect=_detector_that_only_sees_its_own_tile(collinear, score=lambda tile: 5000),
     )
     assert proposals[0]["aabb"] == {"x": 10, "y": 10, "w": 21, "h": 1}
     validate_raw_proposal(proposals[0])
@@ -855,3 +873,103 @@ def test_occlusion_polygon_answers_the_same_shape_question_as_proposal_geometry(
                 "receipt_ref": RECEIPT,
             },
         )
+
+
+def test_surya_refuses_tile_local_coordinates_instead_of_placing_ink_on_the_wrong_region():
+    """The union across overlapping tiles assumes page-absolute detector output.
+
+    A tile-local polygon is indistinguishable from a page-absolute one by shape
+    alone, so without this refusal a live adapter that forgot the tile origin
+    would file every proposal at the wrong place on the page, silently, and one
+    physical detection seen from several tiles would be retained several times at
+    several wrong places instead of unioning into one.
+    """
+    policy = load_geometry_policy()
+    line = [{"x": 800, "y": 100}, {"x": 1500, "y": 100}, {"x": 1500, "y": 120}]
+
+    def detect_tile_local(tile):
+        far_x, far_y = tile["x"] + tile["w"], tile["y"] + tile["h"]
+        if not all(
+            tile["x"] <= point["x"] < far_x and tile["y"] <= point["y"] < far_y for point in line
+        ):
+            return []
+        return [
+            {
+                "polygon": [
+                    {"x": point["x"] - tile["x"], "y": point["y"] - tile["y"]} for point in line
+                ],
+                "score_bp": 9000,
+            }
+        ]
+
+    with pytest.raises(SchemaRefusal, match="outside the tile it was issued for"):
+        surya_double_pass(
+            page_id="pg_local",
+            page_ordinal=0,
+            page_w=3000,
+            page_h=1400,
+            policy=policy,
+            receipt_ref=RECEIPT,
+            response_ref=RESPONSE,
+            detect=detect_tile_local,
+        )
+
+
+def test_a_detection_wider_than_the_overlap_keeps_its_complete_sighting_and_its_fragments():
+    """Full-width tiling, horizontal overlap, and the union key, read together.
+
+    A detection wider than the sealed 700px overlap cannot fit inside every tile
+    that touches it, so overlapping tiles clip it differently and each clipping is
+    retained as its own raw proposal. That is honest retention, not double
+    counting: one tile still saw the whole detection, and the resolver publishes
+    the complete sighting as containing each fragment rather than choosing
+    between them. No coverage denominator is inflated -- the residual-ink check
+    counts page pixels, never proposals (U13).
+    """
+    policy = load_geometry_policy()
+    line = [
+        {"x": 800, "y": 100},
+        {"x": 1500, "y": 100},
+        {"x": 1500, "y": 120},
+        {"x": 800, "y": 120},
+    ]
+
+    def detect_clipping(tile):
+        far_x, far_y = tile["x"] + tile["w"], tile["y"] + tile["h"]
+        if not any(
+            tile["x"] <= point["x"] < far_x and tile["y"] <= point["y"] < far_y for point in line
+        ):
+            return []
+        clipped = [
+            {
+                "x": min(max(point["x"], tile["x"]), far_x - 1),
+                "y": min(max(point["y"], tile["y"]), far_y - 1),
+            }
+            for point in line
+        ]
+        if len({(point["x"], point["y"]) for point in clipped}) < 3:
+            return []
+        return [{"polygon": clipped, "score_bp": 9000}]
+
+    proposals = surya_double_pass(
+        page_id="pg_straddle",
+        page_ordinal=0,
+        page_w=3000,
+        page_h=1400,
+        policy=policy,
+        receipt_ref=RECEIPT,
+        response_ref=RESPONSE,
+        detect=detect_clipping,
+    )
+    spans = {(row["aabb"]["x"], row["aabb"]["x"] + row["aabb"]["w"]) for row in proposals}
+    assert (800, 1501) in spans, "the tile spanning x=700..2100 saw the whole detection"
+    assert (800, 1400) in spans and (1400, 1501) in spans, "clipped fragments are retained too"
+
+    resolved = resolve([_raw_envelope(row) for row in proposals], [])
+    complete = next(row["proposal_id"] for row in proposals if row["aabb"]["w"] == 701)
+    contained = {row["inner"] for row in resolved["containment"] if row["outer"] == complete}
+    assert contained == {row["proposal_id"] for row in proposals} - {complete}, (
+        "every fragment is published as contained by the complete sighting"
+    )
+    assert len(resolved["partition"]) == len(proposals), "invariant 8: one row per proposal"
+    assert {row["disposition"] for row in resolved["partition"]} == {"accepted-coverage"}
