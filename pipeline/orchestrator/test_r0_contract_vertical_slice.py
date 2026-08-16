@@ -252,3 +252,107 @@ def test_shard_size_knob_is_sealed_with_a_point_of_use_recheck_entry():
         "shard-size entry; R0's shard-size knob must be sealed into config_digest with a "
         "point-of-use recheck, exactly as 'designator-padding' already is"
     )
+
+
+# --- 3. Audit-and-repair regression tests (F-S1, F-S2) ---------------------------
+#
+# Sonnet audit-and-repair seat 1, R0. Both reproduced against the real orchestrator
+# over the real fixture on the pre-fix candidate before being fixed -- not merely
+# unit-level constructions -- per the s11-audit brief's "real fixture runs...  test
+# first, then fix" rule.
+
+
+def test_page_testimony_excludes_text_from_an_act_the_same_chair_failed(tmp_path, fixture):
+    """F-S1: a page witness's joined page testimony must never fold in text from an
+    act-scoped attempt the SAME chair recorded as `failed`.
+
+    `malformed-capabilities` declares attestator_3's response to act a1 with a
+    non-object `format_capabilities`; `prepared_response` cannot retain that
+    self-report, so the whole attempt is `failed` -- but its `native_payload` is
+    still the parsed string "SYNTHETIC ACT ONE alpha beta". Before this audit's
+    fix, `publish_page_testimonia_and_attachments` filtered its page join on
+    `isinstance(attempt.native_payload, str)` alone (never `attempt.outcome`), so
+    this failed act's own text was folded into attestator_3's page-1 testimony,
+    which reported `outcome: "read"` as though nothing had failed -- a recorded
+    failure silently counted as page coverage (D2/D3; GOVERNANCE 2). Confirmed
+    against the real run tree before the fix: the page-1 testimonium for
+    attestator_3 carried the full two-act joined text including act a1's, while
+    the act-scoped Testimonium for the same chair on act a1 was `outcome: "failed"`.
+    """
+    result = orchestrate(tmp_path, "r", "malformed-capabilities")
+    assert result.returncode in (0, 3), result.stderr
+    tree = RunTree(tmp_path, "r")
+
+    act_a1_id = act_identity(fixture, act_by_key(fixture, "a1"))
+    act_records = [
+        record
+        for record in _attestatores_artifacts(tree)
+        if record.get("kind") == "testimonium"
+        and record["subject_id"] == act_a1_id
+        and record.get("payload", {}).get("chair") == "attestator_3"
+    ]
+    assert act_records, "no act-scoped Testimonium found for attestator_3 on act a1"
+    act_record = act_records[0]
+    assert act_record["outcome"] == "failed", (
+        "fixture precondition: attestator_3's act-scoped attempt on a1 must be "
+        f"'failed' for this test to exercise the leak; got {act_record['outcome']!r}"
+    )
+    failed_text = act_record["payload"]["payload"]
+    assert isinstance(failed_text, str) and failed_text
+
+    page_records = [
+        record
+        for record in _attestatores_artifacts(tree)
+        if record.get("kind") == "page-testimonium"
+        and record.get("payload", {}).get("chair") == "attestator_3"
+        and record.get("payload", {}).get("page_ordinal") == 1
+    ]
+    assert page_records, "no page-testimonium found for attestator_3 on page 1"
+    page_text = page_records[0]["payload"]["payload"]
+    assert failed_text not in (page_text or ""), (
+        f"attestator_3's page-1 testimony {page_text!r} contains the text of its own "
+        f"failed act-a1 attempt {failed_text!r}; a recorded failure must never be folded "
+        "into a page witness's 'read' testimony (F-S1)"
+    )
+
+
+def test_act_attachment_span_reflects_this_chairs_own_delivered_text_not_the_act_key(
+    run_tree,
+):
+    """F-S2: an act-attachment's `span` must derive from the chair's own delivered
+    reading, never from `len(act_key)` -- and it must not be mislabeled
+    "fixture-declared" when the fixture declares no span at all.
+
+    Before this audit's fix, every attachment entry's span was
+    `{"start": 0, "end": len(act["act_key"])}`. The synthetic act keys are "a1"/"a2"
+    (length 2 either way), so `span.end` was the constant 2 for every chair on
+    every act regardless of how much text was actually delivered -- confirmed
+    against the real 'happy' run tree, where content_health.characters varied
+    (28, 34, 40) while every span.end was 2. That is not a "fixture-declared"
+    span (nothing in `proof/skeleton_fixture.toml` declares one); it is a
+    provenance claim nothing backed.
+    """
+    scenario, tree = run_tree
+    attachment_records = [
+        record for record in _attestatores_artifacts(tree) if record.get("kind") == "act-attachment"
+    ]
+    assert attachment_records, f"scenario {scenario!r}: no act-attachment records found"
+    checked_attached_entries = 0
+    for record in attachment_records:
+        for entry in record["payload"]["attachments"]:
+            if not entry.get("attached"):
+                continue
+            characters = entry.get("content_health", {}).get("characters")
+            if not isinstance(characters, int):
+                continue
+            span = entry["span"]
+            assert span == {"start": 0, "end": characters}, (
+                f"scenario {scenario!r}: attachment entry for chair {entry.get('chair')!r} on "
+                f"{record['subject_id']!r} has span {span!r}, but its own content_health reports "
+                f"{characters} character(s) delivered; the span must reflect this chair's own "
+                "delivered text (F-S2), not a value derived from the act key"
+            )
+            checked_attached_entries += 1
+    assert checked_attached_entries, (
+        f"scenario {scenario!r}: no attached entry had a character count to check"
+    )

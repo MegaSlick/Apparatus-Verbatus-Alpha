@@ -1273,10 +1273,19 @@ def publish_page_testimonia_and_attachments(
         page_subject = page_identity(context.fixture, page_ordinal)
         for chair in sorted(page_chairs):
             attempts = [attempts_by_pair[(act["act_id"], chair)] for act in page_acts]
+            # Only a genuine reading contributes text. An attempt whose *outcome*
+            # is `failed` can still carry a parsed `native_payload` string (a bad
+            # `witness_reported`/`format_capabilities` fails the whole attempt
+            # without clearing the text `prepared_response` already parsed) --
+            # filtering on `isinstance(..., str)` alone let that failed act's own
+            # text be silently folded into a page witness's "read" testimony,
+            # laundering a recorded failure into apparent coverage (D2/D3;
+            # GOVERNANCE 2). Found in audit; F-S1.
             readable = [
                 attempt.native_payload
                 for attempt in attempts
-                if isinstance(attempt.native_payload, str)
+                if attempt.outcome in WITNESS_READING_OUTCOMES
+                and isinstance(attempt.native_payload, str)
             ]
             native_payload = "\n".join(readable)
             outcome = "read" if readable else "failed"
