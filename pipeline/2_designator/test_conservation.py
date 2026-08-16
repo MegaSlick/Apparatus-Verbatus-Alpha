@@ -190,6 +190,28 @@ def test_row_oriented_reconciliation_matches_the_oracle_on_a_fully_inked_densely
         ) == _legacy_reference(width, height, rows, claims, gap_tolerance_px)
 
 
+def test_claim_boundaries_inside_tolerated_ink_gaps_match_the_pixel_oracle():
+    """V3: exhaust claim edges inside and across every gap the topology may merge."""
+    width, height = 12, 1
+    for gap_tolerance_px in (1, 2, 3):
+        rows = blank_rows(width, height)
+        left_x = 2
+        right_x = left_x + gap_tolerance_px + 1
+        paint_pixel(rows, left_x, 0)
+        paint_pixel(rows, right_x, 0)
+        for claim_x0 in range(width):
+            for claim_x1 in range(claim_x0 + 1, width + 1):
+                claims = [{"x": claim_x0, "y": 0, "w": claim_x1 - claim_x0, "h": 1}]
+                assert reconcile(
+                    width,
+                    height,
+                    rows,
+                    background=BACKGROUND,
+                    claimed_bounds=claims,
+                    gap_tolerance_px=gap_tolerance_px,
+                ) == _legacy_reference(width, height, rows, claims, gap_tolerance_px)
+
+
 def test_an_empty_page_reconciles_to_all_zeros():
     width, height = 30, 30
     result = reconcile(
