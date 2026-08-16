@@ -301,6 +301,70 @@ def test_an_audit_round_cap_above_one_is_refused_because_no_second_round_exists(
         audit.load(approved)
 
 
+def test_an_audit_changed_text_is_re_measured_by_the_truncation_instrument():
+    """The last derived field that still described the pre-audit reading.
+
+    `self_revision` and `dissent` are recomputed when Pass C changes the text
+    (H6); `truncation` was not, and `outcome` is derived from it — so an
+    audit-changed reading published the three text-computed signals of a text
+    nobody established, and the re-proof's own engine stop reason was dropped
+    on the floor.
+    """
+    perlector = _perlector()
+    complete = {
+        "classification": "complete",
+        "signals": {
+            "stop_reason_declared": "stop",
+            "unclosed_structure": False,
+            "length_suspicious": False,
+            "ends_abruptly": False,
+        },
+    }
+
+    # The re-proof's own generation ran out of budget: its text is what gets
+    # published, so the record it is published under is the re-proof's.
+    cut_off = perlector._audited_truncation(
+        pass_b=complete,
+        declared_failure=None,
+        text="alpha beta gamma",
+        region_pixels=18612,
+        stop_reason="length",
+    )
+    assert cut_off["classification"] == "truncated"
+    assert cut_off["signals"]["stop_reason_declared"] == "length"
+    assert (
+        perlector._resolve_outcome(
+            declared_failure=None, truncation_record=cut_off, text="alpha beta gamma"
+        )
+        == "truncated"
+    )
+
+    # A clean engine, but the change left the text ending mid-token: the
+    # computed signals are measured over the published text, not the draft.
+    abrupt = perlector._audited_truncation(
+        pass_b=complete,
+        declared_failure=None,
+        text="alpha beta gamma-",
+        region_pixels=18612,
+        stop_reason="stop",
+    )
+    assert abrupt["signals"]["ends_abruptly"] is True
+    assert abrupt["classification"] == "unknown"
+
+    # Pass C is span-scoped, so a clean re-proof can never clear a Pass-B
+    # truncation: the signals are re-measured, the verdict is not improved.
+    was_truncated = {**complete, "classification": "truncated"}
+    kept = perlector._audited_truncation(
+        pass_b=was_truncated,
+        declared_failure=None,
+        text="alpha beta gamma",
+        region_pixels=18612,
+        stop_reason="stop",
+    )
+    assert kept["classification"] == "truncated"
+    assert kept["signals"]["ends_abruptly"] is False
+
+
 def test_raised_cap_needs_tyrels_reference_and_exhaustion_routes_review(tmp_path):
     raised = tmp_path / "raised.toml"
     raised.write_text(

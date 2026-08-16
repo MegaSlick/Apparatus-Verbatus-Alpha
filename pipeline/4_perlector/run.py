@@ -1125,6 +1125,46 @@ def _reconciled_truncation(*, declared_failure: str | None, truncation_record: d
     return truncation_record
 
 
+def _audited_truncation(
+    *,
+    pass_b: dict,
+    declared_failure: str | None,
+    text: str,
+    region_pixels: int,
+    stop_reason: str | None,
+) -> dict:
+    """The truncation instrument, re-measured over an audit-changed reading.
+
+    Three of the four declared signals are computed over the reading text and
+    the fourth is the engine's own word on why it stopped, so a Pass-C re-proof
+    that changes the text invalidates the whole record: the published Perlectio
+    would otherwise state what the *pre-audit* text looked like, and `outcome`
+    is derived from that record. The re-proof's own stop reason was dropped
+    entirely, so a re-proof generation cut off mid-emission could replace
+    established text while the record still read `complete` — the reading
+    delivered as an output would be the truncated one (ARCHITECTURE: "it reads
+    through to the end; truncation is a failure, not an output").
+
+    **Pass C may only ever make this worse.** The re-proof is span-scoped and
+    H8-bounded to the flagged location, so it cannot restore ink a cut-off Pass
+    B never read. A clean re-proof over a truncated semi-final therefore keeps
+    the earlier classification: the recomputed signals describe the published
+    text, but the verdict never improves.
+    """
+    audited = _reconciled_truncation(
+        declared_failure=declared_failure,
+        truncation_record=truncation.classify(
+            text, region_pixels=region_pixels, stop_reason=stop_reason
+        ),
+    )
+    if (
+        pass_b["classification"] != truncation.COMPLETE
+        and audited["classification"] == truncation.COMPLETE
+    ):
+        return {**audited, "classification": pass_b["classification"]}
+    return audited
+
+
 def _audit_semi_final(
     *,
     act_id: str,
@@ -1790,6 +1830,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "payload": payload,
                 "outcome": outcome,
                 "delivered_pixels": delivered_pixels,
+                "region_pixels": region_pixels,
+                "declared_failure": declared_failure,
                 "testimonia": testimonia,
                 "attachment_view": attachment_view,
                 "prior_text": prior["text"],
@@ -1888,6 +1930,31 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 # describe *its* departure from Pass A, not a reading that
                 # never left the Perlector.
                 payload["self_revision"] = departures(final_text, row["prior_text"])
+                # The truncation instrument is the same case as `self_revision`
+                # and was the last field still describing a reading nobody
+                # published: three of its four signals are computed over the
+                # reading text, and `outcome` is derived from the record, so an
+                # audit-changed text left both stating what the *pre-audit* text
+                # looked like -- and the re-proof's own engine word on why it
+                # stopped was dropped entirely, so a re-proof cut off mid-emission
+                # could replace established text while the record still read
+                # `complete` (ARCHITECTURE: "truncation is a failure, not an
+                # output"; GOVERNANCE 10).
+                #
+                # Pass C may only ever make this worse -- see
+                # `_audited_truncation`.
+                payload["truncation"] = _audited_truncation(
+                    pass_b=payload["truncation"],
+                    declared_failure=row["declared_failure"],
+                    text=final_text,
+                    region_pixels=row["region_pixels"],
+                    stop_reason=reproof["stop_reason"],
+                )
+                row["outcome"] = _resolve_outcome(
+                    declared_failure=row["declared_failure"],
+                    truncation_record=payload["truncation"],
+                    text=final_text,
+                )
         if unresolved:
             for flag in flags:
                 start, end = flag["location"]["start"], flag["location"]["end"]
