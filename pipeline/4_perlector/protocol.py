@@ -11,6 +11,24 @@ from common.contracts.errors import ContractError
 
 SELECTION_RULE: Final = "digest-threshold-over-frame-page-seed-act.v1"
 PAGE_SHARED_PREFIX_POLICY: Final = "page-shared-prefix-first.v1"
+
+# The neutral Pass-B form, verbatim from iterative_reader.md:49-50. This is the
+# only text the pipeline puts in front of the reader *about* its own prior
+# draft, and it is pinned here for the same reason the two names above are: a
+# free-text field would leave GOVERNANCE 3 and GOVERNANCE 10's "the instrument
+# may not constrain what it measures" enforced by nothing but a phrase blacklist.
+# Measured before pinning: the blacklist below accepted "The prior reading
+# contains errors. Find and fix them." (forces a change), "Trust the prior
+# reading; reproduce it verbatim." (a picker instruction), and "Rate your
+# confidence no higher than medium." (GOVERNANCE 10's own example of a budgeted
+# confidence level). The fragment is also not a knob: `config/README.md`'s R5a
+# toggle register lists `--draft-fed`, the instrument rate, and the selection-rule
+# name, and deliberately not this. Rewording it is a reviewed two-file change,
+# and the sealed bytes still ride on every record so a run says which form ran.
+PASS_B_FRAGMENT: Final = (
+    "This is a prior reading. It may be correct, incomplete, or wrong. Independently reread "
+    "the image, preserve what the ink supports, and change only what the image justifies."
+)
 _FIELDS: Final = frozenset({"selection_rule", "page_shared_prefix_policy", "pass_b_fragment"})
 
 
@@ -33,9 +51,18 @@ def load(path: str | Path) -> tuple[dict[str, str], str]:
         )
     if not record["pass_b_fragment"].strip():
         raise ContractError("the Perlector protocol declaration has a blank Pass-B fragment")
+    # Kept ahead of the equality check so the named constraint keeps its own
+    # diagnosis: the declaration that trips this one is wrong for a stated
+    # reason, not merely different from the pinned bytes.
     if "prior reading was wrong" in record["pass_b_fragment"].lower():
         raise ContractError(
             "the Pass-B fragment asserts that the prior was wrong; the protocol is neutral"
+        )
+    if record["pass_b_fragment"] != PASS_B_FRAGMENT:
+        raise ContractError(
+            "the Pass-B fragment is not the declared neutral form (iterative_reader.md:49-50); "
+            "what this pipeline says to a reader about its own prior draft is not a free-text "
+            "configuration field"
         )
     return record, digest_bytes(raw)
 

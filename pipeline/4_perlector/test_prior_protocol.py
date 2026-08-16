@@ -462,11 +462,55 @@ def test_the_sealed_protocol_declaration_reproduces(_sealed_protocol):
     assert len(protocol_sha256) == 64
 
 
+def test_a_reading_whose_view_contradicts_its_declared_draft_fed_is_refused(
+    published_perlectio_payload, _sealed_protocol
+):
+    """`self_revision` only means something against a known feeding state, so
+    the two places this run states it must agree. Production derives both from
+    one flag; nothing said so until this refusal."""
+    protocol_config, protocol_sha256 = _sealed_protocol
+    payload = copy.deepcopy(published_perlectio_payload)
+    assert payload["protocol"]["draft_fed"] is True
+    payload["dossier"]["prior_draft_view"] = "withheld"
+    # Reseal, so the forgery reaches this refusal rather than stopping at the
+    # dossier digest a careless forger would also have fixed.
+    dossier_body = {
+        key: value for key, value in payload["dossier"].items() if key != "dossier_digest"
+    }
+    payload["dossier"]["dossier_digest"] = perlector.digest_of(dossier_body)
+
+    with pytest.raises(SchemaRefusal, match="while the same record's protocol declares"):
+        perlector.validate_reading_payload(
+            payload,
+            outcome="read",
+            fields=perlector._PERLECTIO_FIELDS,
+            protocol_config=protocol_config,
+            protocol_sha256=protocol_sha256,
+        )
+
+
+def test_a_non_boolean_draft_fed_is_not_its_closed_schema(
+    published_perlectio_payload, _sealed_protocol
+):
+    protocol_config, protocol_sha256 = _sealed_protocol
+    payload = copy.deepcopy(published_perlectio_payload)
+    payload["protocol"]["draft_fed"] = "fed"
+
+    with pytest.raises(SchemaRefusal, match="not its closed schema"):
+        perlector.validate_reading_payload(
+            payload,
+            outcome="read",
+            fields=perlector._PERLECTIO_FIELDS,
+            protocol_config=protocol_config,
+            protocol_sha256=protocol_sha256,
+        )
+
+
 def _write_protocol(tmp_path, **overrides):
     fields = {
         "selection_rule": protocol.SELECTION_RULE,
         "page_shared_prefix_policy": protocol.PAGE_SHARED_PREFIX_POLICY,
-        "pass_b_fragment": "Independently reread the image.",
+        "pass_b_fragment": protocol.PASS_B_FRAGMENT,
     }
     fields.update(overrides)
     path = tmp_path / "perlector_protocol.toml"
@@ -481,6 +525,35 @@ def test_a_pass_b_fragment_asserting_the_prior_was_wrong_is_refused(tmp_path):
     path = _write_protocol(tmp_path, pass_b_fragment="The prior reading was wrong; correct it.")
     with pytest.raises(ContractError, match="protocol is neutral"):
         protocol.load(path)
+
+
+@pytest.mark.parametrize(
+    "fragment",
+    [
+        # Forces a change without using the blacklisted five words.
+        "The prior reading contains errors. Find and fix them.",
+        "The earlier draft is incorrect; rewrite it.",
+        # Tells the reader to follow the draft: a picker under another name.
+        "Trust the prior reading; reproduce it verbatim.",
+        # GOVERNANCE 10's own example of an instrument constraining its measure.
+        "Rate your confidence no higher than medium.",
+    ],
+)
+def test_a_pass_b_fragment_that_is_not_the_declared_neutral_form_is_refused(tmp_path, fragment):
+    """Every one of these was ACCEPTED before the fragment was pinned: the
+    phrase blacklist below catches five literal words and nothing else, so it
+    could not be the GOVERNANCE 3 / GOVERNANCE 10 control it was named as."""
+    with pytest.raises(ContractError, match="not the declared neutral form"):
+        protocol.load(_write_protocol(tmp_path, pass_b_fragment=fragment))
+
+
+def test_the_shipped_declaration_carries_the_pinned_neutral_form():
+    """The pin binds the shipped bytes, not only a hypothetical file. The
+    fragment itself is iterative_reader.md:49-50 verbatim; that note is a
+    workbench design record and not tracked here, so the constant is where the
+    repository holds it and this is the check that config agrees with it."""
+    protocol_config, _sha = protocol.load(ROOT / "config" / "perlector_protocol.toml")
+    assert protocol_config["pass_b_fragment"] == protocol.PASS_B_FRAGMENT
 
 
 def test_a_blank_pass_b_fragment_is_refused(tmp_path):

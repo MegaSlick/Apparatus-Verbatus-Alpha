@@ -862,8 +862,24 @@ def validate_reading_payload(
     if protocol_record is not None and (
         not isinstance(protocol_record, dict)
         or set(protocol_record) != {"selection_rule", "page_shared_prefix_policy", "draft_fed"}
+        or not isinstance(protocol_record["draft_fed"], bool)
     ):
         raise SchemaRefusal("a prior-draft protocol record is not its closed schema")
+    # Two statements of one fact: the run-level `draft_fed` the record declares
+    # and the per-act view its dossier names. Both derive from the same flag in
+    # `main()`, so this cannot fire on the production path -- and that is the
+    # point. `self_revision` is only interpretable against a known feeding
+    # state, so a record that claimed `draft_fed` true while its dossier
+    # withheld the draft would make the Pass-A->B change rate (a standing metric
+    # under design v2.1) mean nothing, with nothing in the record saying so.
+    prior_draft_view = reading_dossier.get("prior_draft_view")
+    if protocol_record is not None and prior_draft_view is not None:
+        declared_view = "fed" if protocol_record["draft_fed"] else "withheld"
+        if prior_draft_view != declared_view:
+            raise SchemaRefusal(
+                f"a Perlector reading shows its prior draft {prior_draft_view!r} while the same "
+                f"record's protocol declares draft_fed {protocol_record['draft_fed']!r}"
+            )
     if protocol_config is None and protocol_record is not None:
         raise SchemaRefusal(
             "a Perlector reading carries a prior-draft protocol record but this validation "
