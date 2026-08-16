@@ -205,9 +205,10 @@ def testimonia_of(context, act_id: str, proposal_regions: list[dict]) -> list[di
 def act_attachment_view(context, act: dict[str, Any]) -> dict[str, Any]:
     """Validate the R0 attachment that makes a page witness act-addressable.
 
-    R4 owns alignment; until then this is a declared span view, retained beside
-    the page Testimonium and surfaced in the dossier rather than silently
-    treating page completion as an act-level read.
+    R4 owns alignment; until then this is the chair's complete delivered act
+    reading as an interim span, retained beside the page Testimonium and surfaced
+    in the dossier rather than silently treating page completion as an act-level
+    read.
     """
     act_id = act["act_id"]
     entries = [
@@ -257,9 +258,21 @@ def act_attachment_view(context, act: dict[str, Any]) -> dict[str, Any]:
             or not isinstance(attachment.get("page_witness"), bool)
             or not isinstance(attachment.get("attached"), bool)
             or not isinstance(attachment.get("content_health"), dict)
-            or not isinstance(attachment.get("span"), dict)
         ):
             raise SchemaRefusal("an act-attachment record has a malformed attachment")
+        span = attachment["span"]
+        characters = attachment["content_health"].get("characters")
+        if attachment["attached"]:
+            if (
+                not isinstance(characters, int)
+                or isinstance(characters, bool)
+                or span != {"start": 0, "end": characters}
+            ):
+                raise SchemaRefusal(
+                    "an attached act view does not span its complete delivered reading"
+                )
+        elif span is not None:
+            raise SchemaRefusal("an unattached act view claims an alignment span")
         chair = attachment["chair"]
         expected_page_witness = chair in set(context.fixture.get("page_witness_chairs", []))
         if attachment["page_witness"] != expected_page_witness:

@@ -342,6 +342,19 @@ def test_page_testimony_excludes_text_from_an_act_the_same_chair_failed(tmp_path
     assert unjoined[0]["act_key"] == "a1"
     assert unjoined[0]["outcome"] == "failed"
     assert isinstance(unjoined[0]["reason"], str) and unjoined[0]["reason"].strip()
+    attachment_record = next(
+        record
+        for record in _attestatores_artifacts(tree)
+        if record.get("kind") == "act-attachment" and record["subject_id"] == act_a1_id
+    )
+    failed_attachment = next(
+        row for row in attachment_record["payload"]["attachments"] if row["chair"] == "attestator_3"
+    )
+    assert failed_attachment["attached"] is False
+    assert failed_attachment["span"] is None, (
+        "an unattached attempt has no alignment span; a zero-length or payload-length "
+        f"span can be mistaken for real coverage, got {failed_attachment['span']!r}"
+    )
 
 
 def test_act_attachment_span_reflects_this_chairs_own_delivered_text_not_the_act_key(

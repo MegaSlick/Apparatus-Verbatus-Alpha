@@ -1250,10 +1250,11 @@ def publish_page_testimonia_and_attachments(
 ) -> None:
     """Retain page testimony and derive one attachment record for every act.
 
-    The fixture declares act spans, so R0 can make the custody chain real before
-    R4 owns text alignment.  The act-scoped records for chairs 1 and 3 remain a
-    temporary compatibility view for the current Perlector; each is explicitly
-    linked below to the immutable page Testimonium that supplied it.
+    R0 uses each successful chair's complete delivered act reading as an interim
+    span so the custody chain is real before R4 owns text alignment. The fixture
+    declares no spans. The act-scoped records for chairs 1 and 3 remain a temporary
+    compatibility view for the current Perlector; each is explicitly linked below
+    to the immutable page Testimonium that supplied it.
     """
     declared_page_chairs = context.fixture.get("page_witness_chairs", [])
     if (
@@ -1345,6 +1346,7 @@ def publish_page_testimonia_and_attachments(
         for chair in context.witness_chairs:
             attempt = attempts_by_pair[(act["act_id"], chair)]
             page_witness = chair in page_chairs and act["outcome"] == "proposed"
+            attached = act["outcome"] == "proposed" and attempt.outcome in WITNESS_READING_OUTCOMES
             reference = page_records.get((act["page_ordinal"], chair)) if page_witness else None
             if reference is None:
                 act_attempt = attempt_id(act["act_id"], f"read:{chair}", ordinal)
@@ -1358,8 +1360,7 @@ def publish_page_testimonia_and_attachments(
                     "chair": chair,
                     "page_witness": page_witness,
                     "testimonium_ref": reference,
-                    "attached": act["outcome"] == "proposed"
-                    and attempt.outcome in WITNESS_READING_OUTCOMES,
+                    "attached": attached,
                     "content_health": attempt.health,
                     # Interim span, NOT fixture-declared (the fixture declares no
                     # span anywhere): until R4's alignment computes the true
@@ -1369,12 +1370,16 @@ def publish_page_testimonia_and_attachments(
                     # reading (the act key is a short synthetic label like "a1"),
                     # while the report and D1 both called it "fixture-declared" --
                     # a provenance claim nothing backed. Found in audit; F-S2.
-                    "span": {
-                        "start": 0,
-                        "end": len(attempt.native_payload)
-                        if isinstance(attempt.native_payload, str)
-                        else 0,
-                    },
+                    "span": (
+                        {
+                            "start": 0,
+                            "end": len(attempt.native_payload)
+                            if isinstance(attempt.native_payload, str)
+                            else 0,
+                        }
+                        if attached
+                        else None
+                    ),
                 }
             )
         context.publish(
