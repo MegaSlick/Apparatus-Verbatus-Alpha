@@ -3,12 +3,15 @@
 import copy
 import json
 import shutil
+from pathlib import Path
 
 import pytest
 
+from common.chairs.config import load_models_toml
 from common.chairs.errors import DigestMismatchRefusal
 from common.chairs.manifests import build_manifest, write_manifest
 from common.chairs.model_store import (
+    CHAIRS_WITHOUT_ROSTER_ROLE,
     DAI_PROMPT_CITATION,
     REQUIRED_ARTIFACTS,
     STORE_SCHEMA,
@@ -23,6 +26,8 @@ from common.chairs.model_store import (
     write_download_record,
 )
 from common.contracts.canonical import canonical_bytes
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def _store(tmp_path):
@@ -439,3 +444,23 @@ def test_write_download_record_can_express_a_partial_store(tmp_path):
     write_download_record(record, elsewhere)
 
     assert load_download_record(elsewhere) == record
+
+
+# --- O2: the inventory's chair column is a roster role, not a label -------------
+
+
+def test_every_store_chair_is_a_models_toml_role_or_one_recorded_exception():
+    """A chair name the roster does not know cannot be joined to anything.
+
+    The store exists to be bound to `config/models.toml` at S8. If its chair
+    names drift from the roster's role keys, the divergence surfaces on the
+    rented card during pod assembly instead of here.
+    """
+
+    config = load_models_toml(ROOT / "config" / "models.toml")
+    store_chairs = {item.chair for item in REQUIRED_ARTIFACTS}
+    assert store_chairs, "meta-invariant 88: the roster policy is not empty"
+
+    assert store_chairs - set(config.chairs) == set(CHAIRS_WITHOUT_ROSTER_ROLE)
+    assert set(CHAIRS_WITHOUT_ROSTER_ROLE) <= store_chairs
+    assert all(reason.strip() for reason in CHAIRS_WITHOUT_ROSTER_ROLE.values())

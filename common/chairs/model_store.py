@@ -95,7 +95,7 @@ REQUIRED_ARTIFACTS = (
         "ca2150ea465d5a3d67818c50e234b9422619c75d",
     ),
     RequiredArtifact(
-        "proposer_yolo26",
+        "secondary_proposer",
         "yolo26-detection",
         "huggingface",
         "Teklia/YOLOv26-DAI-CReTDHI-Record-Detection",
@@ -110,6 +110,20 @@ REQUIRED_ARTIFACTS = (
         "c202236235762e1c871ad0ccb60c8ee5ba337b9a",
     ),
 )
+# The `chair` column above is a `config/models.toml` role key, not a label: an
+# inventory whose chair names cannot be joined to the roster tells the operator
+# who materializes the store nothing about which chair each snapshot serves.
+# `test_model_store.py` reconciles the two lists, with exactly one recorded
+# exception — Surya 2 has no roster role yet, and roster membership is Tyrel's
+# decision at S8 (CLAUDE.md hard rule 1), so this store entry names the artifact
+# R2's Designator geometry adapter is built against and waits for that word.
+CHAIRS_WITHOUT_ROSTER_ROLE = {
+    "proposer_surya2": (
+        "config/models.toml configures no Surya detection chair, in its live "
+        "fixture roster or its commented real roster; roster membership is "
+        "Tyrel's decision at S8"
+    )
+}
 SURYA_OCR_2_REFUSAL = {
     "artifact": "surya-ocr-2",
     "state": "not-fetched",
