@@ -1760,7 +1760,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             # list of neutral locations is retained on the Perlectio below;
             # no flag result can reopen this page's frozen calculation.
             reproof = reader.read(
-                payload["dossier"],
+                {**payload["dossier"], "semi_final_text": payload["text"]},
                 pass_kind="audit-reproof",
                 delivered_pixels=row["delivered_pixels"],
             )

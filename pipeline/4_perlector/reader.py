@@ -115,8 +115,28 @@ class FixtureReader:
                     for reproof in self._fixture.get("audit_reproof", []):
                         if reproof["scenario"] == self._scenario and reproof["act_key"] == act_key:
                             return reproof["text"]
+                    return self._confirmed_unchanged_text(dossier)
                 return act["text"]
         raise KeyError(f"the fixture declares no act {act_key!r}")
+
+    @staticmethod
+    def _confirmed_unchanged_text(dossier: dict[str, Any]) -> str:
+        """A re-proof with no declared change reports exactly what it was shown.
+
+        Pass C is span-scoped: it re-examines one flagged location, never the
+        whole act. A fixture with nothing declared for that location cannot
+        fall back to the act's original text -- that would silently rewrite a
+        no-readable-text act back to full prose, contradicting the whole-act
+        gap its empty reading already carries. Absent a declared change, the
+        honest report is "confirmed unchanged".
+        """
+        text = dossier.get("semi_final_text")
+        if not isinstance(text, str):
+            raise ContractError(
+                "the fixture Perlector received an audit re-proof dossier without its "
+                "semi-final text; a re-proof cannot confirm what it was not shown"
+            )
+        return text
 
     def _observed_page_fallback_text(
         self, dossier: dict[str, Any], delivered_pixels: DeliveredPixels | None
