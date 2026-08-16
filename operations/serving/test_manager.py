@@ -416,7 +416,7 @@ def recipes(*rows: dict[str, object]):
     return parse_serving_recipes({"schema": "serving-recipes.v1", "profiles": sealed_rows})
 
 
-def test_real_serving_profile_is_structurally_unproven_until_preflight():
+def test_real_serving_profile_is_structurally_unproven_until_preflight(tmp_path: Path) -> None:
     row = profile_row(recipe="reader", chair="perlector", served_model_id="reader", port=8100)
     row["preflight_state"] = "unproven"
 
@@ -424,6 +424,16 @@ def test_real_serving_profile_is_structurally_unproven_until_preflight():
 
     assert profile.preflight_state == "unproven"
     assert profile.preflight_digest is None
+    chair = identity("perlector", "reader")
+    manager, _, _, launcher, _, _ = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(row,),
+        model_ids=("reader",),
+    )
+    with pytest.raises(ServingRecipeRefusal, match="preflight_state='unproven'"):
+        manager.start(chair, TIER)
+    assert launcher.calls == []
 
 
 def test_proven_profile_digest_launches_then_a_runtime_edit_is_refused_by_name(
@@ -431,6 +441,12 @@ def test_proven_profile_digest_launches_then_a_runtime_edit_is_refused_by_name(
 ) -> None:
     chair = identity("reader", "reader-v1")
     row = profile_row(recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000)
+    with pytest.raises(
+        ServingConfigurationError,
+        match=r"recipe='reader-v1', chair='reader', tier='generic-48gb'.*marked proven",
+    ):
+        parse_serving_recipes({"schema": "serving-recipes.v1", "profiles": [row]})
+
     row["preflight_digest"] = profile_preflight_digest(row)
     manager, _, _, launcher, _, _ = manager_for(
         tmp_path,
