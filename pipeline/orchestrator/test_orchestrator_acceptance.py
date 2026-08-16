@@ -2415,6 +2415,12 @@ def test_archetypus_refuses_to_call_an_accepted_empty_reading_blank_without_proo
     reading_path = tree.resolve(old_ref["relative_path"])
     reading = json.loads(reading_path.read_text(encoding="utf-8"))
     reading["payload"]["text"] = ""
+    # R8: the canonical uncertainty layer anchors to the text; a forged blank
+    # reading must stay schema-consistent or the uncertainty refusal fires
+    # before the boundary this test exercises (host fix at R8 integration).
+    reading["payload"]["self_revision"] = []
+    reading["payload"]["uncertain_spans"] = []
+    reading["payload"]["gaps"] = []
     reading["self_hash"] = self_hash(reading)
     reading_path.write_bytes(canonical_bytes(reading))
     new_ref = {
@@ -2498,6 +2504,12 @@ def test_archetypus_establishes_no_readable_text_once_the_review_retains_real_bl
     reading_path = tree.resolve(old_ref["relative_path"])
     reading = json.loads(reading_path.read_text(encoding="utf-8"))
     reading["payload"]["text"] = ""
+    # R8: the canonical uncertainty layer anchors to the text; a forged blank
+    # reading must stay schema-consistent or the uncertainty refusal fires
+    # before the boundary this test exercises (host fix at R8 integration).
+    reading["payload"]["self_revision"] = []
+    reading["payload"]["uncertain_spans"] = []
+    reading["payload"]["gaps"] = []
     reading["self_hash"] = self_hash(reading)
     reading_path.write_bytes(canonical_bytes(reading))
     new_ref = {
@@ -2563,6 +2575,12 @@ def test_archetypus_refuses_a_blank_proof_that_is_the_reading_itself(tmp_path):
     reading_path = tree.resolve(old_ref["relative_path"])
     reading = json.loads(reading_path.read_text(encoding="utf-8"))
     reading["payload"]["text"] = ""
+    # R8: the canonical uncertainty layer anchors to the text; a forged blank
+    # reading must stay schema-consistent or the uncertainty refusal fires
+    # before the boundary this test exercises (host fix at R8 integration).
+    reading["payload"]["self_revision"] = []
+    reading["payload"]["uncertain_spans"] = []
+    reading["payload"]["gaps"] = []
     reading["self_hash"] = self_hash(reading)
     reading_path.write_bytes(canonical_bytes(reading))
     new_ref = {
@@ -2622,6 +2640,12 @@ def test_archetypus_refuses_a_blank_proof_that_is_the_readings_own_crop(tmp_path
         "the review's inputs are the reading plus its crops"
     )
     reading["payload"]["text"] = ""
+    # R8: the canonical uncertainty layer anchors to the text; a forged blank
+    # reading must stay schema-consistent or the uncertainty refusal fires
+    # before the boundary this test exercises (host fix at R8 integration).
+    reading["payload"]["self_revision"] = []
+    reading["payload"]["uncertain_spans"] = []
+    reading["payload"]["gaps"] = []
     reading["self_hash"] = self_hash(reading)
     reading_path.write_bytes(canonical_bytes(reading))
     new_ref = {
