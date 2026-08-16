@@ -1158,6 +1158,163 @@ def _reconciled_truncation(*, declared_failure: str | None, truncation_record: d
     return truncation_record
 
 
+def _audit_semi_final(
+    *,
+    act_id: str,
+    page_id: str,
+    order: int,
+    text: str,
+    regions: list[dict[str, Any]],
+    dossier: dict[str, Any],
+) -> dict[str, Any]:
+    """Derive one Pass-C row from either a pending or sealed Perlectio."""
+    if not regions:
+        raise FatalAccounting(f"Perlectio for {act_id} has no region for its audit geometry")
+    first = regions[0]
+    bounds = first.get("transform", {}).get("bounds")
+    if first.get("source_page_id") != page_id or not isinstance(bounds, dict):
+        raise FatalAccounting(
+            f"Perlectio for {act_id} does not bind its starting page and crop geometry"
+        )
+    testimonia = dossier.get("testimonia")
+    if not isinstance(testimonia, list):
+        raise FatalAccounting(f"Perlectio for {act_id} has no sealed audit testimonia")
+    return {
+        "act_id": act_id,
+        "page_id": page_id,
+        "order": order,
+        # The act's own crop position, independent of the sequence it was
+        # declared and processed in -- reusing `order` here would make declared
+        # and geometric identical by construction, so the "order" flag class
+        # could never fire (audit finding H1).
+        "geometry_order": (bounds.get("y"), bounds.get("x")),
+        "text": text,
+        "testimonia": [
+            record["reported"]
+            for record in testimonia
+            if isinstance(record, dict) and isinstance(record.get("reported"), str)
+        ],
+        # Pass C accounts only within the delivered crop. Page partition and
+        # residual-ink predicates belong to the Recensor.
+        "within_crop": True,
+    }
+
+
+def _sealed_sibling_semi_finals(
+    context,
+    current: list[dict[str, Any]],
+    *,
+    expected: list[dict[str, Any]],
+    protocol_config: dict[str, Any] | None = None,
+    protocol_sha256: str | None = None,
+) -> list[dict[str, Any]]:
+    """Read same-page sibling Perlectiones as immutable recovery context.
+
+    `RunTree.build_manifest` and `read_artifact` both validate every envelope's
+    self-hash, derived path, run/config binding, and input bytes. The sibling
+    text below therefore comes from the sealed Perlectio in the tree, never a
+    reconstruction from fixture or source text. Only rows are returned; the
+    publication loop remains over `pending`, so a sibling cannot be republished.
+    """
+    current_ids = {row["act_id"] for row in current}
+    page_ids = {row["page_id"] for row in current}
+    order_by_id = {act["act_id"]: order for order, act in enumerate(expected)}
+    sibling_ids = {
+        act["act_id"]
+        for act in expected
+        if act["act_id"] not in current_ids and act["page_id"] in page_ids
+    }
+    records_by_subject: dict[str, list[dict[str, Any]]] = {act_id: [] for act_id in sibling_ids}
+    for entry in context.tree.build_manifest(PERLECTOR)["artifacts"]:
+        if entry["kind"] not in {"perlectio"} or entry["subject_id"] not in sibling_ids:
+            continue
+        record = context.tree.read_artifact(PERLECTOR, "perlectio", entry["artifact_id"])
+        records_by_subject[entry["subject_id"]].append(record)
+
+    siblings = []
+    for act_id in sorted(sibling_ids, key=order_by_id.__getitem__):
+        records = records_by_subject[act_id]
+        if not records:
+            continue
+        reading = latest_attempt(
+            records, f"sealed sibling Perlectio for {act_id}", operation="perlegere"
+        )
+        payload = reading.get("payload")
+        # A held/not-run sibling was absent from the original frozen Pass-B
+        # collection too, so it contributes no row to a later recovery audit.
+        if not isinstance(payload, dict) or not isinstance(payload.get("text"), str):
+            continue
+        validate_reading_payload(
+            payload,
+            outcome=reading["outcome"],
+            fields=_PERLECTIO_FIELDS,
+            run_id=context.tree.run_id,
+            config_digest=context.config_digest,
+            protocol_config=protocol_config,
+            protocol_sha256=protocol_sha256,
+        )
+        audit_record = payload["audit"]
+        draft = context.tree.read_artifact_reference(
+            audit_record["draft_ref"], stage=PERLECTOR, kind="audit-draft", subject_id=act_id
+        )
+        finding = context.tree.read_artifact_reference(
+            audit_record["finding_ref"],
+            stage=PERLECTOR,
+            kind="audit-finding",
+            subject_id=act_id,
+        )
+        draft_payload = audit.validate_draft(draft.get("payload"))
+        finding_payload = audit.validate_finding(finding.get("payload"), text=payload["text"])
+        expected_page = expected[order_by_id[act_id]]["page_id"]
+        if (
+            draft_payload["page_id"] != expected_page
+            or finding_payload["page_id"] != expected_page
+            or draft_payload["act_key"] != payload["act_key"]
+            or finding_payload["act_key"] != payload["act_key"]
+            or draft_payload["attempt_ordinal"] != payload["attempt_ordinal"]
+            or finding_payload["attempt_ordinal"] != payload["attempt_ordinal"]
+            or audit_record["finding_digest"] != audit.audit_digest(finding_payload)
+            or finding["inputs"] != [audit_record["draft_ref"]]
+        ):
+            raise FatalAccounting(
+                f"sealed sibling Perlectio for {act_id} does not reconcile with its audit chain"
+            )
+        siblings.append(
+            _audit_semi_final(
+                act_id=act_id,
+                page_id=expected_page,
+                order=order_by_id[act_id],
+                text=payload["text"],
+                regions=payload["basis"]["regions"],
+                dossier=payload["dossier"],
+            )
+        )
+    return siblings
+
+
+def _page_flags(
+    context,
+    semi_finals: list[dict[str, Any]],
+    *,
+    expected: list[dict[str, Any]],
+    recovery_act_id: str | None,
+    protocol_config: dict[str, Any] | None = None,
+    protocol_sha256: str | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    frozen = list(semi_finals)
+    if recovery_act_id is not None:
+        frozen.extend(
+            _sealed_sibling_semi_finals(
+                context,
+                frozen,
+                expected=expected,
+                protocol_config=protocol_config,
+                protocol_sha256=protocol_sha256,
+            )
+        )
+    return audit.flags_once_per_page(frozen)
+
+
 def _publish_lectio_nuda(
     context,
     *,
@@ -1443,7 +1600,9 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     # A recovery re-reads only the acts that were recovered. Re-reading the rest
     # would add an attempt nobody requested to an act nothing happened to, and an
     # attempt tally that counts work no stage asked for stops meaning anything.
-    wanted = [act for act in expected_acts(context) if args.act in (None, act["act_id"])]
+    expected = expected_acts(context)
+    declared_order = {act["act_id"]: order for order, act in enumerate(expected)}
+    wanted = [act for act in expected if args.act in (None, act["act_id"])]
     if args.act and not wanted:
         raise ContractError(f"asked to read {args.act}, which the proposal seal does not name")
     preflight_testimonia_denominator(context, wanted)
@@ -1677,7 +1836,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             {
                 "act": act,
                 "act_id": act_id,
-                "order": len(pending),
+                "order": declared_order[act_id],
                 "bases": bases,
                 "payload": payload,
                 "outcome": outcome,
@@ -1700,30 +1859,23 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         payload = row["payload"]
         bases = row["bases"]
         semi_finals.append(
-            {
-                "act_id": row["act_id"],
-                "page_id": bases[0]["source_page_id"],
-                "order": row["order"],
-                # The act's own crop position, independent of the sequence it
-                # was declared and processed in -- reusing `order` here would
-                # make declared and geometric identical by construction, so
-                # the "order" flag class could never fire (audit finding H1).
-                # Top-to-bottom, then left-to-right, ties broken downstream by
-                # act_id exactly as the declared-order sort already is.
-                "geometry_order": (
-                    bases[0]["transform"]["bounds"]["y"],
-                    bases[0]["transform"]["bounds"]["x"],
-                ),
-                "text": payload["text"],
-                "testimonia": [
-                    record["reported"]
-                    for record in payload["dossier"]["testimonia"]
-                    if isinstance(record.get("reported"), str)
-                ],
-                "within_crop": True,
-            }
+            _audit_semi_final(
+                act_id=row["act_id"],
+                page_id=bases[0]["source_page_id"],
+                order=row["order"],
+                text=payload["text"],
+                regions=bases,
+                dossier=payload["dossier"],
+            )
         )
-    page_flags = audit.flags_once_per_page(semi_finals)
+    page_flags = _page_flags(
+        context,
+        semi_finals,
+        expected=expected,
+        recovery_act_id=args.act,
+        protocol_config=protocol_config,
+        protocol_sha256=protocol_sha256,
+    )
     policy_record = audit.policy_record(audit_policy, audit_sha256)
     for row in pending:
         payload = row["payload"]

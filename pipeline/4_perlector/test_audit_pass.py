@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import importlib.util
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -139,6 +140,88 @@ def test_flags_are_frozen_once_per_page_and_never_cascade_from_a_reproof():
     changed[0]["text"] = "No 2 1600 beta"
     assert flags["a2"] == audit.flags_once_per_page(frozen)["a2"]
     assert audit.flags_once_per_page(changed)["a2"] != flags["a2"]
+
+
+def test_recovery_flags_see_a_sealed_same_page_sibling(monkeypatch):
+    """A one-act recovery still evaluates cross-act flags over its whole page."""
+    perlector = _perlector()
+    recovered = [
+        {
+            "act_id": "a2",
+            "page_id": "p1",
+            "order": 1,
+            "geometry_order": (20, 0),
+            "text": "No 1 1688 recovered",
+            "testimonia": ["No 1 1688 recovered"],
+            "within_crop": True,
+        }
+    ]
+    sibling = {
+        "act_id": "a1",
+        "page_id": "p1",
+        "order": 0,
+        "geometry_order": (10, 0),
+        "text": "No 2 1689 sibling",
+        "testimonia": ["No 2 1689 sibling"],
+        "within_crop": True,
+    }
+    monkeypatch.setattr(
+        perlector,
+        "_sealed_sibling_semi_finals",
+        lambda *_args, **_kwargs: [sibling],
+    )
+
+    flags = perlector._page_flags(
+        object(),
+        recovered,
+        expected=[],
+        recovery_act_id="a2",
+    )
+
+    assert {flag["class"] for flag in flags["a2"]} == {"date-sequence", "numbering"}
+
+
+def test_recovery_sibling_context_is_sealed_and_never_republished(tmp_path):
+    result = _run(tmp_path / "runs", scenario="review")
+    assert result.returncode == 3, result.stderr
+    tree = RunTree(tmp_path / "runs", "r")
+    perlector = _perlector()
+    readings = _records(tree, "perlectio")
+    recovered = next(record for record in readings if record["payload"]["attempt_ordinal"] == 2)
+    sibling = next(
+        record
+        for record in readings
+        if record["subject_id"] != recovered["subject_id"]
+        and record["payload"]["attempt_ordinal"] == 1
+    )
+    page_id = recovered["payload"]["basis"]["regions"][0]["source_page_id"]
+    expected = [
+        {"act_id": recovered["subject_id"], "page_id": page_id},
+        {"act_id": sibling["subject_id"], "page_id": page_id},
+    ]
+    context = SimpleNamespace(tree=tree, config_digest=tree.read_run()["config_digest"])
+    before = [entry for entry in tree.build_manifest(PERLECTOR)["artifacts"]]
+
+    merged = perlector._sealed_sibling_semi_finals(
+        context,
+        [{"act_id": recovered["subject_id"], "page_id": page_id}],
+        expected=expected,
+    )
+
+    assert [row["act_id"] for row in merged] == [sibling["subject_id"]]
+    assert merged[0]["text"] == sibling["payload"]["text"]
+    assert tree.build_manifest(PERLECTOR)["artifacts"] == before
+
+    sibling_path = tree.resolve(tree.artifact_path(PERLECTOR, "perlectio", sibling["artifact_id"]))
+    corrupted = json.loads(sibling_path.read_text())
+    corrupted["payload"]["text"] += " corrupted"
+    sibling_path.write_text(json.dumps(corrupted))
+    with pytest.raises(SchemaRefusal, match="fails its self-hash"):
+        perlector._sealed_sibling_semi_finals(
+            context,
+            [{"act_id": recovered["subject_id"], "page_id": page_id}],
+            expected=expected,
+        )
 
 
 def test_raised_cap_needs_tyrels_reference_and_exhaustion_routes_review(tmp_path):
