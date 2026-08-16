@@ -78,7 +78,14 @@ def main(argv: list[str] | None = None) -> int:
         for record in sample_stratified(args.run, read_json(args.catalog), read_json(args.plan)):
             write_append_only(Path(args.output_dir) / f"{record['sample_digest']}.json", record)
     elif args.command == "ingest-manual":
-        write_append_only(args.output, ingest_manual_pick(args.run, read_json(args.pick)))
+        record = ingest_manual_pick(args.run, read_json(args.pick))
+        output = Path(args.output)
+        existing = _records_in(str(output.parent)) if output.parent.is_dir() else []
+        # A stratum is a collection fact, not a property R0 can derive from one
+        # pick. Reconcile the destination corpus before publishing so a second
+        # spelling of the same page is refused rather than counted twice.
+        validate_corpus([*existing, record], args.run)
+        write_append_only(output, record)
     elif args.command == "bind-instrument":
         write_append_only(
             args.output,

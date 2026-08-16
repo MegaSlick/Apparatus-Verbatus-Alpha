@@ -33,6 +33,9 @@ set can honestly disagree with it. That disagreement is never silently resolved
 either way: it is carried unchanged as `claimed_set` alongside the true `set`, so a
 predates-the-seed pick is ingested, not refused and sent back for a re-pick.
 Automatically sampled records carry `claimed_set: null` (no human claim was made).
+Before publishing a manual pick, the CLI reconciles it with the gold records
+already beside its output path. A second pick that gives the same page another
+stratum is refused before it can be double-counted.
 
 `bind-instrument` creates an append-only `gold-instrument-membership.v1` record
 carrying a sample digest, an R0 act identity, and a protocol digest.

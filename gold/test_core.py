@@ -163,6 +163,55 @@ def test_manual_pick_predating_the_seed_is_still_ingested_with_an_honest_disagre
     assert validate_sample(result, path) == result
 
 
+def test_cli_manual_ingest_refuses_one_page_in_two_strata(tmp_path):
+    path, frame, pages = run_file(tmp_path)
+    page = catalog(pages)[0]
+    records = tmp_path / "manual-records"
+    picks = []
+    for name, stratum in (("first", page["stratum"]), ("second", "second-stratum")):
+        pick_path = tmp_path / f"{name}-pick.json"
+        pick_path.write_text(
+            json.dumps(
+                {
+                    "schema": MANUAL_PICK_SCHEMA,
+                    "selection_basis": name,
+                    "page": {**page, "stratum": stratum},
+                    "set": set_for_page(frame, page["sha256"]),
+                }
+            ),
+            encoding="utf-8",
+        )
+        picks.append(pick_path)
+
+    assert (
+        cli.main(
+            [
+                "ingest-manual",
+                "--run",
+                str(path),
+                "--pick",
+                str(picks[0]),
+                "--output",
+                str(records / "first.json"),
+            ]
+        )
+        == 0
+    )
+    with pytest.raises(SchemaRefusal, match="stratified as"):
+        cli.main(
+            [
+                "ingest-manual",
+                "--run",
+                str(path),
+                "--pick",
+                str(picks[1]),
+                "--output",
+                str(records / "second.json"),
+            ]
+        )
+    assert [item.name for item in records.glob("*.json")] == ["first.json"]
+
+
 def test_a_plan_that_leaves_a_stratum_unnamed_is_refused(tmp_path):
     """A stratum the plan does not name contributes no gold and says nothing about
     it — the silent shortfall U18 and GOVERNANCE 2 forbid. Naming it with quota 0
