@@ -6,7 +6,7 @@ the R0 build chamber runs. Every test here must fail RED on the chamber's base c
 
 Kind table (R0_CONTRACT_NOTE.md "Kind-by-kind table"):
     lectio-prior, primed-without-prior         ACCEPTED by R5a (R0 transfer closed)
-    audit-draft, audit-finding                 DEFERRED -> R5b
+    audit-draft, audit-finding                 ACCEPTED by R5b (R0 transfer closed)
     raw-proposal, occlusion (U7 kinds)         ACCEPTED by R2 (R0 transfer closed)
     Closed-ordinal confidence rule             EXERCISED narrowly (R0 owns it)
 
@@ -27,7 +27,6 @@ import pytest
 
 from common.contracts.envelope import build_envelope
 from common.contracts.errors import ContractError
-from common.contracts.stages import PERLECTOR
 
 # Every kind name the contract note defers past R0, by name, mapped to a stage whose
 # outcome vocabulary it could plausibly ride (so `classify()` inside `build_envelope`
@@ -35,10 +34,8 @@ from common.contracts.stages import PERLECTOR
 # this test's own judgment call about which producer would mint each kind — the
 # contract note assigns producing *branches*, not stages — recorded here and in the
 # report as the strictest defensible reading available before R2/R5a/R5b exist.
-DEFERRED_KINDS = (
-    (PERLECTOR, "read", "audit-draft"),
-    (PERLECTOR, "read", "audit-finding"),
-)
+DEFERRED_KINDS = ()
+GRADUATED_R5B_KINDS = frozenset({"audit-draft", "audit-finding"})
 
 
 @pytest.mark.parametrize("stage,outcome,kind", DEFERRED_KINDS)
@@ -68,10 +65,11 @@ def test_a_deferred_kind_name_is_not_yet_an_accepted_kind(stage, outcome, kind):
 
 
 def test_reserved_kind_names_stay_in_sync_with_the_deferred_kind_census():
-    """R5a removal: the remaining R0 deferred names still match its refusal set."""
+    """R5b removal: only kinds still deferred by R0 remain reserved."""
     from common.contracts.envelope import _RESERVED_KINDS
 
     assert {kind for _stage, _outcome, kind in DEFERRED_KINDS} == set(_RESERVED_KINDS)
+    assert not (GRADUATED_R5B_KINDS & set(_RESERVED_KINDS))
 
 
 # --- Closed-ordinal confidence (three_stage_reading_design.md v2.1 §2, U5) ------

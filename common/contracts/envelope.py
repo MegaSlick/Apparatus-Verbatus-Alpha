@@ -47,12 +47,7 @@ _OPTIONAL: Final = ("approval_ref",)
 # These names belong to producer branches that have not yet defined their
 # payloads.  Refuse them at the envelope boundary rather than relying on their
 # current absence from a run tree (which would be a vacuous promise).
-_RESERVED_KINDS: Final = frozenset(
-    {
-        "audit-draft",
-        "audit-finding",
-    }
-)
+_RESERVED_KINDS: Final = frozenset()
 
 
 def build_envelope(
