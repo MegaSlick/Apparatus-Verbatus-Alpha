@@ -716,6 +716,8 @@ def validate_reading_payload(
             or set(attachment) != {"reference", "page_witness_count"}
             or not isinstance(attachment["reference"], dict)
             or not isinstance(attachment["page_witness_count"], int)
+            or isinstance(attachment["page_witness_count"], bool)
+            or attachment["page_witness_count"] < 0
         ):
             raise SchemaRefusal("a Perlector dossier has malformed act-attachment evidence")
     dossier_testimonia = reading_dossier["testimonia"]

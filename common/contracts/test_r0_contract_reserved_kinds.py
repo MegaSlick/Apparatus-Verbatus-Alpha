@@ -132,6 +132,9 @@ def test_a_witness_confidence_value_outside_the_closed_ordinal_set_is_refused():
         "ordinal validation rule for confidence and none is wired into the Attestatores "
         "self-report path yet"
     )
+    # Strengthened at the chain-end CodeRabbit pass: the refusal must be the
+    # confidence rule's own, not some unrelated recording problem.
+    assert "confidence" in recording_problem
 
 
 def test_a_witness_confidence_integer_ordinal_outside_any_declared_scale_is_refused():
@@ -153,6 +156,7 @@ def test_a_witness_confidence_integer_ordinal_outside_any_declared_scale_is_refu
         "an integer confidence value with no declared closed-ordinal scale was accepted "
         "verbatim; R0's closed-ordinal confidence rule is not enforced on the base commit"
     )
+    assert "confidence" in recording_problem
 
 
 def test_a_nested_confidence_cannot_bypass_the_closed_ordinal_rule():
@@ -166,3 +170,4 @@ def test_a_nested_confidence_cannot_bypass_the_closed_ordinal_rule():
         "a confidence ordinal nested below witness_reported.metadata bypassed the "
         "top-level closed-set check"
     )
+    assert "confidence" in recording_problem

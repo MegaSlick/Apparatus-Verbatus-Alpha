@@ -56,7 +56,9 @@ def test_a_shard_config_that_changed_since_binding_is_refused_before_use():
 
 def test_a_run_missing_the_sealed_shard_digest_entirely_is_refused():
     """A `sealed_config_digests` mapping that names no shard entry at all must
-    refuse rather than silently treat every observed digest as unbound.
+    refuse rather than silently treat every observed digest as unbound — and by
+    its own name, not the changed-since-binding message (strengthened at the
+    chain-end CodeRabbit pass).
     """
-    with pytest.raises(ContractError, match="changed between run binding"):
+    with pytest.raises(ContractError, match="sealed no digest"):
         require_corpus_frame_shard(1, {})

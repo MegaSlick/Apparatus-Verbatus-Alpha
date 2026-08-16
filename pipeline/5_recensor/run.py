@@ -115,8 +115,14 @@ def act_attachment_facts(context, act_id: str) -> dict[str, dict]:
     records = artifacts_for(context, ATTESTATORES, "act-attachment", act_id)
     if not records:
         raise FatalAccounting(f"act {act_id} has no derived act-attachment record")
-    records.sort(key=lambda record: record.get("payload", {}).get("attempt_ordinal", 0))
-    payload = records[-1].get("payload")
+    # The one shared derivation of "current", exactly as the Perlector's
+    # act_attachment_view selects it. The local sort this replaces defaulted a
+    # missing ordinal to 0 and took the last record blind, so a duplicate or
+    # gapped ordinal chain picked an arbitrary attachment where the strict
+    # helper refuses — the same two-predicates-drifting shape as F-O1/F-O3
+    # (CodeRabbit chain-end review, critical; host disposition: fixed).
+    record = latest_attempt(records, f"act-attachment for {act_id}", operation="act-attachment")
+    payload = record.get("payload")
     entries = payload.get("attachments") if isinstance(payload, dict) else None
     if not isinstance(entries, list):
         raise FatalAccounting(f"act {act_id} has malformed derived act-attachment payload")

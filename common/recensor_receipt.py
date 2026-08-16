@@ -345,6 +345,16 @@ def _validate_coverage(
             )
         ):
             raise SchemaRefusal("Recensor partition receipt has malformed shortfalls")
+        # Every granularity count describes configured chairs, so none may exceed
+        # the configured count — a shortfall tally larger than the roster is not a
+        # measurement (CodeRabbit chain-end review; host disposition: fixed).
+        configured = coverage["configured"]
+        if health_unrecorded > configured or any(
+            value > configured for value in shortfalls.values()
+        ):
+            raise SchemaRefusal(
+                "Recensor partition receipt counts more granularity facts than configured chairs"
+            )
         if "granularity_basis" in coverage and (
             coverage["granularity_basis"] != INTERIM_GRANULARITY_BASIS
         ):

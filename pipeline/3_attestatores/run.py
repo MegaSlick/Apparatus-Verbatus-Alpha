@@ -961,13 +961,13 @@ def attempt_tally(
             "reason": "the stored Attestatores manifest does not equal its rebuilt inventory",
         }
 
-    # Page-scoped Testimonia are independently retained source evidence under their
-    # own kind, so this act-level walk never sees one: the act denominator is
-    # rebuilt from the derived attachments instead of by pretending a page record
-    # is an act attempt. There was also a `payload["scope"] == "page"` skip inside
-    # the loop below, which this filter made unreachable -- and which, had anything
-    # reached it, would have carried an act-scoped record past every check in this
-    # function on the strength of one self-reported field. Found in audit; F-O5.
+    # Page-scoped Testimonia are independently retained source evidence under
+    # their own kind, so this kind filter keeps the act-level walk to act
+    # attempts alone. There was also a `payload["scope"] == "page"` skip inside
+    # the loop below, which this filter made unreachable -- and which, had
+    # anything reached it, would have carried an act-scoped record past every
+    # check in this function on the strength of one self-reported field. Found
+    # in audit; F-O5.
     testimonia = [entry for entry in rebuilt["artifacts"] if entry["kind"] == "testimonium"]
     by_act = {act["act_id"]: act for act in acts or ()}
     try:
@@ -1216,6 +1216,26 @@ def resolve_attempt(
     return Attempt(outcome, native_payload, witness_reported, capabilities, health, reason)
 
 
+def declared_page_witness_chairs(context) -> set[str]:
+    """The fixture's page-witness declaration, validated before any use.
+
+    One accessor for both write paths (the act-scoped compatibility flag in
+    `publish_attempt` and the page join in
+    `publish_page_testimonia_and_attachments`), so a malformed declaration is a
+    named refusal before the first attempt publishes rather than a TypeError
+    mid-pass after some artifacts already sealed (CodeRabbit chain-end review;
+    host disposition: fixed).
+    """
+    declared = context.fixture.get("page_witness_chairs", [])
+    if (
+        not isinstance(declared, list)
+        or len(declared) != len(set(declared))
+        or any(not isinstance(chair, str) for chair in declared)
+    ):
+        raise SchemaRefusal("fixture page_witness_chairs is not a unique string list")
+    return set(declared)
+
+
 def publish_attempt(
     context,
     *,
@@ -1241,7 +1261,7 @@ def publish_attempt(
         outcome=attempt.outcome,
         reason=attempt.reason,
     )
-    if chair in set(context.fixture.get("page_witness_chairs", [])):
+    if chair in declared_page_witness_chairs(context):
         # This is the fixture's interim act view of an immutable page witness.
         # Its attachment points at the retained page Testimonium; R4 replaces
         # this declared view with alignment, not with another witness kind.
@@ -1271,14 +1291,7 @@ def publish_page_testimonia_and_attachments(
     compatibility view for the current Perlector; each is explicitly linked below
     to the immutable page Testimonium that supplied it.
     """
-    declared_page_chairs = context.fixture.get("page_witness_chairs", [])
-    if (
-        not isinstance(declared_page_chairs, list)
-        or len(declared_page_chairs) != len(set(declared_page_chairs))
-        or any(not isinstance(chair, str) for chair in declared_page_chairs)
-    ):
-        raise SchemaRefusal("fixture page_witness_chairs is not a unique string list")
-    page_chairs = set(declared_page_chairs) & set(context.witness_chairs)
+    page_chairs = declared_page_witness_chairs(context) & set(context.witness_chairs)
     page_records: dict[tuple[int, str], dict[str, str]] = {}
     by_page: dict[int, list[dict[str, Any]]] = {}
     for act in acts:

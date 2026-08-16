@@ -113,6 +113,14 @@ def test_a_receipt_still_declaring_the_v1_schema_is_refused_once_coverage_carrie
             "mismatch once v2 exists, not merely rejected by an unrelated closed-"
             "schema check on the coverage record it happens to also carry"
         )
+        # Strengthened at the chain-end CodeRabbit pass: only the dedicated
+        # version-mismatch type satisfies D9, not any refusal whose message
+        # happens to contain the words.
+        from common.contracts.errors import ReceiptVersionMismatch
+
+        assert isinstance(error, ReceiptVersionMismatch), (
+            f"the refusal was {type(error).__name__}, not ReceiptVersionMismatch"
+        )
         return
     pytest.fail(
         "a receipt that declares the v1 schema label while carrying page-"

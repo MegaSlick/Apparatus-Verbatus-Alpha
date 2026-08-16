@@ -861,6 +861,15 @@ def require_corpus_frame_shard(
     """Point-of-use recheck for the sealed ≤1,000-page shard boundary."""
     policy, observed = load_corpus_frame_policy(path)
     bound = sealed_config_digests.get("corpus-frame-shard")
+    if bound is None:
+        # A run that sealed no shard digest at all is a different fault from one
+        # whose config changed after binding; naming them apart tells an operator
+        # whether to look at the binding step or at the file (CodeRabbit
+        # chain-end review; host disposition: fixed).
+        raise ContractError(
+            "this run sealed no digest for the corpus-frame shard configuration; "
+            "a shard may not be created under an unbound policy"
+        )
     if bound != observed:
         raise ContractError(
             "the corpus-frame shard configuration changed between run binding and its "
