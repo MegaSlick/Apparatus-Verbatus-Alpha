@@ -213,6 +213,15 @@ def validate_raw_proposal(payload: object) -> dict[str, Any]:
             raise SchemaRefusal("raw proposal transform has invalid rational scale")
     if transform["source_space"] != "page-pixels" or transform["target_space"] != "page-pixels":
         raise SchemaRefusal("raw proposal transform does not end in page pixels")
+    # source_space and target_space are forced equal above (both "page-pixels"); a
+    # same-space transform is only coherent at identity scale. A non-identity
+    # scale_x/scale_y here would claim resampling that never happened -- the
+    # geometry stored is already in this page's actual pixel grid.
+    if (
+        transform["scale_x"]["numerator"] != transform["scale_x"]["denominator"]
+        or transform["scale_y"]["numerator"] != transform["scale_y"]["denominator"]
+    ):
+        raise SchemaRefusal("raw proposal transform claims a non-identity page-pixels scale")
     geometry = _polygon(record["geometry"], page_w, page_h, "raw proposal geometry")
     expected_aabb = enclosing_aabb(geometry, page_w, page_h)
     if record["aabb"] != expected_aabb:
@@ -288,9 +297,15 @@ def validate_occlusion(payload: object) -> dict[str, Any]:
 
 
 def _proposal_id(
-    source: str, page_id: str, geometry: list[dict[str, int]], passes: list[int]
+    source: str, page_id: str, geometry: list[dict[str, int]], score_bp: int, passes: list[int]
 ) -> str:
-    return f"proposal_{digest_of({'source': source, 'page_id': page_id, 'geometry': geometry, 'passes': passes})[:16]}"
+    # score_bp is part of identity, not just payload: two detections with the
+    # same geometry, source, page, and first-observed pass but a DIFFERENT score
+    # are two distinct raw signals (surya_double_pass's union key already treats
+    # them that way). Without score_bp here they collided on one proposal_id --
+    # confirmed by
+    # test_surya_union_key_includes_score_so_a_rescored_repeat_is_retained_not_merged.
+    return f"proposal_{digest_of({'source': source, 'page_id': page_id, 'geometry': geometry, 'score_bp': score_bp, 'passes': passes})[:16]}"
 
 
 def _raw(
@@ -309,7 +324,7 @@ def _raw(
 ) -> dict[str, Any]:
     payload = {
         "schema": RAW_PROPOSAL_SCHEMA,
-        "proposal_id": _proposal_id(source, page_id, points, passes),
+        "proposal_id": _proposal_id(source, page_id, points, score_bp, passes),
         "source": source,
         "page_id": page_id,
         "page_ordinal": page_ordinal,
@@ -338,39 +353,52 @@ def surya_double_pass(
     response_ref: dict[str, str],
     detect: Callable[[dict[str, int]], list[dict[str, Any]]],
 ) -> list[dict[str, Any]]:
-    """Run exact sealed tiling at zero and half-tile offset, then additive union."""
+    """Run exact sealed tiling at zero and half-tile offset, then additive union.
+
+    Tiling covers the full page in BOTH axes -- a page wider than one sealed tile
+    is a real corpus case (parish scans vary in width; nothing in the design
+    caveats tiling to narrow pages), so every column band is tiled, not only the
+    first. Only the vertical axis carries the half-tile offset pass, matching the
+    sealed policy and the design note's named seam mitigation.
+    """
     checked = load_geometry_policy_record(policy)
     tile_h, tile_w = checked["surya"]["tile_height_px"], checked["surya"]["tile_width_px"]
     offsets = (0, checked["surya"]["half_tile_vertical_offset_px"])
     union: dict[str, dict[str, Any]] = {}
     for pass_ordinal, offset in enumerate(offsets):
         for y in range(offset, page_h, tile_h):
-            tile = {"x": 0, "y": y, "w": min(tile_w, page_w), "h": min(tile_h, page_h - y)}
-            for detection in detect(tile):
-                item = _closed(detection, {"polygon", "score_bp"}, "Surya detection")
-                points = _polygon(item["polygon"], page_w, page_h, "Surya polygon")
-                if not _integer(item["score_bp"]) or not 0 <= item["score_bp"] <= 10_000:
-                    raise SchemaRefusal("Surya score is not basis points")
-                key = digest_of({"geometry": points, "score_bp": item["score_bp"]})
-                if key not in union:
-                    union[key] = _raw(
-                        "surya",
-                        page_id,
-                        page_ordinal,
-                        points,
-                        page_w,
-                        page_h,
-                        item["score_bp"],
-                        receipt_ref,
-                        response_ref,
-                        checked["config_sha256"],
-                        [pass_ordinal],
-                        "polygon",
-                    )
-                else:
-                    union[key]["observed_passes"] = sorted(
-                        set(union[key]["observed_passes"] + [pass_ordinal])
-                    )
+            for x in range(0, page_w, tile_w):
+                tile = {
+                    "x": x,
+                    "y": y,
+                    "w": min(tile_w, page_w - x),
+                    "h": min(tile_h, page_h - y),
+                }
+                for detection in detect(tile):
+                    item = _closed(detection, {"polygon", "score_bp"}, "Surya detection")
+                    points = _polygon(item["polygon"], page_w, page_h, "Surya polygon")
+                    if not _integer(item["score_bp"]) or not 0 <= item["score_bp"] <= 10_000:
+                        raise SchemaRefusal("Surya score is not basis points")
+                    key = digest_of({"geometry": points, "score_bp": item["score_bp"]})
+                    if key not in union:
+                        union[key] = _raw(
+                            "surya",
+                            page_id,
+                            page_ordinal,
+                            points,
+                            page_w,
+                            page_h,
+                            item["score_bp"],
+                            receipt_ref,
+                            response_ref,
+                            checked["config_sha256"],
+                            [pass_ordinal],
+                            "polygon",
+                        )
+                    else:
+                        union[key]["observed_passes"] = sorted(
+                            set(union[key]["observed_passes"] + [pass_ordinal])
+                        )
     return [union[key] for key in sorted(union)]
 
 
@@ -668,6 +696,29 @@ def _derive_resolution(
         (payload["page_id"], payload["page_ordinal"]) != page for _envelope, payload in occlusions
     ):
         raise SchemaRefusal("resolver source records do not share one page lineage")
+    # Page lineage (id + ordinal) is not the same fact as page pixel extent: two
+    # raw proposals could in principle share lineage while declaring different
+    # page_width_px/page_height_px. Pin one page extent and refuse a mismatch,
+    # since every AABB and occlusion coordinate below is compared as if they all
+    # shared this one pixel grid.
+    page_w = raws[0][1]["page_transform"]["page_width_px"]
+    page_h = raws[0][1]["page_transform"]["page_height_px"]
+    if any(
+        (payload["page_transform"]["page_width_px"], payload["page_transform"]["page_height_px"])
+        != (page_w, page_h)
+        for _envelope, payload in raws
+    ):
+        raise SchemaRefusal("resolver raw proposals do not share one page pixel extent")
+    # validate_occlusion cannot check its own polygon against the page (it has no
+    # page_transform); this is that deferred extent check. An occlusion outside
+    # the shared page grid is refused rather than silently accepted as if it were
+    # in-bounds geometry that could plausibly touch every proposal on the page.
+    for _envelope, occlusion in occlusions:
+        if any(
+            not (0 <= point["x"] < page_w and 0 <= point["y"] < page_h)
+            for point in occlusion["polygon"]
+        ):
+            raise SchemaRefusal("occlusion polygon falls outside the shared page extent")
     ordered = sorted(raws, key=lambda row: row[1]["proposal_id"])
     ids = [payload["proposal_id"] for _envelope, payload in ordered]
     if len(ids) != len(set(ids)):
@@ -687,6 +738,19 @@ def _derive_resolution(
                         "state": "ambiguous-overlap",
                     }
                 )
+    # Disposition basis (recorded here, not just in the audit report, so the
+    # decision travels with the code it governs): ANY occlusion on the page marks
+    # EVERY proposal on that page "review", not only proposals whose AABB
+    # geometrically intersects the occlusion polygon. This is deliberately
+    # over-broad. GOALS 1 ranks a missed act above a poorly read one; Governance 1
+    # treats extra review effort as an acceptable cost, never a reason to read
+    # less carefully; and Architecture requires occlusions are "never silently
+    # read past." A tight geometric filter would let an occlusion the resolver
+    # itself misjudged (e.g. a coarse polygon, or ink actually extending past its
+    # drawn edge) silently clear proposals it should have flagged. The page-wide
+    # flag is intentionally conservative, decided by the R2 audit seat
+    # (2026-08-16); a geometric-intersection narrowing is future work if the
+    # review-queue cost is measured and found to matter, never a default.
     occlusion_ids = sorted(payload["occlusion_id"] for _envelope, payload in occlusions)
     return {
         "schema": RESOLUTION_SCHEMA,
