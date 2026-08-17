@@ -2068,6 +2068,39 @@ def test_real_bindings_seal_designator_padding_alongside_the_shard_knob(monkeypa
     )
 
 
+def test_real_bindings_refuse_an_unapproved_prior_control_before_run_creation():
+    """The real ingress path shares the fixture path's approval refusal."""
+
+    class Models:
+        witness_chairs = ("attestator_1", "attestator_2", "attestator_3")
+        adapter_recipes = {"door": "synthetic-door-v0"}
+
+        @staticmethod
+        def to_record():
+            return {"models": "synthetic"}
+
+    ledger = {
+        "files": [{"relative_path": "scan.pdf", "sha256": "a" * 64, "bytes": 12}],
+        "self_hash": "b" * 64,
+    }
+    settings = door.render_config.load_pdf_render_settings(
+        minimum_dpi=door.pdf_render.MIN_RENDER_DPI
+    )
+    with pytest.raises(ContractError, match="unapproved instrument sample"):
+        door._real_bindings(
+            Models(),
+            ledger,
+            POLICY,
+            settings,
+            door.load_recovery_policy(),
+            door.load_hard_failure_policy(),
+            designator_padding_config_sha256=door._padding_config_digest(
+                DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH
+            ),
+            perlector_instrument_per_mille=1,
+        )
+
+
 @pytest.mark.parametrize(
     "submission,denominator",
     [

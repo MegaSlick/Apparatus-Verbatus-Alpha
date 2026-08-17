@@ -352,11 +352,16 @@ _READING_REF = {"relative_path": "4_perlector/artifacts/x.json", "sha256": "0" *
 
 
 def _perlectio(outcome: str) -> dict:
+    # `lectio_kind` carries R5a's production marker for the tests that pass a
+    # completed outcome: the outcome-classification guard runs first, so a
+    # failing outcome refuses regardless of kind, but a completed reading
+    # without the marker would stop at the later only-primed-with-prior-
+    # establishes refusal instead of the guard those tests aim at.
     return {
         "stage": archetypus.PERLECTOR,
         "kind": "perlectio",
         "outcome": outcome,
-        "payload": {"text": "some established characters"},
+        "payload": {"text": "some established characters", "lectio_kind": "primed-with-prior"},
     }
 
 
@@ -449,6 +454,9 @@ def _primed_perlectio_without_an_attachment_view() -> dict:
         "inputs": [_READING_REF],
         "payload": {
             "text": "some established characters",
+            # R5a's production marker, so the attachment-view refusal under test
+            # is reached instead of the earlier lectio_kind gate (host fix).
+            "lectio_kind": "primed-with-prior",
             "basis": {
                 "regions": [{"image_path": "2_designator/blobs/sha256/deadbeef"}],
                 "testimonia": [{"chair": "attestator_1", "testimonium_ref": _READING_REF}],

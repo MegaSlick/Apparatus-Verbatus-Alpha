@@ -23,7 +23,7 @@ from typing import Any, Final
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError, FatalAccounting
 from common.contracts.outcomes import OutcomeClass, classify
-from common.contracts.stages import STAGES
+from common.contracts.stages import PERLECTOR, STAGES
 
 DEFAULT_HARD_FAILURE_CONFIG_PATH: Final = (
     Path(__file__).resolve().parents[1] / "config" / "hard_failure.toml"
@@ -33,6 +33,9 @@ DEFAULT_HARD_FAILURE_CONFIG_PATH: Final = (
 # third stops. Unlike the recovery budget, the hard-failure threshold was not
 # delegated for downward tuning, so configuration cannot move it either way.
 RULED_THRESHOLD: Final = 2
+PERLECTOR_INSTRUMENT_KINDS: Final = frozenset(
+    {"lectio-nuda", "lectio-prior", "primed-without-prior"}
+)
 
 
 def _reason_code(text: Any) -> str | None:
@@ -201,24 +204,46 @@ def tally_hard_failures(tree, policy: dict[str, Any]) -> dict[str, Any]:
         return reasons_seen[key]
 
     by_kind: dict[str, list[str]] = {}
+    instrument_by_kind: dict[str, list[str]] = {}
     subjects: set[tuple[str, str]] = set()
+
+    def record(key: str, stage: str, candidates: list[dict[str, Any]]) -> None:
+        """Split one policy entry's matches into production and instrument arms.
+
+        Stated once for both loops below: the two entry shapes differ only in
+        how they select candidates, and a partition rule written twice is a
+        partition rule that can come to mean two things. A subject with both a
+        production and an instrument failure appears in both lists, which is
+        the honest answer -- the instrument arm neither excuses nor doubles the
+        production incident.
+        """
+        production: set[str] = set()
+        instrument: set[str] = set()
+        for entry in candidates:
+            is_instrument = stage == PERLECTOR and entry["kind"] in PERLECTOR_INSTRUMENT_KINDS
+            (instrument if is_instrument else production).add(entry["subject_id"])
+        by_kind[key] = sorted(production)
+        if instrument:
+            instrument_by_kind[key] = sorted(instrument)
+        subjects.update((stage, subject_id) for subject_id in production)
+
     for stage, outcome in sorted(policy["kinds"]):
-        matches = sorted(
-            {entry["subject_id"] for entry in artifacts(stage) if entry["outcome"] == outcome}
+        record(
+            f"{stage}:{outcome}",
+            stage,
+            [entry for entry in artifacts(stage) if entry["outcome"] == outcome],
         )
-        by_kind[f"{stage}:{outcome}"] = matches
-        subjects.update((stage, subject_id) for subject_id in matches)
 
     for stage, outcome, reason in sorted(policy.get("reason_kinds") or ()):
-        matches = sorted(
-            {
-                entry["subject_id"]
+        record(
+            f"{stage}:{outcome}:{reason}",
+            stage,
+            [
+                entry
                 for entry in artifacts(stage)
                 if entry["outcome"] == outcome and reason_of(stage, entry) == reason
-            }
+            ],
         )
-        by_kind[f"{stage}:{outcome}:{reason}"] = matches
-        subjects.update((stage, subject_id) for subject_id in matches)
 
     count = len(subjects)
     return {
@@ -226,5 +251,9 @@ def tally_hard_failures(tree, policy: dict[str, Any]) -> dict[str, Any]:
         "count": count,
         "breached": count > policy["threshold"],
         "by_kind": by_kind,
+        "instrument_by_kind": instrument_by_kind,
+        "instrument_count": len(
+            {subject for matches in instrument_by_kind.values() for subject in matches}
+        ),
         "subjects": sorted(f"{stage}:{subject_id}" for stage, subject_id in subjects),
     }

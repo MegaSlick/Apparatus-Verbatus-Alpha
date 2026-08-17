@@ -5,12 +5,20 @@ implementation of this protocol. This chamber has no pod and no GPU, so the
 only implementation here is `FixtureReader`, and the protocol is the seam that
 lets a real reader replace it without `run.py`'s orchestration changing at all.
 
-`primed` distinguishes the establishing pass (all testimonia in the dossier)
-from Lectio nuda (none) -- one call shape, so a real reader has no second code
-path to keep in sync. **This fixture reader cannot produce a genuinely
-different unprimed reading**: there is no model behind it to diverge, so what
-this build proves is the wiring and the module boundary keeping nuda out of the
-Archetypus's reach, never the witness-dependence signal itself.
+`pass_kind` names every pass explicitly. A boolean could not distinguish the
+production prior, the sampled control, nuda, and the production Perlectio.
+
+**A real reader may not condition its generation on `pass_kind`.** It is
+routing, not evidence: `lectio-nuda` and `lectio-prior` are built from
+identical dossier arguments and therefore carry the same `dossier_digest` and
+the same `rendered_sha256`, so `pass_kind` is the *only* thing that
+distinguishes them at this seam. A reader that read it and behaved differently
+would make the witness-dependence contrast the whole instrument exists for
+measure the pipeline's own label instead of the model, which is GOVERNANCE 10's
+"the instrument may not constrain what it measures" at the reader boundary.
+`FixtureReader` reads it because it has no model behind it and must stand in
+for one; that is the exception the docstring on `_declared_prior_reading`
+names, not the pattern to copy.
 """
 
 from __future__ import annotations
@@ -28,6 +36,14 @@ from common.stage import FALLBACK_PAGE_ACT_ORDINAL
 # thresholds, where the circular fixture path used to invent a blank reading.
 PAGE_FALLBACK_INK_MARGIN: Final = 2
 
+# The closed vocabulary of reading passes. Named here rather than left to the
+# caller's string, because every value outside it fails *silently and in the
+# worst direction*: an unrecognised `pass_kind` falls through to the
+# establishing branch below, so a misspelt `"lectio_prior"` would serve Pass B's
+# own text as the Pass-A draft and publish a `self_revision` of nothing at all.
+# A refusal is the only reading of that a record can carry.
+PASS_KINDS: Final = frozenset({"perlectio", "lectio-nuda", "lectio-prior", "primed-without-prior"})
+
 
 class LectioResult(TypedDict):
     text: str
@@ -44,7 +60,7 @@ class Reader(Protocol):
         self,
         dossier: dict[str, Any],
         *,
-        primed: bool,
+        pass_kind: str,
         delivered_pixels: DeliveredPixels | None = None,
     ) -> LectioResult:
         """Produce one Lectio over one dossier."""
@@ -62,17 +78,28 @@ class FixtureReader:
         self,
         dossier: dict[str, Any],
         *,
-        primed: bool,
+        pass_kind: str,
         delivered_pixels: DeliveredPixels | None = None,
     ) -> LectioResult:
+        if pass_kind not in PASS_KINDS:
+            raise ContractError(
+                f"unknown Perlector pass kind {pass_kind!r}; a pass this reader cannot name "
+                f"would be served as the establishing read, not refused"
+            )
         act_key = dossier["act_key"]
         return {
-            "text": self._reading_text(dossier, delivered_pixels=delivered_pixels),
+            "text": self._reading_text(
+                dossier, pass_kind=pass_kind, delivered_pixels=delivered_pixels
+            ),
             "stop_reason": self._declared_stop_reason(act_key),
         }
 
     def _reading_text(
-        self, dossier: dict[str, Any], *, delivered_pixels: DeliveredPixels | None
+        self,
+        dossier: dict[str, Any],
+        *,
+        pass_kind: str,
+        delivered_pixels: DeliveredPixels | None,
     ) -> str:
         act_key = dossier["act_key"]
         if self._is_page_fallback(dossier):
@@ -82,6 +109,8 @@ class FixtureReader:
             return self._observed_page_fallback_text(dossier, delivered_pixels)
         for act in self._fixture["act"]:
             if act["key"] == act_key:
+                if pass_kind == "lectio-prior":
+                    return self._declared_prior_reading(act_key)
                 return act["text"]
         raise KeyError(f"the fixture declares no act {act_key!r}")
 
@@ -187,6 +216,40 @@ class FixtureReader:
             expected = derive_act_id(source_page_id, FALLBACK_PAGE_ACT_ORDINAL, page_bounds)
             return dossier.get("act_id") == expected
         return False
+
+    def _declared_prior_reading(self, act_key: str) -> str:
+        """Pass A's declared draft for *this* scenario, or a named refusal.
+
+        The whole table validates before any row is selected, for the reason
+        `_declared_stop_reason` gives below: a row naming a scenario or act
+        nobody declared, or a second row for a pair already written, would
+        otherwise sit unnoticed while the first match answered. Here that would
+        hand one scenario's prior draft to another scenario's `self_revision`
+        measurement -- the silent cross-scenario borrow this table exists to
+        end. There is deliberately no fallback: a scenario whose acts reach
+        Pass A and declares no prior is a fixture gap, and an instrument
+        measuring a departure from a draft nobody wrote is worse than a stop.
+        """
+        declared_scenarios = {scenario["name"] for scenario in self._fixture["scenario"]}
+        declared_acts = {act["key"] for act in self._fixture["act"]}
+        rows = self._fixture.get("prior_reading", [])
+        seen: set[tuple[str, str]] = set()
+        for row in rows:
+            key = (row["scenario"], row["act_key"])
+            if key in seen:
+                raise KeyError(
+                    f"prior_reading declares {key!r} twice; two contradictory drafts would "
+                    "publish whichever is written first and discard the other silently"
+                )
+            seen.add(key)
+            if row["scenario"] not in declared_scenarios:
+                raise KeyError(f"prior_reading row names undeclared scenario {row['scenario']!r}")
+            if row["act_key"] not in declared_acts:
+                raise KeyError(f"prior_reading row names undeclared act {row['act_key']!r}")
+        for row in rows:
+            if row["scenario"] == self._scenario and row["act_key"] == act_key:
+                return row["text"]
+        raise KeyError(f"the fixture declares no prior reading for {self._scenario!r}/{act_key!r}")
 
     def _declared_stop_reason(self, act_key: str) -> str | None:
         """The engine's own word on why it stopped.

@@ -14,6 +14,23 @@ The knobs. One question per planned file, each answerable without reading code.
 | `pod_placement.toml` | present — planning-only single-resident GPU resource tiers, dtype capability floors, and the reviewed price sheet for the cards this project rents |
 | `serving_recipes.toml` | present — the complete vLLM flag profile for one configured chair at one measured GPU tier |
 | `formats.toml` | present — which Armarium product projections are written and whether verified pixels are embedded |
+| `perlector_protocol.toml` | present — the sealed prior-draft protocol: Pass-B neutral fragment, page-shared-prefix policy, and control selection-rule name |
+
+## R5a toggle register
+
+| Knob | Default | Who changes it | What retires it |
+|---|---|---|---|
+| `--draft-fed` | fed | Tyrel through B5a | a recorded B5a decision replacing draft-feeding |
+| `--perlector-instrument-per-mille` | 0 | Tyrel, with `--perlector-instrument-approval-ref` | a replacement approved instrument design |
+| Perlector protocol selection-rule name | `digest-threshold-over-frame-page-seed-act.v1` | ordinary engineering with recorded evidence | a replacement rule recorded with its coverage evidence |
+| Perlector protocol Pass-B fragment | the neutral form (iterative_reader.md:49-50) | **not a knob** — pinned to `protocol.PASS_B_FRAGMENT`; rewording is a reviewed two-file change | a B5a prompt-framing ablation Tyrel records, which retires the pin rather than edits around it |
+
+The Pass-B fragment sits in `perlector_protocol.toml` so its exact bytes seal
+into every run, not so a run may choose them. It is pinned in code because a
+free-text field there would leave GOVERNANCE 3 and GOVERNANCE 10's "the
+instrument may not constrain what it measures" resting on a phrase blacklist
+— measured before the pin, one that accepted "The prior reading contains
+errors. Find and fix them." and "Rate your confidence no higher than medium."
 
 Decoder routing is deliberately not configuration. Tyrel ruled that an uncorrupted
 image is never declined by policy, and there is exactly one valid route map: every

@@ -147,6 +147,21 @@ def attempt_bindings(subject: str, operation: str, ordinal: int) -> dict[str, An
     return {"subject_id": subject, "operation": operation, "ordinal": ordinal}
 
 
+# Perlector's passes share an act and ordinal, so their operation names are part
+# of the identity boundary rather than informal labels. The generic identity
+# constructor remains stage-neutral; the Perlector calls this vocabulary before
+# deriving one of its reading attempts.
+PERLECTOR_READING_OPERATIONS = frozenset(
+    {"perlegere", "lectio-nuda", "lectio-prior", "primed-without-prior"}
+)
+
+
+def perlector_attempt_id(subject: str, operation: str, ordinal: int) -> str:
+    if operation not in PERLECTOR_READING_OPERATIONS:
+        raise ValueError(f"unknown Perlector reading operation {operation!r}")
+    return attempt_id(subject, operation, ordinal)
+
+
 def attempt_id(subject: str, operation: str, ordinal: int) -> str:
     return derive("attempt", attempt_bindings(subject, operation, ordinal))
 

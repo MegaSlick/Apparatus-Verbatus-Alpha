@@ -72,7 +72,16 @@ def published_payload(tmp_path_factory):
 
 
 def _validate(payload, outcome="read"):
-    perlector.validate_reading_payload(payload, outcome=outcome, fields=perlector._PERLECTIO_FIELDS)
+    protocol_config, protocol_sha256 = perlector.protocol.load(
+        ROOT / "config" / "perlector_protocol.toml"
+    )
+    perlector.validate_reading_payload(
+        payload,
+        outcome=outcome,
+        fields=perlector._PERLECTIO_FIELDS,
+        protocol_config=protocol_config,
+        protocol_sha256=protocol_sha256,
+    )
 
 
 def _reblinded(payload, *, run_id, config_digest):
@@ -98,8 +107,13 @@ def _reblinded(payload, *, run_id, config_digest):
     body = {key: value for key, value in reading_dossier.items() if key != "dossier_digest"}
     reading_dossier["dossier_digest"] = perlector.digest_of(body)
     identity = perlector.ChairIdentity(**blinded["provenance"]["resolved_identity"])
-    blinded["prompt"] = perlector.prompts.prompt_evidence(identity, reading_dossier)
-    return blinded
+    protocol_config, protocol_sha256 = perlector.protocol.load(
+        ROOT / "config" / "perlector_protocol.toml"
+    )
+    blinded["prompt"] = perlector.prompts.prompt_evidence(
+        identity, reading_dossier, protocol_config, protocol_sha256
+    )
+    return blinded, protocol_config, protocol_sha256
 
 
 def test_a_blinded_dossier_with_a_wrong_witness_label_is_refused(published_payload):
@@ -107,13 +121,17 @@ def test_a_blinded_dossier_with_a_wrong_witness_label_is_refused(published_paylo
     run's own identity, so a swapped or foreign label — invisible to a reader by
     construction — still refuses against the Testimonium basis."""
     run_id, config_digest = "schema-blind-run", "c" * 64
-    blinded = _reblinded(published_payload, run_id=run_id, config_digest=config_digest)
+    blinded, protocol_config, protocol_sha256 = _reblinded(
+        published_payload, run_id=run_id, config_digest=config_digest
+    )
     perlector.validate_reading_payload(
         blinded,
         outcome="read",
         fields=perlector._PERLECTIO_FIELDS,
         run_id=run_id,
         config_digest=config_digest,
+        protocol_config=protocol_config,
+        protocol_sha256=protocol_sha256,
     )
 
     tampered = copy.deepcopy(blinded)
@@ -127,6 +145,8 @@ def test_a_blinded_dossier_with_a_wrong_witness_label_is_refused(published_paylo
             fields=perlector._PERLECTIO_FIELDS,
             run_id=run_id,
             config_digest=config_digest,
+            protocol_config=protocol_config,
+            protocol_sha256=protocol_sha256,
         )
 
 
@@ -431,3 +451,52 @@ def test_an_absent_chair_not_run_perlectio_with_an_unexpected_field_is_refused()
     payload["text"] = ""
     with pytest.raises(SchemaRefusal, match="unexpected"):
         perlector.validate_not_run_payload(payload, fields=perlector._NOT_RUN_ABSENT_FIELDS)
+
+
+def test_primed_without_prior_refuses_a_none_valued_prior_draft_key(published_payload):
+    """The dossier field-set check admits the {prior_draft, prior_draft_view}
+    key combination, so a None prior_draft beside a view key slips a
+    value-only test; the branch judges key presence."""
+    run_id, config_digest = "schema-blind-run", "c" * 64
+    blinded, protocol_config, protocol_sha256 = _reblinded(
+        published_payload, run_id=run_id, config_digest=config_digest
+    )
+    tampered = copy.deepcopy(blinded)
+    tampered["lectio_kind"] = "primed-without-prior"
+    tampered["dossier"]["prior_draft"] = None
+    body = {key: value for key, value in tampered["dossier"].items() if key != "dossier_digest"}
+    tampered["dossier"]["dossier_digest"] = perlector.digest_of(body)
+    with pytest.raises(SchemaRefusal, match="carries prior-draft data"):
+        perlector.validate_reading_payload(
+            tampered,
+            outcome="read",
+            fields=perlector._PERLECTIO_FIELDS,
+            run_id=run_id,
+            config_digest=config_digest,
+            protocol_config=protocol_config,
+            protocol_sha256=protocol_sha256,
+        )
+
+
+def test_an_unknown_lectio_kind_is_refused_at_publication_not_one_stage_later(
+    published_payload,
+):
+    """A misspelt or future kind matched neither prior-draft branch, so its
+    prior-draft evidence published uninspected and the defect surfaced at the
+    Archetypus — one stage after the validator that promises write-time checks."""
+    run_id, config_digest = "schema-blind-run", "c" * 64
+    blinded, protocol_config, protocol_sha256 = _reblinded(
+        published_payload, run_id=run_id, config_digest=config_digest
+    )
+    tampered = copy.deepcopy(blinded)
+    tampered["lectio_kind"] = "primed_with_prior"
+    with pytest.raises(SchemaRefusal, match="unknown lectio kind"):
+        perlector.validate_reading_payload(
+            tampered,
+            outcome="read",
+            fields=perlector._PERLECTIO_FIELDS,
+            run_id=run_id,
+            config_digest=config_digest,
+            protocol_config=protocol_config,
+            protocol_sha256=protocol_sha256,
+        )

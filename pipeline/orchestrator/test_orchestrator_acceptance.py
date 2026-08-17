@@ -397,8 +397,8 @@ FIXTURE = "synthetic-two-page-v0"
 # images, not one 36x36 example. The file is sealed byte-for-byte, so this comment-only config
 # correction moves every dependent artifact. Fresh real runs again measured 54
 # files for happy (exit 0) and 58 for review (exit 3).
-HAPPY_RUN_TREE_DIGEST = "6c8559544554ebaf1ca8c2fac55212e7dce0eea6c968dbf91eeb0b88235cfdb1"
-REVIEW_RUN_TREE_DIGEST = "a07b26191d6c3f243767f66f54e282b05734f165966500ccd0cea97852444409"
+HAPPY_RUN_TREE_DIGEST = "fe567c61c60a875a4a93f1c8d8bb41650e7cb2e796a89186c5565e6c3cc5fab5"
+REVIEW_RUN_TREE_DIGEST = "af2586aae9a2ce52b4c836fa69f2de5f7024806b0d6401eda27167a3c5138336"
 
 
 def orchestrate(
@@ -2710,7 +2710,7 @@ def test_repeating_the_identical_command_leaves_every_byte_unchanged(tmp_path):
 
     # R0 adds two retained page Testimonia and two derived act attachments to
     # the happy walking skeleton; repeatability still compares every byte.
-    assert len(before) == 58
+    assert len(before) == 60
     assert semantic_snapshot_digest(root) == HAPPY_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "happy").returncode == 0
     after = snapshot(root)
@@ -2757,7 +2757,7 @@ def test_repeating_the_review_scenario_also_changes_nothing(tmp_path):
 
     # R0 adds the same four retained page/attachment artifacts before review's
     # recovery loop; its append-only invariant is unchanged.
-    assert len(before) == 62
+    assert len(before) == 65
     assert semantic_snapshot_digest(root) == REVIEW_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "review").returncode == 3
     assert snapshot(root) == before

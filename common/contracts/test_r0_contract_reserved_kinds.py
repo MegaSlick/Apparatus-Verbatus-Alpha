@@ -5,7 +5,7 @@ the R0 build chamber runs. Every test here must fail RED on the chamber's base c
 (main 176b09e) because the refusal it checks is not yet built.
 
 Kind table (R0_CONTRACT_NOTE.md "Kind-by-kind table"):
-    lectio-prior, primed-without-prior         DEFERRED -> R5a
+    lectio-prior, primed-without-prior         ACCEPTED by R5a (R0 transfer closed)
     audit-draft, audit-finding                 DEFERRED -> R5b
     raw-proposal, occlusion (U7 kinds)         DEFERRED -> R2
     Closed-ordinal confidence rule             EXERCISED narrowly (R0 owns it)
@@ -36,8 +36,6 @@ from common.contracts.stages import DESIGNATOR, PERLECTOR
 # contract note assigns producing *branches*, not stages — recorded here and in the
 # report as the strictest defensible reading available before R2/R5a/R5b exist.
 DEFERRED_KINDS = (
-    (PERLECTOR, "read", "lectio-prior"),
-    (PERLECTOR, "read", "primed-without-prior"),
     (PERLECTOR, "read", "audit-draft"),
     (PERLECTOR, "read", "audit-finding"),
     (DESIGNATOR, "proposed", "raw-proposal"),
@@ -69,6 +67,13 @@ def test_a_deferred_kind_name_is_not_yet_an_accepted_kind(stage, outcome, kind):
             inputs=[],
             payload={"probe": "R0 reserved-kind falsification test"},
         )
+
+
+def test_reserved_kind_names_stay_in_sync_with_the_deferred_kind_census():
+    """R5a removal: the remaining R0 deferred names still match its refusal set."""
+    from common.contracts.envelope import _RESERVED_KINDS
+
+    assert {kind for _stage, _outcome, kind in DEFERRED_KINDS} == set(_RESERVED_KINDS)
 
 
 # --- Closed-ordinal confidence (three_stage_reading_design.md v2.1 §2, U5) ------

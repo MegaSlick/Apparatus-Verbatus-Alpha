@@ -123,7 +123,14 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
         str(args.nuda_per_mille),
         "--nuda-approval-ref",
         str(args.nuda_approval_ref),
+        "--perlector-instrument-per-mille",
+        str(args.perlector_instrument_per_mille),
+        "--perlector-instrument-approval-ref",
+        str(args.perlector_instrument_approval_ref),
+        "--perlector-protocol-config",
+        str(args.perlector_protocol_config),
     ]
+    command.append("--draft-fed" if args.draft_fed else "--no-draft-fed")
     for key, value in extra.items():
         command += [f"--{key.replace('_', '-')}", str(value)]
 
@@ -182,6 +189,34 @@ def main() -> int:
         "--models-config",
         default="config/models.toml",
         help="the sealed model-chair roster and recipes for this run",
+    )
+    parser.add_argument(
+        "--perlector-instrument-per-mille",
+        type=int,
+        default=0,
+        help="per-mille rate at which the protocol's selection rule samples acts into "
+        "the primed-without-prior control arm (Lectio nuda has its own "
+        "--nuda-per-mille); raising it above 0 is Tyrel's, with "
+        "--perlector-instrument-approval-ref (config/README.md, R5a toggle register)",
+    )
+    parser.add_argument(
+        "--perlector-instrument-approval-ref",
+        default="",
+        help="Tyrel's recorded approval reference for a nonzero instrument rate",
+    )
+    parser.add_argument(
+        "--perlector-protocol-config",
+        default="config/perlector_protocol.toml",
+        help="the sealed Perlector prior-draft protocol; its exact bytes enter every "
+        "run's config digest",
+    )
+    parser.add_argument(
+        "--draft-fed",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="feed the Pass-A draft to Pass B (fed) or withhold it (--no-draft-fed); "
+        "changing the default is Tyrel's through B5a (config/README.md, R5a toggle "
+        "register)",
     )
     parser.add_argument(
         "--pdf-render-config",
@@ -331,6 +366,11 @@ def checkpoint(args, checkpoint_name: str, hard_failure_policy: dict) -> dict | 
     """
     tree = RunTree(Path(args.run_root), args.run_id)
     tally = tally_hard_failures(tree, hard_failure_policy)
+    if tally["instrument_count"]:
+        print(
+            f"run {args.run_id}: {tally['instrument_count']} Perlector instrument failure(s) "
+            "retained separately; they do not consume Tyrel's production hard-failure cap"
+        )
     if tally["count"] == tally["threshold"] and tally["count"] > 0:
         print(
             f"run {args.run_id}: {tally['count']} hard failure(s) so far — Tyrel's ruling "
