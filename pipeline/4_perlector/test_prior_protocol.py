@@ -526,6 +526,31 @@ def test_a_reading_whose_view_contradicts_its_declared_draft_fed_is_refused(
         )
 
 
+@pytest.mark.parametrize("field", ["selection_rule", "page_shared_prefix_policy"])
+def test_a_protocol_record_naming_a_rule_the_run_never_sealed_is_refused(
+    published_perlectio_payload, _sealed_protocol, field
+):
+    """The closed schema pinned the record's keys; nothing pinned its values.
+
+    `prompt.page_shared_prefix_policy` is reproduced from the sealed bytes by
+    the prompt check, so a payload could declare one policy in its `protocol`
+    block while the prompt it carries was built under another -- two answers to
+    "which design produced this reading", with nothing preferring either.
+    """
+    protocol_config, protocol_sha256 = _sealed_protocol
+    payload = copy.deepcopy(published_perlectio_payload)
+    payload["protocol"][field] = "some-other-rule.v9"
+
+    with pytest.raises(SchemaRefusal, match="while the bytes this run sealed declare"):
+        perlector.validate_reading_payload(
+            payload,
+            outcome="read",
+            fields=perlector._PERLECTIO_FIELDS,
+            protocol_config=protocol_config,
+            protocol_sha256=protocol_sha256,
+        )
+
+
 def test_a_non_boolean_draft_fed_is_not_its_closed_schema(
     published_perlectio_payload, _sealed_protocol
 ):

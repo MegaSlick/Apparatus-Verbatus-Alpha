@@ -894,6 +894,21 @@ def validate_reading_payload(
             "call was not given the sealed protocol bytes it reproduces from -- a cwd-relative "
             "reload is not a sealed-config recheck"
         )
+    # The record's own two policy names, bound to the sealed bytes rather than
+    # merely present. `prompt.page_shared_prefix_policy` is already reproduced
+    # from `protocol_config` by the prompt check below, so a payload could
+    # declare one rule in its `protocol` block while its prompt was built under
+    # another, and nothing said so. Unfireable on the production path for the
+    # same reason the draft_fed cross-check above is, and recorded here for the
+    # same reason: what these two names mean is what the run sealed.
+    if protocol_record is not None:
+        declared = (protocol_record["selection_rule"], protocol_record["page_shared_prefix_policy"])
+        sealed = (protocol_config["selection_rule"], protocol_config["page_shared_prefix_policy"])
+        if declared != sealed:
+            raise SchemaRefusal(
+                f"a Perlector reading declares protocol {declared!r} while the bytes this run "
+                f"sealed declare {sealed!r}"
+            )
     if protocol_config is None:
         protocol_config = {
             "page_shared_prefix_policy": protocol.PAGE_SHARED_PREFIX_POLICY,
