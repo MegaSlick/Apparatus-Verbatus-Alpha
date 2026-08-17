@@ -74,6 +74,14 @@ def test_unknown_geometry_policy_knob_is_refused(tmp_path):
         load_geometry_policy(path)
 
 
+def test_an_unreadable_geometry_policy_file_is_a_named_refusal_not_an_oserror(tmp_path):
+    """The same reasoning the Chandra blob read applies: a missing or unreadable
+    sealed policy reaches the caller as a refusal naming the path, never as a
+    bare OSError out of the middle of the loader."""
+    with pytest.raises(SchemaRefusal, match="geometry policy"):
+        load_geometry_policy(tmp_path / "absent.toml")
+
+
 def test_unknown_top_level_geometry_policy_table_is_refused(tmp_path):
     text = DEFAULT_POLICY_PATH.read_text(encoding="utf-8") + "\n[unread]\nvalue = 1\n"
     path = tmp_path / "geometry.toml"
@@ -665,8 +673,8 @@ def test_resolve_does_not_mutate_its_inputs_across_the_internal_double_derivatio
     inputs -- no TOCTOU between the two passes."""
     raw_sources = _geometry_sources()
     occlusions = [_occlusion_envelope()]
-    before_raw = [dict(item) for item in raw_sources]
-    before_occ = [dict(item) for item in occlusions]
+    before_raw = deepcopy(raw_sources)
+    before_occ = deepcopy(occlusions)
     first = resolve(raw_sources, occlusions)
     second = resolve(raw_sources, occlusions)
     assert first == second

@@ -25,6 +25,8 @@ ROOT = Path(__file__).resolve().parents[2]
 
 # Every orchestrator flag whose value is read as a file this run seals by digest,
 # minus the declared `--models-config` exception above.
+# `test_no_config_flag_escapes_this_suite` fails when a new `-config` flag is
+# added to the orchestrator without a decision here: cover it or declare it.
 SEALED_CONFIG_FLAGS = (
     "--pdf-render-config",
     "--designator-padding-config",
@@ -35,6 +37,10 @@ SEALED_CONFIG_FLAGS = (
     "--hard-failure-config",
     "--witness-context-config",
 )
+
+# Flags deliberately not required to resolve from every working directory, each
+# with its reason on record (module docstring for `--models-config`).
+DECLARED_RELATIVE_CONFIG_FLAGS = ("--models-config",)
 
 
 def _orchestrator_string_defaults() -> dict[str, str]:
@@ -72,6 +78,23 @@ def _orchestrator_string_defaults() -> dict[str, str]:
     finally:
         argparse.ArgumentParser.parse_args = real_parse_args  # type: ignore[method-assign]
     return captured
+
+
+def test_no_config_flag_escapes_this_suite():
+    """SEALED_CONFIG_FLAGS is hand-maintained; this derives the ground truth from
+    the real parser so a new `-config` flag with a relative default cannot land
+    silently uncovered -- it must either join the sealed tuple or be declared a
+    deliberate exception with its reason."""
+    defaults = _orchestrator_string_defaults()
+    config_flags = {flag for flag in defaults if flag.endswith("-config")}
+    uncovered = sorted(
+        config_flags - set(SEALED_CONFIG_FLAGS) - set(DECLARED_RELATIVE_CONFIG_FLAGS)
+    )
+    assert not uncovered, (
+        f"the orchestrator declares config flag(s) {uncovered} that this suite neither "
+        "checks nor declares as a deliberate exception; a relative default there would "
+        "break every run that does not start at the repository root"
+    )
 
 
 @pytest.mark.parametrize("flag", SEALED_CONFIG_FLAGS)

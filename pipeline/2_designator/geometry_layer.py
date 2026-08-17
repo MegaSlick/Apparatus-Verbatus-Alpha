@@ -65,11 +65,11 @@ def _closed(value: object, fields: set[str], what: str) -> dict[str, Any]:
 
 def load_geometry_policy(path: str | Path = DEFAULT_POLICY_PATH) -> dict[str, Any]:
     """Load the sealed integer/toggle policy; unknown knobs fail closed."""
-    data = Path(path).read_bytes()
     try:
+        data = Path(path).read_bytes()
         document = tomllib.loads(data.decode("utf-8"))
-    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
-        raise SchemaRefusal(f"geometry policy cannot be decoded: {error}") from error
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+        raise SchemaRefusal(f"geometry policy at {path} cannot be read: {error}") from error
     document = _closed(document, {"geometry"}, "geometry policy document")
     geometry = _validate_geometry_policy(document["geometry"])
     return {"config_sha256": digest_bytes(data), **geometry}
