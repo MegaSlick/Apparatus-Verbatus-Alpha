@@ -102,25 +102,29 @@ def _plain_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
-def _ink_runs(row: object, threshold: int, y: int, gap: int) -> list[_Run]:
-    """Return maximal ink runs, joining only the permitted same-row gaps."""
+def _unit_ink_runs(row: object, threshold: int, y: int) -> list[_Run]:
+    """Exact contiguous ink runs: one run per unbroken stretch of ink.
+
+    A single blank pixel ends a run. Gap tolerance is not applied here on
+    purpose: it belongs to `_components`, which decides what is *connected*,
+    while this decides what is *ink*. Bridging a tolerated gap into the run
+    itself would put blank pixels inside `ink_count` and make `_subtract_claims`
+    charge a crop for paper it covers.
+    """
     if not isinstance(row, (bytes, bytearray)):
         raise ContractError(f"scanline {y} is not grayscale bytes")
     runs: list[_Run] = []
     start: int | None = None
-    last_ink: int | None = None
-    count = 0
     for x, value in enumerate(row):
         if value <= threshold:
             if start is None:
                 start = x
-            elif last_ink is not None and x - last_ink - 1 > gap:
-                runs.append({"x0": start, "x1": last_ink + 1, "ink_count": count, "y": y})
-                start, count = x, 0
-            last_ink = x
-            count += 1
-    if start is not None and last_ink is not None:
-        runs.append({"x0": start, "x1": last_ink + 1, "ink_count": count, "y": y})
+        elif start is not None:
+            runs.append({"x0": start, "x1": x, "ink_count": x - start, "y": y})
+            start = None
+    if start is not None:
+        end = len(row)
+        runs.append({"x0": start, "x1": end, "ink_count": end - start, "y": y})
     return runs
 
 
@@ -170,11 +174,6 @@ def _subtract_claims(run: _Run, claims: list[tuple[int, int]]) -> tuple[int, lis
             {"x0": cursor, "x1": run["x1"], "ink_count": run["x1"] - cursor, "y": run["y"]}
         )
     return claimed, residual
-
-
-def _unit_ink_runs(row: object, threshold: int, y: int) -> list[_Run]:
-    """Exact contiguous ink runs used for counting and residual topology."""
-    return _ink_runs(row, threshold, y, 0)
 
 
 def _components(runs: list[_Run], gap: int) -> list[dict]:
@@ -281,15 +280,22 @@ def reconcile(
         starts[bounds["y"]].append(bounds)
         ends[bounds["y"] + bounds["h"]].append(bounds)
     active: list[geometry.Bounds] = []
+    # The merged claim intervals are a function of the active set alone, and the
+    # active set only changes on a row where some crop starts or ends. Reading
+    # `starts`/`ends` with `.get` rather than `[y]` also keeps the sweep from
+    # inserting an empty list for every scanline on the page.
+    intervals: list[tuple[int, int]] = []
     total = claimed = 0
     residual_runs: list[_Run] = []
     for y, row in enumerate(rows):
         if len(row) != width:
             raise ContractError(f"scanline {y} has width {len(row)}, expected {width}")
-        for bounds in ends[y]:
-            active.remove(bounds)
-        active.extend(starts[y])
-        intervals = _merged_claim_intervals(active)
+        opening, closing = starts.get(y), ends.get(y)
+        if opening or closing:
+            for bounds in closing or ():
+                active.remove(bounds)
+            active.extend(opening or ())
+            intervals = _merged_claim_intervals(active)
         for run in _unit_ink_runs(row, threshold, y):
             total += run["ink_count"]
             covered, residual = _subtract_claims(run, intervals)
