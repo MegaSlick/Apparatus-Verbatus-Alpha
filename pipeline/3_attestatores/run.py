@@ -54,8 +54,11 @@ from common.stage import (  # noqa: E402
 
 # A witness may report one of these ordinal self-assessments. They are retained
 # as testimony about its own response, never promoted into a model ranking or
-# used to choose a witness. Five plain levels keep fixture and future adapters
+# used to choose a witness. Six plain levels keep fixture and future adapters
 # interoperable while refusing an unbounded integer scale or invented prose.
+# `uncertain` and `unsure` are deliberately both admitted: real adapters emit
+# both spellings, and collapsing them to one is R3's call when it meets those
+# adapters, not this stage's.
 WITNESS_CONFIDENCE_ORDINALS = frozenset({"certain", "high", "medium", "low", "uncertain", "unsure"})
 
 DEFAULT_FORMAT_CAPABILITIES = {

@@ -148,6 +148,13 @@ Designator-held act (no witness was shown a reading there), an absent chair
 (a dead chair asked again is not a second attempt), and a chair with no first
 attempt to follow. The orchestrator never invokes it.
 
+A targeted reread deliberately leaves the act attachment unchanged. If the
+reread changes the chair's outcome or its `content_health`, the Perlector and
+the Recensor both refuse the now-stale attachment by name. The recovery is a
+whole Attestatores pass with `--attempt-ordinal` set to the reread's ordinal,
+run before continuing, so the attachment describes the attempt that actually
+stands.
+
 Neither path accepts the other's arguments: `--attempt-ordinal` beside a reread,
 or `--act`/`--chair` beside a whole pass, is refused rather than ignored. An
 operation this stage does not implement is refused for the same reason — a

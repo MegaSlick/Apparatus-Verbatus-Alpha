@@ -1802,7 +1802,11 @@ def test_a_page_scope_claim_cannot_hide_an_act_scoped_attempt_from_the_history(t
 
     _, history = attestatores._attempt_history(SimpleNamespace(tree=tree))
 
-    assert (record["subject_id"], "attestator_2") in history, (
+    surviving = [
+        item["artifact_id"] for item in history.get((record["subject_id"], "attestator_2"), [])
+    ]
+    assert record["artifact_id"] in surviving, (
         "an act-scoped Testimonium claiming page scope vanished from the attempt history; "
-        "the append/collision bound would then be derived for that pair from nothing"
+        "the append/collision bound would then be derived for that pair without the "
+        "disguised record it exists to see"
     )

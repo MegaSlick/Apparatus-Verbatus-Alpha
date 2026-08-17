@@ -308,7 +308,19 @@ def act_attachment_view(context, act: dict[str, Any], testimonia: list[dict]) ->
                 f"act {act_id} attachment for chair {chair!r} describes an attempt that is no "
                 "longer this chair's current Testimonium"
             )
-        expected_page_witness = chair in set(context.fixture.get("page_witness_chairs", []))
+        declared_chairs = context.fixture.get("page_witness_chairs", [])
+        # The producer (`pipeline/3_attestatores/run.py::declared_page_witness_chairs`)
+        # refuses a declaration that is not a unique list of strings; this reader
+        # holds the same key to the same shape, or a string-valued declaration
+        # would degrade into per-character membership and blame the attachment
+        # for the fixture's own malformation.
+        if not isinstance(declared_chairs, list) or any(
+            not isinstance(item, str) for item in declared_chairs
+        ):
+            raise SchemaRefusal(
+                "the fixture's page_witness_chairs declaration is not a list of chair names"
+            )
+        expected_page_witness = chair in set(declared_chairs)
         if attachment["page_witness"] != expected_page_witness:
             raise SchemaRefusal(
                 f"act {act_id} attachment changes page-witness scope for chair {chair!r}"

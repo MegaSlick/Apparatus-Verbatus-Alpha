@@ -439,8 +439,8 @@ def _primed_perlectio_without_an_attachment_view() -> dict:
 
     Regions and a retained Testimonium basis are supplied precisely so the
     refusal under test is the one reached, not an earlier and unrelated one --
-    the idiom `test_a_completed_reading_is_not_refused_by_that_guard` above
-    already uses on this same boundary.
+    the idiom `test_only_a_completed_reading_may_establish_text` above already
+    applies on this same boundary.
     """
     return {
         "stage": archetypus.PERLECTOR,

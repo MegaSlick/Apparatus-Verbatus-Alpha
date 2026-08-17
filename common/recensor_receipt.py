@@ -306,10 +306,15 @@ def _validate_coverage(
         else by_class[OutcomeClass.COMPLETED.value] < coverage["floor"]
     )
     if coverage["under_witnessed"] != expected_under_witnessed:
+        compared_count, compared_label = (
+            (act_completed, "act-level completed read(s)")
+            if has_page_only_fact
+            else (by_class[OutcomeClass.COMPLETED.value], "completed chair(s)")
+        )
         raise SchemaRefusal(
             f"Recensor partition receipt claims under_witnessed="
-            f"{coverage['under_witnessed']}, but {act_completed} act-level completed "
-            f"read(s) against a floor of {coverage['floor']} says otherwise"
+            f"{coverage['under_witnessed']}, but {compared_count} {compared_label} "
+            f"against a floor of {coverage['floor']} says otherwise"
         )
     # Rederived from the outcome counts rather than compared field by field: the
     # per-class summary is the receipt's own arithmetic, and a receipt whose

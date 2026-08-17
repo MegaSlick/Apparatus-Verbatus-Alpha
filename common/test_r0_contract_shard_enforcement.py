@@ -3,9 +3,10 @@ had no test anywhere in the suite -- not its refusal branch, not its point-of-us
 TOCTOU recheck.  A run whose page count exceeds the sealed shard limit, or whose
 config bytes changed between binding and the run-creation check, is exactly what
 the brief's tampering battery asks for ("the shard limit bypassed by editing config
-bytes after binding"); this file gives it a falsifiable test that fails red if the
-call to `require_corpus_frame_shard` is removed from `pipeline/1_exemplar/door.py`,
-or if either of its two checks is weakened.
+bytes after binding"); this file exercises the helper's own refusal branches
+directly, so it fails red if either of its two checks is weakened. It does NOT
+run the Door: the presence of both Door call sites is pinned separately by
+`pipeline/1_exemplar/test_door.py::test_each_door_path_enforces_the_shard_limit_at_run_creation`.
 
 Sonnet audit-and-repair seat 1, R0.
 """

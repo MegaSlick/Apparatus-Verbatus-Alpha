@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from common.contracts.errors import FatalAccounting, SchemaRefusal
+from common.contracts.outcomes import INTERIM_GRANULARITY_BASIS
 from common.contracts.stages import RECENSOR
 from common.runtree.store import RunTree
 from common.stage import stage_parser
@@ -85,7 +86,7 @@ def test_happy_recensor_pass_writes_a_complete_scoped_partition_receipt(tmp_path
     assert len({item["act_id"] for item in receipt["items"]}) == 2
     assert all(item["review_outcome"] == "accepted" for item in receipt["items"])
     assert {item["coverage"]["granularity_basis"] for item in receipt["items"]} == {
-        "act-outcome-proxy-before-alignment"
+        INTERIM_GRANULARITY_BASIS
     }
 
 
@@ -211,7 +212,7 @@ def _valid_coverage() -> dict:
         "page_granularity_only": 0,
         "health_unrecorded": 1,
         "shortfalls": {"failed": 0, "truncated": 0, "unaligned": 1},
-        "granularity_basis": "act-outcome-proxy-before-alignment",
+        "granularity_basis": INTERIM_GRANULARITY_BASIS,
     }
 
 

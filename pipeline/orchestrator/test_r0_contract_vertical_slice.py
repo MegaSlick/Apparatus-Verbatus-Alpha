@@ -259,15 +259,21 @@ def test_shard_size_knob_is_sealed_with_a_point_of_use_recheck_entry():
     `sealed_config_digests` carries exactly one key, `designator-padding`; nothing
     names a shard-size knob at all.
     """
+    from common.stage import DEFAULT_CORPUS_FRAME_CONFIG_PATH, load_corpus_frame_policy
+
     fixture_data = load_fixture(str(FIXTURE_ROOT))
     registry = ChairRegistry.from_toml(str(ROOT / "config" / "models.toml"))
     bindings = run_config_bindings(registry.config, fixture_data, "happy")
     sealed = bindings["sealed_config_digests"]
-    shard_keys = [key for key in sealed if "shard" in key]
-    assert shard_keys, (
+    assert "corpus-frame-shard" in sealed, (
         f"run_config_bindings()'s sealed_config_digests is {sorted(sealed)}, which names no "
-        "shard-size entry; R0's shard-size knob must be sealed into config_digest with a "
-        "point-of-use recheck, exactly as 'designator-padding' already is"
+        "'corpus-frame-shard' entry; R0's shard-size knob must be sealed into config_digest "
+        "with a point-of-use recheck, exactly as 'designator-padding' already is"
+    )
+    _, expected_digest = load_corpus_frame_policy(DEFAULT_CORPUS_FRAME_CONFIG_PATH)
+    assert sealed["corpus-frame-shard"] == expected_digest, (
+        "the sealed corpus-frame-shard digest does not match the digest of the sealed "
+        "config bytes; a renamed or mis-bound knob would pass a name-only check"
     )
 
 

@@ -134,6 +134,11 @@ def act_attachment_facts(context, act_id: str) -> dict[str, dict]:
         if chair in facts or not isinstance(entry.get("attached"), bool):
             raise FatalAccounting(f"act {act_id} has ambiguous derived act-attachment facts")
         health = entry.get("content_health")
+        # A malformed health record and an absent one are different facts: only
+        # the absent one is honestly "health not recorded", and only the
+        # malformed one tells the operator to look at the artifact.
+        if health is not None and not isinstance(health, dict):
+            raise FatalAccounting(f"act {act_id} has malformed derived act-attachment entry")
         truncated = health.get("truncated") if isinstance(health, dict) else None
         facts[chair] = {
             "attached": entry["attached"],
