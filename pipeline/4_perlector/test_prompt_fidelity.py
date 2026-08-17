@@ -205,3 +205,13 @@ def test_prompt_evidence_binds_the_builders_own_bytes_not_only_its_name(monkeypa
         "a runtime monkeypatch is not a source edit; the module digest binds bytes on disk"
     )
     assert after["rendered_sha256"] != before["rendered_sha256"]
+
+
+def test_the_default_protocols_policy_literal_agrees_with_the_protocol_pin():
+    """prompts.py is self-digesting (its bytes are builder_sha256), so the
+    duplicate literal cannot be replaced with an import without moving every
+    pin. The agreement is pinned here instead: if either side changes its
+    spelling, this fails and a person reconciles the two on purpose."""
+    assert (
+        prompts._DEFAULT_PROTOCOL["page_shared_prefix_policy"] == protocol.PAGE_SHARED_PREFIX_POLICY
+    )
