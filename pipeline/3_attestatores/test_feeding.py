@@ -469,6 +469,42 @@ def test_schedule_is_stage_major_chair_outer_act_inner_and_refuses_duplicate_cha
         stage_major_schedule("parish-7", [{"act_id": "a1"}], ["attestator_1", "attestator_1"])
 
 
+def test_schedule_refuses_a_repeated_act_for_the_same_reason_it_refuses_a_chair():
+    """One duplicate act row in becomes one duplicate serving per chair out."""
+    with pytest.raises(SchemaRefusal, match="repeats an act"):
+        stage_major_schedule(
+            "parish-7",
+            [{"act_id": "a1", "page_ordinal": 0}, {"act_id": "a1", "page_ordinal": 1}],
+            ["attestator_1", "attestator_2"],
+        )
+
+
+@pytest.mark.parametrize(
+    ("acts", "chairs", "message"),
+    [
+        ([{"act_id": "a1"}], ["attestator_1", ""], "chair identity is blank"),
+        ([{"act_id": "a1"}], ["attestator_1", 7], "chair identity is blank"),
+        (["a1"], ["attestator_1"], "act has no identity"),
+        ([{"act_id": "a1", "page_ordinal": "0"}], ["attestator_1"], "ordinal is not an integer"),
+        ([{"act_id": "a1", "page_ordinal": True}], ["attestator_1"], "ordinal is not an integer"),
+    ],
+)
+def test_schedule_refuses_malformed_rows_instead_of_failing_inside_a_sort(acts, chairs, message):
+    """Each of these previously escaped as a bare TypeError or AttributeError."""
+    with pytest.raises(SchemaRefusal, match=message):
+        stage_major_schedule("parish-7", acts, chairs)
+
+
+def test_stage_major_execution_refuses_a_schedule_that_serves_one_act_twice():
+    schedule = stage_major_schedule("parish-7", [{"act_id": "a1"}], ["attestator_1"])
+    residency = SingleChairResidency(lambda chair: chair, lambda *_: None)
+    with pytest.raises(SchemaRefusal, match="serves one act twice"):
+        execute_stage_major_schedule(
+            [schedule[0], dict(schedule[0])], residency=residency, serve=lambda *_: None
+        )
+    assert residency.resident is None
+
+
 def test_stage_major_execution_never_exposes_two_resident_chairs():
     schedule = stage_major_schedule(
         "parish-7",

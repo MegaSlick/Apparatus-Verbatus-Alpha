@@ -46,6 +46,9 @@ DAI_LIMIT_SOURCES = {
     ),
 }
 SCHEDULING_POLICY = "chair-outer-act-inner.stage-major-parish.v1"
+# Where an act with no page ordinal sorts: before every placed act, and named
+# rather than spelled -1 at the two places that have to agree on it.
+_UNPLACED_ORDINAL = -1
 # The (adapter, parser) pairs `retain_model_view` can actually carry to a state.
 _RUNNABLE_PARSERS = frozenset({("churro.v1", "xml")})
 _UNCERTAINTY_TOKENS = ("[UNCERTAIN]", "[CROSSED_OUT]")
@@ -317,15 +320,33 @@ def stage_major_schedule(
     if not isinstance(parish_id, str) or not parish_id:
         raise SchemaRefusal("schedule parish identity is blank")
     chair_rows = list(chairs)
+    if any(not isinstance(chair, str) or not chair for chair in chair_rows):
+        raise SchemaRefusal("schedule chair identity is blank")
     ordered_chairs = sorted(set(chair_rows))
     if len(ordered_chairs) != len(chair_rows):
         # Iterables in production are lists; accepting duplicates makes a repeated
         # serving action look like normal scheduling, so materialize once below.
         raise SchemaRefusal("schedule repeats a chair")
     rows = list(acts)
-    if any(not isinstance(row.get("act_id"), str) or not row["act_id"] for row in rows):
-        raise SchemaRefusal("schedule act has no identity")
-    ordered_acts = sorted(rows, key=lambda row: (row.get("page_ordinal", -1), row["act_id"]))
+    seen_acts: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict) or not isinstance(row.get("act_id"), str) or not row["act_id"]:
+            raise SchemaRefusal("schedule act has no identity")
+        # The same reason the chair check gives, in the other dimension: a
+        # repeated act row is a second serving of one act wearing the look of
+        # ordinary scheduling, and every chair would carry it, so one duplicate
+        # in becomes one duplicate Testimonium per chair out.
+        if row["act_id"] in seen_acts:
+            raise SchemaRefusal("schedule repeats an act")
+        seen_acts.add(row["act_id"])
+        # Checked rather than left to `sorted`, which answers a non-integer
+        # ordinal with an unnamed TypeError from inside a comparison.
+        ordinal = row.get("page_ordinal", _UNPLACED_ORDINAL)
+        if not isinstance(ordinal, int) or isinstance(ordinal, bool):
+            raise SchemaRefusal("schedule act page ordinal is not an integer")
+    ordered_acts = sorted(
+        rows, key=lambda row: (row.get("page_ordinal", _UNPLACED_ORDINAL), row["act_id"])
+    )
     return [
         {
             "policy": SCHEDULING_POLICY,
@@ -408,8 +429,16 @@ def execute_stage_major_schedule(
         for row in rows
     ):
         raise SchemaRefusal("stage-major execution received a malformed schedule row")
-    chairs = [row["chair"] for row in rows]
-    chair_blocks = [chair for chair, _ in groupby(chairs)]
+    chair_blocks = []
+    for chair, chair_rows in groupby(rows, key=lambda row: row["chair"]):
+        chair_blocks.append(chair)
+        served = [row["act_id"] for row in chair_rows]
+        # The block is what one residency actually serves, so a repeat inside it
+        # is a second serving of one act under one load -- the same defect the
+        # builder refuses, arriving through a schedule this executor did not
+        # build. Checked here rather than trusted from there.
+        if len(set(served)) != len(served):
+            raise SchemaRefusal("stage-major execution schedule serves one act twice to a chair")
     if len(chair_blocks) != len(set(chair_blocks)):
         raise SchemaRefusal("stage-major execution schedule returns to an unloaded chair")
     if len({row["parish_id"] for row in rows}) > 1:
