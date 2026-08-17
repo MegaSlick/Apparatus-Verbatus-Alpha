@@ -148,8 +148,13 @@ def validate(layer: Any, text: Any) -> dict[str, Any]:
     return layer
 
 
-def utf8_round_trip(layer: dict[str, Any], text: str) -> None:
-    """Assert byte encoding/decoding cannot silently change offset meaning."""
+def utf8_round_trip(layer: Any, text: Any) -> None:
+    """Assert byte encoding/decoding cannot silently change offset meaning.
+
+    Takes the same unchecked arguments `validate` does, and refuses them the same
+    way, so a caller that wants both questions asked need not ask the first one
+    twice.
+    """
     validate(layer, text)
     restored = text.encode("utf-8").decode("utf-8")
     if restored != text:

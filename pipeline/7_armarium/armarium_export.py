@@ -79,6 +79,10 @@ _UNCERTAINTY_AVAILABLE: Final = "canonical-unicode-codepoint-offsets"
 # reader of any format can compare against the payload beside it.
 _UNCERTAINTY_NOT_APPLICABLE: Final = "not-applicable"
 _ANNOTATION_NOT_PRODUCED: Final = "not-produced-pending-architecture-approval"
+# The manifest-level claim, distinct from the per-row status above since R8:
+# a row saying "annotations not produced" beside a carried uncertainty layer
+# needed to say *which* annotations, and the package claim says it once.
+_ANNOTATIONS_CLAIM: Final = "semantic-annotations-not-produced"
 _LITERAL_TEXT_FORMATS: Final = ("text-bundle", "acts-database", "jsonl")
 _PIXEL_REFERENCE_CLAIM: Final = "reference validity only; pixel resolution requires source access"
 _PIXEL_EMBEDDED_CLAIM: Final = (
@@ -364,6 +368,7 @@ def verify_export_bundle(data: bytes, clean_root) -> dict[str, Any]:
     _verify_retained_run_claim(manifest)
     _verify_canonical_text_claim(manifest)
     _verify_annotations_claim(manifest)
+    _verify_uncertainty_claim(manifest)
     _verify_exact_product_members(formats, sources, actual_names)
     search_fold_verification = _verify_product_accounting(root, manifest, formats, sources)
     verification = {}
@@ -511,8 +516,9 @@ def _validate_projection(projection: ArmariumProjection) -> None:
                 raise SchemaRefusal("a delivered act has no provenance")
             if not regions:
                 raise SchemaRefusal("a delivered act has no source-region provenance")
-            validate_uncertainty(act.get("uncertainty"), literal)
-            utf8_round_trip(act["uncertainty"], literal)
+            # `utf8_round_trip` runs `validate_uncertainty` itself, on exactly
+            # these arguments, before it asks its own question.
+            utf8_round_trip(act.get("uncertainty"), literal)
         elif literal is not None:
             raise SchemaRefusal("a non-delivered act may not carry purported clean text")
         elif act.get("uncertainty") is not None:
@@ -1893,7 +1899,7 @@ def _export_manifest(
                 "resolution_claim": "artifact and receipt citations require retained-run access",
             },
             "annotations": {
-                "status": "semantic-annotations-not-produced",
+                "status": _ANNOTATIONS_CLAIM,
                 "text_writable": False,
             },
             "uncertainty": {
@@ -2965,8 +2971,19 @@ def _verify_annotations_claim(manifest: dict[str, Any]) -> None:
     """
     claims = manifest.get("claims")
     annotations = claims.get("annotations") if isinstance(claims, dict) else None
-    if annotations != {"status": "semantic-annotations-not-produced", "text_writable": False}:
+    if annotations != {"status": _ANNOTATIONS_CLAIM, "text_writable": False}:
         raise SchemaRefusal("the package annotations claim is not this build's fixed claim")
+
+
+def _verify_uncertainty_claim(manifest: dict[str, Any]) -> None:
+    """The carriage claim is a measurement, and is checked as one.
+
+    Unlike the annotations claim beside it, ``carried_by`` is not a constant: it
+    is exactly the literal-text formats this package selected, so a manifest that
+    named a format it does not carry the layer in -- or omitted one it does --
+    would be describing a different package.
+    """
+    claims = manifest.get("claims")
     selected = manifest.get("formats")
     format_rows = selected.get("formats") if isinstance(selected, dict) else None
     carried = sorted(set(format_rows or []) & set(_LITERAL_TEXT_FORMATS))
