@@ -118,6 +118,20 @@ def test_point_of_use_policy_refuses_every_missing_sealed_value(field_path):
         load_geometry_policy_record(policy)
 
 
+@pytest.mark.parametrize(
+    "field", ["half_tile_vertical_offset_px", "horizontal_overlap_px"]
+)
+def test_sealed_tiling_geometry_must_stay_half_the_tile_it_offsets(field):
+    """The half-tile equalities are doing safety work -- a vertical offset that is
+    not half the tile height reopens the seam the double pass exists to cover, and
+    a horizontal overlap that is not half the tile width reopens the x=1400,2800
+    fragmentation V1 fixed -- so a present-but-wrong value must refuse, not load."""
+    policy = deepcopy(load_geometry_policy())
+    policy["surya"][field] = policy["surya"][field] + 1
+    with pytest.raises(SchemaRefusal, match="half the sealed tile"):
+        load_geometry_policy_record(policy)
+
+
 def test_surya_runs_both_half_offset_tilings_and_unions_without_discarding_pass_evidence():
     policy = load_geometry_policy()
     calls = []
