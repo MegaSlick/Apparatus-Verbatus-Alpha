@@ -150,7 +150,7 @@ def read_retained_chandra_response(
     response = custody_reference(response_ref, _RESPONSE_PREFIX, "Chandra response reference")
     receipt = custody_reference(receipt_ref, _RECEIPT_PREFIX, "Chandra receipt reference")
     custody = custody_reference(custody_ref, _RESPONSE_PREFIX, "Chandra custody binding reference")
-    binding_bytes = tree.read_bytes(custody["relative_path"])
+    binding_bytes = _read_custody_bytes(tree, custody["relative_path"], "custody binding")
     if digest_bytes(binding_bytes) != custody["sha256"]:
         raise SchemaRefusal("Chandra custody binding blob differs from its sealed reference")
     try:
@@ -181,10 +181,26 @@ def read_retained_chandra_response(
     # proves the pairing; the response bytes are opaque textual custody, never
     # parsed by this module.
     _validated_designator_receipt(tree, receipt)
-    data = tree.read_bytes(response["relative_path"])
+    data = _read_custody_bytes(tree, response["relative_path"], "response blob")
     if digest_bytes(data) != response["sha256"]:
         raise SchemaRefusal("Chandra response blob differs from its sealed reference")
     return data
+
+
+def _read_custody_bytes(tree: Any, relative_path: str, what: str) -> bytes:
+    """Read one sealed blob, refusing a reference whose file is no longer there.
+
+    A well-formed reference to a blob that has been removed is a custody failure,
+    not a crash: `RunTree.read_run_receipt` already wraps exactly this case for
+    receipts, on the ground that refusing provenance includes provenance that is
+    no longer there. Without this, the same missing-file case reached the caller
+    as a bare `FileNotFoundError` from a stage boundary whose whole purpose is to
+    name what it refused.
+    """
+    try:
+        return tree.read_bytes(relative_path)
+    except OSError as error:
+        raise SchemaRefusal(f"Chandra {what} {relative_path} could not be read: {error}") from error
 
 
 def _is_custody_binding(data: bytes) -> bool:

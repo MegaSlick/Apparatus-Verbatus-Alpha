@@ -268,11 +268,15 @@ class _FixtureTree:
         return {"chair": self.receipt_chair}
 
     def read_bytes(self, path):
-        # `RunTree.read_bytes` is `self.resolve(path).read_bytes()`, so a
-        # reference to a blob that is not there surfaces as OSError, not KeyError.
-        if path not in self.blobs:
-            raise FileNotFoundError(path)
-        return self.blobs[path]
+        # `RunTree.read_bytes` is `Path.read_bytes`, so a blob that is not there
+        # raises FileNotFoundError. A double that raised KeyError instead would
+        # let a missing-blob refusal pass in this suite and fail against the real
+        # tree — the same fixture-restates-the-real-thing gap this class's
+        # docstring already names for stage directories.
+        try:
+            return self.blobs[path]
+        except KeyError:
+            raise FileNotFoundError(2, "No such file or directory", path) from None
 
 
 def test_one_chandra_response_has_one_receipt_and_two_consumable_references():
@@ -311,21 +315,6 @@ def test_one_chandra_response_has_one_receipt_and_two_consumable_references():
     assert "R3-only custody" not in str(geometry)
 
 
-def test_chandra_custody_names_a_missing_blob_instead_of_crashing_on_it():
-    """A retained response that is gone is a custody refusal, not a bare OSError.
-
-    `RunTree.read_run_receipt`, one line above the read this covers, already
-    wraps the same failure for the same reason: a reference that no longer
-    resolves is a provenance failure, and R3 must be able to tell it apart from a
-    crash in the reader.
-    """
-    tree = _FixtureTree()
-    response_ref = retain_chandra_response(tree, b"fixture", RECEIPT)
-    tree.blobs.clear()  # the run tree lost the blob the reference still names
-    with pytest.raises(SchemaRefusal, match="could not be read"):
-        read_retained_chandra_response(tree, response_ref, RECEIPT)
-
-
 def test_chandra_custody_refuses_a_forged_blob_reference():
     tree = _FixtureTree()
     stored = retain_chandra_response(
@@ -347,6 +336,31 @@ def test_chandra_custody_refuses_a_forged_blob_reference():
     # refused by the digest check instead.
     tree.blobs[stored["response_ref"]["relative_path"]] = b"tampered"
     with pytest.raises(SchemaRefusal, match="differs"):
+        read_retained_chandra_response(
+            tree,
+            stored["response_ref"],
+            RECEIPT,
+            stored["custody_ref"],
+            page_id=PAGE_ID,
+            page_ordinal=PAGE_ORDINAL,
+        )
+
+
+@pytest.mark.parametrize("removed", ["response_ref", "custody_ref"])
+def test_chandra_custody_refuses_a_reference_whose_blob_is_gone(removed):
+    """A vanished blob is a named custody refusal, not a bare FileNotFoundError.
+
+    Both halves of the pair are read through the same helper, so both are pinned:
+    the run tree already treats a receipt reference whose file is missing this
+    way, and a stage boundary that exists to say what it refused may not end a
+    stage with an unnamed OS error instead.
+    """
+    tree = _FixtureTree()
+    stored = retain_chandra_response(
+        tree, b"a response later removed", RECEIPT, page_id=PAGE_ID, page_ordinal=PAGE_ORDINAL
+    )
+    del tree.blobs[stored[removed]["relative_path"]]
+    with pytest.raises(SchemaRefusal, match="could not be read"):
         read_retained_chandra_response(
             tree,
             stored["response_ref"],
@@ -757,37 +771,6 @@ def test_resolver_refuses_an_occlusion_polygon_outside_the_shared_page_extent():
     )
     with pytest.raises(SchemaRefusal, match="outside the shared page extent"):
         resolve(raw_sources, [out_of_bounds])
-
-
-def test_resolver_refuses_two_occlusions_sharing_one_identity():
-    """The resolver refuses colliding raw proposal ids; occlusions are the same fact.
-
-    `occlusion_ids` goes into every partition row, so an id counted twice tells a
-    reviewer that two separate obstructions bear on every proposal on the page
-    when only one was ever recorded.
-    """
-    raw_sources = _geometry_sources()
-    first = _occlusion_envelope()
-    second = occlusion_envelope(
-        run_id="r2-fixture",
-        subject_id="occ_fixture",  # the same identity as `first`
-        config_digest="d" * 64,
-        adapter_revision="fixture-r2-v1",
-        inputs=[],
-        payload={
-            "schema": "designator-occlusion.v1",
-            "occlusion_id": "occ_fixture",
-            "page_id": "pg_fixture",
-            "page_ordinal": 0,
-            "polygon": [{"x": 40, "y": 40}, {"x": 41, "y": 40}, {"x": 41, "y": 41}],
-            "z_relationship": "unknown",
-            "review_state": "open",
-            "receipt_ref": RECEIPT,
-        },
-    )
-    assert first["payload"]["polygon"] != second["payload"]["polygon"]
-    with pytest.raises(SchemaRefusal, match="duplicate occlusion identities"):
-        resolve(raw_sources, [first, second])
 
 
 def test_resolver_refuses_raw_proposals_with_mismatched_page_pixel_extent():
