@@ -430,6 +430,15 @@ def validate_sampling_draw(record: Any, run_path: str | Path | None = None) -> d
     )
     for field in frame:
         _sha(frame[field], f"sampling draw frame {field}")
+    # The seed is a derivation, not a free field: even without a run authority
+    # it must be the one the draw's own retained page_digest produces, or a
+    # replaced seed would replay a different ranking under an internally
+    # consistent record.
+    _refuse(
+        frame["seed"]
+        != digest_bytes(canonical_bytes({"page_digest": frame["page_digest"], "purpose": "frame"})),
+        "sampling draw frame seed diverges from its derivation over its own page_digest",
+    )
     raw_catalog = record["catalog"]
     _refuse(not isinstance(raw_catalog, list), "sampling draw catalog is not a list")
     source = []
