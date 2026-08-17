@@ -194,9 +194,10 @@ def main() -> int:
         "--perlector-instrument-per-mille",
         type=int,
         default=0,
-        help="per-mille rate of instrument (lectio-nuda) sampling; raising it above 0 "
-        "is Tyrel's, with --perlector-instrument-approval-ref (config/README.md, "
-        "R5a toggle register)",
+        help="per-mille rate at which the protocol's selection rule samples acts into "
+        "the instrument arms (lectio-nuda and primed-without-prior controls); raising "
+        "it above 0 is Tyrel's, with --perlector-instrument-approval-ref "
+        "(config/README.md, R5a toggle register)",
     )
     parser.add_argument(
         "--perlector-instrument-approval-ref",
