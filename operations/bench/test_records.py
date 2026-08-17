@@ -36,6 +36,24 @@ def test_fixture_exercise_leaves_real_cells_visibly_not_run_not_green():
     assert all(validate_result(result) == result for result in results)
 
 
+def test_a_non_string_cell_refuses_by_name_instead_of_crashing_the_validator():
+    """Both validators take `cell` from a record they have not vouched for yet.
+
+    An unhashable one made `cell not in _MEASURES` raise `TypeError`, so the one
+    boundary whose job is to produce a named refusal produced a traceback
+    instead.
+    """
+    record = definition("B2")
+    record["cell"] = ["B2"]
+    with pytest.raises(SchemaRefusal, match="unknown R7b bench cell"):
+        validate_definition(record)
+
+    result = not_run("B2", fixture_verified=True)
+    result["cell"] = {"B2": True}
+    with pytest.raises(SchemaRefusal, match="unknown R7b bench cell"):
+        validate_result(result)
+
+
 def test_result_cannot_move_its_own_goalposts_or_claim_observations():
     # Re-keyed *and* resealed, which is the binding's real threat model: a
     # goalpost swap that leaves a stale self-hash behind is refused by the

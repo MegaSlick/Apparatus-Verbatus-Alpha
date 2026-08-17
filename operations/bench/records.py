@@ -172,8 +172,15 @@ _MEASURES: Final = {
 
 
 def definition(cell: str) -> dict[str, Any]:
-    """Return one closed, self-hashed, versioned bench-cell definition."""
-    if cell not in _MEASURES:
+    """Return one closed, self-hashed, versioned bench-cell definition.
+
+    The type check is not decoration.  ``validate_definition`` and
+    ``validate_result`` reach this function with a ``cell`` taken straight out of
+    a record they have not vouched for yet, and an unhashable one — a list, a
+    nested table — makes ``cell not in _MEASURES`` raise ``TypeError`` rather
+    than the named refusal these validators exist to produce.
+    """
+    if not isinstance(cell, str) or cell not in _MEASURES:
         raise SchemaRefusal(f"unknown R7b bench cell {cell!r}")
     record: dict[str, Any] = {
         "schema": SCHEMA,
@@ -190,7 +197,14 @@ def definition(cell: str) -> dict[str, Any]:
 
 
 def all_definitions() -> list[dict[str, Any]]:
-    return [definition(cell) for cell in ("B0", "B0.5", "B2", "B3", "B4", "B5", "B5a", "B6")]
+    """Every sealed cell, in the order the matrix above declares them.
+
+    Read off ``_MEASURES`` rather than repeated as a second hand-written list: a
+    cell added to the matrix and forgotten in a duplicate roster would be absent
+    from every exercise and every result with nothing failing to say so
+    (GOVERNANCE 2).  The names themselves are pinned by ``test_records.py``.
+    """
+    return [definition(cell) for cell in _MEASURES]
 
 
 def validate_definition(record: Any) -> dict[str, Any]:
