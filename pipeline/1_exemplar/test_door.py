@@ -38,7 +38,11 @@ from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash,
 from common.contracts.errors import ContractError
 from common.contracts.stages import DESIGNATOR, DOOR, EXEMPLAR
 from common.runtree.store import RunTree
-from common.stage import DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH, StageContext
+from common.stage import (
+    DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH,
+    DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH,
+    StageContext,
+)
 from operations.submit import gate, submit
 
 POLICY = load_format_policy()
@@ -813,6 +817,9 @@ def test_real_run_bindings_change_with_a_renderer_recipe_before_a_page_is_writte
         designator_padding_config_sha256=door._padding_config_digest(
             DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH
         ),
+        designator_geometry_config_sha256=door._geometry_config_digest(
+            DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH
+        ),
     )
     altered_pdf_recipe = dict(door.pdf_render.renderer_recipe(settings), dpi=301)
     monkeypatch.setattr(door.pdf_render, "renderer_recipe", lambda _settings: altered_pdf_recipe)
@@ -825,6 +832,9 @@ def test_real_run_bindings_change_with_a_renderer_recipe_before_a_page_is_writte
         door.load_hard_failure_policy(),
         designator_padding_config_sha256=door._padding_config_digest(
             DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH
+        ),
+        designator_geometry_config_sha256=door._geometry_config_digest(
+            DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH
         ),
     )
 
@@ -860,6 +870,9 @@ def test_a_real_door_run_names_and_binds_its_non_fake_implementation_revision(mo
         designator_padding_config_sha256=door._padding_config_digest(
             DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH
         ),
+        designator_geometry_config_sha256=door._geometry_config_digest(
+            DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH
+        ),
     )
     assert baseline["adapter_recipes"]["door"] == door.REAL_DOOR_ADAPTER_REVISION
     assert baseline["adapter_recipes"]["door"] != "fake-door-v0"
@@ -874,6 +887,9 @@ def test_a_real_door_run_names_and_binds_its_non_fake_implementation_revision(mo
         door.load_hard_failure_policy(),
         designator_padding_config_sha256=door._padding_config_digest(
             DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH
+        ),
+        designator_geometry_config_sha256=door._geometry_config_digest(
+            DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH
         ),
     )
     assert baseline["config_digest"] != changed["config_digest"]
@@ -917,6 +933,9 @@ def test_a_real_door_run_binds_the_hard_failure_policy_before_any_page_is_writte
         designator_padding_config_sha256=door._padding_config_digest(
             DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH
         ),
+        designator_geometry_config_sha256=door._geometry_config_digest(
+            DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH
+        ),
     )
     changed = door._real_bindings(
         Models(),
@@ -932,6 +951,9 @@ def test_a_real_door_run_binds_the_hard_failure_policy_before_any_page_is_writte
         },
         designator_padding_config_sha256=door._padding_config_digest(
             DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH
+        ),
+        designator_geometry_config_sha256=door._geometry_config_digest(
+            DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH
         ),
     )
 
@@ -2048,6 +2070,7 @@ def test_real_bindings_seal_designator_padding_alongside_the_shard_knob(monkeypa
         minimum_dpi=door.pdf_render.MIN_RENDER_DPI
     )
     padding_digest = door._padding_config_digest(DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH)
+    geometry_digest = door._geometry_config_digest(DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH)
     bindings = door._real_bindings(
         Models(),
         ledger,
@@ -2056,12 +2079,19 @@ def test_real_bindings_seal_designator_padding_alongside_the_shard_knob(monkeypa
         door.load_recovery_policy(),
         door.load_hard_failure_policy(),
         designator_padding_config_sha256=padding_digest,
+        designator_geometry_config_sha256=geometry_digest,
     )
     sealed = bindings["sealed_config_digests"]
     assert sealed.get("designator-padding") == padding_digest, (
         f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing a "
         "'designator-padding' entry bound to the exact digest passed in; the fixture "
         "path's run_config_bindings() already seals this name (F-S5)"
+    )
+    assert sealed.get("designator-geometry") == geometry_digest, (
+        f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing a "
+        "'designator-geometry' entry bound to the exact digest passed in; the Designator's "
+        "point-of-use recheck (pipeline/2_designator/run.py) requires this name on every "
+        "run, so a real run without it refuses unconditionally (same class as F-S5)"
     )
     assert "corpus-frame-shard" in sealed, (
         "the pre-existing corpus-frame-shard entry must survive this fix, not be replaced"
@@ -2096,6 +2126,9 @@ def test_real_bindings_refuse_an_unapproved_prior_control_before_run_creation():
             door.load_hard_failure_policy(),
             designator_padding_config_sha256=door._padding_config_digest(
                 DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH
+            ),
+            designator_geometry_config_sha256=door._geometry_config_digest(
+                DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH
             ),
             perlector_instrument_per_mille=1,
         )
