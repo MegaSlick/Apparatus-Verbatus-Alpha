@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import re
+import time
 
 import feeding
 import pytest
@@ -17,6 +19,7 @@ from feeding import (
     churro_generation,
     churro_prompt,
     dai_model_view,
+    detect_repetition,
     execute_stage_major_schedule,
     retain_model_view,
     stage_major_schedule,
@@ -156,6 +159,70 @@ def test_repetition_detection_observes_only_bytes_already_captured(monkeypatch):
     )
     assert observations == [raw]
     assert tree.blobs[record["raw_response_ref"]["relative_path"]] == raw
+
+
+def _repetition_by_construction(raw: bytes) -> dict | None:
+    """The straightforward reading of the same rule, built-string form and all.
+
+    Kept here as the thing `detect_repetition`'s windowed counter must agree
+    with: the shipped form exists only because building `unit * (repeats + 1)`
+    on every step is quadratic in the response length, and an optimisation that
+    is not pinned against the obvious version is a claim rather than a fact.
+    """
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    normalized = re.sub(r"\s+", " ", text).strip()
+    if len(normalized) < 24 * 3:
+        return None
+    for width in range(24, min(256, len(normalized) // 3) + 1):
+        unit = normalized[-width:]
+        repeats = 1
+        while normalized.endswith(unit * (repeats + 1)):
+            repeats += 1
+        if repeats >= 3:
+            return {"kind": "post-hoc-repetition", "unit_characters": width, "repeats": repeats}
+    return None
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        b"",
+        b"a" * 71,
+        b"a" * 72,
+        b"a" * 1_000,
+        b"ab" * 400,
+        b"\xff\xfe not utf-8 at all",
+        "un acte ordinaire qui ne se repète pas du tout, ligne par ligne".encode(),
+        b"preamble that does not repeat, then " + b"the same tail again and again. " * 40,
+        b"   spaced   out   " + b"repeated window of twenty-four+ chars " * 12,
+        # Exactly at the boundary of the window sweep, and one repetition short.
+        b"z" * 24 * 3,
+        b"z" * (24 * 3 - 1),
+    ],
+)
+def test_repetition_counting_matches_the_built_string_reading(raw):
+    assert detect_repetition(raw) == _repetition_by_construction(raw)
+
+
+def test_repetition_detection_stays_linear_on_a_long_degenerate_tail():
+    """The case the windowed counter exists for: a large, wholly repeated tail.
+
+    Nothing bounds a captured response's size, and the built-string form spent
+    time quadratic in it precisely when the detector fires.
+    """
+    raw = b"the same twelve word tail over and over again " * 100_000
+    started = time.perf_counter()
+    finding = detect_repetition(raw)
+    # 99_999, not 100_000: whitespace normalization strips the final trailing
+    # space, so the last window is one character short of the repeated unit.
+    assert finding == {"kind": "post-hoc-repetition", "unit_characters": 46, "repeats": 99_999}
+    # Measured on this 4.6 MB input: 0.23 s windowed, 16.5 s built-string. The
+    # bound sits between them with room on both sides, so it fails on a return
+    # to quadratic rather than on a slow machine.
+    assert time.perf_counter() - started < 4.0
 
 
 def test_dai_retains_resize_and_manifest_references_not_carried_prompt_bytes():

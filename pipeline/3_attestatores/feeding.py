@@ -117,7 +117,20 @@ def detect_repetition(raw: bytes) -> dict[str, Any] | None:
     ):
         unit = normalized[-width:]
         repeats = 1
-        while normalized.endswith(unit * (repeats + 1)):
+        # One window back at a time, rather than `normalized.endswith(unit *
+        # (repeats + 1))`. That form rebuilds and re-compares the whole matched
+        # tail on every step, so counting a tail of n repetitions costs O(n^2)
+        # characters: measured on a wholly repeated response, 0.58 s at 0.9 MB
+        # and 16.5 s at 4.6 MB, against 0.04 s and 0.23 s here. Nothing bounds
+        # the size of a captured response, and the cost lands on exactly the
+        # degenerate runaway output this detector exists to find. The two forms
+        # accept the same tails and return the same count: the tail already ends
+        # with `unit * repeats`, so one further repetition is one further window
+        # equal to `unit` -- pinned in the R3 suite against the built-string
+        # reading it replaces.
+        while (repeats + 1) * width <= len(normalized) and (
+            normalized[-(repeats + 1) * width : -repeats * width] == unit
+        ):
             repeats += 1
         if repeats >= _REPETITION_MIN_REPEATS:
             return {"kind": "post-hoc-repetition", "unit_characters": width, "repeats": repeats}
