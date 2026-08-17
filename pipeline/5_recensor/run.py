@@ -1508,7 +1508,20 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     latest["outcome"] == "no-readable-text"
                     and not continuation_shortfall
                     and not flagged_pages
-                    and act_key not in scenario["hold_acts"]
+                    # Every hold cause the ordinary chain below would apply,
+                    # asked once. `confirmed-blank` is COMPLETED-class and
+                    # terminal, so a cause that only appears in that chain is a
+                    # cause this seal silently overrides: an act whose page
+                    # carries witness text outside every aligned attachment, or
+                    # whose Perlector exhausted its audit re-proof cap, would be
+                    # sealed complete over a shortfall this stage had already
+                    # measured (GOVERNANCE 2; invariant 6). The three page-level
+                    # conditions above are named separately because they are
+                    # already refused before the route is consulted; this
+                    # subsumes the scenario hold `act_key not in
+                    # scenario["hold_acts"]` used to state, through the
+                    # composer's own `unreconciled` cause.
+                    and findings_route is None
                 )
                 else None
             )
