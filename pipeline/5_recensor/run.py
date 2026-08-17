@@ -904,6 +904,30 @@ def geometry_coverage_inputs(context) -> dict[int, dict]:
     return findings
 
 
+def current_act_attachments(context) -> dict[str, dict]:
+    """The current act-attachment record per act, from one manifest pass.
+
+    `latest_attempt` is the one shared derivation of "current", exactly as
+    `act_attachment_facts` above and `pipeline/4_perlector/run.py`'s
+    `act_attachment_view` derive it. Keeping the last record the manifest
+    happens to list is the defect both of those already record: manifest order
+    is a hash, so a second Attestatores pass would hand this check whichever
+    attachment sorted last rather than the current one, and a third consumer
+    deriving "current" its own way is the F-O1/F-O3 drift shape itself.
+    """
+    records: dict[str, list[dict]] = {}
+    for entry in context.tree.build_manifest(ATTESTATORES)["artifacts"]:
+        if entry["kind"] != "act-attachment":
+            continue
+        records.setdefault(entry["subject_id"], []).append(
+            context.tree.read_artifact(ATTESTATORES, "act-attachment", entry["artifact_id"])
+        )
+    return {
+        act_id: latest_attempt(group, f"act-attachment for {act_id}", operation="act-attachment")
+        for act_id, group in records.items()
+    }
+
+
 def testimony_content_findings(context) -> dict[int, dict]:
     """Compare each page witness's text to its own aligned act attachments.
 
@@ -912,14 +936,13 @@ def testimony_content_findings(context) -> dict[int, dict]:
     map; a non-whitespace page character outside their ordered union is a visible
     coverage shortfall, never a verdict about which witness is right.
     """
-    attachments = {
-        record["subject_id"]: record
-        for entry in context.tree.build_manifest(ATTESTATORES)["artifacts"]
-        if entry["kind"] == "act-attachment"
-        for record in [
-            context.tree.read_artifact(ATTESTATORES, "act-attachment", entry["artifact_id"])
-        ]
-    }
+    attachments = current_act_attachments(context)
+    # Read and validated once, not once per page witness: `expected_acts` re-reads
+    # the proposal seal and re-verifies its self-hash on every call, and this stage
+    # never writes to the Designator's seal while it runs.
+    acts_by_page: dict[int, list[dict]] = {}
+    for act in expected_acts(context):
+        acts_by_page.setdefault(act["page_ordinal"], []).append(act)
     findings: dict[int, dict] = {}
     for entry in context.tree.build_manifest(ATTESTATORES)["artifacts"]:
         if entry["kind"] != "page-testimonium":
@@ -927,7 +950,11 @@ def testimony_content_findings(context) -> dict[int, dict]:
         record = context.tree.read_artifact(ATTESTATORES, "page-testimonium", entry["artifact_id"])
         payload = _payload(record, f"page Testimonium {record['artifact_id']}")
         ordinal, chair = payload.get("page_ordinal"), payload.get("chair")
-        if not isinstance(ordinal, int) or not isinstance(chair, str):
+        # `isinstance(ordinal, bool)` is excluded for the reason
+        # `geometry_coverage_inputs` excludes it, and it matters more here: `True`
+        # is an `int` that hashes as `1`, so a page Testimonium claiming
+        # `page_ordinal: true` would silently merge its findings into page 1's.
+        if not isinstance(ordinal, int) or isinstance(ordinal, bool) or not isinstance(chair, str):
             raise FatalAccounting("page Testimonium has no textual page identity")
         if "reported" not in payload:
             if record.get("outcome") in WITNESS_READING_OUTCOMES:
@@ -952,9 +979,7 @@ def testimony_content_findings(context) -> dict[int, dict]:
             # sends whoever reads the exit to the wrong producer.
             raise FatalAccounting("page Testimonium's reported page text is not text")
         spans = []
-        for act in expected_acts(context):
-            if act["page_ordinal"] != ordinal:
-                continue
+        for act in acts_by_page.get(ordinal, []):
             attachment = attachments.get(act["act_id"])
             if attachment is None:
                 raise FatalAccounting(f"act {act['act_id']} has no attachment for content coverage")
@@ -980,7 +1005,8 @@ def testimony_content_findings(context) -> dict[int, dict]:
                 ):
                     span = alignment.get("witness_span")
                     if not isinstance(span, dict) or not all(
-                        isinstance(span.get(k), int) for k in ("start", "end")
+                        isinstance(span.get(k), int) and not isinstance(span.get(k), bool)
+                        for k in ("start", "end")
                     ):
                         raise FatalAccounting("attached page witness has malformed alignment span")
                     spans.append((span["start"], span["end"], act["act_id"]))

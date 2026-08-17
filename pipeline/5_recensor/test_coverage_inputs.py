@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from common.contracts.errors import FatalAccounting
+from common.contracts.identities import attempt_id
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -56,6 +57,19 @@ def _context(*records):
     return _Context(tree=_ArtifactTree(records))
 
 
+@pytest.fixture(autouse=True)
+def _no_expected_acts(monkeypatch):
+    """Default the proposal seal to "no acts" for every test in this file.
+
+    `expected_acts` reads and self-hash-verifies a real Designator artifact,
+    which these hand-built trees deliberately do not carry. Tests that need an
+    act list set their own over the top of this one; the ones that exercise a
+    page Testimonium's own refusals need only that the seal read not explode
+    before the refusal they are about.
+    """
+    monkeypatch.setattr(RUN, "expected_acts", lambda unused: [])
+
+
 def _page_testimonium(*, outcome, reported=...):
     payload = {"page_ordinal": 1, "chair": "attestator_1"}
     if reported is not ...:
@@ -84,12 +98,18 @@ def _conservation(artifact_id, *, ordinal=1, measurable=True, components=None):
 
 
 def _attachment(context, *, end):
+    # `attempt_id`/`attempt_ordinal` are not decoration: `current_act_attachments`
+    # derives "current" through `latest_attempt`, which refuses a record whose
+    # sealed attempt identity does not bind the ordinal it claims. A double
+    # without them would pass a check the real artifact has to satisfy.
     return {
         "artifact_id": "attachment-1",
         "kind": "act-attachment",
         "subject_id": "act-1",
+        "attempt_id": attempt_id("act-1", "act-attachment", 1),
         "outcome": "attached",
         "payload": {
+            "attempt_ordinal": 1,
             "attachments": [
                 {
                     "chair": "attestator_1",
@@ -103,7 +123,7 @@ def _attachment(context, *, end):
                         "witness_span": {"start": 0, "end": end},
                     },
                 }
-            ]
+            ],
         },
     }
 
