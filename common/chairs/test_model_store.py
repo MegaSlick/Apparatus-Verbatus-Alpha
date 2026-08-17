@@ -661,6 +661,8 @@ def test_write_download_record_refuses_what_its_readers_would_refuse(tmp_path):
     with pytest.raises(DigestMismatchRefusal, match="diverges from roster policy"):
         write_download_record(record, tmp_path)
     assert (tmp_path / "download_record.json").read_bytes() == active
+    rejected_digest = digest_bytes(canonical_bytes(record))
+    assert not (tmp_path / "records" / f"{rejected_digest}.json").exists()
 
 
 def test_a_pending_entry_may_not_carry_evidence_for_bytes_that_are_not_there(tmp_path):
