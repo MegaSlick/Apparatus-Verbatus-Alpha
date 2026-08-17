@@ -911,6 +911,39 @@ def test_cli_entry_point_states_the_refusal_instead_of_printing_a_traceback(tmp_
     assert "Traceback" not in finished.stderr
 
 
+def test_a_float_in_a_gold_file_is_a_named_refusal_not_a_traceback(tmp_path):
+    """`canonical_bytes` refuses floats, but as a `TypeError` from inside the
+    self-hash — and a layout/padding record is self-hashed before its rectangles
+    are read. A pixel bound typed `1.5` therefore escaped `validate` as a traceback
+    and exit 1 instead of a named refusal and exit 2. Refused where the file is
+    read, so the refusal can name it."""
+    path, frame, pages = run_file(tmp_path)
+    sample = sample_stratified(path, catalog(pages), plan_for(frame, catalog(pages)))[0]
+    layout = {
+        "schema": LAYOUT_SCHEMA,
+        "sample": sample,
+        "regions": [{"kind": "act", "rect": {"x": 1.5, "y": 2, "w": 3, "h": 4}}],
+    }
+    layout["self_hash"] = _sha("0")
+    record = tmp_path / "layout.json"
+    record.write_text(json.dumps(layout), encoding="utf-8")
+    finished = subprocess.run(
+        [sys.executable, "-m", "gold.cli", "validate", str(record)],
+        capture_output=True,
+        text=True,
+        cwd=Path(__file__).resolve().parents[1],
+    )
+    assert finished.returncode == 2
+    assert "Traceback" not in finished.stderr
+    assert "carries integers, not the float 1.5" in finished.stderr
+    # NaN and Infinity are floats under another spelling, and json accepts both.
+    for literal in ("NaN", "Infinity"):
+        spelled = tmp_path / f"{literal}.json"
+        spelled.write_text('{"quota": %s}' % literal, encoding="utf-8")
+        with pytest.raises(SchemaRefusal, match="carries integers, not the float"):
+            cli.main(["validate", str(spelled)])
+
+
 def test_cli_malformed_json_input_is_a_named_refusal_not_a_traceback(tmp_path):
     """gold/cli.py's own JSON reading used to bypass core._read_json's SchemaRefusal
     wrapping, so a malformed catalog/plan/pick/record crashed with a raw parser

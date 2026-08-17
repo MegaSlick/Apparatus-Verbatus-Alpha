@@ -57,6 +57,25 @@ def _sha(value: Any, field: str) -> str:
     return value
 
 
+def _refuse_json_float(literal: str) -> Any:
+    """Refuse a float literal where it is read, not where it is later hashed.
+
+    `canonical_bytes` refuses floats outright, and every gold quantity — an
+    ordinal, a quota, a pixel bound — is an integer. But that refusal is a
+    `TypeError` raised from inside `self_hash`, and some validators reach the
+    self-hash before they reach the field: a layout region with `"x": 1.5`
+    escaped `python -m gold.cli validate` as a traceback and exit 1 rather than
+    a named refusal and exit 2, which is the defect F-O8 and F-S5 were opened
+    for. Refused at the door instead, where the file that carries it can be
+    named. `parse_constant` covers `NaN` and `Infinity`, which json accepts by
+    default and which are floats by another spelling.
+    """
+    raise SchemaRefusal(
+        f"a gold record carries integers, not the float {literal}; a float's JSON form "
+        "is not stable enough to hash against"
+    )
+
+
 def read_json(path: str | Path) -> Any:
     """Read one JSON file, refusing unreadable or malformed input by name.
 
@@ -65,7 +84,11 @@ def read_json(path: str | Path) -> Any:
     a bare traceback for a malformed catalog, plan, pick, or record file.
     """
     try:
-        return json.loads(Path(path).read_text(encoding="utf-8"))
+        return json.loads(
+            Path(path).read_text(encoding="utf-8"),
+            parse_float=_refuse_json_float,
+            parse_constant=_refuse_json_float,
+        )
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise SchemaRefusal(f"{path} is not readable JSON") from error
 
