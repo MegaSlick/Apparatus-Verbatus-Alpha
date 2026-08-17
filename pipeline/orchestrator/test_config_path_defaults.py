@@ -17,6 +17,7 @@ moving the models-config surface, which is not an orchestrator concern.
 
 import argparse
 import importlib.util
+import os
 from pathlib import Path
 
 import pytest
@@ -64,9 +65,9 @@ def _orchestrator_string_defaults() -> dict[str, str]:
     def capture(self, *_args, **_kwargs):
         captured.update(
             {
-                action.option_strings[0]: action.default
+                action.option_strings[0]: str(action.default)
                 for action in self._actions
-                if action.option_strings and isinstance(action.default, str)
+                if action.option_strings and isinstance(action.default, (str, os.PathLike))
             }
         )
         raise SystemExit(0)
