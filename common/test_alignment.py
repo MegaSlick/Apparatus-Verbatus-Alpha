@@ -244,3 +244,45 @@ def test_alignment_clears_its_alarm_and_restores_the_handler_on_an_exception(mon
     finally:
         signal.alarm(0)
         signal.signal(signal.SIGALRM, previous_handler)
+
+
+@pytest.mark.skipif(
+    not all(hasattr(signal, name) for name in ("SIGALRM", "ITIMER_REAL")),
+    reason="requires the POSIX real-time alarm inspected by the alignment backstop",
+)
+def test_an_alarm_firing_at_the_cancellation_point_is_a_record_not_an_exception(monkeypatch):
+    """P2 review. Cancelling only in the `finally` left a real window: an alarm
+    firing after `get_matching_blocks` returned raised `_TimedOut` from inside
+    the `finally` itself, past the `except` above it, so a SUCCESSFUL alignment
+    propagated an internal exception out of a function whose whole contract is
+    to return an `unaligned` record instead. The sibling deadline in
+    `pipeline/4_perlector/dissent.py::_aligned_within_deadline` already closes
+    exactly this window.
+
+    The fire is simulated at the first cancellation, which is where the real
+    signal would land. Recording `timeout` there understates a finished
+    alignment; escaping as an exception crashes the Attestatores stage.
+    """
+    real_alarm = signal.alarm
+    fired: list[bool] = []
+
+    def firing_alarm(seconds):
+        # The one cancellation the alignment itself owns, whichever it is.
+        if seconds == 0 and not fired:
+            fired.append(True)
+            real_alarm(0)
+            raise alignment_module._TimedOut()
+        return real_alarm(seconds)
+
+    monkeypatch.setattr(signal, "alarm", firing_alarm)
+
+    result = align_to_anchor(
+        "alpha beta",
+        "alpha beta",
+        AlignmentLimits(max_characters=100, max_character_pairs=10_000, timeout_seconds=5),
+    )
+
+    assert fired, "the alignment armed no alarm, so this window was never exercised"
+    assert result["status"] == "unaligned"
+    assert result["reason"] == "timeout"
+    assert "spans" not in result

@@ -195,6 +195,19 @@ def align_to_anchor(witness_raw: str, anchor_raw: str, limits: AlignmentLimits) 
         blocks = SequenceMatcher(
             a=witness_text, b=anchor_text, autojunk=False
         ).get_matching_blocks()
+        # Cancelled inside the `try`, not only in the `finally` -- the same
+        # window `pipeline/4_perlector/dissent.py::_aligned_within_deadline`
+        # already closes for its own SIGALRM, still open here. An alarm firing
+        # after `get_matching_blocks` returned but before the `finally` ran
+        # raised `_TimedOut` from inside the `finally`, past the `except` above,
+        # so a *successful* alignment propagated an internal exception out of a
+        # function whose whole contract is to return an `unaligned` record
+        # instead. Cancelling here does not close the window completely: a
+        # firing in the remaining instructions is caught by the `except` and
+        # recorded as `timeout`, which understates a finished alignment rather
+        # than crashing the stage. That is the safe direction of the two.
+        if alarm_armed:
+            signal.alarm(0)
     except _TimedOut:
         return {"status": "unaligned", "reason": "timeout", "witness": witness, "anchor": anchor}
     finally:
