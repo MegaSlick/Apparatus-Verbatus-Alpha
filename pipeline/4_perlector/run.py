@@ -732,12 +732,20 @@ def validate_reading_payload(
         raise SchemaRefusal("a completed reading cannot establish an empty text")
     # The caller's field set decides which record shape this is: a Perlectio
     # payload smuggling `basis: None` must refuse as a missing witness basis,
-    # never slip down the nuda branch with every witness gone from the record.
-    is_nuda = "basis" not in fields
+    # never slip down the unprimed branch with every witness gone from the
+    # record. Two record kinds are unprimed since R5a -- Lectio nuda and the
+    # universal Pass-A `lectio-prior` -- so the branch is named for the
+    # condition rather than for one of its two occupants, and so are its
+    # refusals: a refusal that says "Lectio nuda" over a lectio-prior record
+    # sends the next reader to the wrong artifact.
+    is_unprimed = "basis" not in fields
     basis = payload.get("basis")
-    if is_nuda:
+    if is_unprimed:
         if payload["dissent"] != []:
-            raise SchemaRefusal("a Lectio nuda cannot dissent from testimony it was not shown")
+            raise SchemaRefusal(
+                "an unprimed reading (Lectio nuda or lectio-prior) cannot dissent from "
+                "testimony it was not shown"
+            )
     elif not isinstance(basis, dict) or not isinstance(basis.get("testimonia"), list):
         raise SchemaRefusal("a Perlectio carries no Testimonium basis for its dissent record")
     else:
@@ -811,16 +819,16 @@ def validate_reading_payload(
             or attachment["page_witness_count"] < 0
         ):
             raise SchemaRefusal("a Perlector dossier has malformed act-attachment evidence")
-        if is_nuda:
+        if is_unprimed:
             raise SchemaRefusal(
-                "a Lectio nuda dossier cannot carry witness-derived act attachment metadata"
+                "an unprimed reading's dossier cannot carry witness-derived act attachment metadata"
             )
     dossier_testimonia = reading_dossier["testimonia"]
     if not isinstance(dossier_testimonia, list):
         raise SchemaRefusal("a Perlector dossier has no Testimonium list")
-    if is_nuda:
+    if is_unprimed:
         if dossier_testimonia:
-            raise SchemaRefusal("a Lectio nuda dossier cannot carry Testimonia")
+            raise SchemaRefusal("an unprimed reading's dossier cannot carry Testimonia")
     elif len(dossier_testimonia) != len(basis["testimonia"]):
         raise SchemaRefusal(
             "a Perlector dossier does not account for exactly its Testimonium basis"
