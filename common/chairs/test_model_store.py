@@ -496,6 +496,32 @@ def test_validate_record_refuses_path_traversal_in_a_carried_path(tmp_path):
         derived_inventory(record)
 
 
+def test_validate_record_refuses_an_artifact_name_that_is_itself_a_path(tmp_path):
+    """The artifact name keys a snapshot directory and a manifest filename.
+
+    ``derived_inventory``'s roster join holds it to a known name, but
+    ``write_download_record`` validates a record without that join, and
+    ``verify_store`` builds a *pending* entry's absent-evidence paths from the
+    name alone — a pending entry carries no snapshot or manifest field to check.
+    """
+
+    record = _store(tmp_path)
+    record["artifacts"][0]["artifact"] = "../escape"
+
+    with pytest.raises(DigestMismatchRefusal, match="artifact name is not a safe relative"):
+        write_download_record(record, tmp_path)
+
+
+def test_a_store_path_may_not_name_the_store_root_itself(tmp_path):
+    """'.' has no path parts, so every other clause of the rule passed it."""
+
+    record = _store(tmp_path)
+    record["artifacts"][0]["snapshot"] = "."
+
+    with pytest.raises(DigestMismatchRefusal, match="snapshot is not a safe relative"):
+        derived_inventory(record)
+
+
 def test_validate_record_refuses_a_duplicate_artifact_name(tmp_path):
     record = _store(tmp_path)
     record["artifacts"][1]["artifact"] = record["artifacts"][0]["artifact"]

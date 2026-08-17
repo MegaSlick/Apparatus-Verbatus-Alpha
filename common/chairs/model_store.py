@@ -726,6 +726,14 @@ def _validate_record(raw: Mapping[str, Any]) -> None:
                 f"artifact names must be unique; {item['artifact']!r} is named twice",
             )
         seen.add(item["artifact"])
+        # The artifact name is a path component in both entry shapes: a present
+        # entry's snapshot and manifest are built from it below, and
+        # `verify_store` builds a pending entry's absent-evidence paths from it
+        # with no other field to check.  Only the roster join in
+        # `derived_inventory` keeps it to a known name today, and this validator
+        # is reached without that join (`write_download_record`), so the name is
+        # held to the same path rule as every other path in the record.
+        _safe(item["artifact"], "artifact name")
         state = item.get("state")
         if state == "pending-fetch":
             if set(item) != PENDING_FIELDS:
@@ -871,10 +879,21 @@ def _validate_origin(item: Mapping[str, Any]) -> None:
 
 
 def _safe(value: object, label: str) -> None:
+    """Refuse anything that is not a relative POSIX path strictly under the root.
+
+    ``manifests._safe_relative`` is the same rule for manifest rows, and it also
+    refuses ``"."``.  This copy did not: ``"."`` has no path parts, so it passed
+    every clause and named the store root itself — ``_under(root, ".")`` returns
+    the root, and ``_publish_once`` would then write its temporary as a *sibling*
+    of the root rather than inside it.  No field this guards may legitimately be
+    the root, so the two spellings of the one rule now agree.
+    """
+
     if (
         not isinstance(value, str)
         or not value
         or PurePosixPath(value).is_absolute()
+        or not PurePosixPath(value).parts
         or ".." in PurePosixPath(value).parts
         or "\\" in value
     ):
