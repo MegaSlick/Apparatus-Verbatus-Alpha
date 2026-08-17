@@ -101,7 +101,13 @@ used; an edited seed cannot silently define a different draw.
 page's set is stable across frames by construction, but every frame has its own
 seeded ranking and quota universe. Records under two different corpus frames are
 therefore refused by name rather than combined into a draw nobody predeclared, as
-is a page stratified or numbered two ways across records. Collection validation
+is a page stratified or numbered two ways across records, and so are two recorded
+draws — two draws are two predeclared designs, and neither can speak for the
+records beside it. Where the corpus retains a draw, every seeded sample the
+records reach must be one that draw produced, *including* the copy a layout or
+padding record embeds: `verify-sampling` reconciles the sample records in a
+directory, so without this a page the sampler never chose could enter gold inside
+an annotation and be replayed by nothing. Collection validation
 also resolves every transcription, adjudication,
 and instrument membership back to a sample in that same corpus. An adjudication
 must embed exactly the two independently stored transcription records for its act;

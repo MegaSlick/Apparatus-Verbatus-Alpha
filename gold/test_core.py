@@ -879,6 +879,69 @@ def test_corpus_refuses_orphaned_or_conflicting_adjudication_custody(tmp_path):
         validate_corpus([sample, first, revised], path)
 
 
+def test_corpus_refuses_a_never_drawn_page_smuggled_inside_an_annotation(tmp_path):
+    """`verify-sampling` reconciles the *sample records* in a directory. A layout or
+    padding record carries its own copy of a sample inside it, so a page the sampler
+    never chose could enter gold as an annotation and be replayed by nothing — every
+    per-record check passes, and the draw's membership list is never consulted.
+    Collection validation holds every seeded sample it can reach, embedded or
+    standing alone, to the draw the corpus retains."""
+    path, frame, pages = run_file(tmp_path)
+    rows = catalog(pages)
+    plan = plan_for(frame, rows)
+    draw, selected = build_sampling_draw(path, rows, plan)
+    drawn_pages = {record["page"]["sha256"] for record in selected}
+    never_drawn = next(row for row in rows if row["sha256"] not in drawn_pages)
+    smuggled = build_sample(
+        frame,
+        never_drawn,
+        selection_basis="seeded-stratified-v1",
+        method="stratified-seed",
+        sampling=selected[0]["sampling"],
+    )
+    assert validate_sample(smuggled, path)  # indistinguishable one record at a time
+    layout = {
+        "schema": LAYOUT_SCHEMA,
+        "sample": smuggled,
+        "regions": [{"kind": "act", "rect": {"x": 1, "y": 1, "w": 2, "h": 2}}],
+    }
+    layout["self_hash"] = self_hash(layout)
+    assert validate_layout(layout, path) == layout
+    assert validate_corpus([draw, *selected], path)
+    with pytest.raises(SchemaRefusal, match="the retained sampling draw did not produce it"):
+        validate_corpus([draw, *selected, layout], path)
+    # A bare sample record the draw did not produce is refused the same way, and a
+    # manual pick — which never claimed the seed chose it — is not.
+    with pytest.raises(SchemaRefusal, match="the retained sampling draw did not produce it"):
+        validate_corpus([draw, *selected, smuggled], path)
+    picked = ingest_manual_pick(
+        path,
+        {
+            "schema": MANUAL_PICK_SCHEMA,
+            "selection_basis": "Tyrel B1 pick of a page the seed did not draw",
+            "page": never_drawn,
+            "set": set_for_page(frame, never_drawn["sha256"]),
+        },
+    )
+    assert validate_corpus([draw, *selected, picked], path)
+
+
+def test_corpus_refuses_two_recorded_draws_in_one_gold_corpus(tmp_path):
+    """Two draws are two predeclared designs. Neither can speak for the records
+    beside it, and combining them is the same defect the frame-mixing refusal
+    exists for one level up."""
+    path, frame, pages = run_file(tmp_path)
+    rows = catalog(pages)
+    plan = plan_for(frame, rows)
+    first, _selected = build_sampling_draw(path, rows, plan)
+    narrower = {gold_set: dict(quotas) for gold_set, quotas in plan.items()}
+    narrower["calibration"][next(name for name, q in narrower["calibration"].items() if q)] = 0
+    second, _also = build_sampling_draw(path, rows, narrower)
+    assert first["self_hash"] != second["self_hash"]
+    with pytest.raises(SchemaRefusal, match="different sampling draws"):
+        validate_corpus([first, second], path)
+
+
 def test_corpus_refuses_an_instrument_membership_without_its_sample(tmp_path):
     path, frame, pages = run_file(tmp_path)
     sample = sample_stratified(path, catalog(pages), plan_for(frame, catalog(pages)))[0]

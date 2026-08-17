@@ -1035,6 +1035,14 @@ def validate_corpus(records: Any, run_path: str | Path | None = None) -> list[di
     to no authority, so one page described as `adverse` in a sample and `ordinary`
     in the layout record that embeds a differently-drawn sample would pass every
     per-record check while making the stratification unmeasurable.
+
+    Draw membership is checked here too, and here is the only place it can be.
+    `verify-sampling` reads the sample records in a directory; a layout or padding
+    record carries its own copy of a sample *inside* it, so a page the sampler
+    never chose could enter gold as an annotation and be replayed by nothing —
+    the exact hole "only replaying the whole draw shows that the sampler chose
+    those pages" claims to close. Every seeded sample reached from any record,
+    embedded or standing alone, must be one the retained draw produced.
     """
     validated = [validate_record(record, run_path) for record in records]
     samples = [
@@ -1042,13 +1050,31 @@ def validate_corpus(records: Any, run_path: str | Path | None = None) -> list[di
         for record in validated
         if record["schema"] in {SAMPLE_SCHEMA, LAYOUT_SCHEMA, PADDING_SCHEMA}
     ]
+    draws = {record["self_hash"]: record for record in validated if record["schema"] == DRAW_SCHEMA}
+    _refuse(
+        len(draws) > 1,
+        f"these gold records retain {len(draws)} different sampling draws; a gold corpus "
+        "is drawn once per corpus frame, so two draws are two designs and neither can "
+        "speak for the records beside it",
+    )
     frames = {sample["frame"]["frame_digest"]: sample["frame"] for sample in samples}
+    for draw in draws.values():
+        frames.setdefault(draw["frame"]["frame_digest"], draw["frame"])
     _refuse(
         len(frames) > 1,
         f"these gold records were built under {len(frames)} different corpus frames "
         f"({', '.join(sorted(frames))}); each frame has its own ranked sampling universe, "
         "so their records cannot be combined as one predeclared draw",
     )
+    for draw in draws.values():
+        members = set(draw["members"])
+        for sample in samples:
+            _refuse(
+                sample["method"] == "stratified-seed" and sample["sample_digest"] not in members,
+                f"sample {sample['sample_digest']} claims the seeded draw chose it, but the "
+                "retained sampling draw did not produce it; a page the sampler never chose "
+                "may not enter gold inside an annotation record",
+            )
     pages: dict[str, dict[str, Any]] = {}
     for sample in samples:
         page = sample["page"]
