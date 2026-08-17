@@ -369,7 +369,13 @@ def require_complete_store(store_root: str | Path) -> dict[str, Any]:
 
 
 def require_store_artifact(store_root: str | Path, artifact: str) -> dict[str, Any]:
-    """Return a byte-verified present artifact or refuse its exact absence class."""
+    """Return a byte-verified present artifact or refuse its exact absence class.
+
+    The result is artifact-keyed, so it carries ``chairs`` — every chair this
+    artifact serves — rather than one inventory row's singular ``chair``:
+    chandra-ocr-2 fills two chairs at one snapshot, and returning the first
+    row's chair would silently claim the artifact serves only that one.
+    """
 
     if artifact == SURYA_OCR_2_REFUSAL["artifact"]:
         raise DigestMismatchRefusal(
@@ -384,7 +390,9 @@ def require_store_artifact(store_root: str | Path, artifact: str) -> dict[str, A
         raise DigestMismatchRefusal(artifact, "artifact is not part of the required roster")
     if rows[0]["state"] == "pending-fetch":
         raise DigestMismatchRefusal(artifact, f"artifact is pending-fetch: {rows[0]['reason']}")
-    return rows[0]
+    result = {key: value for key, value in rows[0].items() if key != "chair"}
+    result["chairs"] = sorted(row["chair"] for row in rows)
+    return result
 
 
 def write_derived_inventory(record: Mapping[str, Any], path: str | Path) -> str:
@@ -456,7 +464,10 @@ def verify_store(store_root: str | Path) -> dict[str, Any]:
             manifest_path, expected_digest=item["digest_manifest"], chair=item["artifact"]
         )
         rows = {row.path: row for row in manifest.rows}
-        _verify_required_files(item, rows)
+        # The licence checks run before the generic required-files sweep:
+        # `required_files` always names the licence, so the sweep's "required
+        # file is absent/empty" wording would otherwise shadow these two
+        # refusals and their U17 reasoning forever.
         license_row = rows.get(item["license"])
         if license_row is None:
             raise DigestMismatchRefusal(
@@ -472,6 +483,7 @@ def verify_store(store_root: str | Path) -> dict[str, Any]:
                 f"license snapshot {item['license']!r} is empty; the pinned revision's "
                 "licence text is the artifact, not a file of that name",
             )
+        _verify_required_files(item, rows)
         for carried in item["carried"]:
             if carried["path"] not in rows:
                 raise DigestMismatchRefusal(

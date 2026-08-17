@@ -602,6 +602,17 @@ def test_required_artifact_refuses_fetched_and_lost_bytes_by_filename(tmp_path):
         require_store_artifact(tmp_path, "qwen3.5-9B")
 
 
+def test_required_artifact_names_every_chair_it_serves_not_one_rows_chair(tmp_path):
+    """chandra-ocr-2 fills two chairs; an artifact-keyed answer must say both."""
+
+    _store(tmp_path)
+
+    result = require_store_artifact(tmp_path, "chandra-ocr-2")
+
+    assert result["chairs"] == ["attestator_1", "designator_structure"]
+    assert "chair" not in result
+
+
 def test_surya_ocr_is_not_required_and_use_refuses_with_its_escape_hatch(tmp_path):
     _store(tmp_path)
 
@@ -755,7 +766,23 @@ def test_store_refuses_a_licence_snapshot_with_no_text(tmp_path):
     )
     write_download_record(record, tmp_path)
 
-    with pytest.raises(DigestMismatchRefusal, match="is empty"):
+    with pytest.raises(DigestMismatchRefusal, match="licence text is the artifact"):
+        verify_store(tmp_path)
+
+
+def test_store_names_a_licence_missing_from_its_manifest_as_the_licence(tmp_path):
+    """The licence-specific refusal fires, not the generic required-file sweep."""
+
+    record = _store(tmp_path)
+    entry = next(item for item in record["artifacts"] if item["artifact"] == "churro-3B")
+    snapshot = tmp_path / entry["snapshot"]
+    (snapshot / "LICENSE").unlink()
+    entry["digest_manifest"] = write_manifest(
+        build_manifest(snapshot), tmp_path / entry["manifest"]
+    )
+    write_download_record(record, tmp_path)
+
+    with pytest.raises(DigestMismatchRefusal, match="license snapshot is absent"):
         verify_store(tmp_path)
 
 
