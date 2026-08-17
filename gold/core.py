@@ -992,10 +992,7 @@ def validate_measurement(record: Any) -> dict[str, Any]:
         record["schema"] != MEASUREMENT_SCHEMA, "instrument membership schema is not recognized"
     )
     _sha(record["sample_digest"], "sample_digest")
-    _refuse(
-        not is_well_formed(record["act_identity"]) or not record["act_identity"].startswith("act_"),
-        "instrument act_identity is not an act identity",
-    )
+    _act_identity(record["act_identity"], "instrument")
     _sha(record["protocol_digest"], "instrument protocol_digest")
     _refuse(not verify_self_hash(record), "instrument membership fails its self-hash")
     return record

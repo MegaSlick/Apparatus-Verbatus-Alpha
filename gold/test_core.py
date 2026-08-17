@@ -108,16 +108,8 @@ def test_seeded_stratification_is_reproducible_and_sets_are_disjoint_by_construc
 def test_sample_refuses_a_page_or_frame_restated_differently_than_r0_authority(tmp_path):
     path, frame, pages = run_file(tmp_path)
     record = sample_stratified(path, catalog(pages), plan_for(frame, catalog(pages)))[0]
-    forged = json.loads(json.dumps(record))
-    forged["page"]["sha256"] = _sha("9")
-    forged["set"] = set_for_page(forged["frame"], forged["page"]["sha256"])
-    without = {
-        key: value for key, value in forged.items() if key not in {"sample_digest", "self_hash"}
-    }
-    forged["sample_digest"] = digest_bytes(canonical_bytes(without))
-    forged["self_hash"] = self_hash(forged)
     with pytest.raises(SchemaRefusal, match="outside the R0"):
-        validate_sample(forged, path)
+        validate_sample(_forge_sample_outside_authority(record), path)
     broken_run = json.loads(path.read_text())
     broken_run["corpus_frame_membership"]["page_digest"] = _sha("0")
     broken_run["self_hash"] = self_hash(broken_run)
