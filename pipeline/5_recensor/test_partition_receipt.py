@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from common.contracts.errors import FatalAccounting, SchemaRefusal
+from common.contracts.outcomes import INTERIM_GRANULARITY_BASIS
 from common.contracts.stages import RECENSOR
 from common.runtree.store import RunTree
 from common.stage import stage_parser
@@ -84,6 +85,9 @@ def test_happy_recensor_pass_writes_a_complete_scoped_partition_receipt(tmp_path
     assert receipt["by_partition_class"] == {"completed": 2, "unresolved": 0, "failed": 0}
     assert len({item["act_id"] for item in receipt["items"]}) == 2
     assert all(item["review_outcome"] == "accepted" for item in receipt["items"])
+    assert {item["coverage"]["granularity_basis"] for item in receipt["items"]} == {
+        INTERIM_GRANULARITY_BASIS
+    }
 
 
 def test_recovery_replaces_the_current_partition_snapshot_without_erasing_history(tmp_path):
@@ -205,6 +209,10 @@ def _valid_coverage() -> dict:
         "by_class": {"completed": 2, "unresolved": 1, "failed": 0},
         "under_witnessed": True,
         "unresolved_chairs": 1,
+        "page_granularity_only": 0,
+        "health_unrecorded": 1,
+        "shortfalls": {"failed": 0, "truncated": 0, "unaligned": 1},
+        "granularity_basis": INTERIM_GRANULARITY_BASIS,
     }
 
 
@@ -538,3 +546,163 @@ def test_an_empty_receipt_may_not_claim_to_be_complete():
     forged["self_hash"] = self_hash({k: v for k, v in forged.items() if k != "self_hash"})
     with pytest.raises(SchemaRefusal, match="does not derive from its items"):
         validate_recensor_partition_receipt(forged)
+
+
+# --- Audit-and-repair regression (F-new-2, mutation-of-mechanisms pass) ----------
+#
+# Sonnet audit-and-repair seat 1, R0. Mutation check: `pipeline/5_recensor/run.py
+# ::validate_chair_coverage` wires `act_attachment_facts(context, act_id)` into
+# `witness_coverage(...)` as its `attachments=` argument -- the one production call
+# site for D2/D3's act-granularity floor accounting (S3's audit question: "can any
+# production caller reach the legacy path... and silently claim act-level coverage
+# without attachment facts?"). Deleting that one keyword argument (falling back to
+# the pre-R0 legacy arithmetic) left the FULL in-repo suite green: no test anywhere
+# asserted a real run's receipt `shortfalls`/`health_unrecorded` values, and
+# `under_witnessed`/`page_granularity_only` happen to come out identical either way
+# for every outcome combination R0's interim (pre-R4-alignment) design can produce
+# (verified: `attached` is definitionally `outcome in WITNESS_READING_OUTCOMES` in
+# R0 today, so `page_granularity_only` is structurally always 0 regardless of
+# whether attachment facts are wired in at all). Only the two host-only semantic
+# pins would have caught it, and those are deselected from the in-chamber gate
+# pending host remeasurement. This test closes that gap directly.
+
+
+def test_a_failed_act_scoped_attempt_produces_a_real_failed_and_unaligned_shortfall(tmp_path):
+    """D2/D3 wired end-to-end: a chair that fails act a1 specifically (while still
+    contributing to its own page-1 testimony via act a2) must show up in the real
+    Recensor receipt's `shortfalls`, not just in `under_witnessed`.
+
+    `malformed-capabilities` declares attestator_3's response to act a1 with a
+    non-object `format_capabilities`; the whole attempt fails
+    (`prepared_response`), so attestator_3 is not attached to act a1 at all.
+    """
+    root = tmp_path / "runs"
+    through_perlector(root, "malformed-capabilities", "malformed-capabilities")
+    result = invoke(
+        root, "malformed-capabilities", "malformed-capabilities", "pipeline/5_recensor/run.py"
+    )
+    assert result.returncode in (0, 3), result.stderr
+
+    receipt = RunTree(root, "malformed-capabilities").read_recensor_partition_receipt()
+    item = next(item for item in receipt["items"] if item["act_key"] == "a1")
+    coverage = item["coverage"]
+    assert coverage["under_witnessed"] is True
+    assert coverage["shortfalls"] == {"failed": 1, "truncated": 0, "unaligned": 1}, (
+        f"act a1's real coverage record is {coverage!r}; attestator_3's act-scoped attempt "
+        "failed for this act specifically (a non-object format_capabilities), so the "
+        "receipt's shortfalls must name it real -- not the all-zero shape a call to "
+        "witness_coverage() with no attachments= argument would silently produce"
+    )
+
+
+def test_v2_receipt_refuses_zero_failed_shortfalls_for_a_failed_attempt(tmp_path):
+    """A v2 label cannot turn an observed failed attempt into all-zero shortfalls."""
+    root = tmp_path / "runs"
+    through_perlector(root, "forged-shortfalls", "malformed-capabilities")
+    result = invoke(
+        root,
+        "forged-shortfalls",
+        "malformed-capabilities",
+        "pipeline/5_recensor/run.py",
+    )
+    assert result.returncode in (0, 3), result.stderr
+    receipt = RunTree(root, "forged-shortfalls").read_recensor_partition_receipt()
+    item = next(item for item in receipt["items"] if item["act_key"] == "a1")
+    item["coverage"]["shortfalls"] = {"failed": 0, "truncated": 0, "unaligned": 0}
+    from common.contracts.canonical import self_hash
+
+    receipt["self_hash"] = self_hash(receipt)
+    with pytest.raises(SchemaRefusal, match="failed shortfall"):
+        from common.recensor_receipt import validate_recensor_partition_receipt
+
+        validate_recensor_partition_receipt(receipt)
+
+
+def test_v2_receipt_cannot_omit_its_granularity_measurement_basis(tmp_path):
+    """P1: zero is not an honest metric unless the receipt names how it was derived."""
+    root = tmp_path / "runs"
+    through_perlector(root, "missing-basis", "happy")
+    result = invoke(root, "missing-basis", "happy", "pipeline/5_recensor/run.py")
+    assert result.returncode == 0, result.stderr
+    receipt = RunTree(root, "missing-basis").read_recensor_partition_receipt()
+    del receipt["items"][0]["coverage"]["granularity_basis"]
+    from common.contracts.canonical import self_hash
+
+    receipt["self_hash"] = self_hash(receipt)
+    with pytest.raises(SchemaRefusal, match="omits.*granularity"):
+        from common.recensor_receipt import validate_recensor_partition_receipt
+
+        validate_recensor_partition_receipt(receipt)
+
+
+# --- Audit-and-repair regression (F-O4) -----------------------------------------
+#
+# Opus audit-and-repair seat 3, R0. `page_granularity_only` is subtracted from the
+# completed count before the v2 block that typed it ever runs, so a non-integer
+# value left `_validate_coverage` through a raw TypeError -- not a ContractError,
+# and so not something a caller that refuses malformed evidence by name can catch.
+
+
+@pytest.mark.parametrize("value", ["1", 1.0, None, [1]])
+def test_a_non_integer_page_granularity_count_is_a_named_refusal(value):
+    """Every other malformed coverage field in this validator is a named refusal."""
+    from common.recensor_receipt import _validate_coverage
+
+    coverage = dict(_valid_coverage(), page_granularity_only=value)
+    with pytest.raises(SchemaRefusal, match="invalid page_granularity_only"):
+        _validate_coverage(coverage)
+
+
+# --- Audit-and-repair regression (F-O3) -----------------------------------------
+#
+# Opus audit-and-repair seat 3, R0. `witness_coverage` counts a chair toward the
+# act floor only when its outcome IS a reading, but `_validate_coverage`
+# rederived the same number from the ATTESTATORES COMPLETED class -- which is
+# wider, because it also holds `excluded`, an approval-bound exclusion that never
+# looked at the ink. Writer and validator therefore disagreed for any act with an
+# excluded chair, and `build_recensor_partition_receipt` validates every item it
+# builds, so no receipt could be written for such an act at all.
+
+
+def _coverage_with_an_excluded_chair() -> dict:
+    from common.contracts.outcomes import witness_coverage
+
+    outcomes = {"attestator_1": "read", "attestator_2": "read", "attestator_3": "excluded"}
+    attachments = {
+        "attestator_1": {"attached": True, "truncated": False, "health_unrecorded": False},
+        "attestator_2": {"attached": True, "truncated": False, "health_unrecorded": False},
+        "attestator_3": {"attached": False, "truncated": None, "health_unrecorded": True},
+    }
+    return witness_coverage(outcomes, 3, attachments=attachments)
+
+
+def test_an_approval_bound_exclusion_does_not_make_the_receipt_refuse_its_own_writer():
+    """The floor arithmetic and its rederivation must count the same chairs.
+
+    An `excluded` chair is COMPLETED class but is not a reading, so
+    `witness_coverage` records `under_witnessed=True` for two reads against a
+    floor of three. The rederivation must reach the same answer instead of
+    reading three completed chairs off `by_class` and calling the record a liar.
+    """
+    coverage = _coverage_with_an_excluded_chair()
+    assert coverage["under_witnessed"] is True
+    assert coverage["by_class"]["completed"] == 3
+    from common.recensor_receipt import _validate_coverage
+
+    _validate_coverage(coverage)
+
+
+def test_the_reading_outcome_set_has_exactly_one_definition():
+    """A second literal spelling of this closed set beside the floor arithmetic
+    that depends on it is a silent divergence waiting to happen: a member added
+    to one and not the other would attach a chair that never read.
+    """
+    import common.contracts.outcomes as vocabulary
+    import common.stage as stage
+
+    assert stage.WITNESS_READING_OUTCOMES is vocabulary.WITNESS_READING_OUTCOMES
+    assert vocabulary.WITNESS_READING_OUTCOMES < {
+        outcome
+        for outcome, klass in vocabulary.VOCABULARIES[vocabulary.ATTESTATORES].items()
+        if klass is vocabulary.OutcomeClass.COMPLETED
+    }, "a reading outcome is completed-class, but the completed class is wider"

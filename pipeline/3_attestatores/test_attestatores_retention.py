@@ -688,7 +688,9 @@ def test_a_wiped_attempt_layer_holds_rather_than_silently_restarting_history(tmp
     )
     manifest = tree.resolve(tree.manifest_path(ATTESTATORES))
     stored = json.loads(manifest.read_text(encoding="utf-8"))
-    assert len(stored["artifacts"]) == 7
+    # R0 also retains page-scoped Testimonia and derived act attachments; the
+    # history invariant here is specifically the seven act-scoped attempts.
+    assert len([entry for entry in stored["artifacts"] if entry["kind"] == "testimonium"]) == 7
     assert any(record["payload"]["attempt_ordinal"] == 2 for record in _testimonia(tree))
 
     shutil.rmtree(tree.resolve("3_attestatores/artifacts"))
@@ -922,7 +924,7 @@ def test_no_self_report_can_reach_a_coverage_count_or_an_outcome_class():
     parameter anywhere on that boundary through which a witness's claim about
     itself could reach a count or a class."""
     parameters = inspect.signature(witness_coverage).parameters
-    assert set(parameters) == {"chair_outcomes", "configured_floor"}
+    assert set(parameters) == {"chair_outcomes", "configured_floor", "attachments"}
     assert attestatores.content_health.__doc__ is not None
     assert "witness_reported" not in inspect.signature(attestatores.content_health).parameters
 
@@ -1729,3 +1731,82 @@ def test_main_does_not_turn_a_fatal_manifest_outcome_into_a_hold(tmp_path):
     assert retry.returncode == 2
     assert "outside-the-closed-vocabulary" in retry.stderr
     assert "attempt tally UNKNOWN" not in retry.stderr
+
+
+# --- Audit-and-repair regression (F-O5) -----------------------------------------
+#
+# Opus audit-and-repair seat 3, R0. The act-level tally walk filters on
+# `kind == "testimonium"`, so the `payload["scope"] == "page"` skip inside the loop
+# was unreachable. Had anything reached it, one self-reported field would have
+# carried an act-scoped record past every check in `attempt_tally` -- its closed
+# field set, its named chair, its content health, and `validate_tallied_testimonium`.
+# `scope` and `page_ordinal` were also listed as optional act-level payload fields,
+# which is what made the disguise well-formed in the first place.
+
+
+def test_an_act_scoped_testimonium_cannot_wear_page_scope_to_skip_the_tally(tmp_path):
+    """A field nothing validates is a field nothing downstream can trust.
+
+    This is the file's own rule about its closed payload, applied to the two
+    fields that belong to the page-scoped kind. A resealed act-scoped record
+    claiming `scope: "page"` must make the count UNKNOWN, not disappear from it.
+    """
+    run_root, tree = run_to_designator(tmp_path, "happy")
+    assert (
+        invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py").returncode
+        == 0
+    )
+    record = _testimonium_for(tree, act_key="a1", chair="attestator_2", ordinal=1)
+    changed = copy.deepcopy(record)
+    changed["payload"]["scope"] = "page"
+    changed["payload"]["page_ordinal"] = 1
+    changed["self_hash"] = self_hash(changed)
+    path = tree.resolve(tree.artifact_path(ATTESTATORES, "testimonium", record["artifact_id"]))
+    path.write_bytes(canonical_bytes(changed))
+    tree.write_manifest(ATTESTATORES)
+
+    tally = attestatores.attempt_tally(tree)
+
+    assert tally["state"] == "UNKNOWN"
+    assert tally["hold"] is True
+    assert "unknown field(s) ['page_ordinal', 'scope']" in tally["reason"], tally["reason"]
+
+
+# --- Fresh-context review (P2): the same disguise, in the sibling walk -----------
+#
+# `_attempt_history` carried the identical `payload["scope"] == "page"` skip behind
+# the identical `kind == "testimonium"` filter, and F-O5 removed only the one in
+# `attempt_tally`. Unreachable for any record this stage writes -- page testimony is
+# a kind of its own -- its one reachable effect was on a record that lied, and it
+# was the wrong effect: the disguised record left the append/collision history
+# entirely, so `require_appendable_ordinal` would judge that act/chair pair against
+# no history at all. The tally is what refuses such a record (the sibling test
+# above); the history's job is to see it.
+
+
+def test_a_page_scope_claim_cannot_hide_an_act_scoped_attempt_from_the_history(tmp_path):
+    """One self-reported field may not remove an attempt from its own history."""
+    run_root, tree = run_to_designator(tmp_path, "happy")
+    assert (
+        invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py").returncode
+        == 0
+    )
+    record = _testimonium_for(tree, act_key="a1", chair="attestator_2", ordinal=1)
+    changed = copy.deepcopy(record)
+    changed["payload"]["scope"] = "page"
+    changed["payload"]["page_ordinal"] = 1
+    changed["self_hash"] = self_hash(changed)
+    path = tree.resolve(tree.artifact_path(ATTESTATORES, "testimonium", record["artifact_id"]))
+    path.write_bytes(canonical_bytes(changed))
+    tree.write_manifest(ATTESTATORES)
+
+    _, history = attestatores._attempt_history(SimpleNamespace(tree=tree))
+
+    surviving = [
+        item["artifact_id"] for item in history.get((record["subject_id"], "attestator_2"), [])
+    ]
+    assert record["artifact_id"] in surviving, (
+        "an act-scoped Testimonium claiming page scope vanished from the attempt history; "
+        "the append/collision bound would then be derived for that pair without the "
+        "disguised record it exists to see"
+    )

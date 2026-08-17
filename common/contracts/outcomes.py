@@ -66,6 +66,15 @@ class ArmariumCategory(str, Enum):
 
 _C = OutcomeClass
 _A = ArmariumCategory
+# The witness outcomes that ARE a reading. Deliberately narrower than the
+# ATTESTATORES COMPLETED class, which also holds `excluded` — an approval-bound
+# exclusion is completed business, not a chair that looked at the ink. Defined
+# here, in the vocabulary module, and re-exported by `common/stage.py`: it is one
+# closed set, and a second literal spelling of it beside the floor arithmetic
+# that depends on it is a silent divergence waiting to happen.
+WITNESS_READING_OUTCOMES: Final = frozenset({"read", "genuinely-empty"})
+INTERIM_GRANULARITY_BASIS: Final = "act-outcome-proxy-before-alignment"
+LEGACY_GRANULARITY_BASIS: Final = "legacy-class-only"
 
 # --- The vocabularies: outcome -> class, one closed set per stage ---------------
 
@@ -268,7 +277,12 @@ def check_algebra_is_total() -> None:
 # --- Witness coverage: outcomes aggregate into counts, never into text ----------
 
 
-def witness_coverage(chair_outcomes: Mapping[str, str], configured_floor: int) -> dict[str, Any]:
+def witness_coverage(
+    chair_outcomes: Mapping[str, str],
+    configured_floor: int,
+    *,
+    attachments: Mapping[str, Mapping[str, Any] | bool] | None = None,
+) -> dict[str, Any]:
     """Aggregate one act's chair outcomes into the coverage record.
 
     Returns counts and two flags, and deliberately returns no category and no
@@ -291,7 +305,48 @@ def witness_coverage(chair_outcomes: Mapping[str, str], configured_floor: int) -
         klass = classify(ATTESTATORES, outcome)
         by_outcome[outcome] = by_outcome.get(outcome, 0) + 1
         by_class[klass.value] += 1
-    completed = by_class[OutcomeClass.COMPLETED.value]
+    attached_chairs: set[str] = set()
+    health_unrecorded = 0
+    shortfalls = {"failed": 0, "truncated": 0, "unaligned": 0}
+    if attachments is not None:
+        unknown = set(attachments) - set(chair_outcomes)
+        if unknown:
+            raise FatalAccounting(
+                f"act attachment facts name unconfigured chair(s) {sorted(unknown)}"
+            )
+        for chair, outcome in chair_outcomes.items():
+            fact = attachments.get(chair)
+            if fact is True:
+                fact = {"attached": True}
+            elif fact is False or fact is None:
+                fact = {"attached": False}
+            if not isinstance(fact, Mapping) or not isinstance(fact.get("attached"), bool):
+                raise FatalAccounting(f"act attachment fact for {chair!r} has no boolean attached")
+            if fact.get("health_unrecorded") is True:
+                health_unrecorded += 1
+            truncated = fact.get("truncated")
+            if truncated is True:
+                shortfalls["truncated"] += 1
+            elif truncated not in (False, None):
+                raise FatalAccounting(
+                    f"act attachment fact for {chair!r} has invalid truncated state"
+                )
+            if outcome == "failed":
+                shortfalls["failed"] += 1
+            if not fact["attached"]:
+                shortfalls["unaligned"] += 1
+            elif outcome in WITNESS_READING_OUTCOMES and truncated is not True:
+                attached_chairs.add(chair)
+    else:
+        # Pre-R0 callers do not carry attachment facts. Preserve their established
+        # class-level arithmetic; R0 consumers opt into act-granularity facts.
+        attached_chairs = {
+            chair
+            for chair, outcome in chair_outcomes.items()
+            if classify(ATTESTATORES, outcome) is OutcomeClass.COMPLETED
+        }
+
+    completed = len(attached_chairs)
     return {
         "configured": len(chair_outcomes),
         "floor": configured_floor,
@@ -301,6 +356,24 @@ def witness_coverage(chair_outcomes: Mapping[str, str], configured_floor: int) -
         # An unresolved chair is a question nobody answered; it is not evidence of
         # anything, so it cannot sit inside a run that calls itself complete.
         "unresolved_chairs": by_class[OutcomeClass.UNRESOLVED.value],
+        # These facts are deliberately separate from the closed witness outcome
+        # vocabulary. A page-only report, a truncation and an unaligned span are
+        # coverage facts, not invented witness outcomes.
+        "page_granularity_only": sum(
+            1
+            for chair, outcome in chair_outcomes.items()
+            if outcome in WITNESS_READING_OUTCOMES and chair not in attached_chairs
+        ),
+        "health_unrecorded": health_unrecorded,
+        "shortfalls": shortfalls,
+        # R0 has no independent alignment state: attached is still derived from
+        # this act's outcome, so page_granularity_only cannot become non-zero
+        # until R4. Name that measurement limit instead of presenting zero as a
+        # measured absence. The legacy path is named separately and is refused
+        # by the v2 receipt boundary.
+        "granularity_basis": (
+            INTERIM_GRANULARITY_BASIS if attachments is not None else LEGACY_GRANULARITY_BASIS
+        ),
     }
 
 

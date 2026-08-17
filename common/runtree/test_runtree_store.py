@@ -27,6 +27,7 @@ from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.contracts.envelope import build_envelope
 from common.contracts.errors import ApprovalRefusal, IncompatibleReuse, SchemaRefusal
 from common.contracts.identities import artifact_id
+from common.contracts.outcomes import INTERIM_GRANULARITY_BASIS
 from common.contracts.stages import DESIGNATOR, DOOR, EXEMPLAR, PERLECTOR
 from common.recensor_receipt import build_recensor_partition_receipt
 from common.runtree import store as runtree_store
@@ -133,6 +134,10 @@ def make_recensor_partition_receipt():
                     "by_class": {"completed": 3, "unresolved": 0, "failed": 0},
                     "under_witnessed": False,
                     "unresolved_chairs": 0,
+                    "page_granularity_only": 0,
+                    "health_unrecorded": 0,
+                    "shortfalls": {"failed": 0, "truncated": 0, "unaligned": 0},
+                    "granularity_basis": INTERIM_GRANULARITY_BASIS,
                 },
             }
         ],

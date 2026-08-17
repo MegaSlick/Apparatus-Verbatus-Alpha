@@ -110,6 +110,44 @@ def chair_outcomes(context, act_id: str) -> dict[str, str]:
     }
 
 
+def act_attachment_facts(context, act_id: str) -> dict[str, dict]:
+    """Read R0's derived attachment record before counting the witness floor."""
+    records = artifacts_for(context, ATTESTATORES, "act-attachment", act_id)
+    if not records:
+        raise FatalAccounting(f"act {act_id} has no derived act-attachment record")
+    # The one shared derivation of "current", exactly as the Perlector's
+    # act_attachment_view selects it. The local sort this replaces defaulted a
+    # missing ordinal to 0 and took the last record blind, so a duplicate or
+    # gapped ordinal chain picked an arbitrary attachment where the strict
+    # helper refuses — the same two-predicates-drifting shape as F-O1/F-O3
+    # (CodeRabbit chain-end review, critical; host disposition: fixed).
+    record = latest_attempt(records, f"act-attachment for {act_id}", operation="act-attachment")
+    payload = record.get("payload")
+    entries = payload.get("attachments") if isinstance(payload, dict) else None
+    if not isinstance(entries, list):
+        raise FatalAccounting(f"act {act_id} has malformed derived act-attachment payload")
+    facts: dict[str, dict] = {}
+    for entry in entries:
+        if not isinstance(entry, dict) or not isinstance(entry.get("chair"), str):
+            raise FatalAccounting(f"act {act_id} has malformed derived act-attachment entry")
+        chair = entry["chair"]
+        if chair in facts or not isinstance(entry.get("attached"), bool):
+            raise FatalAccounting(f"act {act_id} has ambiguous derived act-attachment facts")
+        health = entry.get("content_health")
+        # A malformed health record and an absent one are different facts: only
+        # the absent one is honestly "health not recorded", and only the
+        # malformed one tells the operator to look at the artifact.
+        if health is not None and not isinstance(health, dict):
+            raise FatalAccounting(f"act {act_id} has malformed derived act-attachment entry")
+        truncated = health.get("truncated") if isinstance(health, dict) else None
+        facts[chair] = {
+            "attached": entry["attached"],
+            "truncated": truncated,
+            "health_unrecorded": truncated is None,
+        }
+    return facts
+
+
 def blank_corroboration(
     coverage: dict, outcomes: dict[str, str], *, witness_uncovered: bool = False
 ) -> list[str] | None:
@@ -186,7 +224,36 @@ def validate_chair_coverage(context, act_id: str, floor: int) -> dict[str, objec
             f"which this run was not sealed with. `run.json` names its witness "
             "chairs and nothing may add one after the seal"
         )
-    return witness_coverage(outcomes, floor)
+    attachments = act_attachment_facts(context, act_id)
+    # `chair_outcomes` above collapses each chair to its current attempt, and its
+    # docstring names the reason the two consumers share that derivation: they
+    # "cannot drift on what current means". The derived act-attachment is a third
+    # consumer of the same artifacts and does drift — a targeted reread appends a
+    # new act-scoped attempt and writes no new attachment record — so the floor
+    # would otherwise be counted from facts describing a superseded attempt: a
+    # recovered read silently dropped from `completed` and reported as a
+    # `page_granularity_only` contribution that never happened (GOVERNANCE 2 and
+    # 10). R0's declared `granularity_basis` is that `attached` IS the current act
+    # outcome before R4 alignment; that identity is checked here rather than
+    # assumed, and R4 replaces both together. Found in audit; F-O1.
+    unaccounted = sorted(set(outcomes) - set(attachments))
+    if unaccounted:
+        raise FatalAccounting(
+            f"act {act_id}'s derived act-attachment records no fact for configured "
+            f"chair(s) {unaccounted}; an absent fact would silently read as unattached"
+        )
+    superseded = sorted(
+        chair
+        for chair, outcome in outcomes.items()
+        if attachments[chair]["attached"] != (outcome in WITNESS_READING_OUTCOMES)
+    )
+    if superseded:
+        raise FatalAccounting(
+            f"act {act_id}'s derived act-attachment disagrees with the current Testimonium "
+            f"outcome for chair(s) {superseded}; the witness floor may not be counted from "
+            "a superseded attempt"
+        )
+    return witness_coverage(outcomes, floor, attachments=attachments)
 
 
 def preflight_witness_denominator(context, floor: int) -> None:

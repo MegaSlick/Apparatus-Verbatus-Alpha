@@ -21,7 +21,7 @@ which are honestly non-deterministic and neither of which is a stage artifact.
 from typing import Any, Final
 
 from .canonical import SCHEMA_LABEL, digest_bytes, self_hash, verify_self_hash
-from .errors import SchemaRefusal
+from .errors import ReservedKindRefusal, SchemaRefusal
 from .identities import artifact_id, is_well_formed
 from .outcomes import classify, require_approval
 from .stages import STAGES
@@ -43,6 +43,20 @@ _REQUIRED: Final = (
 )
 
 _OPTIONAL: Final = ("approval_ref",)
+
+# These names belong to producer branches that have not yet defined their
+# payloads.  Refuse them at the envelope boundary rather than relying on their
+# current absence from a run tree (which would be a vacuous promise).
+_RESERVED_KINDS: Final = frozenset(
+    {
+        "lectio-prior",
+        "primed-without-prior",
+        "audit-draft",
+        "audit-finding",
+        "raw-proposal",
+        "occlusion",
+    }
+)
 
 
 def build_envelope(
@@ -128,6 +142,12 @@ def validate_envelope(envelope: Any) -> dict[str, Any]:
     for field in ("run_id", "kind", "config_digest", "subject_id"):
         if not isinstance(envelope[field], str) or not envelope[field]:
             raise SchemaRefusal(f"artifact field {field!r} is empty or not a string")
+
+    if envelope["kind"] in _RESERVED_KINDS:
+        raise ReservedKindRefusal(
+            f"artifact kind {envelope['kind']!r} is reserved for its producing branch and is "
+            "not accepted by the R0 contract"
+        )
 
     if not is_well_formed(envelope["artifact_id"]):
         raise SchemaRefusal(f"artifact_id {envelope['artifact_id']!r} is malformed")

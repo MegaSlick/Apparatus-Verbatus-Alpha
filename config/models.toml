@@ -30,6 +30,8 @@ model_root = "model-fixtures"
 
 # The minimum count of completed-class witness outcomes an act needs before it is
 # recorded `under_witnessed` (`common/contracts/outcomes.py::witness_coverage`).
+# Page-witness attachments count only once their declared act span is present;
+# a page-granularity-only report never lowers this act-level floor.
 # A chair configured `state = "absent"` stays in the roster as an explicit absence
 # and counts against this floor: it is one fewer configured witness, and the floor
 # does not shrink to match.

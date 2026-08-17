@@ -28,7 +28,7 @@ and zero dissent there is the correct output.
 
 import sys
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -57,6 +57,7 @@ from common.stage import (  # noqa: E402
     WITNESS_READING_OUTCOMES,
     expected_acts,
     fixture_serving_details,
+    latest_attempt,
     latest_per_chair,
     open_context,
     run_stage,
@@ -199,6 +200,219 @@ def testimonia_of(context, act_id: str, proposal_regions: list[dict]) -> list[di
             "run was not sealed with"
         )
     return current
+
+
+def act_attachment_view(context, act: dict[str, Any], testimonia: list[dict]) -> dict[str, Any]:
+    """Validate the R0 attachment that makes a page witness act-addressable.
+
+    R4 owns alignment; until then this is the chair's complete delivered act
+    reading as an interim span, retained beside the page Testimonium and surfaced
+    in the dossier rather than silently treating page completion as an act-level
+    read.
+
+    `testimonia` is this act's *current* attempt per chair, already collapsed by
+    `testimonia_of`. The attachment is a derived view of one attempt, so it is
+    checked against that collapse rather than trusted on its own: see the
+    per-chair reconciliation below.
+    """
+    act_id = act["act_id"]
+    current = {record["payload"]["chair"]: record for record in testimonia}
+    entries = [
+        entry
+        for entry in context.tree.build_manifest(ATTESTATORES)["artifacts"]
+        if entry["kind"] == "act-attachment" and entry["subject_id"] == act_id
+    ]
+    if not entries:
+        raise FatalAccounting(f"act {act_id} has no act-attachment record")
+    records = [
+        context.tree.read_artifact(ATTESTATORES, "act-attachment", entry["artifact_id"])
+        for entry in entries
+    ]
+    record = latest_attempt(records, f"act-attachment for {act_id}", operation="act-attachment")
+    payload = record.get("payload")
+    attachments = payload.get("attachments") if isinstance(payload, dict) else None
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != {"act_key", "attempt_ordinal", "attachments"}
+        or payload.get("act_key") != act["act_key"]
+        or not isinstance(attachments, list)
+    ):
+        raise SchemaRefusal("an act-attachment record has no attachment list")
+    configured = set(context.witness_chairs)
+    chairs = [
+        attachment.get("chair") if isinstance(attachment, dict) else None
+        for attachment in attachments
+    ]
+    if len(chairs) != len(set(chairs)) or set(chairs) != configured:
+        raise FatalAccounting(
+            f"act {act_id} attachment chairs do not equal this run's configured witnesses"
+        )
+    page_witness_count = 0
+    for attachment in attachments:
+        if (
+            not isinstance(attachment, dict)
+            or set(attachment)
+            != {
+                "chair",
+                "page_witness",
+                "testimonium_ref",
+                "attached",
+                "content_health",
+                "span",
+            }
+            or not isinstance(attachment.get("chair"), str)
+            or not isinstance(attachment.get("page_witness"), bool)
+            or not isinstance(attachment.get("attached"), bool)
+            or not isinstance(attachment.get("content_health"), dict)
+        ):
+            raise SchemaRefusal("an act-attachment record has a malformed attachment")
+        span = attachment["span"]
+        characters = attachment["content_health"].get("characters")
+        if attachment["attached"]:
+            expected_end = (
+                characters
+                if isinstance(characters, int) and not isinstance(characters, bool)
+                else 0
+            )
+            if span != {"start": 0, "end": expected_end}:
+                raise SchemaRefusal(
+                    "an attached act view does not span its complete delivered reading"
+                )
+        elif span is not None:
+            raise SchemaRefusal("an unattached act view claims an alignment span")
+        chair = attachment["chair"]
+        # The attachment describes one attempt, and the reread path
+        # (`pipeline/3_attestatores/run.py::reread_pass`) appends a new act-scoped
+        # attempt without rewriting it — D8 leaves page-witness reread addressing
+        # to R3. Unchecked, the record then presents a superseded attempt's
+        # outcome and delivered-character count as this act's live attachment,
+        # which is exactly what `testimonia_of`'s latest-attempt collapse exists
+        # to stop ("cannot see a superseded attempt as though it were still
+        # live"), and what R0's own `granularity_basis` claims is impossible:
+        # `attached` IS the current act outcome before R4 alignment. Refuse the
+        # divergence rather than count a stale span or a stale reading as
+        # current. R4 replaces this reconciliation with real alignment. Found in
+        # audit; F-O1.
+        chair_testimonium = current.get(chair)
+        if chair_testimonium is None:
+            raise FatalAccounting(
+                f"act {act_id} attachment names chair {chair!r}, which has no current Testimonium"
+            )
+        if attachment["attached"] != (chair_testimonium["outcome"] in WITNESS_READING_OUTCOMES):
+            raise SchemaRefusal(
+                f"act {act_id} attachment for chair {chair!r} disagrees with that chair's "
+                "current Testimonium outcome"
+            )
+        if attachment["content_health"] != chair_testimonium["payload"].get("content_health"):
+            raise SchemaRefusal(
+                f"act {act_id} attachment for chair {chair!r} describes an attempt that is no "
+                "longer this chair's current Testimonium"
+            )
+        declared_chairs = context.fixture.get("page_witness_chairs", [])
+        # The producer (`pipeline/3_attestatores/run.py::declared_page_witness_chairs`)
+        # refuses a declaration that is not a unique list of strings; this reader
+        # holds the same key to the same shape, or a string-valued declaration
+        # would degrade into per-character membership and blame the attachment
+        # for the fixture's own malformation.
+        if not isinstance(declared_chairs, list) or any(
+            not isinstance(item, str) for item in declared_chairs
+        ):
+            raise SchemaRefusal(
+                "the fixture's page_witness_chairs declaration is not a list of chair names"
+            )
+        expected_page_witness = chair in set(declared_chairs)
+        if attachment["page_witness"] != expected_page_witness:
+            raise SchemaRefusal(
+                f"act {act_id} attachment changes page-witness scope for chair {chair!r}"
+            )
+        # The act-scoped Testimonium carries the same scope claim a second time, as
+        # its optional `page_witness` flag, and `pipeline/4_perlector/dissent.py`
+        # trusts that flag directly: a record wearing it emits `compared: "unknown"`
+        # instead of a real comparison. The attachment's copy is checked above and
+        # this one was checked nowhere, so a resealed Testimonium for an ordinary
+        # act-scoped chair could silence that chair's dissent row — the structural
+        # parroting instrument switched off behind a well-formed and plausible
+        # reason, which is the one failure mode ARCHITECTURE's dissent section
+        # exists to make measurable. Two spellings of one fact, so both are
+        # reconciled against the run's own declaration. Found in fresh-context
+        # review (P2).
+        if chair_testimonium["payload"].get("page_witness", False) is not expected_page_witness:
+            raise SchemaRefusal(
+                f"act {act_id} Testimonium for chair {chair!r} claims a page-witness scope this "
+                "run did not declare"
+            )
+        reference = attachment.get("testimonium_ref")
+        if attachment["page_witness"]:
+            testimonium = context.tree.read_artifact_reference(
+                reference,
+                stage=ATTESTATORES,
+                kind="page-testimonium",
+                subject_id=act["page_id"],
+            )
+            page_payload = testimonium.get("payload")
+            unjoined = (
+                page_payload.get("unjoined_act_attempts")
+                if isinstance(page_payload, dict)
+                else None
+            )
+            if (
+                not isinstance(page_payload, dict)
+                or page_payload.get("chair") != chair
+                or page_payload.get("scope") != "page"
+                or page_payload.get("page_ordinal") != act["page_ordinal"]
+                or not isinstance(unjoined, list)
+                or any(
+                    not isinstance(row, dict)
+                    or set(row) != {"act_id", "act_key", "outcome", "reason"}
+                    or not isinstance(row["act_id"], str)
+                    or not isinstance(row["act_key"], str)
+                    or not isinstance(row["outcome"], str)
+                    or not isinstance(row["reason"], str)
+                    or not row["reason"].strip()
+                    for row in unjoined
+                )
+            ):
+                raise SchemaRefusal(f"act {act_id} attachment points to the wrong page Testimonium")
+            current_unjoined = [row for row in unjoined if row["act_id"] == act_id]
+            if len(current_unjoined) > 1:
+                raise SchemaRefusal(
+                    f"act {act_id} appears more than once in a page Testimonium's "
+                    "unjoined-attempt record"
+                )
+            # An act the page join omitted is disclosed with the attempt outcome
+            # that explains it, and that outcome must be the one the attachment
+            # records. Not `bool(rows) != attached`, which was this check before:
+            # it read every omission as a failure, so the moment the join could
+            # omit a genuine reading -- a structured native object it cannot
+            # concatenate -- the honest disclosure of that omission became a
+            # refusal, and staying silent stayed legal. Absence of a row still
+            # means the act joined, so an unattached act must always be named.
+            # Found in audit; F-O7.
+            row = current_unjoined[0] if current_unjoined else None
+            disclosed = row["outcome"] in WITNESS_READING_OUTCOMES if row is not None else True
+            if disclosed != attachment["attached"]:
+                raise SchemaRefusal(
+                    f"act {act_id} attachment disagrees with its page Testimonium's "
+                    "unjoined-attempt record"
+                )
+            page_witness_count += 1
+        else:
+            testimonium = context.tree.read_artifact_reference(
+                reference,
+                stage=ATTESTATORES,
+                kind="testimonium",
+                subject_id=act_id,
+            )
+            if testimonium.get("payload", {}).get("chair") != chair:
+                raise SchemaRefusal(
+                    f"act {act_id} attachment points to another chair's Testimonium"
+                )
+    return {
+        "reference": context.artifact_ref(ATTESTATORES, "act-attachment", record["artifact_id"]),
+        # A blinded dossier may show that page evidence exists, but not the
+        # chair names embedded in its retained attachment artifact.
+        "page_witness_count": page_witness_count,
+    }
 
 
 def verify_region(context, region: dict) -> dict:
@@ -501,7 +715,7 @@ def validate_reading_payload(
             "a Perlector reading by a configured chair records no resolved identity"
         )
     reading_dossier = payload["dossier"]
-    if not isinstance(reading_dossier, dict) or set(reading_dossier) != {
+    dossier_fields = {
         "act_id",
         "act_key",
         "witness_regime",
@@ -509,7 +723,11 @@ def validate_reading_payload(
         "page_renders",
         "testimonia",
         "dossier_digest",
-    }:
+    }
+    if not isinstance(reading_dossier, dict) or set(reading_dossier) not in (
+        dossier_fields,
+        dossier_fields | {"act_attachment"},
+    ):
         raise SchemaRefusal("a Perlector reading carries no closed dossier record")
     if reading_dossier["act_key"] != payload["act_key"]:
         raise SchemaRefusal("a Perlector reading disagrees with its dossier's act key")
@@ -519,6 +737,17 @@ def validate_reading_payload(
     if reading_dossier["dossier_digest"] != digest_of(dossier_body):
         raise SchemaRefusal("a Perlector dossier digest does not match the dossier it seals")
     dossier_module.assert_no_order_bearing_field(dossier_body)
+    if "act_attachment" in reading_dossier:
+        attachment = reading_dossier["act_attachment"]
+        if (
+            not isinstance(attachment, dict)
+            or set(attachment) != {"reference", "page_witness_count"}
+            or not isinstance(attachment["reference"], dict)
+            or not isinstance(attachment["page_witness_count"], int)
+            or isinstance(attachment["page_witness_count"], bool)
+            or attachment["page_witness_count"] < 0
+        ):
+            raise SchemaRefusal("a Perlector dossier has malformed act-attachment evidence")
     dossier_testimonia = reading_dossier["testimonia"]
     if not isinstance(dossier_testimonia, list):
         raise SchemaRefusal("a Perlector dossier has no Testimonium list")
@@ -779,6 +1008,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         # up to the fold would be truncated, which is a failure and not an output.
         bases = [verify_region(context, region) for region in regions]
         testimonia = testimonia_of(context, act_id, proposal_regions)
+        attachment_view = act_attachment_view(context, act, testimonia)
 
         # Which regions any witness actually saw. Ink uncovered by a recovery
         # recrop was never shown to a witness, and saying so is the difference
@@ -821,6 +1051,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             regime=context.witness_context,
             page_renders=page_renders,
             witness_context=witness_context_table,
+            act_attachment=attachment_view,
         )
         # Built before the reader is called, from the dossier the reader is
         # about to be shown, so what is recorded is the prompt this reading was
@@ -897,7 +1128,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             outcome=outcome,
             attempt=attempt_id(act_id, "perlegere", ordinal),
             inputs=_reading_image_inputs(context, bases, page_renders)
-            + list(testimonium_references.values()),
+            + list(testimonium_references.values())
+            + [attachment_view["reference"]],
             payload=payload,
         )
         read += 1

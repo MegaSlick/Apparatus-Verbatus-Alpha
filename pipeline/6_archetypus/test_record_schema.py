@@ -422,3 +422,49 @@ def test_a_completed_reading_is_not_refused_by_that_guard():
             "act_0000000000000001",
         )
     assert "may only come" not in str(caught.value)
+
+
+# --- The act-attachment view is required, not merely checked when present -------
+#
+# Opus audit-and-repair seat 3, R0. F-O2: `accepted_primed_perlectio` checked the
+# R0 act-attachment dossier view only `if attachment is not None`, so a resealed
+# reading that had simply dropped the field walked past the whole page-witness
+# custody chain -- reference shape, direct-input binding, and the digest-checked
+# dereference of the attachment artifact itself. The retained Testimonium basis
+# beside it was already required for the same reason.
+
+
+def _primed_perlectio_without_an_attachment_view() -> dict:
+    """A `read` Perlectio that passes every guard before the attachment check.
+
+    Regions and a retained Testimonium basis are supplied precisely so the
+    refusal under test is the one reached, not an earlier and unrelated one --
+    the idiom `test_only_a_completed_reading_may_establish_text` above already
+    applies on this same boundary.
+    """
+    return {
+        "stage": archetypus.PERLECTOR,
+        "kind": "perlectio",
+        "outcome": "read",
+        "inputs": [_READING_REF],
+        "payload": {
+            "text": "some established characters",
+            "basis": {
+                "regions": [{"image_path": "2_designator/blobs/sha256/deadbeef"}],
+                "testimonia": [{"chair": "attestator_1", "testimonium_ref": _READING_REF}],
+            },
+            "dossier": {"act_key": "a1", "dossier_digest": "d" * 64},
+        },
+    }
+
+
+def test_a_primed_reading_without_its_act_attachment_view_may_not_establish_text():
+    """R0's exit criterion says the attachment is consumed, not consumed-if-present."""
+    with pytest.raises(SchemaRefusal, match="no act-attachment view"):
+        archetypus.accepted_primed_perlectio(
+            None,
+            _accepted_review(),
+            _primed_perlectio_without_an_attachment_view(),
+            _READING_REF,
+            "act_0000000000000001",
+        )

@@ -530,6 +530,34 @@ def accepted_primed_perlectio(
             f"act {act_id} reached the Archetypus constructor with no retained Testimonium "
             "basis; a reading shown no witness at all is a Lectio nuda by any other name"
         )
+    attachment = (
+        payload.get("dossier", {}).get("act_attachment")
+        if isinstance(payload.get("dossier"), dict)
+        else None
+    )
+    # Required, exactly as the Testimonium basis above is required, and for the
+    # same reason. Every primed reading this pipeline seals carries the
+    # act-attachment dossier view, so a reading that reaches here without one is
+    # a reading whose page-witness custody nobody checked -- and checking it only
+    # `if attachment is not None` made the whole chain opt-out at the one stage
+    # that reads a Perlectio back off disk. Found in audit; F-O2.
+    if not isinstance(attachment, dict):
+        raise SchemaRefusal(
+            f"act {act_id} reached the Archetypus constructor with no act-attachment view; "
+            "the page-witness evidence a reading was built on is consumed here or the "
+            "reading is refused"
+        )
+    reference = attachment.get("reference")
+    if not _is_ref_shaped(reference) or reference not in reading.get("inputs", []):
+        raise SchemaRefusal(
+            f"act {act_id} carries an act-attachment dossier view without a direct input reference"
+        )
+    context.tree.read_artifact_reference(
+        reference,
+        stage=ATTESTATORES,
+        kind="act-attachment",
+        subject_id=act_id,
+    )
     witnesses: dict[tuple[str, str], str | None] = {}
     for index, item in enumerate(testimonia):
         if not isinstance(item, dict):

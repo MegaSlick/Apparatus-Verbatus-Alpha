@@ -211,6 +211,11 @@ def dissent_against(reading: str, testimonia: list[dict]) -> list[dict]:
             continue
         reported = record["payload"].get("reported")
         if not isinstance(reported, str):
+            # Deliberately BEFORE the page-witness branch (F-P2, pinned by the
+            # acceptance suite's structured-witness scenario): a structured
+            # native payload must refuse here by name -- the honest record of
+            # the structured-witness gap -- and never slide under the
+            # page-witness "unknown" row into a run that calls itself complete.
             raise SchemaRefusal(
                 f"completed Testimonium from chair {chair!r} carries no text to compare"
             )
@@ -223,6 +228,15 @@ def dissent_against(reading: str, testimonia: list[dict]) -> list[dict]:
                         "this witness's declared format cannot be reduced to a plain "
                         "comparison view"
                     ),
+                }
+            )
+            continue
+        if record["payload"].get("page_witness") is True:
+            rows.append(
+                {
+                    "chair": chair,
+                    "compared": "unknown",
+                    "reason": "page witness has no act-anchored comparison view before R4 alignment",
                 }
             )
             continue

@@ -41,6 +41,7 @@ from common.contracts.errors import (
 from common.contracts.identities import act_bindings, artifact_id, attempt_id
 from common.contracts.identities import act_id as derive_act_id
 from common.contracts.identities import verify as verify_identity
+from common.contracts.outcomes import WITNESS_READING_OUTCOMES as _WITNESS_READING_OUTCOMES
 from common.contracts.outcomes import classify
 from common.contracts.serving import SERVING_CONFIG_INPUTS_FIELDS, SERVING_CONFIG_INPUTS_SCHEMA
 from common.contracts.stages import DESIGNATOR, EXEMPLAR, PERLECTOR, RECENSOR
@@ -94,6 +95,9 @@ MAX_NUDA_PER_MILLE: Final = 1000
 DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH = (
     Path(__file__).resolve().parents[1] / "config" / "designator_padding.toml"
 )
+DEFAULT_CORPUS_FRAME_CONFIG_PATH = (
+    Path(__file__).resolve().parents[1] / "config" / "corpus_frame.toml"
+)
 DEFAULT_SERVING_RECIPES_CONFIG_PATH = (
     Path(__file__).resolve().parents[1] / "config" / "serving_recipes.toml"
 )
@@ -113,7 +117,13 @@ ATTEMPTED_WITNESS_OUTCOMES = frozenset({"read", "genuinely-empty", "failed"})
 # certify that its regions were witnessed.  A genuinely-empty Testimonium is
 # different: the chair did read the pixels and found no reportable text.  The
 # Perlector uses this narrower set when it records region coverage.
-WITNESS_READING_OUTCOMES = frozenset({"read", "genuinely-empty"})
+#
+# Re-exported from the vocabulary module rather than spelled a second time.  R0's
+# floor arithmetic (`common/contracts/outcomes.py::witness_coverage`) and this
+# module's writers and consumers have to agree on this exact set or an act is
+# attached without being read; two identical literals in two files agreed only by
+# coincidence.  Found in audit; F-O3.
+WITNESS_READING_OUTCOMES = _WITNESS_READING_OUTCOMES
 
 # Every top-level field a reading's model provenance may carry. A closed set,
 # because invariant #42 refuses *wrong-schema* provenance rather than a list of
@@ -710,6 +720,7 @@ def run_config_bindings(
     nuda_approval_ref: str = "",
     serving_recipes_config_path: str | Path = DEFAULT_SERVING_RECIPES_CONFIG_PATH,
     pod_placement_config_path: str | Path = DEFAULT_POD_PLACEMENT_CONFIG_PATH,
+    corpus_frame_config_path: str | Path = DEFAULT_CORPUS_FRAME_CONFIG_PATH,
 ) -> dict[str, Any]:
     """The three `run.json` bindings, and everything that shapes them.
 
@@ -744,6 +755,9 @@ def run_config_bindings(
             "the Designator padding configuration binding at "
             f"{designator_padding_config_path} could not be read"
         ) from error
+    corpus_frame_policy, corpus_frame_config_digest = load_corpus_frame_policy(
+        corpus_frame_config_path
+    )
     armarium_formats_digest, armarium_formats = bind_armarium_formats(armarium_formats_config_path)
     try:
         serving_recipes_config_digest = digest_bytes(Path(serving_recipes_config_path).read_bytes())
@@ -782,6 +796,8 @@ def run_config_bindings(
                 "models": models.to_record(),
                 "pdf_render_config_sha256": pdf_render_config_digest,
                 "designator_padding_config_sha256": padding_config_digest,
+                "corpus_frame_policy": corpus_frame_policy,
+                "corpus_frame_config_sha256": corpus_frame_config_digest,
                 "pdf_target_dpi_override": pdf_target_dpi,
                 "armarium_formats_config_sha256": armarium_formats_digest,
                 "armarium_formats": armarium_formats.to_record(),
@@ -814,9 +830,56 @@ def run_config_bindings(
         # not actually wired shut. Not this stage's window to close.
         "sealed_config_digests": {
             "designator-padding": padding_config_digest,
+            "corpus-frame-shard": corpus_frame_config_digest,
         },
         "armarium_formats": armarium_formats,
     }
+
+
+def load_corpus_frame_policy(path: str | Path) -> tuple[dict[str, int], str]:
+    """Read R0's bounded corpus-frame policy from the bytes a run seals."""
+    try:
+        raw = Path(path).read_bytes()
+        record = tomllib.loads(raw.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+        raise ContractError(
+            f"corpus-frame shard configuration at {path} could not be read"
+        ) from error
+    if set(record) != {"max_pages_per_shard"}:
+        raise ContractError("corpus-frame shard configuration has the wrong closed schema")
+    limit = record["max_pages_per_shard"]
+    if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 1000:
+        raise ContractError("corpus-frame max_pages_per_shard must be an integer in [1, 1000]")
+    return {"max_pages_per_shard": limit}, digest_bytes(raw)
+
+
+def require_corpus_frame_shard(
+    page_count: int,
+    sealed_config_digests: Mapping[str, str],
+    path: str | Path = DEFAULT_CORPUS_FRAME_CONFIG_PATH,
+) -> None:
+    """Point-of-use recheck for the sealed ≤1,000-page shard boundary."""
+    policy, observed = load_corpus_frame_policy(path)
+    bound = sealed_config_digests.get("corpus-frame-shard")
+    if bound is None:
+        # A run that sealed no shard digest at all is a different fault from one
+        # whose config changed after binding; naming them apart tells an operator
+        # whether to look at the binding step or at the file (CodeRabbit
+        # chain-end review; host disposition: fixed).
+        raise ContractError(
+            "this run sealed no digest for the corpus-frame shard configuration; "
+            "a shard may not be created under an unbound policy"
+        )
+    if bound != observed:
+        raise ContractError(
+            "the corpus-frame shard configuration changed between run binding and its "
+            "run-creation check; a shard may not be created under unsealed bytes"
+        )
+    if page_count > policy["max_pages_per_shard"]:
+        raise ContractError(
+            f"corpus frame has {page_count} pages, above its sealed shard limit "
+            f"of {policy['max_pages_per_shard']}"
+        )
 
 
 # The roles the pipeline addresses by name, beside the Attestator witnesses.

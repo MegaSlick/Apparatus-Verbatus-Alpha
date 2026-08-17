@@ -11,9 +11,13 @@ permissions:
   contents: read
 
 jobs:
-  check:
+  test:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      matrix:
+        # 3.12 is the supported floor; later entries are cross-version coverage.
+        python-version: ['3.12', '3.13', '3.14']
     steps:
       # v6.1.0; full commit pin prevents a mutable tag changing executed code.
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
@@ -29,7 +33,7 @@ jobs:
         # v6.3.0; update deliberately after verifying the upstream release commit.
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
-          python-version: '3.12'
+          python-version: ${{ matrix.python-version }}
 
       - name: Repository ingress
         shell: bash
@@ -60,6 +64,19 @@ jobs:
 
       - name: Repository checks
         run: sh .githooks/check-all.sh --ci
+
+  # Branch protection requires the single context `check`. The matrix above
+  # publishes one context per Python version (`test (3.12)` and so on), so this
+  # summary job is the one required name, and it refuses unless every matrix
+  # leg succeeded — a skipped or cancelled leg is a failure here, not a pass.
+  check:
+    needs: test
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every matrix leg succeeded
+        run: test "${{ needs.test.result }}" = "success"
 
   # main never holds an unsterilized instrument: a pull request may carry
   # cleanroom/ drafts while under review, but it may not merge until the tray

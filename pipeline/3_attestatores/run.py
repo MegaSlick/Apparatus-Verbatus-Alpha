@@ -33,7 +33,7 @@ from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal  # noqa: E402
 from common.contracts.identities import act_id as derive_act_id  # noqa: E402
-from common.contracts.identities import attempt_id  # noqa: E402
+from common.contracts.identities import artifact_id, attempt_id  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR  # noqa: E402
 from common.exemplar_boundary import verify_exemplar_crop_lineage  # noqa: E402
 from common.stage import (  # noqa: E402
@@ -46,15 +46,47 @@ from common.stage import (  # noqa: E402
     fixture_serving_details,
     latest_attempt,
     open_context,
+    page_identity,
     run_stage,
     stage_parser,
     validate_serving_provenance,
 )
 
+# A witness may report one of these ordinal self-assessments. They are retained
+# as testimony about its own response, never promoted into a model ranking or
+# used to choose a witness. Six plain levels keep fixture and future adapters
+# interoperable while refusing an unbounded integer scale or invented prose.
+# `uncertain` and `unsure` are deliberately both admitted: real adapters emit
+# both spellings, and collapsing them to one is R3's call when it meets those
+# adapters, not this stage's.
+WITNESS_CONFIDENCE_ORDINALS = frozenset({"certain", "high", "medium", "low", "uncertain", "unsure"})
+
 DEFAULT_FORMAT_CAPABILITIES = {
     "can_express_uncertainty": False,
     "can_express_layout": False,
 }
+
+
+def _confidence_problem(value: Any, path: str = "witness_reported") -> str | None:
+    """Validate every confidence claim in retained witness self-report JSON."""
+    if isinstance(value, dict):
+        for key in sorted(value):
+            item = value[key]
+            if key == "confidence" and (
+                not isinstance(item, str) or item not in WITNESS_CONFIDENCE_ORDINALS
+            ):
+                return (
+                    f"{path}.confidence is not a member of the closed ordinal set "
+                    f"{sorted(WITNESS_CONFIDENCE_ORDINALS)}"
+                )
+            if problem := _confidence_problem(item, f"{path}.{key}"):
+                return problem
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            if problem := _confidence_problem(item, f"{path}[{index}]"):
+                return problem
+    return None
+
 
 # The two write paths this program implements, checked against by name because
 # `--operation` carries no argparse `choices` — the same parser serves every
@@ -470,6 +502,8 @@ def prepared_response(
         return None, None, None, health, str(health["truncation_basis"])
     witness_reported = row.get("witness_reported")
     report_problem = _native_problem(witness_reported, "witness_reported")
+    if report_problem is None:
+        report_problem = _confidence_problem(witness_reported)
     if report_problem is not None:
         witness_reported = None
     try:
@@ -537,7 +571,11 @@ TESTIMONIUM_FIELDS = frozenset(
         "content_health",
     }
 )
-OPTIONAL_TESTIMONIUM_FIELDS = frozenset({"reason", "reported"})
+# `page_witness` marks a page chair's act-scoped compatibility record and is
+# validated here. `scope` and `page_ordinal` are deliberately NOT listed: they
+# belong to the page-scoped kind, which this closed act-level payload never
+# carries, and allowing them here let a resealed act record wear page clothing.
+OPTIONAL_TESTIMONIUM_FIELDS = frozenset({"reason", "reported", "page_witness"})
 
 
 def testimonium_payload(
@@ -596,6 +634,13 @@ def _attempt_history(context) -> tuple[bool, AttemptHistory]:
             continue
         record = context.tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
         payload = record.get("payload")
+        # No `payload["scope"] == "page"` skip here. Page-scoped Testimonia are a
+        # kind of their own and the filter above already excludes them, so the
+        # skip could only ever fire for an act-scoped record that *claimed* page
+        # scope — and it would then drop that record out of the append/collision
+        # history on the strength of one self-reported field, which is exactly
+        # the disguise F-O5 closed in `attempt_tally`. The identical line was
+        # left standing here. Found in fresh-context review (P2).
         chair = payload.get("chair") if isinstance(payload, dict) else None
         if isinstance(chair, str):
             by_pair.setdefault((entry["subject_id"], chair), []).append(record)
@@ -924,6 +969,13 @@ def attempt_tally(
             "reason": "the stored Attestatores manifest does not equal its rebuilt inventory",
         }
 
+    # Page-scoped Testimonia are independently retained source evidence under
+    # their own kind, so this kind filter keeps the act-level walk to act
+    # attempts alone. There was also a `payload["scope"] == "page"` skip inside
+    # the loop below, which this filter made unreachable -- and which, had
+    # anything reached it, would have carried an act-scoped record past every
+    # check in this function on the strength of one self-reported field. Found
+    # in audit; F-O5.
     testimonia = [entry for entry in rebuilt["artifacts"] if entry["kind"] == "testimonium"]
     by_act = {act["act_id"]: act for act in acts or ()}
     try:
@@ -987,7 +1039,12 @@ def attempt_tally(
         return {"state": "UNKNOWN", "count": None, "hold": True, "reason": str(error)}
     except OSError as error:
         return {"state": "UNKNOWN", "count": None, "hold": True, "reason": str(error)}
-    return {"state": "KNOWN", "count": len(testimonia), "hold": False, "reason": None}
+    return {
+        "state": "KNOWN",
+        "count": sum(len(records) for records in by_pair.values()),
+        "hold": False,
+        "reason": None,
+    }
 
 
 def _positive_ordinal(value: str) -> int:
@@ -1167,6 +1224,26 @@ def resolve_attempt(
     return Attempt(outcome, native_payload, witness_reported, capabilities, health, reason)
 
 
+def declared_page_witness_chairs(context) -> set[str]:
+    """The fixture's page-witness declaration, validated before any use.
+
+    One accessor for both write paths (the act-scoped compatibility flag in
+    `publish_attempt` and the page join in
+    `publish_page_testimonia_and_attachments`), so a malformed declaration is a
+    named refusal before the first attempt publishes rather than a TypeError
+    mid-pass after some artifacts already sealed (CodeRabbit chain-end review;
+    host disposition: fixed).
+    """
+    declared = context.fixture.get("page_witness_chairs", [])
+    if (
+        not isinstance(declared, list)
+        or len(declared) != len(set(declared))
+        or any(not isinstance(chair, str) for chair in declared)
+    ):
+        raise SchemaRefusal("fixture page_witness_chairs is not a unique string list")
+    return set(declared)
+
+
 def publish_attempt(
     context,
     *,
@@ -1179,26 +1256,209 @@ def publish_attempt(
 ) -> None:
     """Seal one immutable Testimonium. The only write path for an attempt."""
     attempted = attempt.outcome in ATTEMPTED_WITNESS_OUTCOMES
+    payload = testimonium_payload(
+        chair=chair,
+        act_key=act["act_key"],
+        ordinal=ordinal,
+        regions=region_references(regions) if attempted else [],
+        provenance=provenance_for(context, resolved, attempted=attempted),
+        format_capabilities=attempt.format_capabilities,
+        native_payload=attempt.native_payload,
+        witness_reported=attempt.witness_reported,
+        health=attempt.health,
+        outcome=attempt.outcome,
+        reason=attempt.reason,
+    )
+    if chair in declared_page_witness_chairs(context):
+        # This is the fixture's interim act view of an immutable page witness.
+        # Its attachment points at the retained page Testimonium; R4 replaces
+        # this declared view with alignment, not with another witness kind.
+        payload["page_witness"] = True
     context.publish(
         kind="testimonium",
         subject_id=act["act_id"],
         outcome=attempt.outcome,
         attempt=attempt_id(act["act_id"], f"read:{chair}", ordinal),
         inputs=region_inputs(context, regions) if attempted else [],
-        payload=testimonium_payload(
-            chair=chair,
-            act_key=act["act_key"],
-            ordinal=ordinal,
-            regions=region_references(regions) if attempted else [],
-            provenance=provenance_for(context, resolved, attempted=attempted),
-            format_capabilities=attempt.format_capabilities,
-            native_payload=attempt.native_payload,
-            witness_reported=attempt.witness_reported,
-            health=attempt.health,
-            outcome=attempt.outcome,
-            reason=attempt.reason,
-        ),
+        payload=payload,
     )
+
+
+def publish_page_testimonia_and_attachments(
+    context,
+    *,
+    acts: list[dict[str, Any]],
+    ordinal: int,
+    attempts_by_pair: dict[tuple[str, str], Attempt],
+) -> None:
+    """Retain page testimony and derive one attachment record for every act.
+
+    R0 uses each successful chair's complete delivered act reading as an interim
+    span so the custody chain is real before R4 owns text alignment. The fixture
+    declares no spans. The act-scoped records for chairs 1 and 3 remain a temporary
+    compatibility view for the current Perlector; each is explicitly linked below
+    to the immutable page Testimonium that supplied it.
+    """
+    page_chairs = declared_page_witness_chairs(context) & set(context.witness_chairs)
+    page_records: dict[tuple[int, str], dict[str, str]] = {}
+    by_page: dict[int, list[dict[str, Any]]] = {}
+    for act in acts:
+        if act["outcome"] == "proposed":
+            by_page.setdefault(act["page_ordinal"], []).append(act)
+
+    for page_ordinal, page_acts in sorted(by_page.items()):
+        page_subject = page_identity(context.fixture, page_ordinal)
+        for chair in sorted(page_chairs):
+            attempts = [attempts_by_pair[(act["act_id"], chair)] for act in page_acts]
+            # Only a genuine reading contributes text. An attempt whose *outcome*
+            # is `failed` can still carry a parsed `native_payload` string (a bad
+            # `witness_reported`/`format_capabilities` fails the whole attempt
+            # without clearing the text `prepared_response` already parsed) --
+            # filtering on `isinstance(..., str)` alone let that failed act's own
+            # text be silently folded into a page witness's "read" testimony,
+            # laundering a recorded failure into apparent coverage (D2/D3;
+            # GOVERNANCE 2). Found in audit; F-S1.
+            #
+            # The disclosure below is the exact complement of this filter, computed
+            # from one partition rather than from a second predicate. They were two
+            # predicates, and they did not agree: the join also dropped an act whose
+            # reading is a structured native object (a dict or list rather than
+            # text), while the closed `unjoined_act_attempts` list named only
+            # non-reading OUTCOMES. In the shipped `structured-witness` scenario
+            # that made attestator_1's page-1 record report `read`, carry act a2's
+            # text alone, and disclose nothing -- act a1 gone behind a successful
+            # status, which is F-P3's own defect through F-S1's own door. Found in
+            # audit; F-O7.
+            joined: list[tuple[dict[str, Any], Attempt]] = []
+            unjoined: list[tuple[dict[str, Any], Attempt]] = []
+            for act, attempt in zip(page_acts, attempts, strict=True):
+                target = (
+                    joined
+                    if attempt.outcome in WITNESS_READING_OUTCOMES
+                    and isinstance(attempt.native_payload, str)
+                    else unjoined
+                )
+                target.append((act, attempt))
+            readable = [attempt.native_payload for _, attempt in joined]
+            unjoined_act_attempts = [
+                {
+                    "act_id": act["act_id"],
+                    "act_key": act["act_key"],
+                    "outcome": attempt.outcome,
+                    # A non-reading attempt always carries its own reason. A
+                    # reading the join could not carry has none to borrow, and an
+                    # omission with no reason is the silent loss this list exists
+                    # to refuse -- so the join states its own limit instead.
+                    "reason": attempt.reason
+                    if attempt.outcome not in WITNESS_READING_OUTCOMES
+                    else (
+                        "this chair delivered a structured native reading for the act; R0's "
+                        "synthetic page join concatenates delivered text only"
+                    ),
+                }
+                for act, attempt in unjoined
+            ]
+            native_payload = "\n".join(readable)
+            outcome = "read" if readable else "failed"
+            health = content_health(native_payload, completed=outcome == "read")
+            resolved = context.registry.resolve(chair)
+            page_attempt = attempt_id(page_subject, f"read:{chair}", ordinal)
+            context.publish(
+                kind="page-testimonium",
+                subject_id=page_subject,
+                outcome=outcome,
+                attempt=page_attempt,
+                payload={
+                    **testimonium_payload(
+                        chair=chair,
+                        act_key=f"page-{page_ordinal}",
+                        ordinal=ordinal,
+                        regions=[],
+                        provenance=provenance_for(context, resolved, attempted=outcome == "read"),
+                        format_capabilities=DEFAULT_FORMAT_CAPABILITIES,
+                        native_payload=native_payload if outcome == "read" else None,
+                        witness_reported=None,
+                        health=health
+                        if outcome == "read"
+                        else no_response_health(reason="page witness had no recordable response"),
+                        outcome=outcome,
+                        reason=None
+                        if outcome == "read"
+                        else "page witness had no recordable response",
+                    ),
+                    "scope": "page",
+                    "page_ordinal": page_ordinal,
+                    # R0 synthesizes this fixture page record by joining the
+                    # chair's successful act attempts. The joined text's own
+                    # content_health cannot reveal which acts were omitted, so
+                    # retain every unjoined attempt explicitly (GOVERNANCE 2).
+                    "unjoined_act_attempts": unjoined_act_attempts,
+                },
+            )
+            page_records[(page_ordinal, chair)] = context.artifact_ref(
+                ATTESTATORES,
+                "page-testimonium",
+                artifact_id(ATTESTATORES, "page-testimonium", page_subject, page_attempt),
+            )
+
+    for act in acts:
+        entries: list[dict[str, Any]] = []
+        for chair in context.witness_chairs:
+            attempt = attempts_by_pair[(act["act_id"], chair)]
+            page_witness = chair in page_chairs and act["outcome"] == "proposed"
+            attached = act["outcome"] == "proposed" and attempt.outcome in WITNESS_READING_OUTCOMES
+            reference = page_records.get((act["page_ordinal"], chair)) if page_witness else None
+            if reference is None:
+                act_attempt = attempt_id(act["act_id"], f"read:{chair}", ordinal)
+                reference = context.artifact_ref(
+                    ATTESTATORES,
+                    "testimonium",
+                    artifact_id(ATTESTATORES, "testimonium", act["act_id"], act_attempt),
+                )
+            entries.append(
+                {
+                    "chair": chair,
+                    "page_witness": page_witness,
+                    "testimonium_ref": reference,
+                    "attached": attached,
+                    "content_health": attempt.health,
+                    # Interim span, NOT fixture-declared (the fixture declares no
+                    # span anywhere): until R4's alignment computes the true
+                    # covered span, this treats this chair's own entire delivered
+                    # act-scoped reading as the one covered span. The prior
+                    # `len(act["act_key"])` synthesized a constant unrelated to any
+                    # reading (the act key is a short synthetic label like "a1"),
+                    # while the report and D1 both called it "fixture-declared" --
+                    # a provenance claim nothing backed. Found in audit; F-S2.
+                    "span": (
+                        {
+                            "start": 0,
+                            "end": len(attempt.native_payload)
+                            if isinstance(attempt.native_payload, str)
+                            else 0,
+                        }
+                        if attached
+                        else None
+                    ),
+                }
+            )
+        context.publish(
+            kind="act-attachment",
+            subject_id=act["act_id"],
+            outcome="read",
+            attempt=attempt_id(act["act_id"], "act-attachment", ordinal),
+            # The attachment payload retains each page/act Testimonium reference.
+            # It deliberately does not make the derived record's immutable
+            # publication depend on a later testimonio history surviving: the
+            # tally must diagnose that missing evidence itself, not have the
+            # manifest rebuild fail before it reaches the denominator check.
+            inputs=[],
+            payload={
+                "act_key": act["act_key"],
+                "attempt_ordinal": ordinal,
+                "attachments": entries,
+            },
+        )
 
 
 def attempt_pass(
@@ -1417,6 +1677,9 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             ordinal,
             regions_by_act,
             attempts_by_pair,
+        )
+        publish_page_testimonia_and_attachments(
+            context, acts=acts, ordinal=ordinal, attempts_by_pair=attempts_by_pair
         )
 
     if recorded == 0:
