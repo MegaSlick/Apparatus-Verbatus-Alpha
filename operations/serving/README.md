@@ -20,7 +20,11 @@ descriptor (`chair_preflight_identity_digest`). Repointing the chair in
 `config/models.toml` leaves the catalogue row byte-identical, so the row digest
 cannot see it and the manager refuses the mismatch at launch instead. Both
 halves are stamped after a green preflight and removed together when a row
-returns to `unproven`.
+returns to `unproven`. Stamp the identity digest *first*: `preflight_digest`
+covers every field of the row except `preflight_state` and itself, and that
+includes `preflight_identity_digest`, so a row digest taken before the identity
+digest is written is stale the moment it lands. `chair_preflight_identity_digest`
+and `profile_preflight_digest` are exported for exactly that stamping.
 `verify_recipes_cover_chairs` proves that lookup offline for every configured
 chair at every configured tier and refuses extra stale rows, so a misspelt
 `serving_recipe`, an unconfigured chair profile, or a newly added placement tier
