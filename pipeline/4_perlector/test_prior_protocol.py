@@ -250,9 +250,11 @@ def test_changing_the_act_id_changes_the_draw_for_some_seed():
 
 def test_the_modulo_bias_stays_negligible():
     """`int(digest[:8], 16) % 1000` draws from 2**32 values, not a multiple of
-    1000. The per-threshold bias this leaves is recorded in the function's own
-    docstring; this test is the canary that catches it silently growing if the
-    digest truncation width ever changes."""
+    1000. The numbers below are a hand-recorded derivation pinned to the
+    `digest[:8]` implementation — deliberately not read out of the source, so
+    the test cannot silently follow a code change. Anyone altering the
+    truncation width must re-derive the bias and edit this test on purpose,
+    alongside the recorded bias in `is_control_sampled`'s docstring."""
     space = 2**32
     remainder = space % 1000
     assert remainder != 0, "no bias to record if this ever becomes exact -- update the docstring"

@@ -451,3 +451,27 @@ def test_an_absent_chair_not_run_perlectio_with_an_unexpected_field_is_refused()
     payload["text"] = ""
     with pytest.raises(SchemaRefusal, match="unexpected"):
         perlector.validate_not_run_payload(payload, fields=perlector._NOT_RUN_ABSENT_FIELDS)
+
+
+def test_an_unknown_lectio_kind_is_refused_at_publication_not_one_stage_later(
+    published_payload,
+):
+    """A misspelt or future kind matched neither prior-draft branch, so its
+    prior-draft evidence published uninspected and the defect surfaced at the
+    Archetypus — one stage after the validator that promises write-time checks."""
+    run_id, config_digest = "schema-blind-run", "c" * 64
+    blinded, protocol_config, protocol_sha256 = _reblinded(
+        published_payload, run_id=run_id, config_digest=config_digest
+    )
+    tampered = copy.deepcopy(blinded)
+    tampered["lectio_kind"] = "primed_with_prior"
+    with pytest.raises(SchemaRefusal, match="unknown lectio kind"):
+        perlector.validate_reading_payload(
+            tampered,
+            outcome="read",
+            fields=perlector._PERLECTIO_FIELDS,
+            run_id=run_id,
+            config_digest=config_digest,
+            protocol_config=protocol_config,
+            protocol_sha256=protocol_sha256,
+        )

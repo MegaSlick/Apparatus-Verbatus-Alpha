@@ -23,7 +23,7 @@ from typing import Any, Final
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError, FatalAccounting
 from common.contracts.outcomes import OutcomeClass, classify
-from common.contracts.stages import STAGES
+from common.contracts.stages import PERLECTOR, STAGES
 
 DEFAULT_HARD_FAILURE_CONFIG_PATH: Final = (
     Path(__file__).resolve().parents[1] / "config" / "hard_failure.toml"
@@ -220,7 +220,7 @@ def tally_hard_failures(tree, policy: dict[str, Any]) -> dict[str, Any]:
         production: set[str] = set()
         instrument: set[str] = set()
         for entry in candidates:
-            is_instrument = stage == "perlector" and entry["kind"] in PERLECTOR_INSTRUMENT_KINDS
+            is_instrument = stage == PERLECTOR and entry["kind"] in PERLECTOR_INSTRUMENT_KINDS
             (instrument if is_instrument else production).add(entry["subject_id"])
         by_kind[key] = sorted(production)
         if instrument:

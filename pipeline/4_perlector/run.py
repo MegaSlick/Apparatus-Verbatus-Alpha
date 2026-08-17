@@ -804,9 +804,20 @@ def validate_reading_payload(
                 "reference and view"
             )
         validate_input_refs([prior_draft["reference"]])
-    elif lectio_kind == "primed-without-prior" and prior_draft is not None:
+    elif lectio_kind == "primed-without-prior":
+        if prior_draft is not None:
+            raise SchemaRefusal(
+                "a Perlectio claims primed-without-prior but carries a prior-draft reference"
+            )
+    elif lectio_kind is not None:
+        # `None` is the two kinds whose field sets exclude the key entirely
+        # (lectio-nuda and lectio-prior). Any other value matched neither
+        # branch above, so its prior-draft evidence would publish uninspected
+        # and the defect would surface one stage later at the Archetypus —
+        # the opposite of what this validator promises.
         raise SchemaRefusal(
-            "a Perlectio claims primed-without-prior but carries a prior-draft reference"
+            f"a Perlector reading names unknown lectio kind {lectio_kind!r}; a kind this "
+            "validator cannot name would publish its prior-draft evidence unchecked"
         )
     if "act_attachment" in reading_dossier:
         attachment = reading_dossier["act_attachment"]

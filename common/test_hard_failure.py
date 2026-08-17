@@ -252,6 +252,34 @@ def test_a_production_perlectio_failure_still_spends_the_ruled_cap(tmp_path):
     assert tally["instrument_count"] == 0
 
 
+def test_a_subject_failing_on_both_arms_appears_in_both_lists_and_spends_the_cap(tmp_path):
+    """The partition's documented delicate case: the instrument arm neither
+    excuses nor doubles the production incident for the same subject."""
+
+    tree = make_run(tmp_path)
+    publish(
+        tree,
+        stage=PERLECTOR,
+        kind="perlectio",
+        subject="act_both_arms",
+        outcome="failed",
+        adapter_revision="fake-perlector-v0",
+    )
+    publish(
+        tree,
+        stage=PERLECTOR,
+        kind="lectio-nuda",
+        subject="act_both_arms",
+        outcome="failed",
+        adapter_revision="fake-perlector-v0",
+    )
+    tally = tally_hard_failures(tree, load_hard_failure_policy(DEFAULT_HARD_FAILURE_CONFIG_PATH))
+    assert tally["count"] == 1
+    assert tally["by_kind"]["perlector:failed"] == ["act_both_arms"]
+    assert tally["instrument_by_kind"]["perlector:failed"] == ["act_both_arms"]
+    assert tally["instrument_count"] == 1
+
+
 def test_exactly_two_hard_failures_is_an_early_warning_and_does_not_breach(tmp_path):
     tree = make_run(tmp_path)
     publish(
