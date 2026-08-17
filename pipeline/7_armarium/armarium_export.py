@@ -1413,6 +1413,16 @@ def _text_bundle_records(
             elif line == "canonical_clean_text:":
                 if current_id is None or index + 1 >= len(lines):
                     raise SchemaRefusal("a text-bundle section has no act identity or literal")
+                # One literal per section, so the literal `uncertainty:` anchored
+                # to below is the literal this section ends up recording. A second
+                # `canonical_clean_text:` after the layer would replace `pending`
+                # while `pending_uncertainty` kept the offsets checked against the
+                # first -- an act recorded beside a layer that anchors to a text it
+                # no longer carries. Two or more literal formats catch that drift
+                # as a projection-identity mismatch; the text bundle is a legal
+                # single literal format, where nothing else would.
+                if pending is not None:
+                    raise SchemaRefusal("a text-bundle section carries more than one literal")
                 try:
                     literal = json.loads(lines[index + 1])
                 except json.JSONDecodeError as error:

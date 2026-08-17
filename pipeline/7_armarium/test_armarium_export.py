@@ -21,7 +21,7 @@ from armarium_export import (
     verify_export_bundle,
     verify_projection_identity,
 )
-from display import DISPLAY_CONVENTION
+from display import DISPLAY_CONVENTION, render_display
 from textnorm import TEXTNORM_REVISION, search_fold
 
 from common.armarium_formats import ArmariumFormats
@@ -333,6 +333,52 @@ def test_text_bundle_refuses_two_uncertainty_lines_for_one_literal(tmp_path):
 
     with pytest.raises(SchemaRefusal, match="more than one uncertainty layer"):
         verify_projection_identity(_zip_bytes(members), tmp_path)
+
+
+def test_text_bundle_refuses_a_second_literal_that_would_orphan_its_uncertainty(tmp_path):
+    """The layer's anchor cannot be swapped out from under it after it is checked.
+
+    `uncertainty:` validates against the literal already parsed. A section that
+    then declared a *second* `canonical_clean_text:` recorded the new literal
+    beside the first literal's layer -- offsets into a text this act no longer
+    carries -- and every remaining check passed: the second literal has its own
+    valid hash line and its own display that strips back to it. Two or more
+    literal formats show the drift as a projection-identity mismatch, but a
+    package may legally select the text bundle as its one literal format, and
+    there this section is the whole reading of the act.
+    """
+    formats = ArmariumFormats(("text-bundle", "review-items", "salvage-tier"), False)
+    original = _projection()
+    literal = original.acts[0]["canonical_clean_text"]
+    delivered = {
+        **original.acts[0],
+        "uncertainty": {
+            "uncertain_spans": [
+                {"start": 0, "end": len(literal), "alternatives": ["?"], "confidence": "low"}
+            ],
+            "gaps": [],
+            "self_revisions": [],
+        },
+    }
+    bundle = build_armarium_bundle(
+        replace(original, acts=(delivered, original.acts[1])), formats, _source_bytes
+    )
+    members = _members(bundle.data)
+    lines = members[TEXT_REGISTER].decode("utf-8").split("\n")
+    replacement = "X"
+    assert len(replacement) < len(literal)
+    marker = lines.index("uncertainty:")
+    lines[marker + 2 : marker + 2] = [
+        f"canonical_text_sha256: {canonical_text_sha256(replacement)}",
+        "canonical_clean_text:",
+        json.dumps(replacement, ensure_ascii=False),
+    ]
+    lines[lines.index("display:") + 1] = json.dumps(render_display(replacement), ensure_ascii=False)
+    members[TEXT_REGISTER] = "\n".join(lines).encode("utf-8")
+    _refresh_manifest_member(members, TEXT_REGISTER)
+
+    with pytest.raises(SchemaRefusal, match="more than one literal"):
+        verify_delivered_bundle(_zip_bytes(members), tmp_path / "single")
 
 
 def test_text_bundle_refuses_an_uncertainty_line_before_its_literal(tmp_path):
