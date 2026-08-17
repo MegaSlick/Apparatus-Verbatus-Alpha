@@ -81,9 +81,13 @@ def main(argv: list[str] | None = None) -> int:
         draw, selected = build_sampling_draw(
             args.run, read_json(args.catalog), read_json(args.plan)
         )
+        # The draw is the membership authority, so it is published FIRST: an
+        # interrupted run then leaves a draw whose members are partly missing --
+        # which verify-sampling refuses by name -- never orphan samples with no
+        # membership record to check them against.
+        write_append_only(Path(args.output_dir) / f"draw-{draw['self_hash']}.json", draw)
         for record in selected:
             write_append_only(Path(args.output_dir) / f"{record['sample_digest']}.json", record)
-        write_append_only(Path(args.output_dir) / f"draw-{draw['self_hash']}.json", draw)
     elif args.command == "ingest-manual":
         record = ingest_manual_pick(args.run, read_json(args.pick))
         output = Path(args.output)
@@ -124,13 +128,16 @@ def main(argv: list[str] | None = None) -> int:
             ),
         )
     elif args.command == "verify-sampling":
+        # One pairing rule for both paths, asked before any verification runs.
+        if (args.catalog is None) != (args.plan is None):
+            raise SchemaRefusal("--catalog and --plan must be supplied together")
         records = _records_in(args.directory)
         draws = [record for record in records if record.get("schema") == DRAW_SCHEMA]
         samples = [record for record in records if record.get("schema") == SAMPLE_SCHEMA]
+        if len(draws) > 1:
+            raise SchemaRefusal("the record directory contains more than one sampling draw")
         if len(draws) == 1:
             verify_recorded_draw(samples, draws[0], args.run)
-            if (args.catalog is None) != (args.plan is None):
-                raise SchemaRefusal("--catalog and --plan must be supplied together")
             if args.catalog is not None:
                 verify_stratified_selection(
                     samples,
@@ -139,9 +146,7 @@ def main(argv: list[str] | None = None) -> int:
                     read_json(args.plan),
                 )
         else:
-            if len(draws) > 1:
-                raise SchemaRefusal("the record directory contains more than one sampling draw")
-            if (args.catalog is None) != (args.plan is None) or args.catalog is None:
+            if args.catalog is None:
                 raise SchemaRefusal(
                     "no recorded sampling draw exists; both --catalog and --plan are required "
                     "to verify legacy sample records"

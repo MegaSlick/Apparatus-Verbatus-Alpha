@@ -96,7 +96,14 @@ def test_seeded_stratification_is_reproducible_and_sets_are_disjoint_by_construc
     assert first == second
     by_page = {record["page"]["sha256"]: record["set"] for record in first}
     assert len(by_page) == len(first)
-    assert all(record["set"] == set_for_page(frame, record["page"]["sha256"]) for record in first)
+    # Derived independently of `set_for_page`, so the test still argues if the
+    # implementation and its own oracle drift together.
+    for record in first:
+        rank = digest_bytes(
+            canonical_bytes({"page_sha256": record["page"]["sha256"], "purpose": "gold-set-v1"})
+        )
+        expected = "calibration" if int(rank[0], 16) < 8 else "locked-acceptance"
+        assert record["set"] == expected == set_for_page(frame, record["page"]["sha256"])
     # Attack the only way a page could cross sets: forge its stated membership.
     forged = dict(first[0])
     forged["set"] = "locked-acceptance" if forged["set"] == "calibration" else "calibration"
@@ -245,6 +252,48 @@ def test_a_tampered_sampling_seed_is_refused_as_an_edited_run_authority(tmp_path
     path.write_text(json.dumps(edited), encoding="utf-8")
     with pytest.raises(SchemaRefusal, match="fails its self-hash"):
         sample_stratified(path, rows, plan_for(frame, rows))
+    # Reseal the edited authority so the self-hash passes: only the seed's own
+    # derivation over the run's pages can refuse it now.
+    edited["self_hash"] = self_hash(edited)
+    path.write_text(json.dumps(edited), encoding="utf-8")
+    with pytest.raises(SchemaRefusal, match="seed diverges from its derivation"):
+        sample_stratified(path, rows, plan_for(frame, rows))
+
+
+def test_a_directory_whose_draw_record_vanished_refuses_without_the_full_replay(tmp_path):
+    """The draw is published first, so interruption leaves a draw short of its
+    samples -- refused by membership divergence. The converse state (samples
+    without a draw) now only arises by deletion, and bare verify-sampling
+    refuses it by name; the legacy --catalog/--plan path is deliberately still
+    open because it REPLAYS the whole selection, which is a full
+    re-verification, not a silent accept."""
+    path, frame, pages = run_file(tmp_path)
+    rows = catalog(pages)
+    records = tmp_path / "records"
+    (tmp_path / "catalog.json").write_text(json.dumps(rows), encoding="utf-8")
+    (tmp_path / "plan.json").write_text(json.dumps(plan_for(frame, rows)), encoding="utf-8")
+    assert (
+        cli.main(
+            [
+                "sample",
+                "--run",
+                str(path),
+                "--catalog",
+                str(tmp_path / "catalog.json"),
+                "--plan",
+                str(tmp_path / "plan.json"),
+                "--output-dir",
+                str(records),
+            ]
+        )
+        == 0
+    )
+    draw_files = list(records.glob("draw-*.json"))
+    assert len(draw_files) == 1
+    draw_files[0].unlink()
+
+    with pytest.raises(SchemaRefusal, match="no recorded sampling draw exists"):
+        cli.main(["verify-sampling", str(records), "--run", str(path)])
 
 
 def test_a_method_cannot_carry_another_methods_provenance(tmp_path):
@@ -374,6 +423,7 @@ def test_recorded_draw_recomputes_independently_from_seed_membership_and_plan(tm
                     canonical_bytes(
                         {
                             "seed": draw["frame"]["seed"],
+                            "ordinal": page["ordinal"],
                             "page_sha256": page["sha256"],
                             "stratum": stratum,
                             "purpose": "gold-sample",
@@ -512,8 +562,14 @@ def test_illegible_is_the_one_spelling_and_a_transcription_is_never_blank(tmp_pa
         "parrain " + ILLEGIBLE
         in transcribe(sample, _act(), "hand-a", "parrain " + ILLEGIBLE, path)["text"]
     )
-    for rejected in ("", "   ", "parrain [illegible]", "parrain (ILLEGIBLE?)", "ILLEGIBLE"):
-        with pytest.raises(SchemaRefusal, match="empty|reserved"):
+    for rejected, reason in (
+        ("", "empty"),
+        ("   ", "empty"),
+        ("parrain [illegible]", "reserved"),
+        ("parrain (ILLEGIBLE?)", "reserved"),
+        ("ILLEGIBLE", "reserved"),
+    ):
+        with pytest.raises(SchemaRefusal, match=reason):
             transcribe(sample, _act(), "hand-a", rejected, path)
 
 

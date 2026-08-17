@@ -152,6 +152,13 @@ def _frame_from_run(run: dict[str, Any]) -> tuple[dict[str, str], list[dict[str,
     _refuse(len({page["ordinal"] for page in source}) != len(source), "source page ordinals repeat")
     page_digest = digest_bytes(canonical_bytes(source))
     frame_digest = digest_bytes(canonical_bytes({"pages": source}))
+    expected_seed = digest_bytes(canonical_bytes({"page_digest": page_digest, "purpose": "frame"}))
+    # The self-hash proves the record was resealed by somebody; only the
+    # rederivation proves the seed is the one this run's own pages produce.
+    _refuse(
+        membership["seed"] != expected_seed,
+        "R0 frame seed diverges from its derivation over the run's own pages",
+    )
     _refuse(
         membership["page_digest"] != page_digest,
         "R0 frame page_digest diverges from run source_manifest",
@@ -182,12 +189,21 @@ def set_for_page(frame: dict[str, str], page_sha256: str) -> str:
     return "calibration" if int(rank[0], 16) < 8 else "locked-acceptance"
 
 
-def _rank(frame: dict[str, str], page_sha256: str, stratum: str) -> str:
+def _rank(frame: dict[str, str], page: dict[str, Any], stratum: str) -> str:
+    """One rank per catalog page, not per distinct byte content.
+
+    The ordinal is part of the key because the corpus legitimately admits the
+    same bytes at two ordinals (one page scanned twice); ranked by sha alone
+    the two rows would tie exactly and the draw could not tell them apart.
+    Ordinals themselves never repeat -- the run authority refuses that, and
+    `_frame_from_run` mirrors the refusal, because an ordinal names one page.
+    """
     return digest_bytes(
         canonical_bytes(
             {
                 "seed": frame["seed"],
-                "page_sha256": page_sha256,
+                "ordinal": page["ordinal"],
+                "page_sha256": page["sha256"],
                 "stratum": stratum,
                 "purpose": "gold-sample",
             }
@@ -356,7 +372,7 @@ def _select_stratified(
                 for page in catalog
                 if page["stratum"] == stratum and set_for_page(frame, page["sha256"]) == gold_set
             ]
-            eligible.sort(key=lambda page: _rank(frame, page["sha256"], stratum))
+            eligible.sort(key=lambda page: _rank(frame, page, stratum))
             _refuse(
                 len(eligible) < quota,
                 f"{gold_set}/{stratum} has {len(eligible)} structurally eligible pages for quota {quota}",
@@ -394,7 +410,13 @@ def build_sampling_draw(
 
 
 def validate_sampling_draw(record: Any, run_path: str | Path | None = None) -> dict[str, Any]:
-    """Recompute selected membership; no restated member count is trusted."""
+    """Recompute selected membership; no restated member count is trusted.
+
+    Without `run_path` (the CLI's `--run`), this checks only the record's
+    internal consistency -- its embedded catalog and frame digests against each
+    other. It does not prove the draw originated from a real run; only the
+    run-authority comparison that `run_path` enables can say that.
+    """
     _refuse(
         not isinstance(record, dict)
         or set(record) != {"schema", "frame", "catalog", "plan", "members", "self_hash"},
