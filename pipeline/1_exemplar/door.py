@@ -1228,9 +1228,7 @@ def real_submission(args, registry) -> int:
         load_hard_failure_policy(args.hard_failure_config),
         args.formats_config,
         designator_padding_config_sha256=_padding_config_digest(args.designator_padding_config),
-        designator_geometry_config_sha256=_geometry_config_digest(
-            args.designator_geometry_config
-        ),
+        designator_geometry_config_sha256=_geometry_config_digest(args.designator_geometry_config),
         witness_context=args.witness_context,
         witness_context_config_path=args.witness_context_config,
         nuda_per_mille=args.nuda_per_mille,

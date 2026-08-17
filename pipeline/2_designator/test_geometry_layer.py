@@ -133,9 +133,7 @@ def test_an_enabled_rectify_toggle_is_refused_until_an_implementation_exists():
         load_geometry_policy_record(policy)
 
 
-@pytest.mark.parametrize(
-    "field", ["half_tile_vertical_offset_px", "horizontal_overlap_px"]
-)
+@pytest.mark.parametrize("field", ["half_tile_vertical_offset_px", "horizontal_overlap_px"])
 def test_sealed_tiling_geometry_must_stay_half_the_tile_it_offsets(field):
     """The half-tile equalities are doing safety work -- a vertical offset that is
     not half the tile height reopens the seam the double pass exists to cover, and
