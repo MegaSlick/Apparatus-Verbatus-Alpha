@@ -42,7 +42,12 @@ PAGE_FALLBACK_INK_MARGIN: Final = 2
 # establishing branch below, so a misspelt `"lectio_prior"` would serve Pass B's
 # own text as the Pass-A draft and publish a `self_revision` of nothing at all.
 # A refusal is the only reading of that a record can carry.
-PASS_KINDS: Final = frozenset({"perlectio", "lectio-nuda", "lectio-prior", "primed-without-prior"})
+# `audit-reproof` joins at R5b, which adds the Pass-C span re-proof pass; the
+# reader has carried its dispatch branch since that build, and the producer-
+# literal pin below holds the set to exactly what `run.py` calls.
+PASS_KINDS: Final = frozenset(
+    {"perlectio", "lectio-nuda", "lectio-prior", "primed-without-prior", "audit-reproof"}
+)
 
 
 class LectioResult(TypedDict):
