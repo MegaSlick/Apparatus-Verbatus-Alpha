@@ -1102,6 +1102,29 @@ def test_a_float_in_a_gold_file_is_a_named_refusal_not_a_traceback(tmp_path):
             cli.main(["validate", str(spelled)])
 
 
+def test_a_deeply_nested_gold_file_is_a_named_refusal_not_a_traceback(tmp_path):
+    """json's scanner recurses per nesting level, so a deeply nested file raises
+    `RecursionError` rather than `JSONDecodeError` — and `_records_in` reads every
+    `*.json` in a directory, so one such file was enough to end `validate-corpus`
+    in a traceback instead of a refusal naming the file.
+    `common/runtree/store.py::_read_json` settled the convention."""
+    nested = tmp_path / "records" / "nested.json"
+    nested.parent.mkdir()
+    depth = 30_000
+    nested.write_text("[" * depth + "]" * depth, encoding="utf-8")
+    try:
+        json.loads(nested.read_text())
+    except RecursionError:
+        pass
+    else:
+        pytest.fail(
+            f"{depth} levels did not exhaust this interpreter's scanner, so there is no "
+            "RecursionError for the named refusal to catch and this test proves nothing"
+        )
+    with pytest.raises(SchemaRefusal, match="not readable JSON"):
+        cli.main(["validate-corpus", str(nested.parent)])
+
+
 def test_cli_malformed_json_input_is_a_named_refusal_not_a_traceback(tmp_path):
     """gold/cli.py's own JSON reading used to bypass core._read_json's SchemaRefusal
     wrapping, so a malformed catalog/plan/pick/record crashed with a raw parser

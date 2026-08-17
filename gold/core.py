@@ -86,6 +86,14 @@ def read_json(path: str | Path) -> Any:
     Public so every caller — this module's own frame loader and the CLI's
     argument parsing alike — raises the same named `SchemaRefusal` instead of
     a bare traceback for a malformed catalog, plan, pick, or record file.
+
+    `RecursionError` sits beside the obvious two because it is the same fact —
+    this file could not be read — arriving by a route the tuple did not name.
+    json's scanner recurses per nesting level, and `_records_in` reads every
+    `*.json` in a directory, so one deeply nested file was enough to end
+    `validate-corpus` or `verify-sampling` in a traceback rather than a named
+    refusal naming it. `common/runtree/store.py::_read_json` settled the
+    convention; the depth it fires at is the scanner's own and is not pinned here.
     """
     try:
         return json.loads(
@@ -93,7 +101,7 @@ def read_json(path: str | Path) -> Any:
             parse_float=_refuse_json_float,
             parse_constant=_refuse_json_float,
         )
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, RecursionError) as error:
         raise SchemaRefusal(f"{path} is not readable JSON") from error
 
 
