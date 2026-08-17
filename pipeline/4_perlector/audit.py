@@ -100,6 +100,24 @@ def _flag(flag_class: str, start: int, end: int) -> dict[str, Any]:
     return {"class": flag_class, "location": {"start": start, "end": end}}
 
 
+def _numeric_key(digits: str) -> tuple[int, str]:
+    """Order one decimal run against another without converting it to an int.
+
+    `int()` raises `ValueError` on a digit run longer than CPython's 4300-digit
+    string-conversion limit, and the text these flags are computed over is
+    whatever the reader emitted. A degenerate run of digits from a real reader
+    would have ended the Perlector mid-page with an unnamed `ValueError`
+    instead of a flag -- and surviving what a model emits is this stage's job,
+    not the model's (GOVERNANCE 7: feed it completely and measure it honestly).
+
+    Length-then-lexicographic over the run with leading zeros stripped is
+    exactly `int` ordering for non-negative decimals, at any length, with no
+    limit to reach. The values are only ever compared with each other.
+    """
+    trimmed = digits.lstrip("0") or "0"
+    return len(trimmed), trimmed
+
+
 def flags_once_per_page(semi_finals: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
     """Compute every deterministic flag from the frozen semi-finals exactly once.
 
@@ -120,8 +138,8 @@ def flags_once_per_page(semi_finals: list[dict[str, Any]]) -> dict[str, list[dic
     output: dict[str, list[dict[str, Any]]] = {row["act_id"]: [] for row in semi_finals}
     for rows in by_page.values():
         ordered = sorted(rows, key=lambda row: (row["order"], row["act_id"]))
-        dates: list[tuple[int, dict[str, Any]]] = []
-        numbers: list[tuple[int, dict[str, Any]]] = []
+        dates: list[tuple[tuple[int, str], dict[str, Any]]] = []
+        numbers: list[tuple[tuple[int, str], dict[str, Any]]] = []
         for row in ordered:
             text = row["text"]
             for testimony in row["testimonia"]:
@@ -135,10 +153,10 @@ def flags_once_per_page(semi_finals: list[dict[str, Any]]) -> dict[str, list[dic
                 output[row["act_id"]].append(_flag("repetition", repeated.start(), repeated.end()))
             date = re.search(r"\b(\d{4})\b", text)
             if date:
-                dates.append((int(date.group(1)), row))
+                dates.append((_numeric_key(date.group(1)), row))
             number = re.search(r"\b(?:no\.?|number)\s*(\d+)\b", text, flags=re.IGNORECASE)
             if number:
-                numbers.append((int(number.group(1)), row))
+                numbers.append((_numeric_key(number.group(1)), row))
             # The audit only records locations in the text delivered from this
             # act's crop. It deliberately has no page partition or residual-ink
             # predicate; those belong to the Recensor.

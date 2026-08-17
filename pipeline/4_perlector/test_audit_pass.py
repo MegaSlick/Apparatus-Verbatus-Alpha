@@ -273,6 +273,48 @@ def test_recovery_sibling_context_is_sealed_and_never_republished(tmp_path):
         )
 
 
+def test_a_degenerate_digit_run_flags_instead_of_ending_the_stage():
+    """`int()` on the numbering capture was a `ValueError` waiting on the reader.
+
+    `(\\d+)` is unbounded and the text is whatever the reader emitted, so a run
+    of more than 4300 digits hit CPython's integer string-conversion limit and
+    ended the Perlector mid-page with an unnamed traceback -- for every act on
+    that page, not just the one carrying the run. The comparison is the same
+    ordering it always was; only the representation changed.
+    """
+    degenerate = "No " + "9" * 5000 + " alpha"
+    frozen = [
+        {
+            "act_id": "a1",
+            "page_id": "p1",
+            "order": 0,
+            "geometry_order": 0,
+            "text": degenerate,
+            "testimonia": [degenerate],
+            "within_crop": True,
+        },
+        {
+            "act_id": "a2",
+            "page_id": "p1",
+            "order": 1,
+            "geometry_order": 1,
+            "text": "No 7 beta",
+            "testimonia": ["No 7 beta"],
+            "within_crop": True,
+        },
+    ]
+    flags = audit.flags_once_per_page(frozen)
+    assert [flag["class"] for flag in flags["a2"]] == ["numbering"]
+    assert flags["a1"] == []
+
+    # Ordering is unchanged for every number a register actually carries,
+    # leading zeros included.
+    assert audit._numeric_key("007") < audit._numeric_key("8")
+    assert audit._numeric_key("9") < audit._numeric_key("10")
+    assert audit._numeric_key("0") == audit._numeric_key("000")
+    assert audit._numeric_key("1688") < audit._numeric_key("1689")
+
+
 def test_change_record_refuses_a_change_extending_past_the_flag_end():
     flags = [{"class": "testimony-diff", "location": {"start": 1, "end": 2}}]
     with pytest.raises(SchemaRefusal, match="outside every flagged location"):
