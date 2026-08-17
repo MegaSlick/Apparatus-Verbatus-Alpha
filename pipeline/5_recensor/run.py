@@ -101,7 +101,20 @@ def audit_state(context, reading: dict, act_id: str) -> bool:
     The Perlectio's self-hash only proves that somebody sealed its references;
     this consumer proves they name the matching act, exact kinds, and the exact
     finding bytes whose unresolved state governs review routing.
+
+    `not-run` is the one Perlector outcome published without a reading attempt
+    (`pipeline/4_perlector/run.py`: a Designator-held act, and an explicitly
+    absent Perlector chair). It never reaches Pass C, so there is no chain to
+    verify and no unresolved span to route on — the act is held on its own
+    outcome further down. Demanding a chain here turned the absent-chair hold
+    this stage is built to report into a traceback about missing final text,
+    which is exactly the trap the `basis_regions` guard below is named for.
+    Every attempted outcome (`read`, `truncated`, `no-readable-text`, `failed`)
+    publishes the pair and is verified; a forged `not-run` buys nothing, because
+    that class is held rather than accepted.
     """
+    if reading["outcome"] == "not-run":
+        return False
     chain = validate_chain(context.tree, reading, act_id)
     return chain["record"]["unresolved"]
 

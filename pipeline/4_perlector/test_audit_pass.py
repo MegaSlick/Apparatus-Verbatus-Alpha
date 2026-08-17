@@ -425,6 +425,36 @@ def test_recensor_refuses_a_forged_audit_reference(tmp_path):
         _recensor().audit_state(SimpleNamespace(tree=tree), forged, final["subject_id"])
 
 
+def test_a_not_run_perlectio_has_no_audit_chain_and_is_not_a_traceback():
+    """The absent-chair Perlectio the Recensor is built to hold, not crash on.
+
+    `pipeline/4_perlector/run.py` publishes `not-run` for a Designator-held act
+    and for an explicitly absent Perlector chair (`state = "absent"` on the
+    `perlector` chair in `config/models.toml`), and that record carries no
+    `text` at all. Recensor `main` calls `audit_state` before it classifies the
+    outcome, so demanding a Pass-C chain of every reading turned the absent
+    chair's explicit hold — the shape the neighbouring `basis_regions` comment
+    refuses to index for exactly this reason — into a `SchemaRefusal` about
+    missing final text. Held acts are `continue`d earlier; the absent chair is
+    not, so this is the path that reached it.
+    """
+    not_run = {
+        "outcome": "not-run",
+        "payload": {
+            "act_key": "a1",
+            "attempt_ordinal": 1,
+            "reason": "the Perlector chair is explicitly absent: withdrawn between runs",
+            "basis": {"regions": [], "testimonia": []},
+            "dissent": [],
+            "provenance": {"chair_state": "absent"},
+        },
+        "inputs": [],
+    }
+    # `tree=None` is the assertion: no artifact is read for a reading that never
+    # produced one, so the refusal cannot come from a lookup that half-ran.
+    assert _recensor().audit_state(SimpleNamespace(tree=None), not_run, "act-1") is False
+
+
 def test_the_order_flag_fires_from_real_crop_geometry_not_the_declared_order():
     """H1's repair, red-proved: `geometry_order` must be an independent fact.
 
