@@ -327,7 +327,19 @@ chair, nuda against lectio-prior measures sampling variance; the
 witness-dependence contrast is lectio-prior, or the sampled control, against
 the production Perlectio. Whether the approval-gated nuda arm still earns its
 second model call once Pass A is universal belongs to B4's three-condition
-matrix and to Tyrel — this build changed nuda in no way and claims no answer.
+matrix and to Tyrel — this build claims no answer.
+
+**One thing about nuda did change, and it is not in the list above.**
+`common/hard_failure.py`'s `PERLECTOR_INSTRUMENT_KINDS` covers `lectio-nuda`
+as well as the two new kinds, so a failed Lectio nuda no longer spends Tyrel's
+ruled production hard-failure cap; before this branch it did, because the
+policy is written per (stage, outcome) and nuda is a Perlector artifact. That
+is the right disposition — the cap is a circuit breaker on the production
+reading path, and an instrument arm tripping it would halt a run over a
+measurement nothing downstream consumes — and the failures stay visible in the
+tally's `instrument_by_kind` and on the orchestrator's checkpoint line. It is
+recorded here rather than left to be rediscovered, because it is a change to
+the meaning of a ruled threshold and Tyrel is the one who ruled it.
 
 ## Not built here
 
