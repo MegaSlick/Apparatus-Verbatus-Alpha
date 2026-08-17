@@ -453,6 +453,31 @@ def test_an_absent_chair_not_run_perlectio_with_an_unexpected_field_is_refused()
         perlector.validate_not_run_payload(payload, fields=perlector._NOT_RUN_ABSENT_FIELDS)
 
 
+def test_primed_without_prior_refuses_a_none_valued_prior_draft_key(published_payload):
+    """The dossier field-set check admits the {prior_draft, prior_draft_view}
+    key combination, so a None prior_draft beside a view key slips a
+    value-only test; the branch judges key presence."""
+    run_id, config_digest = "schema-blind-run", "c" * 64
+    blinded, protocol_config, protocol_sha256 = _reblinded(
+        published_payload, run_id=run_id, config_digest=config_digest
+    )
+    tampered = copy.deepcopy(blinded)
+    tampered["lectio_kind"] = "primed-without-prior"
+    tampered["dossier"]["prior_draft"] = None
+    body = {key: value for key, value in tampered["dossier"].items() if key != "dossier_digest"}
+    tampered["dossier"]["dossier_digest"] = perlector.digest_of(body)
+    with pytest.raises(SchemaRefusal, match="carries prior-draft data"):
+        perlector.validate_reading_payload(
+            tampered,
+            outcome="read",
+            fields=perlector._PERLECTIO_FIELDS,
+            run_id=run_id,
+            config_digest=config_digest,
+            protocol_config=protocol_config,
+            protocol_sha256=protocol_sha256,
+        )
+
+
 def test_an_unknown_lectio_kind_is_refused_at_publication_not_one_stage_later(
     published_payload,
 ):

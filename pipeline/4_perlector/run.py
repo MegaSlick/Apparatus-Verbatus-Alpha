@@ -805,9 +805,12 @@ def validate_reading_payload(
             )
         validate_input_refs([prior_draft["reference"]])
     elif lectio_kind == "primed-without-prior":
-        if prior_draft is not None:
+        # Key presence, not value: the dossier field-set check above admits the
+        # {prior_draft, prior_draft_view} key combination, so a None prior_draft
+        # beside a view key would slip a value-only test.
+        if "prior_draft" in reading_dossier or "prior_draft_view" in reading_dossier:
             raise SchemaRefusal(
-                "a Perlectio claims primed-without-prior but carries a prior-draft reference"
+                "a Perlectio claims primed-without-prior but carries prior-draft data"
             )
     elif lectio_kind is not None:
         # `None` is the two kinds whose field sets exclude the key entirely
