@@ -768,6 +768,10 @@ def semantic_snapshot(root: Path) -> dict[str, str]:
     remains byte-bound. The ordinary ``snapshot`` stays byte-exact for all resume
     and no-write assertions.
     """
+    if (root / "run.json").is_file():
+        raise ValueError(
+            "semantic_snapshot requires the runs root, not an individual run directory"
+        )
     files = [(path, path.read_bytes()) for path in sorted(root.rglob("*")) if path.is_file()]
     bundle_paths = {}
     replacements = {}
@@ -834,6 +838,14 @@ def semantic_snapshot(root: Path) -> dict[str, str]:
 def semantic_snapshot_digest(root: Path) -> str:
     """The canonical content pin for the full relative run-tree inventory."""
     return digest_of(semantic_snapshot(root))
+
+
+def test_semantic_snapshot_refuses_an_individual_run_directory(tmp_path):
+    """A missing run-id path prefix must not masquerade as a platform-local pin."""
+    (tmp_path / "run.json").write_text("{}", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="runs root, not an individual run directory"):
+        semantic_snapshot_digest(tmp_path)
 
 
 def test_semantic_snapshot_digest_binds_png_pixels_not_compressor_bytes(tmp_path, monkeypatch):
@@ -1226,6 +1238,46 @@ def test_a_genuinely_empty_testimonium_counts_as_a_witnessed_read(tmp_path):
         for entry in tree.build_manifest(PERLECTOR)["artifacts"]
         if entry["kind"] == "perlectio" and entry["subject_id"] == empty["subject_id"]
     )
+    # Restored on the phase-2 review. These five assertions were deleted by the
+    # R6 pin re-measurement, whose message named only the two digests; they still
+    # pass, and under the wave's raw-span contract the zero-length `witness_span`
+    # for a genuinely-empty page witness is exactly what keeps this chair's blank
+    # from reading as lost page coverage.
+    attachment_record = next(
+        tree.read_artifact(ATTESTATORES, "act-attachment", entry["artifact_id"])
+        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
+        if entry["kind"] == "act-attachment" and entry["subject_id"] == empty["subject_id"]
+    )
+    empty_attachment = next(
+        row
+        for row in attachment_record["payload"]["attachments"]
+        if row["chair"] == empty["payload"]["chair"]
+    )
+    assert empty_attachment["attached"] is True
+    assert empty_attachment["span"] == {"start": 0, "end": 0}
+
+    empty_dissent = next(
+        row for row in reading["payload"]["dissent"] if row["chair"] == empty["payload"]["chair"]
+    )
+    assert empty_dissent["compared"] is True
+    assert empty_dissent["departed"] is True
+    assert empty_dissent["departures"] == [
+        {
+            "reading_span": {"start": 0, "end": len(reading["payload"]["text"])},
+            "testimonium_span": {"start": 0, "end": 0},
+        }
+    ]
+
+    review = next(
+        tree.read_artifact(RECENSOR, "review", entry["artifact_id"])
+        for entry in tree.build_manifest(RECENSOR)["artifacts"]
+        if entry["kind"] == "review" and entry["subject_id"] == empty["subject_id"]
+    )
+    assert review["payload"]["coverage"]["by_outcome"] == {
+        "genuinely-empty": 1,
+        "read": 2,
+    }
+    assert review["payload"]["coverage"]["under_witnessed"] is False
     assert all(region["witness_covered"] for region in reading["payload"]["basis"]["regions"])
     assert export_of(tree)["aggregate"]["status"] == "complete"
 
