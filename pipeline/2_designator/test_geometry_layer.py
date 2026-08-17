@@ -221,6 +221,10 @@ class _FixtureTree:
         return {"fixture": True}
 
     def read_bytes(self, path):
+        # `RunTree.read_bytes` is `self.resolve(path).read_bytes()`, so a
+        # reference to a blob that is not there surfaces as OSError, not KeyError.
+        if path not in self.blobs:
+            raise FileNotFoundError(path)
         return self.blobs[path]
 
 
@@ -243,6 +247,21 @@ def test_one_chandra_response_has_one_receipt_and_two_consumable_references():
         regions=[{"bbox_1000": [0, 0, 500, 500], "score_bp": 9000}],
     )[0]
     assert "R3-only custody" not in str(geometry)
+
+
+def test_chandra_custody_names_a_missing_blob_instead_of_crashing_on_it():
+    """A retained response that is gone is a custody refusal, not a bare OSError.
+
+    `RunTree.read_run_receipt`, one line above the read this covers, already
+    wraps the same failure for the same reason: a reference that no longer
+    resolves is a provenance failure, and R3 must be able to tell it apart from a
+    crash in the reader.
+    """
+    tree = _FixtureTree()
+    response_ref = retain_chandra_response(tree, b"fixture", RECEIPT)
+    tree.blobs.clear()  # the run tree lost the blob the reference still names
+    with pytest.raises(SchemaRefusal, match="could not be read"):
+        read_retained_chandra_response(tree, response_ref, RECEIPT)
 
 
 def test_chandra_custody_refuses_a_forged_blob_reference():
@@ -570,6 +589,37 @@ def test_resolver_refuses_an_occlusion_polygon_outside_the_shared_page_extent():
     )
     with pytest.raises(SchemaRefusal, match="outside the shared page extent"):
         resolve(raw_sources, [out_of_bounds])
+
+
+def test_resolver_refuses_two_occlusions_sharing_one_identity():
+    """The resolver refuses colliding raw proposal ids; occlusions are the same fact.
+
+    `occlusion_ids` goes into every partition row, so an id counted twice tells a
+    reviewer that two separate obstructions bear on every proposal on the page
+    when only one was ever recorded.
+    """
+    raw_sources = _geometry_sources()
+    first = _occlusion_envelope()
+    second = occlusion_envelope(
+        run_id="r2-fixture",
+        subject_id="occ_fixture",  # the same identity as `first`
+        config_digest="d" * 64,
+        adapter_revision="fixture-r2-v1",
+        inputs=[],
+        payload={
+            "schema": "designator-occlusion.v1",
+            "occlusion_id": "occ_fixture",
+            "page_id": "pg_fixture",
+            "page_ordinal": 0,
+            "polygon": [{"x": 40, "y": 40}, {"x": 41, "y": 40}, {"x": 41, "y": 41}],
+            "z_relationship": "unknown",
+            "review_state": "open",
+            "receipt_ref": RECEIPT,
+        },
+    )
+    assert first["payload"]["polygon"] != second["payload"]["polygon"]
+    with pytest.raises(SchemaRefusal, match="duplicate occlusion identities"):
+        resolve(raw_sources, [first, second])
 
 
 def test_resolver_refuses_raw_proposals_with_mismatched_page_pixel_extent():
