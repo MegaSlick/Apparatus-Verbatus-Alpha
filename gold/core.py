@@ -438,23 +438,34 @@ def validate_sampling_draw(record: Any, run_path: str | Path | None = None) -> d
 
 
 def verify_recorded_draw(records: Any, draw: Any, run_path: str | Path) -> list[dict[str, Any]]:
-    """Verify a draw only from its retained inputs, sample records, and R0 authority."""
+    """Verify a draw only from its retained inputs, sample records, and R0 authority.
+
+    Every sample handed in is validated, but only the seed-selected ones are
+    reconciled against the draw's retained membership. A manual pick is not a
+    claim about the draw and never was: refusing the whole verification because
+    one sits in the directory made `verify-sampling` unusable on exactly the
+    directory `ingest-manual` reconciles against and `validate-corpus` reads —
+    a false accusation ("a sample that was not seed-selected") against a record
+    that never asserted it was.
+
+    Nothing is lost by the narrowing. `sample_digest` binds `method`, so a page
+    chosen by hand and minted as `stratified-seed` still fails below as a
+    member the draw did not produce, and a drawn record re-minted as `manual`
+    still fails as a member the draw produced and the directory lacks.
+    """
     validate_sampling_draw(draw, run_path)
     _refuse(not isinstance(records, list), "sample records are not a list")
-    samples = []
+    seeded = []
     for record in records:
         validate_sample(record, run_path)
-        _refuse(
-            record["method"] != "stratified-seed",
-            "recorded draw membership contains a sample that was not seed-selected",
-        )
-        samples.append(record)
-    present = sorted(sample["sample_digest"] for sample in samples)
+        if record["method"] == "stratified-seed":
+            seeded.append(record)
+    present = sorted(sample["sample_digest"] for sample in seeded)
     _refuse(
         present != draw["members"],
         "sample records diverge from the membership retained by the sampling draw",
     )
-    return sorted(samples, key=lambda sample: sample["sample_digest"])
+    return sorted(seeded, key=lambda sample: sample["sample_digest"])
 
 
 def verify_stratified_selection(

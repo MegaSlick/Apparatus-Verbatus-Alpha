@@ -919,6 +919,84 @@ def test_cli_verify_sampling_replays_what_the_sampler_wrote(tmp_path):
         cli.main(["verify-sampling", str(output), "--run", str(path)])
 
 
+def test_verify_sampling_survives_a_manual_pick_beside_the_drawn_records(tmp_path):
+    """A manual pick is not a claim about the draw. `ingest-manual` reconciles a
+    pick against the gold records beside its output path and `validate-corpus`
+    reads that one directory, so drawn samples and picks share it by design — yet
+    `verify-sampling` refused the whole directory the moment a pick appeared,
+    accusing it of being "a sample that was not seed-selected" when it never said
+    it was. The seeded members still reconcile exactly, because `sample_digest`
+    binds `method`: a hand-picked page wearing `stratified-seed` is still refused."""
+    path, frame, pages = run_file(tmp_path)
+    rows, output = catalog(pages), tmp_path / "records"
+    plan = plan_for(frame, rows)
+    for name, payload in (("catalog", rows), ("plan", plan)):
+        (tmp_path / f"{name}.json").write_text(json.dumps(payload), encoding="utf-8")
+    assert (
+        cli.main(
+            [
+                "sample",
+                "--run",
+                str(path),
+                "--catalog",
+                str(tmp_path / "catalog.json"),
+                "--plan",
+                str(tmp_path / "plan.json"),
+                "--output-dir",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    drawn_pages = {
+        json.loads(item.read_text()).get("page", {}).get("sha256") for item in output.glob("*.json")
+    }
+    picked = next(row for row in rows if row["sha256"] not in drawn_pages)
+    (tmp_path / "pick.json").write_text(
+        json.dumps(
+            {
+                "schema": MANUAL_PICK_SCHEMA,
+                "selection_basis": "Tyrel B1 pick, filed with the drawn corpus",
+                "page": picked,
+                "set": set_for_page(frame, picked["sha256"]),
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert (
+        cli.main(
+            [
+                "ingest-manual",
+                "--run",
+                str(path),
+                "--pick",
+                str(tmp_path / "pick.json"),
+                "--output",
+                str(output / "manual.json"),
+            ]
+        )
+        == 0
+    )
+    assert cli.main(["validate-corpus", str(output), "--run", str(path)]) == 0
+    assert cli.main(["verify-sampling", str(output), "--run", str(path)]) == 0
+    # The seeded half is still reconciled exactly: a page the draw did not choose,
+    # minted as a seeded sample, is refused even with the pick sitting beside it.
+    smuggled = build_sample(
+        frame,
+        picked,
+        selection_basis="seeded-stratified-v1",
+        method="stratified-seed",
+        sampling=next(
+            record["sampling"]
+            for record in (json.loads(item.read_text()) for item in output.glob("*.json"))
+            if record.get("sampling")
+        ),
+    )
+    write_append_only(output / f"{smuggled['sample_digest']}.json", smuggled)
+    with pytest.raises(SchemaRefusal, match="diverge.*membership|membership.*diverge"):
+        cli.main(["verify-sampling", str(output), "--run", str(path)])
+
+
 def test_cli_entry_point_states_the_refusal_instead_of_printing_a_traceback(tmp_path):
     """`main()` raising the named refusal is only half of it: run as a program, an
     uncaught `SchemaRefusal` still reached the operator as a stack trace and exit 1.

@@ -27,7 +27,10 @@ catalog.json --plan plan.json` replays: validating one record proves its page is
 real corpus page in the set the seed assigns it, but only replaying the whole draw
 shows that the *sampler* chose those pages.  A hand-picked page minted as
 `stratified-seed`, a record quietly removed from the directory, and a catalog
-re-described after the fact all fail the replay by name.
+re-described after the fact all fail the replay by name.  A `manual` record filed
+in the same directory is validated but is not reconciled against the draw: it
+never claimed to be draw membership, and drawn samples and manual picks share one
+directory by design.
 
 `ingest-manual` accepts Tyrel's `gold-manual-pick.v1` record, which has
 `selection_basis`, the bound page/stratum, and his stated set.  It records that
