@@ -23,8 +23,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable, Final
 
-import protocol
-
 from common.chairs.models import ChairIdentity
 from common.contracts.canonical import canonical_text, digest_bytes, digest_of
 
@@ -33,13 +31,8 @@ from common.contracts.canonical import canonical_text, digest_bytes, digest_of
 # loads, before any act is read, rather than per prompt mid-run as
 # `inspect.getsource` would.
 _MODULE_SOURCE_DIGEST: Final[str] = digest_bytes(Path(__file__).resolve().read_bytes())
-# The shape a caller with no sealed declaration gets: the pinned policy name
-# (taken from `protocol`, not restated here -- a second copy of a pinned string
-# is a second place for it to drift), and no Pass-B fragment at all. An unsealed
-# caller must not be able to put a fragment in front of a reader, which is why
-# the blank is the default rather than `protocol.PASS_B_FRAGMENT`.
 _DEFAULT_PROTOCOL: Final = {
-    "page_shared_prefix_policy": protocol.PAGE_SHARED_PREFIX_POLICY,
+    "page_shared_prefix_policy": "page-shared-prefix-first.v1",
     "pass_b_fragment": "",
 }
 
