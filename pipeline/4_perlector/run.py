@@ -1233,7 +1233,7 @@ def _sealed_sibling_semi_finals(
     }
     records_by_subject: dict[str, list[dict[str, Any]]] = {act_id: [] for act_id in sibling_ids}
     for entry in context.tree.build_manifest(PERLECTOR)["artifacts"]:
-        if entry["kind"] not in {"perlectio"} or entry["subject_id"] not in sibling_ids:
+        if entry["kind"] != "perlectio" or entry["subject_id"] not in sibling_ids:
             continue
         record = context.tree.read_artifact(PERLECTOR, "perlectio", entry["artifact_id"])
         records_by_subject[entry["subject_id"]].append(record)
