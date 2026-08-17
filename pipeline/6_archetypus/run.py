@@ -533,9 +533,7 @@ def accepted_primed_perlectio(
             "basis; a reading shown no witness at all is a Lectio nuda by any other name"
         )
     attachment = (
-        payload.get("dossier", {}).get("act_attachment")
-        if isinstance(payload.get("dossier"), dict)
-        else None
+        claimed_dossier.get("act_attachment") if isinstance(claimed_dossier, dict) else None
     )
     # Required, exactly as the Testimonium basis above is required, and for the
     # same reason. Every primed reading this pipeline seals carries the
@@ -560,47 +558,51 @@ def accepted_primed_perlectio(
         kind="act-attachment",
         subject_id=act_id,
     )
+    # Unconditional: `lectio_kind` is already proved to be `primed-with-prior`
+    # above, and nothing below it reassigns the name. Guarding these checks on
+    # the value again read as though some other kind reached them, which would
+    # have made the whole prior-draft chain look optional at the one stage that
+    # reads a Perlectio back off disk -- the shape F-O2 had already had to
+    # repair once for the act-attachment view.
     prior_draft = claimed_prior_draft
-    if lectio_kind == "primed-with-prior":
-        prior_reference = prior_draft.get("reference") if isinstance(prior_draft, dict) else None
-        if not _is_ref_shaped(prior_reference):
-            raise SchemaRefusal(
-                f"act {act_id} claims primed-with-prior but carries no prior-draft reference"
-            )
-        if prior_reference not in reading.get("inputs", []):
-            raise SchemaRefusal(
-                f"act {act_id} carries a prior-draft reference that is not a digest-checked "
-                "direct input of the reading"
-            )
-        prior_record = context.tree.read_artifact_reference(
-            prior_reference,
-            stage=PERLECTOR,
-            kind="lectio-prior",
-            subject_id=act_id,
+    prior_reference = prior_draft.get("reference") if isinstance(prior_draft, dict) else None
+    if not _is_ref_shaped(prior_reference):
+        raise SchemaRefusal(
+            f"act {act_id} claims primed-with-prior but carries no prior-draft reference"
         )
-        prior_payload = prior_record.get("payload")
-        if (
-            not isinstance(prior_payload, dict)
-            or not isinstance(prior_draft.get("text"), str)
-            or prior_draft["text"] != prior_payload.get("text")
-        ):
-            raise SchemaRefusal(
-                f"act {act_id} embeds prior-draft text that disagrees with its referenced "
-                "lectio-prior"
-            )
-        # The reference is bound to stage, kind, subject and digest above -- and
-        # not, until here, to the attempt. A recovered act carries one Pass-A
-        # draft per attempt, and a Perlectio citing a superseded one would
-        # publish `self_revision` measured against a draft its reader never saw.
-        # Where the two drafts happen to read alike (the ordinary case: recovery
-        # recovers coverage, not text) every other check above passes, so this
-        # is the binding that makes the citation the reading's own.
-        if prior_payload.get("attempt_ordinal") != payload.get("attempt_ordinal"):
-            raise SchemaRefusal(
-                f"act {act_id} cites a prior draft from reading attempt "
-                f"{prior_payload.get('attempt_ordinal')!r}, not its own "
-                f"{payload.get('attempt_ordinal')!r}"
-            )
+    if prior_reference not in reading.get("inputs", []):
+        raise SchemaRefusal(
+            f"act {act_id} carries a prior-draft reference that is not a digest-checked "
+            "direct input of the reading"
+        )
+    prior_record = context.tree.read_artifact_reference(
+        prior_reference,
+        stage=PERLECTOR,
+        kind="lectio-prior",
+        subject_id=act_id,
+    )
+    prior_payload = prior_record.get("payload")
+    if (
+        not isinstance(prior_payload, dict)
+        or not isinstance(prior_draft.get("text"), str)
+        or prior_draft["text"] != prior_payload.get("text")
+    ):
+        raise SchemaRefusal(
+            f"act {act_id} embeds prior-draft text that disagrees with its referenced lectio-prior"
+        )
+    # The reference is bound to stage, kind, subject and digest above -- and
+    # not, until here, to the attempt. A recovered act carries one Pass-A
+    # draft per attempt, and a Perlectio citing a superseded one would
+    # publish `self_revision` measured against a draft its reader never saw.
+    # Where the two drafts happen to read alike (the ordinary case: recovery
+    # recovers coverage, not text) every other check above passes, so this
+    # is the binding that makes the citation the reading's own.
+    if prior_payload.get("attempt_ordinal") != payload.get("attempt_ordinal"):
+        raise SchemaRefusal(
+            f"act {act_id} cites a prior draft from reading attempt "
+            f"{prior_payload.get('attempt_ordinal')!r}, not its own "
+            f"{payload.get('attempt_ordinal')!r}"
+        )
     witnesses: dict[tuple[str, str], str | None] = {}
     for index, item in enumerate(testimonia):
         if not isinstance(item, dict):
