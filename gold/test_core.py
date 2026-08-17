@@ -1110,17 +1110,23 @@ def test_a_deeply_nested_gold_file_is_a_named_refusal_not_a_traceback(tmp_path):
     `common/runtree/store.py::_read_json` settled the convention."""
     nested = tmp_path / "records" / "nested.json"
     nested.parent.mkdir()
-    depth = 30_000
-    nested.write_text("[" * depth + "]" * depth, encoding="utf-8")
-    try:
-        json.loads(nested.read_text())
-    except RecursionError:
-        pass
+    # The exhaustion depth is the interpreter's own, not a portable constant:
+    # 30,000 levels exhaust the scanner on this repo's Linux container but not
+    # on a macOS CPython 3.14, whose C-stack allowance is larger. Probe upward
+    # for the depth this interpreter actually refuses at, so the test proves
+    # the refusal wherever it runs instead of proving it on exactly one build.
+    for depth in (30_000, 100_000, 300_000, 1_000_000):
+        document = "[" * depth + "]" * depth
+        try:
+            json.loads(document)
+        except RecursionError:
+            break
     else:
         pytest.fail(
-            f"{depth} levels did not exhaust this interpreter's scanner, so there is no "
+            "1,000,000 levels did not exhaust this interpreter's scanner, so there is no "
             "RecursionError for the named refusal to catch and this test proves nothing"
         )
+    nested.write_text(document, encoding="utf-8")
     with pytest.raises(SchemaRefusal, match="not readable JSON"):
         cli.main(["validate-corpus", str(nested.parent)])
 
