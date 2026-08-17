@@ -6,7 +6,7 @@ import tomllib
 from pathlib import Path
 from typing import Final
 
-from common.contracts.canonical import digest_bytes
+from common.contracts.canonical import digest_bytes, digest_of
 from common.contracts.errors import ContractError
 
 SELECTION_RULE: Final = "digest-threshold-over-frame-page-seed-act.v1"
@@ -86,8 +86,6 @@ def is_control_sampled(
         )
     if per_mille == 0:
         return False
-    from common.contracts.canonical import digest_of
-
     digest = digest_of(
         {
             "purpose": "perlector-prior-control",

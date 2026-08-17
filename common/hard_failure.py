@@ -206,51 +206,44 @@ def tally_hard_failures(tree, policy: dict[str, Any]) -> dict[str, Any]:
     by_kind: dict[str, list[str]] = {}
     instrument_by_kind: dict[str, list[str]] = {}
     subjects: set[tuple[str, str]] = set()
+
+    def record(key: str, stage: str, candidates: list[dict[str, Any]]) -> None:
+        """Split one policy entry's matches into production and instrument arms.
+
+        Stated once for both loops below: the two entry shapes differ only in
+        how they select candidates, and a partition rule written twice is a
+        partition rule that can come to mean two things. A subject with both a
+        production and an instrument failure appears in both lists, which is
+        the honest answer -- the instrument arm neither excuses nor doubles the
+        production incident.
+        """
+        production: set[str] = set()
+        instrument: set[str] = set()
+        for entry in candidates:
+            is_instrument = stage == "perlector" and entry["kind"] in PERLECTOR_INSTRUMENT_KINDS
+            (instrument if is_instrument else production).add(entry["subject_id"])
+        by_kind[key] = sorted(production)
+        if instrument:
+            instrument_by_kind[key] = sorted(instrument)
+        subjects.update((stage, subject_id) for subject_id in production)
+
     for stage, outcome in sorted(policy["kinds"]):
-        candidates = [entry for entry in artifacts(stage) if entry["outcome"] == outcome]
-        instrument_matches = sorted(
-            {
-                entry["subject_id"]
-                for entry in candidates
-                if stage == "perlector" and entry["kind"] in PERLECTOR_INSTRUMENT_KINDS
-            }
+        record(
+            f"{stage}:{outcome}",
+            stage,
+            [entry for entry in artifacts(stage) if entry["outcome"] == outcome],
         )
-        matches = sorted(
-            {
-                entry["subject_id"]
-                for entry in candidates
-                if not (stage == "perlector" and entry["kind"] in PERLECTOR_INSTRUMENT_KINDS)
-            }
-        )
-        by_kind[f"{stage}:{outcome}"] = matches
-        if instrument_matches:
-            instrument_by_kind[f"{stage}:{outcome}"] = instrument_matches
-        subjects.update((stage, subject_id) for subject_id in matches)
 
     for stage, outcome, reason in sorted(policy.get("reason_kinds") or ()):
-        candidates = [
-            entry
-            for entry in artifacts(stage)
-            if entry["outcome"] == outcome and reason_of(stage, entry) == reason
-        ]
-        instrument_matches = sorted(
-            {
-                entry["subject_id"]
-                for entry in candidates
-                if stage == "perlector" and entry["kind"] in PERLECTOR_INSTRUMENT_KINDS
-            }
+        record(
+            f"{stage}:{outcome}:{reason}",
+            stage,
+            [
+                entry
+                for entry in artifacts(stage)
+                if entry["outcome"] == outcome and reason_of(stage, entry) == reason
+            ],
         )
-        matches = sorted(
-            {
-                entry["subject_id"]
-                for entry in candidates
-                if not (stage == "perlector" and entry["kind"] in PERLECTOR_INSTRUMENT_KINDS)
-            }
-        )
-        by_kind[f"{stage}:{outcome}:{reason}"] = matches
-        if instrument_matches:
-            instrument_by_kind[f"{stage}:{outcome}:{reason}"] = instrument_matches
-        subjects.update((stage, subject_id) for subject_id in matches)
 
     count = len(subjects)
     return {
