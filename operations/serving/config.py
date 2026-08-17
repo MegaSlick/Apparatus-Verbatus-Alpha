@@ -65,6 +65,7 @@ _PROFILE_FIELDS = {
     "startup_timeout_seconds",
     "poll_interval_seconds",
     "readiness_probe",
+    "preflight_state",
 }
 _PROBE_FIELDS = {"kind", "request_json"}
 _PACKAGE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
@@ -143,6 +144,7 @@ class ServingProfile:
     startup_timeout_seconds: int
     poll_interval_seconds: int
     readiness_probe: ProbeSpec
+    preflight_state: str
     kind: str = "vllm"
 
     def __post_init__(self) -> None:
@@ -381,6 +383,9 @@ def _parse_profile(raw: Any) -> "ServingProfile | FixtureProfile":
         raise ServingConfigurationError(
             "generation_config must be exactly 'vllm'; model-supplied generation defaults are not a pinned profile"
         )
+    preflight_state = _text(raw["preflight_state"], "preflight_state")
+    if preflight_state not in {"unproven", "proven"}:
+        raise ServingConfigurationError("preflight_state must be 'unproven' or 'proven'")
     timeout = _positive_int(raw["startup_timeout_seconds"], "startup_timeout_seconds")
     poll = _positive_int(raw["poll_interval_seconds"], "poll_interval_seconds")
     if poll > timeout:
@@ -412,6 +417,7 @@ def _parse_profile(raw: Any) -> "ServingProfile | FixtureProfile":
         startup_timeout_seconds=timeout,
         poll_interval_seconds=poll,
         readiness_probe=_probe(raw["readiness_probe"]),
+        preflight_state=preflight_state,
         kind="vllm",
     )
 

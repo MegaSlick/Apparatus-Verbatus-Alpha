@@ -248,7 +248,10 @@ def _regular_files(root: Path, *, chair: str) -> list[tuple[str, Path]]:
 
 
 def _safe_relative(value: Any) -> bool:
+    # Empty `.parts` is the rule, not the literal ".": "./" also names the
+    # directory itself and has no parts, and `model_store._safe` — the same
+    # rule spelled as a refusal — already judges by parts. The two must agree.
     if not isinstance(value, str) or not value or "\\" in value:
         return False
     path = PurePosixPath(value)
-    return not path.is_absolute() and ".." not in path.parts and value not in (".", "")
+    return not path.is_absolute() and ".." not in path.parts and bool(path.parts)

@@ -306,6 +306,10 @@ def test_a_manifest_whose_digest_is_not_the_pin_is_refused(tmp_path):
         [{"path": "a", "sha256": "0" * 63, "size": 1}],
         [{"path": "../a", "sha256": "0" * 64, "size": 1}],
         [{"path": "/a", "sha256": "0" * 64, "size": 1}],
+        [{"path": ".", "sha256": "0" * 64, "size": 1}],
+        [  # "./" also names the directory itself: no parts, same rule as "."
+            {"path": "./", "sha256": "0" * 64, "size": 1}
+        ],
         [  # not sorted by path
             {"path": "b", "sha256": "0" * 64, "size": 1},
             {"path": "a", "sha256": "0" * 64, "size": 1},

@@ -395,6 +395,7 @@ def profile_row(
         "enable_tower_connector_lora": tower_connector,
         "max_lora_rank": 16,
         "generation_config": "vllm",
+        "preflight_state": "proven",
         "startup_timeout_seconds": 3,
         "poll_interval_seconds": 1,
         "readiness_probe": {
@@ -406,6 +407,96 @@ def profile_row(
 
 def recipes(*rows: dict[str, object]):
     return parse_serving_recipes({"schema": "serving-recipes.v1", "profiles": list(rows)})
+
+
+def test_real_serving_profile_is_structurally_unproven_until_preflight():
+    row = profile_row(recipe="reader", chair="perlector", served_model_id="reader", port=8100)
+    row["preflight_state"] = "unproven"
+
+    profile = recipes(row).profiles[0]
+
+    assert profile.preflight_state == "unproven"
+
+
+def test_a_real_serving_profile_missing_preflight_state_refuses_by_name():
+    """Migration honesty: an older row that predates this field is not silently proven."""
+
+    row = profile_row(recipe="reader", chair="perlector", served_model_id="reader", port=8100)
+    del row["preflight_state"]
+
+    with pytest.raises(ServingConfigurationError, match="preflight_state"):
+        recipes(row)
+
+
+def test_start_refuses_a_serving_profile_that_is_not_preflight_proven(tmp_path: Path) -> None:
+    """A structurally 'unproven' profile must refuse launch, not merely round-trip.
+
+    ``test_real_serving_profile_is_structurally_unproven_until_preflight`` only
+    proves parsing preserves the value; this proves ``manager.start`` actually
+    enforces it before any process, lease, or endpoint action.
+    """
+
+    chair = identity("reader", "reader-v1")
+    row = profile_row(recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000)
+    row["preflight_state"] = "unproven"
+    manager, _, _, launcher, registry, publisher = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(row,),
+        model_ids=("reader-api",),
+    )
+
+    with pytest.raises(ServingRecipeRefusal, match="preflight"):
+        manager.start(chair, TIER)
+
+    assert launcher.processes == []
+    assert publisher.calls == []
+    assert not (tmp_path / "logs").exists()
+    # The refusal is at the recipe door, before any snapshot or residency work:
+    # no store verification ran, and the pod/GPU lease file was never created,
+    # so a following named start is not blocked by this one.
+    assert registry.ensure_calls == []
+    assert not (tmp_path / "pod-gpu.lock").exists()
+
+
+def test_start_refuses_a_proven_adapter_over_an_unproven_base_before_any_snapshot(
+    tmp_path: Path,
+) -> None:
+    """The recipe door covers every participating profile, the base's included.
+
+    A proven adapter over an unproven base must refuse with no registry.ensure
+    work behind it — not verify the adapter snapshot (or the base's) first and
+    refuse afterwards.
+    """
+
+    base = identity("base", "base-v1")
+    adapter = identity("adapter", "adapter-v1", adapter_of="base")
+    base_row = profile_row(recipe="base-v1", chair="base", served_model_id="base-api", port=8000)
+    base_row["preflight_state"] = "unproven"
+    profiles = (
+        base_row,
+        profile_row(
+            recipe="adapter-v1",
+            chair="adapter",
+            served_model_id="adapter-api",
+            port=8100,
+            tower_connector=True,
+        ),
+    )
+    manager, _, _, launcher, registry, publisher = manager_for(
+        tmp_path,
+        identities={base.role: base, adapter.role: adapter},
+        profiles=profiles,
+        model_ids=("base-api", "adapter-api"),
+    )
+
+    with pytest.raises(ServingRecipeRefusal, match="preflight"):
+        manager.start(adapter, TIER)
+
+    assert registry.ensure_calls == []
+    assert launcher.processes == []
+    assert publisher.calls == []
+    assert not (tmp_path / "pod-gpu.lock").exists()
 
 
 def measured_gpu(dtype: str = "bfloat16") -> GpuProfile:
