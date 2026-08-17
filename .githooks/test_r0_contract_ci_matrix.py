@@ -28,7 +28,7 @@ REQUIRED_PYTHON_VERSIONS = {"3.12", "3.13", "3.14"}
 
 
 def _check_job_python_versions() -> set[str]:
-    """Every Python version the `check` job's `setup-python` step actually runs.
+    """Every Python version the CI test matrix's `setup-python` step actually runs.
 
     Reads a `matrix.python-version` strategy if one exists, otherwise the job's
     bare `with: python-version:` value -- so this reports what the workflow
@@ -36,7 +36,7 @@ def _check_job_python_versions() -> set[str]:
     '3.13' or '3.14' somewhere irrelevant (a comment, an unrelated pin).
     """
     workflow = yaml.safe_load(WORKFLOW.read_text())
-    check_job = workflow["jobs"]["check"]
+    check_job = workflow["jobs"]["test"]
     strategy = check_job.get("strategy", {})
     matrix = strategy.get("matrix", {})
     matrix_versions = matrix.get("python-version")
@@ -84,15 +84,24 @@ def test_the_3_12_floor_gate_still_runs_outside_the_matrix():
     """
     workflow = yaml.safe_load(WORKFLOW.read_text())
     matrix_versions = (
-        workflow["jobs"]["check"].get("strategy", {}).get("matrix", {}).get("python-version")
+        workflow["jobs"]["test"].get("strategy", {}).get("matrix", {}).get("python-version")
     )
     assert isinstance(matrix_versions, list) and matrix_versions, (
-        "the CI `check` job declares no strategy.matrix.python-version list at all; "
+        "the CI `test` job declares no strategy.matrix.python-version list at all; "
         "the 3.12 floor cannot be distinguished from 3.13/3.14 cross-version "
         "coverage without one"
     )
-    assert str(matrix_versions[0]) == "3.12", (
+    assert "3.12" in [str(version) for version in matrix_versions], (
         f"the Python version matrix is {matrix_versions!r}; 3.12 is the floor "
-        "(GAMEPLAN_v3.md Phase 1) and is expected first, with 3.13/3.14 as "
+        "(GAMEPLAN_v3.md Phase 1) and must be present, with 3.13/3.14 as "
         "additional cross-version coverage"
+    )
+    # Branch protection requires the single context `check`; the summary job is
+    # that name, and it must gate on every matrix leg or the requirement is
+    # decorative.
+    summary = workflow["jobs"].get("check")
+    assert summary is not None, "the required `check` summary job is missing"
+    needs = summary.get("needs")
+    assert needs == "test" or needs == ["test"], (
+        f"the `check` summary job needs {needs!r}; it must need the `test` matrix"
     )

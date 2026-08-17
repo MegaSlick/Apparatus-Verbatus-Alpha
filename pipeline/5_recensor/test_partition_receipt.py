@@ -610,9 +610,7 @@ def test_v2_receipt_refuses_zero_failed_shortfalls_for_a_failed_attempt(tmp_path
     item["coverage"]["shortfalls"] = {"failed": 0, "truncated": 0, "unaligned": 0}
     from common.contracts.canonical import self_hash
 
-    receipt["self_hash"] = self_hash(
-        {key: value for key, value in receipt.items() if key != "self_hash"}
-    )
+    receipt["self_hash"] = self_hash(receipt)
     with pytest.raises(SchemaRefusal, match="failed shortfall"):
         from common.recensor_receipt import validate_recensor_partition_receipt
 
@@ -629,9 +627,7 @@ def test_v2_receipt_cannot_omit_its_granularity_measurement_basis(tmp_path):
     del receipt["items"][0]["coverage"]["granularity_basis"]
     from common.contracts.canonical import self_hash
 
-    receipt["self_hash"] = self_hash(
-        {key: value for key, value in receipt.items() if key != "self_hash"}
-    )
+    receipt["self_hash"] = self_hash(receipt)
     with pytest.raises(SchemaRefusal, match="omits.*granularity"):
         from common.recensor_receipt import validate_recensor_partition_receipt
 

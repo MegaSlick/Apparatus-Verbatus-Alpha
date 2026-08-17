@@ -112,6 +112,33 @@ def test_coverage_schema_admits_an_unaligned_shortfall_class():
         )
 
 
+# --- CodeRabbit (pre-push CLI, R0 PR loop): the acceptance halves above prove the
+# schema has room for each honest fact; these prove the validator still argues
+# with a dishonest value of the same fact, so deleting the validation cannot
+# leave all six tests green.
+
+
+def test_a_page_granularity_count_beyond_the_configured_chairs_is_refused():
+    """More page-only contributions than chairs is an arithmetic impossibility."""
+    coverage = _base_coverage(page_granularity_only=4, under_witnessed=True)
+    with pytest.raises(SchemaRefusal):
+        _validate_coverage(coverage)
+
+
+def test_a_health_unrecorded_count_beyond_the_configured_chairs_is_refused():
+    """Unrecorded health is counted per chair; a count above three chairs lies."""
+    coverage = _base_coverage(by_outcome={"read": 2, "genuinely-empty": 1}, health_unrecorded=4)
+    with pytest.raises(SchemaRefusal):
+        _validate_coverage(coverage)
+
+
+def test_a_non_integer_unaligned_shortfall_is_refused():
+    """A shortfall class carries a count, and only a count."""
+    coverage = _base_coverage(shortfalls={"failed": 0, "truncated": 0, "unaligned": -1})
+    with pytest.raises(SchemaRefusal):
+        _validate_coverage(coverage)
+
+
 def test_witness_coverage_has_no_signature_room_for_per_act_attachment_facts():
     """D2: the floor computation itself must take attachment facts into account
     to tell a genuinely act-witnessing chair from a completed-but-unattached

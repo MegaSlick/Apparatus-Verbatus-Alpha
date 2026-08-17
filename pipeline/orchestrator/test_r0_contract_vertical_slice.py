@@ -235,18 +235,16 @@ def test_run_creation_records_corpus_frame_membership(run_tree):
     """
     scenario, tree = run_tree
     run = tree.read_run()
-    candidate_keys = ("corpus_frame", "corpus_frame_membership", "frame_membership")
-    present = [key for key in candidate_keys if key in run]
-    assert present, (
-        f"scenario {scenario!r}: run.json carries none of {candidate_keys} (top-level keys: "
-        f"{sorted(run)}); R0_CONTRACT_NOTE.md requires every orchestrator run to record "
-        "corpus-frame membership (frame digest + page digest + seed) at run creation"
+    assert "corpus_frame_membership" in run, (
+        f"scenario {scenario!r}: run.json carries no corpus_frame_membership (top-level "
+        f"keys: {sorted(run)}); R0_CONTRACT_NOTE.md requires every orchestrator run to "
+        "record corpus-frame membership (frame digest + page digest + seed) at run creation"
     )
-    membership = run[present[0]]
+    membership = run["corpus_frame_membership"]
     required_facts = {"frame_digest", "page_digest", "seed"}
     assert isinstance(membership, dict) and required_facts <= set(membership), (
-        f"scenario {scenario!r}: run.json's {present[0]!r} is {membership!r}, which does not "
-        f"carry all of {required_facts}"
+        f"scenario {scenario!r}: run.json's corpus_frame_membership is {membership!r}, "
+        f"which does not carry all of {required_facts}"
     )
 
 

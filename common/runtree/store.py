@@ -200,7 +200,14 @@ class RunTree:
                 "ordinal names one page, so a repeat leaves the run unable to say "
                 "how many pages it was given"
             )
-        membership = corpus_frame_membership or _default_corpus_frame_membership(source_manifest)
+        # `is None`, not falsy: an explicitly supplied empty mapping is a claim
+        # about the frame and must reach the validator to be refused, never be
+        # silently replaced by the derived default.
+        membership = (
+            _default_corpus_frame_membership(source_manifest)
+            if corpus_frame_membership is None
+            else corpus_frame_membership
+        )
         _validate_corpus_frame_membership(membership)
         authority = {
             "schema": SCHEMA_LABEL,

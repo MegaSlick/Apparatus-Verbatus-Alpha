@@ -276,6 +276,10 @@ def _validate_coverage(
     # minus page-granularity-only contributions is exactly what the writer
     # counted. Found in audit; F-O3.
     reading_chairs = sum(by_outcome.get(outcome, 0) for outcome in WITNESS_READING_OUTCOMES)
+    # `reading_chairs - page_only` must reproduce witness_coverage's own
+    # `len(attached_chairs)` exactly. The two definitions are one contract:
+    # a change to what `page_granularity_only` counts must land in both
+    # files in the same commit, or this receipt refuses its own writer.
     act_completed = reading_chairs - page_only
     if page_only > reading_chairs:
         raise SchemaRefusal(
@@ -404,13 +408,18 @@ def _reasons(items: list[dict[str, Any]]) -> list[str]:
             reasons.append(f"act {act_id} is {item['partition_class']} at the Recensor")
         coverage = item["coverage"]
         if coverage["under_witnessed"]:
-            reading_chairs = sum(
-                coverage["by_outcome"].get(outcome, 0) for outcome in WITNESS_READING_OUTCOMES
-            )
+            if "page_granularity_only" in coverage:
+                reading_chairs = sum(
+                    coverage["by_outcome"].get(outcome, 0) for outcome in WITNESS_READING_OUTCOMES
+                )
+                counted = reading_chairs - coverage["page_granularity_only"]
+            else:
+                # A v1 receipt derived its flag from the completed class, so the
+                # reason must quote that same number or it argues with the flag.
+                counted = coverage["by_class"][OutcomeClass.COMPLETED.value]
             reasons.append(
                 f"act {act_id} is under-witnessed "
-                f"({reading_chairs - coverage.get('page_granularity_only', 0)} "
-                f"act-level reads of a floor of {coverage['floor']})"
+                f"({counted} act-level reads of a floor of {coverage['floor']})"
             )
         if coverage["unresolved_chairs"]:
             reasons.append(

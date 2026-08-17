@@ -22,23 +22,12 @@ def test_a_v2_receipt_schema_constant_exists_once_coverage_grows_granularity_fie
     schema constant, `recensor-partition-receipt.v1`, and coverage carries none of
     the page-granularity fields R0 needs (see test_r0_contract_floor_honesty.py).
     """
-    v2_name_candidates = (
-        "RECENSOR_PARTITION_RECEIPT_SCHEMA_V2",
-        "RECENSOR_PARTITION_RECEIPT_SCHEMA_V2_NAME",
-    )
-    v2_schema = next(
-        (
-            getattr(receipt_module, name)
-            for name in v2_name_candidates
-            if hasattr(receipt_module, name)
-        ),
-        None,
-    )
+    v2_schema = getattr(receipt_module, "RECENSOR_PARTITION_RECEIPT_SCHEMA_V2", None)
     if v2_schema is None:
         pytest.fail(
-            "common/recensor_receipt.py carries no v2 receipt schema constant "
-            f"(checked for {v2_name_candidates!r}); D9 requires the receipt schema to "
-            "version v1 -> v2 once coverage grows page-granularity fields"
+            "common/recensor_receipt.py carries no RECENSOR_PARTITION_RECEIPT_SCHEMA_V2 "
+            "constant; D9 requires the receipt schema to version v1 -> v2 once "
+            "coverage grows page-granularity fields"
         )
     assert v2_schema != receipt_module.RECENSOR_PARTITION_RECEIPT_SCHEMA, (
         "the v2 receipt schema constant is byte-identical to the v1 constant; D9 "
