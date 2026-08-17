@@ -25,6 +25,7 @@ from gold.core import (
     build_sample,
     build_sampling_draw,
     ingest_manual_pick,
+    read_transcription_text,
     sample_stratified,
     set_for_page,
     transcribe,
@@ -545,6 +546,30 @@ def test_gold_text_is_stored_so_two_identical_readings_compare_equal(tmp_path):
             transcribe(sample, _act(), "hand-a", rejected, path)
     # A multi-line act is ordinary and must still be accepted.
     assert transcribe(sample, _act(), "hand-a", "first\nsecond", path)["text"] == "first\nsecond"
+
+
+def test_a_byte_order_mark_may_not_fake_a_disagreement(tmp_path):
+    """The commonest invisible difference of all, and the one `_gold_text`'s other
+    rules exist to stop: a Windows editor saving "UTF-8 with signature" prefixes
+    U+FEFF, which `str.strip` does not remove and no reviewer can see. Two
+    transcribers reading the same words would then compare unequal, summon an
+    adjudicator for an act nobody disagreed about, and inflate the disagreement
+    rate this corpus reports. Refused by name like every other one, rather than
+    stripped where nobody would see it."""
+    path, frame, pages = run_file(tmp_path)
+    sample = sample_stratified(path, catalog(pages), plan_for(frame, catalog(pages)))[0]
+    reading = "Marie Anne"
+    with_mark = tmp_path / "hand-a.txt"
+    with_mark.write_bytes((reading + "\n").encode("utf-8-sig"))
+    marked = read_transcription_text(with_mark)
+    assert marked != reading and marked.strip() == marked
+    with pytest.raises(SchemaRefusal, match="byte-order mark"):
+        transcribe(sample, _act(), "hand-a", marked, path)
+    plain = tmp_path / "hand-b.txt"
+    plain.write_bytes((reading + "\n").encode("utf-8"))
+    assert transcribe(sample, _act(), "hand-b", read_transcription_text(plain), path)["text"] == (
+        reading
+    )
 
 
 def test_gold_may_not_be_made_of_the_pipelines_own_output(tmp_path):

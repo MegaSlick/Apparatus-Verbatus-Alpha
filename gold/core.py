@@ -38,6 +38,10 @@ ADJUDICATION_SCHEMA = "gold-adjudication.v1"
 # The one spelling of "I cannot read this", reserved so an unreadable span is
 # counted rather than guessed at, and never quietly dropped from a transcription.
 ILLEGIBLE = "[ILLEGIBLE]"
+# U+FEFF. `str.strip` does not remove it and it renders as nothing, so a Windows
+# editor's "UTF-8 with signature" would otherwise make one transcriber's reading
+# differ from an identical one by a character no reviewer can see.
+BYTE_ORDER_MARK = "\ufeff"
 SETS = frozenset({"calibration", "locked-acceptance"})
 REGION_KINDS = frozenset({"act", "non-act-text", "occlusion", "true-blank"})
 
@@ -625,6 +629,12 @@ def _gold_text(value: Any, label: str) -> str:
     )
     _refuse(value != value.strip(), f"{label} begins or ends with whitespace")
     _refuse("\r" in value, f"{label} carries a CR; gold text uses LF line endings only")
+    _refuse(
+        BYTE_ORDER_MARK in value,
+        f"{label} carries a byte-order mark; it is invisible, it is not part of the "
+        "reading, and one transcriber's editor writing it would make two identical "
+        "readings compare unequal. Save the file as UTF-8 without a signature",
+    )
     _refuse(
         value != unicodedata.normalize("NFC", value),
         f"{label} is not in Unicode NFC; two readings of the same ink must compare equal",
