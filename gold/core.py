@@ -375,7 +375,8 @@ def _select_stratified(
             eligible.sort(key=lambda page: _rank(frame, page, stratum))
             _refuse(
                 len(eligible) < quota,
-                f"{gold_set}/{stratum} has {len(eligible)} structurally eligible pages for quota {quota}",
+                f"{gold_set}/{stratum} has {len(eligible)} structurally eligible pages "
+                f"for quota {quota}",
             )
             selected.extend(
                 build_sample(
@@ -936,6 +937,14 @@ def validate_sample(record: Any, run_path: str | Path | None = None) -> dict[str
     )
     for field in frame:
         _sha(frame[field], f"sample frame {field}")
+    # The same rule the draw record answers to: a seed is a derivation over the
+    # frame's own page_digest, never a free field, and a replaced-then-resealed
+    # one must be refused offline, not only when a run authority is present.
+    _refuse(
+        frame["seed"]
+        != digest_bytes(canonical_bytes({"page_digest": frame["page_digest"], "purpose": "frame"})),
+        "sample frame seed diverges from its derivation over its own page_digest",
+    )
     page = record["page"]
     _refuse(
         not isinstance(page, dict) or set(page) != {"ordinal", "sha256", "stratum"},

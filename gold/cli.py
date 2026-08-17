@@ -158,7 +158,15 @@ def main(argv: list[str] | None = None) -> int:
                 read_json(args.plan),
             )
     elif args.command == "validate-corpus":
-        validate_corpus(_records_in(args.directory), args.run)
+        corpus_records = _records_in(args.directory)
+        # "I found nothing to check" must never wear the words "this corpus is
+        # consistent": an empty or wrong directory is refused by name.
+        if not corpus_records:
+            raise SchemaRefusal(
+                f"{args.directory} holds no gold records to validate; validate-corpus "
+                "proves a corpus, not an empty directory"
+            )
+        validate_corpus(corpus_records, args.run)
     else:
         validate_record(read_json(args.record), args.run)
     return 0

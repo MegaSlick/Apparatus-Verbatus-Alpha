@@ -6,8 +6,9 @@ catalog has one `{ordinal, sha256, stratum}` row for every R0 source page; the
 plan carries a quota for both `calibration` and `locked-acceptance` for **every**
 stratum the catalog declares.  A stratum the plan does not name would drop out of
 gold without saying so, so an unnamed one is refused; quota `0` is how a stratum
-is deliberately left unsampled, and it stays visible in the plan file.  The R0
-sealed page digest deterministically partitions pages into one of those two sets;
+is deliberately left unsampled, and it stays visible in the plan file.  Each
+page's own sha256 -- not the frame-wide `page_digest` field -- deterministically
+partitions pages into one of those two sets;
 the frame's existing `seed` ranks pages within their own stratum. Keeping the
 partition independent of the frame means the same page cannot switch sets when a
 page is added or a shard is resplit. A quota that the partition cannot fill is
