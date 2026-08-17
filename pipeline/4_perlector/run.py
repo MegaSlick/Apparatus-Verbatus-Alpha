@@ -442,19 +442,18 @@ def act_attachment_view(context, act: dict[str, Any], testimonia: list[dict]) ->
                 witness_span = alignment["witness_span"]
                 if not isinstance(page_text, str):
                     raise SchemaRefusal("an attached page witness has no textual comparison view")
-                # `witness_span` indexes the MARKUP-STRIPPED, whitespace-collapsed
-                # view of the page reading -- `align_to_anchor` computes it from
-                # `markup_text_view(page_text)["text"]`, never from the raw bytes.
-                # Slicing `page_text` itself with those offsets is a
-                # coordinate-space error: it agrees only where stripping happens
-                # to remove nothing, which is exactly the ASCII fixture and
-                # exactly not Chandra's HTML or Churro's XML, where the slice
-                # would land mid-tag. It also falsified the premise
-                # `dissent.is_comparable` now rests on -- that
-                # `comparison_reported` is a markup-stripped view and therefore
-                # safe to diff -- since a raw slice carries whatever markup it
-                # cut through. Re-derived in the space the span was measured in.
-                # Found in audit; F-X3.
+                # `witness_span` indexes the RAW page reading. It is stored that
+                # way at the one storage point (`pipeline/3_attestatores/run.py`
+                # clips in the normalized space the matcher measured in, then
+                # translates through the alignment's own `offset_map`), so the
+                # raw text is the space this slice belongs in and every consumer
+                # of the field shares it. F-X3's requirement is met by
+                # `act_comparison_view` stripping the SLICE: the premise
+                # `dissent.is_comparable` rests on -- that `comparison_reported`
+                # is a markup-stripped view and therefore safe to diff -- must
+                # hold whichever space the offsets came from, and a raw slice
+                # handed on unstripped would carry whatever markup it cut
+                # through. Found in audit; F-X3, recomposed by R6's F-G2.
                 comparison_views[chair] = act_comparison_view(page_text, witness_span)
             elif (
                 not isinstance(alignment, dict)
