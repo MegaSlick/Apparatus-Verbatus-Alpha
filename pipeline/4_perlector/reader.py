@@ -7,6 +7,18 @@ lets a real reader replace it without `run.py`'s orchestration changing at all.
 
 `pass_kind` names every pass explicitly. A boolean could not distinguish the
 production prior, the sampled control, nuda, and the production Perlectio.
+
+**A real reader may not condition its generation on `pass_kind`.** It is
+routing, not evidence: `lectio-nuda` and `lectio-prior` are built from
+identical dossier arguments and therefore carry the same `dossier_digest` and
+the same `rendered_sha256`, so `pass_kind` is the *only* thing that
+distinguishes them at this seam. A reader that read it and behaved differently
+would make the witness-dependence contrast the whole instrument exists for
+measure the pipeline's own label instead of the model, which is GOVERNANCE 10's
+"the instrument may not constrain what it measures" at the reader boundary.
+`FixtureReader` reads it because it has no model behind it and must stand in
+for one; that is the exception the docstring on `_declared_prior_reading`
+names, not the pattern to copy.
 """
 
 from __future__ import annotations
@@ -23,6 +35,14 @@ from common.stage import FALLBACK_PAGE_ACT_ORDINAL
 # the unit test exercises the faint band between the primary and secondary
 # thresholds, where the circular fixture path used to invent a blank reading.
 PAGE_FALLBACK_INK_MARGIN: Final = 2
+
+# The closed vocabulary of reading passes. Named here rather than left to the
+# caller's string, because every value outside it fails *silently and in the
+# worst direction*: an unrecognised `pass_kind` falls through to the
+# establishing branch below, so a misspelt `"lectio_prior"` would serve Pass B's
+# own text as the Pass-A draft and publish a `self_revision` of nothing at all.
+# A refusal is the only reading of that a record can carry.
+PASS_KINDS: Final = frozenset({"perlectio", "lectio-nuda", "lectio-prior", "primed-without-prior"})
 
 
 class LectioResult(TypedDict):
@@ -61,6 +81,11 @@ class FixtureReader:
         pass_kind: str,
         delivered_pixels: DeliveredPixels | None = None,
     ) -> LectioResult:
+        if pass_kind not in PASS_KINDS:
+            raise ContractError(
+                f"unknown Perlector pass kind {pass_kind!r}; a pass this reader cannot name "
+                f"would be served as the establishing read, not refused"
+            )
         act_key = dossier["act_key"]
         return {
             "text": self._reading_text(

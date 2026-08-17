@@ -1,6 +1,10 @@
 """The fixture reader recognizes and actually inspects minted fallback acts."""
 
+import re
+from pathlib import Path
+
 import pytest
+import reader as reader_module
 from reader import FixtureReader
 
 from common.contracts.errors import ContractError
@@ -118,6 +122,30 @@ _TWO_ACT_FIXTURE = {
 def _ordinary_dossier(act_key):
     """An act dossier with no page-render shape, so the fallback path is not taken."""
     return {"act_id": "act_0000000000000000", "act_key": act_key, "regions": [], "page_renders": []}
+
+
+def test_an_unnamed_pass_kind_is_refused_rather_than_served_as_the_establishing_read():
+    """The failure direction is what makes this a refusal and not a shrug.
+
+    `_reading_text` dispatches Pass A on one string equality and falls through
+    to the act's own final text otherwise, so a misspelt `"lectio_prior"` would
+    have published Pass B's own reading as the Pass-A draft -- a `self_revision`
+    of nothing at all, against a draft nobody wrote, with every downstream
+    check satisfied. A closed vocabulary is the only place that is visible.
+    """
+    reader = FixtureReader(_TWO_ACT_FIXTURE, "happy")
+
+    with pytest.raises(ContractError, match="unknown Perlector pass kind 'lectio_prior'"):
+        reader.read(_ordinary_dossier("a1"), pass_kind="lectio_prior")
+
+
+def test_every_pass_kind_the_producer_uses_is_in_the_closed_vocabulary():
+    """`run.py` passes these four literals; the set is not a wider net than the
+    producer needs, and no producer call site sits outside it."""
+    producer_calls = set(
+        re.findall(r"pass_kind=\"([^\"]+)\"", (Path(__file__).parent / "run.py").read_text())
+    )
+    assert producer_calls == set(reader_module.PASS_KINDS)
 
 
 def test_pass_a_reads_this_scenarios_own_declared_prior_not_the_first_row():
