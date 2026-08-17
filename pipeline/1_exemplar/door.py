@@ -1373,6 +1373,21 @@ def _real_bindings(
     corpus_frame_policy, corpus_frame_config_sha256 = load_corpus_frame_policy(
         corpus_frame_config_path
     )
+    # Read once and named, for the two reasons the fixture path
+    # (`common.stage.run_config_bindings`) already reads it this way: the digest
+    # sealed into `config_digest` and the one published as the point-of-use
+    # recheck must be of the same bytes -- two reads can straddle a rewrite --
+    # and an unreadable declaration is a named ContractError here rather than an
+    # OSError traceback out of the middle of a dict literal.
+    try:
+        perlector_protocol_config_sha256 = digest_bytes(
+            Path(perlector_protocol_config_path).read_bytes()
+        )
+    except OSError as error:
+        raise ContractError(
+            "the Perlector protocol configuration binding at "
+            f"{perlector_protocol_config_path} could not be read"
+        ) from error
     return {
         "witness_chairs": list(models.witness_chairs),
         "config_digest": digest_of(
@@ -1410,9 +1425,7 @@ def _real_bindings(
                 "nuda_approval_ref": nuda_approval_ref,
                 "perlector_instrument_per_mille": perlector_instrument_per_mille,
                 "perlector_instrument_approval_ref": perlector_instrument_approval_ref,
-                "perlector_protocol_config_sha256": digest_bytes(
-                    Path(perlector_protocol_config_path).read_bytes()
-                ),
+                "perlector_protocol_config_sha256": perlector_protocol_config_sha256,
                 "draft_fed": draft_fed,
             }
         ),
@@ -1432,7 +1445,7 @@ def _real_bindings(
         "sealed_config_digests": {
             "designator-padding": designator_padding_config_sha256,
             "corpus-frame-shard": corpus_frame_config_sha256,
-            "perlector-protocol": digest_bytes(Path(perlector_protocol_config_path).read_bytes()),
+            "perlector-protocol": perlector_protocol_config_sha256,
         },
     }
 
