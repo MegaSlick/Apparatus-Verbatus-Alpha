@@ -190,10 +190,33 @@ def main() -> int:
         default="config/models.toml",
         help="the sealed model-chair roster and recipes for this run",
     )
-    parser.add_argument("--perlector-instrument-per-mille", type=int, default=0)
-    parser.add_argument("--perlector-instrument-approval-ref", default="")
-    parser.add_argument("--perlector-protocol-config", default="config/perlector_protocol.toml")
-    parser.add_argument("--draft-fed", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--perlector-instrument-per-mille",
+        type=int,
+        default=0,
+        help="per-mille rate of instrument (lectio-nuda) sampling; raising it above 0 "
+        "is Tyrel's, with --perlector-instrument-approval-ref (config/README.md, "
+        "R5a toggle register)",
+    )
+    parser.add_argument(
+        "--perlector-instrument-approval-ref",
+        default="",
+        help="Tyrel's recorded approval reference for a nonzero instrument rate",
+    )
+    parser.add_argument(
+        "--perlector-protocol-config",
+        default="config/perlector_protocol.toml",
+        help="the sealed Perlector prior-draft protocol; its exact bytes enter every "
+        "run's config digest",
+    )
+    parser.add_argument(
+        "--draft-fed",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="feed the Pass-A draft to Pass B (fed) or withhold it (--no-draft-fed); "
+        "changing the default is Tyrel's through B5a (config/README.md, R5a toggle "
+        "register)",
+    )
     parser.add_argument(
         "--pdf-render-config",
         default="config/pdf_render.toml",

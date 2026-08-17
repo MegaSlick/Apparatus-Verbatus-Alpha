@@ -29,6 +29,7 @@ from common.contracts.errors import FatalAccounting
 from common.contracts.identities import artifact_id
 from common.contracts.stages import ARCHETYPUS, ATTESTATORES, PERLECTOR, RECENSOR
 from common.runtree.store import RunTree
+from common.stage import EXIT_HELD
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -297,7 +298,8 @@ def test_a_prior_draft_from_another_reading_attempt_cannot_establish(tmp_path):
     root = tmp_path / "runs"
     # The orchestrator, not the raw stage sequence: `review`'s second attempt
     # only exists after the recovery drain, and that drain is the orchestrator's.
-    assert _orchestrate(root, "r", "review").returncode == 3
+    orchestrated = _orchestrate(root, "r", "review")
+    assert orchestrated.returncode == EXIT_HELD, orchestrated.stderr
     tree = RunTree(root, "r")
     # The orchestrator already established this act honestly. Clear that record
     # so stage 6 re-derives from the forged chain on a clean slate: otherwise a
@@ -354,6 +356,65 @@ def test_a_prior_draft_from_another_reading_attempt_cannot_establish(tmp_path):
     assert result.returncode == 2, result.stderr
     assert "Traceback" not in result.stderr
     assert "cites a prior draft from reading attempt 1, not its own 2" in result.stderr
+
+
+def test_a_prior_draft_with_no_attempt_ordinal_cannot_bind(tmp_path):
+    """Two absent ordinals comparing None == None must not pass the attempt binding.
+
+    The reading's own ordinal is proven by `latest_attempt`, but the constructor
+    documents itself as the whole of the boundary, so the prior's side is held
+    to be an integer by name rather than compared as whatever it is.
+    """
+    root = tmp_path / "runs"
+    orchestrated = _orchestrate(root, "r", "review")
+    assert orchestrated.returncode == EXIT_HELD, orchestrated.stderr
+    tree = RunTree(root, "r")
+    for entry in tree.build_manifest(ARCHETYPUS)["artifacts"]:
+        tree.resolve(entry["relative_path"]).unlink()
+    review = accepted_review(tree)
+    act_id = review["subject_id"]
+
+    reading_ref = review["payload"]["perlectio_ref"]
+    reading_path = tree.resolve(reading_ref["relative_path"])
+    reading = json.loads(reading_path.read_text(encoding="utf-8"))
+    embedded = reading["payload"]["dossier"]["prior_draft"]
+
+    current_ref = embedded["reference"]
+    prior_path = tree.resolve(current_ref["relative_path"])
+    prior = json.loads(prior_path.read_text(encoding="utf-8"))
+    del prior["payload"]["attempt_ordinal"]
+    prior["self_hash"] = self_hash(prior)
+    prior_path.write_bytes(canonical_bytes(prior))
+    resealed_ref = {
+        "relative_path": current_ref["relative_path"],
+        "sha256": digest_bytes(prior_path.read_bytes()),
+    }
+
+    embedded["reference"] = resealed_ref
+    dossier = reading["payload"]["dossier"]
+    dossier["dossier_digest"] = digest_of(
+        {key: value for key, value in dossier.items() if key != "dossier_digest"}
+    )
+    reading["inputs"] = [
+        resealed_ref if reference == current_ref else reference for reference in reading["inputs"]
+    ]
+    reading["self_hash"] = self_hash(reading)
+    reading_path.write_bytes(canonical_bytes(reading))
+    _repoint_review(
+        tree,
+        review,
+        {
+            "relative_path": reading_ref["relative_path"],
+            "sha256": digest_bytes(reading_path.read_bytes()),
+        },
+    )
+
+    result = invoke(root, "r", "review", "pipeline/6_archetypus/run.py")
+    assert result.returncode == 2, result.stderr
+    assert "Traceback" not in result.stderr
+    assert f"act {act_id} carries a lectio-prior payload with no integer attempt ordinal" in (
+        result.stderr
+    )
 
 
 def test_a_primed_false_flag_cannot_establish(tmp_path):

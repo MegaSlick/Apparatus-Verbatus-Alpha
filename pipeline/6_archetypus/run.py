@@ -597,6 +597,19 @@ def accepted_primed_perlectio(
     # Where the two drafts happen to read alike (the ordinary case: recovery
     # recovers coverage, not text) every other check above passes, so this
     # is the binding that makes the citation the reading's own.
+    #
+    # Both ordinals are held to be integers before the comparison. The reading's
+    # own is already proven by `latest_attempt`, but this function documents
+    # itself as the whole of the boundary for a caller that resolved its
+    # arguments some other way — and two absent ordinals comparing None == None
+    # would pass the one binding this block exists to make.
+    for owner, candidate in (("lectio-prior", prior_payload), ("Perlectio", payload)):
+        ordinal = candidate.get("attempt_ordinal")
+        if not isinstance(ordinal, int) or isinstance(ordinal, bool):
+            raise SchemaRefusal(
+                f"act {act_id} carries a {owner} payload with no integer attempt ordinal; "
+                "an attempt binding cannot be made over a missing ordinal"
+            )
     if prior_payload.get("attempt_ordinal") != payload.get("attempt_ordinal"):
         raise SchemaRefusal(
             f"act {act_id} cites a prior draft from reading attempt "
