@@ -60,6 +60,7 @@ from common.stage import (  # noqa: E402
     DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH,
     DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH,
     DEFAULT_PDF_RENDER_CONFIG_PATH,
+    DEFAULT_PERLECTOR_AUDIT_CONFIG_PATH,
     DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH,
     DEFAULT_WITNESS_CONTEXT_CONFIG_PATH,
     EXIT_COMPLETE,
@@ -228,7 +229,9 @@ def main() -> int:
         "changing the default is Tyrel's through B5a (config/README.md, R5a toggle "
         "register)",
     )
-    parser.add_argument("--perlector-audit-config", default="config/perlector_audit.toml")
+    parser.add_argument(
+        "--perlector-audit-config", default=str(DEFAULT_PERLECTOR_AUDIT_CONFIG_PATH)
+    )
     parser.add_argument(
         "--pdf-render-config",
         default=str(DEFAULT_PDF_RENDER_CONFIG_PATH),
