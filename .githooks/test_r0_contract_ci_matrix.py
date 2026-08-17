@@ -51,17 +51,19 @@ def _check_job_python_versions() -> set[str]:
 
 
 def test_the_ci_check_job_runs_the_r0_python_matrix():
-    """The `check` job must run under 3.12, 3.13, AND 3.14 -- a matrix, not a pin.
+    """The CI test matrix must run under 3.12, 3.13, AND 3.14 -- membership, not
+    order: 3.12 is the floor because it is present in the matrix, and nothing
+    contractual hangs on which position it occupies.
 
-    On the base commit the job runs a single hardcoded `python-version: '3.12'`
-    with no `strategy.matrix` at all, so this reports exactly one version and
-    the assertion below fails red for the contract reason: the R0 CI matrix has
+    On the base commit the job ran a single hardcoded `python-version: '3.12'`
+    with no `strategy.matrix` at all, so this reported exactly one version and
+    the assertion below failed red for the contract reason: the R0 CI matrix had
     not landed.
     """
     versions = _check_job_python_versions()
     missing = REQUIRED_PYTHON_VERSIONS - versions
     assert not missing, (
-        f"the CI `check` job runs Python version(s) {sorted(versions)}, missing "
+        f"the CI test matrix runs Python version(s) {sorted(versions)}, missing "
         f"{sorted(missing)}; R0_CONTRACT_NOTE.md and GAMEPLAN_v3.md both require "
         f"the matrix {sorted(REQUIRED_PYTHON_VERSIONS)}"
     )

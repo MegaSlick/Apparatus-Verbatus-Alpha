@@ -413,13 +413,16 @@ def _reasons(items: list[dict[str, Any]]) -> list[str]:
                     coverage["by_outcome"].get(outcome, 0) for outcome in WITNESS_READING_OUTCOMES
                 )
                 counted = reading_chairs - coverage["page_granularity_only"]
+                measured = "act-level reads"
             else:
                 # A v1 receipt derived its flag from the completed class, so the
-                # reason must quote that same number or it argues with the flag.
+                # reason must quote that same number, named for what that class
+                # actually counts, or it argues with the flag.
                 counted = coverage["by_class"][OutcomeClass.COMPLETED.value]
+                measured = "completed chairs"
             reasons.append(
                 f"act {act_id} is under-witnessed "
-                f"({counted} act-level reads of a floor of {coverage['floor']})"
+                f"({counted} {measured} of a floor of {coverage['floor']})"
             )
         if coverage["unresolved_chairs"]:
             reasons.append(
