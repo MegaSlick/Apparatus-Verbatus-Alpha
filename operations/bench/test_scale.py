@@ -7,12 +7,8 @@ from operations.bench.scale import cleanup_scale, run_scale
 
 
 def test_scale_runner_refuses_a_smaller_substitute(tmp_path):
-    try:
+    with pytest.raises(ValueError, match="fixed at 10 shards"):
         run_scale(tmp_path / "scale", shards=1, pages_per_shard=1)
-    except ValueError as error:
-        assert "fixed at 10 shards" in str(error)
-    else:
-        raise AssertionError("scale runner accepted a smaller cardinality")
 
 
 def test_scale_runner_creates_resumes_censuses_and_cleans_up_at_small_cardinality(

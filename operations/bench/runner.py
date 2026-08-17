@@ -11,23 +11,18 @@ from .records import all_definitions, not_run, validate_definition, validate_res
 
 
 def exercise_synthetic_definitions() -> list[dict[str, object]]:
-    """Drive each definition over a synthetic fixture and emit no fake pass.
+    """Validate every sealed definition and emit its visible not-run result.
 
-    These minimal rows stand in for the page, act, layout-gold, and injected
-    corruption handles that the later runners receive.  Their purpose is only
-    to prove routing and sealed-measure validation; they cannot be mistaken for
-    model output or human gold.
+    What is exercised is exactly the record path: each definition validates
+    against its own seal, and each cell leaves as a ``not-run`` result bound to
+    the definition digest it names.  Nothing here stands in for a page, act,
+    layout-gold, or injected-corruption handle, because nothing here routes one
+    anywhere — the later runners receive those.  A dict of placeholder handles
+    built, compared against its own literal key set, and discarded would read in
+    review as a routing check while being incapable of failing, which is the
+    shape of claim this bench exists to refuse.
     """
-    synthetic_inputs = {
-        "page": "synthetic-page-1",
-        "act": "synthetic-act-1",
-        "layout_gold": "synthetic-layout-1",
-        "corrupt_span": "synthetic-corrupt-span-1",
-    }
-    if set(synthetic_inputs) != {"page", "act", "layout_gold", "corrupt_span"}:
-        raise AssertionError("R7b synthetic fixture lost a required routing handle")
     definitions = [validate_definition(record) for record in all_definitions()]
-    results: list[dict[str, object]] = []
-    for record in definitions:
-        results.append(validate_result(not_run(record["cell"], fixture_verified=True)))
-    return results
+    return [
+        validate_result(not_run(record["cell"], fixture_verified=True)) for record in definitions
+    ]
