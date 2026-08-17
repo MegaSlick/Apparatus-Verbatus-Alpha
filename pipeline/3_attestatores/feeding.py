@@ -289,6 +289,10 @@ def retain_model_view(
         "view": view,
         "raw_response_ref": {"relative_path": published.relative_path, "sha256": raw_digest},
         "transport_stop_reason": transport_stop_reason,
+        # What the transport said, until this boundary finds a reason to say
+        # something more honest. Stated once here rather than reassigned
+        # identically down each branch that finds nothing.
+        "stop_reason": transport_stop_reason,
         "findings": [],
         "parse": {"state": "not-requested" if parser is None else "pending", "parser": parser},
     }
@@ -296,8 +300,6 @@ def retain_model_view(
         if finding := detect_repetition(raw_response):
             record["findings"].append(finding)
             record["stop_reason"] = "partial-post-hoc-repetition-detected"
-        else:
-            record["stop_reason"] = transport_stop_reason
         if parser == "xml":
             try:
                 record["parse"] = {
@@ -308,8 +310,6 @@ def retain_model_view(
             except SchemaRefusal as error:
                 record["parse"] = {"state": "failed", "parser": "xml", "reason": str(error)}
                 record["stop_reason"] = "partial-parse-failed"
-    else:
-        record["stop_reason"] = transport_stop_reason
     return record
 
 
