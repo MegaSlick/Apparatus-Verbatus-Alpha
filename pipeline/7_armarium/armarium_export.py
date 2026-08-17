@@ -1480,13 +1480,16 @@ def _text_bundle_records(
                 # render -> strip -> hash. The rendered display is a reading aid and
                 # stripping it must return the canonical field exactly, so a display
                 # convention can never become characters in the hashed text.
-                if (
-                    current_id is None
-                    or pending is None
-                    or pending_uncertainty is None
-                    or index + 1 >= len(lines)
-                ):
+                if current_id is None or pending is None or index + 1 >= len(lines):
                     raise SchemaRefusal("a text-bundle display has no literal to render")
+                # Its own refusal rather than the one above: a section that reaches
+                # its display with no `uncertainty:` line has a literal and is
+                # missing the layer, which is the opposite defect and the one a
+                # reader of the message has to act on.
+                if pending_uncertainty is None:
+                    raise SchemaRefusal(
+                        "a text-bundle section carries a literal with no uncertainty layer"
+                    )
                 convention_line = lines[index - 1] if index else ""
                 if convention_line != f"display_convention: {DISPLAY_CONVENTION}":
                     raise SchemaRefusal("a text-bundle display names no known convention")

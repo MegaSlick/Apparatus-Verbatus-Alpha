@@ -130,6 +130,22 @@ def validate(layer: Any, text: Any) -> dict[str, Any]:
             "a whole-act gap must be the only gap in canonical uncertainty; a reading "
             "cannot be simultaneously wholly illegible and partly read"
         )
+    # The converse of the whole-act bounds rule above, and the reason exclusivity
+    # is not enough on its own. Over an empty text every position check passes
+    # vacuously -- `leading` starts at 0 and `trailing` ends at `len("")` whatever
+    # else is true -- so a record holding no characters could carry a partly-read
+    # position label, and be sealed as a proved blank with a declared gap beside
+    # the proof. With nothing to sit before, inside, or after, `whole-act` is the
+    # only position that says anything, and it is the one the producer binds to
+    # the `no-readable-text` outcome. Asked after exclusivity so a layer that
+    # breaks both is refused by the stronger statement.
+    if text == "":
+        for index, gap in enumerate(gaps):
+            if gap["position"] != "whole-act":
+                raise SchemaRefusal(
+                    f"gaps[{index}] is declared {gap['position']!r} over an empty text; the "
+                    "only position that means anything where nothing was read is 'whole-act'"
+                )
     for index, revision in enumerate(revisions):
         if not isinstance(revision, dict) or set(revision) != {"reading_span", "prior_span"}:
             raise SchemaRefusal(f"self_revisions[{index}] is not the canonical revision schema")

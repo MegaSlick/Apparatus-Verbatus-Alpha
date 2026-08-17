@@ -335,6 +335,20 @@ def test_text_bundle_refuses_two_uncertainty_lines_for_one_literal(tmp_path):
         verify_projection_identity(_zip_bytes(members), tmp_path)
 
 
+def test_text_bundle_refuses_a_literal_section_with_no_uncertainty_layer(tmp_path):
+    """The layer is not optional beside a delivered literal, and says so by name."""
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    lines = members[TEXT_REGISTER].decode("utf-8").split("\n")
+    marker = lines.index("uncertainty:")
+    del lines[marker : marker + 2]
+    members[TEXT_REGISTER] = "\n".join(lines).encode("utf-8")
+    _refresh_manifest_member(members, TEXT_REGISTER)
+
+    with pytest.raises(SchemaRefusal, match="literal with no uncertainty layer"):
+        verify_projection_identity(_zip_bytes(members), tmp_path)
+
+
 def test_text_bundle_refuses_a_second_literal_that_would_orphan_its_uncertainty(tmp_path):
     """The layer's anchor cannot be swapped out from under it after it is checked.
 

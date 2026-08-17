@@ -405,6 +405,34 @@ def test_record_validation_refuses_a_whole_act_gap_beside_any_other_gap():
         )
 
 
+def test_record_validation_refuses_a_proved_blank_that_also_declares_a_gap():
+    """The same exclusivity, reached from the side the position rules leave open.
+
+    Every bounds rule is satisfied vacuously over an empty text -- `leading`
+    starts at 0 and `trailing` ends at `len("")` -- and the whole-act rule only
+    runs when the label already says `whole-act`. So this record sealed clean:
+    `no_readable_text` with the blank proof that finding owes, and beside it a
+    gap declaring a partly-read position. Two claims about the same act, one
+    saying the page held no readable ink and the other that ink was seen and
+    not read.
+
+    `whole-act` is the position the pipeline binds to `no-readable-text`
+    upstream (`validate_whole_act_consistency`), so requiring it here is what
+    makes the reseal gate ask the question the producer already asks.
+    """
+    gap = {"position": "leading", "start": 0, "end": 0, "witness_evidence": []}
+    with pytest.raises(SchemaRefusal, match="over an empty text"):
+        archetypus.validate_record(
+            seal_record(
+                text="",
+                text_hash=digest_of(""),
+                text_status="no_readable_text",
+                evidence_ref=READING_REF,
+                uncertainty={"uncertain_spans": [], "gaps": [gap], "self_revisions": []},
+            )
+        )
+
+
 def test_record_validation_refuses_unvalidated_gap_witness_evidence():
     """Every nested field retained by the canonical layer is validated on reseal."""
     gap = {

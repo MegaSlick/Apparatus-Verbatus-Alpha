@@ -114,6 +114,28 @@ def test_projection_refuses_a_payload_it_cannot_canonicalize(payload, expected) 
             "Maria",
             "prior_span is reversed",
         ),
+        # Both are in bounds over an empty text and both are refused: `leading`
+        # starts at 0 and `trailing` ends at len("") whatever the text is, so the
+        # bounds rules say nothing here and the position label alone would decide
+        # whether a record holding no characters looked partly read.
+        (
+            {
+                "uncertain_spans": [],
+                "gaps": [{"position": "leading", "start": 0, "end": 0, "witness_evidence": []}],
+                "self_revisions": [],
+            },
+            "",
+            "over an empty text",
+        ),
+        (
+            {
+                "uncertain_spans": [],
+                "gaps": [{"position": "trailing", "start": 0, "end": 0, "witness_evidence": []}],
+                "self_revisions": [],
+            },
+            "",
+            "over an empty text",
+        ),
         (
             {
                 "uncertain_spans": [
