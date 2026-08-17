@@ -208,15 +208,33 @@ def _components(runs: list[_Run], gap: int) -> list[dict]:
             if runs[right]["x0"] - runs[left]["x1"] <= gap:
                 union(left, right)
         for previous_y in range(max(0, y - radius), y):
+            previous = by_row.get(previous_y)
+            if not previous:
+                continue
+            # Runs on one scanline are disjoint and left-to-right --
+            # `_unit_ink_runs` scans each row in x order and `_subtract_claims`
+            # only cuts a run into left-to-right pieces -- so both x0 and x1 are
+            # strictly increasing along a row (the same-row rejoin above already
+            # leans on this order). That monotonicity is what makes one forward
+            # pointer per row pair replace the full cross product: a previous-row
+            # run wholly left of this `left` is wholly left of every later `left`
+            # too, and past that dropped prefix every remaining run passes the
+            # left-side test, so the scan only needs to stop at the first run
+            # wholly right of `left`. Two half-open segments have ink pixels
+            # within the required horizontal Chebyshev radius exactly under the
+            # dropped/stopped inequalities.
+            start = 0
             for left in current:
-                for right in by_row.get(previous_y, []):
-                    # Two half-open segments have ink pixels within the required
-                    # horizontal Chebyshev radius exactly under this inequality.
-                    if (
-                        runs[left]["x0"] < runs[right]["x1"] + radius
-                        and runs[right]["x0"] < runs[left]["x1"] + radius
-                    ):
-                        union(left, right)
+                while (
+                    start < len(previous)
+                    and runs[previous[start]]["x1"] + radius <= runs[left]["x0"]
+                ):
+                    start += 1
+                for offset in range(start, len(previous)):
+                    right = previous[offset]
+                    if runs[right]["x0"] >= runs[left]["x1"] + radius:
+                        break
+                    union(left, right)
     groups: dict[int, list[_Run]] = defaultdict(list)
     for index, run in enumerate(runs):
         groups[find(index)].append(run)

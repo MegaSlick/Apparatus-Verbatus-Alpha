@@ -190,6 +190,35 @@ def test_row_oriented_reconciliation_matches_the_oracle_on_a_fully_inked_densely
         ) == _legacy_reference(width, height, rows, claims, gap_tolerance_px)
 
 
+def test_row_oriented_reconciliation_matches_the_oracle_on_a_dense_wholly_unclaimed_page():
+    """A realistic-width page, densely speckled and never claimed, is the load
+    case for `_components`' cross-row union: every ink run on the page arrives as
+    residual at once (thousands of runs), and the forward-pointer row join must
+    still produce exactly the retired oracle's components -- the randomized suite
+    above never exceeds a few hundred runs, so it cannot distinguish the pointer
+    walk from the cross product it replaced."""
+    generator = random.Random(20260817)
+    width, height = 800, 100
+    rows = blank_rows(width, height)
+    run_count = 0
+    for y in range(height):
+        for x in range(width):
+            if generator.randrange(3) == 0:
+                rows[y][x] = INK
+                if x == 0 or rows[y][x - 1] != INK:
+                    run_count += 1
+    assert run_count > 5000, "the page must actually carry thousands of ink runs"
+    for gap_tolerance_px in (0, 2):
+        assert reconcile(
+            width,
+            height,
+            rows,
+            background=BACKGROUND,
+            claimed_bounds=[],
+            gap_tolerance_px=gap_tolerance_px,
+        ) == _legacy_reference(width, height, rows, [], gap_tolerance_px)
+
+
 def test_claim_boundaries_inside_tolerated_ink_gaps_match_the_pixel_oracle():
     """V3: exhaust claim edges inside and across every gap the topology may merge."""
     width, height = 12, 1
