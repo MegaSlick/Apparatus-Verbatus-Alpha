@@ -30,7 +30,7 @@ from common.chairs.model_store import (
     write_download_record,
 )
 from common.chairs.registry import CACHE_DESCRIPTOR
-from common.contracts.canonical import canonical_bytes
+from common.contracts.canonical import canonical_bytes, digest_bytes
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -173,20 +173,21 @@ def _promotion_artifact(
     tmp_path,
     entry,
     staging="staging/churro-3B-promoted",
-    manifest="manifests/churro-3B-promoted.json",
 ):
-    """A promotion artifact naming its own staging and manifest paths.
+    """A promotion artifact staging fresh bytes for the entry's own manifest name.
 
-    Deliberately distinct from ``entry``'s already-published manifest (written by
-    ``_store``'s fixture setup from a different snapshot directory), so these
-    tests exercise a fresh promotion rather than colliding with the fixture.
+    Promotion admits exactly one manifest name per artifact (the artifact-keyed
+    path the record layer enforces), so the fixture's already-published manifest
+    is removed first: these tests exercise a fresh promotion at the one name a
+    record may reference, from a staging directory of this helper's own bytes.
     """
+    (tmp_path / entry["manifest"]).unlink()
     staged = tmp_path / staging
     staged.mkdir(parents=True)
     (staged / "config.json").write_text('{"fixture":true}', encoding="utf-8")
     (staged / "LICENSE").write_text("fixture licence\n", encoding="utf-8")
     (staged / "model.safetensors").write_bytes(b"fixture weights\n")
-    return {**entry, "staging": staging, "manifest": manifest}, staged
+    return {**entry, "staging": staging}, staged
 
 
 def test_promote_verified_snapshot_reuses_identical_bytes_silently(tmp_path):
@@ -409,16 +410,26 @@ def test_promote_verified_snapshot_refuses_a_staging_symlink_that_escapes_the_st
 def test_promote_verified_snapshot_accepts_a_legitimate_nested_staging_path(tmp_path):
     record = _store(tmp_path)
     entry = next(item for item in record["artifacts"] if item["artifact"] == "churro-3B")
-    artifact, _ = _promotion_artifact(
-        tmp_path,
-        entry,
-        staging="staging/nested/churro-3B",
-        manifest="manifests/churro-3B-nested.json",
-    )
+    artifact, staged = _promotion_artifact(tmp_path, entry, staging="staging/nested/churro-3B")
 
     digest = promote_verified_snapshot(tmp_path, artifact)
 
-    assert len(digest) == 64
+    # The claim is the published artifact, not the return value's shape: the
+    # manifest of the staged bytes sits at the artifact-keyed name, and the
+    # returned digest is the digest of those exact published bytes.
+    published = (tmp_path / artifact["manifest"]).read_bytes()
+    assert published == canonical_bytes(build_manifest(staged).to_record())
+    assert digest == digest_bytes(published)
+
+
+def test_promote_verified_snapshot_refuses_a_manifest_name_no_record_may_reference(tmp_path):
+    record = _store(tmp_path)
+    entry = next(item for item in record["artifacts"] if item["artifact"] == "churro-3B")
+    artifact, _ = _promotion_artifact(tmp_path, entry)
+    artifact["manifest"] = "manifests/churro-3B-nested.json"
+
+    with pytest.raises(DigestMismatchRefusal, match="artifact-keyed path"):
+        promote_verified_snapshot(tmp_path, artifact)
 
 
 # --- Battery: forged manifests, path traversal, roster mismatches ---------------
@@ -630,12 +641,26 @@ def test_require_complete_store_cannot_be_satisfied_by_a_forged_inventory(tmp_pa
     forged["pending"] = []
 
     # The door takes a store root and re-derives its own inventory from real
-    # bytes, so a flipped `complete` flag has no way in: an inventory-shaped
-    # mapping is not even a path.
-    with pytest.raises(TypeError):
+    # bytes, so a flipped `complete` flag has no way in — and the wrong-shape
+    # mistake is refused inside the taxonomy, naming what was expected, not
+    # left to pathlib's TypeError.
+    with pytest.raises(DigestMismatchRefusal, match="carries no authority"):
         require_complete_store(forged)
     with pytest.raises(DigestMismatchRefusal, match="surya2-detection"):
         require_complete_store(tmp_path)
+
+
+def test_write_download_record_refuses_what_its_readers_would_refuse(tmp_path):
+    """The writer runs the roster join: no record is published that every reader refuses."""
+
+    record = _store(tmp_path)
+    active = (tmp_path / "download_record.json").read_bytes()
+    entry = next(item for item in record["artifacts"] if item["artifact"] == "chandra-ocr-2")
+    entry["revision"] = "1" * 40
+
+    with pytest.raises(DigestMismatchRefusal, match="diverges from roster policy"):
+        write_download_record(record, tmp_path)
+    assert (tmp_path / "download_record.json").read_bytes() == active
 
 
 def test_a_pending_entry_may_not_carry_evidence_for_bytes_that_are_not_there(tmp_path):

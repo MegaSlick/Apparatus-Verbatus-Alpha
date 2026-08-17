@@ -459,6 +459,46 @@ def test_start_refuses_a_serving_profile_that_is_not_preflight_proven(tmp_path: 
     assert not (tmp_path / "pod-gpu.lock").exists()
 
 
+def test_start_refuses_a_proven_adapter_over_an_unproven_base_before_any_snapshot(
+    tmp_path: Path,
+) -> None:
+    """The recipe door covers every participating profile, the base's included.
+
+    A proven adapter over an unproven base must refuse with no registry.ensure
+    work behind it — not verify the adapter snapshot (or the base's) first and
+    refuse afterwards.
+    """
+
+    base = identity("base", "base-v1")
+    adapter = identity("adapter", "adapter-v1", adapter_of="base")
+    base_row = profile_row(recipe="base-v1", chair="base", served_model_id="base-api", port=8000)
+    base_row["preflight_state"] = "unproven"
+    profiles = (
+        base_row,
+        profile_row(
+            recipe="adapter-v1",
+            chair="adapter",
+            served_model_id="adapter-api",
+            port=8100,
+            tower_connector=True,
+        ),
+    )
+    manager, _, _, launcher, registry, publisher = manager_for(
+        tmp_path,
+        identities={base.role: base, adapter.role: adapter},
+        profiles=profiles,
+        model_ids=("base-api", "adapter-api"),
+    )
+
+    with pytest.raises(ServingRecipeRefusal, match="preflight"):
+        manager.start(adapter, TIER)
+
+    assert registry.ensure_calls == []
+    assert launcher.processes == []
+    assert publisher.calls == []
+    assert not (tmp_path / "pod-gpu.lock").exists()
+
+
 def measured_gpu(dtype: str = "bfloat16") -> GpuProfile:
     return GpuProfile("fake GPU", "12.4", "550", (8, 0), "48", "100", dtype)
 

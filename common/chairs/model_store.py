@@ -246,6 +246,13 @@ def write_download_record(record: Mapping[str, Any], store_root: str | Path) -> 
             label="previous or legacy download record",
         )
 
+    # The reader's roster join runs at write time too, after the transition
+    # rules have said their more specific piece and before anything is
+    # published. Without it, a mistyped revision published fine, archived the
+    # good record, and only then had every reader refuse "diverges from roster
+    # policy": a store whose writer accepts what its readers refuse is loadable
+    # and unusable.
+    derived_inventory(record)
     archive = _under(root, f"records/{digest}.json")
     _publish_once(archive, payload, chair="model-store", label="download record version")
     _move_active_record(destination, archive)
@@ -359,6 +366,12 @@ def require_complete_store(store_root: str | Path) -> dict[str, Any]:
     derived ``complete`` flag while bytes are pending or missing.
     """
 
+    if isinstance(store_root, Mapping):
+        raise DigestMismatchRefusal(
+            "model-store",
+            "require_complete_store takes the store root path and re-verifies real "
+            "bytes; an inventory-shaped mapping carries no authority here",
+        )
     inventory = verify_store(store_root)
     if not inventory["complete"]:
         raise DigestMismatchRefusal(
@@ -551,6 +564,18 @@ def promote_verified_snapshot(store_root: str | Path, artifact: Mapping[str, Any
             "required_files; a pending-fetch entry has no bytes to promote",
         )
     _safe(artifact["artifact"], "artifact name")
+    # The record layer (`_validate_record`) admits exactly one manifest name per
+    # artifact — `manifests/<artifact>.json` — and publication never overwrites,
+    # so a manifest published anywhere else would sit in the store permanently
+    # under a name no valid record can ever reference. Refuse it at birth.
+    expected_manifest = f"manifests/{artifact['artifact']}.json"
+    if artifact["manifest"] != expected_manifest:
+        raise DigestMismatchRefusal(
+            artifact["artifact"],
+            f"a promoted manifest is published at its artifact-keyed path "
+            f"{expected_manifest!r}, not {artifact['manifest']!r}; no download "
+            "record may reference any other name",
+        )
     staging = _under(root, artifact["staging"])
     manifest = build_manifest(staging)
     _verify_required_files(artifact, {row.path: row for row in manifest.rows})
@@ -613,18 +638,27 @@ def _publish_once(destination: Path, payload: bytes, *, chair: str, label: str) 
 def _move_active_record(destination: Path, archive: Path) -> None:
     """Atomically point the active name at an already-immutable record version."""
 
-    temporary = destination.with_name(f".{destination.name}.active-{os.getpid()}")
+    temporary: Path | None = None
     try:
         destination.parent.mkdir(parents=True, exist_ok=True)
-        temporary.unlink(missing_ok=True)
-        temporary.write_bytes(archive.read_bytes())
+        # A unique per-call temporary for the same reason `_publish_once` makes
+        # one: two writers in one process sharing a PID-derived name would let
+        # writer B's bytes take the active name while writer A returns its own
+        # digest — a silently wrong active record, not a loud refusal.
+        descriptor, raw_temporary = tempfile.mkstemp(
+            prefix=f".{destination.name}.active-", dir=destination.parent
+        )
+        temporary = Path(raw_temporary)
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(archive.read_bytes())
         os.replace(temporary, destination)
     except OSError as error:
         raise DigestMismatchRefusal(
             "model-store", f"cannot publish active download_record.json: {error}"
         ) from error
     finally:
-        temporary.unlink(missing_ok=True)
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def _current_v1_record(root: Path, raw_bytes: bytes) -> dict[str, Any] | None:

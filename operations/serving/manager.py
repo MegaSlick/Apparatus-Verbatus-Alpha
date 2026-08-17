@@ -571,11 +571,20 @@ class ServingManager:
         process: ServerProcess | None = None
         endpoint = ""
         try:
+            # Every participating profile — the chair's own and, for an
+            # adapter, its base's — passes the recipe door before any snapshot
+            # is verified: a proven adapter over an unproven base must refuse
+            # with no registry.ensure work behind it, or the preflight gate's
+            # "before snapshot verification" claim is false for exactly the
+            # composed launches that need it most.
             profile = _launchable(self.recipes.for_identity(identity, tier), identity)
             self._assert_runtime(profile)
+            base_identity, base_profile = self._base_profile(identity, tier, profile)
             primary_snapshot = self.registry.ensure(identity)
-            base_identity, base_snapshot, base_profile = self._base_material(
-                identity, tier, primary_snapshot
+            base_snapshot = (
+                primary_snapshot
+                if identity.adapter_of is None
+                else self.registry.ensure(base_identity)
             )
             endpoint = profile.endpoint
             # The lock spans endpoint probing and any failed launch cleanup, not
@@ -781,18 +790,21 @@ class ServingManager:
         if error is not None:
             raise error
 
-    def _base_material(
+    def _base_profile(
         self,
         identity: ChairIdentity,
         tier: str,
-        primary_snapshot: VerifiedSnapshot,
-    ) -> tuple[ChairIdentity, VerifiedSnapshot, ServingProfile]:
+        profile: ServingProfile,
+    ) -> tuple[ChairIdentity, ServingProfile]:
+        """Resolve the base chair and pass its profile through the recipe door.
+
+        Deliberately snapshot-free: `start` verifies snapshots only after every
+        participating profile has been validated, so an unproven base profile
+        refuses before any `registry.ensure` work.
+        """
+
         if identity.adapter_of is None:
-            return (
-                identity,
-                primary_snapshot,
-                _launchable(self.recipes.for_identity(identity, tier), identity),
-            )
+            return identity, profile
         configured_base = self.registry.resolve(identity.adapter_of)
         if isinstance(configured_base, AbsentChair):
             raise ServingConfigurationError(
@@ -804,7 +816,6 @@ class ServingManager:
             )
         return (
             configured_base,
-            self.registry.ensure(configured_base),
             _launchable(self.recipes.for_identity(configured_base, tier), configured_base),
         )
 
