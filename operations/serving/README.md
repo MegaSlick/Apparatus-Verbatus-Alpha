@@ -18,6 +18,16 @@ A profile whose `kind` is `fixture` is the walking skeleton's stand-in and is
 refused *by that name* before any lease, probe or process — it carries no
 vLLM flags to be refused by, and blocking it with an unsatisfiable version pin
 would report the wrong cause.
+A `vllm` row also carries `preflight_state`, and `unproven` refuses launch at
+that same door, by that same name. A real row is written from reviewed, locked
+vLLM and model-stack versions, a verified manifest, and a real-silicon
+preflight; the field records whether that preflight has happened for *this
+exact profile*. It is a declaration in a reviewed config file and not a
+measurement — nothing in this package can observe a preflight that ran
+elsewhere — so `proven` means a reviewer asserted it, exactly as a profile's
+GPU figures are planning values rather than a measured fit (GOVERNANCE 10).
+There is deliberately no default: a row written before the field existed
+refuses at parse time rather than reading as proven.
 The recipe and `config/pod_placement.toml` byte digests are both part of the
 run configuration digest. Production assembly requires the `StageContext` that
 `open_context()` revalidated and the `StageContextReceiptPublisher` for that
