@@ -352,9 +352,11 @@ _READING_REF = {"relative_path": "4_perlector/artifacts/x.json", "sha256": "0" *
 
 
 def _perlectio(outcome: str) -> dict:
-    # `lectio_kind` carries R5a's production marker so the boundary check under
-    # test is reached instead of the earlier only-primed-with-prior-establishes
-    # refusal (host integration fix after R5a landed that stricter gate).
+    # `lectio_kind` carries R5a's production marker for the tests that pass a
+    # completed outcome: the outcome-classification guard runs first, so a
+    # failing outcome refuses regardless of kind, but a completed reading
+    # without the marker would stop at the later only-primed-with-prior-
+    # establishes refusal instead of the guard those tests aim at.
     return {
         "stage": archetypus.PERLECTOR,
         "kind": "perlectio",
