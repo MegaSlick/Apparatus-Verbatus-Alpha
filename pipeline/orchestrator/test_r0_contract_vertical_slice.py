@@ -240,7 +240,16 @@ def test_two_acts_on_one_page_never_claim_the_same_page_witness_bytes(run_tree, 
     belong to this act. Two acts asserting the identical range of one page
     reading is not a partition of that reading, it is the same claim made
     twice, and GOALS 5 asks every result to return to the exact ink it came
-    from."""
+    from.
+
+    Strengthened on the P2 review from identity to disjointness: two acts
+    claiming *overlapping* ranges is the same false provenance claim as two
+    acts claiming identical ones, only harder to see, and identity alone would
+    pass a witness-side hull that absorbed a neighbouring act's characters at
+    one end. A zero-length span (a `genuinely-empty` page witness) claims no
+    character, so it is exempt from the overlap arm and stays covered by the
+    identity arm.
+    """
     scenario, tree = run_tree
     spans: dict[str, list[tuple[str, dict]]] = {}
     for entry in tree.build_manifest(ATTESTATORES)["artifacts"]:
@@ -263,6 +272,18 @@ def test_two_acts_on_one_page_never_claim_the_same_page_witness_bytes(run_tree, 
                 f"{key} of chair {chair}'s page reading"
             )
             seen[key] = act_id
+        claimed = sorted(
+            (span["start"], span["end"], act_id)
+            for act_id, span in rows
+            if span["end"] > span["start"]
+        )
+        for index in range(1, len(claimed)):
+            _, earlier_end, earlier_act = claimed[index - 1]
+            later_start, _, later_act = claimed[index]
+            assert earlier_end <= later_start, (
+                f"scenario {scenario!r}: acts {earlier_act} and {later_act} claim overlapping "
+                f"characters of chair {chair}'s page reading"
+            )
 
 
 # --- 2. Corpus-frame binding -----------------------------------------------------

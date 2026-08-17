@@ -1316,6 +1316,12 @@ def publish_page_testimonia_and_attachments(
     context.require_sealed_config("alignment", limits_digest)
     page_records: dict[tuple[int, str], dict[str, str]] = {}
     page_texts: dict[tuple[int, str], str] = {}
+    # The anchor is a page fact, not a chair's report, and it is kept in its own
+    # map for that reason: parked in `page_texts` under a reserved chair slot it
+    # shared a key space with the configured roster, so a chair carrying that
+    # name would have had its retained page reading silently overwritten by the
+    # anchor markup and then been aligned against itself.
+    anchor_texts: dict[int, str] = {}
     page_alignments: dict[tuple[int, str], dict[str, Any]] = {}
     anchor_ranges: dict[tuple[int, str], dict[str, int]] = {}
     by_page: dict[int, list[dict[str, Any]]] = {}
@@ -1425,7 +1431,7 @@ def publish_page_testimonia_and_attachments(
         ]
         if len(anchors) == 1 and isinstance(anchors[0].get("html"), str):
             anchor = anchors[0]
-            page_texts[(page_ordinal, "chandra-anchor")] = anchor["html"]
+            anchor_texts[page_ordinal] = anchor["html"]
             normalized_anchor = markup_text_view(anchor["html"])["text"]
             # `lines` is declared in reading order (ARCHITECTURE: Chandra's own
             # `ocr_layout` reading flow). Searching each line from where the
@@ -1495,7 +1501,7 @@ def publish_page_testimonia_and_attachments(
                     }
                 else:
                     page_text = page_texts.get((act["page_ordinal"], chair))
-                    anchor_text = page_texts.get((act["page_ordinal"], "chandra-anchor"))
+                    anchor_text = anchor_texts.get(act["page_ordinal"])
                     if page_text is None or anchor_text is None or act_anchor is None:
                         result = {"status": "unaligned", "reason": "missing-chandra-page-anchor"}
                     else:
