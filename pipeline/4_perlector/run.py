@@ -1165,7 +1165,11 @@ def _publish_primed_without_prior(
         )
         for record in testimonia
     }
-    membership = context.tree.read_run()["corpus_frame_membership"]
+    # `context.run` is the run authority `open_context` already read and
+    # verified from disk, and nothing writes `run.json` after the Door creates
+    # it. Re-reading it here would re-verify the same bytes once per sampled
+    # act, and once more per act at the sampling decision below.
+    membership = context.run["corpus_frame_membership"]
     payload = {
         "act_key": act["act_key"],
         "attempt_ordinal": ordinal,
@@ -1362,7 +1366,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             protocol_sha256=protocol_sha256,
         )
 
-        frame_membership = context.tree.read_run()["corpus_frame_membership"]
+        frame_membership = context.run["corpus_frame_membership"]
         if protocol.is_control_sampled(
             act_id,
             frame_digest=frame_membership["frame_digest"],
