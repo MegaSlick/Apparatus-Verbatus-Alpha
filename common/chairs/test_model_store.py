@@ -129,7 +129,9 @@ def test_derived_inventory_reader_reverifies_snapshot_bytes(tmp_path):
         read_derived_inventory(tmp_path, path)
 
 
-def test_store_refuses_a_license_that_is_not_byte_pinned(tmp_path):
+def test_store_refuses_a_pinned_licence_whose_bytes_are_gone(tmp_path):
+    # The manifest still pins LICENSE; only the snapshot's bytes vanished, so
+    # this is byte-verification failing, not record validation.
     record = _store(tmp_path)
     entry = next(item for item in record["artifacts"] if item["artifact"] == "chandra-ocr-2")
     snapshot = tmp_path / entry["snapshot"]
