@@ -513,16 +513,18 @@ def act_comparison_view(page_text: str, witness_span: dict[str, int]) -> str:
     """
     # Both bounds, not only the end: this reads an artifact back from disk, so
     # it is the last gate before untrusted numbers become a comparison view. A
-    # negative or inverted span slices to an empty string without complaint,
-    # and that empty string would become the act's comparison view -- dissent
-    # then records the witness as departing from the whole reading, or as
-    # corroborating a blank it never reported.
+    # slice is the one place a malformed offset does not announce itself:
+    # `text[-3:2]` is a perfectly good Python expression and a silently wrong
+    # comparison view, which dissent would then read as departure from a
+    # witness that said no such thing -- or as corroborating a blank it never
+    # reported. The Recensor's own consumer of this field checks the same
+    # three conditions.
     if not isinstance(witness_span, dict) or set(witness_span) != {"start", "end"}:
         raise SchemaRefusal("an attached page witness carries no two-bound comparison span")
     start, end = witness_span["start"], witness_span["end"]
     if any(not isinstance(bound, int) or isinstance(bound, bool) for bound in (start, end)):
         raise SchemaRefusal("an attached page witness claims a non-integer comparison span")
-    if end > len(page_text):
+    if start < 0 or end < start or end > len(page_text):
         raise SchemaRefusal("an attached page witness claims a span past its own comparison view")
     return markup_text_view(page_text[start:end])["text"]
 
