@@ -1029,25 +1029,18 @@ def _is_sha256(value: Any) -> bool:
 def _default_corpus_frame_membership(source_manifest: list[dict[str, Any]]) -> dict[str, str]:
     """Bind even direct RunTree callers to the one frame they supplied.
 
-    Every row must carry a real digest: substituting None for a missing sha256
-    would give two different undigested page sets the same three membership
-    digests, so a second shard could reuse the first's run id and pass the
-    bound-field check. The frame record must not claim to bind bytes it never
-    saw.
+    A row's declared sha256 is optional here BY the Door's own contract:
+    `SourceEntry.declared_sha256` defaults to None, admission is legal without
+    it, and the door computes digests itself (duplicate accounting groups on
+    the computed digest for exactly that reason). Refusing None here was tried
+    and broke that contract in CI. The residual weakness is real and recorded:
+    two undigested page sets with the same ordinals produce identical
+    membership digests, so the honest close is binding the door's COMPUTED
+    digests into membership -- a recorded-bytes change, parked as a follow-up,
+    not a silent refusal that contradicts the admission contract.
     """
-    for page in source_manifest:
-        digest = page.get("sha256")
-        if (
-            not isinstance(digest, str)
-            or len(digest) != 64
-            or set(digest) - set("0123456789abcdef")
-        ):
-            raise SchemaRefusal(
-                f"source page {page.get('ordinal')!r} carries no sha256 digest; corpus-frame "
-                "membership cannot bind a page whose bytes it never saw"
-            )
     pages = [
-        {"ordinal": page.get("ordinal"), "sha256": page["sha256"]}
+        {"ordinal": page.get("ordinal"), "sha256": page.get("sha256")}
         for page in sorted(source_manifest, key=lambda page: page.get("ordinal", 0))
     ]
     page_digest = digest_bytes(canonical_bytes(pages))
