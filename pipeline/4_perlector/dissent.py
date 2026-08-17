@@ -326,8 +326,21 @@ def dissent_against(reading: str, testimonia: list[dict]) -> list[dict]:
                 "departures": spans,
                 "comparison_loss": {
                     "reading_dropped_characters": reading_view["dropped_characters"],
+                    # Removal only, never re-encoding -- the two halves of this
+                    # account must answer the same question, and the reading
+                    # half is `comparison_view`, whose docstring settles it:
+                    # "NFC discards nothing -- it re-encodes a character, it
+                    # does not remove one", and charging composition to the loss
+                    # account "would put a wrong number on every diacritic-heavy
+                    # act in the corpus this project exists to read". Summing
+                    # every `markup_text_view` loss field charged exactly that,
+                    # on the witness side alone, so a witness reporting
+                    # decomposed French was recorded as having lost a character
+                    # per accent while the identically-composed reading was not.
+                    # Markup and collapsed whitespace ARE removals and stay.
                     "witness_dropped_characters": witness_view["dropped_characters"]
-                    + sum(markup_view["loss"].values()),
+                    + markup_view["loss"]["markup_characters"]
+                    + markup_view["loss"]["whitespace_characters"],
                 },
             }
         )

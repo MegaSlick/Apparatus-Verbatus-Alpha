@@ -393,3 +393,51 @@ def test_the_comparison_runs_off_the_main_thread_without_touching_signal_state()
 
     assert "error" not in captured, captured.get("error")
     assert captured["result"], "a real difference must still be reported"
+
+
+# --- P2 review: the two halves of comparison_loss answer the same question ---
+
+
+def test_a_decomposed_witness_report_is_not_charged_a_character_per_accent():
+    """`comparison_view`'s docstring settles what `dropped_characters` counts:
+    "NFC discards nothing -- it re-encodes a character, it does not remove
+    one", and charging composition to the loss account "would put a wrong
+    number on every diacritic-heavy act in the corpus this project exists to
+    read". The witness half of `comparison_loss` must answer that same
+    question: summing every `markup_text_view` loss field folded in its
+    `unicode_reencoded_characters`, so a witness reporting decomposed French
+    was recorded as losing one character per accent while the
+    identically-composed reading was recorded as losing none.
+    """
+    precomposed = unicodedata.normalize("NFC", "baptisé et présenté")
+    decomposed = unicodedata.normalize("NFD", precomposed)
+    assert precomposed != decomposed, "the fixture must actually differ at the codepoint level"
+
+    rows = dissent.dissent_against(
+        precomposed,
+        [{"outcome": "read", "payload": {"chair": "attestator_1", "reported": decomposed}}],
+    )
+
+    assert rows[0]["departed"] is False, "the same ink in another normal form is not dissent"
+    assert rows[0]["comparison_loss"] == {
+        "reading_dropped_characters": 0,
+        "witness_dropped_characters": 0,
+    }
+
+
+def test_markup_and_collapsed_whitespace_stay_in_the_witness_loss_account():
+    """The other direction: tags and a collapsed run are genuine removals, and
+    dropping them from the account would hide what the comparison view discarded.
+    """
+    rows = dissent.dissent_against(
+        "alpha beta",
+        [
+            {
+                "outcome": "read",
+                "payload": {"chair": "attestator_1", "reported": "<b>alpha   beta</b>"},
+            }
+        ],
+    )
+
+    assert rows[0]["departed"] is False
+    assert rows[0]["comparison_loss"]["witness_dropped_characters"] == len("<b>") + len("</b>") + 2
