@@ -119,6 +119,13 @@ def _validate_geometry_policy(value: object) -> dict[str, Any]:
         raise SchemaRefusal(
             "YOLO OBB policy must declare obb, aabb-enclose, and a boolean rectify toggle"
         )
+    if yolo["rectify"]:
+        # No rectification implementation exists: a sealed policy enabling it
+        # would make `yolo_proposals` publish `mode: "rectify"` records for crops
+        # nothing rectified. The record schema's "rectify" mode stays reserved
+        # (the reserved-then-graduated pattern) for the day an implementation
+        # arrives with its own tests; until then the toggle fails closed.
+        raise SchemaRefusal("YOLO OBB rectification is not implemented; the toggle fails closed")
     provenance = _closed(
         geometry["provenance"],
         {"source", "calibrated_for_this_corpus", "caveat"},

@@ -55,6 +55,10 @@ def _detector_that_only_sees_its_own_tile(polygon, score=lambda tile: 9000):
 
 def test_sealed_policy_exposes_integer_surya_sizing_and_yolo_rectification_toggle():
     policy = load_geometry_policy()
+    # The digest the Designator hands to require_sealed_config must be taken over
+    # the same raw bytes common/stage.py seals, or every run refuses an unchanged
+    # file.
+    assert policy["config_sha256"] == digest_bytes(DEFAULT_POLICY_PATH.read_bytes())
     assert policy["surya"]["tile_height_px"] == 1400
     assert policy["surya"]["half_tile_vertical_offset_px"] == 700
     assert policy["surya"]["horizontal_overlap_px"] == 700
@@ -115,6 +119,17 @@ def test_point_of_use_policy_refuses_every_missing_sealed_value(field_path):
         parent = parent[field]
     del parent[field_path[-1]]
     with pytest.raises(SchemaRefusal, match="closed"):
+        load_geometry_policy_record(policy)
+
+
+def test_an_enabled_rectify_toggle_is_refused_until_an_implementation_exists():
+    """A sealed policy with rectify=true would make yolo_proposals publish
+    mode-"rectify" records for crops nothing rectified -- a false claim in
+    published custody. The record schema keeps "rectify" reserved; the sealed
+    toggle fails closed until the implementation and its tests arrive."""
+    policy = deepcopy(load_geometry_policy())
+    policy["yolo_obb"]["rectify"] = True
+    with pytest.raises(SchemaRefusal, match="rectification is not implemented"):
         load_geometry_policy_record(policy)
 
 
