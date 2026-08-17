@@ -167,23 +167,24 @@ def test_write_derived_inventory_refuses_a_differing_republish_and_leaves_the_fi
     assert path.read_bytes() == original_bytes
 
 
-def _promotion_artifact(tmp_path, entry):
+def _promotion_artifact(
+    tmp_path,
+    entry,
+    staging="staging/churro-3B-promoted",
+    manifest="manifests/churro-3B-promoted.json",
+):
     """A promotion artifact naming its own staging and manifest paths.
 
     Deliberately distinct from ``entry``'s already-published manifest (written by
     ``_store``'s fixture setup from a different snapshot directory), so these
     tests exercise a fresh promotion rather than colliding with the fixture.
     """
-    staging = tmp_path / "staging" / "churro-3B-promoted"
-    staging.mkdir(parents=True)
-    (staging / "config.json").write_text('{"fixture":true}', encoding="utf-8")
-    (staging / "LICENSE").write_text("fixture licence\n", encoding="utf-8")
-    (staging / "model.safetensors").write_bytes(b"fixture weights\n")
-    return {
-        **entry,
-        "staging": staging.relative_to(tmp_path).as_posix(),
-        "manifest": "manifests/churro-3B-promoted.json",
-    }, staging
+    staged = tmp_path / staging
+    staged.mkdir(parents=True)
+    (staged / "config.json").write_text('{"fixture":true}', encoding="utf-8")
+    (staged / "LICENSE").write_text("fixture licence\n", encoding="utf-8")
+    (staged / "model.safetensors").write_bytes(b"fixture weights\n")
+    return {**entry, "staging": staging, "manifest": manifest}, staged
 
 
 def test_promote_verified_snapshot_reuses_identical_bytes_silently(tmp_path):
@@ -218,62 +219,17 @@ def test_promote_verified_snapshot_refuses_a_differing_republish_and_leaves_the_
 
 
 def test_write_download_record_round_trips_through_load_download_record(tmp_path):
-    artifacts = {}
-    for requirement in {item.artifact: item for item in REQUIRED_ARTIFACTS}.values():
-        root = (
-            tmp_path
-            / ("hf" if requirement.source == "huggingface" else "local")
-            / requirement.artifact
-        )
-        root.mkdir(parents=True)
-        (root / "config.json").write_text('{"fixture":true}', encoding="utf-8")
-        (root / "LICENSE").write_text(f"license for {requirement.artifact}\n", encoding="utf-8")
-        (root / "model.safetensors").write_bytes(f"weights for {requirement.artifact}\n".encode())
-        carried = []
-        if requirement.artifact == "dai-recordgold-atr":
-            for name in ("system.txt", "query.txt"):
-                (root / name).write_text(f"{name} fixture\n", encoding="utf-8")
-                carried.append({"name": name, "path": name, "citation": DAI_PROMPT_CITATION})
-        manifest_path = tmp_path / "manifests" / f"{requirement.artifact}.json"
-        pin = write_manifest(build_manifest(root), manifest_path)
-        artifacts[requirement.artifact] = {
-            "artifact": requirement.artifact,
-            "state": "present",
-            "source": requirement.source,
-            "repo": requirement.repo,
-            "revision": requirement.revision,
-            "snapshot": root.relative_to(tmp_path).as_posix(),
-            "manifest": manifest_path.relative_to(tmp_path).as_posix(),
-            "digest_manifest": pin,
-            "license": "LICENSE",
-            "carried": carried,
-            "required_files": sorted(
-                ["LICENSE", "model.safetensors", *[x["path"] for x in carried]]
-            ),
-        }
-    record = {
-        "schema": STORE_SCHEMA,
-        "layout": {
-            "hf": "hf",
-            "local": "local",
-            "manifests": "manifests",
-            "records": "records",
-            "staging": "staging",
-        },
-        "capacity": {
-            "snapshot_bytes": 1,
-            "promotion_headroom_bytes": 1,
-            "available_bytes": 2,
-            "cleanup_owner": "host model-store operator",
-        },
-        "artifacts": [artifacts[key] for key in sorted(artifacts)],
-    }
+    """`_store` is the one host-record fixture, and it writes through this writer.
 
-    write_download_record(record, tmp_path)
+    This body was a verbatim second copy of `_store`, differing only in capacity
+    figures neither assertion reads. One fixture means a record shape that
+    changes cannot pass here while failing everywhere else.
+    """
+
+    record = _store(tmp_path)
 
     assert load_download_record(tmp_path) == record
-    raw_bytes = (tmp_path / "download_record.json").read_bytes()
-    assert raw_bytes == canonical_bytes(record)
+    assert (tmp_path / "download_record.json").read_bytes() == canonical_bytes(record)
 
 
 def test_load_download_record_refuses_hand_formatted_bytes_by_name(tmp_path):
@@ -441,16 +397,12 @@ def test_promote_verified_snapshot_refuses_a_staging_symlink_that_escapes_the_st
 def test_promote_verified_snapshot_accepts_a_legitimate_nested_staging_path(tmp_path):
     record = _store(tmp_path)
     entry = next(item for item in record["artifacts"] if item["artifact"] == "churro-3B")
-    staging = tmp_path / "staging" / "nested" / "churro-3B"
-    staging.mkdir(parents=True)
-    (staging / "config.json").write_text('{"fixture":true}', encoding="utf-8")
-    (staging / "LICENSE").write_text("fixture licence\n", encoding="utf-8")
-    (staging / "model.safetensors").write_bytes(b"fixture weights\n")
-    artifact = {
-        **entry,
-        "staging": staging.relative_to(tmp_path).as_posix(),
-        "manifest": "manifests/churro-3B-nested.json",
-    }
+    artifact, _ = _promotion_artifact(
+        tmp_path,
+        entry,
+        staging="staging/nested/churro-3B",
+        manifest="manifests/churro-3B-nested.json",
+    )
 
     digest = promote_verified_snapshot(tmp_path, artifact)
 
