@@ -238,21 +238,49 @@ def _components(runs: list[_Run], gap: int) -> list[dict]:
     groups: dict[int, list[_Run]] = defaultdict(list)
     for index, run in enumerate(runs):
         groups[find(index)].append(run)
-    components = []
+    entries = []
     for group in groups.values():
         x0 = min(run["x0"] for run in group)
         x1 = max(run["x1"] for run in group)
         y0 = min(run["y"] for run in group)
         y1 = max(run["y"] for run in group) + 1
-        components.append(
-            {
-                "bounds": {"x": x0, "y": y0, "w": x1 - x0, "h": y1 - y0},
-                "pixel_count": sum(run["ink_count"] for run in group),
-            }
+        entries.append(
+            (
+                {
+                    "bounds": {"x": x0, "y": y0, "w": x1 - x0, "h": y1 - y0},
+                    "pixel_count": sum(run["ink_count"] for run in group),
+                },
+                group,
+            )
         )
-    return sorted(
-        components, key=lambda item: (item["bounds"]["y"], item["bounds"]["x"], item["pixel_count"])
-    )
+
+    # The published order is the retired implementation's order, and downstream
+    # identity depends on it: `residual_act_ordinal(index)` in run.py names each
+    # residual by its position here. `label_components` sorts by origin and then
+    # by the sorted member pixels — never by pixel count — so two components
+    # sharing a (top, left) origin must be ordered by their ink, not by a count
+    # that the oracle ignores or by union-find insertion order. Pixels are
+    # materialised for the tied components only; ties need two components whose
+    # bounding boxes share an exact corner, so almost every page has none.
+    def origin(entry: tuple[dict, list[_Run]]) -> tuple[int, int]:
+        return (entry[0]["bounds"]["y"], entry[0]["bounds"]["x"])
+
+    entries.sort(key=origin)
+    ordered: list[dict] = []
+    span_start = 0
+    for index in range(1, len(entries) + 1):
+        if index == len(entries) or origin(entries[index]) != origin(entries[span_start]):
+            span = entries[span_start:index]
+            if len(span) > 1:
+                span.sort(key=lambda entry: _member_pixels(entry[1]))
+            ordered.extend(component for component, _group in span)
+            span_start = index
+    return ordered
+
+
+def _member_pixels(group: list[_Run]) -> tuple[tuple[int, int], ...]:
+    """A tied component's ink as the oracle compares it: sorted (x, y) pixels."""
+    return tuple(sorted((x, run["y"]) for run in group for x in range(run["x0"], run["x1"])))
 
 
 def reconcile(

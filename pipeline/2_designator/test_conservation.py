@@ -219,6 +219,36 @@ def test_row_oriented_reconciliation_matches_the_oracle_on_a_dense_wholly_unclai
         ) == _legacy_reference(width, height, rows, [], gap_tolerance_px)
 
 
+def test_residual_components_sharing_an_origin_are_ordered_by_ink_like_the_oracle():
+    """Two disjoint residual components can share a (top, left) bounds origin,
+    and the published order is identity-bearing (`residual_act_ordinal(index)` in
+    run.py). The retired implementation breaks that tie by the sorted member
+    pixels and never consults pixel_count, so the row-oriented sort must do the
+    same. The block is deliberately the LARGER component with the
+    lexicographically earlier ink: a count-based or insertion-order tie-break
+    puts the diagonal first and diverges from the oracle."""
+    width, height = 12, 12
+    rows = blank_rows(width, height)
+    # A 2x5 block hugging the corner: origin (0, 0), 10 pixels.
+    paint_rect(rows, 0, 0, 2, 5, INK)
+    # A disjoint anti-diagonal from (8, 0) down to (0, 8): origin (0, 0) too --
+    # its bounding box shares the exact corner -- 9 pixels, and every pixel of
+    # it stays at Chebyshev distance >= 2 from the block.
+    for step in range(9):
+        paint_pixel(rows, 8 - step, step, INK)
+    result = reconcile(
+        width, height, rows, background=BACKGROUND, claimed_bounds=[], gap_tolerance_px=0
+    )
+    assert result == _legacy_reference(width, height, rows, [], 0)
+    first, second = result["residual_components"]
+    assert (first["pixel_count"], second["pixel_count"]) == (10, 9), (
+        "the larger block must come first purely because its ink sorts earlier; "
+        "a smaller-count-first order is the retired tie-break divergence"
+    )
+    assert first["bounds"]["x"] == second["bounds"]["x"] == 0
+    assert first["bounds"]["y"] == second["bounds"]["y"] == 0
+
+
 def test_claim_boundaries_inside_tolerated_ink_gaps_match_the_pixel_oracle():
     """V3: exhaust claim edges inside and across every gap the topology may merge."""
     width, height = 12, 1
