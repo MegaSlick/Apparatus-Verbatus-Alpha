@@ -313,6 +313,22 @@ def act_attachment_view(context, act: dict[str, Any], testimonia: list[dict]) ->
             raise SchemaRefusal(
                 f"act {act_id} attachment changes page-witness scope for chair {chair!r}"
             )
+        # The act-scoped Testimonium carries the same scope claim a second time, as
+        # its optional `page_witness` flag, and `pipeline/4_perlector/dissent.py`
+        # trusts that flag directly: a record wearing it emits `compared: "unknown"`
+        # instead of a real comparison. The attachment's copy is checked above and
+        # this one was checked nowhere, so a resealed Testimonium for an ordinary
+        # act-scoped chair could silence that chair's dissent row — the structural
+        # parroting instrument switched off behind a well-formed and plausible
+        # reason, which is the one failure mode ARCHITECTURE's dissent section
+        # exists to make measurable. Two spellings of one fact, so both are
+        # reconciled against the run's own declaration. Found in fresh-context
+        # review (P2).
+        if chair_testimonium["payload"].get("page_witness", False) is not expected_page_witness:
+            raise SchemaRefusal(
+                f"act {act_id} Testimonium for chair {chair!r} claims a page-witness scope this "
+                "run did not declare"
+            )
         reference = attachment.get("testimonium_ref")
         if attachment["page_witness"]:
             testimonium = context.tree.read_artifact_reference(

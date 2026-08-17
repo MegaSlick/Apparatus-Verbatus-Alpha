@@ -529,6 +529,45 @@ def test_perlector_refuses_a_referenced_page_ordinal_outside_the_fixture(tmp_pat
     assert "wrong page Testimonium" in result.stderr
 
 
+# --- Fresh-context review (P2): the second spelling of the scope claim -----------
+#
+# The act-scoped Testimonium carries the page-witness claim a second time, as the
+# optional `page_witness` payload flag, and `pipeline/4_perlector/dissent.py` reads
+# that flag directly. The attachment's copy was reconciled against the run's
+# declaration; this one was reconciled against nothing.
+
+
+def test_perlector_refuses_an_act_scoped_testimonium_wearing_a_page_witness_flag(tmp_path):
+    """A resealed flag may not switch off a chair's dissent comparison.
+
+    `page_witness` is an accepted optional field of the closed act-level payload,
+    so setting it on attestator_2 -- the chair D1 keeps act-scoped -- is a
+    well-formed disguise. Before this fix nothing refused it and the reading
+    sealed with attestator_2's dissent row reduced to `compared: "unknown"`,
+    carrying the page-witness reason for a chair that is not one: the structural
+    parroting instrument disabled behind a plausible sentence, which is precisely
+    what ARCHITECTURE's dissent section exists to keep measurable.
+    """
+    root = tmp_path / "runs"
+    tree = _through_attestatores(root, "forged-scope")
+    entry = next(
+        row
+        for row in tree.build_manifest(ATTESTATORES)["artifacts"]
+        if row["kind"] == "testimonium"
+        and tree.read_artifact(ATTESTATORES, "testimonium", row["artifact_id"])["payload"]["chair"]
+        == RETAINED_ACT_WITNESS_CHAIR
+    )
+    record = tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
+    record["payload"]["page_witness"] = True
+    _reseal(tree.resolve(entry["relative_path"]), record)
+
+    result = invoke_stage(root, "forged-scope", "happy", "pipeline/4_perlector/run.py")
+    assert result.returncode != 0, (
+        "the Perlector read on over an act-scoped Testimonium claiming page-witness scope"
+    )
+    assert "page-witness scope this run did not declare" in result.stderr, result.stderr
+
+
 # --- 4. Audit-and-repair regression (F-O1): the reread path ----------------------
 #
 # Opus audit-and-repair seat 3, R0. The derived act-attachment is written only by

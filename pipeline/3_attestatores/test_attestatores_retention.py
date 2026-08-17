@@ -1770,3 +1770,39 @@ def test_an_act_scoped_testimonium_cannot_wear_page_scope_to_skip_the_tally(tmp_
     assert tally["state"] == "UNKNOWN"
     assert tally["hold"] is True
     assert "unknown field(s) ['page_ordinal', 'scope']" in tally["reason"], tally["reason"]
+
+
+# --- Fresh-context review (P2): the same disguise, in the sibling walk -----------
+#
+# `_attempt_history` carried the identical `payload["scope"] == "page"` skip behind
+# the identical `kind == "testimonium"` filter, and F-O5 removed only the one in
+# `attempt_tally`. Unreachable for any record this stage writes -- page testimony is
+# a kind of its own -- its one reachable effect was on a record that lied, and it
+# was the wrong effect: the disguised record left the append/collision history
+# entirely, so `require_appendable_ordinal` would judge that act/chair pair against
+# no history at all. The tally is what refuses such a record (the sibling test
+# above); the history's job is to see it.
+
+
+def test_a_page_scope_claim_cannot_hide_an_act_scoped_attempt_from_the_history(tmp_path):
+    """One self-reported field may not remove an attempt from its own history."""
+    run_root, tree = run_to_designator(tmp_path, "happy")
+    assert (
+        invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py").returncode
+        == 0
+    )
+    record = _testimonium_for(tree, act_key="a1", chair="attestator_2", ordinal=1)
+    changed = copy.deepcopy(record)
+    changed["payload"]["scope"] = "page"
+    changed["payload"]["page_ordinal"] = 1
+    changed["self_hash"] = self_hash(changed)
+    path = tree.resolve(tree.artifact_path(ATTESTATORES, "testimonium", record["artifact_id"]))
+    path.write_bytes(canonical_bytes(changed))
+    tree.write_manifest(ATTESTATORES)
+
+    _, history = attestatores._attempt_history(SimpleNamespace(tree=tree))
+
+    assert (record["subject_id"], "attestator_2") in history, (
+        "an act-scoped Testimonium claiming page scope vanished from the attempt history; "
+        "the append/collision bound would then be derived for that pair from nothing"
+    )

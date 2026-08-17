@@ -631,8 +631,13 @@ def _attempt_history(context) -> tuple[bool, AttemptHistory]:
             continue
         record = context.tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
         payload = record.get("payload")
-        if isinstance(payload, dict) and payload.get("scope") == "page":
-            continue
+        # No `payload["scope"] == "page"` skip here. Page-scoped Testimonia are a
+        # kind of their own and the filter above already excludes them, so the
+        # skip could only ever fire for an act-scoped record that *claimed* page
+        # scope — and it would then drop that record out of the append/collision
+        # history on the strength of one self-reported field, which is exactly
+        # the disguise F-O5 closed in `attempt_tally`. The identical line was
+        # left standing here. Found in fresh-context review (P2).
         chair = payload.get("chair") if isinstance(payload, dict) else None
         if isinstance(chair, str):
             by_pair.setdefault((entry["subject_id"], chair), []).append(record)
