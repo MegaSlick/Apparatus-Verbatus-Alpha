@@ -452,6 +452,11 @@ def test_start_refuses_a_serving_profile_that_is_not_preflight_proven(tmp_path: 
     assert launcher.processes == []
     assert publisher.calls == []
     assert not (tmp_path / "logs").exists()
+    # The refusal is at the recipe door, before any snapshot or residency work:
+    # no store verification ran, and the pod/GPU lease file was never created,
+    # so a following named start is not blocked by this one.
+    assert registry.ensure_calls == []
+    assert not (tmp_path / "pod-gpu.lock").exists()
 
 
 def measured_gpu(dtype: str = "bfloat16") -> GpuProfile:

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
@@ -526,6 +527,18 @@ def promote_verified_snapshot(store_root: str | Path, artifact: Mapping[str, Any
     """
 
     root = Path(store_root).resolve()
+    if not isinstance(artifact, Mapping) or not {
+        "artifact",
+        "staging",
+        "manifest",
+        "required_files",
+    } <= set(artifact):
+        raise DigestMismatchRefusal(
+            "model-store",
+            "a promotion entry carries at least artifact, staging, manifest, and "
+            "required_files; a pending-fetch entry has no bytes to promote",
+        )
+    _safe(artifact["artifact"], "artifact name")
     staging = _under(root, artifact["staging"])
     manifest = build_manifest(staging)
     _verify_required_files(artifact, {row.path: row for row in manifest.rows})
@@ -552,10 +565,18 @@ def _publish_once(destination: Path, payload: bytes, *, chair: str, label: str) 
     ``manifests.file_size`` records the same reasoning for the read side.
     """
 
-    temporary = destination.with_name(f".{destination.name}.candidate-{os.getpid()}")
+    temporary: Path | None = None
     try:
         destination.parent.mkdir(parents=True, exist_ok=True)
-        temporary.write_bytes(payload)
+        # A unique per-call temporary, exactly as `_write_temporary` makes one
+        # for run artifacts: a PID-derived name collides between two calls in
+        # one process, and a crashed earlier call could leave its name taken.
+        descriptor, raw_temporary = tempfile.mkstemp(
+            prefix=f".{destination.name}.candidate-", dir=destination.parent
+        )
+        temporary = Path(raw_temporary)
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
         try:
             os.link(temporary, destination)
         except FileExistsError:
@@ -573,7 +594,8 @@ def _publish_once(destination: Path, payload: bytes, *, chair: str, label: str) 
             chair, f"cannot publish {label} at {destination}: {error}"
         ) from error
     finally:
-        temporary.unlink(missing_ok=True)
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def _move_active_record(destination: Path, archive: Path) -> None:
@@ -617,7 +639,7 @@ def _validate_record_transition(
     for artifact, old_item in old.items():
         replacement_item = new.get(artifact)
         if replacement_item is None:
-            # Both records hold exactly six unique artifacts, so a name the
+            # Both records hold the roster's full set of unique artifacts, so a name the
             # replacement does not carry was renamed or swapped for another.
             # Reading `new[artifact]` here raised a bare `KeyError` that named
             # no chair, which is the one thing `errors.py`'s "complete public
@@ -706,11 +728,12 @@ def _validate_record(raw: Mapping[str, Any]) -> None:
             "model-store", "available capacity cannot cover verified promotion double-space"
         )
     items = raw["artifacts"]
-    if not isinstance(items, list) or len(items) != 6:
+    expected_artifacts = len({required.artifact for required in REQUIRED_ARTIFACTS})
+    if not isinstance(items, list) or len(items) != expected_artifacts:
         raise DigestMismatchRefusal(
             "model-store",
-            "download record must name exactly six unique roster artifacts, each either "
-            "present or pending-fetch",
+            f"download record must name exactly {expected_artifacts} unique roster "
+            "artifacts, each either present or pending-fetch",
         )
     seen: set[str] = set()
     for item in items:

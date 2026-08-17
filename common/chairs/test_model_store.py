@@ -215,6 +215,16 @@ def test_promote_verified_snapshot_refuses_a_differing_republish_and_leaves_the_
     assert manifest_path.read_bytes() == original_bytes
 
 
+def test_promote_verified_snapshot_refuses_a_pending_shaped_entry_by_name(tmp_path):
+    # A pending-fetch entry carries no staging, manifest, or required_files; it
+    # must be refused through the taxonomy, not escape as a bare KeyError.
+    record = _mark_pending(tmp_path, _store(tmp_path), "surya2-detection", "not fetched yet")
+    entry = next(item for item in record["artifacts"] if item["artifact"] == "surya2-detection")
+
+    with pytest.raises(DigestMismatchRefusal, match="no bytes to promote"):
+        promote_verified_snapshot(tmp_path, entry)
+
+
 # --- S5: a canonical writer closes the "hand-authored JSON" gap -----------------
 
 
@@ -486,7 +496,7 @@ def test_validate_record_refuses_a_five_artifact_record(tmp_path):
     record = _store(tmp_path)
     record["artifacts"] = record["artifacts"][:5]
 
-    with pytest.raises(DigestMismatchRefusal, match="exactly six"):
+    with pytest.raises(DigestMismatchRefusal, match="exactly 6 unique roster"):
         derived_inventory(record)
 
 
@@ -499,7 +509,10 @@ def test_derived_inventory_refuses_a_revision_that_disagrees_with_the_roster(tmp
         derived_inventory(record)
 
 
-def test_derived_inventory_refuses_a_unicode_artifact_name_as_a_required_artifact(tmp_path):
+def test_derived_inventory_holds_a_renamed_artifact_to_the_artifact_keyed_path_rule(tmp_path):
+    # The path rule fires before the roster join ever sees the name: the entry's
+    # snapshot and manifest are keyed by the old spelling, so the renamed entry
+    # is refused as a layout mismatch, not as a stranger to the roster.
     record = _store(tmp_path)
     record["artifacts"][0]["artifact"] = "chandra-ocr-2’"
 
@@ -603,6 +616,11 @@ def test_require_complete_store_cannot_be_satisfied_by_a_forged_inventory(tmp_pa
     forged["complete"] = True
     forged["pending"] = []
 
+    # The door takes a store root and re-derives its own inventory from real
+    # bytes, so a flipped `complete` flag has no way in: an inventory-shaped
+    # mapping is not even a path.
+    with pytest.raises(TypeError):
+        require_complete_store(forged)
     with pytest.raises(DigestMismatchRefusal, match="surya2-detection"):
         require_complete_store(tmp_path)
 
