@@ -1236,9 +1236,9 @@ def _publish_residual_holds(
     never decide whether a region exists in the accounting at all — spec 06's
     own words, and `conservation.py`'s module docstring says the same of the
     artifact this extends. `residual_components` already arrives in the
-    deterministic (top, then left) order `structure.label_components`
-    produces, so `index` — and therefore `residual_act_ordinal(index)` — names
-    the same residual on every run over an unchanged page.
+    deterministic (top, then left) order `conservation.reconcile` produces, so
+    `index` — and therefore `residual_act_ordinal(index)` — names the same
+    residual on every run over an unchanged page.
     """
     rows = []
     for index, component in enumerate(residual_components):

@@ -1,12 +1,60 @@
 """Independent, row-oriented residual-ink reconciliation (U13).
 
-The original skeleton built three Python ``set[(x, y)]`` values.  That made the
-proof easy to read, but a dense 600dpi parish page turns every ink pixel into
-several Python objects.  This implementation has the same threshold and
-gap-connectivity semantics while retaining only ink *runs* and the currently
-active claimed rectangles.  It is therefore O(page pixels + ink runs) memory,
-rather than O(ink pixels), and its denominator still comes from page pixels,
-not a proposer-derived mask.
+Conservation: claimed ink plus residual ink equals every ink pixel found.
+
+**The denominator is the page's own pixels, never the structure pass's own
+output.** The old pipeline's conservation logic proved coverage of units the
+structure model had already emitted -- a chunk not claimed by a crop was
+accounted for, but a mark the model never emitted as a chunk at all had no
+denominator to be missing from. An independent second read
+(`/stage/70_gpt_review/ASSESSMENT.md:172-173`) named it precisely: "the present
+conservation logic proves coverage of units already emitted by a structural
+model. It cannot prove that the model did not miss ink entirely." This module
+rescans the page's actual pixels and classifies every one it finds as claimed
+(inside some cut crop) or residual (not inside any), so a mark the grouping pass
+never produced a region for still appears -- as a residual component, never as
+an absence.
+
+**Every residual region is accounted regardless of size.** `review_priority`
+below orders which residual a reviewer looks at first; it never decides whether
+a residual exists in the accounting. Deleting the priority threshold entirely
+would only reorder review, never drop a region -- which is the property
+GOVERNANCE 10 requires of any threshold in an instrument: the instrument may not
+constrain what it measures.
+
+**Two ink calibrations exist in this pipeline, by decision rather than drift.**
+This stage conserves a pixel as ink at `background - SECONDARY_MARGIN` (2
+levels), the most sensitive declared structural threshold available to it; the
+Recensor's independent page-coverage check
+(`pipeline/5_recensor/residual_ink.py`) requires
+`MINIMUM_CONTRAST_BELOW_BACKGROUND` (40 levels). They are different instruments:
+this one is the Designator reconciling its own cut and errs sensitive, because a
+faint mark it dismisses here is GOALS 1's worst failure; the Recensor's is an
+after-the-fact audit of the same pages and errs confident, because it exists to
+catch whole missed regions rather than to re-litigate faint pixels a held act
+already accounts for. The asymmetry is safe in exactly one direction, and that
+direction is the invariant: every pixel the Recensor calls ink is ink to this
+stage too, so the audit can never flag ink this accounting silently ignored --
+while ink only this stage sees ends as a held residual act, which is visible,
+never lost. The containment is pinned where the two stages legitimately meet,
+`common/test_designator_recensor_ink_calibration.py`; narrowing this stage's
+margin past the Recensor's contrast would break the safe direction and must be a
+deliberate two-sided change.
+
+**How it is computed, and why that changed.** The original skeleton built three
+Python ``set[(x, y)]`` values. That made the proof easy to read, but a dense
+600dpi parish page turns every ink pixel into several Python objects. This
+implementation keeps the same threshold and gap-connectivity semantics while
+retaining only ink *runs* and the currently active claimed rectangles, so its
+memory is O(page pixels + ink runs) rather than O(ink pixels). Equivalence to
+the retired pixel-set algorithm is not asserted, it is exercised: the retired
+implementation is kept in `test_conservation.py` as an oracle and compared
+against on randomized, fully-inked, and exhaustive claim-edge pages.
+
+Connectivity labelling is this module's own (`_components`) rather than
+`structure.label_components`, because the two now work over different objects --
+runs here, pixels there. `test_conservation.py`'s oracle is what holds the two
+to one meaning of "connected".
 """
 
 from __future__ import annotations
@@ -27,12 +75,25 @@ class ReconciliationResult(TypedDict):
     residual_components: list[dict]
 
 
+# A residual component at or above this many pixels, on either axis, is
+# reviewed first -- a priority ordering, not a filter. See the module
+# docstring: nothing here may become an inclusion test.
 DEFAULT_REVIEW_PRIORITY_MIN_DIMENSION_PX: Final = 6
 
 
 class _Run(TypedDict):
+    """One horizontal stretch of ink on scanline `y`, half-open at `x1`.
+
+    Every run this module builds is contiguous ink: `_unit_ink_runs` splits on
+    the first blank pixel, and `_subtract_claims` only ever cuts a run shorter.
+    So `x1 - x0 == ink_count` for every run, and the two are carried separately
+    only because `_components` reads the span while the accounting reads the
+    count. Tolerated blank gaps are bridged in `_components`' connectivity, never
+    inside a run.
+    """
+
     x0: int
-    x1: int  # exclusive, including any blank bridge only in the geometry below
+    x1: int
     ink_count: int
     y: int
 
@@ -75,11 +136,14 @@ def _merged_claim_intervals(active: list[geometry.Bounds]) -> list[tuple[int, in
 
 
 def _subtract_claims(run: _Run, claims: list[tuple[int, int]]) -> tuple[int, list[_Run]]:
-    """Split an ink run around claims, counting actual ink rather than area."""
-    # A run may span tolerated blank gaps.  Re-scanning just that short row slice
-    # would need the image again, so the caller supplies exact unit runs below.
-    # Here every x represents ink: `_residual_unit_runs` deliberately supplies
-    # those exact runs after the topology scan has formed connectivity runs.
+    """Split an ink run around claims, counting actual ink rather than area.
+
+    Every x in `run` is ink -- `_unit_ink_runs` guarantees it -- so an interval
+    width here *is* an ink count, and neither the claimed total nor a residual
+    piece has to re-read the scanline to know how much ink it covers. `claims`
+    must arrive merged and sorted (`_merged_claim_intervals`); overlapping claims
+    would otherwise be counted twice.
+    """
     residual: list[_Run] = []
     claimed = 0
     cursor = run["x0"]
@@ -185,7 +249,19 @@ def reconcile(
     gap_tolerance_px: int = DEFAULT_GAP_TOLERANCE_PX,
     review_priority_min_dimension_px: int = DEFAULT_REVIEW_PRIORITY_MIN_DIMENSION_PX,
 ) -> ReconciliationResult:
-    """Reconcile every page-ink pixel once against final crop rectangles."""
+    """Reconcile one page's ink against the crops actually cut on it.
+
+    `claimed_bounds` is the final, padded crop rectangles this stage actually
+    cut -- not the structure pass's raw proposals -- because a crop's padding is
+    exactly what may already cover ink the raw proposal's own rectangle did not.
+    Every ink pixel is classified once; `claimed_pixel_count +
+    residual_pixel_count == total_ink_pixel_count` always, by construction,
+    because every pixel in the denominator is examined exactly once. The final
+    check below is not that identity (which holds by arithmetic) but the
+    independent one: that the residual *components* published for review sum back
+    to the residual ink counted, so no residual pixel is left out of a region a
+    reviewer can be shown.
+    """
     if not _plain_int(width) or not _plain_int(height) or width <= 0 or height <= 0:
         raise ContractError(f"a {width}x{height} page has no pixels to scan")
     if len(rows) != height:

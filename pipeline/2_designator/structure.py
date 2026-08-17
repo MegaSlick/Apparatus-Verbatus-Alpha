@@ -30,7 +30,9 @@ walking skeleton's tiny synthetic pages. Before real parish pages or a corpus
 run, replace those two functions as a pair with a measured array-based or
 native implementation that preserves their exact threshold, connectivity,
 ordering, and accounting contracts. Their present form proves mechanism, not
-production scale.
+production scale. `conservation.py` has already crossed that boundary for its
+own accounting (U13, row runs instead of pixel sets); this module has not, and a
+replacement here must still agree with the calibration the two share.
 """
 
 from typing import Final, TypedDict
@@ -173,9 +175,12 @@ def infer_background(width: int, height: int, rows: list) -> int:
 def ink_pixels(width: int, height: int, rows: list, *, background: int, margin: int) -> set:
     """Every pixel at or below the ink threshold, as a set of (x, y) pairs.
 
-    Split out from `scan_ink_components` so `conservation.py` can classify
-    each ink pixel against a set of claimed crops directly, rather than
-    reasoning about whole components that may straddle a crop's edge.
+    Split out from `scan_ink_components` so a caller that needs the raw ink set
+    -- rather than whole components, which may straddle a crop's edge -- can
+    take it directly. `conservation.py` was that caller until U13 replaced its
+    pixel sets with row runs; it now shares only `_ink_threshold` and
+    `SECONDARY_MARGIN` with this module, and `test_conservation.py` keeps this
+    function as the oracle its replacement is checked against.
     """
     if width <= 0 or height <= 0:
         raise ContractError(f"a {width}x{height} page has no pixels to scan")
@@ -199,9 +204,11 @@ def label_components(
 ) -> list[Component]:
     """Connected-component labeling over an arbitrary set of (x, y) pixels.
 
-    The one union-find implementation both `scan_ink_components` (over every
-    ink pixel) and `conservation.py` (over the residual subset only) use, so
-    the two never drift on what "connected" means.
+    `scan_ink_components` labels every ink pixel through here. `conservation.py`
+    labelled its residual subset through here too until U13 moved it to runs;
+    the two definitions of "connected" are now kept from drifting by
+    `test_conservation.py`, which compares the run-oriented labelling against
+    this one directly rather than by sharing the code.
     """
     if gap_tolerance_px < 0:
         raise ContractError(f"gap tolerance {gap_tolerance_px} is negative")
