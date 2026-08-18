@@ -1478,6 +1478,19 @@ def publish_page_testimonia_and_attachments(
                 act = next((item for item in page_acts if item["act_key"] == line["act_key"]), None)
                 if start >= 0:
                     if act is not None:
+                        if (page_ordinal, act["act_id"]) in anchor_ranges:
+                            # The same malformed-vs-absent rule as every branch
+                            # above: keeping the last line would drop the first
+                            # line's span and geometry without a record, and the
+                            # dropped half's characters would read as witness
+                            # departure. The day an act genuinely owns several
+                            # anchor lines, line_geometry carries all of them --
+                            # it does not keep the last.
+                            raise SchemaRefusal(
+                                f"page {page_ordinal} declares more than one Chandra anchor "
+                                f"line for act {line['act_key']}; keeping the last one would "
+                                "drop the first line's span and geometry without a record"
+                            )
                         bbox = {key: line.get(key) for key in ("x", "y", "w", "h")}
                         if any(value is None for value in bbox.values()):
                             # A null coordinate is a default standing in for

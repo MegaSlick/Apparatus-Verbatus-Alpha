@@ -201,9 +201,10 @@ of:
   the page reading, never raw bytes.
 - unaligned: `{status, reason}`, reasons among `missing-chandra-page-anchor`,
   `act-anchor-line-not-located`, `no-overlap-with-act-anchor`,
-  `character-limit`, `character-pair-limit`, `timeout`, and
-  `non-reading-page-attempt-<outcome>` for an attempt that produced no
-  reading.
+  `character-limit`, `character-pair-limit`, `timeout`,
+  `no-common-anchor-text` (the aligner's own reasons pass through
+  verbatim), and `non-reading-page-attempt-<outcome>` for an attempt that
+  produced no reading.
 
 For a page witness, `attached` is true exactly when `alignment.status` is
 `aligned` and the attempt outcome is a reading — both the Perlector
