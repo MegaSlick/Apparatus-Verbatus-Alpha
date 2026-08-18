@@ -18,6 +18,7 @@ from typing import Any, Final
 from common.contracts.canonical import digest_of, is_sha256
 from common.contracts.envelope import validate_input_refs
 from common.contracts.errors import SchemaRefusal
+from common.contracts.stages import PERLECTOR
 
 SCHEMA: Final = "perlector-audit.v1"
 AUDIT_CAP_EXHAUSTED: Final = "audit-round-cap-exhausted"
@@ -270,10 +271,10 @@ def validate_chain(tree, reading: dict[str, Any], act_id: str) -> dict[str, Any]
         raise SchemaRefusal(f"reading of {act_id} has no final text for its Pass-C audit")
     record = validate_perlectio_audit(payload.get("audit"), text_length=None)
     draft = tree.read_artifact_reference(
-        record["draft_ref"], stage="perlector", kind="audit-draft", subject_id=act_id
+        record["draft_ref"], stage=PERLECTOR, kind="audit-draft", subject_id=act_id
     )
     finding = tree.read_artifact_reference(
-        record["finding_ref"], stage="perlector", kind="audit-finding", subject_id=act_id
+        record["finding_ref"], stage=PERLECTOR, kind="audit-finding", subject_id=act_id
     )
     draft_payload = validate_draft(draft.get("payload"))
     validate_perlectio_audit(record, text_length=len(draft_payload["semi_final_text"]))

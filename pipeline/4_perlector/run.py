@@ -1829,12 +1829,19 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "bases": bases,
                 "payload": payload,
                 "outcome": outcome,
-                "delivered_pixels": delivered_pixels,
+                # Deliberately NOT the decoded pixels: holding every act's
+                # delivered images until the audit loop reaches it would grow
+                # peak memory with the number of acts on the run -- a parish
+                # of several hundred acts is several hundred sets of
+                # page-sized buffers held at once, and the failure mode is an
+                # OOM kill after the drafts are on disk and before any
+                # Perlectio is published. The rare re-proof rebuilds its
+                # pixels from the same sealed artifacts instead.
                 "region_pixels": region_pixels,
                 "declared_failure": declared_failure,
                 "testimonia": testimonia,
                 "attachment_view": attachment_view,
-                "prior_text": prior["text"],
+                "prior": prior,
                 "inputs": _reading_image_inputs(context, bases, page_renders)
                 + list(testimonium_references.values())
                 + [attachment_view["reference"], prior["reference"]],
@@ -1912,10 +1919,28 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             # Exactly one reader invocation for this act and audit round.  The
             # list of neutral locations is retained on the Perlectio below;
             # no flag result can reopen this page's frozen calculation.
+            #
+            # The pixels are rebuilt here, for this act alone, from the same
+            # sealed artifacts the Pass-B dossier was built from -- the
+            # rebuilt dossier is discarded, and the double-run byte-identity
+            # acceptance tests hold the determinism this relies on.
+            _, reproof_pixels = dossier_module.build_reader_dossier(
+                context,
+                act_id=act_id,
+                act_key=row["act"]["act_key"],
+                regions=row["bases"],
+                testimonia=row["testimonia"],
+                regime=context.witness_context,
+                page_renders=_page_renders_for(context, row["bases"]),
+                witness_context=witness_context_table,
+                act_attachment=row["attachment_view"],
+                prior_draft=row["prior"],
+                prior_draft_view="fed" if context.draft_fed else "withheld",
+            )
             reproof = reader.read(
                 {**payload["dossier"], "semi_final_text": payload["text"]},
                 pass_kind="audit-reproof",
-                delivered_pixels=row["delivered_pixels"],
+                delivered_pixels=reproof_pixels,
             )
             final_text = reproof["text"]
             changes = audit.change_record(payload["text"], final_text, flags)
@@ -1929,7 +1954,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 # actually published, so the recorded self-revision must
                 # describe *its* departure from Pass A, not a reading that
                 # never left the Perlector.
-                payload["self_revision"] = departures(final_text, row["prior_text"])
+                payload["self_revision"] = departures(final_text, row["prior"]["text"])
                 # The truncation instrument is the same case as `self_revision`
                 # and was the last field still describing a reading nobody
                 # published: three of its four signals are computed over the

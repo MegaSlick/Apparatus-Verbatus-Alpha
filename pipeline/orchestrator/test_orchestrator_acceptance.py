@@ -408,12 +408,12 @@ FIXTURE = "synthetic-two-page-v0"
 # The literals below are re-measured on this change, and each re-measurement
 # names what moved them. A mismatch here is evidence about the recorded
 # artifacts, never about the platform. Re-measured host-side after rebasing
-# R5b onto merged R4 (main 942b426): the ladder underneath gained R4's
-# PR-loop artifacts (anchor_basis on every aligned page-witness alignment,
-# the explicit non-reading-page-attempt reason), so every wave-time R5b
-# literal is superseded. File counts 64/71 unchanged by the rebase.
-HAPPY_RUN_TREE_DIGEST = "5577e17b2fadab870482615ff6b20ce8b0b774b51eccbc379e99933f9865f86c"
-REVIEW_RUN_TREE_DIGEST = "bfce9639225623526bcc2e166d70c5ef0c65515d87930fe5dfc0350643d290bd"
+# R5b onto merged R4, then again on R5b's CR round 1: the sealed audit
+# policy's bytes changed (its comment now states the one-round build limit),
+# and every Recensor review records the Pass-C verdict as data
+# (audit_unresolved). File counts 64/71 unchanged throughout.
+HAPPY_RUN_TREE_DIGEST = "c13a44092fe01a6fb02926c0c099d496b15af54658b58d2f0dc7c205e5776033"
+REVIEW_RUN_TREE_DIGEST = "707369ca2f050f26e196bb80f1b1d717e36e4931a0d349144f5ca33d8abe8cb7"
 
 
 def orchestrate(

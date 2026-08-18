@@ -134,6 +134,12 @@ def flags_once_per_page(semi_finals: list[dict[str, Any]]) -> dict[str, list[dic
             raise SchemaRefusal("an audit semi-final has no integer declared order")
         if "geometry_order" not in row:
             raise SchemaRefusal("an audit semi-final has no geometry order")
+        # Proved present like every other field in this loop: `.get` with a
+        # True default read a row that never stated its crop containment as
+        # "fully inside", and the within-crop flag class silently stopped
+        # firing for any future producer that omitted the key.
+        if not isinstance(row.get("within_crop"), bool):
+            raise SchemaRefusal("an audit semi-final does not say whether it stays within its crop")
         by_page[row["page_id"]].append(row)
     output: dict[str, list[dict[str, Any]]] = {row["act_id"]: [] for row in semi_finals}
     for rows in by_page.values():
@@ -160,7 +166,7 @@ def flags_once_per_page(semi_finals: list[dict[str, Any]]) -> dict[str, list[dic
             # The audit only records locations in the text delivered from this
             # act's crop. It deliberately has no page partition or residual-ink
             # predicate; those belong to the Recensor.
-            if not row.get("within_crop", True):
+            if not row["within_crop"]:
                 output[row["act_id"]].append(_flag("within-crop", 0, len(text)))
         for values, flag_class in ((dates, "date-sequence"), (numbers, "numbering")):
             for previous, current in zip(values, values[1:], strict=False):

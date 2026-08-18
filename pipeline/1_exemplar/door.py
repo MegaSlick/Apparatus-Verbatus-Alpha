@@ -1417,6 +1417,15 @@ def _real_bindings(
             "the Perlector protocol configuration binding at "
             f"{perlector_protocol_config_path} could not be read"
         ) from error
+    # Same discipline, same reasons, for the audit policy: one read feeding
+    # both digests, and a named refusal instead of an OSError traceback.
+    try:
+        perlector_audit_config_sha256 = digest_bytes(Path(perlector_audit_config_path).read_bytes())
+    except OSError as error:
+        raise ContractError(
+            "the Perlector audit configuration binding at "
+            f"{perlector_audit_config_path} could not be read"
+        ) from error
     return {
         "witness_chairs": list(models.witness_chairs),
         "config_digest": digest_of(
@@ -1457,9 +1466,7 @@ def _real_bindings(
                 "perlector_instrument_per_mille": perlector_instrument_per_mille,
                 "perlector_instrument_approval_ref": perlector_instrument_approval_ref,
                 "perlector_protocol_config_sha256": perlector_protocol_config_sha256,
-                "perlector_audit_config_sha256": digest_bytes(
-                    Path(perlector_audit_config_path).read_bytes()
-                ),
+                "perlector_audit_config_sha256": perlector_audit_config_sha256,
                 "draft_fed": draft_fed,
             }
         ),
@@ -1482,7 +1489,7 @@ def _real_bindings(
             "alignment": alignment_config_sha256,
             "corpus-frame-shard": corpus_frame_config_sha256,
             "perlector-protocol": perlector_protocol_config_sha256,
-            "perlector-audit": digest_bytes(Path(perlector_audit_config_path).read_bytes()),
+            "perlector-audit": perlector_audit_config_sha256,
         },
     }
 

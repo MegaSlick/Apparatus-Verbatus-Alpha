@@ -27,6 +27,7 @@ import pytest
 
 from common.contracts.envelope import build_envelope
 from common.contracts.errors import ContractError
+from common.contracts.stages import ATTESTATORES
 
 # Every kind name the contract note defers past R0, by name, mapped to a stage whose
 # outcome vocabulary it could plausibly ride (so `classify()` inside `build_envelope`
@@ -70,6 +71,30 @@ def test_reserved_kind_names_stay_in_sync_with_the_deferred_kind_census():
 
     assert {kind for _stage, _outcome, kind in DEFERRED_KINDS} == set(_RESERVED_KINDS)
     assert not (GRADUATED_R5B_KINDS & set(_RESERVED_KINDS))
+
+
+def test_the_reserved_kind_refusal_branch_itself_still_refuses(monkeypatch):
+    """With every R5b kind graduated, `DEFERRED_KINDS` is empty and the
+    parametrised refusal test above never runs -- deleting the refusal branch
+    in `build_envelope` would leave this whole file green. A sentinel kind is
+    reserved here temporarily so the branch is exercised at least once until a
+    future branch defers a real kind again."""
+    from common.contracts import envelope as envelope_module
+
+    monkeypatch.setattr(envelope_module, "_RESERVED_KINDS", frozenset({"reserved-sentinel-kind"}))
+    with pytest.raises(ContractError, match="reserved-sentinel-kind"):
+        build_envelope(
+            run_id="r0-reserved-kind-probe",
+            artifact_id="art_0000000000000000",
+            subject_id="act_0000000000000000",
+            stage=ATTESTATORES,
+            kind="reserved-sentinel-kind",
+            outcome="read",
+            config_digest="0" * 64,
+            adapter_revision="fixture-v0",
+            inputs=[],
+            payload={"probe": "the refusal branch, not any particular kind"},
+        )
 
 
 # --- Closed-ordinal confidence (three_stage_reading_design.md v2.1 §2, U5) ------

@@ -117,12 +117,40 @@ class FixtureReader:
                 if pass_kind == "lectio-prior":
                     return self._declared_prior_reading(act_key)
                 if pass_kind == "audit-reproof":
-                    for reproof in self._fixture.get("audit_reproof", []):
-                        if reproof["scenario"] == self._scenario and reproof["act_key"] == act_key:
-                            return reproof["text"]
-                    return self._confirmed_unchanged_text(dossier)
+                    return self._declared_reproof_text(dossier, act_key)
                 return act["text"]
         raise KeyError(f"the fixture declares no act {act_key!r}")
+
+    def _declared_reproof_text(self, dossier: dict[str, Any], act_key: str) -> str:
+        """This scenario's declared re-proof result, or an honest confirmation.
+
+        The whole table validates before any row is selected, for the reason
+        `_declared_prior_reading` gives: a duplicate pair or a row naming a
+        scenario or act nobody declared would otherwise sit unnoticed while
+        the first match answered -- and here the miss falls through to
+        "confirmed unchanged", so a fixture meaning to exercise a changed
+        re-proof would silently exercise the no-change path instead.
+        """
+        declared_scenarios = {scenario["name"] for scenario in self._fixture["scenario"]}
+        declared_acts = {act["key"] for act in self._fixture["act"]}
+        rows = self._fixture.get("audit_reproof", [])
+        seen: set[tuple[str, str]] = set()
+        for row in rows:
+            key = (row["scenario"], row["act_key"])
+            if key in seen:
+                raise KeyError(
+                    f"audit_reproof declares {key!r} twice; two contradictory re-proof "
+                    "results would publish whichever is written first and discard the other"
+                )
+            seen.add(key)
+            if row["scenario"] not in declared_scenarios:
+                raise KeyError(f"audit_reproof row names undeclared scenario {row['scenario']!r}")
+            if row["act_key"] not in declared_acts:
+                raise KeyError(f"audit_reproof row names undeclared act {row['act_key']!r}")
+        for row in rows:
+            if row["scenario"] == self._scenario and row["act_key"] == act_key:
+                return row["text"]
+        return self._confirmed_unchanged_text(dossier)
 
     @staticmethod
     def _confirmed_unchanged_text(dossier: dict[str, Any]) -> str:

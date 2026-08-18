@@ -1069,6 +1069,12 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     "recoveries_used": 0,
                     "budget_allowed": budget["allowed"],
                     "absolute_cap": budget["absolute_cap"],
+                    # None, not absent, and not False: a Designator-held act
+                    # has no Perlectio and therefore no audit to report. The
+                    # field stays universal so a consumer can tell "no audit
+                    # exists" (here) from "audited, resolved" (False) and
+                    # "audited, unresolved" (True).
+                    "audit_unresolved": None,
                 },
             )
             held += 1
@@ -1317,6 +1323,13 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 # recorded under: a consumer that only ever sees the field
                 # populated cannot tell "checked and clear" from "never checked".
                 "page_coverage": page_coverage,
+                # The Pass-C verdict, recorded as data for every act for the
+                # same reason: an act held for an exhausted audit cap must be
+                # separable from every other hold without matching prose, and
+                # an audit that resolved cleanly must be tellable from one
+                # never checked. R8's canonical export reads uncertainty spans
+                # whose review-side "why" lives exactly here.
+                "audit_unresolved": audit_unresolved,
                 # Present only on a `confirmed-blank`, because it is the evidence
                 # that outcome rests on and nothing else has any. Every other
                 # review carries the fields above and no more.

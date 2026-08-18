@@ -186,8 +186,12 @@ def test_flags_are_frozen_once_per_page_and_never_cascade_from_a_reproof():
     assert audit.flags_once_per_page(changed)["a2"] != flags["a2"]
 
 
-def test_recovery_flags_see_a_sealed_same_page_sibling(monkeypatch):
-    """A one-act recovery still evaluates cross-act flags over its whole page."""
+def test_recovery_flag_pass_merges_sibling_rows_before_the_page_calculation(monkeypatch):
+    """The merge rule alone: a one-act recovery still evaluates cross-act flags
+    over its whole page. The sibling rows are supplied here rather than read --
+    `test_recovery_sibling_context_is_sealed_and_never_republished` below is
+    what proves they come from sealed artifacts, so deleting that test is what
+    would lose the sealing coverage, not this one."""
     perlector = _perlector()
     recovered = [
         {

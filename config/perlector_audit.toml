@@ -1,8 +1,11 @@
 # R5b Pass-C audit policy.  These bytes are sealed into every run.
 #
-# One round is the production default.  A run may use a higher value only with
-# Tyrel's recorded approval reference; no configuration can exceed the absolute
-# ceiling, and no stage has a runtime switch that can raise either value.
+# One round is the production default, and one round is all this build performs:
+# `pipeline/4_perlector/audit.py` refuses `round_cap` above 1 even with Tyrel's
+# approval reference, because no second re-proof pass exists to run.  Lowering it
+# to 0 is permitted and routes flagged acts to review.  `absolute_round_cap`
+# declares how far the cap may ever be raised once that pass is built; no
+# configuration can exceed it, and no stage has a runtime switch for either value.
 schema = "perlector-audit.v1"
 default_round_cap = 1
 absolute_round_cap = 2
