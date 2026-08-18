@@ -276,7 +276,16 @@ def dissent_against(reading: str, testimonia: list[dict]) -> list[dict]:
                 {
                     "chair": chair,
                     "compared": "unknown",
-                    "reason": "page witness has no act-anchored comparison view before R4 alignment",
+                    # Since R4 an attached page witness always carries a
+                    # comparison view, so absence means exactly one thing: the
+                    # chair's recorded alignment is explicitly unaligned (the
+                    # act-attachment names its reason). Not "before R4" -- that
+                    # message outlived the build it described.
+                    "reason": (
+                        "page witness is not attached to this act; its recorded alignment "
+                        "is explicitly unaligned, so there is no act-anchored comparison "
+                        "view to diff"
+                    ),
                 }
             )
             continue

@@ -1474,8 +1474,26 @@ def publish_page_testimonia_and_attachments(
                         f"the Chandra anchor line for act {line['act_key']} on page "
                         f"{page_ordinal} carries no text; a malformed line is not an absent one"
                     )
-                start = normalized_anchor.find(source, search_from)
+                # The haystack is the markup-stripped, whitespace-collapsed
+                # view, so the needle must be the same view of the same
+                # declaration -- searching raw declared text inside the
+                # normalized anchor failed for any line carrying a tag, an
+                # entity, or a double space, and it failed SILENTLY: nothing
+                # recorded the miss, the act reported
+                # act-anchor-line-not-located for a line sitting on disk, and
+                # `search_from` stayed behind the unlocated line's span. An
+                # unlocatable declared line is malformed evidence, not an
+                # absent act line.
+                needle = markup_text_view(source)["text"]
+                start = normalized_anchor.find(needle, search_from) if needle else -1
                 act = next((item for item in page_acts if item["act_key"] == line["act_key"]), None)
+                if start < 0:
+                    raise SchemaRefusal(
+                        f"the Chandra anchor line for act {line['act_key']} on page "
+                        f"{page_ordinal} does not occur in the page's own anchor text at or "
+                        "after the previous line; an unlocatable declared line is malformed "
+                        "evidence, not an absent act line"
+                    )
                 if start >= 0:
                     if act is not None:
                         if (page_ordinal, act["act_id"]) in anchor_ranges:
@@ -1504,7 +1522,7 @@ def publish_page_testimonia_and_attachments(
                             )
                         anchor_ranges[(page_ordinal, act["act_id"])] = {
                             "start": start,
-                            "end": start + len(source),
+                            "end": start + len(needle),
                             "bbox": bbox,
                         }
                     # A located line advances the cursor whether or not it maps
@@ -1512,7 +1530,7 @@ def publish_page_testimonia_and_attachments(
                     # unproposed act still occupies its span of the page, and
                     # leaving the cursor behind it would let the NEXT act's
                     # formulaic opening resolve into this line's text.
-                    search_from = start + len(source)
+                    search_from = start + len(needle)
 
     for act in acts:
         entries: list[dict[str, Any]] = []

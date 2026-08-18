@@ -600,3 +600,23 @@ def test_the_legacy_under_witnessed_message_prints_the_count_that_raised_the_fla
         act_pages={"act_a": [1]},
     )
     assert aggregate["reasons"] == ["act act_a is under-witnessed (2 of a floor of 3)"]
+
+
+def test_an_unknown_granularity_basis_is_refused_never_guessed_from():
+    """The closed vocabulary, closed at the consumer: a basis this module never
+    produced is malformed evidence. A default here would guess the message
+    count from the wrong arithmetic -- the exact defect the basis branch
+    exists to repair."""
+    coverage = witness_coverage(
+        {"s1": "read", "s2": "read", "s3": "read"},
+        3,
+        attachments={"s1": True, "s2": True, "s3": False},
+    )
+    forged = {**coverage, "granularity_basis": "a-basis-nothing-produces"}
+    with pytest.raises(FatalAccounting, match="unknown granularity basis"):
+        run_aggregate(
+            {"act_a": ArmariumCategory.DELIVERED},
+            {"act_a": forged},
+            {1: {"outcome": "sealed"}},
+            act_pages={"act_a": [1]},
+        )

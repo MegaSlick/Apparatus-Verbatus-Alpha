@@ -399,8 +399,22 @@ def test_the_comparison_runs_off_the_main_thread_without_touching_signal_state()
             captured["error"] = error
 
     thread = threading.Thread(target=work)
-    thread.start()
-    thread.join()
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    signal.setitimer(signal.ITIMER_REAL, 30.0)
+    try:
+        thread.start()
+        thread.join()
+
+        # The name promises "without touching signal state", so pin the state:
+        # a worker-thread path that reached the process alarm in some way that
+        # did not raise would otherwise stay green while destroying a caller's
+        # timer.
+        remaining, _ = signal.getitimer(signal.ITIMER_REAL)
+        assert remaining > 20, "the worker-thread path disturbed the main thread's timer"
+        assert signal.getsignal(signal.SIGALRM) is previous_handler
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0.0)
+        signal.signal(signal.SIGALRM, previous_handler)
 
     assert "error" not in captured, captured.get("error")
     assert captured["result"], "a real difference must still be reported"

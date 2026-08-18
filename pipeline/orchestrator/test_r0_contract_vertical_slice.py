@@ -247,8 +247,9 @@ def test_two_acts_on_one_page_never_claim_the_same_page_witness_bytes(run_tree, 
     acts claiming identical ones, only harder to see, and identity alone would
     pass a witness-side hull that absorbed a neighbouring act's characters at
     one end. A zero-length span (a `genuinely-empty` page witness) claims no
-    character, so it is exempt from the overlap arm and stays covered by the
-    identity arm.
+    character, so it is exempt from both arms: the trivial attach of one page
+    witness is (0, 0) for every act on the page, and that repetition is
+    decided behaviour rather than a double claim.
     """
     scenario, tree = run_tree
     spans: dict[str, list[tuple[str, dict]]] = {}

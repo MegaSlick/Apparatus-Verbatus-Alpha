@@ -507,7 +507,11 @@ def act_comparison_view(page_text: str, witness_span: dict[str, int]) -> str:
     # and that empty string would become the act's comparison view -- dissent
     # then records the witness as departing from the whole reading, or as
     # corroborating a blank it never reported.
+    if not isinstance(witness_span, dict) or set(witness_span) != {"start", "end"}:
+        raise SchemaRefusal("an attached page witness carries no two-bound comparison span")
     start, end = witness_span["start"], witness_span["end"]
+    if any(not isinstance(bound, int) or isinstance(bound, bool) for bound in (start, end)):
+        raise SchemaRefusal("an attached page witness claims a non-integer comparison span")
     if not 0 <= start <= end or end > len(normalized):
         raise SchemaRefusal("an attached page witness claims a span past its own comparison view")
     return normalized[start:end]

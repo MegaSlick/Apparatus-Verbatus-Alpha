@@ -378,3 +378,16 @@ def test_nfc_composition_keeps_the_offset_map_pointing_at_the_raw_cluster():
     assert offsets[11] == 12
     assert offsets[12] == 14
     assert view["loss"]["unicode_reencoded_characters"] == 2
+
+
+def test_starter_starter_composition_yields_honest_none_offsets_never_shifted_ones():
+    """The documented fallback: where per-cluster composition cannot reproduce
+    NFC of the whole (starter-starter composition -- Hangul jamo compose
+    across combining-class-0 boundaries), every offset entry is None. An
+    absent measurement, never a fabricated one: publishing shifted offsets
+    there would reach the act attachment as measured geometry."""
+    raw = "가"  # Hangul jamo G + A, NFC-composed to one syllable
+    view = markup_text_view(raw)
+
+    assert view["text"] == "가"
+    assert view["offset_map"] == [None]

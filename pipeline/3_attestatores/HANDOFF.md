@@ -185,7 +185,8 @@ Written by the same stage invocation that writes page testimony, one
 carries `attachments`: one entry per configured chair, each with `chair`,
 `attached` (bool), `span` (`{start, end}`), `content_health` (dict or null —
 null is "health not recorded", a distinct fact), `page_witness` (bool,
-strictly), a `reference` to the chair's Testimonium or page-Testimonium, and
+strictly), a `testimonium_ref` pointing at the chair's Testimonium or
+page-Testimonium, and
 `alignment` — null for an act-scoped chair, and for a page witness exactly one
 of:
 

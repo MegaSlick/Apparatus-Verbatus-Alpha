@@ -32,6 +32,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from common.alignment import markup_text_view  # noqa: E402
 from common.imaging import crop_png  # noqa: E402
 from proof.synthetic_pages import ALL_PAGES, FIXTURE_ID, render_page  # noqa: E402
 
@@ -388,6 +389,20 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
         ]
 
     for anchor in CHANDRA_ANCHORS:
+        # The generator proves what a comment alone cannot hold: each declared
+        # act text occurs exactly ONCE in the stripped page view, so the
+        # in-order anchor-line search resolves unambiguously and no act's
+        # aligned span can absorb a duplicate of another's text (F-X2). An
+        # edit that breaks this would otherwise surface three stages away as
+        # span arithmetic rather than here, at the text that changed.
+        stripped_view = markup_text_view(anchor["html"])["text"]
+        for act_key in anchor["lines"]:
+            act_text = next(row for row in ACTS if row["key"] == act_key)["text"]
+            if stripped_view.count(act_text) != 1:
+                raise ValueError(
+                    f"the chandra_anchor page view does not carry act {act_key!r} exactly "
+                    "once; the separator between the act texts was changed"
+                )
         lines += [
             "",
             "[[chandra_anchor]]",

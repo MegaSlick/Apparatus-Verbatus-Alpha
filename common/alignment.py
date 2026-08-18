@@ -68,10 +68,16 @@ def markup_text_view(raw: str) -> dict[str, Any]:
     plain: list[str] = []
     offsets: list[int] = []
     in_tag = False
+    # Only a `<` that actually closes is markup. An unterminated one is
+    # ordinary ink ("aged < 30" at the end of a note), and treating it as an
+    # opened tag silently dropped every character after it. One index instead
+    # of a per-`<` forward scan: a `<` closes exactly when any `>` exists
+    # after it, i.e. when it sits before the last `>` of the whole input.
+    last_close = raw.rfind(">")
     i = 0
     while i < len(raw):
         char = raw[i]
-        if char == "<":
+        if char == "<" and i < last_close:
             in_tag = True
         elif char == ">" and in_tag:
             in_tag = False
