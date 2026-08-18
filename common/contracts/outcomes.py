@@ -551,7 +551,17 @@ def run_aggregate(
             # `pipeline/7_armarium/armarium_export.py::_run_aggregate` already
             # converts exactly that `KeyError` into a named refusal rather than
             # let a fabricated count stand in for one nothing measured.
-            if "page_granularity_only" in record:
+            # Keyed on the recorded basis, not on key presence: `witness_coverage`
+            # emits `page_granularity_only` on its legacy path too, where
+            # `under_witnessed` is decided from the COMPLETED class (which also
+            # holds `excluded`). Rederiving from reading outcomes there printed a
+            # number no rule in this file produced -- {read, excluded, dead}
+            # against a floor of 3 flags at 2 and reported 1 -- the same class of
+            # defect this branch exists to repair.
+            if (
+                record.get("granularity_basis", LEGACY_GRANULARITY_BASIS)
+                != LEGACY_GRANULARITY_BASIS
+            ):
                 reading_chairs = sum(
                     record["by_outcome"].get(outcome, 0) for outcome in WITNESS_READING_OUTCOMES
                 )

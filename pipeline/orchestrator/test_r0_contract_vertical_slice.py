@@ -448,24 +448,31 @@ def test_act_attachment_span_reflects_this_chairs_own_delivered_text_not_the_act
     ]
     assert attachment_records, f"scenario {scenario!r}: no act-attachment records found"
     checked_attached_entries = 0
+    checked_page_witness_entries = 0
     for record in attachment_records:
         for entry in record["payload"]["attachments"]:
             if not entry.get("attached"):
                 continue
-            characters = entry.get("content_health", {}).get("characters")
-            if not isinstance(characters, int):
-                continue
-            span = entry["span"]
             if entry.get("page_witness"):
                 # A page witness's span is a slice of its PAGE reading, so it is
                 # not this act's own character count -- but it must still be a
                 # well-formed, non-empty range that agrees with the computed
                 # alignment it is derived from, never a wider hull carried over
-                # from another act's text (F-X2).
+                # from another act's text (F-X2). Checked BEFORE the
+                # character-count guard below: a page-witness entry without an
+                # integer count would otherwise reach no assertion at all, and
+                # this test would stop guarding the exact regression its
+                # docstring names.
+                span = entry["span"]
                 assert span["end"] > span["start"], entry
                 assert entry["alignment"]["status"] == "aligned"
                 assert span == entry["alignment"]["witness_span"], entry
+                checked_page_witness_entries += 1
                 continue
+            characters = entry.get("content_health", {}).get("characters")
+            if not isinstance(characters, int):
+                continue
+            span = entry["span"]
             assert span == {"start": 0, "end": characters}, (
                 f"scenario {scenario!r}: attachment entry for chair {entry.get('chair')!r} on "
                 f"{record['subject_id']!r} has span {span!r}, but its own content_health reports "
@@ -476,6 +483,73 @@ def test_act_attachment_span_reflects_this_chairs_own_delivered_text_not_the_act
     assert checked_attached_entries, (
         f"scenario {scenario!r}: no attached entry had a character count to check"
     )
+    assert checked_page_witness_entries, (
+        f"scenario {scenario!r}: no attached page-witness entry was checked, so this test "
+        "proved nothing about the act-anchored span it exists to guard"
+    )
+
+
+def test_a_non_reading_page_attempt_is_an_explicit_unaligned_reason_never_an_alignment(
+    run_tree, fixture
+):
+    """A page witness's attempt that produced no reading must short-circuit to an
+    explicit `unaligned` reason naming that outcome -- never run the page
+    alignment. Before this fix, a failed attempt on a page-witness chair could
+    reach the alignment path, come back `aligned` (the page text is other acts'
+    successful readings), and publish `attached: False` beside an aligned
+    alignment -- the exact shape `pipeline/4_perlector/run.py` and
+    `pipeline/5_recensor/run.py::act_attachment_facts` both refuse. One failed
+    witness attempt then stopped the act for a reason that has nothing to do
+    with the ink.
+
+    In `review`, attestator_3 (a page chair) has a declared `witness_failure`
+    on act a2, so this pins the produced record; in `happy` it asserts the
+    invariant over every entry (no unattached page witness carries anything but
+    an explicit unaligned result).
+    """
+    scenario, tree = run_tree
+    attachment_records = [
+        record for record in _attestatores_artifacts(tree) if record.get("kind") == "act-attachment"
+    ]
+    for record in attachment_records:
+        for entry in record["payload"]["attachments"]:
+            if entry.get("page_witness") and not entry.get("attached"):
+                assert entry["alignment"]["status"] == "unaligned", entry
+    if scenario == "review":
+        a2_id = act_identity(fixture, act_by_key(fixture, "a2"))
+        record = next(record for record in attachment_records if record["subject_id"] == a2_id)
+        entry = next(
+            entry for entry in record["payload"]["attachments"] if entry["chair"] == "attestator_3"
+        )
+        assert entry["attached"] is False
+        assert entry["alignment"] == {
+            "status": "unaligned",
+            "reason": "non-reading-page-attempt-failed",
+        }, entry
+
+
+def test_an_attached_page_witness_alignment_names_its_anchor_basis(run_tree):
+    """Every aligned page-witness alignment states what it aligned against.
+
+    `anchor_basis` is the field that keeps a trivial zero-length attach on a
+    page with no located anchor line (`no-act-anchor`) distinguishable from an
+    alignment computed through Chandra's anchor (`act-anchor`). Without it, a
+    page whose anchor pass failed could satisfy the witness floor and reach
+    confirmed-blank while looking identical to a proved blank sheet. Both
+    shipped scenarios carry located anchor lines for both acts, so every
+    aligned record here must say `act-anchor`.
+    """
+    scenario, tree = run_tree
+    checked = 0
+    for record in _attestatores_artifacts(tree):
+        if record.get("kind") != "act-attachment":
+            continue
+        for entry in record["payload"]["attachments"]:
+            alignment = entry.get("alignment")
+            if isinstance(alignment, dict) and alignment.get("status") == "aligned":
+                assert alignment["anchor_basis"] == "act-anchor", entry
+                checked += 1
+    assert checked, f"scenario {scenario!r}: no aligned page-witness alignment was checked"
 
 
 def test_perlector_consumes_the_page_testimonium_named_by_an_act_attachment(tmp_path):
@@ -699,7 +773,7 @@ def test_the_witness_floor_is_not_counted_from_a_superseded_attachment(tmp_path)
     """F-O1 (REOPENED on R4's audit): the floor may not be counted from an
     attachment the reread outdated -- for attestator_3, a page witness, exactly
     as for an act-scoped chair. `pipeline/5_recensor/run.py::
-    chair_content_health` gives the Recensor the same per-chair staleness
+    chair_current_attempts` gives the Recensor the same per-chair staleness
     signal `act_attachment_view` uses, since R4 removed this file's own
     outcome-based version of the check for every page witness rather than only
     exempting the narrower comparison that alignment legitimately disagrees

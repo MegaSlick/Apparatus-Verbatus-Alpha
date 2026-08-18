@@ -94,25 +94,18 @@ def artifacts_for(context, stage: str, kind: str, subject: str) -> list[dict]:
     return records
 
 
-def chair_outcomes(context, act_id: str) -> dict[str, str]:
-    """The current outcome per chair: the latest attempt, with its honest status.
+def chair_current_attempts(context, act_id: str) -> dict[str, dict]:
+    """Each chair's current attempt facts, from ONE latest-attempt collapse.
 
     Derived, never stored as a pointer. A failed attempt 2 over a successful
     attempt 1 therefore reads as `failed`, with attempt 1 intact as history.
     `latest_per_chair` is the one shared derivation of "current" per chair,
     also used by `pipeline/4_perlector/run.py::testimonia_of` over the same
-    upstream artifacts, so the two consumers cannot drift on what "current" means.
-    """
-    records = artifacts_for(context, ATTESTATORES, "testimonium", act_id)
-    return {
-        record["payload"]["chair"]: record["outcome"]
-        for record in latest_per_chair(records, f"testimonium for {act_id}")
-    }
-
-
-def chair_content_health(context, act_id: str) -> dict[str, dict | None]:
-    """The current `content_health` per chair, from the same latest-attempt
-    collapse `chair_outcomes` uses over the same artifacts.
+    upstream artifacts, so the consumers cannot drift on what "current" means.
+    `outcome` and `content_health` come out of the same collapse for the same
+    reason: two functions that each re-derived "current" independently could
+    drift apart, and the staleness check below would then compare two
+    different ideas of the current attempt.
 
     A page witness's act-attachment `content_health` is recorded from this
     exact per-(act, chair) attempt stream (`pipeline/3_attestatores/run.py`'s
@@ -122,8 +115,18 @@ def chair_content_health(context, act_id: str) -> dict[str, dict | None]:
     """
     records = artifacts_for(context, ATTESTATORES, "testimonium", act_id)
     return {
-        record["payload"]["chair"]: record["payload"].get("content_health")
+        record["payload"]["chair"]: {
+            "outcome": record["outcome"],
+            "content_health": record["payload"].get("content_health"),
+        }
         for record in latest_per_chair(records, f"testimonium for {act_id}")
+    }
+
+
+def chair_outcomes(context, act_id: str) -> dict[str, str]:
+    """The current outcome per chair, from `chair_current_attempts`'s collapse."""
+    return {
+        chair: fact["outcome"] for chair, fact in chair_current_attempts(context, act_id).items()
     }
 
 
@@ -241,7 +244,8 @@ def validate_chair_coverage(context, act_id: str, floor: int) -> dict[str, objec
     is an easy thing for a later retry to mistake for history, so the whole
     witness denominator is validated before any of it is published.
     """
-    outcomes = chair_outcomes(context, act_id)
+    current_attempts = chair_current_attempts(context, act_id)
+    outcomes = {chair: fact["outcome"] for chair, fact in current_attempts.items()}
     sealed = set(context.witness_chairs)
     missing = sealed - set(outcomes)
     if missing:
@@ -297,14 +301,14 @@ def validate_chair_coverage(context, act_id: str, floor: int) -> dict[str, objec
     # NOT scoped to act-scoped chairs, unlike the outcome check just above: a
     # page witness's attachment `content_health` is recorded from this exact
     # per-(act, chair) attempt stream, not from page-level text, so it is a
-    # valid staleness signal for every chair (`chair_content_health`'s
+    # valid staleness signal for every chair (`chair_current_attempts`'s
     # docstring; mirrors `pipeline/4_perlector/run.py::act_attachment_view`'s
     # identical, symmetric check -- REOPENED F-O1).
-    current_health = chair_content_health(context, act_id)
     stale_health = sorted(
         chair
         for chair, fact in attachments.items()
-        if fact["content_health"] != current_health.get(chair)
+        if fact["content_health"]
+        != (current_attempts[chair]["content_health"] if chair in current_attempts else None)
     )
     if stale_health:
         raise FatalAccounting(

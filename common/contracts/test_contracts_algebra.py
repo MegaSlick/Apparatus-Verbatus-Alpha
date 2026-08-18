@@ -572,3 +572,31 @@ def test_the_under_witnessed_count_is_the_attached_reads_never_the_wider_class()
         act_pages={"act_a": [1]},
     )
     assert aggregate["reasons"] == ["act act_a is under-witnessed (2 of a floor of 3)"]
+
+
+def test_the_legacy_under_witnessed_message_prints_the_count_that_raised_the_flag():
+    """On the legacy path (`attachments=None`) `under_witnessed` is decided from
+    the COMPLETED class, which also holds `excluded` -- and the record still
+    carries `page_granularity_only`, so branching on that key's presence
+    rederived the message count from reading outcomes instead: {read, excluded,
+    dead} against a floor of 3 flagged at 2 and reported 1, a number no rule in
+    `witness_coverage` produced. The branch is keyed on the recorded
+    `granularity_basis`, so the message quotes the same arithmetic that decided
+    the flag.
+    """
+    coverage = witness_coverage(
+        {"s1": "read", "s2": "excluded", "s3": "dead"},
+        3,
+    )
+    assert coverage["granularity_basis"] == outcomes.LEGACY_GRANULARITY_BASIS
+    assert coverage["under_witnessed"] is True, "decided from the class count of 2"
+    assert coverage["by_class"]["completed"] == 2
+    assert coverage["page_granularity_only"] == 0, "the legacy record still carries the key"
+
+    aggregate = run_aggregate(
+        {"act_a": ArmariumCategory.DELIVERED},
+        {"act_a": coverage},
+        {1: {"outcome": "sealed"}},
+        act_pages={"act_a": [1]},
+    )
+    assert aggregate["reasons"] == ["act act_a is under-witnessed (2 of a floor of 3)"]

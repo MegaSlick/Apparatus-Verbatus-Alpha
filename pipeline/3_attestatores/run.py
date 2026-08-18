@@ -1449,12 +1449,29 @@ def publish_page_testimonia_and_attachments(
                     continue
                 start = normalized_anchor.find(source, search_from)
                 act = next((item for item in page_acts if item["act_key"] == line["act_key"]), None)
-                if start >= 0 and act is not None:
-                    anchor_ranges[(page_ordinal, act["act_id"])] = {
-                        "start": start,
-                        "end": start + len(source),
-                        "bbox": {key: line.get(key) for key in ("x", "y", "w", "h")},
-                    }
+                if start >= 0:
+                    if act is not None:
+                        bbox = {key: line.get(key) for key in ("x", "y", "w", "h")}
+                        if any(value is None for value in bbox.values()):
+                            # A null coordinate is a default standing in for
+                            # geometry nobody measured; published as this act's
+                            # line_geometry it would be indistinguishable from a
+                            # real rectangle (GOVERNANCE 2/10).
+                            raise SchemaRefusal(
+                                f"the Chandra anchor line for act {line['act_key']} on page "
+                                f"{page_ordinal} declares an incomplete rectangle; a null "
+                                "coordinate cannot be published as measured line geometry"
+                            )
+                        anchor_ranges[(page_ordinal, act["act_id"])] = {
+                            "start": start,
+                            "end": start + len(source),
+                            "bbox": bbox,
+                        }
+                    # A located line advances the cursor whether or not it maps
+                    # to a proposed act on this page -- an anchor line for an
+                    # unproposed act still occupies its span of the page, and
+                    # leaving the cursor behind it would let the NEXT act's
+                    # formulaic opening resolve into this line's text.
                     search_from = start + len(source)
 
     for act in acts:
@@ -1466,7 +1483,20 @@ def publish_page_testimonia_and_attachments(
             attached = act["outcome"] == "proposed" and attempt.outcome in WITNESS_READING_OUTCOMES
             if page_witness:
                 act_anchor = anchor_ranges.get((act["page_ordinal"], act["act_id"]))
-                if attempt.outcome == "genuinely-empty":
+                if attempt.outcome not in WITNESS_READING_OUTCOMES:
+                    # There is no reading to place. Running the page alignment
+                    # here would manufacture an `aligned` status for text this
+                    # chair never delivered on this act, and the Perlector
+                    # refuses exactly that shape (`attached: False` beside an
+                    # aligned alignment) -- one failed attempt would stop the
+                    # act for a reason that has nothing to do with the ink.
+                    # The attempt's own outcome is the explicit unaligned
+                    # reason instead.
+                    alignment = {
+                        "status": "unaligned",
+                        "reason": f"non-reading-page-attempt-{attempt.outcome}",
+                    }
+                elif attempt.outcome == "genuinely-empty":
                     # There is no witness text to place, which is a different fact
                     # from text that was placed and searched for in vain: bounded
                     # alignment can never succeed against an empty string (an empty
@@ -1479,6 +1509,13 @@ def publish_page_testimonia_and_attachments(
                     # does for the same outcome.
                     alignment = {
                         "status": "aligned",
+                        # A trivial attach with no located anchor line says so.
+                        # Without this, a page whose Chandra anchor was missing
+                        # or malformed could satisfy the witness floor and reach
+                        # confirmed-blank while looking identical to a proved
+                        # blank sheet -- the Recensor and the export could not
+                        # see that nothing was ever aligned (GOVERNANCE 2/10).
+                        "anchor_basis": "act-anchor" if act_anchor is not None else "no-act-anchor",
                         "anchor_span": (
                             {"start": act_anchor["start"], "end": act_anchor["start"]}
                             if act_anchor is not None
@@ -1502,8 +1539,14 @@ def publish_page_testimonia_and_attachments(
                 else:
                     page_text = page_texts.get((act["page_ordinal"], chair))
                     anchor_text = anchor_texts.get(act["page_ordinal"])
-                    if page_text is None or anchor_text is None or act_anchor is None:
+                    if page_text is None or anchor_text is None:
                         result = {"status": "unaligned", "reason": "missing-chandra-page-anchor"}
+                    elif act_anchor is None:
+                        # The page anchor exists; this act's line was not located
+                        # in it (or the fixture declared none for it). Saying
+                        # "missing-chandra-page-anchor" here sent an operator
+                        # looking for an anchor file that exists.
+                        result = {"status": "unaligned", "reason": "act-anchor-line-not-located"}
                     else:
                         # One alignment per (page, chair), not per (act, chair):
                         # the inputs do not depend on the act, and the design
@@ -1547,6 +1590,7 @@ def publish_page_testimonia_and_attachments(
                             witness_end = max(end for _, end in clipped)
                             alignment = {
                                 "status": "aligned",
+                                "anchor_basis": "act-anchor",
                                 "anchor_span": {key: act_anchor[key] for key in ("start", "end")},
                                 "witness_span": {"start": witness_start, "end": witness_end},
                                 "line_geometry": [

@@ -164,18 +164,31 @@ def test_an_all_markup_input_normalizes_to_a_genuinely_zero_width_offset_map():
     reason="the wall-clock backstop is a SIGALRM mechanism; where it cannot exist the "
     "comparison runs unbounded and this test would hang for minutes to say nothing",
 )
-def test_alignment_deadline_reports_unaligned_honestly_never_a_partial_map():
+def test_alignment_deadline_reports_unaligned_honestly_never_a_partial_map(monkeypatch):
     """The timeout path must say `unaligned` -- never return a spans list that
-    stopped partway through and pretend it was complete (GOVERNANCE 2/10)."""
-    witness = "alpha beta gamma " * 400
-    anchor = "alpha beta gamna " * 400
+    stopped partway through and pretend it was complete (GOVERNANCE 2/10).
+
+    The deadline is forced deterministically: a matcher that sleeps past the
+    timeout stands in for `SequenceMatcher`, so the alarm always fires. Racing
+    real inputs against the wall clock made the test's verdict a machine claim
+    -- a fast runner finishes the comparison and goes red for no code reason,
+    and a loaded runner is what makes it pass, so a genuine loss of the
+    deadline would not reliably show up either.
+    """
+
+    class _StuckMatcher:
+        def __init__(self, a="", b="", autojunk=False):
+            pass
+
+        def get_matching_blocks(self):
+            time.sleep(30)
+            raise AssertionError("the deadline never fired")
+
+    monkeypatch.setattr(alignment_module, "SequenceMatcher", _StuckMatcher)
     limits = AlignmentLimits(max_characters=100_000, max_character_pairs=10**9, timeout_seconds=1)
 
-    started = time.monotonic()
-    result = align_to_anchor(witness, anchor, limits)
-    elapsed = time.monotonic() - started
+    result = align_to_anchor("alpha beta gamma", "alpha beta gamna", limits)
 
-    assert elapsed < 10, "the wall-clock bound must stop the alignment"
     assert result["status"] == "unaligned"
     assert result["reason"] == "timeout"
     assert "spans" not in result, "a timed-out alignment must never carry a partial spans list"

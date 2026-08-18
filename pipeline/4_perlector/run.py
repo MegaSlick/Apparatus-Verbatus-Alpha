@@ -425,6 +425,7 @@ def act_attachment_view(context, act: dict[str, Any], testimonia: list[dict]) ->
                     or set(alignment)
                     != {
                         "status",
+                        "anchor_basis",
                         "anchor_span",
                         "witness_span",
                         "line_geometry",

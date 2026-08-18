@@ -215,6 +215,14 @@ def test_a_page_witness_comparison_view_lifts_the_capability_exemption():
     ]
     rows = dissent.dissent_against("alpha beta gamma", testimonia)
     assert rows[0]["compared"] is True
+    # The point of the exemption lift: the act-anchored `comparison_reported`
+    # view is what gets diffed. Diffing the raw report ("alpha [beta|beeta]
+    # gamma") would leave `compared` True and only these lines red -- and would
+    # record every act with alternative-reading markup as dissenting when the
+    # witness in fact agreed.
+    assert rows[0]["departed"] is False, rows[0]
+    assert rows[0]["departures"] == []
+    assert "reason" not in rows[0]
 
 
 def test_a_runaway_witness_report_is_unknown_rather_than_aligned_for_twenty_minutes():

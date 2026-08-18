@@ -402,10 +402,18 @@ FIXTURE = "synthetic-two-page-v0"
 # error, not different recorded bytes. Passing `<runs-root>/r` instead of
 # `<runs-root>` removes the `r/` prefix from every relative inventory key and
 # reproduces the two alleged Linux digests exactly while every per-file digest
-# remains identical. `semantic_snapshot` now refuses that ambiguous call shape;
-# the host-measured literals below are unchanged.
-HAPPY_RUN_TREE_DIGEST = "6580affa21ee8968491be8006c058a2028e5c2f6275b28bcdf6e27ff6b29b52a"
-REVIEW_RUN_TREE_DIGEST = "b77930e22dedaf1d2af147f9c8482ca91cc3a95f34bf92c4b030fc8c972a8fae"
+# remains identical. `semantic_snapshot` now refuses that ambiguous call shape,
+# and no platform-local value was ever substituted for a host-measured one.
+#
+# The literals below are re-measured on this change, and each re-measurement
+# names what moved them. A mismatch here is evidence about the recorded
+# artifacts, never about the platform. R4's PR loop moved them twice over the
+# wave-time values: every aligned page-witness alignment now carries
+# `anchor_basis`, and a non-reading page attempt (review's attestator_3 on a2)
+# now records its explicit `non-reading-page-attempt-failed` reason instead of
+# running the page alignment. File counts stayed 60/65.
+HAPPY_RUN_TREE_DIGEST = "f0db48b213bf725f6da497228b49871ff390f55c09d2105aefb6f7c0eb8cd6cb"
+REVIEW_RUN_TREE_DIGEST = "3652502dd5bd55f30a83116b8591348eb6d5852f2e5ff305b8af1236e8e5e394"
 
 
 def orchestrate(
