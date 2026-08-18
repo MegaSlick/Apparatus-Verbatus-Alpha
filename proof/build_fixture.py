@@ -32,6 +32,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from common.alignment import markup_text_view  # noqa: E402
 from common.imaging import crop_png  # noqa: E402
 from proof.synthetic_pages import ALL_PAGES, FIXTURE_ID, render_page  # noqa: E402
 
@@ -113,6 +114,23 @@ TESTIMONY = {
         "attestator_3": "SYNTHETIC ACT TWO delta epsiIon zeta eta",
     },
 }
+
+# R4's fixture-only Chandra view.  The HTML is deliberately retained as markup
+# so the alignment path proves stripping and offset accounting before mapping
+# the named anchor lines into their declared geometry.
+#
+# The space before the first `</p>` is load-bearing: tag stripping leaves it as
+# the only separator between the two act texts in the page view, and it is what
+# keeps act a1's and act a2's aligned page spans disjoint (F-X2 -- the
+# vertical-slice suite refuses overlapping page-witness spans). Do not tidy it
+# away.
+CHANDRA_ANCHORS = (
+    {
+        "page_ordinal": 1,
+        "html": "<p>SYNTHETIC ACT ONE alpha beta gamma </p><p>SYNTHETIC ACT TWO delta epsilon zeta eta</p>",
+        "lines": ("a1", "a2"),
+    },
+)
 
 # The first two rows are the pair spec 07's `format_capabilities` exists for: "a
 # witness that cannot say 'unsure' must not be read as confident". Their own
@@ -369,6 +387,56 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
             f"h = {bounds['h']}",
             f"text = {toml_string(act['text'])}",
         ]
+
+    for anchor in CHANDRA_ANCHORS:
+        # The generator proves what a comment alone cannot hold: each declared
+        # act text occurs exactly ONCE in the stripped page view, so the
+        # in-order anchor-line search resolves unambiguously and no act's
+        # aligned span can absorb a duplicate of another's text (F-X2). An
+        # edit that breaks this would otherwise surface three stages away as
+        # span arithmetic rather than here, at the text that changed.
+        stripped_view = markup_text_view(anchor["html"])["text"]
+        previous_end = -1
+        for act_key in anchor["lines"]:
+            act_text = next(row for row in ACTS if row["key"] == act_key)["text"]
+            if stripped_view.count(act_text) != 1:
+                raise ValueError(
+                    f"the chandra_anchor page view does not carry act {act_key!r} exactly "
+                    "once; the in-order anchor-line search cannot resolve it unambiguously"
+                )
+            start = stripped_view.find(act_text)
+            # Strict separation, not merely order: the Attestatores page join
+            # keeps one separator between act readings, so an anchor whose act
+            # texts became adjacent would shift every later anchor offset by
+            # one against the witness view -- and that surfaces three stages
+            # away as span arithmetic, not here at the character that changed.
+            if start <= previous_end:
+                raise ValueError(
+                    f"the chandra_anchor page view does not separate act {act_key!r} from "
+                    "the act before it; the separator between the act texts was changed"
+                )
+            previous_end = start + len(act_text)
+        lines += [
+            "",
+            "[[chandra_anchor]]",
+            f"page_ordinal = {anchor['page_ordinal']}",
+            f"html = {toml_string(anchor['html'])}",
+        ]
+        anchor_lines = []
+        for act_key in anchor["lines"]:
+            act = next(row for row in ACTS if row["key"] == act_key)
+            bounds = act_descriptor(act["page_ordinal"], act["proposal_ordinal"])["bounds"]
+            anchor_lines.append(
+                {
+                    "act_key": act_key,
+                    "text": act["text"],
+                    "x": bounds["x"],
+                    "y": bounds["y"],
+                    "w": bounds["w"],
+                    "h": bounds["h"],
+                }
+            )
+        lines.append("lines = " + toml_value(anchor_lines))
 
     for prior in PRIOR_READINGS:
         lines += [

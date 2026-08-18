@@ -33,10 +33,12 @@ from wholesale disagreement.
 from __future__ import annotations
 
 import signal
+import threading
 import unicodedata
 from difflib import SequenceMatcher
 from typing import Any, Final
 
+from common.alignment import markup_text_view
 from common.contracts.errors import SchemaRefusal
 from common.stage import WITNESS_READING_OUTCOMES
 
@@ -81,7 +83,22 @@ def _aligned_within_deadline(reading: str, reported: str, *, seconds: int) -> li
     touched either way -- the alignment simply does not finish, exactly as
     the pair-count bound already declares of itself.
     """
-    if not hasattr(signal, "SIGALRM"):
+    # The same ownership rule `common/alignment.py::align_to_anchor` carries
+    # (R4 audit, F-L3), for the same reason and in the same process: `SIGALRM`
+    # and `ITIMER_REAL` are process-global, so arming unconditionally replaced
+    # a caller's own real-time timer and then cancelled it in `finally` --
+    # destroying a deadline this module never owned. From a non-main thread
+    # `signal.signal` raises outright, so this was also the one of the two
+    # bounded comparisons in the pipeline that could not run off the main
+    # thread at all. Arm only where nothing else owns the timer; otherwise run
+    # unbounded under the caller's deadline, which is the honest degradation
+    # the missing-SIGALRM branch below already takes. Found in audit; F-X4.
+    if (
+        not hasattr(signal, "SIGALRM")
+        or not hasattr(signal, "ITIMER_REAL")
+        or threading.current_thread() is not threading.main_thread()
+        or signal.getitimer(signal.ITIMER_REAL) != (0.0, 0.0)
+    ):
         return departures(reading, reported)
     previous_handler = signal.signal(signal.SIGALRM, _deadline_handler)
     signal.alarm(seconds)
@@ -188,7 +205,27 @@ def is_comparable(record: dict[str, Any]) -> bool:
     """
     payload = record.get("payload", {})
     capabilities = payload.get("format_capabilities", {})
-    return not bool(capabilities.get("can_express_uncertainty", False))
+    if not bool(capabilities.get("can_express_uncertainty", False)):
+        return True
+    # A format that can embed uncertainty markup inline (`[UNCERTAIN]`,
+    # `[CROSSED_OUT]`) is unsafe to diff against its raw report -- the markup
+    # itself would read as disagreement. That is still true here: this chair
+    # stays unmeasurable UNLESS an act-anchored, markup-stripped comparison
+    # view already exists for it (R4's alignment -- `comparison_reported`,
+    # never the raw `reported`). Most capability-declared chairs never get
+    # one and stay honestly unknown; a page witness that does gets to rejoin
+    # the instrument through the safe view rather than by declaration alone.
+    #
+    # Said exactly: `markup_text_view` removes TAG markup (`<...>`) and
+    # decodes entities. A notation that is not tag-shaped -- DAI's bracketed
+    # `[UNCERTAIN]` most plainly -- survives it, so the view does not make
+    # every capability-declared format safe. It happens to line up today
+    # because the tag-emitting chairs (Chandra HTML, Churro XML) are the page
+    # witnesses that get views, and the bracket-emitting chair is act-scoped
+    # and gets none. If a bracket-notation chair ever becomes page-scoped, the
+    # view alone is not the safety this exemption is claiming. Named rather
+    # than assumed away (GOVERNANCE 10). R4 audit, F-X3.
+    return isinstance(payload.get("comparison_reported"), str)
 
 
 def dissent_against(reading: str, testimonia: list[dict]) -> list[dict]:
@@ -209,7 +246,7 @@ def dissent_against(reading: str, testimonia: list[dict]) -> list[dict]:
         if record["outcome"] not in WITNESS_READING_OUTCOMES:
             rows.append({"chair": chair, "compared": False, "reason": record["outcome"]})
             continue
-        reported = record["payload"].get("reported")
+        reported = record["payload"].get("comparison_reported", record["payload"].get("reported"))
         if not isinstance(reported, str):
             # Deliberately BEFORE the page-witness branch (F-P2, pinned by the
             # acceptance suite's structured-witness scenario): a structured
@@ -231,12 +268,24 @@ def dissent_against(reading: str, testimonia: list[dict]) -> list[dict]:
                 }
             )
             continue
-        if record["payload"].get("page_witness") is True:
+        if (
+            record["payload"].get("page_witness") is True
+            and "comparison_reported" not in record["payload"]
+        ):
             rows.append(
                 {
                     "chair": chair,
                     "compared": "unknown",
-                    "reason": "page witness has no act-anchored comparison view before R4 alignment",
+                    # Since R4 an attached page witness always carries a
+                    # comparison view, so absence means exactly one thing: the
+                    # chair's recorded alignment is explicitly unaligned (the
+                    # act-attachment names its reason). Not "before R4" -- that
+                    # message outlived the build it described.
+                    "reason": (
+                        "page witness is not attached to this act; its recorded alignment "
+                        "is explicitly unaligned, so there is no act-anchored comparison "
+                        "view to diff"
+                    ),
                 }
             )
             continue
@@ -270,7 +319,8 @@ def dissent_against(reading: str, testimonia: list[dict]) -> list[dict]:
                 }
             )
             continue
-        witness_view = comparison_view(reported)
+        markup_view = markup_text_view(reported)
+        witness_view = comparison_view(markup_view["text"])
         rows.append(
             {
                 "chair": chair,
@@ -285,7 +335,21 @@ def dissent_against(reading: str, testimonia: list[dict]) -> list[dict]:
                 "departures": spans,
                 "comparison_loss": {
                     "reading_dropped_characters": reading_view["dropped_characters"],
-                    "witness_dropped_characters": witness_view["dropped_characters"],
+                    # Removal only, never re-encoding -- the two halves of this
+                    # account must answer the same question, and the reading
+                    # half is `comparison_view`, whose docstring settles it:
+                    # "NFC discards nothing -- it re-encodes a character, it
+                    # does not remove one", and charging composition to the loss
+                    # account "would put a wrong number on every diacritic-heavy
+                    # act in the corpus this project exists to read". Summing
+                    # every `markup_text_view` loss field charged exactly that,
+                    # on the witness side alone, so a witness reporting
+                    # decomposed French was recorded as having lost a character
+                    # per accent while the identically-composed reading was not.
+                    # Markup and collapsed whitespace ARE removals and stay.
+                    "witness_dropped_characters": witness_view["dropped_characters"]
+                    + markup_view["loss"]["markup_characters"]
+                    + markup_view["loss"]["whitespace_characters"],
                 },
             }
         )

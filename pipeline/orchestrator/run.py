@@ -39,6 +39,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from common.alignment import DEFAULT_ALIGNMENT_CONFIG_PATH  # noqa: E402
 from common.armarium_formats import DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH  # noqa: E402
 from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.identities import artifact_id  # noqa: E402
@@ -110,6 +111,8 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
         str(args.designator_padding_config),
         "--designator-geometry-config",
         str(args.designator_geometry_config),
+        "--alignment-config",
+        str(args.alignment_config),
         "--formats-config",
         str(args.formats_config),
         "--recovery-config",
@@ -237,6 +240,11 @@ def main() -> int:
         "--designator-geometry-config",
         default=str(DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH),
         help="the sealed Surya/YOLO geometry and crop-policy declaration for this run",
+    )
+    parser.add_argument(
+        "--alignment-config",
+        default=str(DEFAULT_ALIGNMENT_CONFIG_PATH),
+        help="the sealed limits for page-witness alignment",
     )
     parser.add_argument(
         "--formats-config",

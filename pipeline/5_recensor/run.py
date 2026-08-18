@@ -94,19 +94,39 @@ def artifacts_for(context, stage: str, kind: str, subject: str) -> list[dict]:
     return records
 
 
-def chair_outcomes(context, act_id: str) -> dict[str, str]:
-    """The current outcome per chair: the latest attempt, with its honest status.
+def chair_current_attempts(context, act_id: str) -> dict[str, dict]:
+    """Each chair's current attempt facts, from ONE latest-attempt collapse.
 
     Derived, never stored as a pointer. A failed attempt 2 over a successful
     attempt 1 therefore reads as `failed`, with attempt 1 intact as history.
     `latest_per_chair` is the one shared derivation of "current" per chair,
     also used by `pipeline/4_perlector/run.py::testimonia_of` over the same
-    upstream artifacts, so the two consumers cannot drift on what "current" means.
+    upstream artifacts, so the consumers cannot drift on what "current" means.
+    `outcome` and `content_health` come out of the same collapse for the same
+    reason: two functions that each re-derived "current" independently could
+    drift apart, and the staleness check below would then compare two
+    different ideas of the current attempt.
+
+    A page witness's act-attachment `content_health` is recorded from this
+    exact per-(act, chair) attempt stream (`pipeline/3_attestatores/run.py`'s
+    `attempts_by_pair`), not from its page-level Testimonium -- a targeted
+    reread appends to this stream whether or not the chair is page-scoped, so
+    this is a staleness signal for every chair alike (REOPENED F-O1).
     """
     records = artifacts_for(context, ATTESTATORES, "testimonium", act_id)
     return {
-        record["payload"]["chair"]: record["outcome"]
+        record["payload"]["chair"]: {
+            "outcome": record["outcome"],
+            "content_health": record["payload"].get("content_health"),
+        }
         for record in latest_per_chair(records, f"testimonium for {act_id}")
+    }
+
+
+def chair_outcomes(context, act_id: str) -> dict[str, str]:
+    """The current outcome per chair, from `chair_current_attempts`'s collapse."""
+    return {
+        chair: fact["outcome"] for chair, fact in chair_current_attempts(context, act_id).items()
     }
 
 
@@ -140,16 +160,87 @@ def act_attachment_facts(context, act_id: str) -> dict[str, dict]:
         if health is not None and not isinstance(health, dict):
             raise FatalAccounting(f"act {act_id} has malformed derived act-attachment entry")
         truncated = health.get("truncated") if isinstance(health, dict) else None
+        # The same malformed-versus-absent rule `attached` and `content_health`
+        # get above: any non-boolean flag read as "act-scoped" would skip the
+        # alignment-consistency check and halt later on the outcome check with
+        # a message blaming the Testimonium, when the real fault is this field.
+        page_witness = entry.get("page_witness")
+        if not isinstance(page_witness, bool):
+            raise FatalAccounting(
+                f"act {act_id} attachment entry for chair {chair!r} carries no boolean "
+                "page_witness flag; its scope decides which consistency check applies"
+            )
+        if page_witness:
+            alignment = entry.get("alignment")
+            if not isinstance(alignment, dict) or alignment.get("status") not in {
+                "aligned",
+                "unaligned",
+            }:
+                raise FatalAccounting(
+                    f"act {act_id} page witness {chair!r} has no computed alignment fact"
+                )
+            if entry["attached"] != (alignment["status"] == "aligned"):
+                raise FatalAccounting(
+                    f"act {act_id} page witness {chair!r} contradicts its computed alignment"
+                )
+            # The documented closed shapes (pipeline/3_attestatores/HANDOFF.md),
+            # enforced where the floor is counted, not only at the Perlector: an
+            # attached record missing its geometry -- or its anchor_basis, which
+            # the blank gate below reads -- must not count as valid coverage,
+            # and a reason-free unaligned record leaves an operator with no
+            # statement of why comparison failed.
+            if alignment["status"] == "aligned":
+                if set(alignment) != {
+                    "status",
+                    "anchor_basis",
+                    "anchor_span",
+                    "witness_span",
+                    "line_geometry",
+                    "loss",
+                    "offset_maps",
+                } or alignment["anchor_basis"] not in {
+                    "act-anchor",
+                    "no-page-anchor",
+                    "act-line-not-located",
+                }:
+                    raise FatalAccounting(
+                        f"act {act_id} page witness {chair!r} carries a malformed aligned "
+                        "alignment record; the witness floor may not be counted from "
+                        "geometry evidence that is missing or unrecognised"
+                    )
+            elif set(alignment) != {"status", "reason"} or not (
+                isinstance(alignment["reason"], str) and alignment["reason"].strip()
+            ):
+                raise FatalAccounting(
+                    f"act {act_id} page witness {chair!r} carries an unaligned record with "
+                    "no usable reason; an unexplained failure is a silent loss"
+                )
         facts[chair] = {
             "attached": entry["attached"],
             "truncated": truncated,
             "health_unrecorded": truncated is None,
+            "page_witness": page_witness,
+            "content_health": health,
+            # None for act-scoped chairs and unaligned page witnesses; the
+            # producer's disclosure of what an aligned page witness aligned
+            # against ("act-anchor" | "no-page-anchor" | "act-line-not-located").
+            # `blank_corroboration`
+            # is the consumer that must see it.
+            "anchor_basis": (
+                entry["alignment"].get("anchor_basis")
+                if page_witness and entry["attached"]
+                else None
+            ),
         }
     return facts
 
 
 def blank_corroboration(
-    coverage: dict, outcomes: dict[str, str], *, witness_uncovered: bool = False
+    coverage: dict,
+    outcomes: dict[str, str],
+    attachments: dict[str, dict],
+    *,
+    witness_uncovered: bool = False,
 ) -> list[str] | None:
     """The corroborating chairs if every witness that read this act's ink agrees
     nothing was there, or `None` if the evidence does not support that.
@@ -185,6 +276,18 @@ def blank_corroboration(
     can therefore be `False` while the actual reading evidence is one chair
     short of the floor; trusting it here would let an excluded chair stand
     in for a witness that never looked.
+
+    `attachments` is `act_attachment_facts`'s per-chair record. A page witness
+    whose trivial attach discloses `anchor_basis: "act-line-not-located"`
+    still counts toward the floor (the chair did complete, and that is
+    disclosed rather than hidden), but it may not corroborate a TERMINAL
+    blank: the page's Chandra anchor exists yet locates no line for this act,
+    so the geometry does not reconcile, and confirmed-blank is a proved
+    absence -- the act holds for a human instead (GOVERNANCE 2/9; GOALS 1:
+    the unproved direction costs a review, never an act). `no-page-anchor` is
+    the different fact of a page with no anchor at all -- an ink-free or
+    fallback page has nothing for Chandra to anchor, and refusing blank there
+    would make the intended blank-page path unreachable.
     """
     if witness_uncovered or coverage["unresolved_chairs"]:
         return None
@@ -195,6 +298,17 @@ def blank_corroboration(
         len(completed) < coverage["floor"]
         or not completed
         or any(outcomes[chair] != "genuinely-empty" for chair in completed)
+        or any(
+            attachments.get(chair, {}).get("anchor_basis") == "act-line-not-located"
+            # Defence in depth beside `act_attachment_facts`' own refusal: a
+            # page witness whose fact somehow carries no basis at all is
+            # geometry nobody checked, and a terminal blank may not rest on it.
+            or (
+                attachments.get(chair, {}).get("page_witness")
+                and attachments.get(chair, {}).get("anchor_basis") is None
+            )
+            for chair in completed
+        )
     ):
         return None
     return completed
@@ -209,7 +323,8 @@ def validate_chair_coverage(context, act_id: str, floor: int) -> dict[str, objec
     is an easy thing for a later retry to mistake for history, so the whole
     witness denominator is validated before any of it is published.
     """
-    outcomes = chair_outcomes(context, act_id)
+    current_attempts = chair_current_attempts(context, act_id)
+    outcomes = {chair: fact["outcome"] for chair, fact in current_attempts.items()}
     sealed = set(context.witness_chairs)
     missing = sealed - set(outcomes)
     if missing:
@@ -225,33 +340,60 @@ def validate_chair_coverage(context, act_id: str, floor: int) -> dict[str, objec
             "chairs and nothing may add one after the seal"
         )
     attachments = act_attachment_facts(context, act_id)
-    # `chair_outcomes` above collapses each chair to its current attempt, and its
-    # docstring names the reason the two consumers share that derivation: they
-    # "cannot drift on what current means". The derived act-attachment is a third
-    # consumer of the same artifacts and does drift — a targeted reread appends a
-    # new act-scoped attempt and writes no new attachment record — so the floor
-    # would otherwise be counted from facts describing a superseded attempt: a
-    # recovered read silently dropped from `completed` and reported as a
-    # `page_granularity_only` contribution that never happened (GOVERNANCE 2 and
-    # 10). R0's declared `granularity_basis` is that `attached` IS the current act
-    # outcome before R4 alignment; that identity is checked here rather than
-    # assumed, and R4 replaces both together. Found in audit; F-O1.
-    unaccounted = sorted(set(outcomes) - set(attachments))
+    # R4's attachment is an independent computed fact for a PAGE witness.  It
+    # must not be forced back into the act attempt outcome there: a page
+    # witness can have read its page while the bounded text-to-anchor
+    # calculation honestly remains unaligned, and `act_attachment_facts`
+    # already checks that fact for internal consistency against its own
+    # computed alignment.
+    unaccounted = sorted(set(outcomes) ^ set(attachments))
     if unaccounted:
         raise FatalAccounting(
-            f"act {act_id}'s derived act-attachment records no fact for configured "
-            f"chair(s) {unaccounted}; an absent fact would silently read as unattached"
+            f"act {act_id}'s derived act-attachment and its current Testimonia disagree on "
+            f"chair(s) {unaccounted}; an absent fact would silently read as unattached, and "
+            "an extra one would attach a chair that never testified for this act"
         )
+    # An ACT-SCOPED chair carries no independent computed fact: its `attached`
+    # is a restatement of that chair's own current Testimonium outcome, not a
+    # second measurement of anything. `reread_pass` (`pipeline/3_attestatores/
+    # run.py`) appends a new act-scoped attempt without writing a new
+    # attachment record, so the derived attachment is a THIRD consumer of the
+    # same artifacts as `chair_outcomes`/`testimonia_of` and can drift from
+    # both exactly as it did before R4 (F-O1): a targeted reread would
+    # otherwise count the witness floor from an attempt the reread already
+    # superseded. Restored on R4's audit (REOPENED F-O1) after removing it
+    # here left this hole open for every act-scoped chair; page witnesses are
+    # exempted because their own alignment-consistency check above is the
+    # genuinely independent fact this check would otherwise wrongly demand
+    # agreement from.
     superseded = sorted(
         chair
         for chair, outcome in outcomes.items()
-        if attachments[chair]["attached"] != (outcome in WITNESS_READING_OUTCOMES)
+        if not attachments[chair]["page_witness"]
+        and attachments[chair]["attached"] != (outcome in WITNESS_READING_OUTCOMES)
     )
     if superseded:
         raise FatalAccounting(
             f"act {act_id}'s derived act-attachment disagrees with the current Testimonium "
             f"outcome for chair(s) {superseded}; the witness floor may not be counted from "
             "a superseded attempt"
+        )
+    # NOT scoped to act-scoped chairs, unlike the outcome check just above: a
+    # page witness's attachment `content_health` is recorded from this exact
+    # per-(act, chair) attempt stream, not from page-level text, so it is a
+    # valid staleness signal for every chair (`chair_current_attempts`'s
+    # docstring; mirrors `pipeline/4_perlector/run.py::act_attachment_view`'s
+    # identical, symmetric check -- REOPENED F-O1).
+    stale_health = sorted(
+        chair
+        for chair, fact in attachments.items()
+        if fact["content_health"] != current_attempts[chair]["content_health"]
+    )
+    if stale_health:
+        raise FatalAccounting(
+            f"act {act_id}'s derived act-attachment describes an attempt that is no longer "
+            f"the current Testimonium for chair(s) {stale_health}; the witness floor may not "
+            "be counted from a superseded attempt"
         )
     return witness_coverage(outcomes, floor, attachments=attachments)
 
@@ -1036,6 +1178,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 blank_corroboration(
                     coverage,
                     chair_outcomes(context, act_id),
+                    act_attachment_facts(context, act_id),
                     witness_uncovered=bool(state["recovery_regions"]),
                 )
                 if (

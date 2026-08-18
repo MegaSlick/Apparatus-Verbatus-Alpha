@@ -73,7 +73,7 @@ _A = ArmariumCategory
 # closed set, and a second literal spelling of it beside the floor arithmetic
 # that depends on it is a silent divergence waiting to happen.
 WITNESS_READING_OUTCOMES: Final = frozenset({"read", "genuinely-empty"})
-INTERIM_GRANULARITY_BASIS: Final = "act-outcome-proxy-before-alignment"
+INTERIM_GRANULARITY_BASIS: Final = "computed-act-attachment-alignment"
 LEGACY_GRANULARITY_BASIS: Final = "legacy-class-only"
 
 # --- The vocabularies: outcome -> class, one closed set per stage ---------------
@@ -366,11 +366,8 @@ def witness_coverage(
         ),
         "health_unrecorded": health_unrecorded,
         "shortfalls": shortfalls,
-        # R0 has no independent alignment state: attached is still derived from
-        # this act's outcome, so page_granularity_only cannot become non-zero
-        # until R4. Name that measurement limit instead of presenting zero as a
-        # measured absence. The legacy path is named separately and is refused
-        # by the v2 receipt boundary.
+        # Attachments are computed facts: page testimony counts only where its
+        # retained text aligned through Chandra's anchor into act geometry.
         "granularity_basis": (
             INTERIM_GRANULARITY_BASIS if attachments is not None else LEGACY_GRANULARITY_BASIS
         ),
@@ -535,9 +532,48 @@ def run_aggregate(
     for act in sorted(coverage):
         record = coverage[act]
         if record.get("under_witnessed"):
+            # Not unconditionally `record["by_class"]["completed"]`: that is the
+            # wider ATTESTATORES COMPLETED class (it also holds `excluded`, and --
+            # since R4 -- a page witness that read its page but did not align
+            # into this act), while `under_witnessed` above is decided from the
+            # narrower attached-reading count. The two were equal before per-act
+            # alignment existed, so this message could get away with the class
+            # count; they can now diverge, and printing the wider number produced
+            # a floor-satisfying count next to an under-witnessed verdict.
+            # Rederived from `by_outcome` and `page_granularity_only` exactly as
+            # `common/recensor_receipt.py` already does for the same reason
+            # (including its same v1/v2 branch: `page_granularity_only` is
+            # optional on a pre-R0 schema-v1 record, where `by_class['completed']`
+            # is the whole answer with no page-granularity distinction to draw).
+            # Deliberately raw indexing, not `.get(..., default)`: a record
+            # claiming `under_witnessed` without the fields that justify it is
+            # not a zero to report, it is malformed evidence, and
+            # `pipeline/7_armarium/armarium_export.py::_run_aggregate` already
+            # converts exactly that `KeyError` into a named refusal rather than
+            # let a fabricated count stand in for one nothing measured.
+            # Keyed on the recorded basis, not on key presence: `witness_coverage`
+            # emits `page_granularity_only` on its legacy path too, where
+            # `under_witnessed` is decided from the COMPLETED class (which also
+            # holds `excluded`). Rederiving from reading outcomes there printed a
+            # number no rule in this file produced -- {read, excluded, dead}
+            # against a floor of 3 flags at 2 and reported 1 -- the same class of
+            # defect this branch exists to repair.
+            basis = record.get("granularity_basis", LEGACY_GRANULARITY_BASIS)
+            if basis == INTERIM_GRANULARITY_BASIS:
+                reading_chairs = sum(
+                    record["by_outcome"].get(outcome, 0) for outcome in WITNESS_READING_OUTCOMES
+                )
+                completed = reading_chairs - record["page_granularity_only"]
+            elif basis == LEGACY_GRANULARITY_BASIS:
+                completed = record["by_class"]["completed"]
+            else:
+                # A closed vocabulary, closed here too: a basis this module never
+                # produced is malformed evidence, not a default to guess from.
+                raise FatalAccounting(
+                    f"act {act} coverage names unknown granularity basis {basis!r}"
+                )
             reasons.append(
-                f"act {act} is under-witnessed "
-                f"({record['by_class']['completed']} of a floor of {record['floor']})"
+                f"act {act} is under-witnessed ({completed} of a floor of {record['floor']})"
             )
         if record.get("unresolved_chairs"):
             reasons.append(

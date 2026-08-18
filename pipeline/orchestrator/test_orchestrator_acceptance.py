@@ -397,8 +397,23 @@ FIXTURE = "synthetic-two-page-v0"
 # images, not one 36x36 example. The file is sealed byte-for-byte, so this comment-only config
 # correction moves every dependent artifact. Fresh real runs again measured 54
 # files for happy (exit 0) and 58 for review (exit 3).
-HAPPY_RUN_TREE_DIGEST = "226a9eb673616ee1d1bad42e505c6d8b9d49dec01b3bf29835a5561b10de292d"
-REVIEW_RUN_TREE_DIGEST = "c2991c59dde796ff7ec2c136c26f03eeff830c34a735799a2a837f60e2b74b2f"
+#
+# R4 audit verified that the apparent Linux/macOS divergence was a snapshot-root
+# error, not different recorded bytes. Passing `<runs-root>/r` instead of
+# `<runs-root>` removes the `r/` prefix from every relative inventory key and
+# reproduces the two alleged Linux digests exactly while every per-file digest
+# remains identical. `semantic_snapshot` now refuses that ambiguous call shape,
+# and no platform-local value was ever substituted for a host-measured one.
+#
+# The literals below are re-measured on this change, and each re-measurement
+# names what moved them. A mismatch here is evidence about the recorded
+# artifacts, never about the platform. R4's PR loop moved them twice over the
+# wave-time values: every aligned page-witness alignment now carries
+# `anchor_basis`, and a non-reading page attempt (review's attestator_3 on a2)
+# now records its explicit `non-reading-page-attempt-failed` reason instead of
+# running the page alignment. File counts stayed 60/65.
+HAPPY_RUN_TREE_DIGEST = "f0db48b213bf725f6da497228b49871ff390f55c09d2105aefb6f7c0eb8cd6cb"
+REVIEW_RUN_TREE_DIGEST = "3652502dd5bd55f30a83116b8591348eb6d5852f2e5ff305b8af1236e8e5e394"
 
 
 def orchestrate(
@@ -749,6 +764,10 @@ def semantic_snapshot(root: Path) -> dict[str, str]:
     remains byte-bound. The ordinary ``snapshot`` stays byte-exact for all resume
     and no-write assertions.
     """
+    if (root / "run.json").is_file():
+        raise ValueError(
+            "semantic_snapshot requires the runs root, not an individual run directory"
+        )
     files = [(path, path.read_bytes()) for path in sorted(root.rglob("*")) if path.is_file()]
     bundle_paths = {}
     replacements = {}
@@ -815,6 +834,14 @@ def semantic_snapshot(root: Path) -> dict[str, str]:
 def semantic_snapshot_digest(root: Path) -> str:
     """The canonical content pin for the full relative run-tree inventory."""
     return digest_of(semantic_snapshot(root))
+
+
+def test_semantic_snapshot_refuses_an_individual_run_directory(tmp_path):
+    """A missing run-id path prefix must not masquerade as a platform-local pin."""
+    (tmp_path / "run.json").write_text("{}", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="runs root, not an individual run directory"):
+        semantic_snapshot_digest(tmp_path)
 
 
 def test_semantic_snapshot_digest_binds_png_pixels_not_compressor_bytes(tmp_path, monkeypatch):
@@ -1207,6 +1234,41 @@ def test_a_genuinely_empty_testimonium_counts_as_a_witnessed_read(tmp_path):
         for entry in tree.build_manifest(PERLECTOR)["artifacts"]
         if entry["kind"] == "perlectio" and entry["subject_id"] == empty["subject_id"]
     )
+    attachment_record = next(
+        tree.read_artifact(ATTESTATORES, "act-attachment", entry["artifact_id"])
+        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
+        if entry["kind"] == "act-attachment" and entry["subject_id"] == empty["subject_id"]
+    )
+    empty_attachment = next(
+        row
+        for row in attachment_record["payload"]["attachments"]
+        if row["chair"] == empty["payload"]["chair"]
+    )
+    assert empty_attachment["attached"] is True
+    assert empty_attachment["span"] == {"start": 0, "end": 0}
+
+    empty_dissent = next(
+        row for row in reading["payload"]["dissent"] if row["chair"] == empty["payload"]["chair"]
+    )
+    assert empty_dissent["compared"] is True
+    assert empty_dissent["departed"] is True
+    assert empty_dissent["departures"] == [
+        {
+            "reading_span": {"start": 0, "end": len(reading["payload"]["text"])},
+            "testimonium_span": {"start": 0, "end": 0},
+        }
+    ]
+
+    review = next(
+        tree.read_artifact(RECENSOR, "review", entry["artifact_id"])
+        for entry in tree.build_manifest(RECENSOR)["artifacts"]
+        if entry["kind"] == "review" and entry["subject_id"] == empty["subject_id"]
+    )
+    assert review["payload"]["coverage"]["by_outcome"] == {
+        "genuinely-empty": 1,
+        "read": 2,
+    }
+    assert review["payload"]["coverage"]["under_witnessed"] is False
     assert all(region["witness_covered"] for region in reading["payload"]["basis"]["regions"])
     assert export_of(tree)["aggregate"]["status"] == "complete"
 
@@ -2988,10 +3050,11 @@ def test_the_capability_scenario_leaves_one_chair_uncompared_while_happy_compare
     with witnesses rather than to read ink."
 
     Spec 07's fixture declares that capability on chair 2 of act a1 in the
-    dedicated `witness-capabilities` scenario. R0 additionally leaves both
-    page-witness chairs unknown until R4 provides act-anchored comparison views.
-    The reference happy run therefore has those two honest unknown rows while
-    its act-scoped chair remains comparable.
+    dedicated `witness-capabilities` scenario. R0 left both page-witness chairs
+    unknown until R4 provided act-anchored comparison views; now that R4's
+    alignment lands a comparison view for both, only the capability-declared
+    chair stays unknown, and the reference happy run — where no chair declares
+    the capability — compares all three.
     """
     root = tmp_path / "runs"
     result = orchestrate(root, "r", "witness-capabilities")
@@ -3006,7 +3069,7 @@ def test_the_capability_scenario_leaves_one_chair_uncompared_while_happy_compare
     assert set(by_chair) == {"attestator_1", "attestator_2", "attestator_3"}
     assert by_chair["attestator_2"]["compared"] == "unknown"
     assert "cannot be reduced to a plain comparison view" in by_chair["attestator_2"]["reason"]
-    assert [row["compared"] for row in reading["payload"]["dissent"]].count("unknown") == 3
+    assert [row["compared"] for row in reading["payload"]["dissent"]].count("unknown") == 1
 
     testimonium = next(
         record
@@ -3036,10 +3099,7 @@ def test_the_capability_scenario_leaves_one_chair_uncompared_while_happy_compare
         "attestator_2",
         "attestator_3",
     }
-    assert {row["chair"] for row in happy_dissent if row["compared"] == "unknown"} == {
-        "attestator_1",
-        "attestator_3",
-    }
+    assert {row["chair"] for row in happy_dissent if row["compared"] == "unknown"} == set()
 
 
 def test_a_delivered_act_still_links_back_to_the_exact_ink(review_run):

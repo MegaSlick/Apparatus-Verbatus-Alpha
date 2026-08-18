@@ -32,6 +32,7 @@ SEALED_CONFIG_FLAGS = (
     "--pdf-render-config",
     "--designator-padding-config",
     "--designator-geometry-config",
+    "--alignment-config",
     "--perlector-protocol-config",
     "--formats-config",
     "--recovery-config",

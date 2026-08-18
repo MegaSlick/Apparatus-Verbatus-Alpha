@@ -15,6 +15,13 @@ The knobs. One question per planned file, each answerable without reading code.
 | `serving_recipes.toml` | present — the complete vLLM flag profile for one configured chair at one measured GPU tier |
 | `formats.toml` | present — which Armarium product projections are written and whether verified pixels are embedded |
 | `perlector_protocol.toml` | present — the sealed prior-draft protocol: Pass-B neutral fragment, page-shared-prefix policy, and control selection-rule name |
+| `alignment.toml` | present — sealed character, pair, and wall-clock ceilings for witness-to-Chandra alignment |
+
+## R4 toggle register
+
+| Knob | Default | Who changes it | What retires it |
+|---|---|---|---|
+| alignment character/pair/deadline limits | 100,000 / 100,000,000 / 5 seconds | ordinary engineering with recorded measurement | a replacement bounded aligner with recorded benchmark evidence |
 
 ## R5a toggle register
 

@@ -43,6 +43,7 @@ import truncation  # noqa: E402
 from dissent import departures, dissent_against, validate_dissent  # noqa: E402
 from reader import FixtureReader  # noqa: E402
 
+from common.alignment import markup_text_view  # noqa: E402
 from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.canonical import digest_of  # noqa: E402
@@ -250,6 +251,7 @@ def act_attachment_view(context, act: dict[str, Any], testimonia: list[dict]) ->
             f"act {act_id} attachment chairs do not equal this run's configured witnesses"
         )
     page_witness_count = 0
+    comparison_views: dict[str, str] = {}
     for attachment in attachments:
         if (
             not isinstance(attachment, dict)
@@ -260,6 +262,7 @@ def act_attachment_view(context, act: dict[str, Any], testimonia: list[dict]) ->
                 "testimonium_ref",
                 "attached",
                 "content_health",
+                "alignment",
                 "span",
             }
             or not isinstance(attachment.get("chair"), str)
@@ -270,7 +273,7 @@ def act_attachment_view(context, act: dict[str, Any], testimonia: list[dict]) ->
             raise SchemaRefusal("an act-attachment record has a malformed attachment")
         span = attachment["span"]
         characters = attachment["content_health"].get("characters")
-        if attachment["attached"]:
+        if attachment["attached"] and not attachment["page_witness"]:
             expected_end = (
                 characters
                 if isinstance(characters, int) and not isinstance(characters, bool)
@@ -280,7 +283,7 @@ def act_attachment_view(context, act: dict[str, Any], testimonia: list[dict]) ->
                 raise SchemaRefusal(
                     "an attached act view does not span its complete delivered reading"
                 )
-        elif span is not None:
+        elif not attachment["attached"] and span is not None:
             raise SchemaRefusal("an unattached act view claims an alignment span")
         chair = attachment["chair"]
         # The attachment describes one attempt, and the reread path
@@ -300,11 +303,24 @@ def act_attachment_view(context, act: dict[str, Any], testimonia: list[dict]) ->
             raise FatalAccounting(
                 f"act {act_id} attachment names chair {chair!r}, which has no current Testimonium"
             )
-        if attachment["attached"] != (chair_testimonium["outcome"] in WITNESS_READING_OUTCOMES):
+        if not attachment["page_witness"] and attachment["attached"] != (
+            chair_testimonium["outcome"] in WITNESS_READING_OUTCOMES
+        ):
             raise SchemaRefusal(
                 f"act {act_id} attachment for chair {chair!r} disagrees with that chair's "
                 "current Testimonium outcome"
             )
+        # NOT exempted for a page witness, unlike the `attached`/outcome check just
+        # above: `content_health` is recorded from this act's own per-chair attempt
+        # (`attempts_by_pair` in `pipeline/3_attestatores/run.py`) for every chair,
+        # page witness or not -- a targeted reread (`reread_pass`) appends a new
+        # attempt to that exact same per-(act, chair) `testimonium` stream whether
+        # or not the chair is page-scoped, so a page witness's attachment can go
+        # stale after a reread exactly as an act-scoped one can (REOPENED F-O1):
+        # `attached` legitimately differs from the chair's outcome for a page
+        # witness (alignment can honestly fail against live text), but the health
+        # of the attempt the attachment actually describes must always still be
+        # this chair's current one.
         if attachment["content_health"] != chair_testimonium["payload"].get("content_health"):
             raise SchemaRefusal(
                 f"act {act_id} attachment for chair {chair!r} describes an attempt that is no "
@@ -392,13 +408,66 @@ def act_attachment_view(context, act: dict[str, Any], testimonia: list[dict]) ->
             # Found in audit; F-O7.
             row = current_unjoined[0] if current_unjoined else None
             disclosed = row["outcome"] in WITNESS_READING_OUTCOMES if row is not None else True
-            if disclosed != attachment["attached"]:
+            # Joining a response into the retained page body only proves that
+            # the bytes arrived. It does not prove a bounded text alignment can
+            # attach them to this act (notably a genuine empty response has no
+            # span). An omitted response can never be attached; a joined one may
+            # still be explicitly unaligned.
+            if not disclosed and attachment["attached"]:
                 raise SchemaRefusal(
                     f"act {act_id} attachment disagrees with its page Testimonium's "
                     "unjoined-attempt record"
                 )
+            alignment = attachment["alignment"]
+            if attachment["attached"]:
+                if (
+                    not isinstance(alignment, dict)
+                    or set(alignment)
+                    != {
+                        "status",
+                        "anchor_basis",
+                        "anchor_span",
+                        "witness_span",
+                        "line_geometry",
+                        "loss",
+                        "offset_maps",
+                    }
+                    or alignment.get("status") != "aligned"
+                    or span != alignment.get("witness_span")
+                ):
+                    raise SchemaRefusal("an attached page witness has no computed alignment")
+                page_text = page_payload.get("reported")
+                witness_span = alignment["witness_span"]
+                if not isinstance(page_text, str):
+                    raise SchemaRefusal("an attached page witness has no textual comparison view")
+                # `witness_span` indexes the MARKUP-STRIPPED, whitespace-collapsed
+                # view of the page reading -- `align_to_anchor` computes it from
+                # `markup_text_view(page_text)["text"]`, never from the raw bytes.
+                # Slicing `page_text` itself with those offsets is a
+                # coordinate-space error: it agrees only where stripping happens
+                # to remove nothing, which is exactly the ASCII fixture and
+                # exactly not Chandra's HTML or Churro's XML, where the slice
+                # would land mid-tag. It also falsified the premise
+                # `dissent.is_comparable` now rests on -- that
+                # `comparison_reported` is a markup-stripped view and therefore
+                # safe to diff -- since a raw slice carries whatever markup it
+                # cut through. Re-derived in the space the span was measured in.
+                # Found in audit; F-X3.
+                comparison_views[chair] = act_comparison_view(page_text, witness_span)
+            elif (
+                not isinstance(alignment, dict)
+                or set(alignment) != {"status", "reason"}
+                or alignment.get("status") != "unaligned"
+                or not (isinstance(alignment["reason"], str) and alignment["reason"].strip())
+            ):
+                # The producer emits exactly {status, reason}; a reason-free
+                # mapping would validate while leaving the operator no
+                # statement of why comparison failed.
+                raise SchemaRefusal("an unattached page witness has no explicit unaligned result")
             page_witness_count += 1
         else:
+            if attachment["alignment"] is not None:
+                raise SchemaRefusal("an act-scoped witness carries page alignment evidence")
             testimonium = context.tree.read_artifact_reference(
                 reference,
                 stage=ATTESTATORES,
@@ -414,7 +483,59 @@ def act_attachment_view(context, act: dict[str, Any], testimonia: list[dict]) ->
         # A blinded dossier may show that page evidence exists, but not the
         # chair names embedded in its retained attachment artifact.
         "page_witness_count": page_witness_count,
+        # Stated exactly, because the count above was chosen to disclose an
+        # aggregate and this does not: `comparison_views` is keyed per chair,
+        # relabeled through `witness_label` in `dossier.build_dossier`, and
+        # present only for page witnesses. A blinded reader therefore learns
+        # WHICH pseudonyms are page-scoped -- scope, never identity, but with
+        # a roster of three where one chair is act-scoped that narrows a
+        # witness from one-in-three to one-in-two and names the act-scoped
+        # chair outright. U3 requires the act-anchored view and the view has
+        # to be attributable to a label for dissent to use it, so this is the
+        # cost of the instrument rather than an oversight; it is recorded here
+        # so R5a/R5b, which own the dossier's reference-based act views, can
+        # weigh it deliberately. R4 audit, F-X5.
+        "comparison_views": comparison_views,
     }
+
+
+def act_comparison_view(page_text: str, witness_span: dict[str, int]) -> str:
+    """One act's slice of a page reading, in the space the span was measured in.
+
+    `witness_span` indexes the markup-stripped, whitespace-collapsed view
+    `common.alignment.align_to_anchor` aligned -- never the raw page bytes --
+    so the slice is taken from that same view. Slicing the raw report with
+    these offsets agrees only where stripping removed nothing, which is the
+    ASCII fixture and not Chandra's HTML or Churro's XML. Found in audit; F-X3.
+    """
+    normalized = markup_text_view(page_text)["text"]
+    # Both bounds, not only the end: this reads an artifact back from disk, so
+    # it is the last gate before untrusted numbers become a comparison view. A
+    # negative or inverted span slices to an empty string without complaint,
+    # and that empty string would become the act's comparison view -- dissent
+    # then records the witness as departing from the whole reading, or as
+    # corroborating a blank it never reported.
+    if not isinstance(witness_span, dict) or set(witness_span) != {"start", "end"}:
+        raise SchemaRefusal("an attached page witness carries no two-bound comparison span")
+    start, end = witness_span["start"], witness_span["end"]
+    if any(not isinstance(bound, int) or isinstance(bound, bool) for bound in (start, end)):
+        raise SchemaRefusal("an attached page witness claims a non-integer comparison span")
+    if not 0 <= start <= end or end > len(normalized):
+        raise SchemaRefusal("an attached page witness claims a span past its own comparison view")
+    return normalized[start:end]
+
+
+def dissent_testimonia(testimonia: list[dict], attachment_view: dict[str, Any]) -> list[dict]:
+    """Give dissent an act-anchored page slice without changing retained testimony."""
+    views = attachment_view["comparison_views"]
+    result = []
+    for record in testimonia:
+        copied = {**record, "payload": dict(record["payload"])}
+        chair = copied["payload"]["chair"]
+        if copied["payload"].get("page_witness") and chair in views:
+            copied["payload"]["comparison_reported"] = views[chair]
+        result.append(copied)
+    return result
 
 
 def verify_region(context, region: dict) -> dict:
@@ -826,11 +947,12 @@ def validate_reading_payload(
         attachment = reading_dossier["act_attachment"]
         if (
             not isinstance(attachment, dict)
-            or set(attachment) != {"reference", "page_witness_count"}
+            or set(attachment) != {"reference", "page_witness_count", "comparison_views"}
             or not isinstance(attachment["reference"], dict)
             or not isinstance(attachment["page_witness_count"], int)
             or isinstance(attachment["page_witness_count"], bool)
             or attachment["page_witness_count"] < 0
+            or not isinstance(attachment["comparison_views"], dict)
         ):
             raise SchemaRefusal("a Perlector dossier has malformed act-attachment evidence")
         if is_unprimed:
@@ -1223,7 +1345,7 @@ def _publish_primed_without_prior(
             "approval_ref": context.perlector_instrument_approval_ref,
         },
         "membership": {**membership, "act_id": act_id, "protocol_sha256": protocol_sha256},
-        "dissent": dissent_against(text, testimonia),
+        "dissent": dissent_against(text, dissent_testimonia(testimonia, attachment_view)),
         "truncation": truncation_record,
         "uncertain_spans": [],
         "gaps": _whole_act_gap(testimonia, testimonium_references)
@@ -1492,7 +1614,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             },
             "dossier": primed_dossier,
             "prompt": prompt,
-            "dissent": dissent_against(reading, testimonia),
+            "dissent": dissent_against(reading, dissent_testimonia(testimonia, attachment_view)),
             "truncation": truncation_record,
             "uncertain_spans": [],
             "gaps": gaps,

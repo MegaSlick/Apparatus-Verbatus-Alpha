@@ -326,7 +326,41 @@ def build_dossier(
         "testimonia": testimonia_rows,
     }
     if act_attachment is not None:
-        dossier["act_attachment"] = act_attachment
+        # `act_attachment["comparison_views"]` is keyed by real chair name
+        # upstream (`pipeline/4_perlector/run.py::act_attachment_view`) so the
+        # Perlector's own dissent machinery can match it back to a chair's
+        # Testimonium. That real name is exactly what blinding exists to
+        # withhold from the dossier -- the one object every reader actually
+        # sees -- so it is relabeled here through the same `witness_label`
+        # every other dossier identity already goes through, never carried
+        # verbatim into what gets shown.
+        views = act_attachment.get("comparison_views")
+        if not isinstance(views, dict):
+            raise SchemaRefusal(
+                "an act attachment reached the dossier with no comparison_views mapping; "
+                "a dossier may not be built from an attachment whose views are absent"
+            )
+        relabeled_views: dict[str, str] = {}
+        for chair, text in views.items():
+            label = witness_label(
+                chair,
+                regime=regime,
+                run_id=context.tree.run_id,
+                config_digest=context.config_digest,
+            )
+            # `witness_label` does not guarantee uniqueness; a collision here
+            # would silently overwrite one chair's comparison view with
+            # another's -- evidence lost behind a well-formed dossier.
+            if label in relabeled_views:
+                raise SchemaRefusal(
+                    f"two comparison views relabel to the same witness label {label!r}; "
+                    "a colliding pseudonym would silently replace one chair's view"
+                )
+            relabeled_views[label] = text
+        dossier["act_attachment"] = {
+            **act_attachment,
+            "comparison_views": relabeled_views,
+        }
     if prior_draft is not None:
         if prior_draft_view not in {"fed", "withheld"}:
             raise SchemaRefusal("a prior draft requires a named fed or withheld view")

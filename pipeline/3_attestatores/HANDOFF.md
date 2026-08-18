@@ -178,6 +178,43 @@ Thus a later `failed` attempt is current and visible, while the earlier successf
 attempt remains retained history. A missing or gapped history is refused rather
 than repaired or selected around.
 
+## Act-attachment schema (R4)
+
+Written by the same stage invocation that writes page testimony, one
+`act-attachment` record per act in the proposal seal, held acts included
+(`subject_id == act_id`). A held act carries one entry per chair with
+`page_witness` false, `attached` false, and `alignment` null. Its payload
+carries `attachments`: one entry per configured chair, each with `chair`,
+`attached` (bool), `span` (`{start, end}`), `content_health` (dict or null —
+null is "health not recorded", a distinct fact), `page_witness` (bool,
+strictly), a `testimonium_ref` pointing at the chair's Testimonium or
+page-Testimonium, and
+`alignment` — null for an act-scoped chair, and for a page witness exactly one
+of:
+
+- aligned: the closed key set `{status, anchor_basis, anchor_span,
+  witness_span, line_geometry, loss, offset_maps}`, with `anchor_basis` one of
+  `act-anchor` (computed through Chandra's located anchor line),
+  `no-page-anchor` (a genuinely-empty witness's trivial zero-length attach on
+  a page with no Chandra anchor at all — the ink-free/fallback path; blank
+  confirmation stays open), or `act-line-not-located` (the page's anchor
+  exists but locates no line for this act — the Recensor's
+  `blank_corroboration` refuses to seal a terminal blank on it).
+  `witness_span` indexes the markup-stripped, whitespace-collapsed view of
+  the page reading, never raw bytes.
+- unaligned: `{status, reason}`, reasons among `missing-chandra-page-anchor`,
+  `act-anchor-line-not-located`, `no-overlap-with-act-anchor`,
+  `character-limit`, `character-pair-limit`, `timeout`,
+  `no-common-anchor-text` (the aligner's own reasons pass through
+  verbatim), and `non-reading-page-attempt-<outcome>` for an attempt that
+  produced no reading.
+
+For a page witness, `attached` is true exactly when `alignment.status` is
+`aligned` and the attempt outcome is a reading — both the Perlector
+(`act_attachment_view`) and the Recensor (`act_attachment_facts`) refuse any
+other combination, and both pin the shapes above; a field change here is an
+interface change and lands in all three files in the same commit.
+
 ## Attempt tally
 
 The stage's derived manifest is rebuilt from immutable Testimonia, compared to its

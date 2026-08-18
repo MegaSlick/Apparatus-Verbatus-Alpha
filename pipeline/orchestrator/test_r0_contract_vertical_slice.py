@@ -192,18 +192,8 @@ def test_derived_act_attachment_record_is_written_by_attestatores_for_every_prop
     )
 
 
-def test_dissent_names_a_page_witness_row_as_compared_unknown_with_a_named_reason(
-    run_tree, fixture
-):
-    """D5: page-witness rows emit compared:"unknown" with a named reason (alignment
-    views are R4's), per the existing is_comparable doctrine in
-    `pipeline/4_perlector/dissent.py`.
-
-    On the base commit attestator_1 and attestator_3 are ordinary act-scoped
-    witnesses, so their dissent rows for act a1 compare normally
-    (`compared: True`) rather than carrying D5's page-witness `unknown` reason --
-    this fails red independently of whether page-scoped Testimonium exists yet.
-    """
+def test_dissent_compares_each_page_witness_against_its_act_anchored_view(run_tree, fixture):
+    """R4 restores the real roster: page rows compare their computed act slices."""
     scenario, tree = run_tree
     act_a1_id = act_identity(fixture, act_by_key(fixture, "a1"))
     reading = _latest_completed_reading(tree, act_a1_id)
@@ -214,12 +204,94 @@ def test_dissent_names_a_page_witness_row_as_compared_unknown_with_a_named_reaso
         f"for chair(s) {PAGE_WITNESS_CHAIRS}"
     )
     for row in page_witness_rows:
-        reason = row.get("reason")
-        assert row.get("compared") == "unknown" and isinstance(reason, str) and reason.strip(), (
-            f"scenario {scenario!r}: dissent row for chair {row.get('chair')!r} is {row!r}; D5 "
-            "requires a page-witness row to emit compared:'unknown' with a non-blank named "
-            "reason, since act-anchored alignment views belong to R4"
+        assert row.get("compared") is True, row
+
+
+def test_a_page_witness_matching_the_ink_exactly_records_no_departure(run_tree, fixture):
+    """F-X2. The act-anchored view must be THIS act's slice, not the chair's
+    whole page reading.
+
+    `attestator_1` reproduces both fixture acts exactly, so its dissent row for
+    each act must be empty: "a metric that rewards disagreement rewards
+    hallucination" (ARCHITECTURE, on dissent), and this is the one instrument
+    that catches a chair which learned to agree with witnesses rather than read
+    ink. Hulling whole overlapping matching blocks handed act a1 the entire
+    page -- so the chair that agreed with the ink perfectly was recorded as
+    departing over the whole of act a2, and the better the witness the larger
+    the false departure.
+    """
+    scenario, tree = run_tree
+    for act_key in ("a1", "a2"):
+        act_id = act_identity(fixture, act_by_key(fixture, act_key))
+        reading = _latest_completed_reading(tree, act_id)
+        row = next(
+            row for row in reading["payload"]["dissent"] if row.get("chair") == "attestator_1"
         )
+        assert row["compared"] is True, row
+        assert row["departed"] is False, (
+            f"scenario {scenario!r}: act {act_key} records a departure against a page witness "
+            f"whose text reproduces the reading exactly: {row!r}"
+        )
+        assert row["departures"] == [], row
+
+
+def test_two_acts_on_one_page_never_claim_the_same_page_witness_bytes(run_tree, fixture):
+    """F-X2. A span is a provenance claim about which of this chair's characters
+    belong to this act. Two acts asserting the identical range of one page
+    reading is not a partition of that reading, it is the same claim made
+    twice, and GOALS 5 asks every result to return to the exact ink it came
+    from.
+
+    Strengthened on the P2 review from identity to disjointness: two acts
+    claiming *overlapping* ranges is the same false provenance claim as two
+    acts claiming identical ones, only harder to see, and identity alone would
+    pass a witness-side hull that absorbed a neighbouring act's characters at
+    one end. A zero-length span (a `genuinely-empty` page witness) claims no
+    character, so it is exempt from both arms: the trivial attach of one page
+    witness is (0, 0) for every act on the page, and that repetition is
+    decided behaviour rather than a double claim.
+    """
+    scenario, tree = run_tree
+    spans: dict[str, list[tuple[str, dict]]] = {}
+    for entry in tree.build_manifest(ATTESTATORES)["artifacts"]:
+        if entry["kind"] != "act-attachment":
+            continue
+        record = tree.read_artifact(ATTESTATORES, "act-attachment", entry["artifact_id"])
+        for attachment in record["payload"]["attachments"]:
+            if attachment["page_witness"] and attachment["attached"]:
+                spans.setdefault(attachment["chair"], []).append(
+                    (record["subject_id"], attachment["span"])
+                )
+    assert spans, f"scenario {scenario!r}: no attached page-witness span to check"
+    for chair, rows in spans.items():
+        seen: dict[tuple[int, int], str] = {}
+        for act_id, span in rows:
+            if span["end"] == span["start"]:
+                # A zero-length span claims no character, so two of them are
+                # not the same provenance claim made twice -- a page witness
+                # that read a page and found nothing attaches at (0, 0) for
+                # every act on it (the trivial attach), and that is not the
+                # double-claim this arm refuses.
+                continue
+            key = (span["start"], span["end"])
+            clash = seen.get(key)
+            assert clash is None, (
+                f"scenario {scenario!r}: acts {clash} and {act_id} both claim characters "
+                f"{key} of chair {chair}'s page reading"
+            )
+            seen[key] = act_id
+        claimed = sorted(
+            (span["start"], span["end"], act_id)
+            for act_id, span in rows
+            if span["end"] > span["start"]
+        )
+        for index in range(1, len(claimed)):
+            _, earlier_end, earlier_act = claimed[index - 1]
+            later_start, _, later_act = claimed[index]
+            assert earlier_end <= later_start, (
+                f"scenario {scenario!r}: acts {earlier_act} and {later_act} claim overlapping "
+                f"characters of chair {chair}'s page reading"
+            )
 
 
 # --- 2. Corpus-frame binding -----------------------------------------------------
@@ -384,11 +456,40 @@ def test_act_attachment_span_reflects_this_chairs_own_delivered_text_not_the_act
     ]
     assert attachment_records, f"scenario {scenario!r}: no act-attachment records found"
     checked_attached_entries = 0
+    checked_page_witness_entries = 0
     for record in attachment_records:
         for entry in record["payload"]["attachments"]:
             if not entry.get("attached"):
                 continue
-            characters = entry.get("content_health", {}).get("characters")
+            if entry.get("page_witness"):
+                # A page witness's span is a slice of its PAGE reading, so it is
+                # not this act's own character count -- but it must still be a
+                # well-formed, non-empty range that agrees with the computed
+                # alignment it is derived from, never a wider hull carried over
+                # from another act's text (F-X2). Checked BEFORE the
+                # character-count guard below: a page-witness entry without an
+                # integer count would otherwise reach no assertion at all, and
+                # this test would stop guarding the exact regression its
+                # docstring names.
+                span = entry["span"]
+                assert entry["alignment"]["status"] == "aligned"
+                assert span == entry["alignment"]["witness_span"], entry
+                assert span["end"] >= span["start"], entry
+                # `or {}`, not a .get default: an explicit `content_health: null`
+                # is a valid recorded fact ("health not recorded", per the
+                # Recensor), and the default alone would crash this test on it.
+                if (entry.get("content_health") or {}).get("characters"):
+                    # Only a reading that delivered characters must claim a
+                    # non-empty span: the trivial zero-length attach of a
+                    # genuinely-empty page witness is a legitimate shape
+                    # (asserted as such by the acceptance suite), so demanding
+                    # end > start unconditionally would go red against decided
+                    # behaviour the moment that scenario joins this
+                    # parametrisation.
+                    assert span["end"] > span["start"], entry
+                checked_page_witness_entries += 1
+                continue
+            characters = (entry.get("content_health") or {}).get("characters")
             if not isinstance(characters, int):
                 continue
             span = entry["span"]
@@ -402,6 +503,74 @@ def test_act_attachment_span_reflects_this_chairs_own_delivered_text_not_the_act
     assert checked_attached_entries, (
         f"scenario {scenario!r}: no attached entry had a character count to check"
     )
+    assert checked_page_witness_entries, (
+        f"scenario {scenario!r}: no attached page-witness entry was checked, so this test "
+        "proved nothing about the act-anchored span it exists to guard"
+    )
+
+
+def test_a_non_reading_page_attempt_is_an_explicit_unaligned_reason_never_an_alignment(
+    run_tree, fixture
+):
+    """A page witness's attempt that produced no reading must short-circuit to an
+    explicit `unaligned` reason naming that outcome -- never run the page
+    alignment. Before this fix, a failed attempt on a page-witness chair could
+    reach the alignment path, come back `aligned` (the page text is other acts'
+    successful readings), and publish `attached: False` beside an aligned
+    alignment -- the exact shape `pipeline/4_perlector/run.py` and
+    `pipeline/5_recensor/run.py::act_attachment_facts` both refuse. One failed
+    witness attempt then stopped the act for a reason that has nothing to do
+    with the ink.
+
+    In `review`, attestator_3 (a page chair) has a declared `witness_failure`
+    on act a2, so this pins the produced record; in `happy` it asserts the
+    invariant over every entry (no unattached page witness carries anything but
+    an explicit unaligned result).
+    """
+    scenario, tree = run_tree
+    attachment_records = [
+        record for record in _attestatores_artifacts(tree) if record.get("kind") == "act-attachment"
+    ]
+    for record in attachment_records:
+        for entry in record["payload"]["attachments"]:
+            if entry.get("page_witness") and not entry.get("attached"):
+                assert entry["alignment"]["status"] == "unaligned", entry
+    if scenario == "review":
+        a2_id = act_identity(fixture, act_by_key(fixture, "a2"))
+        record = next(record for record in attachment_records if record["subject_id"] == a2_id)
+        entry = next(
+            entry for entry in record["payload"]["attachments"] if entry["chair"] == "attestator_3"
+        )
+        assert entry["attached"] is False
+        assert entry["alignment"] == {
+            "status": "unaligned",
+            "reason": "non-reading-page-attempt-failed",
+        }, entry
+
+
+def test_an_attached_page_witness_alignment_names_its_anchor_basis(run_tree):
+    """Every aligned page-witness alignment states what it aligned against.
+
+    `anchor_basis` is the field that keeps a trivial zero-length attach on a
+    page with no located anchor line (`no-page-anchor`/`act-line-not-located`)
+    distinguishable from an
+    alignment computed through Chandra's anchor (`act-anchor`). Without it, a
+    page whose anchor pass failed could satisfy the witness floor and reach
+    confirmed-blank while looking identical to a proved blank sheet. Both
+    shipped scenarios carry located anchor lines for both acts, so every
+    aligned record here must say `act-anchor`.
+    """
+    scenario, tree = run_tree
+    checked = 0
+    for record in _attestatores_artifacts(tree):
+        if record.get("kind") != "act-attachment":
+            continue
+        for entry in record["payload"]["attachments"]:
+            alignment = entry.get("alignment")
+            if isinstance(alignment, dict) and alignment.get("status") == "aligned":
+                assert alignment["anchor_basis"] == "act-anchor", entry
+                checked += 1
+    assert checked, f"scenario {scenario!r}: no aligned page-witness alignment was checked"
 
 
 def test_perlector_consumes_the_page_testimonium_named_by_an_act_attachment(tmp_path):
@@ -584,14 +753,24 @@ def test_perlector_refuses_an_act_scoped_testimonium_wearing_a_page_witness_flag
 
 
 def test_perlector_refuses_an_attachment_describing_a_superseded_attempt(tmp_path):
-    """F-O1: a targeted reread leaves the attachment describing the old attempt.
+    """F-O1 (REOPENED on R4's audit): a targeted reread leaves the attachment
+    describing the old attempt, for a page witness exactly as for an act-scoped
+    one.
 
-    `reread-success` declares a second, longer response for attestator_1 on act
-    a2. Before this fix the run continued in silence with the attachment still
-    claiming `span 0..40` and the ordinal-1 `content_health`, while that chair's
-    current Testimonium delivered 48 characters -- a positive alignment claim over
-    text that is no longer the reading, which is precisely the dishonesty F-S2 and
-    F-P2 closed on the first-pass path.
+    `reread-success` declares a second, longer response for attestator_1 (a
+    page witness) on act a2. Before this fix the run continued in silence with
+    the attachment still claiming `span 0..40` and the ordinal-1
+    `content_health`, while that chair's current Testimonium delivered 48
+    characters -- a positive alignment claim over text that is no longer the
+    reading, which is precisely the dishonesty F-S2 and F-P2 closed on the
+    first-pass path. R4's alignment made `attached` legitimately diverge from
+    a page witness's own outcome (alignment can honestly fail against live
+    text), and a repair scoped that divergence away entirely instead of to
+    just the `attached`/outcome comparison it applies to -- `content_health`
+    staleness is unconditional in `pipeline/4_perlector/run.py::
+    act_attachment_view` again, since it is recorded from the same per-(act,
+    chair) attempt stream a reread appends to whether or not the chair is
+    page-scoped.
     """
     root = tmp_path / "runs"
     fixture_data = load_fixture(str(FIXTURE_ROOT))
@@ -612,7 +791,14 @@ def test_perlector_refuses_an_attachment_describing_a_superseded_attempt(tmp_pat
 
 
 def test_the_witness_floor_is_not_counted_from_a_superseded_attachment(tmp_path):
-    """F-O1: the floor may not be counted from an attachment the reread outdated.
+    """F-O1 (REOPENED on R4's audit): the floor may not be counted from an
+    attachment the reread outdated -- for attestator_3, a page witness, exactly
+    as for an act-scoped chair. `pipeline/5_recensor/run.py::
+    chair_current_attempts` gives the Recensor the same per-chair staleness
+    signal `act_attachment_view` uses, since R4 removed this file's own
+    outcome-based version of the check for every page witness rather than only
+    exempting the narrower comparison that alignment legitimately disagrees
+    with.
 
     Drives the natural order -- whole pass, targeted reread, Perlector, Recensor.
     `reread-failure` declares attestator_3's second attempt on act a1 as a
@@ -656,6 +842,75 @@ def test_the_witness_floor_is_not_counted_from_a_superseded_attachment(tmp_path)
         "a partition receipt was written from a coverage count the reread had already "
         "superseded; the denominator is validated before this stage publishes anything"
     )
+
+
+def test_act_scoped_attachment_must_match_the_current_outcome_when_health_is_current(tmp_path):
+    """F-O1's restored outcome guard carries evidence independent of health.
+
+    An act-scoped reread fails after the original successful read. This test then
+    makes the old attachment current in every health-derived respect while leaving
+    its positive ``attached`` fact untouched. Perlector and Recensor must each
+    refuse that one remaining contradiction rather than count a superseded read.
+    """
+    root = tmp_path / "runs"
+    fixture_data = load_fixture(str(FIXTURE_ROOT))
+    act_a1_id = act_identity(fixture_data, act_by_key(fixture_data, "a1"))
+    tree = _through_attestatores(root, "act-scoped-stale", "happy")
+
+    reread = _reread(
+        root,
+        "act-scoped-stale",
+        "happy",
+        act_a1_id,
+        RETAINED_ACT_WITNESS_CHAIR,
+    )
+    assert reread.returncode == 0, reread.stderr
+
+    current = max(
+        (
+            record
+            for record in _attestatores_artifacts(tree)
+            if record.get("kind") == "testimonium"
+            and record.get("subject_id") == act_a1_id
+            and record.get("payload", {}).get("chair") == RETAINED_ACT_WITNESS_CHAIR
+        ),
+        key=lambda record: record["payload"]["attempt_ordinal"],
+    )
+    assert current["outcome"] == "failed"
+
+    attachment_entry = next(
+        entry
+        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
+        if entry["kind"] == "act-attachment" and entry["subject_id"] == act_a1_id
+    )
+    attachment_path = tree.resolve(attachment_entry["relative_path"])
+    attachment_record = tree.read_artifact(
+        ATTESTATORES, "act-attachment", attachment_entry["artifact_id"]
+    )
+    attachment = next(
+        row
+        for row in attachment_record["payload"]["attachments"]
+        if row["chair"] == RETAINED_ACT_WITNESS_CHAIR
+    )
+    assert attachment["page_witness"] is False
+    assert attachment["attached"] is True
+    attachment["content_health"] = current["payload"]["content_health"]
+    # The span must stay consistent with the health just copied in, or the
+    # Perlector refuses on the span before it reaches the outcome guard this
+    # test is named for: a non-integer character count skips that span check
+    # entirely, and 0 matches the forged {0, 0}. Any other value would go red
+    # on the span message instead of the outcome guard.
+    assert current["payload"]["content_health"]["characters"] in (None, 0), current["payload"]
+    attachment["span"] = {"start": 0, "end": 0}
+    _reseal(attachment_path, attachment_record)
+
+    perlector = invoke_stage(root, "act-scoped-stale", "happy", "pipeline/4_perlector/run.py")
+    assert perlector.returncode != 0
+    assert "disagrees with that chair's current Testimonium outcome" in perlector.stderr
+
+    recensor = invoke_stage(root, "act-scoped-stale", "happy", "pipeline/5_recensor/run.py")
+    assert recensor.returncode != 0
+    assert "disagrees with the current Testimonium outcome" in recensor.stderr
 
 
 def test_page_testimony_names_a_reading_the_join_could_not_carry(tmp_path, fixture):

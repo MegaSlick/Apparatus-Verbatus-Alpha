@@ -4,6 +4,7 @@ metric; a raw-string cross-check beside the normalized one; an honest
 """
 
 import signal
+import threading
 import time
 import unicodedata
 
@@ -171,10 +172,10 @@ def test_a_non_reading_outcome_is_recorded_as_no_opinion_not_agreement():
 
 
 def test_a_witness_whose_format_can_express_uncertainty_is_unknown_not_guessed():
-    """No live producer declares this today (`is_comparable`'s own docstring):
-    forged directly onto a bare record, the same technique
-    `test_testimonia_latest_attempt.py` already uses to exercise a boundary no
-    live producer reaches yet either."""
+    """A capability-declared chair with no act-anchored comparison view (R4's
+    alignment) stays honestly unmeasurable -- forged directly onto a bare
+    record, the same technique `test_testimonia_latest_attempt.py` already
+    uses to exercise a boundary no live act-scoped producer reaches."""
     testimonia = [
         {
             "outcome": "read",
@@ -195,6 +196,33 @@ def test_a_witness_whose_format_can_express_uncertainty_is_unknown_not_guessed()
             ),
         }
     ]
+
+
+def test_a_page_witness_comparison_view_lifts_the_capability_exemption():
+    """The same capability-declared format becomes measurable once R4's
+    alignment hands it an act-anchored, markup-stripped `comparison_reported`
+    view -- the exemption is about an unsafe raw report, not the chair."""
+    testimonia = [
+        {
+            "outcome": "read",
+            "payload": {
+                "chair": "attestator_2",
+                "reported": "alpha [beta|beeta] gamma",
+                "comparison_reported": "alpha beta gamma",
+                "format_capabilities": {"can_express_uncertainty": True},
+            },
+        }
+    ]
+    rows = dissent.dissent_against("alpha beta gamma", testimonia)
+    assert rows[0]["compared"] is True
+    # The point of the exemption lift: the act-anchored `comparison_reported`
+    # view is what gets diffed. Diffing the raw report ("alpha [beta|beeta]
+    # gamma") would leave `compared` True and only these lines red -- and would
+    # record every act with alternative-reading markup as dissenting when the
+    # witness in fact agreed.
+    assert rows[0]["departed"] is False, rows[0]
+    assert rows[0]["departures"] == []
+    assert "reason" not in rows[0]
 
 
 def test_a_runaway_witness_report_is_unknown_rather_than_aligned_for_twenty_minutes():
@@ -315,3 +343,159 @@ def test_this_module_pins_equality_only_and_takes_no_similarity_parameter():
         "threshold -- 'closest match' needs a metric, and refusing metrics is "
         "what keeps a normalization from becoming a fuzzy-match picker"
     )
+
+
+# --- F-X4 (R4 audit, Opus seat 3): the comparison deadline owns its own alarm ---
+
+
+@pytest.mark.skipif(
+    not all(hasattr(signal, name) for name in ("SIGALRM", "ITIMER_REAL")),
+    reason="requires the POSIX real-time alarm this backstop is built on",
+)
+def test_the_comparison_deadline_leaves_a_callers_own_alarm_alone():
+    """`SIGALRM` is process-global. Arming unconditionally replaced a caller's
+    real-time timer and then cancelled it in `finally`, destroying a deadline
+    this module never owned -- the same defect `common/alignment.py` closed as
+    F-L3, still open in its sibling on the same call path."""
+    previous_handler = signal.getsignal(signal.SIGALRM)
+
+    def caller_handler(signum, frame):
+        pass
+
+    signal.signal(signal.SIGALRM, caller_handler)
+    signal.setitimer(signal.ITIMER_REAL, 30.0)
+    try:
+        result = dissent._aligned_within_deadline("alpha beta", "alpha beta", seconds=1)
+
+        assert result == []
+        remaining, _ = signal.getitimer(signal.ITIMER_REAL)
+        # Not merely "still running": a module that armed its own 1s timer and
+        # left it in place also leaves `remaining > 0`, while the caller's 30s
+        # deadline is gone -- and later fires an unrelated SIGALRM mid-run.
+        assert remaining > 20, "alignment replaced or cancelled a timer it did not own"
+        assert signal.getsignal(signal.SIGALRM) is caller_handler
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0.0)
+        signal.signal(signal.SIGALRM, previous_handler)
+
+
+@pytest.mark.skipif(
+    not all(hasattr(signal, name) for name in ("SIGALRM", "ITIMER_REAL")),
+    reason="requires the POSIX real-time alarm this backstop is built on",
+)
+def test_the_comparison_runs_off_the_main_thread_without_touching_signal_state():
+    """`signal.signal` raises outright from a non-main thread, so the bounded
+    comparison could not run there at all. It degrades to an unbounded run --
+    the same honest degradation the missing-SIGALRM platform already takes --
+    rather than crashing the caller."""
+    captured = {}
+
+    def work():
+        try:
+            captured["result"] = dissent._aligned_within_deadline(
+                "alpha beta", "alpha gamma", seconds=1
+            )
+        except BaseException as error:  # noqa: BLE001 - the point of the test
+            captured["error"] = error
+
+    thread = threading.Thread(target=work)
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    signal.setitimer(signal.ITIMER_REAL, 30.0)
+    try:
+        thread.start()
+        thread.join()
+
+        # The name promises "without touching signal state", so pin the state:
+        # a worker-thread path that reached the process alarm in some way that
+        # did not raise would otherwise stay green while destroying a caller's
+        # timer.
+        remaining, _ = signal.getitimer(signal.ITIMER_REAL)
+        assert remaining > 20, "the worker-thread path disturbed the main thread's timer"
+        assert signal.getsignal(signal.SIGALRM) is previous_handler
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0.0)
+        signal.signal(signal.SIGALRM, previous_handler)
+
+    assert "error" not in captured, captured.get("error")
+    assert captured["result"], "a real difference must still be reported"
+
+
+@pytest.mark.skipif(
+    not all(hasattr(signal, name) for name in ("SIGALRM", "ITIMER_REAL")),
+    reason="requires the POSIX real-time alarm this backstop is built on",
+)
+def test_the_thread_clause_alone_keeps_a_worker_from_the_process_alarm():
+    """The armed-timer case above cannot fail on the main-thread clause: with a
+    caller timer running, the `getitimer` clause already refuses to arm
+    whatever the thread check does. Here NO timer is armed, so the main-thread
+    check is the only thing standing between the worker and `signal.signal` --
+    which raises ValueError off the main thread. Delete that clause and this
+    test goes red where the other stays green."""
+    assert signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0), (
+        "precondition: no caller timer may be armed, or the getitimer clause masks "
+        "the one this test exists to hold"
+    )
+    captured = {}
+
+    def work():
+        try:
+            captured["result"] = dissent._aligned_within_deadline(
+                "alpha beta", "alpha gamma", seconds=1
+            )
+        except BaseException as error:  # noqa: BLE001 - the point of the test
+            captured["error"] = error
+
+    thread = threading.Thread(target=work)
+    thread.start()
+    thread.join()
+
+    assert "error" not in captured, captured.get("error")
+    assert captured["result"], "a real difference must still be reported"
+
+
+# --- P2 review: the two halves of comparison_loss answer the same question ---
+
+
+def test_a_decomposed_witness_report_is_not_charged_a_character_per_accent():
+    """`comparison_view`'s docstring settles what `dropped_characters` counts:
+    "NFC discards nothing -- it re-encodes a character, it does not remove
+    one", and charging composition to the loss account "would put a wrong
+    number on every diacritic-heavy act in the corpus this project exists to
+    read". The witness half of `comparison_loss` must answer that same
+    question: summing every `markup_text_view` loss field folded in its
+    `unicode_reencoded_characters`, so a witness reporting decomposed French
+    was recorded as losing one character per accent while the
+    identically-composed reading was recorded as losing none.
+    """
+    precomposed = unicodedata.normalize("NFC", "baptisé et présenté")
+    decomposed = unicodedata.normalize("NFD", precomposed)
+    assert precomposed != decomposed, "the fixture must actually differ at the codepoint level"
+
+    rows = dissent.dissent_against(
+        precomposed,
+        [{"outcome": "read", "payload": {"chair": "attestator_1", "reported": decomposed}}],
+    )
+
+    assert rows[0]["departed"] is False, "the same ink in another normal form is not dissent"
+    assert rows[0]["comparison_loss"] == {
+        "reading_dropped_characters": 0,
+        "witness_dropped_characters": 0,
+    }
+
+
+def test_markup_and_collapsed_whitespace_stay_in_the_witness_loss_account():
+    """The other direction: tags and a collapsed run are genuine removals, and
+    dropping them from the account would hide what the comparison view discarded.
+    """
+    rows = dissent.dissent_against(
+        "alpha beta",
+        [
+            {
+                "outcome": "read",
+                "payload": {"chair": "attestator_1", "reported": "<b>alpha   beta</b>"},
+            }
+        ],
+    )
+
+    assert rows[0]["departed"] is False
+    assert rows[0]["comparison_loss"]["witness_dropped_characters"] == len("<b>") + len("</b>") + 2
