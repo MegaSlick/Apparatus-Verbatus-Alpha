@@ -339,7 +339,7 @@ def test_chandra_custody_refuses_a_forged_blob_reference():
     # Tampering the stored bytes themselves (leaving every reference honest) is
     # refused by the digest check instead.
     tree.blobs[stored["response_ref"]["relative_path"]] = b"tampered"
-    with pytest.raises(SchemaRefusal, match="blob differs from its sealed reference"):
+    with pytest.raises(SchemaRefusal, match="response blob differs from its sealed reference"):
         read_retained_chandra_response(
             tree,
             stored["response_ref"],
@@ -413,6 +413,15 @@ def test_chandra_custody_refuses_a_malformed_page_identity_before_writing(
             page_ordinal=page_ordinal,
         )
     assert tree.blobs == {}, "no custody may be sealed under an identity the read half refuses"
+
+
+def test_chandra_custody_refuses_a_response_that_is_not_bytes_before_writing():
+    tree = _FixtureTree()
+    with pytest.raises(SchemaRefusal, match="not bytes"):
+        retain_chandra_response(
+            tree, "a str response", RECEIPT, page_id=PAGE_ID, page_ordinal=PAGE_ORDINAL
+        )
+    assert tree.blobs == {}, "nothing may be sealed for a response of the wrong type"
 
 
 def test_chandra_custody_refuses_to_retain_a_response_that_is_itself_a_binding():

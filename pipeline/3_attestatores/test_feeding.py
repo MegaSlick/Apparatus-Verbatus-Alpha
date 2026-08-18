@@ -101,6 +101,20 @@ def test_churro_xml_refuses_a_doctype_before_the_parser_sees_it(raw):
         validate_churro_xml(raw)
 
 
+def test_churro_xml_refuses_a_response_that_is_not_raw_bytes():
+    """A str here would slip past the DOCTYPE byte scan and still parse, making
+    that refusal skippable by the caller's choice of type."""
+    with pytest.raises(SchemaRefusal, match="not raw bytes"):
+        validate_churro_xml("<output>text</output>")
+
+
+def test_churro_xml_refuses_an_output_element_carrying_attributes_or_children():
+    with pytest.raises(SchemaRefusal, match="plain <output> XML element"):
+        validate_churro_xml(b'<output kind="decorated">text</output>')
+    with pytest.raises(SchemaRefusal, match="plain <output> XML element"):
+        validate_churro_xml(b"<output><child>text</child></output>")
+
+
 def test_churro_records_a_24k_bound_and_detects_repetition_after_complete_capture():
     tree = _Tree()
     raw = b"a" * 72
@@ -257,16 +271,28 @@ def test_repetition_detection_stays_linear_on_a_long_degenerate_tail():
     Nothing bounds a captured response's size, and the built-string form spent
     time quadratic in it precisely when the detector fires.
     """
-    raw = b"the same twelve word tail over and over again " * 100_000
-    started = time.perf_counter()
+    unit = b"the same twelve word tail over and over again "
+    raw = unit * 100_000
     finding = detect_repetition(raw)
     # 99_999, not 100_000: whitespace normalization strips the final trailing
     # space, so the last window is one character short of the repeated unit.
     assert finding == {"kind": "post-hoc-repetition", "unit_characters": 46, "repeats": 99_999}
-    # Measured on this 4.6 MB input: 0.23 s windowed, 16.5 s built-string. The
-    # bound sits between them with room on both sides, so it fails on a return
-    # to quadratic rather than on a slow machine.
-    assert time.perf_counter() - started < 4.0
+    # Same machine, same load, same input: the windowed counter must beat the
+    # quadratic built-string reading it replaced by a wide margin. A ratio
+    # between two measurements taken back to back is immune to a slow or busy
+    # runner in a way no absolute wall-clock bound is (measured at this probe
+    # size: ~0.04 s windowed vs ~0.58 s built-string, a 14x gap asserted at 3x).
+    probe = unit * 20_000
+    started = time.perf_counter()
+    assert detect_repetition(probe) is not None
+    windowed = time.perf_counter() - started
+    started = time.perf_counter()
+    assert _repetition_by_construction(probe) is not None
+    built_string = time.perf_counter() - started
+    assert windowed * 3 < built_string, (
+        f"windowed {windowed:.3f}s vs built-string {built_string:.3f}s: the windowed "
+        "counter no longer clearly beats the quadratic form it exists to replace"
+    )
 
 
 def test_dai_retains_resize_and_manifest_references_not_carried_prompt_bytes():
@@ -376,7 +402,11 @@ def test_chandra_intake_consumes_the_r2_blob_under_its_original_receipt():
     assert intake["custody_ref"] == stored["custody_ref"]
     assert intake["schema"] == "attestatores-chandra-capture.v1"
     assert intake["raw_response_sha256"] == digest_bytes(raw)
-    # Verified at both ends of custody: once at retain, once at intake.
+    # The exact receipt reference was handed to the tree's verifier at both
+    # ends of custody -- once at retain, once at intake. Verification itself is
+    # the tree's own (read_run_receipt -> validate_receipt), proven in the
+    # store suite; what custody must prove is that it asks, both times, with
+    # the reference it was given.
     assert tree.receipts == [receipt, receipt]
 
 
@@ -435,7 +465,7 @@ def test_chandra_intake_refuses_a_tampered_response_blob():
     receipt = _ref("receipts/sha256/" + "b" * 64 + ".json")
     stored = _retain(tree, b"original response bytes", receipt)
     tree.blobs[stored["response_ref"]["relative_path"]] = b"tampered response bytes"
-    with pytest.raises(SchemaRefusal, match="blob differs from its sealed reference"):
+    with pytest.raises(SchemaRefusal, match="response blob differs from its sealed reference"):
         _intake(tree, stored, receipt)
 
 
