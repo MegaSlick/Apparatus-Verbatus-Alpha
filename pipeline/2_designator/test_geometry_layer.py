@@ -7,6 +7,7 @@ from copy import deepcopy
 import pytest
 from geometry_layer import (
     DEFAULT_POLICY_PATH,
+    RESPONSE_BLOB_PREFIX,
     chandra_layout,
     load_geometry_policy,
     load_geometry_policy_record,
@@ -26,7 +27,9 @@ from common.contracts.errors import SchemaRefusal
 from common.contracts.stages import writing_directory
 
 RECEIPT = {"relative_path": "receipts/sha256/" + "a" * 64 + ".json", "sha256": "a" * 64}
-RESPONSE = {"relative_path": "2_designator/blobs/sha256/" + "b" * 64, "sha256": "b" * 64}
+# Derived exactly as the custody module derives its prefix, so this fixture can
+# never regress to the bare-stage-name literal the F-S2 fix removed.
+RESPONSE = {"relative_path": RESPONSE_BLOB_PREFIX + "b" * 64, "sha256": "b" * 64}
 PAGE_ID = "pg_fixture"
 PAGE_ORDINAL = 0
 
@@ -383,6 +386,29 @@ def test_chandra_custody_refuses_to_retain_under_a_non_designator_receipt():
             page_ordinal=PAGE_ORDINAL,
         )
     assert tree.blobs == {}, "no custody may be sealed that the read half can never accept"
+
+
+@pytest.mark.parametrize(
+    ("page_id", "page_ordinal"),
+    [
+        ("", 0),  # blank page_id
+        (None, 0),  # non-string page_id
+        (PAGE_ID, -1),  # negative ordinal
+        (PAGE_ID, True),  # boolean masquerading as an ordinal
+    ],
+)
+def test_chandra_custody_refuses_a_malformed_page_identity_before_writing(page_id, page_ordinal):
+    """Every `_page_identity` branch refuses at the write door, nothing sealed."""
+    tree = _FixtureTree()
+    with pytest.raises(SchemaRefusal, match="page"):
+        retain_chandra_response(
+            tree,
+            b"a response under a broken identity",
+            RECEIPT,
+            page_id=page_id,
+            page_ordinal=page_ordinal,
+        )
+    assert tree.blobs == {}, "no custody may be sealed under an identity the read half refuses"
 
 
 def test_chandra_custody_refuses_to_retain_a_response_that_is_itself_a_binding():

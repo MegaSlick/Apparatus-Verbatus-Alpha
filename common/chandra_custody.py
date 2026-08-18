@@ -49,7 +49,7 @@ CUSTODY_BINDING_SCHEMA = "chandra-custody-binding.v1"
 # fixture trees fabricated paths from the bare stage name instead of exercising
 # the real numbered layout — the derived-record pattern the R0 freeze note
 # names, reproduced in the test doubles meant to catch it.
-_RESPONSE_PREFIX = f"{writing_directory(DESIGNATOR)}/{BLOBS_DIR}/"
+RESPONSE_BLOB_PREFIX = f"{writing_directory(DESIGNATOR)}/{BLOBS_DIR}/"
 _RECEIPT_PREFIX = "receipts/sha256/"
 # Named once, because the writer and the reader must not drift on what a binding
 # is -- and because the write half checks the same shape for a third reason
@@ -115,7 +115,7 @@ def retain_chandra_response(
     digest, published = tree.put_blob(DESIGNATOR, response)
     response_ref = custody_reference(
         {"relative_path": published.relative_path, "sha256": digest},
-        _RESPONSE_PREFIX,
+        RESPONSE_BLOB_PREFIX,
         "Chandra response reference",
     )
     binding = canonical_bytes(
@@ -130,7 +130,7 @@ def retain_chandra_response(
     binding_digest, binding_published = tree.put_blob(DESIGNATOR, binding)
     custody_ref = custody_reference(
         {"relative_path": binding_published.relative_path, "sha256": binding_digest},
-        _RESPONSE_PREFIX,
+        RESPONSE_BLOB_PREFIX,
         "Chandra custody binding reference",
     )
     return {"response_ref": response_ref, "custody_ref": custody_ref}
@@ -147,9 +147,11 @@ def read_retained_chandra_response(
 ) -> bytes:
     """R3's intake boundary: forged, mismatched, or tampered references are refused."""
     _page_identity(page_id, page_ordinal)
-    response = custody_reference(response_ref, _RESPONSE_PREFIX, "Chandra response reference")
+    response = custody_reference(response_ref, RESPONSE_BLOB_PREFIX, "Chandra response reference")
     receipt = custody_reference(receipt_ref, _RECEIPT_PREFIX, "Chandra receipt reference")
-    custody = custody_reference(custody_ref, _RESPONSE_PREFIX, "Chandra custody binding reference")
+    custody = custody_reference(
+        custody_ref, RESPONSE_BLOB_PREFIX, "Chandra custody binding reference"
+    )
     binding_bytes = _read_custody_bytes(tree, custody["relative_path"], "custody binding")
     if digest_bytes(binding_bytes) != custody["sha256"]:
         raise SchemaRefusal("Chandra custody binding blob differs from its sealed reference")

@@ -23,6 +23,7 @@ from feeding import (
     execute_stage_major_schedule,
     retain_model_view,
     stage_major_schedule,
+    validate_churro_xml,
 )
 
 from common.chandra_custody import retain_chandra_response
@@ -59,7 +60,14 @@ class _Tree:
         return {"chair": self.receipt_chair}
 
     def read_bytes(self, path):
-        return self.blobs[path]
+        # `RunTree.read_bytes` is a filesystem read, so an absent blob raises
+        # FileNotFoundError (an OSError). A KeyError here would let a
+        # missing-blob refusal pass in this suite and fail against the real
+        # tree, because `_read_custody_bytes` catches OSError only.
+        try:
+            return self.blobs[path]
+        except KeyError:
+            raise FileNotFoundError(2, "No such file or directory", path) from None
 
 
 def _retain(tree, raw, receipt, *, page_id=PAGE_ID, page_ordinal=PAGE_ORDINAL):
@@ -75,6 +83,21 @@ def _intake(tree, stored, receipt, *, page_id=PAGE_ID, page_ordinal=PAGE_ORDINAL
         receipt_ref=receipt,
         custody_ref=stored["custody_ref"],
     )
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        b'<!DOCTYPE output [<!ENTITY x "y">]><output>&x;</output>',
+        b'<?xml version="1.0"?><!doctype output><output>text</output>',
+    ],
+)
+def test_churro_xml_refuses_a_doctype_before_the_parser_sees_it(raw):
+    """A legitimate Churro response is one plain <output> element; a DTD is the
+    door to entity tricks the validator has no reason to keep open. Escaped text
+    (&lt;!DOCTYPE) never carries these bytes, so honest transcriptions pass."""
+    with pytest.raises(SchemaRefusal, match="DOCTYPE"):
+        validate_churro_xml(raw)
 
 
 def test_churro_records_a_24k_bound_and_detects_repetition_after_complete_capture():
@@ -330,9 +353,23 @@ def test_chandra_intake_consumes_the_r2_blob_under_its_original_receipt():
     assert intake["response_ref"] == stored["response_ref"]
     assert intake["receipt_ref"] == receipt
     assert intake["custody_ref"] == stored["custody_ref"]
+    assert intake["schema"] == "attestatores-chandra-capture.v1"
     assert intake["raw_response_sha256"] == digest_bytes(raw)
     # Verified at both ends of custody: once at retain, once at intake.
     assert tree.receipts == [receipt, receipt]
+
+
+@pytest.mark.parametrize("vanished", ["response_ref", "custody_ref"])
+def test_chandra_intake_names_a_vanished_blob_instead_of_leaking_the_oserror(vanished):
+    """P2-1's named refusal, proven against a double that fails like the real
+    tree: `RunTree.read_bytes` raises FileNotFoundError for an absent blob, and
+    only an OSError-shaped double can show the refusal is actually wired."""
+    tree = _Tree()
+    receipt = _ref("receipts/sha256/" + "b" * 64 + ".json")
+    stored = _retain(tree, b"a response that will vanish", receipt)
+    del tree.blobs[stored[vanished]["relative_path"]]
+    with pytest.raises(SchemaRefusal, match="could not be read"):
+        _intake(tree, stored, receipt)
 
 
 def test_chandra_intake_refuses_a_response_retained_under_a_different_receipt():

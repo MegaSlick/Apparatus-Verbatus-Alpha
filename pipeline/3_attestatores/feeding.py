@@ -17,6 +17,7 @@ from itertools import groupby
 from threading import RLock
 from typing import Any, Callable, Iterator
 
+from common.chandra_custody import read_retained_chandra_response
 from common.contracts.canonical import digest_bytes, digest_of
 from common.contracts.errors import SchemaRefusal
 from common.contracts.stages import ATTESTATORES
@@ -59,9 +60,11 @@ _REPETITION_MIN_REPEATS = 3
 def churro_prompt() -> dict[str, str]:
     """The trained two-message XML framing, retained verbatim.
 
-    These strings are carried from the quarantined prior adapter's explicit
-    ``prompts/ocr.py`` transcription. They are split by role because joining or
-    summarizing them changes the actual chat-template bytes the model receives.
+    These strings are carried bytes from the quarantined prior adapter,
+    ``/window/remote/pilot_churro.py`` (its transcription of the model release's
+    ``prompts/ocr.py``), named as carried in the commit that brought them per
+    the quarantine rule. They are split by role because joining or summarizing
+    them changes the actual chat-template bytes the model receives.
     """
     system = (
         "You are an expert in diplomatic transcription of historical documents from various "
@@ -97,6 +100,13 @@ def churro_generation() -> dict[str, int]:
 
 def validate_churro_xml(raw: bytes) -> str:
     """Validate the native Churro XML while retaining raw bytes on every failure."""
+    # A DOCTYPE is refused before the parser sees it: a legitimate Churro
+    # response is one plain <output> element, and a DTD is the door to entity
+    # tricks this validator has no reason to keep open. A whole-payload scan on
+    # purpose — a DOCTYPE may follow an XML declaration, and escaped text
+    # (&lt;!DOCTYPE) never contains these bytes, so honest transcriptions pass.
+    if isinstance(raw, (bytes, bytearray)) and b"<!DOCTYPE" in bytes(raw).upper():
+        raise SchemaRefusal("Churro response carries a DOCTYPE; a plain <output> element cannot")
     try:
         root = ET.fromstring(raw)
     except (ET.ParseError, UnicodeDecodeError) as error:
@@ -240,8 +250,6 @@ def chandra_capture_intake(
     result intentionally carries the original references alongside the exact
     raw bytes' digest.
     """
-    from common.chandra_custody import read_retained_chandra_response
-
     raw = read_retained_chandra_response(
         tree,
         response_ref,
@@ -251,6 +259,7 @@ def chandra_capture_intake(
         page_ordinal=page_ordinal,
     )
     return {
+        "schema": "attestatores-chandra-capture.v1",
         "adapter": "chandra-capture.v1",
         "page_id": page_id,
         "page_ordinal": page_ordinal,
