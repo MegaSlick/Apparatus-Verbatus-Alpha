@@ -13,6 +13,19 @@ import tomllib
 from pathlib import Path
 from typing import Any, Callable, Final, TypedDict
 
+# One-receipt Chandra custody lives in common/chandra_custody.py: the write half
+# is R2's and the read half is R3's Attestatores intake, and a stage may not
+# import another stage's uniquely named module. Both halves are re-exported here
+# so this module keeps naming them. The signatures did NOT survive the move
+# unchanged -- both now require the page identity, the write returns a
+# `{"response_ref", "custody_ref"}` pair, and the read takes that custody
+# reference -- so a caller written against the pre-move names has to be updated,
+# not merely re-pointed. There are no such callers yet; see common/chandra_custody.py.
+from common.chandra_custody import (  # noqa: F401  (re-export)
+    RESPONSE_BLOB_PREFIX,
+    read_retained_chandra_response,
+    retain_chandra_response,
+)
 from common.contracts.canonical import digest_bytes, digest_of
 from common.contracts.envelope import build_envelope, validate_envelope
 from common.contracts.errors import SchemaRefusal
@@ -34,6 +47,9 @@ _SOURCES: Final = frozenset({"surya", "yolo-obb", "chandra-layout"})
 _TILING_PASS: Final = "surya-tiling-pass"
 _RESPONSE_DETECTION: Final = "response-detection"
 _OBSERVATION_UNITS: Final = frozenset({_TILING_PASS, _RESPONSE_DETECTION})
+# The response-blob prefix is owned by common/chandra_custody.py, which derives
+# it from the run tree's own directory naming — a literal here once failed every
+# real response reference (see that module's comment); one construction, shared.
 
 
 class Bounds(TypedDict):
@@ -286,7 +302,7 @@ def validate_raw_proposal(payload: object) -> dict[str, Any]:
     if record["proposal_id"] != expected_proposal_id:
         raise SchemaRefusal("raw proposal identity does not derive from source content")
     _ref(record["receipt_ref"], "receipts/sha256/", "raw proposal receipt reference")
-    _ref(record["response_ref"], "designator/blobs/sha256/", "raw proposal response reference")
+    _ref(record["response_ref"], RESPONSE_BLOB_PREFIX, "raw proposal response reference")
     _sha(record["adapter_config_sha256"], "raw proposal adapter config")
     # Observation provenance says WHICH of a source's observations produced this
     # record, and the unit says what those ordinals count. One field named
@@ -635,41 +651,6 @@ def load_geometry_policy_record(policy: object) -> dict[str, Any]:
     return policy
 
 
-def retain_chandra_response(
-    tree: Any, response: bytes, receipt_ref: dict[str, str]
-) -> dict[str, str]:
-    """Store one raw response blob and bind it jointly to the one serving receipt."""
-    _ref(receipt_ref, "receipts/sha256/", "Chandra receipt reference")
-    if not isinstance(response, bytes):
-        raise SchemaRefusal("Chandra raw response is not bytes")
-    digest, published = tree.put_blob(DESIGNATOR, response)
-    reference = {"relative_path": published.relative_path, "sha256": digest}
-    return _ref(reference, "designator/blobs/sha256/", "Chandra response reference")
-
-
-def read_retained_chandra_response(tree: Any, response_ref: object, receipt_ref: object) -> bytes:
-    """R3's future intake boundary: forged blob or receipt references are refused."""
-    response = _ref(response_ref, "designator/blobs/sha256/", "Chandra response reference")
-    receipt = _ref(receipt_ref, "receipts/sha256/", "Chandra receipt reference")
-    # Receipt validation is delegated to the run tree, which verifies its schema,
-    # path, and bytes.  The response itself is opaque textual custody, never parsed
-    # by this geometry module.
-    tree.read_run_receipt(receipt)
-    # A reference whose blob is gone is a custody failure, not a crash: the same
-    # reasoning `RunTree.read_run_receipt` applies to a missing receipt. Without
-    # this, a retained response that was deleted under the run reaches R3 as a
-    # bare FileNotFoundError instead of a named refusal naming the reference.
-    try:
-        data = tree.read_bytes(response["relative_path"])
-    except OSError as error:
-        raise SchemaRefusal(
-            f"Chandra response blob {response['relative_path']} could not be read: {error}"
-        ) from error
-    if digest_bytes(data) != response["sha256"]:
-        raise SchemaRefusal("Chandra response blob differs from its sealed reference")
-    return data
-
-
 def raw_proposal_envelope(
     *,
     run_id: str,
@@ -836,15 +817,6 @@ def _derive_resolution(
     ids = [payload["proposal_id"] for _envelope, payload in ordered]
     if len(ids) != len(set(ids)):
         raise SchemaRefusal("resolver received duplicate raw proposal identities")
-    # The same question, asked of the other source. Two occlusion envelopes under
-    # one `occlusion_id` are an identity collision exactly as two raw proposals
-    # are, and left unchecked they are worse than untidy: `occlusion_ids` below
-    # goes into EVERY partition row, so one occlusion counted twice tells a
-    # reviewer that two separate obstructions bear on every proposal on the page.
-    # GOVERNANCE 10 -- the record may only claim what was actually measured.
-    occlusion_ids = sorted(payload["occlusion_id"] for _envelope, payload in occlusions)
-    if len(occlusion_ids) != len(set(occlusion_ids)):
-        raise SchemaRefusal("resolver received duplicate occlusion identities")
     containment, overlaps = [], []
     for index, (_envelope, left) in enumerate(ordered):
         for _other_envelope, right in ordered[index + 1 :]:
@@ -891,6 +863,15 @@ def _derive_resolution(
     # flag is intentionally conservative, decided by the R2 audit seat
     # (2026-08-16); a geometric-intersection narrowing is future work if the
     # review-queue cost is measured and found to matter, never a default.
+    # The same question, asked of the other source. Two occlusion envelopes under
+    # one `occlusion_id` are an identity collision exactly as two raw proposals
+    # are, and left unchecked they are worse than untidy: `occlusion_ids` below
+    # goes into EVERY partition row, so one occlusion counted twice tells a
+    # reviewer that two separate obstructions bear on every proposal on the page.
+    # GOVERNANCE 10 -- the record may only claim what was actually measured.
+    occlusion_ids = sorted(payload["occlusion_id"] for _envelope, payload in occlusions)
+    if len(occlusion_ids) != len(set(occlusion_ids)):
+        raise SchemaRefusal("resolver received duplicate occlusion identities")
     return {
         "schema": RESOLUTION_SCHEMA,
         "page_id": page[0],
