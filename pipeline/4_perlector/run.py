@@ -1287,8 +1287,18 @@ def _sealed_sibling_semi_finals(
         payload = reading.get("payload")
         # A held/not-run sibling was absent from the original frozen Pass-B
         # collection too, so it contributes no row to a later recovery audit.
-        if not isinstance(payload, dict) or not isinstance(payload.get("text"), str):
+        # ONLY that outcome skips: any other outcome whose payload lost its
+        # text is malformed evidence, and dropping it would quietly shrink the
+        # page's cross-act flag comparisons exactly like the zero-record case
+        # above.
+        if reading["outcome"] == "not-run":
             continue
+        if not isinstance(payload, dict) or not isinstance(payload.get("text"), str):
+            raise FatalAccounting(
+                f"sealed sibling Perlectio for {act_id} has outcome {reading['outcome']!r} "
+                "but no text to audit; a malformed sibling may not be dropped from the "
+                "page's flag comparisons"
+            )
         validate_reading_payload(
             payload,
             outcome=reading["outcome"],
@@ -2056,6 +2066,17 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                         "", dissent_testimonia(row["testimonia"], row["attachment_view"])
                     )
                     payload["self_revision"] = departures("", row["prior"]["text"])
+                elif payload["gaps"] and all(
+                    gap.get("position") == "whole-act" for gap in payload["gaps"]
+                ):
+                    # The symmetric direction: a Pass-B no-readable-text act
+                    # carried the whole-act gap, and a re-proof that restored
+                    # readable text would otherwise publish established text
+                    # BESIDE a gap claiming the whole act is empty --
+                    # validate_annotations refuses exactly that, so the valid
+                    # re-proof could never publish. Only the whole-act shape
+                    # clears; a legitimate narrower gap is not this case.
+                    payload["gaps"] = []
             # After the projection, not before it: `validate_chain` recomputes
             # the change record from the draft's semi-final against the
             # PUBLISHED text, so the record must describe the projected text.
