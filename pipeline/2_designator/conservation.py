@@ -59,8 +59,10 @@ to one meaning of "connected".
 
 from __future__ import annotations
 
+import heapq
 from collections import defaultdict
-from typing import Final, TypedDict
+from functools import cmp_to_key
+from typing import Final, Iterator, TypedDict
 
 import geometry
 from structure import DEFAULT_GAP_TOLERANCE_PX, SECONDARY_MARGIN, _ink_threshold
@@ -259,9 +261,9 @@ def _components(runs: list[_Run], gap: int) -> list[dict]:
     # residual by its position here. `label_components` sorts by origin and then
     # by the sorted member pixels — never by pixel count — so two components
     # sharing a (top, left) origin must be ordered by their ink, not by a count
-    # that the oracle ignores or by union-find insertion order. Pixels are
-    # materialised for the tied components only; ties need two components whose
-    # bounding boxes share an exact corner, so almost every page has none.
+    # that the oracle ignores or by union-find insertion order. Tied components
+    # are compared over a lazily merged run stream: memory stays proportional to
+    # the runs, which already exist, never to the pixels they cover.
     def origin(entry: tuple[dict, list[_Run]]) -> tuple[int, int]:
         return (entry[0]["bounds"]["y"], entry[0]["bounds"]["x"])
 
@@ -272,15 +274,35 @@ def _components(runs: list[_Run], gap: int) -> list[dict]:
         if index == len(entries) or origin(entries[index]) != origin(entries[span_start]):
             span = entries[span_start:index]
             if len(span) > 1:
-                span.sort(key=lambda entry: _member_pixels(entry[1]))
+                span.sort(key=cmp_to_key(_compare_ink_streams))
             ordered.extend(component for component, _group in span)
             span_start = index
     return ordered
 
 
-def _member_pixels(group: list[_Run]) -> tuple[tuple[int, int], ...]:
-    """A tied component's ink as the oracle compares it: sorted (x, y) pixels."""
-    return tuple(sorted((x, run["y"]) for run in group for x in range(run["x0"], run["x1"])))
+def _pixel_stream(group: list[_Run]) -> Iterator[tuple[int, int]]:
+    """A tied component's ink in the oracle's sorted (x, y) order, lazily.
+
+    Each run yields (x0, y), (x0 + 1, y), ... — ascending in (x, y) because y is
+    fixed — so a heap merge of the runs is exactly the sorted pixel sequence the
+    retired implementation compared, produced one pixel at a time.
+    """
+    return heapq.merge(*(((x, run["y"]) for x in range(run["x0"], run["x1"])) for run in group))
+
+
+def _compare_ink_streams(left: tuple[dict, list[_Run]], right: tuple[dict, list[_Run]]) -> int:
+    """Lexicographic sorted-pixel comparison without materialising either side.
+
+    Two distinct components cannot hold identical ink (a pixel belongs to exactly
+    one), so after the first difference — or the shorter stream running out, the
+    tuple-prefix rule — the comparison is decided.
+    """
+    for left_pixel, right_pixel in zip(
+        _pixel_stream(left[1]), _pixel_stream(right[1]), strict=False
+    ):
+        if left_pixel != right_pixel:
+            return -1 if left_pixel < right_pixel else 1
+    return left[0]["pixel_count"] - right[0]["pixel_count"]
 
 
 def reconcile(
