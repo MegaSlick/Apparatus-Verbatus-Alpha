@@ -1913,6 +1913,14 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         protocol_sha256=protocol_sha256,
     )
     policy_record = audit.policy_record(audit_policy, audit_sha256)
+    # One page's renders at a time: flags are common (the fixture flags every
+    # act), so the re-proof rebuild below runs for most acts on a real run.
+    # Page renders are the expensive half and are per PAGE, not per act;
+    # `pending` walks acts in declared order, so a single-slot cache keyed by
+    # the act's page set removes the repeated render work while keeping peak
+    # memory bounded to one page -- the same bound the no-hoarding comment
+    # below defends.
+    render_cache: dict[str, Any] = {}
     for row in pending:
         payload = row["payload"]
         act_id = row["act_id"]
@@ -1962,6 +1970,12 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             # sealed artifacts the Pass-B dossier was built from -- the
             # rebuilt dossier is discarded, and the double-run byte-identity
             # acceptance tests hold the determinism this relies on.
+            page_key = tuple(basis["source_page_id"] for basis in row["bases"])
+            if render_cache.get("key") != page_key:
+                render_cache = {
+                    "key": page_key,
+                    "renders": _page_renders_for(context, row["bases"]),
+                }
             _, reproof_pixels = dossier_module.build_reader_dossier(
                 context,
                 act_id=act_id,
@@ -1969,7 +1983,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 regions=row["bases"],
                 testimonia=row["testimonia"],
                 regime=context.witness_context,
-                page_renders=_page_renders_for(context, row["bases"]),
+                page_renders=render_cache["renders"],
                 witness_context=witness_context_table,
                 act_attachment=row["attachment_view"],
                 prior_draft=row["prior"],

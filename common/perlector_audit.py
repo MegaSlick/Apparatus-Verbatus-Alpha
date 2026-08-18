@@ -47,6 +47,21 @@ _PERLECTIO_AUDIT_FIELDS: Final = frozenset(
 )
 
 
+# Module scope so tests can assert against the same closed list the runtime
+# screen uses. The screen below is unreachable over today's fixed literal, and
+# that is its job: it fires on every call the moment an editor softens the
+# wording (or a future variant is built through this function), which is a
+# stronger guard than a test that must remember to run.
+FORBIDDEN_PROMPT_FRAGMENTS: Final = (
+    "wrong",
+    "incorrect",
+    "should read",
+    "expected",
+    "replace with",
+    "must change",
+)
+
+
 def neutral_prompt(*, start: int, end: int, text_length: int) -> str:
     if not 0 <= start <= end <= text_length:
         raise SchemaRefusal("an audit re-proof location lies outside the delivered text")
@@ -56,8 +71,7 @@ def neutral_prompt(*, start: int, end: int, text_length: int) -> str:
         "if it supports the existing text, record confirmed unchanged."
     )
     lowered = prompt.lower()
-    forbidden = ("wrong", "incorrect", "should read", "expected", "replace with", "must change")
-    if any(fragment in lowered for fragment in forbidden):
+    if any(fragment in lowered for fragment in FORBIDDEN_PROMPT_FRAGMENTS):
         raise SchemaRefusal("the audit re-proof prompt is not neutral")
     return prompt
 
