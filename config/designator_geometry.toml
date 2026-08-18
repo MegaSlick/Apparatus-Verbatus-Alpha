@@ -1,0 +1,21 @@
+# R2 Designator geometry policy.  This file is sealed into a run by its SHA-256.
+[geometry]
+schema = "designator-geometry-policy.v1"
+
+[geometry.surya]
+role = "designator_surya"
+tile_width_px = 1400
+tile_height_px = 1400
+half_tile_vertical_offset_px = 700
+horizontal_overlap_px = 700
+
+[geometry.yolo_obb]
+role = "designator_yolo_obb"
+task = "obb"
+crop_policy = "aabb-enclose"
+rectify = false
+
+[geometry.provenance]
+source = "R2 binding: REBUILD_PLAN_three_stage.md and three_stage_reading_design.md v2.1"
+calibrated_for_this_corpus = false
+caveat = "Fixture policy only; real proposer activation remains behind Tyrel's S8 word."

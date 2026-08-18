@@ -1076,6 +1076,7 @@ def fixture_submission(args, registry) -> int:
         args.scenario,
         pdf_render_config_path=args.pdf_render_config,
         designator_padding_config_path=args.designator_padding_config,
+        designator_geometry_config_path=args.designator_geometry_config,
         pdf_target_dpi=args.pdf_target_dpi,
         armarium_formats_config_path=args.formats_config,
         recovery_config_path=args.recovery_config,
@@ -1227,6 +1228,7 @@ def real_submission(args, registry) -> int:
         load_hard_failure_policy(args.hard_failure_config),
         args.formats_config,
         designator_padding_config_sha256=_padding_config_digest(args.designator_padding_config),
+        designator_geometry_config_sha256=_geometry_config_digest(args.designator_geometry_config),
         witness_context=args.witness_context,
         witness_context_config_path=args.witness_context_config,
         nuda_per_mille=args.nuda_per_mille,
@@ -1326,6 +1328,23 @@ def _padding_config_digest(path: str) -> str:
         ) from error
 
 
+def _geometry_config_digest(path: str) -> str:
+    """The Designator geometry policy's digest, sealed for the same reason.
+
+    Unlike padding, this one is load-bearing today: `pipeline/2_designator/run.py`
+    re-reads the geometry policy at point of use and proves it read what was
+    bound via `context.require_sealed_config("designator-geometry", ...)`, so a
+    real run whose door never sealed this name would refuse at the Designator
+    unconditionally — the exact defect F-S5 named for padding.
+    """
+    try:
+        return digest_bytes(Path(path).read_bytes())
+    except OSError as error:
+        raise ContractError(
+            f"the Designator geometry configuration binding at {path} could not be read"
+        ) from error
+
+
 def _real_bindings(
     models,
     ledger,
@@ -1337,6 +1356,7 @@ def _real_bindings(
     corpus_frame_config_path=DEFAULT_CORPUS_FRAME_CONFIG_PATH,
     *,
     designator_padding_config_sha256: str,
+    designator_geometry_config_sha256: str,
     witness_context: str = "named",
     witness_context_config_path: str | Path = DEFAULT_WITNESS_CONTEXT_CONFIG_PATH,
     nuda_per_mille: int = 0,
@@ -1409,6 +1429,7 @@ def _real_bindings(
                 "recovery_policy": recovery_policy,
                 "hard_failure_policy": hard_failure_policy,
                 "designator_padding_config_sha256": designator_padding_config_sha256,
+                "designator_geometry_config_sha256": designator_geometry_config_sha256,
                 "corpus_frame_policy": corpus_frame_policy,
                 "corpus_frame_config_sha256": corpus_frame_config_sha256,
                 "models": models.to_record(),
@@ -1444,6 +1465,7 @@ def _real_bindings(
         # Found in audit (S5); F-S5.
         "sealed_config_digests": {
             "designator-padding": designator_padding_config_sha256,
+            "designator-geometry": designator_geometry_config_sha256,
             "corpus-frame-shard": corpus_frame_config_sha256,
             "perlector-protocol": perlector_protocol_config_sha256,
         },

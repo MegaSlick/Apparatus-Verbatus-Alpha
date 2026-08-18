@@ -56,7 +56,10 @@ from common.recovery import (  # noqa: E402
 )
 from common.runtree.store import RunTree  # noqa: E402
 from common.stage import (  # noqa: E402
+    DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH,
     DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH,
+    DEFAULT_PDF_RENDER_CONFIG_PATH,
+    DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH,
     DEFAULT_WITNESS_CONTEXT_CONFIG_PATH,
     EXIT_COMPLETE,
     EXIT_HELD,
@@ -105,6 +108,8 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
         str(args.pdf_render_config),
         "--designator-padding-config",
         str(args.designator_padding_config),
+        "--designator-geometry-config",
+        str(args.designator_geometry_config),
         "--formats-config",
         str(args.formats_config),
         "--recovery-config",
@@ -206,7 +211,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--perlector-protocol-config",
-        default="config/perlector_protocol.toml",
+        default=str(DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH),
         help="the sealed Perlector prior-draft protocol; its exact bytes enter every "
         "run's config digest",
     )
@@ -220,13 +225,18 @@ def main() -> int:
     )
     parser.add_argument(
         "--pdf-render-config",
-        default="config/pdf_render.toml",
+        default=str(DEFAULT_PDF_RENDER_CONFIG_PATH),
         help="the default whole-page PDF rasterisation target for this run",
     )
     parser.add_argument(
         "--designator-padding-config",
         default=str(DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH),
         help="the capture padding applied to every act crop, sealed into this run",
+    )
+    parser.add_argument(
+        "--designator-geometry-config",
+        default=str(DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH),
+        help="the sealed Surya/YOLO geometry and crop-policy declaration for this run",
     )
     parser.add_argument(
         "--formats-config",

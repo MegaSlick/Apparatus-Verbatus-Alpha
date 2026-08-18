@@ -51,8 +51,6 @@ _RESERVED_KINDS: Final = frozenset(
     {
         "audit-draft",
         "audit-finding",
-        "raw-proposal",
-        "occlusion",
     }
 )
 

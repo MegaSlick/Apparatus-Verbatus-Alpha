@@ -99,6 +99,9 @@ MAX_PERLECTOR_INSTRUMENT_PER_MILLE: Final = 1000
 DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH = (
     Path(__file__).resolve().parents[1] / "config" / "designator_padding.toml"
 )
+DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH = (
+    Path(__file__).resolve().parents[1] / "config" / "designator_geometry.toml"
+)
 DEFAULT_CORPUS_FRAME_CONFIG_PATH = (
     Path(__file__).resolve().parents[1] / "config" / "corpus_frame.toml"
 )
@@ -563,6 +566,9 @@ def stage_parser(description: str, *, accepts_chair: bool = False) -> argparse.A
         "--designator-padding-config", default=str(DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH)
     )
     parser.add_argument(
+        "--designator-geometry-config", default=str(DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH)
+    )
+    parser.add_argument(
         "--perlector-instrument-per-mille",
         type=int,
         default=0,
@@ -772,6 +778,7 @@ def run_config_bindings(
     *,
     pdf_render_config_path: str | Path = DEFAULT_PDF_RENDER_CONFIG_PATH,
     designator_padding_config_path: str | Path = DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH,
+    designator_geometry_config_path: str | Path = DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH,
     pdf_target_dpi: int | None = None,
     armarium_formats_config_path: str | Path = DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH,
     recovery_config_path: str | Path = DEFAULT_RECOVERY_CONFIG_PATH,
@@ -794,7 +801,7 @@ def run_config_bindings(
     the adapter recipes, so two of the three come straight off it. The third,
     `config_digest`, is the digest of *everything* that shapes this run's
     behaviour — the model configuration, fixture, scenario, PDF-render settings,
-    Designator padding, Armarium projection configuration, recovery policy, the
+    Designator padding and geometry policy, Armarium projection configuration, recovery policy, the
     run-level hard-failure policy, serving-recipe catalogue, and pod-placement
     catalogue. The synthetic fixture declares byte-backed pages only, so
     it does not claim to bind the real Door's PDFium/Pillow/libheif execution
@@ -829,6 +836,13 @@ def run_config_bindings(
         raise ContractError(
             "the Designator padding configuration binding at "
             f"{designator_padding_config_path} could not be read"
+        ) from error
+    try:
+        geometry_config_digest = digest_bytes(Path(designator_geometry_config_path).read_bytes())
+    except OSError as error:
+        raise ContractError(
+            "the Designator geometry configuration binding at "
+            f"{designator_geometry_config_path} could not be read"
         ) from error
     corpus_frame_policy, corpus_frame_config_digest = load_corpus_frame_policy(
         corpus_frame_config_path
@@ -873,6 +887,7 @@ def run_config_bindings(
                 "models": models.to_record(),
                 "pdf_render_config_sha256": pdf_render_config_digest,
                 "designator_padding_config_sha256": padding_config_digest,
+                "designator_geometry_config_sha256": geometry_config_digest,
                 "corpus_frame_policy": corpus_frame_policy,
                 "corpus_frame_config_sha256": corpus_frame_config_digest,
                 "pdf_target_dpi_override": pdf_target_dpi,
@@ -904,13 +919,14 @@ def run_config_bindings(
         # above by name. This is the record of which bytes each digest above was
         # taken over, so a stage that re-reads one of these files for its values
         # can prove it read what was bound (`StageContext.require_sealed_config`).
-        # Only `designator-padding` has such a point-of-use re-read today: the
+        # Designator padding and geometry policies have point-of-use re-reads;
         # Door's own second read of the PDF-render policy (`door.py`) neither
         # takes a sealed digest nor calls `require_sealed_config`, so sealing a
         # `pdf-render` entry here would read as a closed TOCTOU window that is
         # not actually wired shut. Not this stage's window to close.
         "sealed_config_digests": {
             "designator-padding": padding_config_digest,
+            "designator-geometry": geometry_config_digest,
             "corpus-frame-shard": corpus_frame_config_digest,
             "perlector-protocol": perlector_protocol_config_digest,
         },
@@ -1825,6 +1841,7 @@ def open_context(
         args.scenario,
         pdf_render_config_path=args.pdf_render_config,
         designator_padding_config_path=args.designator_padding_config,
+        designator_geometry_config_path=args.designator_geometry_config,
         pdf_target_dpi=args.pdf_target_dpi,
         armarium_formats_config_path=args.formats_config,
         recovery_config_path=args.recovery_config,

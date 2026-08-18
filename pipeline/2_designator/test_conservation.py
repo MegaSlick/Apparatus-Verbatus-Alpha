@@ -6,9 +6,11 @@ point of this module, and a test that trusted the same claimed list the
 reconciliation is supposed to be checking would not be testing anything.
 """
 
+import random
+
 import pytest
 from conservation import reconcile
-from structure import PRIMARY_MARGIN, SECONDARY_MARGIN
+from structure import PRIMARY_MARGIN, SECONDARY_MARGIN, ink_pixels, label_components
 
 from common.contracts.errors import ContractError
 
@@ -29,6 +31,35 @@ def paint_rect(rows: list[bytearray], x: int, y: int, w: int, h: int, value: int
 
 def paint_pixel(rows: list[bytearray], x: int, y: int, value: int = INK) -> None:
     rows[y][x] = value
+
+
+def _legacy_reference(width, height, rows, claimed_bounds, gap_tolerance_px):
+    """The old pixel-set algorithm, kept here solely as a U13 equivalence oracle."""
+    pixels = ink_pixels(width, height, rows, background=BACKGROUND, margin=SECONDARY_MARGIN)
+    claimed = {
+        pixel
+        for pixel in pixels
+        if any(
+            bounds["x"] <= pixel[0] < bounds["x"] + bounds["w"]
+            and bounds["y"] <= pixel[1] < bounds["y"] + bounds["h"]
+            for bounds in claimed_bounds
+        )
+    }
+    components = label_components(pixels - claimed, gap_tolerance_px=gap_tolerance_px)
+    return {
+        "total_ink_pixel_count": len(pixels),
+        "claimed_pixel_count": len(claimed),
+        "residual_pixel_count": len(pixels - claimed),
+        "residual_components": [
+            {
+                **component,
+                "review_priority": "high"
+                if max(component["bounds"]["w"], component["bounds"]["h"]) >= 6
+                else "low",
+            }
+            for component in components
+        ],
+    }
 
 
 # --- exact reconciliation -----------------------------------------------------
@@ -94,6 +125,150 @@ def test_claimed_plus_residual_always_equals_total():
     )
     assert result["total_ink_pixel_count"] == 100 + 36 + 1
     assert result["claimed_pixel_count"] == 100
+
+
+def test_row_oriented_u13_reimplementation_is_equivalent_to_the_retired_pixel_set_oracle():
+    """Fixed randomized small pages cover gaps, overlaps, and residual topology."""
+    generator = random.Random(20260816)
+    width, height = 31, 23
+    for gap_tolerance_px in (0, 1, 3):
+        for _case in range(15):
+            rows = blank_rows(width, height)
+            for y in range(height):
+                for x in range(width):
+                    if generator.randrange(7) == 0:
+                        rows[y][x] = INK
+            claims = [
+                {
+                    "x": generator.randrange(width - 1),
+                    "y": generator.randrange(height - 1),
+                    "w": generator.randrange(1, 8),
+                    "h": generator.randrange(1, 8),
+                }
+                for _ in range(4)
+            ]
+            for bounds in claims:
+                bounds["w"] = min(bounds["w"], width - bounds["x"])
+                bounds["h"] = min(bounds["h"], height - bounds["y"])
+            assert reconcile(
+                width,
+                height,
+                rows,
+                background=BACKGROUND,
+                claimed_bounds=claims,
+                gap_tolerance_px=gap_tolerance_px,
+            ) == _legacy_reference(width, height, rows, claims, gap_tolerance_px)
+
+
+def test_row_oriented_reconciliation_matches_the_oracle_on_a_fully_inked_densely_claimed_page():
+    """S1 breaker case: a fully-inked page with many heavily overlapping claims is
+    the pathological input for _subtract_claims' run-splitting arithmetic -- every
+    row is one giant ink run split by many overlapping intervals at once."""
+    generator = random.Random(20260816)
+    width, height = 25, 25
+    rows = [bytearray([INK] * width) for _ in range(height)]
+    for gap_tolerance_px in (0, 2):
+        claims = [
+            {
+                "x": generator.randrange(width - 1),
+                "y": generator.randrange(height - 1),
+                "w": generator.randrange(1, 12),
+                "h": generator.randrange(1, 12),
+            }
+            for _ in range(10)  # far more overlap than the 4-claim randomized suite
+        ]
+        for bounds in claims:
+            bounds["w"] = min(bounds["w"], width - bounds["x"])
+            bounds["h"] = min(bounds["h"], height - bounds["y"])
+        assert reconcile(
+            width,
+            height,
+            rows,
+            background=BACKGROUND,
+            claimed_bounds=claims,
+            gap_tolerance_px=gap_tolerance_px,
+        ) == _legacy_reference(width, height, rows, claims, gap_tolerance_px)
+
+
+def test_row_oriented_reconciliation_matches_the_oracle_on_a_dense_wholly_unclaimed_page():
+    """A realistic-width page, densely speckled and never claimed, is the load
+    case for `_components`' cross-row union: every ink run on the page arrives as
+    residual at once (thousands of runs), and the forward-pointer row join must
+    still produce exactly the retired oracle's components -- the randomized suite
+    above never exceeds a few hundred runs, so it cannot distinguish the pointer
+    walk from the cross product it replaced."""
+    generator = random.Random(20260817)
+    width, height = 800, 100
+    rows = blank_rows(width, height)
+    run_count = 0
+    for y in range(height):
+        for x in range(width):
+            if generator.randrange(3) == 0:
+                rows[y][x] = INK
+                if x == 0 or rows[y][x - 1] != INK:
+                    run_count += 1
+    assert run_count > 5000, "the page must actually carry thousands of ink runs"
+    for gap_tolerance_px in (0, 2):
+        assert reconcile(
+            width,
+            height,
+            rows,
+            background=BACKGROUND,
+            claimed_bounds=[],
+            gap_tolerance_px=gap_tolerance_px,
+        ) == _legacy_reference(width, height, rows, [], gap_tolerance_px)
+
+
+def test_residual_components_sharing_an_origin_are_ordered_by_ink_like_the_oracle():
+    """Two disjoint residual components can share a (top, left) bounds origin,
+    and the published order is identity-bearing (`residual_act_ordinal(index)` in
+    run.py). The retired implementation breaks that tie by the sorted member
+    pixels and never consults pixel_count, so the row-oriented sort must do the
+    same. The block is deliberately the LARGER component with the
+    lexicographically earlier ink: a count-based or insertion-order tie-break
+    puts the diagonal first and diverges from the oracle."""
+    width, height = 12, 12
+    rows = blank_rows(width, height)
+    # A 2x5 block hugging the corner: origin (0, 0), 10 pixels.
+    paint_rect(rows, 0, 0, 2, 5, INK)
+    # A disjoint anti-diagonal from (8, 0) down to (0, 8): origin (0, 0) too --
+    # its bounding box shares the exact corner -- 9 pixels, and every pixel of
+    # it stays at Chebyshev distance >= 2 from the block.
+    for step in range(9):
+        paint_pixel(rows, 8 - step, step, INK)
+    result = reconcile(
+        width, height, rows, background=BACKGROUND, claimed_bounds=[], gap_tolerance_px=0
+    )
+    assert result == _legacy_reference(width, height, rows, [], 0)
+    first, second = result["residual_components"]
+    assert (first["pixel_count"], second["pixel_count"]) == (10, 9), (
+        "the larger block must come first purely because its ink sorts earlier; "
+        "a smaller-count-first order is the retired tie-break divergence"
+    )
+    assert first["bounds"]["x"] == second["bounds"]["x"] == 0
+    assert first["bounds"]["y"] == second["bounds"]["y"] == 0
+
+
+def test_claim_boundaries_inside_tolerated_ink_gaps_match_the_pixel_oracle():
+    """V3: exhaust claim edges inside and across every gap the topology may merge."""
+    width, height = 12, 1
+    for gap_tolerance_px in (1, 2, 3):
+        rows = blank_rows(width, height)
+        left_x = 2
+        right_x = left_x + gap_tolerance_px + 1
+        paint_pixel(rows, left_x, 0)
+        paint_pixel(rows, right_x, 0)
+        for claim_x0 in range(width):
+            for claim_x1 in range(claim_x0 + 1, width + 1):
+                claims = [{"x": claim_x0, "y": 0, "w": claim_x1 - claim_x0, "h": 1}]
+                assert reconcile(
+                    width,
+                    height,
+                    rows,
+                    background=BACKGROUND,
+                    claimed_bounds=claims,
+                    gap_tolerance_px=gap_tolerance_px,
+                ) == _legacy_reference(width, height, rows, claims, gap_tolerance_px)
 
 
 def test_an_empty_page_reconciles_to_all_zeros():
