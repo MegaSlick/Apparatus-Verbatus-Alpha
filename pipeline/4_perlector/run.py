@@ -64,6 +64,7 @@ from common.stage import (  # noqa: E402
     latest_attempt,
     latest_per_chair,
     open_context,
+    reading_basis_regions,
     run_stage,
     stage_parser,
     validate_serving_provenance,
@@ -1183,6 +1184,18 @@ def _audit_semi_final(
         raise FatalAccounting(
             f"Perlectio for {act_id} does not bind its starting page and crop geometry"
         )
+    # Proved before it becomes a sort key: `bounds.get` handed a crop record
+    # that lost either number a (None, None) geometry_order, and comparing
+    # None with an integer ends the whole page's flag pass in an unnamed
+    # TypeError -- the same failure the `_region_ordinal` refusal exists to
+    # prevent.
+    if any(
+        not isinstance(bounds.get(side), int) or isinstance(bounds.get(side), bool)
+        for side in ("x", "y")
+    ):
+        raise FatalAccounting(
+            f"Perlectio for {act_id} has no integer crop origin to order its page audit by"
+        )
     testimonia = dossier.get("testimonia")
     if not isinstance(testimonia, list):
         raise FatalAccounting(f"Perlectio for {act_id} has no sealed audit testimonia")
@@ -1274,7 +1287,7 @@ def _sealed_sibling_semi_finals(
                 page_id=expected_page,
                 order=order_by_id[act_id],
                 text=payload["text"],
-                regions=payload["basis"]["regions"],
+                regions=reading_basis_regions(reading, f"sealed sibling Perlectio for {act_id}"),
                 dossier=payload["dossier"],
             )
         )

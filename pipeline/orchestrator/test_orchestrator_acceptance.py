@@ -411,9 +411,11 @@ FIXTURE = "synthetic-two-page-v0"
 # R5b onto merged R4, then again on R5b's CR round 1: the sealed audit
 # policy's bytes changed (its comment now states the one-round build limit),
 # and every Recensor review records the Pass-C verdict as data
-# (audit_unresolved). File counts 64/71 unchanged throughout.
+# (audit_unresolved) — round 2 closed the recovery-requested review's gap in
+# that same field, which moved the review literal alone. File counts 64/71
+# unchanged throughout.
 HAPPY_RUN_TREE_DIGEST = "c13a44092fe01a6fb02926c0c099d496b15af54658b58d2f0dc7c205e5776033"
-REVIEW_RUN_TREE_DIGEST = "707369ca2f050f26e196bb80f1b1d717e36e4931a0d349144f5ca33d8abe8cb7"
+REVIEW_RUN_TREE_DIGEST = "e6c0a7ff70e4dc5ec2e2215833a7a00df6d5146fe7947c899ff8ca439825958c"
 
 
 def orchestrate(

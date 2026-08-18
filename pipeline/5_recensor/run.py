@@ -1184,6 +1184,11 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     "perlectio_ref": reading_ref,
                     "recovery_request_ref": request_ref,
                     "recovery_policy": budget,
+                    # This act WAS audited (computed above for every act with a
+                    # Perlectio); omitting the field here would read back as
+                    # None -- "no audit exists" -- which is false, and R8's
+                    # canonical export is the consumer that would believe it.
+                    "audit_unresolved": audit_unresolved,
                 },
             )
             held += 1
