@@ -104,12 +104,17 @@ def churro_generation() -> dict[str, int]:
 
 def validate_churro_xml(raw: bytes) -> str:
     """Validate the native Churro XML while retaining raw bytes on every failure."""
+    # Refused as a type before any content question: a str here would slip past
+    # the byte scan below and still parse, making the DOCTYPE refusal skippable
+    # by the caller's choice of type.
+    if not isinstance(raw, (bytes, bytearray)):
+        raise SchemaRefusal("Churro response is not raw bytes")
     # A DOCTYPE is refused before the parser sees it: a legitimate Churro
     # response is one plain <output> element, and a DTD is the door to entity
     # tricks this validator has no reason to keep open. A whole-payload scan on
     # purpose — a DOCTYPE may follow an XML declaration, and escaped text
     # (&lt;!DOCTYPE) never contains these bytes, so honest transcriptions pass.
-    if isinstance(raw, (bytes, bytearray)) and b"<!DOCTYPE" in bytes(raw).upper():
+    if b"<!DOCTYPE" in bytes(raw).upper():
         raise SchemaRefusal("Churro response carries a DOCTYPE; a plain <output> element cannot")
     try:
         root = ET.fromstring(raw)
@@ -125,7 +130,11 @@ def detect_repetition(raw: bytes) -> dict[str, Any] | None:
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
-        return None
+        # Not silence: None below means "inspected, nothing to report", and an
+        # undecodable capture was never inspected at all. The record carries
+        # that fact as its own finding kind so nothing is lost silently, and
+        # `retain_model_view` knows not to call it a repetition.
+        return {"kind": "post-hoc-repetition-uninspected", "reason": "response is not UTF-8 text"}
     normalized = re.sub(r"\s+", " ", text).strip()
     if len(normalized) < _REPETITION_WINDOW * _REPETITION_MIN_REPEATS:
         return None
@@ -312,7 +321,10 @@ def retain_model_view(
     if adapter == "churro.v1":
         if finding := detect_repetition(raw_response):
             record["findings"].append(finding)
-            record["stop_reason"] = "partial-post-hoc-repetition-detected"
+            # Only an actual repetition rewrites the stop reason; an
+            # uninspected capture is a recorded fact, not a detected failure.
+            if finding["kind"] == "post-hoc-repetition":
+                record["stop_reason"] = "partial-post-hoc-repetition-detected"
         if parser == "xml":
             try:
                 record["parse"] = {

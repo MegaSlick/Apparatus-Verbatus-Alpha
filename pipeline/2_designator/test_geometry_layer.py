@@ -339,7 +339,7 @@ def test_chandra_custody_refuses_a_forged_blob_reference():
     # Tampering the stored bytes themselves (leaving every reference honest) is
     # refused by the digest check instead.
     tree.blobs[stored["response_ref"]["relative_path"]] = b"tampered"
-    with pytest.raises(SchemaRefusal, match="differs"):
+    with pytest.raises(SchemaRefusal, match="blob differs from its sealed reference"):
         read_retained_chandra_response(
             tree,
             stored["response_ref"],
@@ -390,18 +390,21 @@ def test_chandra_custody_refuses_to_retain_under_a_non_designator_receipt():
 
 
 @pytest.mark.parametrize(
-    ("page_id", "page_ordinal"),
+    ("page_id", "page_ordinal", "message"),
     [
-        ("", 0),  # blank page_id
-        (None, 0),  # non-string page_id
-        (PAGE_ID, -1),  # negative ordinal
-        (PAGE_ID, True),  # boolean masquerading as an ordinal
+        ("", 0, "page identity is blank"),  # blank page_id
+        (None, 0, "page identity is blank"),  # non-string page_id
+        (PAGE_ID, -1, "page ordinal is not a non-negative integer"),  # negative ordinal
+        (PAGE_ID, True, "page ordinal is not a non-negative integer"),  # boolean ordinal
     ],
 )
-def test_chandra_custody_refuses_a_malformed_page_identity_before_writing(page_id, page_ordinal):
-    """Every `_page_identity` branch refuses at the write door, nothing sealed."""
+def test_chandra_custody_refuses_a_malformed_page_identity_before_writing(
+    page_id, page_ordinal, message
+):
+    """Every `_page_identity` branch refuses at the write door, nothing sealed;
+    the exact message proves each case hits ITS branch, not a sibling's."""
     tree = _FixtureTree()
-    with pytest.raises(SchemaRefusal, match="page"):
+    with pytest.raises(SchemaRefusal, match=message):
         retain_chandra_response(
             tree,
             b"a response under a broken identity",

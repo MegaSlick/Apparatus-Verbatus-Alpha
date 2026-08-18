@@ -120,6 +120,24 @@ def test_churro_records_a_24k_bound_and_detects_repetition_after_complete_captur
     assert tree.blobs[record["raw_response_ref"]["relative_path"]] == raw
 
 
+def test_an_undecodable_churro_capture_records_uninspected_without_claiming_repetition():
+    """An undecodable response was never inspected for repetition; the record
+    says so as its own finding kind, and the transport's stop reason survives —
+    an uninspected capture is a recorded fact, not a detected failure."""
+    tree = _Tree()
+    record = retain_model_view(
+        tree,
+        adapter="churro.v1",
+        view={"prompt": churro_prompt(), "generation": churro_generation()},
+        raw_response=b"\xff\xfe not utf-8 at all",
+        transport_stop_reason="eos",
+    )
+    assert {"kind": "post-hoc-repetition-uninspected", "reason": "response is not UTF-8 text"} in (
+        record["findings"]
+    )
+    assert record["stop_reason"] == "eos"
+
+
 def test_churro_prompt_retains_the_trained_two_message_xml_bytes():
     prompt = churro_prompt()
     assert set(prompt) == {"system", "user"}
@@ -196,7 +214,9 @@ def _repetition_by_construction(raw: bytes) -> dict | None:
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
-        return None
+        # Mirrors the shipped detector: an undecodable capture is reported as
+        # uninspected, never silently passed.
+        return {"kind": "post-hoc-repetition-uninspected", "reason": "response is not UTF-8 text"}
     normalized = re.sub(r"\s+", " ", text).strip()
     if len(normalized) < 24 * 3:
         return None
@@ -415,7 +435,7 @@ def test_chandra_intake_refuses_a_tampered_response_blob():
     receipt = _ref("receipts/sha256/" + "b" * 64 + ".json")
     stored = _retain(tree, b"original response bytes", receipt)
     tree.blobs[stored["response_ref"]["relative_path"]] = b"tampered response bytes"
-    with pytest.raises(SchemaRefusal, match="differs"):
+    with pytest.raises(SchemaRefusal, match="blob differs from its sealed reference"):
         _intake(tree, stored, receipt)
 
 

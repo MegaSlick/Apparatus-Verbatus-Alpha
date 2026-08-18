@@ -17,7 +17,7 @@ still cross.
 | `stage.py` | argument shape, opening a run, publishing with the envelope filled in |
 | `imaging.py` | decoding and cropping, with bounds refused rather than clamped |
 | `armarium_formats.py` | the sealed Armarium projection choices — the door binds them into the run, the Armarium reads them back |
-| `chandra_custody.py` | one-receipt Chandra custody: R2 writes it, R3's intake reads it back. It deliberately names the Designator's blob root and serving chair — those constants come from `contracts/`, not from any stage module, so the import boundary above holds |
+| `chandra_custody.py` | one-receipt Chandra custody: R2 writes it, R3's intake reads it back. It deliberately names the Designator's blob root and serving chair — those constants come from `contracts/`, `runtree/` and `stage.py`, never from a stage module, so the import boundary above holds |
 
 Code enters here **when a second stage needs it** — not in anticipation. Moving
 something in is its own pull request, because this is the one place two agents can
