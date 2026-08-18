@@ -34,6 +34,7 @@ SEALED_CONFIG_FLAGS = (
     "--designator-geometry-config",
     "--alignment-config",
     "--perlector-protocol-config",
+    "--perlector-audit-config",
     "--formats-config",
     "--recovery-config",
     "--hard-failure-config",

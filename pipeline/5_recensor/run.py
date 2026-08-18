@@ -45,6 +45,7 @@ from common.contracts.stages import (  # noqa: E402
     RECENSOR,
 )
 from common.exemplar_boundary import verify_sealed_page_pixels  # noqa: E402
+from common.perlector_audit import validate_chain  # noqa: E402
 from common.recensor_receipt import build_recensor_partition_receipt  # noqa: E402
 from common.recovery import (  # noqa: E402
     FALLBACK_RECROP,
@@ -92,6 +93,36 @@ def artifacts_for(context, stage: str, kind: str, subject: str) -> list[dict]:
         if entry["kind"] == kind and entry["subject_id"] == subject:
             records.append(context.tree.read_artifact(stage, kind, entry["artifact_id"]))
     return records
+
+
+def audit_state(context, reading: dict, act_id: str) -> bool | None:
+    """Verify the two R5b artifacts behind a Perlectio's audit claim.
+
+    The Perlectio's self-hash only proves that somebody sealed its references;
+    this consumer proves they name the matching act, exact kinds, and the exact
+    finding bytes whose unresolved state governs review routing.
+
+    `not-run` is the one Perlector outcome published without a reading attempt
+    (`pipeline/4_perlector/run.py`: a Designator-held act, and an explicitly
+    absent Perlector chair). It never reaches Pass C, so there is no chain to
+    verify and no unresolved span to route on — the act is held on its own
+    outcome further down. Demanding a chain here turned the absent-chair hold
+    this stage is built to report into a traceback about missing final text,
+    which is exactly the trap the `basis_regions` guard below is named for.
+    Every attempted outcome (`read`, `truncated`, `no-readable-text`, `failed`)
+    publishes the pair and is verified; a forged `not-run` buys nothing, because
+    that class is held rather than accepted.
+
+    `None`, not `False`: this act has no audit at all — the same fact a
+    Designator-held act's review records. `False` means audited and resolved,
+    and claiming it here would tell R8's canonical export that a reading
+    nobody examined came back clean. Routing is unchanged (`elif
+    audit_unresolved:` treats both as falsy); only the record is honest.
+    """
+    if reading["outcome"] == "not-run":
+        return None
+    chain = validate_chain(context.tree, reading, act_id)
+    return chain["record"]["unresolved"]
 
 
 def chair_current_attempts(context, act_id: str) -> dict[str, dict]:
@@ -901,6 +932,7 @@ def preflight_review_evidence(context, budget: dict) -> None:
             )
         latest = latest_attempt(readings, f"reading of {act_id}", operation="perlegere")
         context.artifact_ref(PERLECTOR, "perlectio", latest["artifact_id"])
+        audit_state(context, latest, act_id)
         if classify(PERLECTOR, latest["outcome"]) is OutcomeClass.COMPLETED:
             for region in _reconcile_reading_regions(latest, state["regions"], act_id):
                 context.input_ref(region["image_path"])
@@ -1043,6 +1075,12 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     "recoveries_used": 0,
                     "budget_allowed": budget["allowed"],
                     "absolute_cap": budget["absolute_cap"],
+                    # None, not absent, and not False: a Designator-held act
+                    # has no Perlectio and therefore no audit to report. The
+                    # field stays universal so a consumer can tell "no audit
+                    # exists" (here) from "audited, resolved" (False) and
+                    # "audited, unresolved" (True).
+                    "audit_unresolved": None,
                 },
             )
             held += 1
@@ -1067,6 +1105,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         # exact reading Recensor assessed.
         latest = latest_attempt(readings, f"reading of {act_id}", operation="perlegere")
         latest_payload = _payload(latest, f"reading of {act_id}")
+        audit_unresolved = audit_state(context, latest, act_id)
         reading_class = classify(PERLECTOR, latest["outcome"])
         reading_ref = context.artifact_ref(PERLECTOR, "perlectio", latest["artifact_id"])
         basis_regions = (
@@ -1151,6 +1190,11 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     "perlectio_ref": reading_ref,
                     "recovery_request_ref": request_ref,
                     "recovery_policy": budget,
+                    # This act WAS audited (computed above for every act with a
+                    # Perlectio); omitting the field here would read back as
+                    # None -- "no audit exists" -- which is false, and R8's
+                    # canonical export is the consumer that would believe it.
+                    "audit_unresolved": audit_unresolved,
                 },
             )
             held += 1
@@ -1237,6 +1281,12 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "proposal set — GOALS 1: a missed act is worse than a poorly read one); "
                 "accepting this act would leave that ink unaccounted for",
             )
+        elif audit_unresolved:
+            outcome, reason = (
+                "held-for-review",
+                "the Perlector exhausted its sealed audit re-proof cap with unresolved span(s); "
+                "they remain explicit uncertainty rather than a silent retry",
+            )
         elif act_key in scenario["hold_acts"]:
             outcome, reason = "held-for-review", "the act did not reconcile and needs a human"
         elif wants_recovery:
@@ -1284,6 +1334,13 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 # recorded under: a consumer that only ever sees the field
                 # populated cannot tell "checked and clear" from "never checked".
                 "page_coverage": page_coverage,
+                # The Pass-C verdict, recorded as data for every act for the
+                # same reason: an act held for an exhausted audit cap must be
+                # separable from every other hold without matching prose, and
+                # an audit that resolved cleanly must be tellable from one
+                # never checked. R8's canonical export reads uncertainty spans
+                # whose review-side "why" lives exactly here.
+                "audit_unresolved": audit_unresolved,
                 # Present only on a `confirmed-blank`, because it is the evidence
                 # that outcome rests on and nothing else has any. Every other
                 # review carries the fields above and no more.

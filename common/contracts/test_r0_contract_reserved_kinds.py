@@ -6,7 +6,7 @@ the R0 build chamber runs. Every test here must fail RED on the chamber's base c
 
 Kind table (R0_CONTRACT_NOTE.md "Kind-by-kind table"):
     lectio-prior, primed-without-prior         ACCEPTED by R5a (R0 transfer closed)
-    audit-draft, audit-finding                 DEFERRED -> R5b
+    audit-draft, audit-finding                 ACCEPTED by R5b (R0 transfer closed)
     raw-proposal, occlusion (U7 kinds)         ACCEPTED by R2 (R0 transfer closed)
     Closed-ordinal confidence rule             EXERCISED narrowly (R0 owns it)
 
@@ -27,7 +27,7 @@ import pytest
 
 from common.contracts.envelope import build_envelope
 from common.contracts.errors import ContractError
-from common.contracts.stages import PERLECTOR
+from common.contracts.stages import ATTESTATORES
 
 # Every kind name the contract note defers past R0, by name, mapped to a stage whose
 # outcome vocabulary it could plausibly ride (so `classify()` inside `build_envelope`
@@ -35,10 +35,8 @@ from common.contracts.stages import PERLECTOR
 # this test's own judgment call about which producer would mint each kind — the
 # contract note assigns producing *branches*, not stages — recorded here and in the
 # report as the strictest defensible reading available before R2/R5a/R5b exist.
-DEFERRED_KINDS = (
-    (PERLECTOR, "read", "audit-draft"),
-    (PERLECTOR, "read", "audit-finding"),
-)
+DEFERRED_KINDS = ()
+GRADUATED_R5B_KINDS = frozenset({"audit-draft", "audit-finding"})
 
 
 @pytest.mark.parametrize("stage,outcome,kind", DEFERRED_KINDS)
@@ -68,10 +66,35 @@ def test_a_deferred_kind_name_is_not_yet_an_accepted_kind(stage, outcome, kind):
 
 
 def test_reserved_kind_names_stay_in_sync_with_the_deferred_kind_census():
-    """R5a removal: the remaining R0 deferred names still match its refusal set."""
+    """R5b removal: only kinds still deferred by R0 remain reserved."""
     from common.contracts.envelope import _RESERVED_KINDS
 
     assert {kind for _stage, _outcome, kind in DEFERRED_KINDS} == set(_RESERVED_KINDS)
+    assert not (GRADUATED_R5B_KINDS & set(_RESERVED_KINDS))
+
+
+def test_the_reserved_kind_refusal_branch_itself_still_refuses(monkeypatch):
+    """With every R5b kind graduated, `DEFERRED_KINDS` is empty and the
+    parametrised refusal test above never runs -- deleting the refusal branch
+    in `build_envelope` would leave this whole file green. A sentinel kind is
+    reserved here temporarily so the branch is exercised at least once until a
+    future branch defers a real kind again."""
+    from common.contracts import envelope as envelope_module
+
+    monkeypatch.setattr(envelope_module, "_RESERVED_KINDS", frozenset({"reserved-sentinel-kind"}))
+    with pytest.raises(ContractError, match="reserved-sentinel-kind"):
+        build_envelope(
+            run_id="r0-reserved-kind-probe",
+            artifact_id="art_0000000000000000",
+            subject_id="act_0000000000000000",
+            stage=ATTESTATORES,
+            kind="reserved-sentinel-kind",
+            outcome="read",
+            config_digest="0" * 64,
+            adapter_revision="fixture-v0",
+            inputs=[],
+            payload={"probe": "the refusal branch, not any particular kind"},
+        )
 
 
 # --- Closed-ordinal confidence (three_stage_reading_design.md v2.1 §2, U5) ------

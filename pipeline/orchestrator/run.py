@@ -60,6 +60,7 @@ from common.stage import (  # noqa: E402
     DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH,
     DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH,
     DEFAULT_PDF_RENDER_CONFIG_PATH,
+    DEFAULT_PERLECTOR_AUDIT_CONFIG_PATH,
     DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH,
     DEFAULT_WITNESS_CONTEXT_CONFIG_PATH,
     EXIT_COMPLETE,
@@ -137,6 +138,8 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
         str(args.perlector_instrument_approval_ref),
         "--perlector-protocol-config",
         str(args.perlector_protocol_config),
+        "--perlector-audit-config",
+        str(args.perlector_audit_config),
     ]
     command.append("--draft-fed" if args.draft_fed else "--no-draft-fed")
     for key, value in extra.items():
@@ -225,6 +228,9 @@ def main() -> int:
         help="feed the Pass-A draft to Pass B (fed) or withhold it (--no-draft-fed); "
         "changing the default is Tyrel's through B5a (config/README.md, R5a toggle "
         "register)",
+    )
+    parser.add_argument(
+        "--perlector-audit-config", default=str(DEFAULT_PERLECTOR_AUDIT_CONFIG_PATH)
     )
     parser.add_argument(
         "--pdf-render-config",

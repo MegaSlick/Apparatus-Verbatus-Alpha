@@ -407,13 +407,17 @@ FIXTURE = "synthetic-two-page-v0"
 #
 # The literals below are re-measured on this change, and each re-measurement
 # names what moved them. A mismatch here is evidence about the recorded
-# artifacts, never about the platform. R4's PR loop moved them twice over the
-# wave-time values: every aligned page-witness alignment now carries
-# `anchor_basis`, and a non-reading page attempt (review's attestator_3 on a2)
-# now records its explicit `non-reading-page-attempt-failed` reason instead of
-# running the page alignment. File counts stayed 60/65.
-HAPPY_RUN_TREE_DIGEST = "f0db48b213bf725f6da497228b49871ff390f55c09d2105aefb6f7c0eb8cd6cb"
-REVIEW_RUN_TREE_DIGEST = "3652502dd5bd55f30a83116b8591348eb6d5852f2e5ff305b8af1236e8e5e394"
+# artifacts, never about the platform. Re-measured host-side after rebasing
+# R5b onto merged R4, then again on R5b's CR round 1: the sealed audit
+# policy's bytes changed (its comment now states the one-round build limit),
+# and every Recensor review records the Pass-C verdict as data
+# (audit_unresolved) — round 2 closed the recovery-requested review's gap in
+# that same field, which moved the review literal alone. R5b itself moved the
+# file counts from R4's 60/65 to 64/71 (each act gains an audit draft and an
+# audit finding); the counts then held at 64/71 across every one of this
+# loop's re-measurements while only digests moved.
+HAPPY_RUN_TREE_DIGEST = "c13a44092fe01a6fb02926c0c099d496b15af54658b58d2f0dc7c205e5776033"
+REVIEW_RUN_TREE_DIGEST = "e6c0a7ff70e4dc5ec2e2215833a7a00df6d5146fe7947c899ff8ca439825958c"
 
 
 def orchestrate(
@@ -2772,7 +2776,7 @@ def test_repeating_the_identical_command_leaves_every_byte_unchanged(tmp_path):
 
     # R0 adds two retained page Testimonia and two derived act attachments to
     # the happy walking skeleton; repeatability still compares every byte.
-    assert len(before) == 60
+    assert len(before) == 64
     assert semantic_snapshot_digest(root) == HAPPY_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "happy").returncode == 0
     after = snapshot(root)
@@ -2819,7 +2823,7 @@ def test_repeating_the_review_scenario_also_changes_nothing(tmp_path):
 
     # R0 adds the same four retained page/attachment artifacts before review's
     # recovery loop; its append-only invariant is unchanged.
-    assert len(before) == 65
+    assert len(before) == 71
     assert semantic_snapshot_digest(root) == REVIEW_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "review").returncode == 3
     assert snapshot(root) == before

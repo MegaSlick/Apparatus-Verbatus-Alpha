@@ -278,6 +278,7 @@ def test_the_scenarios_are_exactly_the_declared_ones(skeleton):
         "happy",
         "witness-capabilities",
         "review",
+        "audit-change",
         "refused-page",
         "refused-first-page",
         "truncated-reading",
@@ -302,6 +303,18 @@ def test_the_scenarios_are_exactly_the_declared_ones(skeleton):
     assert by_name["witness-capabilities"]["hold_acts"] == []
     assert by_name["review"]["recover_acts"] == ["a1"]
     assert by_name["review"]["hold_acts"] == ["a2"]
+    # The scenario's data, not only its presence in the name census: a wrong
+    # recover/hold declaration or a missing re-proof row would leave the
+    # audit-change path measuring nothing while this file stayed green.
+    assert by_name["audit-change"]["recover_acts"] == []
+    assert by_name["audit-change"]["hold_acts"] == []
+    assert skeleton["audit_reproof"] == [
+        {
+            "scenario": "audit-change",
+            "act_key": "a1",
+            "text": "SYNTHETIC ACT ONE alpha beta gamma!",
+        }
+    ]
     assert by_name["refused-page"]["recover_acts"] == []
     assert by_name["refused-page"]["hold_acts"] == []
     assert by_name["refused-first-page"]["recover_acts"] == []

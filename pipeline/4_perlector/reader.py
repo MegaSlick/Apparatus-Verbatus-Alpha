@@ -42,7 +42,12 @@ PAGE_FALLBACK_INK_MARGIN: Final = 2
 # establishing branch below, so a misspelt `"lectio_prior"` would serve Pass B's
 # own text as the Pass-A draft and publish a `self_revision` of nothing at all.
 # A refusal is the only reading of that a record can carry.
-PASS_KINDS: Final = frozenset({"perlectio", "lectio-nuda", "lectio-prior", "primed-without-prior"})
+# `audit-reproof` joins at R5b, which adds the Pass-C span re-proof pass; the
+# reader has carried its dispatch branch since that build, and the producer-
+# literal pin below holds the set to exactly what `run.py` calls.
+PASS_KINDS: Final = frozenset(
+    {"perlectio", "lectio-nuda", "lectio-prior", "primed-without-prior", "audit-reproof"}
+)
 
 
 class LectioResult(TypedDict):
@@ -111,8 +116,77 @@ class FixtureReader:
             if act["key"] == act_key:
                 if pass_kind == "lectio-prior":
                     return self._declared_prior_reading(act_key)
+                if pass_kind == "audit-reproof":
+                    return self._declared_reproof_text(dossier, act_key)
                 return act["text"]
         raise KeyError(f"the fixture declares no act {act_key!r}")
+
+    def _validated_rows(self, table: str, extra_check=None) -> list:
+        """Every row of one fixture table, after the WHOLE table validates.
+
+        One loop for all three tables, because they had started to drift: a
+        duplicate pair or a row naming a scenario or act nobody declared would
+        otherwise sit unnoticed while the first match answered, and the next
+        table copied whichever validator its author happened to read. Each
+        caller keeps its own miss policy and any per-table check.
+        """
+        declared_scenarios = {scenario["name"] for scenario in self._fixture["scenario"]}
+        declared_acts = {act["key"] for act in self._fixture["act"]}
+        rows = self._fixture.get(table, [])
+        seen: set[tuple[str, str]] = set()
+        for row in rows:
+            key = (row["scenario"], row["act_key"])
+            if key in seen:
+                raise KeyError(
+                    f"{table} declares {key!r} twice; two contradictory rows would "
+                    "publish whichever is written first and discard the other silently"
+                )
+            seen.add(key)
+            if row["scenario"] not in declared_scenarios:
+                raise KeyError(f"{table} row names undeclared scenario {row['scenario']!r}")
+            if row["act_key"] not in declared_acts:
+                raise KeyError(f"{table} row names undeclared act {row['act_key']!r}")
+            if extra_check is not None:
+                extra_check(row)
+        return rows
+
+    def _matching_row(self, table: str, act_key: str, extra_check=None):
+        for row in self._validated_rows(table, extra_check):
+            if row["scenario"] == self._scenario and row["act_key"] == act_key:
+                return row
+        return None
+
+    def _declared_reproof_text(self, dossier, act_key: str) -> str:
+        """This scenario's declared re-proof result, or an honest confirmation.
+
+        The whole table validates before any row is selected
+        (`_validated_rows`) -- and here a miss falls through to "confirmed
+        unchanged", so a fixture meaning to exercise a changed re-proof would
+        otherwise silently exercise the no-change path instead.
+        """
+        row = self._matching_row("audit_reproof", act_key)
+        if row is not None:
+            return row["text"]
+        return self._confirmed_unchanged_text(dossier)
+
+    @staticmethod
+    def _confirmed_unchanged_text(dossier: dict[str, Any]) -> str:
+        """A re-proof with no declared change reports exactly what it was shown.
+
+        Pass C is span-scoped: it re-examines one flagged location, never the
+        whole act. A fixture with nothing declared for that location cannot
+        fall back to the act's original text -- that would silently rewrite a
+        no-readable-text act back to full prose, contradicting the whole-act
+        gap its empty reading already carries. Absent a declared change, the
+        honest report is "confirmed unchanged".
+        """
+        text = dossier.get("semi_final_text")
+        if not isinstance(text, str):
+            raise ContractError(
+                "the fixture Perlector received an audit re-proof dossier without its "
+                "semi-final text; a re-proof cannot confirm what it was not shown"
+            )
+        return text
 
     def _observed_page_fallback_text(
         self, dossier: dict[str, Any], delivered_pixels: DeliveredPixels | None
@@ -230,25 +304,9 @@ class FixtureReader:
         Pass A and declares no prior is a fixture gap, and an instrument
         measuring a departure from a draft nobody wrote is worse than a stop.
         """
-        declared_scenarios = {scenario["name"] for scenario in self._fixture["scenario"]}
-        declared_acts = {act["key"] for act in self._fixture["act"]}
-        rows = self._fixture.get("prior_reading", [])
-        seen: set[tuple[str, str]] = set()
-        for row in rows:
-            key = (row["scenario"], row["act_key"])
-            if key in seen:
-                raise KeyError(
-                    f"prior_reading declares {key!r} twice; two contradictory drafts would "
-                    "publish whichever is written first and discard the other silently"
-                )
-            seen.add(key)
-            if row["scenario"] not in declared_scenarios:
-                raise KeyError(f"prior_reading row names undeclared scenario {row['scenario']!r}")
-            if row["act_key"] not in declared_acts:
-                raise KeyError(f"prior_reading row names undeclared act {row['act_key']!r}")
-        for row in rows:
-            if row["scenario"] == self._scenario and row["act_key"] == act_key:
-                return row["text"]
+        row = self._matching_row("prior_reading", act_key)
+        if row is not None:
+            return row["text"]
         raise KeyError(f"the fixture declares no prior reading for {self._scenario!r}/{act_key!r}")
 
     def _declared_stop_reason(self, act_key: str) -> str | None:
@@ -262,29 +320,12 @@ class FixtureReader:
         calling the reading complete, and nothing in this offline chamber is
         entitled to claim an engine went silent.
         """
-        declared_scenarios = {scenario["name"] for scenario in self._fixture["scenario"]}
-        declared_acts = {act["key"] for act in self._fixture["act"]}
-        rows = self._fixture.get("stop_reason", [])
-        # The whole table validates before any row is selected: a misspelt row
-        # sitting after the match would otherwise stay unnoticed, silently
-        # defaulting every act it meant to name to "stop" — a declared `length`
-        # would vanish and a truncated reading would publish as complete.
-        seen: set[tuple[str, str]] = set()
-        for row in rows:
-            key = (row["scenario"], row["act_key"])
-            if key in seen:
-                raise KeyError(
-                    f"stop_reason declares {key!r} twice; two contradictory rows would "
-                    "publish whichever is written first and discard the other silently"
-                )
-            seen.add(key)
-            if row["scenario"] not in declared_scenarios:
-                raise KeyError(f"stop_reason row names undeclared scenario {row['scenario']!r}")
-            if row["act_key"] not in declared_acts:
-                raise KeyError(f"stop_reason row names undeclared act {row['act_key']!r}")
+
+        def _known_signal(row):
             if row["stop_reason"] not in {"stop", "length"}:
                 raise KeyError(f"stop_reason row declares unknown signal {row['stop_reason']!r}")
-        for row in rows:
-            if row["scenario"] == self._scenario and row["act_key"] == act_key:
-                return row["stop_reason"]
+
+        row = self._matching_row("stop_reason", act_key, _known_signal)
+        if row is not None:
+            return row["stop_reason"]
         return "stop"

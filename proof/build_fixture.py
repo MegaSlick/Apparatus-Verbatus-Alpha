@@ -76,6 +76,11 @@ _PRIOR_READING_SCENARIOS = (
     "happy",
     "witness-capabilities",
     "review",
+    # R5b's audit-change scenario reaches ordinary Pass A like every other
+    # scenario in this tuple, so under R5a's no-borrowing rule it must declare
+    # its own priors; its DECLARED audit re-proof (AUDIT_REPROOFS) is what
+    # departs.
+    "audit-change",
     "refused-page",
     "truncated-reading",
     "genuinely-empty-witness",
@@ -95,6 +100,12 @@ PRIOR_READINGS = tuple(
     {"scenario": scenario, "act_key": act_key, "text": text}
     for scenario in _PRIOR_READING_SCENARIOS
     for act_key, text in _DEFAULT_PRIOR_TEXT.items()
+)
+
+# Fixture-only Pass-C response. It is deliberately separate from R5a's
+# `prior_reading` rows, which this branch must not alter.
+AUDIT_REPROOFS = (
+    {"scenario": "audit-change", "act_key": "a1", "text": "SYNTHETIC ACT ONE alpha beta gamma!"},
 )
 
 # What each witness reports. Chair 1 agrees with the established reading, chair 2
@@ -447,6 +458,15 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
             f"text = {toml_string(prior['text'])}",
         ]
 
+    for reproof in AUDIT_REPROOFS:
+        lines += [
+            "",
+            "[[audit_reproof]]",
+            f"scenario = {toml_string(reproof['scenario'])}",
+            f"act_key = {toml_string(reproof['act_key'])}",
+            f"text = {toml_string(reproof['text'])}",
+        ]
+
     # One act runs across the page break. The continuation is a region of the
     # same act, not a third act: two acts, one cross-page continuation.
     continuation_source = act_descriptor(2, 1)
@@ -524,6 +544,11 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
         'name = "review"',
         'recover_acts = ["a1"]',
         'hold_acts = ["a2"]',
+        "",
+        "[[scenario]]",
+        'name = "audit-change"',
+        "recover_acts = []",
+        "hold_acts = []",
         "",
         "[[scenario]]",
         'name = "refused-page"',

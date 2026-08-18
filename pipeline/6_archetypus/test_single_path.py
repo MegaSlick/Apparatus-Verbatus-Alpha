@@ -398,6 +398,50 @@ def test_a_prior_draft_with_no_attempt_ordinal_cannot_bind(tmp_path):
     reading["inputs"] = [
         resealed_ref if reference == current_ref else reference for reference in reading["inputs"]
     ]
+
+    # Since R5b the audit chain seals its own references to the prior: the
+    # audit draft binds it as an input, the finding binds the draft, and the
+    # reading binds both. A forgery that stops at the reading is now caught
+    # earlier by byte integrity ("the bytes changed under a sealed
+    # reference") -- the right behaviour, but not the boundary THIS test
+    # holds -- so the whole chain reseals to keep the ordinal check
+    # reachable.
+    audit_record = reading["payload"]["audit"]
+    draft_ref = audit_record["draft_ref"]
+    draft_path = tree.resolve(draft_ref["relative_path"])
+    draft = json.loads(draft_path.read_text(encoding="utf-8"))
+    draft["inputs"] = [
+        resealed_ref if reference == current_ref else reference for reference in draft["inputs"]
+    ]
+    draft["self_hash"] = self_hash(draft)
+    draft_path.write_bytes(canonical_bytes(draft))
+    resealed_draft_ref = {
+        "relative_path": draft_ref["relative_path"],
+        "sha256": digest_bytes(draft_path.read_bytes()),
+    }
+
+    finding_ref = audit_record["finding_ref"]
+    finding_path = tree.resolve(finding_ref["relative_path"])
+    finding = json.loads(finding_path.read_text(encoding="utf-8"))
+    finding["inputs"] = [
+        resealed_draft_ref if reference == draft_ref else reference
+        for reference in finding["inputs"]
+    ]
+    finding["self_hash"] = self_hash(finding)
+    finding_path.write_bytes(canonical_bytes(finding))
+    resealed_finding_ref = {
+        "relative_path": finding_ref["relative_path"],
+        "sha256": digest_bytes(finding_path.read_bytes()),
+    }
+
+    audit_record["draft_ref"] = resealed_draft_ref
+    audit_record["finding_ref"] = resealed_finding_ref
+    reading["inputs"] = [
+        resealed_draft_ref
+        if reference == draft_ref
+        else (resealed_finding_ref if reference == finding_ref else reference)
+        for reference in reading["inputs"]
+    ]
     reading["self_hash"] = self_hash(reading)
     reading_path.write_bytes(canonical_bytes(reading))
     _repoint_review(

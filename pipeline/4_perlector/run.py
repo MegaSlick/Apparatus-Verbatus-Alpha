@@ -34,6 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import annotations  # noqa: E402
+import audit  # noqa: E402
 import dossier as dossier_module  # noqa: E402
 import nuda  # noqa: E402
 import prompts  # noqa: E402
@@ -63,6 +64,7 @@ from common.stage import (  # noqa: E402
     latest_attempt,
     latest_per_chair,
     open_context,
+    reading_basis_regions,
     run_stage,
     stage_parser,
     validate_serving_provenance,
@@ -739,6 +741,7 @@ _PERLECTIO_FIELDS: Final = frozenset(
         "lectio_kind",
         "self_revision",
         "protocol",
+        "audit",
     }
 )
 
@@ -1077,6 +1080,14 @@ def validate_reading_payload(
             "the truncation field is where that is confirmed or held unknown, never "
             "contradicted"
         )
+    if "audit" not in fields:
+        annotations.validate_annotations(payload, outcome=outcome)
+        return
+    # The re-proof locations are offsets in the frozen semi-final, which may
+    # be longer than the corrected final after a deletion. The full shared
+    # chain check binds them to the audit draft before publication; this
+    # payload-only shape check therefore does not guess a bound from final text.
+    audit.validate_perlectio_audit(payload.get("audit"), text_length=None)
     annotations.validate_annotations(payload, outcome=outcome)
 
 
@@ -1113,6 +1124,232 @@ def _reconciled_truncation(*, declared_failure: str | None, truncation_record: d
     ):
         return {**truncation_record, "classification": truncation.UNKNOWN}
     return truncation_record
+
+
+def _audited_truncation(
+    *,
+    pass_b: dict,
+    declared_failure: str | None,
+    text: str,
+    region_pixels: int,
+    stop_reason: str | None,
+) -> dict:
+    """The truncation instrument, re-measured over an audit-changed reading.
+
+    Three of the four declared signals are computed over the reading text and
+    the fourth is the engine's own word on why it stopped, so a Pass-C re-proof
+    that changes the text invalidates the whole record: the published Perlectio
+    would otherwise state what the *pre-audit* text looked like, and `outcome`
+    is derived from that record. The re-proof's own stop reason was dropped
+    entirely, so a re-proof generation cut off mid-emission could replace
+    established text while the record still read `complete` — the reading
+    delivered as an output would be the truncated one (ARCHITECTURE: "it reads
+    through to the end; truncation is a failure, not an output").
+
+    **Pass C may only ever make this worse.** The re-proof is span-scoped and
+    H8-bounded to the flagged location, so it cannot restore ink a cut-off Pass
+    B never read. A clean re-proof over a truncated semi-final therefore keeps
+    the earlier classification: the recomputed signals describe the published
+    text, but the verdict never improves.
+    """
+    audited = _reconciled_truncation(
+        declared_failure=declared_failure,
+        truncation_record=truncation.classify(
+            text, region_pixels=region_pixels, stop_reason=stop_reason
+        ),
+    )
+    if (
+        pass_b["classification"] != truncation.COMPLETE
+        and audited["classification"] == truncation.COMPLETE
+    ):
+        return {**audited, "classification": pass_b["classification"]}
+    return audited
+
+
+def _audit_semi_final(
+    *,
+    act_id: str,
+    page_id: str,
+    order: int,
+    text: str,
+    regions: list[dict[str, Any]],
+    dossier: dict[str, Any],
+) -> dict[str, Any]:
+    """Derive one Pass-C row from either a pending or sealed Perlectio."""
+    if not regions:
+        raise FatalAccounting(f"Perlectio for {act_id} has no region for its audit geometry")
+    first = regions[0]
+    bounds = first.get("transform", {}).get("bounds")
+    if first.get("source_page_id") != page_id or not isinstance(bounds, dict):
+        raise FatalAccounting(
+            f"Perlectio for {act_id} does not bind its starting page and crop geometry"
+        )
+    # Proved before it becomes a sort key: `bounds.get` handed a crop record
+    # that lost either number a (None, None) geometry_order, and comparing
+    # None with an integer ends the whole page's flag pass in an unnamed
+    # TypeError -- the same failure the `_region_ordinal` refusal exists to
+    # prevent.
+    if any(
+        not isinstance(bounds.get(side), int) or isinstance(bounds.get(side), bool)
+        for side in ("x", "y")
+    ):
+        raise FatalAccounting(
+            f"Perlectio for {act_id} has no integer crop origin to order its page audit by"
+        )
+    testimonia = dossier.get("testimonia")
+    if not isinstance(testimonia, list):
+        raise FatalAccounting(f"Perlectio for {act_id} has no sealed audit testimonia")
+    reports: list[str] = []
+    for record in testimonia:
+        if not isinstance(record, dict):
+            raise FatalAccounting(f"Perlectio for {act_id} carries a non-object audit testimonium")
+        reported = record.get("reported")
+        # Absent is the honest shape for a chair that failed or never ran; a
+        # present-but-untextual report is a witness this pass cannot compare
+        # and may not quietly omit from the flag denominator -- the audit
+        # draft would state a flag set computed from fewer witnesses than the
+        # act has, with nothing saying which was left out. `dissent_against`
+        # already refuses the same shape; this keeps the two rules aligned so
+        # a reordering cannot open the gap.
+        if reported is None:
+            continue
+        if not isinstance(reported, str):
+            raise FatalAccounting(
+                f"Perlectio for {act_id} carries a witness report that is not text; a witness "
+                "this pass cannot compare may not be dropped from its flags"
+            )
+        reports.append(reported)
+    return {
+        "act_id": act_id,
+        "page_id": page_id,
+        "order": order,
+        # The act's own crop position, independent of the sequence it was
+        # declared and processed in -- reusing `order` here would make declared
+        # and geometric identical by construction, so the "order" flag class
+        # could never fire (audit finding H1).
+        "geometry_order": (bounds.get("y"), bounds.get("x")),
+        "text": text,
+        "testimonia": reports,
+        # Pass C accounts only within the delivered crop. Page partition and
+        # residual-ink predicates belong to the Recensor.
+        "within_crop": True,
+    }
+
+
+def _sealed_sibling_semi_finals(
+    context,
+    current: list[dict[str, Any]],
+    *,
+    expected: list[dict[str, Any]],
+    protocol_config: dict[str, Any] | None = None,
+    protocol_sha256: str | None = None,
+) -> list[dict[str, Any]]:
+    """Read same-page sibling Perlectiones as immutable recovery context.
+
+    `RunTree.build_manifest` and `read_artifact` both validate every envelope's
+    self-hash, derived path, run/config binding, and input bytes. The sibling
+    text below therefore comes from the sealed Perlectio in the tree, never a
+    reconstruction from fixture or source text. Only rows are returned; the
+    publication loop remains over `pending`, so a sibling cannot be republished.
+    """
+    current_ids = {row["act_id"] for row in current}
+    page_ids = {row["page_id"] for row in current}
+    order_by_id = {act["act_id"]: order for order, act in enumerate(expected)}
+    sibling_ids = {
+        act["act_id"]
+        for act in expected
+        if act["act_id"] not in current_ids and act["page_id"] in page_ids
+    }
+    records_by_subject: dict[str, list[dict[str, Any]]] = {act_id: [] for act_id in sibling_ids}
+    for entry in context.tree.build_manifest(PERLECTOR)["artifacts"]:
+        if entry["kind"] != "perlectio" or entry["subject_id"] not in sibling_ids:
+            continue
+        record = context.tree.read_artifact(PERLECTOR, "perlectio", entry["artifact_id"])
+        records_by_subject[entry["subject_id"]].append(record)
+
+    siblings = []
+    for act_id in sorted(sibling_ids, key=order_by_id.__getitem__):
+        records = records_by_subject[act_id]
+        if not records:
+            # Never a skip: by the time a recovery pass runs, every expected
+            # act carries a Perlectio -- a held one carries `not-run`, handled
+            # below. Zero artifacts means a reading that existed is no longer
+            # here, and a page flag pass computed over a short row set would
+            # seal a quieter flag set than the page's evidence supports (the
+            # cross-act classes lose a comparison, not a row).
+            raise FatalAccounting(
+                f"act {act_id} shares this page with the recovered act but has no Perlectio "
+                "at all; the page audit may not be computed over a row that is missing"
+            )
+        reading = latest_attempt(
+            records, f"sealed sibling Perlectio for {act_id}", operation="perlegere"
+        )
+        payload = reading.get("payload")
+        # A held/not-run sibling was absent from the original frozen Pass-B
+        # collection too, so it contributes no row to a later recovery audit.
+        # ONLY that outcome skips: any other outcome whose payload lost its
+        # text is malformed evidence, and dropping it would quietly shrink the
+        # page's cross-act flag comparisons exactly like the zero-record case
+        # above.
+        if reading["outcome"] == "not-run":
+            continue
+        if not isinstance(payload, dict) or not isinstance(payload.get("text"), str):
+            raise FatalAccounting(
+                f"sealed sibling Perlectio for {act_id} has outcome {reading['outcome']!r} "
+                "but no text to audit; a malformed sibling may not be dropped from the "
+                "page's flag comparisons"
+            )
+        validate_reading_payload(
+            payload,
+            outcome=reading["outcome"],
+            fields=_PERLECTIO_FIELDS,
+            run_id=context.tree.run_id,
+            config_digest=context.config_digest,
+            protocol_config=protocol_config,
+            protocol_sha256=protocol_sha256,
+        )
+        chain = audit.validate_chain(context.tree, reading, act_id)
+        draft_payload = chain["draft"]["payload"]
+        finding_payload = chain["finding"]["payload"]
+        expected_page = expected[order_by_id[act_id]]["page_id"]
+        if draft_payload["page_id"] != expected_page or finding_payload["page_id"] != expected_page:
+            raise FatalAccounting(
+                f"sealed sibling Perlectio for {act_id} does not reconcile with its audit chain"
+            )
+        siblings.append(
+            _audit_semi_final(
+                act_id=act_id,
+                page_id=expected_page,
+                order=order_by_id[act_id],
+                text=payload["text"],
+                regions=reading_basis_regions(reading, f"sealed sibling Perlectio for {act_id}"),
+                dossier=payload["dossier"],
+            )
+        )
+    return siblings
+
+
+def _page_flags(
+    context,
+    semi_finals: list[dict[str, Any]],
+    *,
+    expected: list[dict[str, Any]],
+    recovery_act_id: str | None,
+    protocol_config: dict[str, Any] | None = None,
+    protocol_sha256: str | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    frozen = list(semi_finals)
+    if recovery_act_id is not None:
+        frozen.extend(
+            _sealed_sibling_semi_finals(
+                context,
+                frozen,
+                expected=expected,
+                protocol_config=protocol_config,
+                protocol_sha256=protocol_sha256,
+            )
+        )
+    return audit.flags_once_per_page(frozen)
 
 
 def _publish_lectio_nuda(
@@ -1394,17 +1631,22 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     )
     protocol_config, protocol_sha256 = protocol.load(context.perlector_protocol_config_path)
     context.require_sealed_config("perlector-protocol", protocol_sha256)
+    audit_policy, audit_sha256 = audit.load(context.perlector_audit_config_path)
+    context.require_sealed_config("perlector-audit", audit_sha256)
 
     # A recovery re-reads only the acts that were recovered. Re-reading the rest
     # would add an attempt nobody requested to an act nothing happened to, and an
     # attempt tally that counts work no stage asked for stops meaning anything.
-    wanted = [act for act in expected_acts(context) if args.act in (None, act["act_id"])]
+    expected = expected_acts(context)
+    declared_order = {act["act_id"]: order for order, act in enumerate(expected)}
+    wanted = [act for act in expected if args.act in (None, act["act_id"])]
     if args.act and not wanted:
         raise ContractError(f"asked to read {args.act}, which the proposal seal does not name")
     preflight_testimonia_denominator(context, wanted)
 
     read = 0
     acknowledged = 0
+    pending: list[dict[str, Any]] = []
     chair = perlector_chair(context)
     for act in wanted:
         act_id = act["act_id"]
@@ -1627,9 +1869,277 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "draft_fed": context.draft_fed,
             },
         }
+        pending.append(
+            {
+                "act": act,
+                "act_id": act_id,
+                "order": declared_order[act_id],
+                "bases": bases,
+                "payload": payload,
+                "outcome": outcome,
+                # Deliberately NOT the decoded pixels: holding every act's
+                # delivered images until the audit loop reaches it would grow
+                # peak memory with the number of acts on the run -- a parish
+                # of several hundred acts is several hundred sets of
+                # page-sized buffers held at once, and the failure mode is an
+                # OOM kill after the drafts are on disk and before any
+                # Perlectio is published. The rare re-proof rebuilds its
+                # pixels from the same sealed artifacts instead.
+                "region_pixels": region_pixels,
+                "declared_failure": declared_failure,
+                "testimonia": testimonia,
+                "attachment_view": attachment_view,
+                "prior": prior,
+                "inputs": _reading_image_inputs(context, bases, page_renders)
+                + list(testimonium_references.values())
+                + [attachment_view["reference"], prior["reference"]],
+            }
+        )
+        read += 1
+
+    # The page flag pass receives these immutable Pass-B semi-finals together,
+    # before any re-proof result exists.  Its output is therefore one
+    # deterministic cross-act computation per page, with no cascade.
+    semi_finals = []
+    for row in pending:
+        payload = row["payload"]
+        bases = row["bases"]
+        semi_finals.append(
+            _audit_semi_final(
+                act_id=row["act_id"],
+                page_id=bases[0]["source_page_id"],
+                order=row["order"],
+                text=payload["text"],
+                regions=bases,
+                dossier=payload["dossier"],
+            )
+        )
+    page_flags = _page_flags(
+        context,
+        semi_finals,
+        expected=expected,
+        recovery_act_id=args.act,
+        protocol_config=protocol_config,
+        protocol_sha256=protocol_sha256,
+    )
+    policy_record = audit.policy_record(audit_policy, audit_sha256)
+    # One page's renders at a time: flags are common (the fixture flags every
+    # act), so the re-proof rebuild below runs for most acts on a real run.
+    # Page renders are the expensive half and are per PAGE, not per act;
+    # `pending` walks acts in declared order, so a single-slot cache keyed by
+    # the act's page set removes the repeated render work while keeping peak
+    # memory bounded to one page -- the same bound the no-hoarding comment
+    # below defends.
+    render_cache: dict[str, Any] = {}
+    for row in pending:
+        payload = row["payload"]
+        act_id = row["act_id"]
+        flags = page_flags[act_id]
+        page_id = row["bases"][0]["source_page_id"]
+        draft_payload = {
+            "act_key": row["act"]["act_key"],
+            "attempt_ordinal": payload["attempt_ordinal"],
+            "semi_final_text": payload["text"],
+            "page_id": page_id,
+            "round_cap": audit_policy["round_cap"],
+            "policy": policy_record,
+            "flags": flags,
+        }
+        audit.validate_draft(draft_payload)
+        draft = context.publish(
+            kind="audit-draft",
+            subject_id=act_id,
+            outcome="read",
+            attempt=perlector_attempt_id(act_id, "perlegere", payload["attempt_ordinal"]),
+            inputs=row["inputs"],
+            payload=draft_payload,
+        )
+        draft_ref = context.input_ref(draft.relative_path)
+        final_text = payload["text"]
+        unresolved = bool(flags) and audit_policy["round_cap"] == 0
+        reproofs = [
+            {
+                "class": flag["class"],
+                "location": flag["location"],
+                "prompt": audit.neutral_prompt(
+                    start=flag["location"]["start"],
+                    end=flag["location"]["end"],
+                    text_length=len(final_text),
+                ),
+            }
+            for flag in flags
+        ]
+        changes: list[dict[str, Any]] = []
+        uncertainty: list[dict[str, Any]] = []
+        if flags and audit_policy["round_cap"]:
+            # Exactly one reader invocation for this act and audit round.  The
+            # list of neutral locations is retained on the Perlectio below;
+            # no flag result can reopen this page's frozen calculation.
+            #
+            # The pixels are rebuilt here, for this act alone, from the same
+            # sealed artifacts the Pass-B dossier was built from -- the
+            # rebuilt dossier is discarded, and the double-run byte-identity
+            # acceptance tests hold the determinism this relies on.
+            page_key = tuple(basis["source_page_id"] for basis in row["bases"])
+            if render_cache.get("key") != page_key:
+                render_cache = {
+                    "key": page_key,
+                    "renders": _page_renders_for(context, row["bases"]),
+                }
+            _, reproof_pixels = dossier_module.build_reader_dossier(
+                context,
+                act_id=act_id,
+                act_key=row["act"]["act_key"],
+                regions=row["bases"],
+                testimonia=row["testimonia"],
+                regime=context.witness_context,
+                page_renders=render_cache["renders"],
+                witness_context=witness_context_table,
+                act_attachment=row["attachment_view"],
+                prior_draft=row["prior"],
+                prior_draft_view="fed" if context.draft_fed else "withheld",
+            )
+            reproof = reader.read(
+                {**payload["dossier"], "semi_final_text": payload["text"]},
+                pass_kind="audit-reproof",
+                delivered_pixels=reproof_pixels,
+            )
+            final_text = reproof["text"]
+            pre_audit_text = payload["text"]
+            if final_text != payload["text"]:
+                payload["text"] = final_text
+                payload["dissent"] = dissent_against(
+                    final_text, dissent_testimonia(row["testimonia"], row["attachment_view"])
+                )
+                # self_revision was computed against the pre-audit Pass-B
+                # reading (audit finding H6); an audit-changed text is the one
+                # actually published, so the recorded self-revision must
+                # describe *its* departure from Pass A, not a reading that
+                # never left the Perlector.
+                payload["self_revision"] = departures(final_text, row["prior"]["text"])
+                # The truncation instrument is the same case as `self_revision`
+                # and was the last field still describing a reading nobody
+                # published: three of its four signals are computed over the
+                # reading text, and `outcome` is derived from the record, so an
+                # audit-changed text left both stating what the *pre-audit* text
+                # looked like -- and the re-proof's own engine word on why it
+                # stopped was dropped entirely, so a re-proof cut off mid-emission
+                # could replace established text while the record still read
+                # `complete` (ARCHITECTURE: "truncation is a failure, not an
+                # output"; GOVERNANCE 10).
+                #
+                # Pass C may only ever make this worse -- see
+                # `_audited_truncation`.
+                payload["truncation"] = _audited_truncation(
+                    pass_b=payload["truncation"],
+                    declared_failure=row["declared_failure"],
+                    text=final_text,
+                    region_pixels=row["region_pixels"],
+                    stop_reason=reproof["stop_reason"],
+                )
+                row["outcome"] = _resolve_outcome(
+                    declared_failure=row["declared_failure"],
+                    truncation_record=payload["truncation"],
+                    text=final_text,
+                )
+                if row["outcome"] == "no-readable-text":
+                    # One emptiness rubric everywhere: the Pass-B path empties
+                    # `text` for this outcome (whitespace was never established
+                    # ink) and attaches the whole-act gap so the absence
+                    # travels with the witness evidence that corroborates it.
+                    # A re-proof that turned the reading unreadable published
+                    # neither -- an act saying "nothing readable here" while
+                    # carrying whitespace as its text and no evidence of the
+                    # absence.
+                    final_text = ""
+                    payload["text"] = ""
+                    payload["gaps"] = _whole_act_gap(
+                        row["testimonia"],
+                        {
+                            record["artifact_id"]: context.artifact_ref(
+                                ATTESTATORES, "testimonium", record["artifact_id"]
+                            )
+                            for record in row["testimonia"]
+                        },
+                    )
+                    payload["dissent"] = dissent_against(
+                        "", dissent_testimonia(row["testimonia"], row["attachment_view"])
+                    )
+                    payload["self_revision"] = departures("", row["prior"]["text"])
+                elif payload["gaps"] and all(
+                    gap.get("position") == "whole-act" for gap in payload["gaps"]
+                ):
+                    # The symmetric direction: a Pass-B no-readable-text act
+                    # carried the whole-act gap, and a re-proof that restored
+                    # readable text would otherwise publish established text
+                    # BESIDE a gap claiming the whole act is empty --
+                    # validate_annotations refuses exactly that, so the valid
+                    # re-proof could never publish. Only the whole-act shape
+                    # clears; a legitimate narrower gap is not this case.
+                    payload["gaps"] = []
+            # After the projection, not before it: `validate_chain` recomputes
+            # the change record from the draft's semi-final against the
+            # PUBLISHED text, so the record must describe the projected text.
+            changes = audit.change_record(pre_audit_text, final_text, flags)
+        if unresolved:
+            for flag in flags:
+                start, end = flag["location"]["start"], flag["location"]["end"]
+                if start < end:
+                    uncertainty.append(
+                        {"start": start, "end": end, "reason": "audit-round-cap-exhausted"}
+                    )
+        finding_payload = {
+            "act_key": row["act"]["act_key"],
+            "attempt_ordinal": payload["attempt_ordinal"],
+            "page_id": page_id,
+            "round_cap": audit_policy["round_cap"],
+            "policy": policy_record,
+            "flags": flags,
+            "change_record": changes,
+            "uncertain_spans": uncertainty,
+            "unresolved": unresolved,
+        }
+        audit.validate_finding(
+            finding_payload,
+            text=final_text,
+            flag_text=draft_payload["semi_final_text"],
+        )
+        finding = context.publish(
+            kind="audit-finding",
+            subject_id=act_id,
+            outcome="read",
+            attempt=perlector_attempt_id(act_id, "perlegere", payload["attempt_ordinal"]),
+            inputs=[draft_ref],
+            payload=finding_payload,
+        )
+        finding_ref = context.input_ref(finding.relative_path)
+        # R5b's uncertainty is carried on the existing Perlectio layer until
+        # R8 reconciles the canonical export schema.  An unresolved flag never
+        # silently remains a clean `read`: it becomes an explicit span and the
+        # Recensor consumes the companion `unresolved` fact below.
+        payload["uncertain_spans"] = [
+            {"start": span["start"], "end": span["end"], "alternatives": [], "confidence": "low"}
+            for span in uncertainty
+        ]
+        payload["audit"] = {
+            "draft_ref": draft_ref,
+            "finding_ref": finding_ref,
+            "finding_digest": audit.audit_digest(finding_payload),
+            "unresolved": unresolved,
+            "reproofs": reproofs,
+        }
+        reading_inputs = row["inputs"] + [draft_ref, finding_ref]
+        # The producer and every later consumer use the same cross-record
+        # validation. Run it before the Perlectio is published so a drifted
+        # draft/finding relationship never becomes an unreadable artifact.
+        audit.validate_chain(
+            context.tree,
+            {"payload": payload, "inputs": reading_inputs},
+            act_id,
+        )
         validate_reading_payload(
             payload,
-            outcome=outcome,
+            outcome=row["outcome"],
             fields=_PERLECTIO_FIELDS,
             run_id=context.tree.run_id,
             config_digest=context.config_digest,
@@ -1639,14 +2149,11 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         context.publish(
             kind="perlectio",
             subject_id=act_id,
-            outcome=outcome,
-            attempt=perlector_attempt_id(act_id, "perlegere", ordinal),
-            inputs=_reading_image_inputs(context, bases, page_renders)
-            + list(testimonium_references.values())
-            + [attachment_view["reference"], prior["reference"]],
+            outcome=row["outcome"],
+            attempt=perlector_attempt_id(act_id, "perlegere", payload["attempt_ordinal"]),
+            inputs=reading_inputs,
             payload=payload,
         )
-        read += 1
 
     if read == 0 and acknowledged == 0:
         raise ContractError("the Perlector read no act and acknowledged no held act")

@@ -80,6 +80,9 @@ DEFAULT_WITNESS_CONTEXT_CONFIG_PATH = (
 DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH = (
     Path(__file__).resolve().parents[1] / "config" / "perlector_protocol.toml"
 )
+DEFAULT_PERLECTOR_AUDIT_CONFIG_PATH = (
+    Path(__file__).resolve().parents[1] / "config" / "perlector_audit.toml"
+)
 
 # Spec 08's run-level blind/named toggle, from Tyrel's 2026-07-30 ruling
 # (courtroom_doctrine.md, formalized in spec_08 — not ARCHITECTURE.md, which
@@ -297,6 +300,10 @@ class StageContext:
     @property
     def perlector_protocol_config_path(self) -> str:
         return self.args.perlector_protocol_config
+
+    @property
+    def perlector_audit_config_path(self) -> str:
+        return self.args.perlector_audit_config
 
     def publish(
         self,
@@ -587,6 +594,11 @@ def stage_parser(description: str, *, accepts_chair: bool = False) -> argparse.A
         help="the sealed Perlector prior-draft protocol declaration",
     )
     parser.add_argument(
+        "--perlector-audit-config",
+        default=str(DEFAULT_PERLECTOR_AUDIT_CONFIG_PATH),
+        help="the sealed Perlector Pass-C audit declaration",
+    )
+    parser.add_argument(
         "--draft-fed",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -793,6 +805,7 @@ def run_config_bindings(
     perlector_instrument_per_mille: int = 0,
     perlector_instrument_approval_ref: str = "",
     perlector_protocol_config_path: str | Path = DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH,
+    perlector_audit_config_path: str | Path = DEFAULT_PERLECTOR_AUDIT_CONFIG_PATH,
     draft_fed: bool = True,
     serving_recipes_config_path: str | Path = DEFAULT_SERVING_RECIPES_CONFIG_PATH,
     pod_placement_config_path: str | Path = DEFAULT_POD_PLACEMENT_CONFIG_PATH,
@@ -832,6 +845,13 @@ def run_config_bindings(
         raise ContractError(
             "the Perlector protocol configuration binding at "
             f"{perlector_protocol_config_path} could not be read"
+        ) from error
+    try:
+        perlector_audit_config_digest = digest_bytes(Path(perlector_audit_config_path).read_bytes())
+    except OSError as error:
+        raise ContractError(
+            "the Perlector audit configuration binding at "
+            f"{perlector_audit_config_path} could not be read"
         ) from error
     try:
         padding_config_digest = digest_bytes(Path(designator_padding_config_path).read_bytes())
@@ -914,6 +934,7 @@ def run_config_bindings(
                 "perlector_instrument_per_mille": perlector_instrument_per_mille,
                 "perlector_instrument_approval_ref": perlector_instrument_approval_ref,
                 "perlector_protocol_config_sha256": perlector_protocol_config_digest,
+                "perlector_audit_config_sha256": perlector_audit_config_digest,
                 "draft_fed": draft_fed,
                 "serving_config_inputs": serving_config_inputs,
             }
@@ -935,6 +956,7 @@ def run_config_bindings(
             "alignment": alignment_config_digest,
             "corpus-frame-shard": corpus_frame_config_digest,
             "perlector-protocol": perlector_protocol_config_digest,
+            "perlector-audit": perlector_audit_config_digest,
         },
         "armarium_formats": armarium_formats,
     }
@@ -1860,6 +1882,7 @@ def open_context(
         perlector_instrument_per_mille=args.perlector_instrument_per_mille,
         perlector_instrument_approval_ref=args.perlector_instrument_approval_ref,
         perlector_protocol_config_path=args.perlector_protocol_config,
+        perlector_audit_config_path=args.perlector_audit_config,
         draft_fed=args.draft_fed,
     )
     tree = RunTree(Path(args.run_root), args.run_id)
