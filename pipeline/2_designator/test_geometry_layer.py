@@ -417,7 +417,7 @@ def test_chandra_custody_refuses_a_malformed_page_identity_before_writing(
 
 def test_chandra_custody_refuses_a_response_that_is_not_bytes_before_writing():
     tree = _FixtureTree()
-    with pytest.raises(SchemaRefusal, match="not bytes"):
+    with pytest.raises(SchemaRefusal, match=r"^Chandra raw response is not bytes$"):
         retain_chandra_response(
             tree, "a str response", RECEIPT, page_id=PAGE_ID, page_ordinal=PAGE_ORDINAL
         )
