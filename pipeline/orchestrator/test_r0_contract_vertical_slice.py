@@ -265,6 +265,13 @@ def test_two_acts_on_one_page_never_claim_the_same_page_witness_bytes(run_tree, 
     for chair, rows in spans.items():
         seen: dict[tuple[int, int], str] = {}
         for act_id, span in rows:
+            if span["end"] == span["start"]:
+                # A zero-length span claims no character, so two of them are
+                # not the same provenance claim made twice -- a page witness
+                # that read a page and found nothing attaches at (0, 0) for
+                # every act on it (the trivial attach), and that is not the
+                # double-claim this arm refuses.
+                continue
             key = (span["start"], span["end"])
             clash = seen.get(key)
             assert clash is None, (
@@ -464,9 +471,18 @@ def test_act_attachment_span_reflects_this_chairs_own_delivered_text_not_the_act
                 # this test would stop guarding the exact regression its
                 # docstring names.
                 span = entry["span"]
-                assert span["end"] > span["start"], entry
                 assert entry["alignment"]["status"] == "aligned"
                 assert span == entry["alignment"]["witness_span"], entry
+                assert span["end"] >= span["start"], entry
+                if entry.get("content_health", {}).get("characters"):
+                    # Only a reading that delivered characters must claim a
+                    # non-empty span: the trivial zero-length attach of a
+                    # genuinely-empty page witness is a legitimate shape
+                    # (asserted as such by the acceptance suite), so demanding
+                    # end > start unconditionally would go red against decided
+                    # behaviour the moment that scenario joins this
+                    # parametrisation.
+                    assert span["end"] > span["start"], entry
                 checked_page_witness_entries += 1
                 continue
             characters = entry.get("content_health", {}).get("characters")

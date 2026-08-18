@@ -239,9 +239,15 @@ def test_unanimous_genuinely_empty_corroborates_blank():
     ]
 
 
-def test_a_floor_met_only_by_zero_length_attachments_completes_only_as_a_blank():
+def test_a_floor_met_only_by_trivially_attached_empty_readings_completes_only_as_a_blank():
     """R4 audit, composition seam: the trivial zero-length attachment (F-G2) x
     the rederived coverage count x dissent's zero-span departure record.
+
+    Named for what it measures: the floor arithmetic and the blank door over
+    trivially attached `genuinely-empty` chairs. Spans are not inputs to
+    `witness_coverage` at all -- the zero-length SPAN shape itself is pinned
+    where spans live, by the acceptance suite's genuinely-empty-witness
+    scenario ({"start": 0, "end": 0}) and the vertical slice's span checks.
 
     An act CAN reach a satisfied floor with no chair having placed one
     character of real text -- every chair `genuinely-empty`, every attachment

@@ -1429,7 +1429,23 @@ def publish_page_testimonia_and_attachments(
             for row in context.fixture.get("chandra_anchor", [])
             if row.get("page_ordinal") == page_ordinal
         ]
-        if len(anchors) == 1 and isinstance(anchors[0].get("html"), str):
+        if len(anchors) > 1:
+            # Skipping a malformed declaration is not the same fact as an absent
+            # one: it would detach every page witness on the page from every act
+            # on it, and record `missing-chandra-page-anchor` for an anchor that
+            # is present on disk -- a default substituted for malformed evidence
+            # (GOVERNANCE 2/10).
+            raise SchemaRefusal(
+                f"page {page_ordinal} declares {len(anchors)} Chandra anchors; a page has "
+                "one anchor, and skipping a duplicated declaration would detach every "
+                "page witness on it under a reason naming an absent anchor"
+            )
+        if anchors and not isinstance(anchors[0].get("html"), str):
+            raise SchemaRefusal(
+                f"the Chandra anchor for page {page_ordinal} carries no anchor markup "
+                "text; a malformed anchor is not an absent one"
+            )
+        if anchors:
             anchor = anchors[0]
             anchor_texts[page_ordinal] = anchor["html"]
             normalized_anchor = markup_text_view(anchor["html"])["text"]
@@ -1586,6 +1602,16 @@ def publish_page_testimonia_and_attachments(
                                 shift = span["witness"]["start"] - span["anchor"]["start"]
                                 clipped.append((start + shift, end + shift))
                         if clipped:
+                            # Still a hull ACROSS the clipped fragments: when the
+                            # act's anchor range matches the witness in two
+                            # separate places, the span also covers whatever the
+                            # witness wrote between them, and the comparison view
+                            # may carry a few of a neighbour's characters into
+                            # the dissent row as a departure. That direction is
+                            # deliberate -- it overstates disagreement and never
+                            # hides it, which is what an instrument watching for
+                            # a reader that learned to agree with witnesses
+                            # needs. Do not "fix" this towards agreement.
                             witness_start = min(start for start, _ in clipped)
                             witness_end = max(end for _, end in clipped)
                             alignment = {

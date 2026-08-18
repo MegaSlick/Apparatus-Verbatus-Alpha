@@ -2,11 +2,20 @@
 
 import signal
 import time
+from pathlib import Path
 
 import pytest
 
 import common.alignment as alignment_module
-from common.alignment import AlignmentLimits, align_to_anchor, markup_text_view
+from common.alignment import (
+    DEFAULT_ALIGNMENT_CONFIG_PATH,
+    AlignmentLimits,
+    align_to_anchor,
+    load_alignment_limits,
+    markup_text_view,
+)
+from common.contracts.canonical import digest_bytes
+from common.contracts.errors import ContractError
 
 
 def test_markup_view_strips_tags_with_offsets_and_explicit_loss():
@@ -299,3 +308,73 @@ def test_an_alarm_firing_at_the_cancellation_point_is_a_record_not_an_exception(
     assert result["status"] == "unaligned"
     assert result["reason"] == "timeout"
     assert "spans" not in result
+
+
+# --- The limits loader: the only gate between config/alignment.toml and every run
+
+
+def test_the_loader_returns_the_sealed_limits_and_the_exact_file_digest():
+    limits, digest = load_alignment_limits()
+    assert limits.max_characters > 0
+    assert limits.max_character_pairs > 0
+    assert limits.timeout_seconds > 0
+    assert digest == digest_bytes(Path(DEFAULT_ALIGNMENT_CONFIG_PATH).read_bytes())
+
+
+def test_the_loader_refuses_an_unreadable_file(tmp_path):
+    with pytest.raises(ContractError, match="could not be read"):
+        load_alignment_limits(tmp_path / "absent.toml")
+
+
+def test_the_loader_refuses_an_unknown_or_missing_key(tmp_path):
+    misspelt = tmp_path / "misspelt.toml"
+    misspelt.write_text(
+        "[limits]\nmax_characters = 1\nmax_character_pairs = 1\ntimeout_second = 1\n"
+    )
+    with pytest.raises(ContractError, match="closed schema"):
+        load_alignment_limits(misspelt)
+    partial = tmp_path / "partial.toml"
+    partial.write_text("[limits]\nmax_characters = 1\n")
+    with pytest.raises(ContractError, match="closed schema"):
+        load_alignment_limits(partial)
+
+
+@pytest.mark.parametrize("bad", ['"3"', "true", "0", "-1", "1.5"])
+def test_the_loader_refuses_a_value_that_is_not_a_positive_integer(tmp_path, bad):
+    """`true` would parse as 1 and quietly cut every page alignment to one
+    second; a float or string would land in signal.alarm at run time. The
+    loader is where those stop."""
+    path = tmp_path / "limits.toml"
+    path.write_text(
+        f"[limits]\nmax_characters = 1\nmax_character_pairs = 1\ntimeout_seconds = {bad}\n"
+    )
+    with pytest.raises(ContractError, match="positive integers"):
+        load_alignment_limits(path)
+
+
+# --- NFC composition and the offset map
+
+
+def test_nfc_composition_keeps_the_offset_map_pointing_at_the_raw_cluster():
+    """Composition changes codepoint count, so indexing pre-composition offsets
+    with a post-composition index mis-pointed every entry after the first
+    merge. Each composed character now maps to the raw offset of the cluster
+    that produced it -- for NFD French, the base letter the accent composed
+    into."""
+    raw = "Genevie\u0300ve ne\u0301e"  # NFD: base letters with combining accents
+    view = markup_text_view(raw)
+
+    assert view["text"] == "Genevi\u00e8ve n\u00e9e"  # NFC: composed \u00e8 and \u00e9
+    offsets = view["offset_map"]
+    # \u00e8 composed from raw[6] ("e") + raw[7] (combining grave) -> maps to 6.
+    assert offsets[6] == 6
+    # Every later offset names its own raw character, not one shifted by the
+    # merge: v is raw[8], e raw[9], the collapsed space None, n raw[11], and
+    # \u00e9 maps to its base letter raw[12].
+    assert offsets[7] == 8
+    assert offsets[8] == 9
+    assert offsets[9] is None
+    assert offsets[10] == 11
+    assert offsets[11] == 12
+    assert offsets[12] == 14
+    assert view["loss"]["unicode_reencoded_characters"] == 2

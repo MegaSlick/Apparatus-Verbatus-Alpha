@@ -102,9 +102,37 @@ def markup_text_view(raw: str) -> dict[str, Any]:
                 plain.append(char)
                 offsets.append(i)
         i += 1
-    composed = unicodedata.normalize("NFC", "".join(plain))
-    # NFC can change codepoint count. The map remains a best-effort trace to the
-    # retained raw payload; composition loss is recorded rather than fabricated.
+    stripped = "".join(plain)
+    composed = unicodedata.normalize("NFC", stripped)
+    # NFC can change codepoint count, so indexing the pre-composition offsets
+    # with a post-composition index mis-points every entry after the first
+    # merge (an NFD French line was measured at 7 of 14 offsets wrong). The
+    # map is rebuilt through composition instead: the stripped text splits
+    # into clusters at combining-class-0 starters, NFC composes only within
+    # such a cluster for this corpus's canonical text, and every composed
+    # character maps to its cluster's first raw offset. Where per-cluster
+    # composition cannot reproduce the composed text (starter-starter
+    # composition, e.g. Hangul jamo), the map records None for every entry
+    # rather than publishing offsets that may lie -- an absent measurement,
+    # never a fabricated one (GOVERNANCE 10).
+    composed_offsets: list[int | None]
+    cluster_chars: list[str] = []
+    cluster_offsets: list[int | None] = []
+    if stripped:
+        boundaries = [
+            index
+            for index, char in enumerate(stripped)
+            if index == 0 or unicodedata.combining(char) == 0
+        ]
+        boundaries.append(len(stripped))
+        for start, end in zip(boundaries, boundaries[1:], strict=False):
+            piece = unicodedata.normalize("NFC", stripped[start:end])
+            cluster_chars.extend(piece)
+            cluster_offsets.extend([offsets[start]] * len(piece))
+    if "".join(cluster_chars) == composed:
+        composed_offsets = cluster_offsets
+    else:
+        composed_offsets = [None] * len(composed)
     normalized_chars: list[str] = []
     normalized_offsets: list[int | None] = []
     pending_space = False
@@ -117,15 +145,15 @@ def markup_text_view(raw: str) -> dict[str, Any]:
             normalized_offsets.append(None)
             pending_space = False
         normalized_chars.append(char)
-        normalized_offsets.append(offsets[index] if index < len(offsets) else None)
+        normalized_offsets.append(composed_offsets[index])
     normalized = "".join(normalized_chars)
     return {
         "text": normalized,
         "offset_map": normalized_offsets,
         "loss": {
-            "markup_characters": len(raw) - len("".join(plain)),
+            "markup_characters": len(raw) - len(stripped),
             "whitespace_characters": len(composed) - len(normalized),
-            "unicode_reencoded_characters": abs(len("".join(plain)) - len(composed)),
+            "unicode_reencoded_characters": abs(len(stripped) - len(composed)),
         },
     }
 
@@ -156,8 +184,12 @@ def load_alignment_limits(
 def align_to_anchor(witness_raw: str, anchor_raw: str, limits: AlignmentLimits) -> dict[str, Any]:
     """Align a witness comparison view to an anchor, or explicitly `unaligned`.
 
-    Bounds apply before and during SequenceMatcher. No input is clipped: a limit
-    or deadline produces a retained unaligned result with its reason.
+    The character and pair bounds always apply before SequenceMatcher runs. The
+    wall-clock deadline applies only where this call owns the process real-time
+    timer (main thread, POSIX `SIGALRM`, no timer already armed); elsewhere the
+    comparison runs unbounded under the caller's own deadline, with the pair
+    bound still refusing the pathological case. No input is clipped: a limit or
+    a fired deadline produces a retained unaligned result with its reason.
     """
     witness = markup_text_view(witness_raw)
     anchor = markup_text_view(anchor_raw)

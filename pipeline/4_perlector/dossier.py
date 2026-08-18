@@ -334,17 +334,26 @@ def build_dossier(
         # sees -- so it is relabeled here through the same `witness_label`
         # every other dossier identity already goes through, never carried
         # verbatim into what gets shown.
+        relabeled_views: dict[str, str] = {}
+        for chair, text in act_attachment["comparison_views"].items():
+            label = witness_label(
+                chair,
+                regime=regime,
+                run_id=context.tree.run_id,
+                config_digest=context.config_digest,
+            )
+            # `witness_label` does not guarantee uniqueness; a collision here
+            # would silently overwrite one chair's comparison view with
+            # another's -- evidence lost behind a well-formed dossier.
+            if label in relabeled_views:
+                raise SchemaRefusal(
+                    f"two comparison views relabel to the same witness label {label!r}; "
+                    "a colliding pseudonym would silently replace one chair's view"
+                )
+            relabeled_views[label] = text
         dossier["act_attachment"] = {
             **act_attachment,
-            "comparison_views": {
-                witness_label(
-                    chair,
-                    regime=regime,
-                    run_id=context.tree.run_id,
-                    config_digest=context.config_digest,
-                ): text
-                for chair, text in act_attachment["comparison_views"].items()
-            },
+            "comparison_views": relabeled_views,
         }
     if prior_draft is not None:
         if prior_draft_view not in {"fed", "withheld"}:

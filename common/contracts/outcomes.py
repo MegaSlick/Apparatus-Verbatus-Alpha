@@ -558,16 +558,20 @@ def run_aggregate(
             # number no rule in this file produced -- {read, excluded, dead}
             # against a floor of 3 flags at 2 and reported 1 -- the same class of
             # defect this branch exists to repair.
-            if (
-                record.get("granularity_basis", LEGACY_GRANULARITY_BASIS)
-                != LEGACY_GRANULARITY_BASIS
-            ):
+            basis = record.get("granularity_basis", LEGACY_GRANULARITY_BASIS)
+            if basis == INTERIM_GRANULARITY_BASIS:
                 reading_chairs = sum(
                     record["by_outcome"].get(outcome, 0) for outcome in WITNESS_READING_OUTCOMES
                 )
                 completed = reading_chairs - record["page_granularity_only"]
-            else:
+            elif basis == LEGACY_GRANULARITY_BASIS:
                 completed = record["by_class"]["completed"]
+            else:
+                # A closed vocabulary, closed here too: a basis this module never
+                # produced is malformed evidence, not a default to guess from.
+                raise FatalAccounting(
+                    f"act {act} coverage names unknown granularity basis {basis!r}"
+                )
             reasons.append(
                 f"act {act} is under-witnessed ({completed} of a floor of {record['floor']})"
             )

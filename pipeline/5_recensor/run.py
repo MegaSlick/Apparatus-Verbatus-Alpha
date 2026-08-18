@@ -160,7 +160,17 @@ def act_attachment_facts(context, act_id: str) -> dict[str, dict]:
         if health is not None and not isinstance(health, dict):
             raise FatalAccounting(f"act {act_id} has malformed derived act-attachment entry")
         truncated = health.get("truncated") if isinstance(health, dict) else None
-        if entry.get("page_witness") is True:
+        # The same malformed-versus-absent rule `attached` and `content_health`
+        # get above: any non-boolean flag read as "act-scoped" would skip the
+        # alignment-consistency check and halt later on the outcome check with
+        # a message blaming the Testimonium, when the real fault is this field.
+        page_witness = entry.get("page_witness")
+        if not isinstance(page_witness, bool):
+            raise FatalAccounting(
+                f"act {act_id} attachment entry for chair {chair!r} carries no boolean "
+                "page_witness flag; its scope decides which consistency check applies"
+            )
+        if page_witness:
             alignment = entry.get("alignment")
             if not isinstance(alignment, dict) or alignment.get("status") not in {
                 "aligned",
@@ -177,7 +187,7 @@ def act_attachment_facts(context, act_id: str) -> dict[str, dict]:
             "attached": entry["attached"],
             "truncated": truncated,
             "health_unrecorded": truncated is None,
-            "page_witness": entry.get("page_witness") is True,
+            "page_witness": page_witness,
             "content_health": health,
         }
     return facts

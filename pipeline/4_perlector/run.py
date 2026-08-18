@@ -501,9 +501,16 @@ def act_comparison_view(page_text: str, witness_span: dict[str, int]) -> str:
     ASCII fixture and not Chandra's HTML or Churro's XML. Found in audit; F-X3.
     """
     normalized = markup_text_view(page_text)["text"]
-    if witness_span["end"] > len(normalized):
+    # Both bounds, not only the end: this reads an artifact back from disk, so
+    # it is the last gate before untrusted numbers become a comparison view. A
+    # negative or inverted span slices to an empty string without complaint,
+    # and that empty string would become the act's comparison view -- dissent
+    # then records the witness as departing from the whole reading, or as
+    # corroborating a blank it never reported.
+    start, end = witness_span["start"], witness_span["end"]
+    if not 0 <= start <= end or end > len(normalized):
         raise SchemaRefusal("an attached page witness claims a span past its own comparison view")
-    return normalized[witness_span["start"] : witness_span["end"]]
+    return normalized[start:end]
 
 
 def dissent_testimonia(testimonia: list[dict], attachment_view: dict[str, Any]) -> list[dict]:
