@@ -117,6 +117,12 @@ TESTIMONY = {
 # R4's fixture-only Chandra view.  The HTML is deliberately retained as markup
 # so the alignment path proves stripping and offset accounting before mapping
 # the named anchor lines into their declared geometry.
+#
+# The space before the first `</p>` is load-bearing: tag stripping leaves it as
+# the only separator between the two act texts in the page view, and it is what
+# keeps act a1's and act a2's aligned page spans disjoint (F-X2 -- the
+# vertical-slice suite refuses overlapping page-witness spans). Do not tidy it
+# away.
 CHANDRA_ANCHORS = (
     {
         "page_ordinal": 1,

@@ -369,7 +369,10 @@ def test_the_comparison_deadline_leaves_a_callers_own_alarm_alone():
 
         assert result == []
         remaining, _ = signal.getitimer(signal.ITIMER_REAL)
-        assert remaining > 0, "alignment cancelled a timer it did not own"
+        # Not merely "still running": a module that armed its own 1s timer and
+        # left it in place also leaves `remaining > 0`, while the caller's 30s
+        # deadline is gone -- and later fires an unrelated SIGALRM mid-run.
+        assert remaining > 20, "alignment replaced or cancelled a timer it did not own"
         assert signal.getsignal(signal.SIGALRM) is caller_handler
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0.0)

@@ -189,12 +189,26 @@ def act_attachment_facts(context, act_id: str) -> dict[str, dict]:
             "health_unrecorded": truncated is None,
             "page_witness": page_witness,
             "content_health": health,
+            # None for act-scoped chairs and unaligned page witnesses; the
+            # producer's disclosure of what an aligned page witness aligned
+            # against ("act-anchor" | "no-page-anchor" | "act-line-not-located").
+            # `blank_corroboration`
+            # is the consumer that must see it.
+            "anchor_basis": (
+                entry["alignment"].get("anchor_basis")
+                if page_witness and entry["attached"]
+                else None
+            ),
         }
     return facts
 
 
 def blank_corroboration(
-    coverage: dict, outcomes: dict[str, str], *, witness_uncovered: bool = False
+    coverage: dict,
+    outcomes: dict[str, str],
+    attachments: dict[str, dict],
+    *,
+    witness_uncovered: bool = False,
 ) -> list[str] | None:
     """The corroborating chairs if every witness that read this act's ink agrees
     nothing was there, or `None` if the evidence does not support that.
@@ -230,6 +244,18 @@ def blank_corroboration(
     can therefore be `False` while the actual reading evidence is one chair
     short of the floor; trusting it here would let an excluded chair stand
     in for a witness that never looked.
+
+    `attachments` is `act_attachment_facts`'s per-chair record. A page witness
+    whose trivial attach discloses `anchor_basis: "act-line-not-located"`
+    still counts toward the floor (the chair did complete, and that is
+    disclosed rather than hidden), but it may not corroborate a TERMINAL
+    blank: the page's Chandra anchor exists yet locates no line for this act,
+    so the geometry does not reconcile, and confirmed-blank is a proved
+    absence -- the act holds for a human instead (GOVERNANCE 2/9; GOALS 1:
+    the unproved direction costs a review, never an act). `no-page-anchor` is
+    the different fact of a page with no anchor at all -- an ink-free or
+    fallback page has nothing for Chandra to anchor, and refusing blank there
+    would make the intended blank-page path unreachable.
     """
     if witness_uncovered or coverage["unresolved_chairs"]:
         return None
@@ -240,6 +266,10 @@ def blank_corroboration(
         len(completed) < coverage["floor"]
         or not completed
         or any(outcomes[chair] != "genuinely-empty" for chair in completed)
+        or any(
+            attachments.get(chair, {}).get("anchor_basis") == "act-line-not-located"
+            for chair in completed
+        )
     ):
         return None
     return completed
@@ -277,11 +307,12 @@ def validate_chair_coverage(context, act_id: str, floor: int) -> dict[str, objec
     # calculation honestly remains unaligned, and `act_attachment_facts`
     # already checks that fact for internal consistency against its own
     # computed alignment.
-    unaccounted = sorted(set(outcomes) - set(attachments))
+    unaccounted = sorted(set(outcomes) ^ set(attachments))
     if unaccounted:
         raise FatalAccounting(
-            f"act {act_id}'s derived act-attachment records no fact for configured "
-            f"chair(s) {unaccounted}; an absent fact would silently read as unattached"
+            f"act {act_id}'s derived act-attachment and its current Testimonia disagree on "
+            f"chair(s) {unaccounted}; an absent fact would silently read as unattached, and "
+            "an extra one would attach a chair that never testified for this act"
         )
     # An ACT-SCOPED chair carries no independent computed fact: its `attached`
     # is a restatement of that chair's own current Testimonium outcome, not a
@@ -317,8 +348,7 @@ def validate_chair_coverage(context, act_id: str, floor: int) -> dict[str, objec
     stale_health = sorted(
         chair
         for chair, fact in attachments.items()
-        if fact["content_health"]
-        != (current_attempts[chair]["content_health"] if chair in current_attempts else None)
+        if fact["content_health"] != current_attempts[chair]["content_health"]
     )
     if stale_health:
         raise FatalAccounting(
@@ -1109,6 +1139,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 blank_corroboration(
                     coverage,
                     chair_outcomes(context, act_id),
+                    act_attachment_facts(context, act_id),
                     witness_uncovered=bool(state["recovery_regions"]),
                 )
                 if (

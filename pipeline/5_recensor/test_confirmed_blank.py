@@ -165,7 +165,7 @@ def test_confirmed_blank_is_a_completed_class_terminal_outcome(tmp_path):
 def test_completed_reading_evidence_below_the_floor_never_corroborates_blank():
     coverage = {"under_witnessed": True, "unresolved_chairs": 0, "floor": 2}
     outcomes = {"attestator_1": "genuinely-empty"}
-    assert RECENSOR_RUN.blank_corroboration(coverage, outcomes) is None
+    assert RECENSOR_RUN.blank_corroboration(coverage, outcomes, {}) is None
 
 
 def test_an_excluded_chair_cannot_stand_in_for_a_witness_that_never_read(tmp_path):
@@ -182,7 +182,7 @@ def test_an_excluded_chair_cannot_stand_in_for_a_witness_that_never_read(tmp_pat
     }
     coverage = witness_coverage(outcomes, configured_floor=3)
     assert coverage["under_witnessed"] is False
-    assert RECENSOR_RUN.blank_corroboration(coverage, outcomes) is None
+    assert RECENSOR_RUN.blank_corroboration(coverage, outcomes, {}) is None
 
 
 def test_an_unresolved_chair_never_corroborates_blank():
@@ -193,7 +193,7 @@ def test_an_unresolved_chair_never_corroborates_blank():
     # the wrong branch.
     coverage = {"under_witnessed": False, "unresolved_chairs": 1, "floor": 2}
     outcomes = {"attestator_1": "genuinely-empty", "attestator_2": "not-run"}
-    assert RECENSOR_RUN.blank_corroboration(coverage, outcomes) is None
+    assert RECENSOR_RUN.blank_corroboration(coverage, outcomes, {}) is None
 
 
 def test_testimonia_from_original_regions_cannot_confirm_a_recovery_region_blank():
@@ -204,7 +204,7 @@ def test_testimonia_from_original_regions_cannot_confirm_a_recovery_region_blank
         "attestator_2": "genuinely-empty",
         "attestator_3": "genuinely-empty",
     }
-    assert RECENSOR_RUN.blank_corroboration(coverage, outcomes, witness_uncovered=True) is None
+    assert RECENSOR_RUN.blank_corroboration(coverage, outcomes, {}, witness_uncovered=True) is None
 
 
 def test_zero_completed_chairs_never_corroborates_blank():
@@ -212,7 +212,7 @@ def test_zero_completed_chairs_never_corroborates_blank():
     positive evidence of absence."""
     coverage = {"under_witnessed": False, "unresolved_chairs": 0, "floor": 0}
     outcomes = {"attestator_1": "failed", "attestator_2": "dead"}
-    assert RECENSOR_RUN.blank_corroboration(coverage, outcomes) is None
+    assert RECENSOR_RUN.blank_corroboration(coverage, outcomes, {}) is None
 
 
 def test_one_dissenting_read_refuses_corroboration():
@@ -222,7 +222,7 @@ def test_one_dissenting_read_refuses_corroboration():
         "attestator_2": "genuinely-empty",
         "attestator_3": "read",
     }
-    assert RECENSOR_RUN.blank_corroboration(coverage, outcomes) is None
+    assert RECENSOR_RUN.blank_corroboration(coverage, outcomes, {}) is None
 
 
 def test_unanimous_genuinely_empty_corroborates_blank():
@@ -232,7 +232,7 @@ def test_unanimous_genuinely_empty_corroborates_blank():
         "attestator_2": "genuinely-empty",
         "attestator_3": "genuinely-empty",
     }
-    assert RECENSOR_RUN.blank_corroboration(coverage, outcomes) == [
+    assert RECENSOR_RUN.blank_corroboration(coverage, outcomes, {}) == [
         "attestator_1",
         "attestator_2",
         "attestator_3",
@@ -280,16 +280,51 @@ def test_a_floor_met_only_by_trivially_attached_empty_readings_completes_only_as
     assert coverage["by_outcome"] == {"genuinely-empty": 3}
     assert coverage["shortfalls"] == {"failed": 0, "truncated": 0, "unaligned": 0}
     # The blank door, open only because the Perlector itself found no ink.
-    assert RECENSOR_RUN.blank_corroboration(coverage, outcomes) == sorted(outcomes)
+    assert RECENSOR_RUN.blank_corroboration(coverage, outcomes, {}) == sorted(outcomes)
     # One chair that actually read text closes it, however satisfied the floor.
     contradicted = dict(outcomes, attestator_2="read")
     assert (
         RECENSOR_RUN.blank_corroboration(
             witness_coverage(contradicted, 3, attachments={c: True for c in contradicted}),
             contradicted,
+            {},
         )
         is None
     )
+
+
+def test_an_unlocated_act_line_never_corroborates_a_terminal_blank():
+    """CR round 3 on R4's PR loop, ruled here with one refinement over the
+    finding: a page witness whose trivial attach discloses `anchor_basis:
+    "act-line-not-located"` (the page's anchor EXISTS yet locates no line for
+    this act) still counts toward the floor, but confirmed-blank is a PROVED
+    absence and geometry that does not reconcile may not seal one -- the act
+    holds for a human (GOVERNANCE 2/9). `no-page-anchor` is the different
+    fact of a page with no Chandra anchor at all: the ink-free-page scenario's
+    Designator-minted fallback act lives exactly there, and refusing blank on
+    it would make the intended blank-page path unreachable (the acceptance
+    suite pins that scenario end-to-end at exit 0). The not-located case has
+    no shipped scenario (`chandra_anchor` is scenario-global and both act
+    lines always locate), so the gate is exercised here directly, on forged
+    facts, exactly as the rest of this section forges coverage records."""
+    outcomes = {
+        "attestator_1": "genuinely-empty",
+        "attestator_2": "genuinely-empty",
+        "attestator_3": "genuinely-empty",
+    }
+    coverage = witness_coverage(outcomes, 3, attachments={c: True for c in outcomes})
+    anchored = {chair: {"page_witness": True, "anchor_basis": "act-anchor"} for chair in outcomes}
+    assert RECENSOR_RUN.blank_corroboration(coverage, outcomes, anchored) == sorted(outcomes)
+
+    anchorless_page = {
+        chair: {"page_witness": True, "anchor_basis": "no-page-anchor"} for chair in outcomes
+    }
+    assert RECENSOR_RUN.blank_corroboration(coverage, outcomes, anchorless_page) == sorted(outcomes)
+
+    unlocated = dict(
+        anchored, attestator_3={"page_witness": True, "anchor_basis": "act-line-not-located"}
+    )
+    assert RECENSOR_RUN.blank_corroboration(coverage, outcomes, unlocated) is None
 
 
 if __name__ == "__main__":

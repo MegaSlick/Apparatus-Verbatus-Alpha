@@ -166,11 +166,16 @@ def load_alignment_limits(
         record = tomllib.loads(raw.decode("utf-8"))
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
         raise ContractError(f"alignment configuration at {path} could not be read") from error
-    if set(record) != {"limits"} or set(record["limits"]) != {
-        "max_characters",
-        "max_character_pairs",
-        "timeout_seconds",
-    }:
+    if (
+        set(record) != {"limits"}
+        or not isinstance(record["limits"], dict)
+        or set(record["limits"])
+        != {
+            "max_characters",
+            "max_character_pairs",
+            "timeout_seconds",
+        }
+    ):
         raise ContractError("alignment configuration has the wrong closed schema")
     values = record["limits"]
     if any(

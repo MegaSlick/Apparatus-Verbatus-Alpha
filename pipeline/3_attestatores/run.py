@@ -1458,11 +1458,22 @@ def publish_page_testimonia_and_attachments(
             # first match `str.find` would return from position 0.
             search_from = 0
             for line in anchor.get("lines", []):
+                # The same malformed-versus-absent rule as the anchor checks
+                # above: a skipped row leaves the act reporting
+                # act-anchor-line-not-located for a line that sits malformed on
+                # disk, and leaves `search_from` behind the malformed line's
+                # span so the next act's formulaic opening can resolve into it.
                 if not isinstance(line, dict) or not isinstance(line.get("act_key"), str):
-                    continue
+                    raise SchemaRefusal(
+                        f"a Chandra anchor line for page {page_ordinal} names no act key; "
+                        "skipping it would detach an act under a reason naming an absent line"
+                    )
                 source = line.get("text")
                 if not isinstance(source, str):
-                    continue
+                    raise SchemaRefusal(
+                        f"the Chandra anchor line for act {line['act_key']} on page "
+                        f"{page_ordinal} carries no text; a malformed line is not an absent one"
+                    )
                 start = normalized_anchor.find(source, search_from)
                 act = next((item for item in page_acts if item["act_key"] == line["act_key"]), None)
                 if start >= 0:
@@ -1525,13 +1536,26 @@ def publish_page_testimonia_and_attachments(
                     # does for the same outcome.
                     alignment = {
                         "status": "aligned",
-                        # A trivial attach with no located anchor line says so.
-                        # Without this, a page whose Chandra anchor was missing
-                        # or malformed could satisfy the witness floor and reach
-                        # confirmed-blank while looking identical to a proved
-                        # blank sheet -- the Recensor and the export could not
-                        # see that nothing was ever aligned (GOVERNANCE 2/10).
-                        "anchor_basis": "act-anchor" if act_anchor is not None else "no-act-anchor",
+                        # A trivial attach with no located anchor line says so,
+                        # and says WHICH absence: an ink-free or fallback page
+                        # legitimately has no Chandra anchor at all
+                        # (`no-page-anchor` -- blank confirmation stays open),
+                        # while a page whose anchor exists but locates no line
+                        # for this act is geometry that does not reconcile
+                        # (`act-line-not-located` -- `blank_corroboration`
+                        # refuses to seal a terminal blank on it). Without the
+                        # distinction the Recensor and the export could not
+                        # tell either from a computed alignment (GOVERNANCE
+                        # 2/10).
+                        "anchor_basis": (
+                            "act-anchor"
+                            if act_anchor is not None
+                            else (
+                                "no-page-anchor"
+                                if anchor_texts.get(act["page_ordinal"]) is None
+                                else "act-line-not-located"
+                            )
+                        ),
                         "anchor_span": (
                             {"start": act_anchor["start"], "end": act_anchor["start"]}
                             if act_anchor is not None

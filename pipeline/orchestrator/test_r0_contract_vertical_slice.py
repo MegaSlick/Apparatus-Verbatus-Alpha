@@ -474,7 +474,10 @@ def test_act_attachment_span_reflects_this_chairs_own_delivered_text_not_the_act
                 assert entry["alignment"]["status"] == "aligned"
                 assert span == entry["alignment"]["witness_span"], entry
                 assert span["end"] >= span["start"], entry
-                if entry.get("content_health", {}).get("characters"):
+                # `or {}`, not a .get default: an explicit `content_health: null`
+                # is a valid recorded fact ("health not recorded", per the
+                # Recensor), and the default alone would crash this test on it.
+                if (entry.get("content_health") or {}).get("characters"):
                     # Only a reading that delivered characters must claim a
                     # non-empty span: the trivial zero-length attach of a
                     # genuinely-empty page witness is a legitimate shape
@@ -485,7 +488,7 @@ def test_act_attachment_span_reflects_this_chairs_own_delivered_text_not_the_act
                     assert span["end"] > span["start"], entry
                 checked_page_witness_entries += 1
                 continue
-            characters = entry.get("content_health", {}).get("characters")
+            characters = (entry.get("content_health") or {}).get("characters")
             if not isinstance(characters, int):
                 continue
             span = entry["span"]
@@ -548,7 +551,8 @@ def test_an_attached_page_witness_alignment_names_its_anchor_basis(run_tree):
     """Every aligned page-witness alignment states what it aligned against.
 
     `anchor_basis` is the field that keeps a trivial zero-length attach on a
-    page with no located anchor line (`no-act-anchor`) distinguishable from an
+    page with no located anchor line (`no-page-anchor`/`act-line-not-located`)
+    distinguishable from an
     alignment computed through Chandra's anchor (`act-anchor`). Without it, a
     page whose anchor pass failed could satisfy the witness floor and reach
     confirmed-blank while looking identical to a proved blank sheet. Both
