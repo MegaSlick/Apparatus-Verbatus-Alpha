@@ -169,13 +169,15 @@ def read_retained_chandra_response(
         raise SchemaRefusal("Chandra custody binding is not exact canonical JSON bytes")
     if recorded["page_id"] != page_id or recorded["page_ordinal"] != page_ordinal:
         raise SchemaRefusal("Chandra custody binding belongs to a different page")
-    if (
-        recorded["schema"] != CUSTODY_BINDING_SCHEMA
-        or recorded["receipt_sha256"] != receipt["sha256"]
-        or recorded["response_sha256"] != response["sha256"]
-    ):
+    if recorded["schema"] != CUSTODY_BINDING_SCHEMA:
+        raise SchemaRefusal("Chandra custody binding does not carry its own schema label")
+    if recorded["receipt_sha256"] != receipt["sha256"]:
         raise SchemaRefusal(
             "Chandra response was retained under a different receipt than the one given here"
+        )
+    if recorded["response_sha256"] != response["sha256"]:
+        raise SchemaRefusal(
+            "Chandra custody binding names a different response than the one given here"
         )
     # Receipt validation is delegated to the run tree, which verifies its schema,
     # path, and bytes -- that proves the receipt itself is authentic, not that it

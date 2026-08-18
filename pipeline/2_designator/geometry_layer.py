@@ -863,7 +863,15 @@ def _derive_resolution(
     # flag is intentionally conservative, decided by the R2 audit seat
     # (2026-08-16); a geometric-intersection narrowing is future work if the
     # review-queue cost is measured and found to matter, never a default.
+    # The same question, asked of the other source. Two occlusion envelopes under
+    # one `occlusion_id` are an identity collision exactly as two raw proposals
+    # are, and left unchecked they are worse than untidy: `occlusion_ids` below
+    # goes into EVERY partition row, so one occlusion counted twice tells a
+    # reviewer that two separate obstructions bear on every proposal on the page.
+    # GOVERNANCE 10 -- the record may only claim what was actually measured.
     occlusion_ids = sorted(payload["occlusion_id"] for _envelope, payload in occlusions)
+    if len(occlusion_ids) != len(set(occlusion_ids)):
+        raise SchemaRefusal("resolver received duplicate occlusion identities")
     return {
         "schema": RESOLUTION_SCHEMA,
         "page_id": page[0],

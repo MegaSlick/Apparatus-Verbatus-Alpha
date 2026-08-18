@@ -25,6 +25,7 @@ from geometry_layer import (
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import SchemaRefusal
 from common.contracts.stages import writing_directory
+from common.runtree.store import BLOBS_DIR
 
 RECEIPT = {"relative_path": "receipts/sha256/" + "a" * 64 + ".json", "sha256": "a" * 64}
 # Derived exactly as the custody module derives its prefix, so this fixture can
@@ -262,7 +263,7 @@ class _FixtureTree:
 
     def put_blob(self, stage, data):
         digest = digest_bytes(data)
-        path = f"{writing_directory(stage)}/blobs/sha256/{digest}"
+        path = f"{writing_directory(stage)}/{BLOBS_DIR}/{digest}"
         self.blobs[path] = data
         return digest, type("Published", (), {"relative_path": path})()
 
@@ -326,7 +327,7 @@ def test_chandra_custody_refuses_a_forged_blob_reference():
     # A response reference whose claimed digest disagrees with what the custody
     # binding recorded is refused by the pairing check before any bytes are read.
     forged = {**stored["response_ref"], "sha256": "0" * 64}
-    with pytest.raises(SchemaRefusal, match="different receipt"):
+    with pytest.raises(SchemaRefusal, match="names a different response"):
         read_retained_chandra_response(
             tree,
             forged,
@@ -797,6 +798,37 @@ def test_resolver_refuses_an_occlusion_polygon_outside_the_shared_page_extent():
     )
     with pytest.raises(SchemaRefusal, match="outside the shared page extent"):
         resolve(raw_sources, [out_of_bounds])
+
+
+def test_resolver_refuses_two_occlusions_sharing_one_identity():
+    """The resolver refuses colliding raw proposal ids; occlusions are the same fact.
+
+    `occlusion_ids` goes into every partition row, so an id counted twice tells a
+    reviewer that two separate obstructions bear on every proposal on the page
+    when only one was ever recorded.
+    """
+    raw_sources = _geometry_sources()
+    first = _occlusion_envelope()
+    second = occlusion_envelope(
+        run_id="r2-fixture",
+        subject_id="occ_fixture",  # the same identity as `first`
+        config_digest="d" * 64,
+        adapter_revision="fixture-r2-v1",
+        inputs=[],
+        payload={
+            "schema": "designator-occlusion.v1",
+            "occlusion_id": "occ_fixture",
+            "page_id": "pg_fixture",
+            "page_ordinal": 0,
+            "polygon": [{"x": 40, "y": 40}, {"x": 41, "y": 40}, {"x": 41, "y": 41}],
+            "z_relationship": "unknown",
+            "review_state": "open",
+            "receipt_ref": RECEIPT,
+        },
+    )
+    assert first["payload"]["polygon"] != second["payload"]["polygon"]
+    with pytest.raises(SchemaRefusal, match="duplicate occlusion identities"):
+        resolve(raw_sources, [first, second])
 
 
 def test_resolver_refuses_raw_proposals_with_mismatched_page_pixel_extent():

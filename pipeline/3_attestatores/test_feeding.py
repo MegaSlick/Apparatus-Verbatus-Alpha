@@ -30,6 +30,7 @@ from common.chandra_custody import retain_chandra_response
 from common.contracts.canonical import digest_bytes, digest_of
 from common.contracts.errors import SchemaRefusal
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, writing_directory
+from common.runtree.store import BLOBS_DIR
 
 PAGE_ID = "pg_fixture"
 PAGE_ORDINAL = 0
@@ -51,7 +52,7 @@ class _Tree:
 
     def put_blob(self, stage, data):
         digest = digest_bytes(data)
-        path = f"{writing_directory(stage)}/blobs/sha256/{digest}"
+        path = f"{writing_directory(stage)}/{BLOBS_DIR}/{digest}"
         self.blobs[path] = data
         return digest, type("Published", (), {"relative_path": path})()
 
