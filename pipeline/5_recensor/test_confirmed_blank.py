@@ -313,17 +313,27 @@ def test_an_unlocated_act_line_never_corroborates_a_terminal_blank():
         "attestator_3": "genuinely-empty",
     }
     coverage = witness_coverage(outcomes, 3, attachments={c: True for c in outcomes})
-    anchored = {chair: {"page_witness": True, "anchor_basis": "act-anchor"} for chair in outcomes}
+
+    def _fact(anchor_basis: str) -> dict:
+        # The full shape `act_attachment_facts` emits, not only the key the
+        # gate reads today -- a slimmer forgery would keep passing if the gate
+        # started requiring another producer key.
+        return {
+            "attached": True,
+            "truncated": False,
+            "health_unrecorded": False,
+            "page_witness": True,
+            "content_health": {"truncated": False, "characters": 0},
+            "anchor_basis": anchor_basis,
+        }
+
+    anchored = {chair: _fact("act-anchor") for chair in outcomes}
     assert RECENSOR_RUN.blank_corroboration(coverage, outcomes, anchored) == sorted(outcomes)
 
-    anchorless_page = {
-        chair: {"page_witness": True, "anchor_basis": "no-page-anchor"} for chair in outcomes
-    }
+    anchorless_page = {chair: _fact("no-page-anchor") for chair in outcomes}
     assert RECENSOR_RUN.blank_corroboration(coverage, outcomes, anchorless_page) == sorted(outcomes)
 
-    unlocated = dict(
-        anchored, attestator_3={"page_witness": True, "anchor_basis": "act-line-not-located"}
-    )
+    unlocated = dict(anchored, attestator_3=_fact("act-line-not-located"))
     assert RECENSOR_RUN.blank_corroboration(coverage, outcomes, unlocated) is None
 
 

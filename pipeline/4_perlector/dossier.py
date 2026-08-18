@@ -334,8 +334,14 @@ def build_dossier(
         # sees -- so it is relabeled here through the same `witness_label`
         # every other dossier identity already goes through, never carried
         # verbatim into what gets shown.
+        views = act_attachment.get("comparison_views")
+        if not isinstance(views, dict):
+            raise SchemaRefusal(
+                "an act attachment reached the dossier with no comparison_views mapping; "
+                "a dossier may not be built from an attachment whose views are absent"
+            )
         relabeled_views: dict[str, str] = {}
-        for chair, text in act_attachment["comparison_views"].items():
+        for chair, text in views.items():
             label = witness_label(
                 chair,
                 regime=regime,

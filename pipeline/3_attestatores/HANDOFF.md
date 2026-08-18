@@ -181,7 +181,9 @@ than repaired or selected around.
 ## Act-attachment schema (R4)
 
 Written by the same stage invocation that writes page testimony, one
-`act-attachment` record per proposed act (`subject_id == act_id`). Its payload
+`act-attachment` record per act in the proposal seal, held acts included
+(`subject_id == act_id`). A held act carries one entry per chair with
+`page_witness` false, `attached` false, and `alignment` null. Its payload
 carries `attachments`: one entry per configured chair, each with `chair`,
 `attached` (bool), `span` (`{start, end}`), `content_health` (dict or null —
 null is "health not recorded", a distinct fact), `page_witness` (bool,

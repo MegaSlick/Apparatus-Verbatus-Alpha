@@ -895,6 +895,12 @@ def test_act_scoped_attachment_must_match_the_current_outcome_when_health_is_cur
     assert attachment["page_witness"] is False
     assert attachment["attached"] is True
     attachment["content_health"] = current["payload"]["content_health"]
+    # The span must stay consistent with the health just copied in, or the
+    # Perlector refuses on the span before it reaches the outcome guard this
+    # test is named for: a non-integer character count skips that span check
+    # entirely, and 0 matches the forged {0, 0}. Any other value would go red
+    # on the span message instead of the outcome guard.
+    assert current["payload"]["content_health"]["characters"] in (None, 0), current["payload"]
     attachment["span"] = {"start": 0, "end": 0}
     _reseal(attachment_path, attachment_record)
 

@@ -386,8 +386,8 @@ def test_starter_starter_composition_yields_honest_none_offsets_never_shifted_on
     across combining-class-0 boundaries), every offset entry is None. An
     absent measurement, never a fabricated one: publishing shifted offsets
     there would reach the act attachment as measured geometry."""
-    raw = "가"  # Hangul jamo G + A, NFC-composed to one syllable
+    raw = "\u1100\u1161"  # Hangul jamo G + A, NFC-composed to one syllable
     view = markup_text_view(raw)
 
-    assert view["text"] == "가"
+    assert view["text"] == "\uac00"
     assert view["offset_map"] == [None]
