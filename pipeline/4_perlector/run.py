@@ -1199,6 +1199,26 @@ def _audit_semi_final(
     testimonia = dossier.get("testimonia")
     if not isinstance(testimonia, list):
         raise FatalAccounting(f"Perlectio for {act_id} has no sealed audit testimonia")
+    reports: list[str] = []
+    for record in testimonia:
+        if not isinstance(record, dict):
+            raise FatalAccounting(f"Perlectio for {act_id} carries a non-object audit testimonium")
+        reported = record.get("reported")
+        # Absent is the honest shape for a chair that failed or never ran; a
+        # present-but-untextual report is a witness this pass cannot compare
+        # and may not quietly omit from the flag denominator -- the audit
+        # draft would state a flag set computed from fewer witnesses than the
+        # act has, with nothing saying which was left out. `dissent_against`
+        # already refuses the same shape; this keeps the two rules aligned so
+        # a reordering cannot open the gap.
+        if reported is None:
+            continue
+        if not isinstance(reported, str):
+            raise FatalAccounting(
+                f"Perlectio for {act_id} carries a witness report that is not text; a witness "
+                "this pass cannot compare may not be dropped from its flags"
+            )
+        reports.append(reported)
     return {
         "act_id": act_id,
         "page_id": page_id,
@@ -1209,11 +1229,7 @@ def _audit_semi_final(
         # could never fire (audit finding H1).
         "geometry_order": (bounds.get("y"), bounds.get("x")),
         "text": text,
-        "testimonia": [
-            record["reported"]
-            for record in testimonia
-            if isinstance(record, dict) and isinstance(record.get("reported"), str)
-        ],
+        "testimonia": reports,
         # Pass C accounts only within the delivered crop. Page partition and
         # residual-ink predicates belong to the Recensor.
         "within_crop": True,
@@ -1956,7 +1972,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 delivered_pixels=reproof_pixels,
             )
             final_text = reproof["text"]
-            changes = audit.change_record(payload["text"], final_text, flags)
+            pre_audit_text = payload["text"]
             if final_text != payload["text"]:
                 payload["text"] = final_text
                 payload["dissent"] = dissent_against(
@@ -1993,6 +2009,34 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     truncation_record=payload["truncation"],
                     text=final_text,
                 )
+                if row["outcome"] == "no-readable-text":
+                    # One emptiness rubric everywhere: the Pass-B path empties
+                    # `text` for this outcome (whitespace was never established
+                    # ink) and attaches the whole-act gap so the absence
+                    # travels with the witness evidence that corroborates it.
+                    # A re-proof that turned the reading unreadable published
+                    # neither -- an act saying "nothing readable here" while
+                    # carrying whitespace as its text and no evidence of the
+                    # absence.
+                    final_text = ""
+                    payload["text"] = ""
+                    payload["gaps"] = _whole_act_gap(
+                        row["testimonia"],
+                        {
+                            record["artifact_id"]: context.artifact_ref(
+                                ATTESTATORES, "testimonium", record["artifact_id"]
+                            )
+                            for record in row["testimonia"]
+                        },
+                    )
+                    payload["dissent"] = dissent_against(
+                        "", dissent_testimonia(row["testimonia"], row["attachment_view"])
+                    )
+                    payload["self_revision"] = departures("", row["prior"]["text"])
+            # After the projection, not before it: `validate_chain` recomputes
+            # the change record from the draft's semi-final against the
+            # PUBLISHED text, so the record must describe the projected text.
+            changes = audit.change_record(pre_audit_text, final_text, flags)
         if unresolved:
             for flag in flags:
                 start, end = flag["location"]["start"], flag["location"]["end"]

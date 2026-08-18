@@ -114,6 +114,9 @@ def test_fixture_exercises_a_changed_reproof_with_its_triggering_flag_class(tmp_
         subject_id=changed["subject_id"],
     )
     assert final["payload"]["text"] != draft["payload"]["semi_final_text"]
+    # The exact declared result, not merely "something changed": any wrong
+    # changed text would otherwise pass this end-to-end pin.
+    assert final["payload"]["text"] == "SYNTHETIC ACT ONE alpha beta gamma!"
     perlector = _perlector()
     assert final["payload"]["self_revision"] == perlector.departures(
         final["payload"]["text"], prior["payload"]["text"]
