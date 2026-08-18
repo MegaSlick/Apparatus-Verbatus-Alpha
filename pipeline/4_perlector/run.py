@@ -1271,7 +1271,16 @@ def _sealed_sibling_semi_finals(
     for act_id in sorted(sibling_ids, key=order_by_id.__getitem__):
         records = records_by_subject[act_id]
         if not records:
-            continue
+            # Never a skip: by the time a recovery pass runs, every expected
+            # act carries a Perlectio -- a held one carries `not-run`, handled
+            # below. Zero artifacts means a reading that existed is no longer
+            # here, and a page flag pass computed over a short row set would
+            # seal a quieter flag set than the page's evidence supports (the
+            # cross-act classes lose a comparison, not a row).
+            raise FatalAccounting(
+                f"act {act_id} shares this page with the recovered act but has no Perlectio "
+                "at all; the page audit may not be computed over a row that is missing"
+            )
         reading = latest_attempt(
             records, f"sealed sibling Perlectio for {act_id}", operation="perlegere"
         )

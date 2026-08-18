@@ -121,35 +121,52 @@ class FixtureReader:
                 return act["text"]
         raise KeyError(f"the fixture declares no act {act_key!r}")
 
-    def _declared_reproof_text(self, dossier: dict[str, Any], act_key: str) -> str:
-        """This scenario's declared re-proof result, or an honest confirmation.
+    def _validated_rows(self, table: str, extra_check=None) -> list:
+        """Every row of one fixture table, after the WHOLE table validates.
 
-        The whole table validates before any row is selected, for the reason
-        `_declared_prior_reading` gives: a duplicate pair or a row naming a
-        scenario or act nobody declared would otherwise sit unnoticed while
-        the first match answered -- and here the miss falls through to
-        "confirmed unchanged", so a fixture meaning to exercise a changed
-        re-proof would silently exercise the no-change path instead.
+        One loop for all three tables, because they had started to drift: a
+        duplicate pair or a row naming a scenario or act nobody declared would
+        otherwise sit unnoticed while the first match answered, and the next
+        table copied whichever validator its author happened to read. Each
+        caller keeps its own miss policy and any per-table check.
         """
         declared_scenarios = {scenario["name"] for scenario in self._fixture["scenario"]}
         declared_acts = {act["key"] for act in self._fixture["act"]}
-        rows = self._fixture.get("audit_reproof", [])
+        rows = self._fixture.get(table, [])
         seen: set[tuple[str, str]] = set()
         for row in rows:
             key = (row["scenario"], row["act_key"])
             if key in seen:
                 raise KeyError(
-                    f"audit_reproof declares {key!r} twice; two contradictory re-proof "
-                    "results would publish whichever is written first and discard the other"
+                    f"{table} declares {key!r} twice; two contradictory rows would "
+                    "publish whichever is written first and discard the other silently"
                 )
             seen.add(key)
             if row["scenario"] not in declared_scenarios:
-                raise KeyError(f"audit_reproof row names undeclared scenario {row['scenario']!r}")
+                raise KeyError(f"{table} row names undeclared scenario {row['scenario']!r}")
             if row["act_key"] not in declared_acts:
-                raise KeyError(f"audit_reproof row names undeclared act {row['act_key']!r}")
-        for row in rows:
+                raise KeyError(f"{table} row names undeclared act {row['act_key']!r}")
+            if extra_check is not None:
+                extra_check(row)
+        return rows
+
+    def _matching_row(self, table: str, act_key: str, extra_check=None):
+        for row in self._validated_rows(table, extra_check):
             if row["scenario"] == self._scenario and row["act_key"] == act_key:
-                return row["text"]
+                return row
+        return None
+
+    def _declared_reproof_text(self, dossier, act_key: str) -> str:
+        """This scenario's declared re-proof result, or an honest confirmation.
+
+        The whole table validates before any row is selected
+        (`_validated_rows`) -- and here a miss falls through to "confirmed
+        unchanged", so a fixture meaning to exercise a changed re-proof would
+        otherwise silently exercise the no-change path instead.
+        """
+        row = self._matching_row("audit_reproof", act_key)
+        if row is not None:
+            return row["text"]
         return self._confirmed_unchanged_text(dossier)
 
     @staticmethod
@@ -287,25 +304,9 @@ class FixtureReader:
         Pass A and declares no prior is a fixture gap, and an instrument
         measuring a departure from a draft nobody wrote is worse than a stop.
         """
-        declared_scenarios = {scenario["name"] for scenario in self._fixture["scenario"]}
-        declared_acts = {act["key"] for act in self._fixture["act"]}
-        rows = self._fixture.get("prior_reading", [])
-        seen: set[tuple[str, str]] = set()
-        for row in rows:
-            key = (row["scenario"], row["act_key"])
-            if key in seen:
-                raise KeyError(
-                    f"prior_reading declares {key!r} twice; two contradictory drafts would "
-                    "publish whichever is written first and discard the other silently"
-                )
-            seen.add(key)
-            if row["scenario"] not in declared_scenarios:
-                raise KeyError(f"prior_reading row names undeclared scenario {row['scenario']!r}")
-            if row["act_key"] not in declared_acts:
-                raise KeyError(f"prior_reading row names undeclared act {row['act_key']!r}")
-        for row in rows:
-            if row["scenario"] == self._scenario and row["act_key"] == act_key:
-                return row["text"]
+        row = self._matching_row("prior_reading", act_key)
+        if row is not None:
+            return row["text"]
         raise KeyError(f"the fixture declares no prior reading for {self._scenario!r}/{act_key!r}")
 
     def _declared_stop_reason(self, act_key: str) -> str | None:
@@ -319,29 +320,12 @@ class FixtureReader:
         calling the reading complete, and nothing in this offline chamber is
         entitled to claim an engine went silent.
         """
-        declared_scenarios = {scenario["name"] for scenario in self._fixture["scenario"]}
-        declared_acts = {act["key"] for act in self._fixture["act"]}
-        rows = self._fixture.get("stop_reason", [])
-        # The whole table validates before any row is selected: a misspelt row
-        # sitting after the match would otherwise stay unnoticed, silently
-        # defaulting every act it meant to name to "stop" — a declared `length`
-        # would vanish and a truncated reading would publish as complete.
-        seen: set[tuple[str, str]] = set()
-        for row in rows:
-            key = (row["scenario"], row["act_key"])
-            if key in seen:
-                raise KeyError(
-                    f"stop_reason declares {key!r} twice; two contradictory rows would "
-                    "publish whichever is written first and discard the other silently"
-                )
-            seen.add(key)
-            if row["scenario"] not in declared_scenarios:
-                raise KeyError(f"stop_reason row names undeclared scenario {row['scenario']!r}")
-            if row["act_key"] not in declared_acts:
-                raise KeyError(f"stop_reason row names undeclared act {row['act_key']!r}")
+
+        def _known_signal(row):
             if row["stop_reason"] not in {"stop", "length"}:
                 raise KeyError(f"stop_reason row declares unknown signal {row['stop_reason']!r}")
-        for row in rows:
-            if row["scenario"] == self._scenario and row["act_key"] == act_key:
-                return row["stop_reason"]
+
+        row = self._matching_row("stop_reason", act_key, _known_signal)
+        if row is not None:
+            return row["stop_reason"]
         return "stop"

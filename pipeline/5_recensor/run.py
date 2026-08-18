@@ -95,7 +95,7 @@ def artifacts_for(context, stage: str, kind: str, subject: str) -> list[dict]:
     return records
 
 
-def audit_state(context, reading: dict, act_id: str) -> bool:
+def audit_state(context, reading: dict, act_id: str) -> bool | None:
     """Verify the two R5b artifacts behind a Perlectio's audit claim.
 
     The Perlectio's self-hash only proves that somebody sealed its references;
@@ -112,9 +112,15 @@ def audit_state(context, reading: dict, act_id: str) -> bool:
     Every attempted outcome (`read`, `truncated`, `no-readable-text`, `failed`)
     publishes the pair and is verified; a forged `not-run` buys nothing, because
     that class is held rather than accepted.
+
+    `None`, not `False`: this act has no audit at all — the same fact a
+    Designator-held act's review records. `False` means audited and resolved,
+    and claiming it here would tell R8's canonical export that a reading
+    nobody examined came back clean. Routing is unchanged (`elif
+    audit_unresolved:` treats both as falsy); only the record is honest.
     """
     if reading["outcome"] == "not-run":
-        return False
+        return None
     chain = validate_chain(context.tree, reading, act_id)
     return chain["record"]["unresolved"]
 

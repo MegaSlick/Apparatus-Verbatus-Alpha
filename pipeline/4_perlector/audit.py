@@ -132,8 +132,16 @@ def flags_once_per_page(semi_finals: list[dict[str, Any]]) -> dict[str, list[dic
             raise SchemaRefusal("an audit semi-final has no text or testimonia")
         if not isinstance(row.get("order"), int) or isinstance(row.get("order"), bool):
             raise SchemaRefusal("an audit semi-final has no integer declared order")
-        if "geometry_order" not in row:
-            raise SchemaRefusal("an audit semi-final has no geometry order")
+        geometry_order = row.get("geometry_order")
+        # Proved comparable, not merely present: this is a sort key, and a
+        # shape `sorted` cannot compare ends the whole page's flag pass in an
+        # unnamed TypeError rather than one named refusal.
+        if (
+            not isinstance(geometry_order, tuple)
+            or len(geometry_order) != 2
+            or any(not isinstance(part, int) or isinstance(part, bool) for part in geometry_order)
+        ):
+            raise SchemaRefusal("an audit semi-final has no two-integer geometry order")
         # Proved present like every other field in this loop: `.get` with a
         # True default read a row that never stated its crop containment as
         # "fully inside", and the within-crop flag class silently stopped

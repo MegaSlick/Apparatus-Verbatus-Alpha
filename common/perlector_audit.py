@@ -1,8 +1,9 @@
 """Perlector Pass-C audit records, shared by their two stage-side halves.
 
-`pipeline/4_perlector/audit.py`'s run.py produces the audit draft and finding
-records; `pipeline/5_recensor/run.py`'s `audit_state` consumes them to decide
-review routing. The producer and the consumer must validate the exact same
+`pipeline/4_perlector/run.py` produces the audit draft and finding records
+(`pipeline/4_perlector/audit.py` holds the flag pass and the sealed policy
+loader, and re-exports these names); `pipeline/5_recensor/run.py`'s
+`audit_state` consumes them to decide review routing. The producer and the consumer must validate the exact same
 closed schema, or drift between the two would let a malformed record pass one
 side and fail the other silently. A stage may not import another stage's
 uniquely named module (`pipeline/test_stage_import_boundaries.py`), so the

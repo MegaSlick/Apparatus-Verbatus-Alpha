@@ -164,7 +164,7 @@ def test_flags_are_frozen_once_per_page_and_never_cascade_from_a_reproof():
             "act_id": "a1",
             "page_id": "p1",
             "order": 0,
-            "geometry_order": 0,
+            "geometry_order": (0, 0),
             "text": "No 2 1689 alpha",
             "testimonia": ["No 2 1689 beta"],
             "within_crop": True,
@@ -173,7 +173,7 @@ def test_flags_are_frozen_once_per_page_and_never_cascade_from_a_reproof():
             "act_id": "a2",
             "page_id": "p1",
             "order": 1,
-            "geometry_order": 1,
+            "geometry_order": (1, 0),
             "text": "No 1 1688 gamma",
             "testimonia": ["No 1 1688 gamma"],
             "within_crop": True,
@@ -185,7 +185,11 @@ def test_flags_are_frozen_once_per_page_and_never_cascade_from_a_reproof():
     # locations are the audit plan; no call recomputes them over changed text.
     changed = copy.deepcopy(frozen)
     changed[0]["text"] = "No 2 1600 beta"
-    assert flags["a2"] == audit.flags_once_per_page(frozen)["a2"]
+    # Only the different-input direction carries information: recomputing over
+    # the SAME frozen rows equals itself for any implementation (the function
+    # is pure), so that comparison was a tautology, not evidence. The
+    # production ordering -- _page_flags called once, before the re-proof
+    # loop -- is what the no-cascade guarantee actually rests on.
     assert audit.flags_once_per_page(changed)["a2"] != flags["a2"]
 
 
@@ -295,7 +299,7 @@ def test_a_degenerate_digit_run_flags_instead_of_ending_the_stage():
             "act_id": "a1",
             "page_id": "p1",
             "order": 0,
-            "geometry_order": 0,
+            "geometry_order": (0, 0),
             "text": degenerate,
             "testimonia": [degenerate],
             "within_crop": True,
@@ -304,7 +308,7 @@ def test_a_degenerate_digit_run_flags_instead_of_ending_the_stage():
             "act_id": "a2",
             "page_id": "p1",
             "order": 1,
-            "geometry_order": 1,
+            "geometry_order": (1, 0),
             "text": "No 7 beta",
             "testimonia": ["No 7 beta"],
             "within_crop": True,
@@ -501,7 +505,9 @@ def test_a_not_run_perlectio_has_no_audit_chain_and_is_not_a_traceback():
     }
     # `tree=None` is the assertion: no artifact is read for a reading that never
     # produced one, so the refusal cannot come from a lookup that half-ran.
-    assert _recensor().audit_state(SimpleNamespace(tree=None), not_run, "act-1") is False
+    # `None`, never `False`: no audit exists, which is a different recorded
+    # fact from "audited, resolved".
+    assert _recensor().audit_state(SimpleNamespace(tree=None), not_run, "act-1") is None
 
 
 def test_the_order_flag_fires_from_real_crop_geometry_not_the_declared_order():
