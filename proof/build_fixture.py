@@ -396,13 +396,26 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
         # edit that breaks this would otherwise surface three stages away as
         # span arithmetic rather than here, at the text that changed.
         stripped_view = markup_text_view(anchor["html"])["text"]
+        previous_end = -1
         for act_key in anchor["lines"]:
             act_text = next(row for row in ACTS if row["key"] == act_key)["text"]
             if stripped_view.count(act_text) != 1:
                 raise ValueError(
                     f"the chandra_anchor page view does not carry act {act_key!r} exactly "
-                    "once; the separator between the act texts was changed"
+                    "once; the in-order anchor-line search cannot resolve it unambiguously"
                 )
+            start = stripped_view.find(act_text)
+            # Strict separation, not merely order: the Attestatores page join
+            # keeps one separator between act readings, so an anchor whose act
+            # texts became adjacent would shift every later anchor offset by
+            # one against the witness view -- and that surfaces three stages
+            # away as span arithmetic, not here at the character that changed.
+            if start <= previous_end:
+                raise ValueError(
+                    f"the chandra_anchor page view does not separate act {act_key!r} from "
+                    "the act before it; the separator between the act texts was changed"
+                )
+            previous_end = start + len(act_text)
         lines += [
             "",
             "[[chandra_anchor]]",

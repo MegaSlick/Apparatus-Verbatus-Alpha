@@ -454,7 +454,15 @@ def act_attachment_view(context, act: dict[str, Any], testimonia: list[dict]) ->
                 # cut through. Re-derived in the space the span was measured in.
                 # Found in audit; F-X3.
                 comparison_views[chair] = act_comparison_view(page_text, witness_span)
-            elif not isinstance(alignment, dict) or alignment.get("status") != "unaligned":
+            elif (
+                not isinstance(alignment, dict)
+                or set(alignment) != {"status", "reason"}
+                or alignment.get("status") != "unaligned"
+                or not (isinstance(alignment["reason"], str) and alignment["reason"].strip())
+            ):
+                # The producer emits exactly {status, reason}; a reason-free
+                # mapping would validate while leaving the operator no
+                # statement of why comparison failed.
                 raise SchemaRefusal("an unattached page witness has no explicit unaligned result")
             page_witness_count += 1
         else:

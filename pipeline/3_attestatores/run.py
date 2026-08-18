@@ -1510,15 +1510,28 @@ def publish_page_testimonia_and_attachments(
                                 "drop the first line's span and geometry without a record"
                             )
                         bbox = {key: line.get(key) for key in ("x", "y", "w", "h")}
-                        if any(value is None for value in bbox.values()):
-                            # A null coordinate is a default standing in for
-                            # geometry nobody measured; published as this act's
-                            # line_geometry it would be indistinguishable from a
-                            # real rectangle (GOVERNANCE 2/10).
+                        if (
+                            any(
+                                not isinstance(value, int) or isinstance(value, bool)
+                                for value in bbox.values()
+                            )
+                            or bbox["x"] < 0
+                            or bbox["y"] < 0
+                            or bbox["w"] <= 0
+                            or bbox["h"] <= 0
+                        ):
+                            # A null, non-integer, or negative coordinate is a
+                            # default standing in for geometry nobody measured;
+                            # published as this act's line_geometry it would be
+                            # indistinguishable from a real rectangle -- or be a
+                            # rectangle nothing can draw, refused two stages
+                            # later as a type error at the consumer instead of
+                            # here, at the declaration (GOVERNANCE 2/10).
                             raise SchemaRefusal(
                                 f"the Chandra anchor line for act {line['act_key']} on page "
-                                f"{page_ordinal} declares an incomplete rectangle; a null "
-                                "coordinate cannot be published as measured line geometry"
+                                f"{page_ordinal} declares an unusable rectangle; only measured "
+                                "non-negative integer geometry can be published as this act's "
+                                "line geometry"
                             )
                         anchor_ranges[(page_ordinal, act["act_id"])] = {
                             "start": start,

@@ -420,6 +420,39 @@ def test_the_comparison_runs_off_the_main_thread_without_touching_signal_state()
     assert captured["result"], "a real difference must still be reported"
 
 
+@pytest.mark.skipif(
+    not all(hasattr(signal, name) for name in ("SIGALRM", "ITIMER_REAL")),
+    reason="requires the POSIX real-time alarm this backstop is built on",
+)
+def test_the_thread_clause_alone_keeps_a_worker_from_the_process_alarm():
+    """The armed-timer case above cannot fail on the main-thread clause: with a
+    caller timer running, the `getitimer` clause already refuses to arm
+    whatever the thread check does. Here NO timer is armed, so the main-thread
+    check is the only thing standing between the worker and `signal.signal` --
+    which raises ValueError off the main thread. Delete that clause and this
+    test goes red where the other stays green."""
+    assert signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0), (
+        "precondition: no caller timer may be armed, or the getitimer clause masks "
+        "the one this test exists to hold"
+    )
+    captured = {}
+
+    def work():
+        try:
+            captured["result"] = dissent._aligned_within_deadline(
+                "alpha beta", "alpha gamma", seconds=1
+            )
+        except BaseException as error:  # noqa: BLE001 - the point of the test
+            captured["error"] = error
+
+    thread = threading.Thread(target=work)
+    thread.start()
+    thread.join()
+
+    assert "error" not in captured, captured.get("error")
+    assert captured["result"], "a real difference must still be reported"
+
+
 # --- P2 review: the two halves of comparison_loss answer the same question ---
 
 

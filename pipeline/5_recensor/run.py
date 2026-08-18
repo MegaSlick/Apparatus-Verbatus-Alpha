@@ -183,6 +183,38 @@ def act_attachment_facts(context, act_id: str) -> dict[str, dict]:
                 raise FatalAccounting(
                     f"act {act_id} page witness {chair!r} contradicts its computed alignment"
                 )
+            # The documented closed shapes (pipeline/3_attestatores/HANDOFF.md),
+            # enforced where the floor is counted, not only at the Perlector: an
+            # attached record missing its geometry -- or its anchor_basis, which
+            # the blank gate below reads -- must not count as valid coverage,
+            # and a reason-free unaligned record leaves an operator with no
+            # statement of why comparison failed.
+            if alignment["status"] == "aligned":
+                if set(alignment) != {
+                    "status",
+                    "anchor_basis",
+                    "anchor_span",
+                    "witness_span",
+                    "line_geometry",
+                    "loss",
+                    "offset_maps",
+                } or alignment["anchor_basis"] not in {
+                    "act-anchor",
+                    "no-page-anchor",
+                    "act-line-not-located",
+                }:
+                    raise FatalAccounting(
+                        f"act {act_id} page witness {chair!r} carries a malformed aligned "
+                        "alignment record; the witness floor may not be counted from "
+                        "geometry evidence that is missing or unrecognised"
+                    )
+            elif set(alignment) != {"status", "reason"} or not (
+                isinstance(alignment["reason"], str) and alignment["reason"].strip()
+            ):
+                raise FatalAccounting(
+                    f"act {act_id} page witness {chair!r} carries an unaligned record with "
+                    "no usable reason; an unexplained failure is a silent loss"
+                )
         facts[chair] = {
             "attached": entry["attached"],
             "truncated": truncated,
@@ -268,6 +300,13 @@ def blank_corroboration(
         or any(outcomes[chair] != "genuinely-empty" for chair in completed)
         or any(
             attachments.get(chair, {}).get("anchor_basis") == "act-line-not-located"
+            # Defence in depth beside `act_attachment_facts`' own refusal: a
+            # page witness whose fact somehow carries no basis at all is
+            # geometry nobody checked, and a terminal blank may not rest on it.
+            or (
+                attachments.get(chair, {}).get("page_witness")
+                and attachments.get(chair, {}).get("anchor_basis") is None
+            )
             for chair in completed
         )
     ):

@@ -336,6 +336,14 @@ def test_an_unlocated_act_line_never_corroborates_a_terminal_blank():
     unlocated = dict(anchored, attestator_3=_fact("act-line-not-located"))
     assert RECENSOR_RUN.blank_corroboration(coverage, outcomes, unlocated) is None
 
+    # A page witness whose fact carries NO basis at all is geometry nobody
+    # checked. `act_attachment_facts` refuses such a record at the producer
+    # boundary; this pins the gate's own defence in depth behind it.
+    basisless_fact = _fact("act-anchor")
+    del basisless_fact["anchor_basis"]
+    basisless = dict(anchored, attestator_3=basisless_fact)
+    assert RECENSOR_RUN.blank_corroboration(coverage, outcomes, basisless) is None
+
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))
