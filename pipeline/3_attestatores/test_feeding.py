@@ -722,7 +722,7 @@ def test_model_view_refuses_a_parser_it_cannot_run_instead_of_recording_pending(
     )
     assert unparsed["parse"] == {"state": "not-requested", "parser": None}
     assert unparsed["raw_response_ref"]["relative_path"].startswith(
-        f"{writing_directory(ATTESTATORES)}/blobs/sha256/"
+        f"{writing_directory(ATTESTATORES)}/{BLOBS_DIR}/"
     )
 
 

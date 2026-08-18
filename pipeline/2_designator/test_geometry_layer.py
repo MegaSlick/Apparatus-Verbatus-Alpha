@@ -473,11 +473,14 @@ def test_chandra_custody_refuses_a_receipt_reused_with_a_different_response():
             page_id=PAGE_ID,
             page_ordinal=PAGE_ORDINAL,
         )
-    with pytest.raises(SchemaRefusal, match="different receipt"):
+    # The cross-response forgery under the binding's OWN receipt: the receipt
+    # check passes honestly, so what refuses is the response pairing itself —
+    # otherwise this case would only re-prove the receipt branch above.
+    with pytest.raises(SchemaRefusal, match="names a different response"):
         read_retained_chandra_response(
             tree,
             first["response_ref"],
-            RECEIPT,
+            other_receipt,
             second["custody_ref"],
             page_id=PAGE_ID,
             page_ordinal=PAGE_ORDINAL,
