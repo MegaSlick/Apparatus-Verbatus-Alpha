@@ -407,11 +407,13 @@ FIXTURE = "synthetic-two-page-v0"
 #
 # The literals below are re-measured on this change, and each re-measurement
 # names what moved them. A mismatch here is evidence about the recorded
-# artifacts, never about the platform. Re-measured at the R5a/R5b seam
-# closure: audit-change priors declared, the sealed protocol threaded
-# through the audit pass.
-HAPPY_RUN_TREE_DIGEST = "b0b4b46273ddfb7609ccb9f89f301c3d1016cd4e0f644ae047e4d56e75051770"
-REVIEW_RUN_TREE_DIGEST = "2c846186d5b976f401badaa44f4f7c13c4e80ebe0e9edcc8e70d719450f81bed"
+# artifacts, never about the platform. Re-measured host-side after rebasing
+# R5b onto merged R4 (main 942b426): the ladder underneath gained R4's
+# PR-loop artifacts (anchor_basis on every aligned page-witness alignment,
+# the explicit non-reading-page-attempt reason), so every wave-time R5b
+# literal is superseded. File counts 64/71 unchanged by the rebase.
+HAPPY_RUN_TREE_DIGEST = "5577e17b2fadab870482615ff6b20ce8b0b774b51eccbc379e99933f9865f86c"
+REVIEW_RUN_TREE_DIGEST = "bfce9639225623526bcc2e166d70c5ef0c65515d87930fe5dfc0350643d290bd"
 
 
 def orchestrate(
