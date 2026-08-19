@@ -17,9 +17,12 @@ Run the cardinality exercise (no models) from the repository root:
 python -c 'from pathlib import Path; from operations.bench.scale import run_scale; print(run_scale(Path("/out/r7b-runtree-scale")))'
 ```
 
-It refuses any cardinality other than ten RunTrees of 1,000 pages, in keeping
-with the sealed shard boundary.  Its target must not already exist.  Copy the
-printed result into the task report before removing the scratch tree.
+The default invocation is sealed at ten RunTrees of 1,000 pages and records
+`state: "measured"`. Smaller positive dimensions refuse unless the caller passes
+`allow_undersized_smoke=True`; that explicit smoke path records
+`state: "smoke-undersized"` and can never stand for the sealed measurement. Its
+target must not already exist. Copy a sealed run's printed result into the task
+report before removing the scratch tree.
 
 ## Real-runner schema obligations
 
