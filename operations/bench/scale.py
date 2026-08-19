@@ -18,6 +18,7 @@ _SEALED_PAGES_PER_SHARD: Final = 1_000
 SHARDS: Final = _SEALED_SHARDS
 PAGES_PER_SHARD: Final = _SEALED_PAGES_PER_SHARD
 CONFIG_DIGEST = digest_bytes(b"r7b-runtree-scale-v1")
+_CENSUS_FILE: Final = "aggregate-census.json"
 
 
 def _source(shard: int, ordinal: int) -> dict[str, object]:
@@ -74,9 +75,11 @@ def run_scale(
     if root.exists():
         raise FileExistsError(f"scale root already exists: {root}")
     started = time.perf_counter()
+    state = "measured" if is_sealed else "smoke-undersized"
     manifests: list[dict[str, object]] = []
     expected_artifact_count = shards * pages_per_shard
     artifact_count = 0
+    missing_pages: list[tuple[int, int]] = []
     root.mkdir(parents=True)
     create_started = time.perf_counter()
     for shard in range(1, shards + 1):
@@ -94,13 +97,15 @@ def run_scale(
             publication = tree.publish_artifact(_proposal(run_id, page))
             if isinstance(publication, PublishResult):
                 artifact_count += 1
+            else:
+                missing_pages.append((shard, int(page["ordinal"])))
         manifests.append(tree.build_manifest(DESIGNATOR))
     create_seconds = time.perf_counter() - create_started
     if artifact_count != expected_artifact_count:
         raise RuntimeError(
             f"scale bench published {artifact_count} artifacts; "
             f"expected {expected_artifact_count}; a partial publication cannot "
-            "produce a census or result"
+            f"produce a census or result; non-receipted pages: {missing_pages}"
         )
     resume_started = time.perf_counter()
     for shard in range(1, shards + 1):
@@ -124,16 +129,19 @@ def run_scale(
     export_started = time.perf_counter()
     census = {
         "schema": "r7b-runtree-scale-census.v1",
+        "state": state,
+        "shards": shards,
+        "pages_per_shard": pages_per_shard,
         "runs": manifests,
         "artifact_count": artifact_count,
     }
-    (root / "aggregate-census.json").write_bytes(canonical_bytes(census))
+    (root / _CENSUS_FILE).write_bytes(canonical_bytes(census))
     export_seconds = time.perf_counter() - export_started
     disk_bytes = sum(path.stat().st_size for path in root.rglob("*") if path.is_file())
     inodes = sum(1 for _ in root.rglob("*"))
     return {
         "schema": "r7b-runtree-scale-result.v1",
-        "state": "measured" if is_sealed else "smoke-undersized",
+        "state": state,
         "shards": shards,
         "pages_per_shard": pages_per_shard,
         "artifact_count": artifact_count,
@@ -148,4 +156,9 @@ def run_scale(
 
 def cleanup_scale(root: Path) -> None:
     """Remove a known scale scratch directory after its result is recorded."""
+    marker = root / _CENSUS_FILE
+    if not marker.is_file():
+        raise FileNotFoundError(
+            f"scale cleanup requires the {_CENSUS_FILE} marker; missing regular file: {marker}"
+        )
     shutil.rmtree(root)

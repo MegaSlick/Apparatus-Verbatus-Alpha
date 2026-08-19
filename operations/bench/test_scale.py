@@ -46,6 +46,9 @@ def test_scale_runner_creates_resumes_censuses_and_cleans_up_at_small_cardinalit
     )
     assert (root / "aggregate-census.json").exists()
     census = json.loads((root / "aggregate-census.json").read_bytes())
+    assert census["state"] == "smoke-undersized"
+    assert census["shards"] == 2
+    assert census["pages_per_shard"] == 3
     assert census["artifact_count"] == 6
 
     with pytest.raises(FileExistsError, match="scale root already exists"):
@@ -53,6 +56,18 @@ def test_scale_runner_creates_resumes_censuses_and_cleans_up_at_small_cardinalit
 
     cleanup_scale(root)
     assert not root.exists()
+
+
+def test_cleanup_scale_refuses_a_markerless_non_scale_directory(tmp_path):
+    root = tmp_path / "ordinary-directory"
+    retained = root / "must-survive.txt"
+    root.mkdir()
+    retained.write_text("not scale output")
+
+    with pytest.raises(FileNotFoundError, match="aggregate-census.json marker"):
+        cleanup_scale(root)
+
+    assert retained.read_text() == "not scale output"
 
 
 def test_scale_runner_refuses_a_dropped_artifact_before_writing_a_census(tmp_path, monkeypatch):
@@ -69,7 +84,10 @@ def test_scale_runner_refuses_a_dropped_artifact_before_writing_a_census(tmp_pat
     monkeypatch.setattr(scale.RunTree, "publish_artifact", publish_with_one_drop)
     root = tmp_path / "scale-shortfall"
 
-    with pytest.raises(RuntimeError, match="published 5 artifacts; expected 6"):
+    with pytest.raises(
+        RuntimeError,
+        match=r"published 5 artifacts; expected 6.*non-receipted pages: \[\(1, 3\)\]",
+    ):
         run_scale(root, shards=2, pages_per_shard=3, allow_undersized_smoke=True)
 
     assert not (root / "aggregate-census.json").exists()
@@ -78,15 +96,14 @@ def test_scale_runner_refuses_a_dropped_artifact_before_writing_a_census(tmp_pat
 def test_scale_runner_refuses_resume_if_a_shard_loses_its_run_authority(tmp_path, monkeypatch):
     root = tmp_path / "scale-missing-run-authority"
     real_perf_counter = scale.time.perf_counter
-    perf_counter_calls = 0
+    sabotage_fired = False
 
     def remove_authority_between_create_and_resume():
-        nonlocal perf_counter_calls
-        perf_counter_calls += 1
-        if perf_counter_calls == 4:
-            authority = root / "bench-scale-01" / "run.json"
-            assert authority.is_file(), "the create phase must publish the run authority"
+        nonlocal sabotage_fired
+        authority = root / "bench-scale-01" / "run.json"
+        if not sabotage_fired and authority.is_file():
             authority.unlink()
+            sabotage_fired = True
         return real_perf_counter()
 
     monkeypatch.setattr(scale.time, "perf_counter", remove_authority_between_create_and_resume)
@@ -97,4 +114,5 @@ def test_scale_runner_refuses_resume_if_a_shard_loses_its_run_authority(tmp_path
     ):
         run_scale(root, shards=2, pages_per_shard=3, allow_undersized_smoke=True)
 
+    assert sabotage_fired, "the test must remove the run authority before proving its refusal"
     assert not (root / "aggregate-census.json").exists()

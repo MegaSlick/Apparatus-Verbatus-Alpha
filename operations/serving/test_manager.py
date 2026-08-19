@@ -491,6 +491,21 @@ def test_proven_profile_digest_launches_then_a_runtime_edit_is_refused_by_name(
         parse_serving_recipes({"schema": "serving-recipes.v1", "profiles": [edited]})
 
 
+def test_proven_profile_digest_refuses_a_different_chair_identity_digest() -> None:
+    proven = identity("reader", "reader-v1")
+    different = identity("attestator-1", "witness-v1")
+    row = profile_row(recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000)
+    row["preflight_identity_digest"] = chair_preflight_identity_digest(proven)
+    row["preflight_digest"] = profile_preflight_digest(row)
+
+    different_digest = chair_preflight_identity_digest(different)
+    assert different_digest != row["preflight_identity_digest"]
+    row["preflight_identity_digest"] = different_digest
+
+    with pytest.raises(ServingConfigurationError, match="stale preflight_digest"):
+        parse_serving_recipes({"schema": "serving-recipes.v1", "profiles": [row]})
+
+
 def test_a_real_serving_profile_missing_preflight_state_refuses_by_name():
     """Migration honesty: an older row that predates this field is not silently proven."""
 

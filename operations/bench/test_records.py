@@ -117,6 +117,15 @@ def test_rehashed_not_run_result_cannot_carry_observations():
         validate_result(forged)
 
 
+def test_rehashed_not_run_result_requires_a_boolean_fixture_marker():
+    forged = not_run("B2", fixture_verified=True)
+    forged["fixture_verified"] = "verified"
+    forged["self_hash"] = self_hash(forged)
+
+    with pytest.raises(SchemaRefusal, match="boolean fixture marker"):
+        validate_result(forged)
+
+
 def test_rehashed_reason_and_rehashed_extra_fields_do_not_forge_sealed_records():
     result = not_run("B2", fixture_verified=True)
     result["reason"] = "operator chose not to run this cell"
