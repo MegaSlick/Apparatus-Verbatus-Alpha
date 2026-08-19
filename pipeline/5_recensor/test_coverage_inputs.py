@@ -89,7 +89,18 @@ def _page_testimonium(*, outcome, reported=..., attempt_ordinal=1, artifact_id=N
     }
 
 
-def _conservation(artifact_id, *, ordinal=1, measurable=True, components=None):
+def _conservation(artifact_id, *, ordinal=1, measurable=True, components=None, counts=...):
+    residual_components = [] if components is None else components
+    if counts is ...:
+        residual = sum(
+            component["pixel_count"]
+            for component in residual_components
+            if isinstance(component, dict)
+            and isinstance(component.get("pixel_count"), int)
+            and not isinstance(component.get("pixel_count"), bool)
+        )
+        counts = (residual, 0, residual) if measurable else (None, None, None)
+    total, claimed, residual = counts
     return {
         "artifact_id": artifact_id,
         "stage": RUN.DESIGNATOR,
@@ -99,7 +110,10 @@ def _conservation(artifact_id, *, ordinal=1, measurable=True, components=None):
         "payload": {
             "page_ordinal": ordinal,
             "ink_measurable": measurable,
-            "residual_components": [] if components is None else components,
+            "total_ink_pixel_count": total,
+            "claimed_pixel_count": claimed,
+            "residual_pixel_count": residual,
+            "residual_components": residual_components,
         },
     }
 
@@ -231,6 +245,25 @@ def test_each_act_gets_a_private_copy_of_its_pages_content_finding():
     }
 
 
+def test_unreported_page_content_is_unavailable_and_cannot_fire_the_shortfall_route():
+    """An absent measurement is neither a measured clean page nor a shortfall."""
+    content = RUN.testimony_content_for_page({}, 7)
+
+    assert content == RUN.NO_PAGE_CONTENT_COVERAGE
+    assert content["by_chair"] is None
+    assert content["shortfall"] is None
+    assert "no page witness reported text for this page" in content["reason"]
+    assert content is not RUN.NO_PAGE_CONTENT_COVERAGE
+    assert (
+        RUN.review_route_from_findings(
+            testimony_shortfall=content["shortfall"],
+            audit_unresolved=False,
+            under_witnessed=False,
+        )
+        is None
+    )
+
+
 def test_real_uncovered_testimony_ranges_route_to_review_losslessly(monkeypatch):
     """V2a: a genuine content shortfall is measured and reaches the hold route."""
     page = _page_testimonium(outcome="read", reported="alphaXYZ \tQ")
@@ -350,6 +383,44 @@ def test_geometry_coverage_refuses_a_non_integer_component_pixel_count(monkeypat
     monkeypatch.setattr(RUN, "expected_acts", lambda unused: [])
 
     with pytest.raises(FatalAccounting, match="page 1.*component 0.*malformed"):
+        RUN.geometry_coverage_inputs(context)
+
+
+def test_geometry_coverage_refuses_mismatched_pixel_arithmetic(monkeypatch):
+    context = _context(_conservation("conservation-1", counts=(12, 5, 6)))
+    monkeypatch.setattr(RUN, "expected_acts", lambda unused: [])
+
+    with pytest.raises(FatalAccounting, match="page 1 pixel accounting does not reconcile"):
+        RUN.geometry_coverage_inputs(context)
+
+
+def test_geometry_coverage_refuses_a_malformed_pixel_count_type(monkeypatch):
+    context = _context(_conservation("conservation-1", counts=(12, True, 12)))
+    monkeypatch.setattr(RUN, "expected_acts", lambda unused: [])
+
+    with pytest.raises(FatalAccounting, match="page 1 has malformed measured pixel counts"):
+        RUN.geometry_coverage_inputs(context)
+
+
+def test_geometry_coverage_refuses_a_residual_component_sum_mismatch(monkeypatch):
+    context = _context(
+        _conservation("conservation-1", components=[_component()], counts=(13, 0, 13))
+    )
+    monkeypatch.setattr(
+        RUN,
+        "expected_acts",
+        lambda unused: [{"act_key": "residual:1:0", "page_ordinal": 1, "outcome": "held"}],
+    )
+
+    with pytest.raises(FatalAccounting, match="page 1 residual component pixel sum"):
+        RUN.geometry_coverage_inputs(context)
+
+
+def test_unmeasured_geometry_requires_all_pixel_counts_to_be_none(monkeypatch):
+    context = _context(_conservation("conservation-1", measurable=False, counts=(0, None, None)))
+    monkeypatch.setattr(RUN, "expected_acts", lambda unused: [])
+
+    with pytest.raises(FatalAccounting, match="unmeasured.*page 1.*must carry None"):
         RUN.geometry_coverage_inputs(context)
 
 

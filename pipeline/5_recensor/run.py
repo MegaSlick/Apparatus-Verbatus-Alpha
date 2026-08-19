@@ -880,6 +880,12 @@ def geometry_coverage_inputs(context) -> dict[int, dict]:
         ordinal = payload.get("page_ordinal")
         measurable = payload.get("ink_measurable")
         components = payload.get("residual_components")
+        pixel_count_fields = (
+            "total_ink_pixel_count",
+            "claimed_pixel_count",
+            "residual_pixel_count",
+        )
+        pixel_counts = {field: payload.get(field) for field in pixel_count_fields}
         if (
             not isinstance(ordinal, int)
             or isinstance(ordinal, bool)
@@ -906,6 +912,34 @@ def geometry_coverage_inputs(context) -> dict[int, dict]:
                     f"Designator conservation page {ordinal} residual component {index} "
                     "is malformed"
                 )
+        if measurable:
+            if any(
+                not isinstance(count, int) or isinstance(count, bool) or count < 0
+                for count in pixel_counts.values()
+            ):
+                raise FatalAccounting(
+                    f"Designator conservation page {ordinal} has malformed measured pixel "
+                    "counts; total, claimed, and residual must be non-negative integers"
+                )
+            total = pixel_counts["total_ink_pixel_count"]
+            claimed = pixel_counts["claimed_pixel_count"]
+            residual = pixel_counts["residual_pixel_count"]
+            if claimed + residual != total:
+                raise FatalAccounting(
+                    f"Designator conservation page {ordinal} pixel accounting does not "
+                    "reconcile: claimed_pixel_count + residual_pixel_count does not equal "
+                    "total_ink_pixel_count"
+                )
+            if sum(component["pixel_count"] for component in components) != residual:
+                raise FatalAccounting(
+                    f"Designator conservation page {ordinal} residual component pixel sum "
+                    "does not equal residual_pixel_count"
+                )
+        elif any(count is not None for count in pixel_counts.values()):
+            raise FatalAccounting(
+                f"unmeasured Designator conservation page {ordinal} must carry None for "
+                "total_ink_pixel_count, claimed_pixel_count, and residual_pixel_count"
+            )
         expected = {f"residual:{ordinal}:{index}" for index in range(len(components))}
         actual = {key for key in residual_keys if key.startswith(f"residual:{ordinal}:")}
         if measurable and actual != expected:
@@ -1136,6 +1170,16 @@ NO_PAGE_CONSERVATION = {
 }
 
 
+NO_PAGE_CONTENT_COVERAGE = {
+    "by_chair": None,
+    "shortfall": None,
+    "reason": (
+        "no page witness reported text for this page, so testimony content coverage "
+        "was not measured; its acts are already held or floored by their own causes"
+    ),
+}
+
+
 def geometry_coverage_for(findings: dict[int, dict], ordinal: int) -> dict:
     """Return one review's private copy of a page's geometry-coverage fact.
 
@@ -1160,14 +1204,16 @@ def testimony_content_for_page(findings: dict[int, dict], ordinal: int) -> dict:
     The measurement is intentionally computed once per page, but review payloads
     are act-scoped consumers. Giving each consumer its own nested object prevents
     an in-process mutation made while preparing one act from changing a sibling
-    act's still-to-be-published evidence.
+    act's still-to-be-published evidence. A page absent from `findings` had no
+    page witness report text to measure; its None-valued fallback records that
+    absence rather than restating it as a measured, clean page.
     """
-    return copy.deepcopy(findings.get(ordinal, {"by_chair": {}, "shortfall": False}))
+    return copy.deepcopy(findings.get(ordinal, NO_PAGE_CONTENT_COVERAGE))
 
 
 def review_route_from_findings(
     *,
-    testimony_shortfall: bool,
+    testimony_shortfall: bool | None,
     audit_unresolved: bool | None,
     under_witnessed: bool,
     unreconciled: bool = False,
@@ -1176,7 +1222,10 @@ def review_route_from_findings(
 
     Coverage comes first under GOALS 1, followed by R5b's reading-audit finding,
     then the witness floor. Every active reason is retained in that stable order;
-    they all map to the same `held-for-review` outcome. `audit_unresolved` is
+    they all map to the same `held-for-review` outcome. `None` testimony coverage
+    means no page witness reported text and routes like `False`: the act's own
+    held or witness-floor cause already routes it, while an absent measurement
+    is not itself a measured shortfall. `audit_unresolved` is
     wired to the Recensor's verified `audit_state` since the wave restacked R5b
     below this branch; `None` means no audit exists and routes like `False` by
     design, because absence of an audit is not an unresolved audit. `unreconciled`

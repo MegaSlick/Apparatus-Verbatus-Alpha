@@ -431,6 +431,12 @@ FIXTURE = "synthetic-two-page-v0"
 # ranges plus their explicit count. That field-shape change moves recorded bytes
 # but writes no new files: fresh real runs through this module's own helpers held
 # at 64 files for happy (exit 0) and 71 for review (exit 3).
+#
+# Re-measured for R6 CodeRabbit round 4 finding A after an unmeasured page's
+# testimony content coverage changed from the measured-clean shape to None-valued
+# `by_chair`/`shortfall` plus a reason. Neither acceptance scenario exercises that
+# unavailable shape -- every reviewed page has reported page-witness text -- so
+# both digest literals remain byte-identical, with file counts still 64/71.
 HAPPY_RUN_TREE_DIGEST = "59605960127ef8740b9acf838e6c355d6d15e3e4cd0613fb33ef0a133bde5cc5"
 REVIEW_RUN_TREE_DIGEST = "cdf4dc49ef2a93fdf5509aebc9ec912cc29d6de1d57b1d55fad2cb6468435976"
 
