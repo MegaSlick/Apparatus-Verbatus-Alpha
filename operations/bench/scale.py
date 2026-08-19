@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import time
 from pathlib import Path
 from typing import Any, Final
 
-from common.contracts.canonical import canonical_bytes, digest_bytes
+from common.contracts.canonical import SCHEMA_LABEL, canonical_bytes, digest_bytes
 from common.contracts.envelope import build_envelope
 from common.contracts.identities import artifact_id, page_id
 from common.contracts.stages import DESIGNATOR
@@ -19,6 +20,15 @@ SHARDS: Final = _SEALED_SHARDS
 PAGES_PER_SHARD: Final = _SEALED_PAGES_PER_SHARD
 CONFIG_DIGEST = digest_bytes(b"r7b-runtree-scale-v1")
 _CENSUS_FILE: Final = "aggregate-census.json"
+_CENSUS_SCHEMA: Final = "r7b-runtree-scale-census.v1"
+_RESULT_FILE: Final = "scale-result.json"
+_RESULT_SCHEMA: Final = "r7b-runtree-scale-result.v1"
+
+
+def _decimal_seconds(nanoseconds: int) -> str:
+    """Represent an observed duration exactly in canonical-JSON-compatible seconds."""
+    whole, fractional = divmod(nanoseconds, 1_000_000_000)
+    return f"{whole}.{fractional:09d}"
 
 
 def _source(shard: int, ordinal: int) -> dict[str, object]:
@@ -74,14 +84,14 @@ def run_scale(
         )
     if root.exists():
         raise FileExistsError(f"scale root already exists: {root}")
-    started = time.perf_counter()
+    started = time.perf_counter_ns()
     state = "measured" if is_sealed else "smoke-undersized"
     manifests: list[dict[str, object]] = []
     expected_artifact_count = shards * pages_per_shard
     artifact_count = 0
     missing_pages: list[tuple[int, int]] = []
     root.mkdir(parents=True)
-    create_started = time.perf_counter()
+    create_started = time.perf_counter_ns()
     for shard in range(1, shards + 1):
         run_id = f"bench-scale-{shard:02d}"
         source = [_source(shard, ordinal) for ordinal in range(1, pages_per_shard + 1)]
@@ -100,14 +110,14 @@ def run_scale(
             else:
                 missing_pages.append((shard, int(page["ordinal"])))
         manifests.append(tree.build_manifest(DESIGNATOR))
-    create_seconds = time.perf_counter() - create_started
+    create_seconds = _decimal_seconds(time.perf_counter_ns() - create_started)
     if artifact_count != expected_artifact_count:
         raise RuntimeError(
             f"scale bench published {artifact_count} artifacts; "
             f"expected {expected_artifact_count}; a partial publication cannot "
             f"produce a census or result; non-receipted pages: {missing_pages}"
         )
-    resume_started = time.perf_counter()
+    resume_started = time.perf_counter_ns()
     for shard in range(1, shards + 1):
         run_id = f"bench-scale-{shard:02d}"
         source = [_source(shard, ordinal) for ordinal in range(1, pages_per_shard + 1)]
@@ -125,10 +135,10 @@ def run_scale(
             adapter_recipes={"designator": "r7b-scale-synthetic-v1"},
             witness_chairs=[],
         )
-    resume_seconds = time.perf_counter() - resume_started
-    export_started = time.perf_counter()
+    resume_seconds = _decimal_seconds(time.perf_counter_ns() - resume_started)
+    export_started = time.perf_counter_ns()
     census = {
-        "schema": "r7b-runtree-scale-census.v1",
+        "schema": _CENSUS_SCHEMA,
         "state": state,
         "shards": shards,
         "pages_per_shard": pages_per_shard,
@@ -136,11 +146,11 @@ def run_scale(
         "artifact_count": artifact_count,
     }
     (root / _CENSUS_FILE).write_bytes(canonical_bytes(census))
-    export_seconds = time.perf_counter() - export_started
-    disk_bytes = sum(path.stat().st_size for path in root.rglob("*") if path.is_file())
-    inodes = sum(1 for _ in root.rglob("*"))
-    return {
-        "schema": "r7b-runtree-scale-result.v1",
+    export_seconds = _decimal_seconds(time.perf_counter_ns() - export_started)
+    pre_result_disk_bytes = sum(path.stat().st_size for path in root.rglob("*") if path.is_file())
+    pre_result_inodes = sum(1 for _ in root.rglob("*"))
+    result = {
+        "schema": _RESULT_SCHEMA,
         "state": state,
         "shards": shards,
         "pages_per_shard": pages_per_shard,
@@ -148,17 +158,103 @@ def run_scale(
         "create_seconds": create_seconds,
         "resume_seconds": resume_seconds,
         "manifest_export_seconds": export_seconds,
-        "wall_seconds": time.perf_counter() - started,
-        "disk_bytes": disk_bytes,
-        "inodes": inodes,
+        "wall_seconds": _decimal_seconds(time.perf_counter_ns() - started),
+        "disk_bytes": pre_result_disk_bytes,
+        "inodes": pre_result_inodes + 1,
     }
+    # The result is part of the scratch tree whose storage it reports. Its byte
+    # count reaches a fixed point once the digit width of disk_bytes stops moving.
+    while True:
+        result_bytes = canonical_bytes(result)
+        complete_disk_bytes = pre_result_disk_bytes + len(result_bytes)
+        if result["disk_bytes"] == complete_disk_bytes:
+            break
+        result["disk_bytes"] = complete_disk_bytes
+    (root / _RESULT_FILE).write_bytes(result_bytes)
+    return result
+
+
+def _validate_scale_census(census: Any) -> list[str]:
+    expected_fields = {
+        "schema",
+        "state",
+        "shards",
+        "pages_per_shard",
+        "runs",
+        "artifact_count",
+    }
+    if not isinstance(census, dict) or set(census) != expected_fields:
+        raise ValueError("scale cleanup marker is not a valid R7b scale census: wrong fields")
+    shards = census["shards"]
+    pages_per_shard = census["pages_per_shard"]
+    if (
+        not isinstance(shards, int)
+        or isinstance(shards, bool)
+        or not 0 < shards <= _SEALED_SHARDS
+        or not isinstance(pages_per_shard, int)
+        or isinstance(pages_per_shard, bool)
+        or not 0 < pages_per_shard <= _SEALED_PAGES_PER_SHARD
+    ):
+        raise ValueError("scale cleanup marker is not a valid R7b scale census: invalid dimensions")
+    expected_state = (
+        "measured"
+        if shards == _SEALED_SHARDS and pages_per_shard == _SEALED_PAGES_PER_SHARD
+        else "smoke-undersized"
+    )
+    if census["schema"] != _CENSUS_SCHEMA or census["state"] != expected_state:
+        raise ValueError(
+            "scale cleanup marker is not a valid R7b scale census: schema or state mismatch"
+        )
+    artifact_count = census["artifact_count"]
+    if (
+        not isinstance(artifact_count, int)
+        or isinstance(artifact_count, bool)
+        or artifact_count != shards * pages_per_shard
+    ):
+        raise ValueError(
+            "scale cleanup marker is not a valid R7b scale census: cardinality mismatch"
+        )
+    runs = census["runs"]
+    if not isinstance(runs, list) or len(runs) != shards:
+        raise ValueError("scale cleanup marker is not a valid R7b scale census: run count mismatch")
+    expected_run_ids = [f"bench-scale-{shard:02d}" for shard in range(1, shards + 1)]
+    manifest_fields = {"schema", "run_id", "stage", "artifacts", "blobs"}
+    for manifest, expected_run_id in zip(runs, expected_run_ids, strict=True):
+        if (
+            not isinstance(manifest, dict)
+            or set(manifest) != manifest_fields
+            or manifest["schema"] != SCHEMA_LABEL
+            or manifest["run_id"] != expected_run_id
+            or manifest["stage"] != DESIGNATOR
+            or not isinstance(manifest["artifacts"], list)
+            or len(manifest["artifacts"]) != pages_per_shard
+            or manifest["blobs"] != []
+        ):
+            raise ValueError(
+                "scale cleanup marker is not a valid R7b scale census: run manifest mismatch"
+            )
+    return expected_run_ids
 
 
 def cleanup_scale(root: Path) -> None:
-    """Remove a known scale scratch directory after its result is recorded."""
+    """Remove a validated scale scratch directory after its result is recorded."""
     marker = root / _CENSUS_FILE
     if not marker.is_file():
         raise FileNotFoundError(
             f"scale cleanup requires the {_CENSUS_FILE} marker; missing regular file: {marker}"
         )
+    try:
+        census = json.loads(marker.read_bytes())
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError(
+            "scale cleanup marker is not a valid R7b scale census: unreadable JSON"
+        ) from error
+    run_ids = _validate_scale_census(census)
+    for run_id in run_ids:
+        authority = root / run_id / RUN_FILE
+        if not authority.is_file():
+            raise FileNotFoundError(
+                "scale cleanup census names a run without its RunTree authority; "
+                f"missing regular file: {authority}"
+            )
     shutil.rmtree(root)

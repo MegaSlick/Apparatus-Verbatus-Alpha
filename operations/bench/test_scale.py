@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 
 import pytest
 
 import operations.bench.scale as scale
+from common.contracts.canonical import canonical_bytes
 from operations.bench.scale import cleanup_scale, run_scale
 
 
@@ -31,6 +33,15 @@ def test_scale_runner_creates_resumes_censuses_and_cleans_up_at_small_cardinalit
     monkeypatch.setattr(scale, "SHARDS", 2)
     monkeypatch.setattr(scale, "PAGES_PER_SHARD", 3)
     root = tmp_path / "scale-smoke"
+    real_create = scale.RunTree.create
+    resumed_run_ids = []
+
+    def observe_resume(cls, tree_root, run_id, **kwargs):
+        if (tree_root / run_id / scale.RUN_FILE).is_file():
+            resumed_run_ids.append(run_id)
+        return real_create(tree_root, run_id, **kwargs)
+
+    monkeypatch.setattr(scale.RunTree, "create", classmethod(observe_resume))
 
     result = run_scale(root, shards=2, pages_per_shard=3, allow_undersized_smoke=True)
 
@@ -39,17 +50,25 @@ def test_scale_runner_creates_resumes_censuses_and_cleans_up_at_small_cardinalit
     assert result["artifact_count"] == 6
     assert result["disk_bytes"] > 0
     assert result["inodes"] > 0
-    assert result["create_seconds"] > 0
-    assert (
-        result["create_seconds"] + result["resume_seconds"] + result["manifest_export_seconds"]
-        <= result["wall_seconds"]
-    )
+    assert Decimal(result["create_seconds"]) > 0
+    assert Decimal(result["create_seconds"]) + Decimal(result["resume_seconds"]) + Decimal(
+        result["manifest_export_seconds"]
+    ) <= Decimal(result["wall_seconds"])
+    assert resumed_run_ids == ["bench-scale-01", "bench-scale-02"]
     assert (root / "aggregate-census.json").exists()
     census = json.loads((root / "aggregate-census.json").read_bytes())
     assert census["state"] == "smoke-undersized"
     assert census["shards"] == 2
     assert census["pages_per_shard"] == 3
     assert census["artifact_count"] == 6
+    persisted_bytes = (root / "scale-result.json").read_bytes()
+    persisted_result = json.loads(persisted_bytes)
+    assert persisted_result == result
+    assert persisted_bytes == canonical_bytes(result)
+    assert result["disk_bytes"] == sum(
+        path.stat().st_size for path in root.rglob("*") if path.is_file()
+    )
+    assert result["inodes"] == sum(1 for _ in root.rglob("*"))
 
     with pytest.raises(FileExistsError, match="scale root already exists"):
         run_scale(root, shards=2, pages_per_shard=3, allow_undersized_smoke=True)
@@ -68,6 +87,35 @@ def test_cleanup_scale_refuses_a_markerless_non_scale_directory(tmp_path):
         cleanup_scale(root)
 
     assert retained.read_text() == "not scale output"
+
+
+def test_cleanup_scale_refuses_a_counterfeit_marker_in_a_non_scale_directory(tmp_path):
+    root = tmp_path / "ordinary-directory"
+    retained = root / "must-survive.txt"
+    root.mkdir()
+    retained.write_text("not scale output")
+    (root / "aggregate-census.json").write_text('{"schema":"unrelated-census.v1"}')
+
+    with pytest.raises(ValueError, match="not a valid R7b scale census"):
+        cleanup_scale(root)
+
+    assert retained.read_text() == "not scale output"
+
+
+def test_cleanup_scale_refuses_a_census_whose_named_run_lost_its_authority(tmp_path):
+    root = tmp_path / "scale-missing-cleanup-authority"
+    result = run_scale(root, shards=1, pages_per_shard=1, allow_undersized_smoke=True)
+    authority = root / "bench-scale-01" / scale.RUN_FILE
+    authority.unlink()
+
+    with pytest.raises(
+        FileNotFoundError,
+        match="scale cleanup census names a run without its RunTree authority",
+    ):
+        cleanup_scale(root)
+
+    assert root.is_dir()
+    assert json.loads((root / "scale-result.json").read_bytes()) == result
 
 
 def test_scale_runner_refuses_a_dropped_artifact_before_writing_a_census(tmp_path, monkeypatch):
@@ -95,7 +143,7 @@ def test_scale_runner_refuses_a_dropped_artifact_before_writing_a_census(tmp_pat
 
 def test_scale_runner_refuses_resume_if_a_shard_loses_its_run_authority(tmp_path, monkeypatch):
     root = tmp_path / "scale-missing-run-authority"
-    real_perf_counter = scale.time.perf_counter
+    real_perf_counter_ns = scale.time.perf_counter_ns
     sabotage_fired = False
 
     def remove_authority_between_create_and_resume():
@@ -104,9 +152,9 @@ def test_scale_runner_refuses_resume_if_a_shard_loses_its_run_authority(tmp_path
         if not sabotage_fired and authority.is_file():
             authority.unlink()
             sabotage_fired = True
-        return real_perf_counter()
+        return real_perf_counter_ns()
 
-    monkeypatch.setattr(scale.time, "perf_counter", remove_authority_between_create_and_resume)
+    monkeypatch.setattr(scale.time, "perf_counter_ns", remove_authority_between_create_and_resume)
 
     with pytest.raises(
         FileNotFoundError,

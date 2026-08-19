@@ -22,7 +22,9 @@ The default invocation is sealed at ten RunTrees of 1,000 pages and records
 `allow_undersized_smoke=True`; that explicit smoke path records
 `state: "smoke-undersized"` and can never stand for the sealed measurement. Its
 target must not already exist. Copy a sealed run's printed result into the task
-report before removing the scratch tree.
+report before removing the scratch tree. The complete result is also persisted as
+`scale-result.json` beside `aggregate-census.json`; its durations are exact decimal-second
+strings so the record can use the repository's canonical JSON encoding.
 
 ## Real-runner schema obligations
 

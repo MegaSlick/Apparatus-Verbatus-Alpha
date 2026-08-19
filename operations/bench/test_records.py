@@ -15,11 +15,31 @@ from operations.bench.records import (
 )
 from operations.bench.runner import exercise_synthetic_definitions
 
+_V1_DEFINITION_DIGESTS = {
+    "B0": "3901353b314037d586dccb879cf8fb91c252b6a4fa187d52dc1a1b26dcbcc0b9",
+    "B0.5": "ee528ec4953e868de636fb4ee8aa71b3133182e9a902f027c92e9ce640eea640",
+    "B2": "0fe63faad754b66236697ff3c59da4c948fb67879e8369639249ff9e77f628f8",
+    "B3": "7372cc62e8d80f6b117c55baf7c66f0cf4fc499fcfc93d7fabaa726b1fb8daf5",
+    "B4": "1eea90fbefabfd12d35313775a3c954433ae08570c73c62c5e145df2bae18968",
+    "B5": "b6c02773684e724a8e1081fd3ddd4e862a7a55342f787bf0ef30be0475d012f4",
+    "B5a": "492b611bc8d02ea9a0e7da99f69a2f7c3117f133fe7f30464d58ac5c88011855",
+    "B6": "02f886ef4b6d9c0b1e05b9aeec62a7887e49ad9225abdf3b1989227a7b26850a",
+}
+
 
 def test_each_r7b_cell_has_one_sealed_predeclared_definition():
     cells = [record["cell"] for record in all_definitions()]
     assert cells == ["B0", "B0.5", "B2", "B3", "B4", "B5", "B5a", "B6"]
     assert all(validate_definition(record) == record for record in all_definitions())
+
+
+def test_v1_definition_digests_are_immutable_until_the_version_moves():
+    actual = {record["cell"]: record["definition_digest"] for record in all_definitions()}
+
+    assert actual == _V1_DEFINITION_DIGESTS, (
+        "an R7b v1 definition changed without moving records.VERSION; change the version "
+        "before re-pinning the deliberately new definitions"
+    )
 
 
 def test_mutating_returned_measures_cannot_change_the_sealed_definition():

@@ -15,6 +15,8 @@ from common.contracts.errors import SchemaRefusal
 
 SCHEMA: Final = "bench-cell-definition.v1"
 RESULT_SCHEMA: Final = "bench-cell-result.v1"
+# test_records.py pins every digest emitted under this version. A deliberate
+# _MEASURES change moves VERSION before those immutable baselines are re-pinned.
 VERSION: Final = "r7b-v1"
 REAL_CELLS: Final = frozenset({"B0", "B0.5"})
 
