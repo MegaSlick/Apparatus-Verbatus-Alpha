@@ -1298,7 +1298,7 @@ def publish_attempt(
 
 def _raw_span_from_normalized(
     offset_map: list[int | None], start: int, end: int
-) -> tuple[int, int]:
+) -> tuple[int, int] | None:
     """Translate a `[start, end)` span over `markup_text_view`'s normalized text
     back into the raw text's own character indices.
 
@@ -1315,7 +1315,7 @@ def _raw_span_from_normalized(
         offset_map[index] for index in range(start, end) if offset_map[index] is not None
     ]
     if not raw_indices:
-        return start, start
+        return None
     return min(raw_indices), max(raw_indices) + 1
 
 
@@ -1700,31 +1700,40 @@ def publish_page_testimonia_and_attachments(
                             # needs. Do not "fix" this towards agreement.
                             normalized_start = min(start for start, _ in clipped)
                             normalized_end = max(end for _, end in clipped)
-                            witness_start, witness_end = _raw_span_from_normalized(
+                            raw_span = _raw_span_from_normalized(
                                 result["witness"]["offset_map"], normalized_start, normalized_end
                             )
-                            alignment = {
-                                "status": "aligned",
-                                "anchor_basis": "act-anchor",
-                                "anchor_span": {key: act_anchor[key] for key in ("start", "end")},
-                                "witness_span": {"start": witness_start, "end": witness_end},
-                                "line_geometry": [
-                                    {
-                                        "bbox": {
-                                            key: act_anchor["bbox"][key]
-                                            for key in ("x", "y", "w", "h")
+                            if raw_span is None:
+                                result = {
+                                    "status": "unaligned",
+                                    "reason": "no-raw-counterpart-for-aligned-span",
+                                }
+                            else:
+                                witness_start, witness_end = raw_span
+                                alignment = {
+                                    "status": "aligned",
+                                    "anchor_basis": "act-anchor",
+                                    "anchor_span": {
+                                        key: act_anchor[key] for key in ("start", "end")
+                                    },
+                                    "witness_span": {"start": witness_start, "end": witness_end},
+                                    "line_geometry": [
+                                        {
+                                            "bbox": {
+                                                key: act_anchor["bbox"][key]
+                                                for key in ("x", "y", "w", "h")
+                                            }
                                         }
-                                    }
-                                ],
-                                "loss": {
-                                    "witness": result["witness"]["loss"],
-                                    "anchor": result["anchor"]["loss"],
-                                },
-                                "offset_maps": {
-                                    "witness": result["witness"]["offset_map"],
-                                    "anchor": result["anchor"]["offset_map"],
-                                },
-                            }
+                                    ],
+                                    "loss": {
+                                        "witness": result["witness"]["loss"],
+                                        "anchor": result["anchor"]["loss"],
+                                    },
+                                    "offset_maps": {
+                                        "witness": result["witness"]["offset_map"],
+                                        "anchor": result["anchor"]["offset_map"],
+                                    },
+                                }
                         else:
                             result = {"status": "unaligned", "reason": "no-overlap-with-act-anchor"}
                     if result["status"] == "unaligned":

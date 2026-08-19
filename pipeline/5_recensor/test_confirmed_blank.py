@@ -119,7 +119,11 @@ def test_unanimous_absence_seals_confirmed_blank(tmp_path):
     # as lost coverage.
     other = _review_of(tree, "a2")
     assert other["outcome"] == "accepted"
-    assert other["payload"]["testimony_content_coverage"]["shortfall"] is False
+    content_coverage = other["payload"]["testimony_content_coverage"]
+    measurement = content_coverage["by_chair"].get("attestator_1")
+    assert measurement
+    assert measurement["attached_spans"]
+    assert content_coverage["shortfall"] is False
 
 
 def test_a_dissenting_witness_holds_instead_of_confirming_blank(tmp_path):

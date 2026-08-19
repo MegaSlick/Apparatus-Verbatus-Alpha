@@ -1001,14 +1001,41 @@ def testimony_content_findings(context) -> dict[int, dict]:
     coverage shortfall, never a verdict about which witness is right.
     """
     attachments = current_act_attachments(context)
+    page_testimonia = current_page_testimonia(context)
     # Read and validated once, not once per page witness: `expected_acts` re-reads
     # the proposal seal and re-verifies its self-hash on every call, and this stage
     # never writes to the Designator's seal while it runs.
     acts_by_page: dict[int, list[dict]] = {}
     for act in expected_acts(context):
         acts_by_page.setdefault(act["page_ordinal"], []).append(act)
+    for ordinal, acts in acts_by_page.items():
+        for act in acts:
+            attachment = attachments.get(act["act_id"])
+            if attachment is None:
+                continue
+            rows = _payload(attachment, f"attachment for {act['act_id']}").get("attachments")
+            if not isinstance(rows, list):
+                continue
+            for row in rows:
+                if (
+                    not isinstance(row, dict)
+                    or not row.get("page_witness")
+                    or not row.get("attached")
+                ):
+                    continue
+                chair = row.get("chair")
+                page_testimonium = page_testimonia.get((ordinal, chair))
+                if page_testimonium is None or row.get(
+                    "testimonium_ref"
+                ) != context.artifact_ref(
+                    ATTESTATORES, "page-testimonium", page_testimonium["artifact_id"]
+                ):
+                    raise FatalAccounting(
+                        f"act {act['act_id']} attached page witness {chair!r} references no "
+                        "current page Testimonium"
+                    )
     findings: dict[int, dict] = {}
-    for (ordinal, chair), record in current_page_testimonia(context).items():
+    for (ordinal, chair), record in page_testimonia.items():
         payload = _payload(record, f"page Testimonium {record['artifact_id']}")
         if "reported" not in payload:
             if record.get("outcome") in WITNESS_READING_OUTCOMES:

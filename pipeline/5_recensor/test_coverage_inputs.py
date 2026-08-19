@@ -160,6 +160,22 @@ def test_a_non_reading_page_testimonium_still_has_no_content_to_compare():
     assert RUN.testimony_content_findings(context) == {}
 
 
+def test_an_attached_page_witness_requires_its_current_page_testimonium(monkeypatch):
+    context = _context()
+    context.tree.records["attachment-1"] = _attachment(context, end=5)
+    monkeypatch.setattr(
+        RUN,
+        "expected_acts",
+        lambda unused: [{"act_id": "act-1", "act_key": "a1", "page_ordinal": 1}],
+    )
+
+    with pytest.raises(
+        FatalAccounting,
+        match="act act-1.*attestator_1.*no current page Testimonium",
+    ):
+        RUN.testimony_content_findings(context)
+
+
 def test_each_act_gets_a_private_copy_of_its_pages_content_finding():
     """V3: mutating one act's nested payload cannot corrupt a sibling review."""
     findings = {
@@ -403,8 +419,10 @@ def test_content_and_audit_holds_compose_in_stable_recorded_order():
         testimony_shortfall=True,
         audit_unresolved=True,
         under_witnessed=True,
+        unreconciled=True,
     )
 
     assert outcome == "held-for-review"
     assert reason.index("testimony coverage") < reason.index("audit re-proof cap")
     assert reason.index("audit re-proof cap") < reason.index("witness floor")
+    assert reason.index("witness floor") < reason.index("did not reconcile")
