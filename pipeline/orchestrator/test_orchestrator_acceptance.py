@@ -464,8 +464,14 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # module's `orchestrate` and `semantic_snapshot_digest` helpers measured
 # 64 files for happy (exit 0) and 71 for review (exit 3) — the counts R5b
 # established, unmoved by R6 and R8 alike.
-HAPPY_RUN_TREE_DIGEST = "3f59dafcf5ae5e95a428371a15b8edf17cd33a05b649b29d6c1ee89ed83e3dda"
-REVIEW_RUN_TREE_DIGEST = "71ead5cc1affa0f7bff3b5df82604ee1ee0d91966160ea5e0c434f47d0657d67"
+#
+# Re-pinned for R8 CodeRabbit round 2 finding 2. The acts.sqlite column named
+# `uncertainty_spans_json` actually stores the complete canonical uncertainty
+# layer, so it is now truthfully named `uncertainty_json`. Only that SQLite
+# schema identifier changed; fresh runs through this module's own helpers held
+# the file counts at 64/71 while the two semantic database identities moved.
+HAPPY_RUN_TREE_DIGEST = "27423cd9a5dafbd50144322577dc51b3b4f5db7c49d75cc5b339acb7fbf7ea98"
+REVIEW_RUN_TREE_DIGEST = "cff96edca88623b7bd1311ff28e665c481ee0821af89369d089c51099ebdf09f"
 
 
 def orchestrate(

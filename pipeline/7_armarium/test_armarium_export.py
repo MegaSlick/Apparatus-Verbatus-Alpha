@@ -1886,6 +1886,6 @@ def test_unicode_uncertainty_offsets_survive_every_literal_projection(tmp_path, 
     database.write_bytes(members["acts.sqlite"])
     with sqlite3.connect(database) as connection:
         stored = connection.execute(
-            "SELECT uncertainty_spans_json FROM acts WHERE act_id = 'act-1'"
+            "SELECT uncertainty_json FROM acts WHERE act_id = 'act-1'"
         ).fetchone()[0]
     assert json.loads(stored) == layer

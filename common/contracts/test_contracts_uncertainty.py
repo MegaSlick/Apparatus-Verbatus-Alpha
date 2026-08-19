@@ -34,6 +34,18 @@ def test_canonical_vocabulary_matches_the_perlector_producer() -> None:
     assert canonical_uncertainty._GAP_POSITIONS == annotations.GAP_POSITIONS
 
 
+def test_source_revision_vocabulary_matches_the_perlector_producer() -> None:
+    path = ROOT / "pipeline/4_perlector/dissent.py"
+    spec = importlib.util.spec_from_file_location("perlector_dissent_contract_drift", path)
+    dissent = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(dissent)
+
+    produced = dissent.departures("a", "b")
+
+    assert len(produced) == 1
+    assert canonical_uncertainty._SOURCE_REVISION_FIELDS == frozenset(produced[0])
+
+
 def test_whitespace_only_text_accepts_a_whole_act_gap() -> None:
     layer = {
         "uncertain_spans": [],
@@ -113,6 +125,21 @@ def test_a_prior_span_is_not_bounded_by_the_established_text() -> None:
     [
         ("not an object", "object Perlectio payload"),
         ({"text": "Maria", "self_revision": {}}, "self_revision is not a list"),
+        (
+            {
+                "text": "Maria",
+                "uncertain_spans": [],
+                "gaps": [],
+                "self_revision": [
+                    {
+                        "reading_span": {"start": 0, "end": 5},
+                        "testimonium_span": {"start": 0, "end": 5},
+                        "unsupported": True,
+                    }
+                ],
+            },
+            r"self_revision\[0\].*closed source schema",
+        ),
     ],
 )
 def test_projection_refuses_a_payload_it_cannot_canonicalize(payload, expected) -> None:

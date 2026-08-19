@@ -213,6 +213,23 @@ def test_record_validation_refuses_a_resealed_dishonest_text_status():
         archetypus.validate_record(record)
 
 
+def test_record_validation_accepts_a_partial_text_with_an_internal_gap():
+    gap = {
+        "position": "internal",
+        "start": 2,
+        "end": 2,
+        "witness_evidence": [],
+    }
+
+    record = make_record(
+        text_status="partial",
+        uncertainty={"uncertain_spans": [], "gaps": [gap], "self_revisions": []},
+    )
+
+    assert record["text_status"] == "partial"
+    assert record["uncertainty"]["gaps"] == [gap]
+
+
 def test_record_validation_refuses_a_bad_nested_self_hash():
     record = make_record()
     record["act_key"] = "edited-after-construction"

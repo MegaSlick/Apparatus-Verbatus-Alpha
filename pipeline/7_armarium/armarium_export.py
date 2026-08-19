@@ -1154,7 +1154,7 @@ def _acts_database_bytes(acts: tuple[dict[str, Any], ...]) -> bytes:
                     canonical_text_sha256 TEXT,
                     provenance_json TEXT,
                     source_regions_json TEXT,
-                    uncertainty_spans_json TEXT,
+                    uncertainty_json TEXT,
                     uncertainty_status TEXT NOT NULL,
                     annotations_json TEXT NOT NULL,
                     annotation_status TEXT NOT NULL,
@@ -1198,7 +1198,7 @@ def _acts_database_bytes(acts: tuple[dict[str, Any], ...]) -> bytes:
                     INSERT INTO acts(
                         act_id, act_key, category, canonical_clean_text,
                         canonical_text_sha256, provenance_json, source_regions_json,
-                        uncertainty_spans_json, uncertainty_status, annotations_json,
+                        uncertainty_json, uncertainty_status, annotations_json,
                         annotation_status, evidence_json, approval_ref, reason
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
@@ -1581,7 +1581,7 @@ def _database_literals(path) -> dict[str, tuple[str, str, dict[str, Any]]]:
         connection = _open_acts_database(path)
         rows = connection.execute(
             """
-            SELECT act_id, canonical_clean_text, canonical_text_sha256, uncertainty_spans_json
+            SELECT act_id, canonical_clean_text, canonical_text_sha256, uncertainty_json
             FROM acts
             WHERE canonical_clean_text IS NOT NULL
             ORDER BY act_id
@@ -2492,7 +2492,7 @@ def _database_act_records(
         rows = connection.execute(
             "SELECT act_id, act_key, category, canonical_clean_text, canonical_text_sha256, "
             "provenance_json, source_regions_json, evidence_json, reason, "
-            "uncertainty_spans_json, uncertainty_status FROM acts"
+            "uncertainty_json, uncertainty_status FROM acts"
         ).fetchall()
     except sqlite3.DatabaseError as error:
         raise SchemaRefusal("the acts database cannot be read for product accounting") from error
