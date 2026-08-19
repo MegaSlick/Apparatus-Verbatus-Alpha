@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Callable, Mapping
+from typing import Callable, Iterable, Mapping
 
 import pytest
 
@@ -51,9 +51,11 @@ from .config import (
     FixtureProfile,
     ServingConfigInputs,
     ServingRecipes,
+    chair_preflight_identity_digest,
     load_serving_recipes,
     model_and_tokenizer_pins,
     parse_serving_recipes,
+    profile_preflight_digest,
     seal_json_object,
     verify_recipes_cover_chairs,
 )
@@ -405,17 +407,103 @@ def profile_row(
     }
 
 
-def recipes(*rows: dict[str, object]):
-    return parse_serving_recipes({"schema": "serving-recipes.v1", "profiles": list(rows)})
+def seal_rows(
+    rows: Iterable[dict[str, object]],
+    identities: Mapping[str, ChairIdentity] | None = None,
+) -> list[dict[str, object]]:
+    """Stamp the proof mark a real operator stamps after a green preflight.
+
+    A proven row's mark is (row bytes, chair identity), so the identity digest
+    goes in first and the row digest is taken over it. A row for a chair no
+    identity was supplied for is stamped against a stand-in identity, so tests
+    that only exercise catalogue parsing keep a well-formed mark.
+    """
+
+    sealed: list[dict[str, object]] = []
+    for source in rows:
+        row = dict(source)
+        if row.get("preflight_state") == "proven":
+            chair = (identities or {}).get(str(row["chair"])) or identity(
+                str(row["chair"]), str(row["recipe"])
+            )
+            row.setdefault("preflight_identity_digest", chair_preflight_identity_digest(chair))
+            row.setdefault("preflight_digest", profile_preflight_digest(row))
+        sealed.append(row)
+    return sealed
 
 
-def test_real_serving_profile_is_structurally_unproven_until_preflight():
+def recipes(*rows: dict[str, object], identities: Mapping[str, ChairIdentity] | None = None):
+    return parse_serving_recipes(
+        {"schema": "serving-recipes.v1", "profiles": seal_rows(rows, identities)}
+    )
+
+
+def test_real_serving_profile_is_structurally_unproven_until_preflight(tmp_path: Path) -> None:
     row = profile_row(recipe="reader", chair="perlector", served_model_id="reader", port=8100)
     row["preflight_state"] = "unproven"
 
     profile = recipes(row).profiles[0]
 
     assert profile.preflight_state == "unproven"
+    assert profile.preflight_digest is None
+    chair = identity("perlector", "reader")
+    manager, _, _, launcher, _, _ = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(row,),
+        model_ids=("reader",),
+    )
+    with pytest.raises(ServingRecipeRefusal, match="preflight_state='unproven'"):
+        manager.start(chair, TIER)
+    assert launcher.calls == []
+
+
+def test_proven_profile_digest_launches_then_a_runtime_edit_is_refused_by_name(
+    tmp_path: Path,
+) -> None:
+    chair = identity("reader", "reader-v1")
+    row = profile_row(recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000)
+    with pytest.raises(
+        ServingConfigurationError,
+        match=r"recipe='reader-v1', chair='reader', tier='generic-48gb'.*marked proven",
+    ):
+        parse_serving_recipes({"schema": "serving-recipes.v1", "profiles": [row]})
+
+    row["preflight_identity_digest"] = chair_preflight_identity_digest(chair)
+    row["preflight_digest"] = profile_preflight_digest(row)
+    manager, _, _, launcher, _, _ = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(row,),
+        model_ids=("reader-api",),
+    )
+
+    handle = manager.start(chair, TIER)
+    assert launcher.calls
+    handle.stop()
+
+    edited = dict(row)
+    edited["max_model_len"] = 4096
+    with pytest.raises(
+        ServingConfigurationError,
+        match=r"recipe='reader-v1', chair='reader', tier='generic-48gb'.*stale preflight_digest",
+    ):
+        parse_serving_recipes({"schema": "serving-recipes.v1", "profiles": [edited]})
+
+
+def test_proven_profile_digest_refuses_a_different_chair_identity_digest() -> None:
+    proven = identity("reader", "reader-v1")
+    different = identity("attestator-1", "witness-v1")
+    row = profile_row(recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000)
+    row["preflight_identity_digest"] = chair_preflight_identity_digest(proven)
+    row["preflight_digest"] = profile_preflight_digest(row)
+
+    different_digest = chair_preflight_identity_digest(different)
+    assert different_digest != row["preflight_identity_digest"]
+    row["preflight_identity_digest"] = different_digest
+
+    with pytest.raises(ServingConfigurationError, match="stale preflight_digest"):
+        parse_serving_recipes({"schema": "serving-recipes.v1", "profiles": [row]})
 
 
 def test_a_real_serving_profile_missing_preflight_state_refuses_by_name():
@@ -497,6 +585,91 @@ def test_start_refuses_a_proven_adapter_over_an_unproven_base_before_any_snapsho
     assert launcher.processes == []
     assert publisher.calls == []
     assert not (tmp_path / "pod-gpu.lock").exists()
+
+
+def test_a_proven_profile_does_not_carry_over_onto_a_repointed_chair(tmp_path: Path) -> None:
+    """The proof is over (row, checkpoint); the row digest can only see one half.
+
+    `config/models.toml` owns the model artifact, so repointing a chair at other
+    weights — or bumping its revision — never touches the catalogue row. Its
+    `preflight_digest` still verifies and `preflight_state` still reads
+    `proven`, which is exactly the shape R1's O-a finding named: a proven claim
+    surviving the edit that invalidated it. Nothing in the row can catch this,
+    so the launch boundary holds both halves and refuses there.
+    """
+
+    proven = identity("reader", "reader-v1", revision="a" * 40)
+    row = profile_row(recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000)
+    row["preflight_identity_digest"] = chair_preflight_identity_digest(proven)
+    row["preflight_digest"] = profile_preflight_digest(row)
+
+    manager, _, _, launcher, _, _ = manager_for(
+        tmp_path, identities={"reader": proven}, profiles=(row,), model_ids=("reader-api",)
+    )
+    manager.start(proven, TIER).stop()
+    assert launcher.calls
+
+    # models.toml now points the same chair, at the same recipe and tier, at a
+    # different checkpoint. The catalogue bytes are untouched.
+    repointed = identity("reader", "reader-v1", revision="b" * 40)
+    catalogue = parse_serving_recipes({"schema": "serving-recipes.v1", "profiles": [dict(row)]})
+    assert catalogue.profiles[0].preflight_state == "proven"
+
+    manager, _, _, launcher, _, _ = manager_for(
+        tmp_path / "repointed",
+        identities={"reader": repointed},
+        profiles=(row,),
+        model_ids=("reader-api",),
+    )
+    with pytest.raises(ServingRecipeRefusal, match="must be preflighted again before launch"):
+        manager.start(repointed, TIER)
+    assert launcher.calls == []
+
+
+def test_recipe_coverage_catches_a_repointed_chair_offline_not_on_the_rented_gpu() -> None:
+    """`_launchable` refuses this, but only with the meter already running."""
+
+    proven = identity("reader", "reader-v1", revision="a" * 40)
+    row = profile_row(recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000)
+    row["preflight_identity_digest"] = chair_preflight_identity_digest(proven)
+    row["preflight_digest"] = profile_preflight_digest(row)
+    catalogue = parse_serving_recipes({"schema": "serving-recipes.v1", "profiles": [row]})
+
+    verify_recipes_cover_chairs(
+        ModelsConfig(witness_floor=0, chairs={"reader": proven}), catalogue, (TIER,)
+    )
+
+    repointed = identity("reader", "reader-v1", revision="b" * 40)
+    with pytest.raises(
+        ServingConfigurationError,
+        match=r"no longer configures.*recipe='reader-v1', chair='reader', tier='generic-48gb'",
+    ):
+        verify_recipes_cover_chairs(
+            ModelsConfig(witness_floor=0, chairs={"reader": repointed}), catalogue, (TIER,)
+        )
+
+
+def test_an_unproven_profile_may_not_retain_either_half_of_a_proof_mark() -> None:
+    chair = identity("reader", "reader-v1")
+    row = profile_row(recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000)
+    row["preflight_identity_digest"] = chair_preflight_identity_digest(chair)
+    row["preflight_digest"] = profile_preflight_digest(row)
+    row["preflight_state"] = "unproven"
+
+    with pytest.raises(
+        ServingConfigurationError,
+        match=r"unproven and must not carry \['preflight_digest', 'preflight_identity_digest'\]",
+    ):
+        parse_serving_recipes({"schema": "serving-recipes.v1", "profiles": [row]})
+
+    without_identity = {
+        key: value for key, value in row.items() if key != "preflight_identity_digest"
+    }
+    without_identity["preflight_state"] = "proven"
+    with pytest.raises(
+        ServingConfigurationError, match="without a lowercase SHA-256 preflight_identity_digest"
+    ):
+        parse_serving_recipes({"schema": "serving-recipes.v1", "profiles": [without_identity]})
 
 
 def measured_gpu(dtype: str = "bfloat16") -> GpuProfile:
@@ -584,7 +757,7 @@ def manager_for(
     observed_packages = {"vllm": package_version, **dict(package_versions or {})}
     manager = ServingManager(
         registry=registry,
-        recipes=recipes(*profiles),
+        recipes=recipes(*profiles, identities=identities),
         config_inputs=ServingConfigInputs("1" * 64, "2" * 64),
         launcher=launcher,
         http=http,
@@ -3123,7 +3296,8 @@ def test_a_manager_built_audit_reaches_a_real_stage_context_end_to_end(tmp_path:
                 chair=chair.role,
                 served_model_id="reader-api",
                 port=8000,
-            )
+            ),
+            identities={chair.role: chair},
         ),
         config_inputs=ServingConfigInputs.from_record(bindings["serving_config_inputs"]),
         launcher=launcher,

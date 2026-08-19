@@ -9,8 +9,10 @@ from .config import (
     ServingConfigInputs,
     ServingProfile,
     ServingRecipes,
+    chair_preflight_identity_digest,
     load_serving_recipes,
     parse_serving_recipes,
+    profile_preflight_digest,
     verify_recipes_cover_chairs,
 )
 from .manager import (
@@ -38,7 +40,9 @@ __all__ = [
     "StageContextReceiptPublisher",
     "assemble_serving_preflight_callback",
     "assemble_serving_smoke_reader",
+    "chair_preflight_identity_digest",
     "load_serving_recipes",
     "parse_serving_recipes",
+    "profile_preflight_digest",
     "verify_recipes_cover_chairs",
 ]
