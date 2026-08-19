@@ -11,6 +11,7 @@ asserts an exact expected count.
 """
 
 import hashlib
+import importlib.util
 import json
 import shutil
 import sqlite3
@@ -55,6 +56,19 @@ from common.stage import (
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
 FIXTURE = "synthetic-two-page-v0"
+
+
+def _load_recensor():
+    path = ROOT / "pipeline/5_recensor/run.py"
+    spec = importlib.util.spec_from_file_location("recensor_run_acceptance", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+RECENSOR_RUN = _load_recensor()
+NO_PAGE_CONSERVATION = RECENSOR_RUN.NO_PAGE_CONSERVATION
+NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 
 # Each of these is the digest of a whole run tree's relative-path -> file-digest
 # inventory, per spec 02's test 9. They are re-pinned in the commit that changes
@@ -416,8 +430,29 @@ FIXTURE = "synthetic-two-page-v0"
 # file counts from R4's 60/65 to 64/71 (each act gains an audit draft and an
 # audit finding); the counts then held at 64/71 across every one of this
 # loop's re-measurements while only digests moved.
-HAPPY_RUN_TREE_DIGEST = "c13a44092fe01a6fb02926c0c099d496b15af54658b58d2f0dc7c205e5776033"
-REVIEW_RUN_TREE_DIGEST = "e6c0a7ff70e4dc5ec2e2215833a7a00df6d5146fe7947c899ff8ca439825958c"
+#
+# Re-measured host-side after rebasing R6 onto merged R5b. R6 changes recorded
+# bytes without adding files: witness_span now stores RAW page-text indices
+# (translated from the matcher's normalized space at the one storage point),
+# every Recensor review gains the coverage fact set, and the review route
+# composes testimony/audit/floor causes in stable order. Fresh real runs via
+# this module's `orchestrate` and `semantic_snapshot_digest` helpers measured
+# 64 files for happy (exit 0) and 71 for review (exit 3) — the counts R5b
+# established, unmoved by R6.
+#
+# Re-pinned for R6 CodeRabbit round 3 because every Recensor review's testimony
+# coverage fact replaces per-character uncovered offsets with lossless half-open
+# ranges plus their explicit count. That field-shape change moves recorded bytes
+# but writes no new files: fresh real runs through this module's own helpers held
+# at 64 files for happy (exit 0) and 71 for review (exit 3).
+#
+# Re-measured for R6 CodeRabbit round 4 finding A after an unmeasured page's
+# testimony content coverage changed from the measured-clean shape to None-valued
+# `by_chair`/`shortfall` plus a reason. Neither acceptance scenario exercises that
+# unavailable shape -- every reviewed page has reported page-witness text -- so
+# both digest literals remain byte-identical, with file counts still 64/71.
+HAPPY_RUN_TREE_DIGEST = "59605960127ef8740b9acf838e6c355d6d15e3e4cd0613fb33ef0a133bde5cc5"
+REVIEW_RUN_TREE_DIGEST = "cdf4dc49ef2a93fdf5509aebc9ec912cc29d6de1d57b1d55fad2cb6468435976"
 
 
 def orchestrate(
@@ -1238,6 +1273,11 @@ def test_a_genuinely_empty_testimonium_counts_as_a_witnessed_read(tmp_path):
         for entry in tree.build_manifest(PERLECTOR)["artifacts"]
         if entry["kind"] == "perlectio" and entry["subject_id"] == empty["subject_id"]
     )
+    # Restored on the phase-2 review. These five assertions were deleted by the
+    # R6 pin re-measurement, whose message named only the two digests; they still
+    # pass, and under the wave's raw-span contract the zero-length `witness_span`
+    # for a genuinely-empty page witness is exactly what keeps this chair's blank
+    # from reading as lost page coverage.
     attachment_record = next(
         tree.read_artifact(ATTESTATORES, "act-attachment", entry["artifact_id"])
         for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
@@ -1351,7 +1391,14 @@ def _designator_context_for(root: Path, run_id: str, scenario: str):
     consumers below, per meta-invariant #86.
     """
     args = stage_parser("test-only residual denominator context").parse_args(
-        ["--run-root", str(root), "--run-id", run_id, "--scenario", scenario]
+        [
+            "--run-root",
+            str(root),
+            "--run-id",
+            run_id,
+            "--scenario",
+            scenario,
+        ]
     )
     return open_context(args, DESIGNATOR)
 
@@ -3463,6 +3510,15 @@ def test_losing_the_first_page_holds_every_act_and_delivers_nothing(refused_firs
         "a2": "held",
         "residual:2:0": "held",
     }
+    reviews_by_key = {
+        record["payload"]["act_key"]: record for record in artifacts(tree, RECENSOR, "review")
+    }
+    for act_key in ("a1", "a2"):
+        assert reviews_by_key[act_key]["payload"]["geometry_coverage"] == NO_PAGE_CONSERVATION
+        assert (
+            reviews_by_key[act_key]["payload"]["testimony_content_coverage"]
+            == NO_PAGE_CONTENT_COVERAGE
+        )
     assert artifacts(tree, DESIGNATOR, "region") == [], (
         "no region may be cut for an act that cannot be fully marked out — an "
         "orphan continuation crop would be evidence of an act nothing accounts for"

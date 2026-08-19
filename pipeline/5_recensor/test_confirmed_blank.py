@@ -60,19 +60,34 @@ def _invoke(root: Path, run_id: str, scenario: str, program: str) -> subprocess.
     )
 
 
-def _run_through_recensor(root: Path, run_id: str, scenario: str) -> subprocess.CompletedProcess:
+# One runner for both stop points: the stage list and exit-code contract live
+# in exactly one place, so the two entry helpers below cannot drift apart.
+_STAGES_THROUGH_RECENSOR = (
+    "pipeline/1_exemplar/door.py",
+    "pipeline/1_exemplar/run.py",
+    "pipeline/2_designator/run.py",
+    "pipeline/3_attestatores/run.py",
+    "pipeline/4_perlector/run.py",
+    "pipeline/5_recensor/run.py",
+)
+
+
+def _run_through(
+    root: Path, run_id: str, scenario: str, programs: tuple[str, ...]
+) -> subprocess.CompletedProcess:
     result = None
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/2_designator/run.py",
-        "pipeline/3_attestatores/run.py",
-        "pipeline/4_perlector/run.py",
-        "pipeline/5_recensor/run.py",
-    ):
+    for program in programs:
         result = _invoke(root, run_id, scenario, program)
         assert result.returncode in (0, 3), f"{program}: {result.stderr}"
     return result
+
+
+def _run_through_recensor(root: Path, run_id: str, scenario: str) -> subprocess.CompletedProcess:
+    return _run_through(root, run_id, scenario, _STAGES_THROUGH_RECENSOR)
+
+
+def _run_through_perlector(root: Path, run_id: str, scenario: str) -> None:
+    _run_through(root, run_id, scenario, _STAGES_THROUGH_RECENSOR[:-1])
 
 
 def _review_of(tree: RunTree, act_key: str) -> dict:
@@ -109,10 +124,22 @@ def test_unanimous_absence_seals_confirmed_blank(tmp_path):
         "pages_without_residual_ink_outside_coverage": [1],
     }
 
-    # The act this scenario does not touch reads and accepts exactly as ever --
-    # blank confirmation is additive, not a change to the ordinary path.
+    # The other act reads and accepts exactly as ever -- blank confirmation is
+    # additive, not a change to the ordinary path. R6's own content-coverage
+    # check (the other act's page Testimonium against its aligned attachments)
+    # also finds no shortfall: a1's genuinely-empty contribution joins the page
+    # text as a leading blank line, and the alignment correctly maps its
+    # matched span back to that raw page text (not the whitespace-collapsed
+    # comparison view `align_to_anchor` matches over) so the join never reads
+    # as lost coverage.
     other = _review_of(tree, "a2")
     assert other["outcome"] == "accepted"
+    content_coverage = other["payload"]["testimony_content_coverage"]
+    measurement = content_coverage["by_chair"].get("attestator_1")
+    assert measurement
+    assert measurement["attached_spans"]
+    assert measurement["uncovered_non_whitespace"] == {"ranges": [], "count": 0}
+    assert content_coverage["shortfall"] is False
 
 
 def test_a_dissenting_witness_holds_instead_of_confirming_blank(tmp_path):
@@ -133,10 +160,61 @@ def test_a_dissenting_witness_holds_instead_of_confirming_blank(tmp_path):
     assert "blank_evidence" not in review["payload"]
 
 
+def test_no_readable_text_hold_names_the_testimony_shortfall_that_blocked_its_seal(
+    tmp_path, monkeypatch
+):
+    """A route that closes the blank gate remains visible in the hold reason.
+
+    The page-content instrument and route composer have their own focused tests;
+    this test injects that instrument's measured-shortfall shape into a real
+    unanimously corroborated blank run to isolate the terminal composition seam.
+    """
+    root = tmp_path / "runs"
+    _run_through_perlector(root, "r", "confirmed-blank")
+
+    measured_findings = RECENSOR_RUN.testimony_content_findings
+
+    def findings_with_shortfall(context):
+        findings = measured_findings(context)
+        assert findings[1]["shortfall"] is False
+        findings[1]["shortfall"] = True
+        measurement = findings[1]["by_chair"]["attestator_1"]
+        measurement["uncovered_non_whitespace"] = {
+            "ranges": [{"start": 0, "end": 1}],
+            "count": 1,
+        }
+        return findings
+
+    monkeypatch.setattr(RECENSOR_RUN, "testimony_content_findings", findings_with_shortfall)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(ROOT / "pipeline/5_recensor/run.py"),
+            "--run-root",
+            str(root),
+            "--run-id",
+            "r",
+            "--scenario",
+            "confirmed-blank",
+        ],
+    )
+
+    assert RECENSOR_RUN.main() == 3
+    review = _review_of(RunTree(root, "r"), "a1")
+    reason = review["payload"]["reason"]
+    assert review["outcome"] == "held-for-review"
+    assert review["payload"]["testimony_content_coverage"]["shortfall"] is True
+    assert "no-readable-text" in reason
+    assert "testimony coverage is incomplete at the whole-page level" in reason
+
+
 def test_confirmed_blank_is_a_completed_class_terminal_outcome(tmp_path):
     """`confirmed-blank` does not hold the run -- unlike `held-for-review`, it is
     COMPLETED-class (`common/contracts/outcomes.py`) and the run reaches EXIT_COMPLETE
-    when it is the only unusual act."""
+    when it is the only unusual act. R6's own content-coverage check runs over both
+    acts' page Testimonia here too (`testimony_content_findings`) and finds nothing
+    uncovered, so it adds no partial reason of its own."""
     root = tmp_path / "runs"
     result = subprocess.run(
         [

@@ -531,14 +531,13 @@ other stage's own reader of this stage's manifest already filters to the one or
 two kinds it actually wants (`entry["kind"] == "region"`, `== "hold"`), so a new
 kind appearing here changes nothing for them by construction.
 
-**`conservation` is the one exception**, and only indirectly: no stage reads a
-`kind="conservation"` record itself, but every residual it finds now also
-produces a `kind="hold"` record and an expected-act row (see above), and *that*
-is read exactly like any other hold — by Recensor's `designator_hold`, and
-downstream of it by every stage that already knows how to carry a held act to
-its terminal category. The conservation artifact remains what it always was,
-an audit trail nothing reads directly; what changed is that it is no longer the
-only trace a residual leaves.
+**`conservation` is the one exception**: Recensor's
+`geometry_coverage_inputs` reads those records directly and refuses a page that
+carries a non-held expected act but no conservation record. Every residual the
+record names also produces a `kind="hold"` record and an expected-act row (see
+above), and *that* is read exactly like any other hold — by Recensor's
+`designator_hold`, and downstream of it by every stage that already knows how
+to carry a held act to its terminal category.
 
 ## Cost, and where it is unbounded
 

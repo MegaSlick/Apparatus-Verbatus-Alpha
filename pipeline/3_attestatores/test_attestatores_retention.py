@@ -1810,3 +1810,68 @@ def test_a_page_scope_claim_cannot_hide_an_act_scoped_attempt_from_the_history(t
         "the append/collision bound would then be derived for that pair without the "
         "disguised record it exists to see"
     )
+
+
+def test_a_normalized_match_with_no_raw_counterpart_is_retained_as_unaligned(tmp_path, monkeypatch):
+    """A synthesized separator is not a raw span at the normalized offset.
+
+    The caller used to publish `(start, start)` in raw coordinates when every
+    normalized character in the clipped match mapped to ``None``. That asserted
+    alignment to an empty raw slice the witness never supplied. Exercise the
+    caller, not only the translator: both page chairs must retain an explicit
+    unaligned fact, with no zero-length aligned attachment surviving.
+    """
+    run_root, tree = run_to_designator(tmp_path, "happy")
+    loss = {
+        "markup_characters": 0,
+        "whitespace_characters": 1,
+        "unicode_reencoded_characters": 0,
+    }
+
+    def separator_only_alignment(_witness, _anchor, _limits):
+        return {
+            "status": "aligned",
+            "witness": {"text": " ", "offset_map": [None], "loss": loss},
+            "anchor": {"text": "S", "offset_map": [0], "loss": loss},
+            "spans": [
+                {
+                    "witness": {"start": 0, "end": 1},
+                    "anchor": {"start": 0, "end": 1},
+                }
+            ],
+        }
+
+    monkeypatch.setattr(attestatores, "align_to_anchor", separator_only_alignment)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run.py",
+            "--run-root",
+            str(run_root),
+            "--run-id",
+            "retention",
+            "--scenario",
+            "happy",
+            "--fixture-root",
+            str(ROOT / "proof"),
+        ],
+    )
+
+    assert attestatores.main() == 0
+    a1 = next(
+        tree.read_artifact(ATTESTATORES, "act-attachment", entry["artifact_id"])
+        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
+        if entry["kind"] == "act-attachment"
+        and tree.read_artifact(ATTESTATORES, "act-attachment", entry["artifact_id"])["payload"][
+            "act_key"
+        ]
+        == "a1"
+    )
+    page_attachments = [row for row in a1["payload"]["attachments"] if row["page_witness"]]
+    assert page_attachments
+    assert all(
+        row["alignment"] == {"status": "unaligned", "reason": "no-raw-counterpart-for-aligned-span"}
+        for row in page_attachments
+    )
+    assert all(row["attached"] is False and row["span"] is None for row in page_attachments)

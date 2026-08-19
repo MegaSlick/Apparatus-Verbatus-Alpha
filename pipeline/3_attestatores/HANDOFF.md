@@ -173,10 +173,13 @@ ordinal — `attempt_id(act_id, f"read:{chair}", ordinal)`. The RunTree's
 immutable publish boundary atomically creates it and refuses different bytes at
 an existing identity. The stage has no pointer and no artifact overwrite path.
 
-Consumers derive current per chair through `common.stage.latest_per_chair()`.
-Thus a later `failed` attempt is current and visible, while the earlier successful
-attempt remains retained history. A missing or gapped history is refused rather
-than repaired or selected around.
+Act-scoped Testimonium consumers derive current per chair through
+`common.stage.latest_per_chair()`. The Recensor also reads `page-testimonium`
+records directly for content coverage, deriving current per `(page, chair)`
+through the shared `latest_attempt()` discipline. Thus a later `failed` attempt
+is current and visible, while the earlier successful attempt remains retained
+history. A missing or gapped history is refused rather than repaired or selected
+around.
 
 ## Act-attachment schema (R4)
 
@@ -200,10 +203,16 @@ of:
   confirmation stays open), or `act-line-not-located` (the page's anchor
   exists but locates no line for this act — the Recensor's
   `blank_corroboration` refuses to seal a terminal blank on it).
-  `witness_span` indexes the markup-stripped, whitespace-collapsed view of
-  the page reading, never raw bytes.
+  `witness_span` and its top-level `span` mirror index the raw retained page
+  reading. Alignment is computed over the markup-stripped,
+  whitespace-collapsed view and translated back to raw character offsets before
+  publication. `offset_maps` instead map normalized-text positions to raw
+  offsets, with `None` for synthesized separators, while `loss` records what
+  normalization changed. Never index an `offset_maps` entry with
+  `witness_span` or `span`: they use different coordinate spaces.
 - unaligned: `{status, reason}`, reasons among `missing-chandra-page-anchor`,
   `act-anchor-line-not-located`, `no-overlap-with-act-anchor`,
+  `no-raw-counterpart-for-aligned-span`,
   `character-limit`, `character-pair-limit`, `timeout`,
   `no-common-anchor-text` (the aligner's own reasons pass through
   verbatim), and `non-reading-page-attempt-<outcome>` for an attempt that

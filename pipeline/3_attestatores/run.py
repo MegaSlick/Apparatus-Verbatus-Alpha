@@ -1296,6 +1296,29 @@ def publish_attempt(
     )
 
 
+def _raw_span_from_normalized(
+    offset_map: list[int | None], start: int, end: int
+) -> tuple[int, int] | None:
+    """Translate a `[start, end)` span over `markup_text_view`'s normalized text
+    back into the raw text's own character indices.
+
+    `align_to_anchor`'s matching runs on the normalized (whitespace-collapsed)
+    text, so a matched block's `start`/`end` are normalized-text offsets. Storing
+    them as-is under `witness_span` -- which every later reader (this stage's own
+    `span` field, and the Recensor's page-Testimonium content-coverage check)
+    indexes into the RAW page text -- silently shifts by however much leading or
+    internal whitespace the normalization collapsed. `offset_map[i]` is `None`
+    only for a synthesized separator character with no raw counterpart, so the
+    real span is the min/max raw index actually mapped inside the range.
+    """
+    raw_indices = [
+        offset_map[index] for index in range(start, end) if offset_map[index] is not None
+    ]
+    if not raw_indices:
+        return None
+    return min(raw_indices), max(raw_indices) + 1
+
+
 def publish_page_testimonia_and_attachments(
     context,
     *,
@@ -1645,23 +1668,18 @@ def publish_page_testimonia_and_attachments(
                     if result["status"] == "aligned":
                         # CLIPPED to this act's anchor range, then carried back
                         # through each block's own witness/anchor offset, rather
-                        # than hulling whole overlapping blocks. A witness whose
-                        # page text matches the anchor exactly produces ONE
-                        # matching block covering the page, which overlaps every
-                        # act on it -- so the hull handed each act the chair's
-                        # entire page reading as its "act-anchored" span. The
-                        # better the witness, the wider the error: attestator_1
-                        # (an exact match) recorded span 0..75 for BOTH fixture
-                        # acts, two acts claiming the identical bytes, and its
-                        # dissent row for act a1 then recorded all forty-one
-                        # characters of act a2 as a departure. That inverts the
-                        # one instrument ARCHITECTURE names for catching a chair
-                        # that "learned to agree with witnesses rather than to
-                        # read ink" ("a metric that rewards disagreement rewards
-                        # hallucination"), and it is R0's freeze note 2 again: a
-                        # restatement computed by a second predicate agreed with
-                        # what it restated only by coincidence. Found in audit;
-                        # F-X2.
+                        # than hulling whole overlapping blocks (R4 audit,
+                        # F-X2: the hull handed every act the chair's entire
+                        # page reading, inverting the dissent instrument), THEN
+                        # translated from the markup-stripped normalized space
+                        # the matcher measured in back to RAW page-text indices
+                        # through the alignment's own offset_map (R6 audit,
+                        # F-G2: every consumer of witness_span -- the Perlector
+                        # comparison views, the Recensor content coverage, the
+                        # act-scoped `span` mirror -- indexes the RAW retained
+                        # text). Wave composition per R6-Opus's recorded
+                        # verdict: clip in normalized space first, translate at
+                        # this one storage point, spans stay RAW everywhere.
                         clipped = []
                         for span in result["spans"]:
                             start = max(span["anchor"]["start"], act_anchor["start"])
@@ -1680,30 +1698,42 @@ def publish_page_testimonia_and_attachments(
                             # hides it, which is what an instrument watching for
                             # a reader that learned to agree with witnesses
                             # needs. Do not "fix" this towards agreement.
-                            witness_start = min(start for start, _ in clipped)
-                            witness_end = max(end for _, end in clipped)
-                            alignment = {
-                                "status": "aligned",
-                                "anchor_basis": "act-anchor",
-                                "anchor_span": {key: act_anchor[key] for key in ("start", "end")},
-                                "witness_span": {"start": witness_start, "end": witness_end},
-                                "line_geometry": [
-                                    {
-                                        "bbox": {
-                                            key: act_anchor["bbox"][key]
-                                            for key in ("x", "y", "w", "h")
+                            normalized_start = min(start for start, _ in clipped)
+                            normalized_end = max(end for _, end in clipped)
+                            raw_span = _raw_span_from_normalized(
+                                result["witness"]["offset_map"], normalized_start, normalized_end
+                            )
+                            if raw_span is None:
+                                result = {
+                                    "status": "unaligned",
+                                    "reason": "no-raw-counterpart-for-aligned-span",
+                                }
+                            else:
+                                witness_start, witness_end = raw_span
+                                alignment = {
+                                    "status": "aligned",
+                                    "anchor_basis": "act-anchor",
+                                    "anchor_span": {
+                                        key: act_anchor[key] for key in ("start", "end")
+                                    },
+                                    "witness_span": {"start": witness_start, "end": witness_end},
+                                    "line_geometry": [
+                                        {
+                                            "bbox": {
+                                                key: act_anchor["bbox"][key]
+                                                for key in ("x", "y", "w", "h")
+                                            }
                                         }
-                                    }
-                                ],
-                                "loss": {
-                                    "witness": result["witness"]["loss"],
-                                    "anchor": result["anchor"]["loss"],
-                                },
-                                "offset_maps": {
-                                    "witness": result["witness"]["offset_map"],
-                                    "anchor": result["anchor"]["offset_map"],
-                                },
-                            }
+                                    ],
+                                    "loss": {
+                                        "witness": result["witness"]["loss"],
+                                        "anchor": result["anchor"]["loss"],
+                                    },
+                                    "offset_maps": {
+                                        "witness": result["witness"]["offset_map"],
+                                        "anchor": result["anchor"]["offset_map"],
+                                    },
+                                }
                         else:
                             result = {"status": "unaligned", "reason": "no-overlap-with-act-anchor"}
                     if result["status"] == "unaligned":

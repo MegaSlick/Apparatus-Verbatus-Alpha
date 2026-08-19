@@ -442,19 +442,18 @@ def act_attachment_view(context, act: dict[str, Any], testimonia: list[dict]) ->
                 witness_span = alignment["witness_span"]
                 if not isinstance(page_text, str):
                     raise SchemaRefusal("an attached page witness has no textual comparison view")
-                # `witness_span` indexes the MARKUP-STRIPPED, whitespace-collapsed
-                # view of the page reading -- `align_to_anchor` computes it from
-                # `markup_text_view(page_text)["text"]`, never from the raw bytes.
-                # Slicing `page_text` itself with those offsets is a
-                # coordinate-space error: it agrees only where stripping happens
-                # to remove nothing, which is exactly the ASCII fixture and
-                # exactly not Chandra's HTML or Churro's XML, where the slice
-                # would land mid-tag. It also falsified the premise
-                # `dissent.is_comparable` now rests on -- that
-                # `comparison_reported` is a markup-stripped view and therefore
-                # safe to diff -- since a raw slice carries whatever markup it
-                # cut through. Re-derived in the space the span was measured in.
-                # Found in audit; F-X3.
+                # `witness_span` indexes the RAW page reading. It is stored that
+                # way at the one storage point (`pipeline/3_attestatores/run.py`
+                # clips in the normalized space the matcher measured in, then
+                # translates through the alignment's own `offset_map`), so the
+                # raw text is the space this slice belongs in and every consumer
+                # of the field shares it. F-X3's requirement is met by
+                # `act_comparison_view` stripping the SLICE: the premise
+                # `dissent.is_comparable` rests on -- that `comparison_reported`
+                # is a markup-stripped view and therefore safe to diff -- must
+                # hold whichever space the offsets came from, and a raw slice
+                # handed on unstripped would carry whatever markup it cut
+                # through. Found in audit; F-X3, recomposed by R6's F-G2.
                 comparison_views[chair] = act_comparison_view(page_text, witness_span)
             elif (
                 not isinstance(alignment, dict)
@@ -502,29 +501,32 @@ def act_attachment_view(context, act: dict[str, Any], testimonia: list[dict]) ->
 
 
 def act_comparison_view(page_text: str, witness_span: dict[str, int]) -> str:
-    """One act's slice of a page reading, in the space the span was measured in.
+    """One act's markup-stripped slice of a page reading, from a RAW span.
 
-    `witness_span` indexes the markup-stripped, whitespace-collapsed view
-    `common.alignment.align_to_anchor` aligned -- never the raw page bytes --
-    so the slice is taken from that same view. Slicing the raw report with
-    these offsets agrees only where stripping removed nothing, which is the
-    ASCII fixture and not Chandra's HTML or Churro's XML. Found in audit; F-X3.
+    Since the wave composed R4's per-act clip with R6's raw translation,
+    `witness_span` indexes the RAW page-Testimonium text at the one storage
+    point (`pipeline/3_attestatores/run.py`) — every consumer of the field
+    shares that space. The slice is therefore taken from the raw bytes, and
+    the markup stripping F-X3 requires (a comparison view safe to diff — a
+    raw slice would carry whatever markup it cut through) is applied to the
+    slice itself, not to the whole page before slicing.
     """
-    normalized = markup_text_view(page_text)["text"]
     # Both bounds, not only the end: this reads an artifact back from disk, so
     # it is the last gate before untrusted numbers become a comparison view. A
-    # negative or inverted span slices to an empty string without complaint,
-    # and that empty string would become the act's comparison view -- dissent
-    # then records the witness as departing from the whole reading, or as
-    # corroborating a blank it never reported.
+    # slice is the one place a malformed offset does not announce itself:
+    # `text[-3:2]` is a perfectly good Python expression and a silently wrong
+    # comparison view, which dissent would then read as departure from a
+    # witness that said no such thing -- or as corroborating a blank it never
+    # reported. The Recensor's own consumer of this field checks the same
+    # three conditions.
     if not isinstance(witness_span, dict) or set(witness_span) != {"start", "end"}:
         raise SchemaRefusal("an attached page witness carries no two-bound comparison span")
     start, end = witness_span["start"], witness_span["end"]
     if any(not isinstance(bound, int) or isinstance(bound, bool) for bound in (start, end)):
         raise SchemaRefusal("an attached page witness claims a non-integer comparison span")
-    if not 0 <= start <= end or end > len(normalized):
+    if start < 0 or end < start or end > len(page_text):
         raise SchemaRefusal("an attached page witness claims a span past its own comparison view")
-    return normalized[start:end]
+    return markup_text_view(page_text[start:end])["text"]
 
 
 def dissent_testimonia(testimonia: list[dict], attachment_view: dict[str, Any]) -> list[dict]:

@@ -45,7 +45,7 @@ def _region(*, act_id: str, origin: str, ordinal: int, page_ordinal: int) -> dic
         "payload": {
             "origin": origin,
             "region_id": f"rgn_{act_id}_{ordinal}",
-            "image_path": f"designator/blobs/{act_id}_{ordinal}.png",
+            "image_path": f"2_designator/blobs/{act_id}_{ordinal}.png",
             "image_sha256": "a" * 64,
             "transform": {
                 "operation": "crop",
