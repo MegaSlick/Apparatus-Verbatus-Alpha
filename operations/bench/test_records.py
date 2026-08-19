@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from copy import deepcopy
+
 import pytest
 
 from common.contracts.canonical import self_hash
@@ -18,6 +20,15 @@ def test_each_r7b_cell_has_one_sealed_predeclared_definition():
     cells = [record["cell"] for record in all_definitions()]
     assert cells == ["B0", "B0.5", "B2", "B3", "B4", "B5", "B5a", "B6"]
     assert all(validate_definition(record) == record for record in all_definitions())
+
+
+def test_mutating_returned_measures_cannot_change_the_sealed_definition():
+    pristine = deepcopy(definition("B0.5"))
+    returned = definition("B0.5")
+
+    returned["measures"][0]["name"] = "caller-mutated-measure"
+
+    assert definition("B0.5") == pristine
 
 
 def test_fixture_exercise_leaves_real_cells_visibly_not_run_not_green():

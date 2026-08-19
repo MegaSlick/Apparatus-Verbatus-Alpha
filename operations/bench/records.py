@@ -7,6 +7,7 @@ an explicit ``not-run`` record, never a passing result.
 
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any, Final
 
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash, verify_self_hash
@@ -186,7 +187,7 @@ def definition(cell: str) -> dict[str, Any]:
         "schema": SCHEMA,
         "version": VERSION,
         "cell": cell,
-        "measures": _MEASURES[cell],
+        "measures": deepcopy(_MEASURES[cell]),
         "execution_requirement": "authorized-pod-session"
         if cell in REAL_CELLS
         else "runner-and-gold-inputs",

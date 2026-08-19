@@ -11,7 +11,7 @@ from common.contracts.canonical import canonical_bytes, digest_bytes
 from common.contracts.envelope import build_envelope
 from common.contracts.identities import artifact_id, page_id
 from common.contracts.stages import DESIGNATOR
-from common.runtree.store import RunTree
+from common.runtree.store import PublishResult, RunTree
 
 _SEALED_SHARDS: Final = 10
 _SEALED_PAGES_PER_SHARD: Final = 1_000
@@ -75,6 +75,8 @@ def run_scale(
         raise FileExistsError(f"scale root already exists: {root}")
     started = time.perf_counter()
     manifests: list[dict[str, object]] = []
+    expected_artifact_count = shards * pages_per_shard
+    artifact_count = 0
     root.mkdir(parents=True)
     create_started = time.perf_counter()
     for shard in range(1, shards + 1):
@@ -89,9 +91,17 @@ def run_scale(
             witness_chairs=[],
         )
         for page in source:
-            tree.publish_artifact(_proposal(run_id, page))
+            publication = tree.publish_artifact(_proposal(run_id, page))
+            if isinstance(publication, PublishResult):
+                artifact_count += 1
         manifests.append(tree.build_manifest(DESIGNATOR))
     create_seconds = time.perf_counter() - create_started
+    if artifact_count != expected_artifact_count:
+        raise RuntimeError(
+            f"scale bench published {artifact_count} artifacts; "
+            f"expected {expected_artifact_count}; a partial publication cannot "
+            "produce a census or result"
+        )
     resume_started = time.perf_counter()
     for shard in range(1, shards + 1):
         run_id = f"bench-scale-{shard:02d}"
@@ -109,7 +119,7 @@ def run_scale(
     census = {
         "schema": "r7b-runtree-scale-census.v1",
         "runs": manifests,
-        "artifact_count": shards * pages_per_shard,
+        "artifact_count": artifact_count,
     }
     (root / "aggregate-census.json").write_bytes(canonical_bytes(census))
     export_seconds = time.perf_counter() - export_started
@@ -120,7 +130,7 @@ def run_scale(
         "state": "measured" if is_sealed else "smoke-undersized",
         "shards": shards,
         "pages_per_shard": pages_per_shard,
-        "artifact_count": shards * pages_per_shard,
+        "artifact_count": artifact_count,
         "create_seconds": create_seconds,
         "resume_seconds": resume_seconds,
         "manifest_export_seconds": export_seconds,
