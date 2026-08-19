@@ -21,13 +21,14 @@ from armarium_export import (
     verify_export_bundle,
     verify_projection_identity,
 )
-from display import DISPLAY_CONVENTION
+from display import DISPLAY_CONVENTION, render_display
 from textnorm import TEXTNORM_REVISION, search_fold
 
 from common.armarium_formats import ArmariumFormats
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.contracts.errors import ApprovalRefusal, SchemaRefusal
 from common.contracts.outcomes import ArmariumCategory, run_aggregate
+from common.contracts.uncertainty import validate as validate_uncertainty
 from common.imaging import encode_grayscale_png
 
 TEXT_REGISTER = "text/_source_folder/register/readings.txt"
@@ -78,6 +79,7 @@ def _projection(*, salvage_items=()) -> ArmariumProjection:
                 "act_key": "one",
                 "category": "delivered",
                 "canonical_clean_text": "Cǣsar d’Amours",
+                "uncertainty": {"uncertain_spans": [], "gaps": [], "self_revisions": []},
                 "provenance": {"chair": "perlector"},
                 "source_regions": [region],
                 "reason": None,
@@ -197,6 +199,30 @@ def test_every_literal_projection_has_the_same_clean_text_and_hash(tmp_path):
     }
 
 
+def test_manifest_uncertainty_status_reflects_no_literal_format_carriage(tmp_path):
+    formats = ArmariumFormats(("review-items", "salvage-tier"), embed_pixels=False)
+    bundle = build_armarium_bundle(_projection(), formats, _source_bytes)
+    manifest = json.loads(_members(bundle.data)[EXPORT_MANIFEST_NAME])
+
+    assert manifest["claims"]["uncertainty"] == {
+        "status": "not-applicable",
+        "offset_unit": "unicode-code-point",
+        "carried_by": [],
+    }
+
+
+def test_manifest_refuses_available_uncertainty_with_no_literal_carrier(tmp_path):
+    formats = ArmariumFormats(("review-items", "salvage-tier"), embed_pixels=False)
+    bundle = build_armarium_bundle(_projection(), formats, _source_bytes)
+    members = _members(bundle.data)
+    manifest = json.loads(members[EXPORT_MANIFEST_NAME])
+    manifest["claims"]["uncertainty"]["status"] = "canonical-unicode-codepoint-offsets"
+    _refresh_manifest(members, manifest)
+
+    with pytest.raises(SchemaRefusal, match="canonical carriage claim"):
+        verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
+
+
 def test_literal_display_markers_do_not_refuse_or_change_an_established_text(tmp_path):
     projection = _projection()
     literal = r"Act ⟨literal⟩, gap glyphs ⟦not markup⟧, and a \\ path"
@@ -286,6 +312,228 @@ def test_projection_identity_refuses_a_self_consistent_package_with_one_drifted_
     verify_export_bundle(tampered, tmp_path / "clean")
     with pytest.raises(SchemaRefusal, match="projection differs"):
         verify_projection_identity(tampered, tmp_path / "identity")
+
+
+def test_projection_identity_refuses_a_self_consistent_package_with_drifted_uncertainty(tmp_path):
+    """The same drift class as the sibling test above, one field over.
+
+    A writer that changed only `uncertainty` -- never touching `canonical_clean_text`
+    or its hash -- would pass the literal-text identity check by construction: the
+    text is untouched. Uncertainty is a projected reading beside that text, not a
+    decoration outside GOVERNANCE 5's reach, so a format that silently drifted on it
+    alone must fail identity exactly as a drifted literal would (U3).
+    """
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    records = [json.loads(line) for line in members["acts.jsonl"].decode("utf-8").splitlines()]
+    records[0]["uncertainty"] = {
+        "uncertain_spans": [{"start": 0, "end": 1, "alternatives": ["X"], "confidence": "low"}],
+        "gaps": [],
+        "self_revisions": [],
+    }
+    members["acts.jsonl"] = b"".join(canonical_bytes(record) + b"\n" for record in records)
+    _refresh_manifest_member(members, "acts.jsonl")
+
+    # The member digests now agree and every format's own uncertainty layer is
+    # independently well-formed against its own literal text, so package
+    # verification alone is green. The identity guard is the independent
+    # assertion that catches a writer which changes one format's uncertainty
+    # while leaving the other formats' at their original (also valid) value.
+    tampered = _zip_bytes(members)
+    verify_export_bundle(tampered, tmp_path / "clean")
+    with pytest.raises(SchemaRefusal, match="projection differs"):
+        verify_projection_identity(tampered, tmp_path / "identity")
+
+
+def test_text_bundle_refuses_two_uncertainty_lines_for_one_literal(tmp_path):
+    """A second layer cannot overwrite the first while the parser walks the section."""
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    lines = members[TEXT_REGISTER].decode("utf-8").split("\n")
+    marker = lines.index("uncertainty:")
+    lines[marker:marker] = lines[marker : marker + 2]
+    members[TEXT_REGISTER] = "\n".join(lines).encode("utf-8")
+    _refresh_manifest_member(members, TEXT_REGISTER)
+
+    with pytest.raises(SchemaRefusal, match="more than one uncertainty layer"):
+        verify_projection_identity(_zip_bytes(members), tmp_path)
+
+
+def test_text_bundle_refuses_a_literal_section_with_no_uncertainty_layer(tmp_path):
+    """The layer is not optional beside a delivered literal, and says so by name."""
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    lines = members[TEXT_REGISTER].decode("utf-8").split("\n")
+    marker = lines.index("uncertainty:")
+    del lines[marker : marker + 2]
+    members[TEXT_REGISTER] = "\n".join(lines).encode("utf-8")
+    _refresh_manifest_member(members, TEXT_REGISTER)
+
+    with pytest.raises(SchemaRefusal, match="literal with no uncertainty layer"):
+        verify_projection_identity(_zip_bytes(members), tmp_path)
+
+
+def test_text_bundle_refuses_a_second_literal_that_would_orphan_its_uncertainty(tmp_path):
+    """The layer's anchor cannot be swapped out from under it after it is checked.
+
+    `uncertainty:` validates against the literal already parsed. A section that
+    then declared a *second* `canonical_clean_text:` recorded the new literal
+    beside the first literal's layer -- offsets into a text this act no longer
+    carries -- and every remaining check passed: the second literal has its own
+    valid hash line and its own display that strips back to it. Two or more
+    literal formats show the drift as a projection-identity mismatch, but a
+    package may legally select the text bundle as its one literal format, and
+    there this section is the whole reading of the act.
+    """
+    formats = ArmariumFormats(("text-bundle", "review-items", "salvage-tier"), False)
+    original = _projection()
+    literal = original.acts[0]["canonical_clean_text"]
+    delivered = {
+        **original.acts[0],
+        "uncertainty": {
+            "uncertain_spans": [
+                {"start": 0, "end": len(literal), "alternatives": ["?"], "confidence": "low"}
+            ],
+            "gaps": [],
+            "self_revisions": [],
+        },
+    }
+    bundle = build_armarium_bundle(
+        replace(original, acts=(delivered, original.acts[1])), formats, _source_bytes
+    )
+    members = _members(bundle.data)
+    lines = members[TEXT_REGISTER].decode("utf-8").split("\n")
+    replacement = "X"
+    assert len(replacement) < len(literal)
+    marker = lines.index("uncertainty:")
+    lines[marker + 2 : marker + 2] = [
+        f"canonical_text_sha256: {canonical_text_sha256(replacement)}",
+        "canonical_clean_text:",
+        json.dumps(replacement, ensure_ascii=False),
+    ]
+    lines[lines.index("display:") + 1] = json.dumps(render_display(replacement), ensure_ascii=False)
+    members[TEXT_REGISTER] = "\n".join(lines).encode("utf-8")
+    _refresh_manifest_member(members, TEXT_REGISTER)
+
+    with pytest.raises(SchemaRefusal, match="more than one literal"):
+        verify_delivered_bundle(_zip_bytes(members), tmp_path / "single")
+
+
+def test_text_bundle_refuses_an_uncertainty_line_before_its_literal(tmp_path):
+    """Line order binds an uncertainty layer to an already parsed act literal."""
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    lines = members[TEXT_REGISTER].decode("utf-8").split("\n")
+    marker = lines.index("uncertainty:")
+    uncertainty_lines = lines[marker : marker + 2]
+    del lines[marker : marker + 2]
+    literal_marker = lines.index("canonical_clean_text:")
+    lines[literal_marker:literal_marker] = uncertainty_lines
+    members[TEXT_REGISTER] = "\n".join(lines).encode("utf-8")
+    _refresh_manifest_member(members, TEXT_REGISTER)
+
+    with pytest.raises(SchemaRefusal, match="has no literal to anchor to"):
+        verify_projection_identity(_zip_bytes(members), tmp_path)
+
+
+def test_text_bundle_refuses_uncertainty_valid_only_for_a_different_acts_literal(tmp_path):
+    """Valid JSON and valid offsets for some other act do not authorize this act."""
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    lines = members[TEXT_REGISTER].decode("utf-8").split("\n")
+    marker = lines.index("uncertainty:")
+    own_literal = _projection().acts[0]["canonical_clean_text"]
+    other_literal = own_literal + " belongs to a different act"
+    other_layer = {
+        "uncertain_spans": [
+            {
+                "start": len(own_literal),
+                "end": len(own_literal) + 1,
+                "alternatives": ["?"],
+                "confidence": "low",
+            }
+        ],
+        "gaps": [],
+        "self_revisions": [],
+    }
+    assert validate_uncertainty(other_layer, other_literal) == other_layer
+    lines[marker + 1] = json.dumps(other_layer, ensure_ascii=False, sort_keys=True)
+    members[TEXT_REGISTER] = "\n".join(lines).encode("utf-8")
+    _refresh_manifest_member(members, TEXT_REGISTER)
+
+    with pytest.raises(SchemaRefusal, match="does not anchor to its own act's literal"):
+        verify_projection_identity(_zip_bytes(members), tmp_path)
+
+
+def test_jsonl_uncertainty_status_may_not_contradict_the_layer_beside_it(tmp_path):
+    """The declaration a recipient reads is checked against the payload it describes.
+
+    Cross-format identity compares layer to layer; it never reads
+    `uncertainty_status`, so before this guard a delivered JSONL row could carry a
+    valid canonical layer while telling every reader of that row there was none.
+    """
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    records = [json.loads(line) for line in members["acts.jsonl"].decode("utf-8").splitlines()]
+    assert records[0]["uncertainty_status"] == "canonical-unicode-codepoint-offsets"
+    records[0]["uncertainty_status"] = "not-applicable"
+    members["acts.jsonl"] = b"".join(canonical_bytes(record) + b"\n" for record in records)
+    _refresh_manifest_member(members, "acts.jsonl")
+
+    with pytest.raises(SchemaRefusal, match="does not declare the canonical uncertainty carriage"):
+        verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
+
+
+def test_acts_database_uncertainty_status_may_not_contradict_the_layer_beside_it(tmp_path):
+    """The same declaration, in the format whose column a search tool reads first."""
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    database = tmp_path / "tampered.sqlite"
+    database.write_bytes(members["acts.sqlite"])
+    connection = sqlite3.connect(database)
+    connection.execute("UPDATE acts SET uncertainty_status = 'not-applicable'")
+    connection.commit()
+    connection.close()
+    members["acts.sqlite"] = database.read_bytes()
+    _refresh_manifest_member(members, "acts.sqlite")
+
+    with pytest.raises(SchemaRefusal, match="does not declare the canonical uncertainty carriage"):
+        verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
+
+
+def test_a_single_literal_format_package_still_reads_back_its_uncertainty(tmp_path):
+    """One selected literal format has nothing to compare against -- and is still read.
+
+    `_compare_literal_projections` needs two formats to say anything, so a package
+    that selects only `jsonl` was leaving `claims.uncertainty` asserted and never
+    verified: the same defect `verify_delivered_bundle` exists to refuse for the
+    one text.
+    """
+    formats = ArmariumFormats(("jsonl", "review-items", "salvage-tier"), False)
+    bundle = build_armarium_bundle(_projection(), formats, _source_bytes)
+    members = _members(bundle.data)
+    records = [json.loads(line) for line in members["acts.jsonl"].decode("utf-8").splitlines()]
+    records[0]["uncertainty"] = {"nonsense": True}
+    members["acts.jsonl"] = b"".join(canonical_bytes(record) + b"\n" for record in records)
+    _refresh_manifest_member(members, "acts.jsonl")
+
+    with pytest.raises(SchemaRefusal, match="does not anchor to its own act's literal"):
+        verify_delivered_bundle(_zip_bytes(members), tmp_path / "single")
+
+
+def test_a_non_delivered_act_may_not_carry_an_uncertainty_layer(tmp_path):
+    """Offsets into a text this act does not have are not a reading to export."""
+    original = _projection()
+    held = {
+        **original.acts[1],
+        "uncertainty": {"uncertain_spans": [], "gaps": [], "self_revisions": []},
+    }
+    with pytest.raises(SchemaRefusal, match="may not carry an uncertainty layer"):
+        build_armarium_bundle(
+            replace(original, acts=(original.acts[0], held)),
+            _formats(embed_pixels=False),
+            _source_bytes,
+        )
 
 
 def test_the_delivered_gate_asks_both_questions_the_manifest_claims_were_asked(tmp_path):
@@ -380,6 +628,7 @@ def test_unselected_format_members_cannot_hide_inside_a_self_consistent_bundle(t
     # check under test rather than tripping the (correct) canonical-text identity
     # mismatch a single selected literal format now produces.
     manifest["canonical_text"]["identity_verified_across"] = []
+    manifest["claims"]["uncertainty"]["carried_by"] = ["jsonl"]
     manifest["self_hash"] = self_hash(manifest)
     members[EXPORT_MANIFEST_NAME] = canonical_bytes(manifest)
 
@@ -615,6 +864,7 @@ def test_text_bundle_keeps_every_cited_source_folder_when_no_act_is_delivered(tm
         record.update(
             category="held-for-review",
             canonical_clean_text=None,
+            uncertainty=None,
             provenance=None,
             source_regions=[],
         )
@@ -671,6 +921,7 @@ def test_source_root_and_a_named_source_root_folder_cannot_collide(tmp_path):
             **act,
             "category": "held-for-review",
             "canonical_clean_text": None,
+            "uncertainty": None,
             "provenance": None,
             "source_regions": [],
         }
@@ -1176,6 +1427,7 @@ def test_a_held_page_makes_the_bundle_partial_where_the_run_aggregate_reconciles
             **original.acts[0],
             "category": ArmariumCategory.CONFIRMED_BLANK.value,
             "canonical_clean_text": None,
+            "uncertainty": None,
             "provenance": None,
             "source_regions": [],
             "reason": None,
@@ -1318,15 +1570,40 @@ def test_the_manifest_says_the_display_convention_is_only_proposed(tmp_path):
         "convention": DISPLAY_CONVENTION,
         "status": "proposed-pending-tyrels-choice",
         "alters_stored_text": False,
+        "renders_canonical_uncertainty": False,
         "exercised_against_real_spans": False,
         "reason": (
-            "the Archetypus record carries no uncertainty or gap layer yet, so "
-            "every rendering in this build is the established text unchanged"
+            "the rendering is not fed this package's canonical uncertainty "
+            "layer, which travels beside each literal instead; marking spans "
+            "inside a displayed reading would exercise a convention that "
+            "remains Tyrel's choice at this gate"
         ),
     }
+    # The same package says, two claims above, that it carries the canonical
+    # layer. Both statements are about this build's uncertainty; a manifest whose
+    # display claim contradicted its uncertainty claim would be a package arguing
+    # with itself about what it contains.
+    assert manifest["claims"]["uncertainty"]["status"] == "canonical-unicode-codepoint-offsets"
     members = _members(bundle.data)
     manifest["claims"]["display"]["status"] = "chosen"
     _refresh_manifest(members, manifest)
+    with pytest.raises(SchemaRefusal, match="display claim is not the verified claim"):
+        verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
+
+
+def test_the_manifest_may_not_claim_the_rendering_carries_the_canonical_layer(tmp_path):
+    """The non-carriage declaration is verified, not merely written.
+
+    A package whose display claim said the rendering carried the layer would be
+    describing a `display:` line this build does not produce -- the failure mode
+    the claim exists to prevent, one field over from the convention itself.
+    """
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    manifest = json.loads(members[EXPORT_MANIFEST_NAME])
+    manifest["claims"]["display"]["renders_canonical_uncertainty"] = True
+    _refresh_manifest(members, manifest)
+
     with pytest.raises(SchemaRefusal, match="display claim is not the verified claim"):
         verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
 
@@ -1578,3 +1855,37 @@ def _refresh_manifest_member(members: dict[str, bytes], changed_member: str) -> 
 def _refresh_manifest(members: dict[str, bytes], manifest: dict) -> None:
     manifest["self_hash"] = self_hash(manifest)
     members[EXPORT_MANIFEST_NAME] = canonical_bytes(manifest)
+
+
+@pytest.mark.parametrize("text", ["e\u0301", "é", "𐐷\u0301", "A\u030a𐐷"])
+def test_unicode_uncertainty_offsets_survive_every_literal_projection(tmp_path, text):
+    """Offsets count Unicode code points, never UTF-8 bytes or UTF-16 units."""
+    layer = {
+        "uncertain_spans": [{"start": 0, "end": 1, "alternatives": ["?"], "confidence": "low"}],
+        "gaps": [
+            {"position": "trailing", "start": len(text), "end": len(text), "witness_evidence": []}
+        ],
+        "self_revisions": [
+            {
+                "reading_span": {"start": len(text), "end": len(text)},
+                "prior_span": {"start": 0, "end": 0},
+            }
+        ],
+    }
+    projection = _projection()
+    delivered = {**projection.acts[0], "canonical_clean_text": text, "uncertainty": layer}
+    projection = replace(projection, acts=(delivered, projection.acts[1]))
+    bundle = build_armarium_bundle(projection, _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    assert json.loads(members["acts.jsonl"].splitlines()[0])["uncertainty"] == layer
+    assert (
+        json.dumps(layer, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        in members[TEXT_REGISTER]
+    )
+    database = tmp_path / "acts.sqlite"
+    database.write_bytes(members["acts.sqlite"])
+    with sqlite3.connect(database) as connection:
+        stored = connection.execute(
+            "SELECT uncertainty_json FROM acts WHERE act_id = 'act-1'"
+        ).fetchone()[0]
+    assert json.loads(stored) == layer

@@ -54,6 +54,8 @@ from common.contracts.outcomes import (
     run_aggregate,
 )
 from common.contracts.stages import ARMARIUM
+from common.contracts.uncertainty import utf8_round_trip
+from common.contracts.uncertainty import validate as validate_uncertainty
 from common.imaging import dimensions
 
 EXPORT_MANIFEST_NAME: Final = "EXPORT_MANIFEST.json"
@@ -71,8 +73,16 @@ _ZIP_EPOCH: Final = (1980, 1, 1, 0, 0, 0)
 _SOURCE_ACCESS_REQUIRED: Final = "requires-source-access"
 _RUN_ACCESS_REQUIRED: Final = "requires-retained-run-access"
 _EMBEDDED: Final = "embedded"
-_UNAVAILABLE_UNCERTAINTY: Final = "not-available-in-archetypus-contract"
+_UNCERTAINTY_AVAILABLE: Final = "canonical-unicode-codepoint-offsets"
+# The other half of the same declaration. An act with no established text, or a
+# package with no literal-text format, has no offsets for a layer to anchor to or
+# carry, so it says so in the one vocabulary every reader can compare.
+_UNCERTAINTY_NOT_APPLICABLE: Final = "not-applicable"
 _ANNOTATION_NOT_PRODUCED: Final = "not-produced-pending-architecture-approval"
+# The manifest-level claim, distinct from the per-row status above since R8:
+# a row saying "annotations not produced" beside a carried uncertainty layer
+# needed to say *which* annotations, and the package claim says it once.
+_ANNOTATIONS_CLAIM: Final = "semantic-annotations-not-produced"
 _LITERAL_TEXT_FORMATS: Final = ("text-bundle", "acts-database", "jsonl")
 _PIXEL_REFERENCE_CLAIM: Final = "reference validity only; pixel resolution requires source access"
 _PIXEL_EMBEDDED_CLAIM: Final = (
@@ -160,6 +170,16 @@ class ArmariumBundle:
 
     data: bytes
     manifest: dict[str, Any]
+
+
+def _uncertainty_claim(formats: tuple[str, ...] | list[str]) -> dict[str, Any]:
+    """Measure which selected formats carry canonical uncertainty."""
+    carried_by = sorted(set(formats) & set(_LITERAL_TEXT_FORMATS))
+    return {
+        "status": _UNCERTAINTY_AVAILABLE if carried_by else _UNCERTAINTY_NOT_APPLICABLE,
+        "offset_unit": "unicode-code-point",
+        "carried_by": carried_by,
+    }
 
 
 def canonical_text_sha256(text: str) -> str:
@@ -358,6 +378,7 @@ def verify_export_bundle(data: bytes, clean_root) -> dict[str, Any]:
     _verify_retained_run_claim(manifest)
     _verify_canonical_text_claim(manifest)
     _verify_annotations_claim(manifest)
+    _verify_uncertainty_claim(manifest)
     _verify_exact_product_members(formats, sources, actual_names)
     search_fold_verification = _verify_product_accounting(root, manifest, formats, sources)
     verification = {}
@@ -415,8 +436,16 @@ def verify_delivered_bundle(data: bytes, clean_root) -> dict[str, Any]:
 
 
 def _compare_literal_projections(root: Path, formats: ArmariumFormats) -> dict[str, str]:
-    """Compare already-verified literal members without extracting the package again."""
-    projections: dict[str, dict[str, tuple[str, str]]] = {}
+    """Compare already-verified literal members without extracting the package again.
+
+    Each format's rows carry ``(text, digest, uncertainty)``: the uncertainty layer
+    rides in the same equality check as the text it anchors to, so a format that
+    silently diverged on its uncertainty carriage -- present, well-formed, but
+    *different* from what the other formats say -- fails identity exactly as a
+    diverging literal would (U3: uncertainty is a projected reading like the text
+    it sits beside, and GOVERNANCE 5 does not stop at the characters).
+    """
+    projections: dict[str, dict[str, tuple[str, str, dict[str, Any]]]] = {}
     selected_literal_formats = [name for name in _LITERAL_TEXT_FORMATS if name in formats.formats]
     if len(selected_literal_formats) < 2:
         raise SchemaRefusal("projection identity needs at least two selected literal-text formats")
@@ -433,9 +462,10 @@ def _compare_literal_projections(root: Path, formats: ArmariumFormats) -> dict[s
     for name, records in projections.items():
         if records != baseline:
             raise SchemaRefusal(
-                f"canonical clean-text projection differs between {baseline_name} and {name}"
+                f"canonical clean-text or uncertainty projection differs between "
+                f"{baseline_name} and {name}"
             )
-    return {act_id: text for act_id, (text, _digest) in baseline.items()}
+    return {act_id: text for act_id, (text, _digest, _uncertainty) in baseline.items()}
 
 
 def _validate_projection(projection: ArmariumProjection) -> None:
@@ -496,8 +526,16 @@ def _validate_projection(projection: ArmariumProjection) -> None:
                 raise SchemaRefusal("a delivered act has no provenance")
             if not regions:
                 raise SchemaRefusal("a delivered act has no source-region provenance")
+            # `utf8_round_trip` runs `validate_uncertainty` itself, on exactly
+            # these arguments, before it asks its own question.
+            utf8_round_trip(act.get("uncertainty"), literal)
         elif literal is not None:
             raise SchemaRefusal("a non-delivered act may not carry purported clean text")
+        elif act.get("uncertainty") is not None:
+            # The same rule as the line above, for the layer that anchors to that
+            # text: offsets into a text this act does not have are not a reading
+            # the export may carry, and no writer would have anywhere to put them.
+            raise SchemaRefusal("a non-delivered act may not carry an uncertainty layer")
         if category == ArmariumCategory.EXCLUDED_WITH_APPROVAL.value:
             require_approval(ARMARIUM, category, act.get("approval_ref"))
         _reject_act_salvage_namespace(act)
@@ -846,6 +884,8 @@ def _text_bundle_members(
                     f"canonical_text_sha256: {canonical_text_sha256(act[CANONICAL_TEXT_FIELD])}",
                     "canonical_clean_text:",
                     json.dumps(act[CANONICAL_TEXT_FIELD], ensure_ascii=False),
+                    "uncertainty:",
+                    json.dumps(act["uncertainty"], ensure_ascii=False, sort_keys=True),
                     # Beside the canonical field, never instead of it: the clean
                     # verifier strips this back and requires the line above exactly.
                     f"display_convention: {DISPLAY_CONVENTION}",
@@ -1114,7 +1154,7 @@ def _acts_database_bytes(acts: tuple[dict[str, Any], ...]) -> bytes:
                     canonical_text_sha256 TEXT,
                     provenance_json TEXT,
                     source_regions_json TEXT,
-                    uncertainty_spans_json TEXT,
+                    uncertainty_json TEXT,
                     uncertainty_status TEXT NOT NULL,
                     annotations_json TEXT NOT NULL,
                     annotation_status TEXT NOT NULL,
@@ -1158,7 +1198,7 @@ def _acts_database_bytes(acts: tuple[dict[str, Any], ...]) -> bytes:
                     INSERT INTO acts(
                         act_id, act_key, category, canonical_clean_text,
                         canonical_text_sha256, provenance_json, source_regions_json,
-                        uncertainty_spans_json, uncertainty_status, annotations_json,
+                        uncertainty_json, uncertainty_status, annotations_json,
                         annotation_status, evidence_json, approval_ref, reason
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
@@ -1170,8 +1210,10 @@ def _acts_database_bytes(acts: tuple[dict[str, Any], ...]) -> bytes:
                         text_hash,
                         canonical_text(act["provenance"]) if literal is not None else None,
                         canonical_text(act["source_regions"]) if literal is not None else None,
-                        None,
-                        _UNAVAILABLE_UNCERTAINTY,
+                        canonical_text(act["uncertainty"]) if literal is not None else None,
+                        _UNCERTAINTY_AVAILABLE
+                        if literal is not None
+                        else _UNCERTAINTY_NOT_APPLICABLE,
                         "[]",
                         _ANNOTATION_NOT_PRODUCED,
                         canonical_text(_act_evidence(act)),
@@ -1233,8 +1275,10 @@ def _act_json_records(acts: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
                 else None,
                 "provenance": act.get("provenance") if literal is not None else None,
                 "source_regions": act.get("source_regions", []) if literal is not None else [],
-                "uncertainty_spans": None,
-                "uncertainty_status": _UNAVAILABLE_UNCERTAINTY,
+                "uncertainty": act.get("uncertainty") if literal is not None else None,
+                "uncertainty_status": _UNCERTAINTY_AVAILABLE
+                if literal is not None
+                else _UNCERTAINTY_NOT_APPLICABLE,
                 "annotations": [],
                 "annotation_status": _ANNOTATION_NOT_PRODUCED,
                 "witnesses": act.get("witnesses", []),
@@ -1347,11 +1391,12 @@ def _text_bundle_records(
             _require_sha256(digest, "a text-bundle source citation digest")
             known_pages.add((path, digest))
 
-    records: dict[str, tuple[str, str, tuple[tuple[str, str], ...]]] = {}
+    records: dict[str, tuple[str, str, tuple[tuple[str, str], ...], dict[str, Any]]] = {}
     for path in sorted((root / "text").rglob("readings.txt")) if (root / "text").exists() else []:
         lines = _package_lines(path, "text bundle")
         current_id: str | None = None
         pending: tuple[str, str, tuple[tuple[str, str], ...]] | None = None
+        pending_uncertainty: dict[str, Any] | None = None
         citations: list[tuple[str, str]] = []
         for index, line in enumerate(lines):
             if line.startswith("act-id: "):
@@ -1362,6 +1407,7 @@ def _text_bundle_records(
                     raise SchemaRefusal("a text-bundle section has an empty act identity")
                 citations = []
                 pending = None
+                pending_uncertainty = None
             elif line.startswith("source-page: "):
                 if current_id is None or index + 1 >= len(lines):
                     raise SchemaRefusal(
@@ -1383,6 +1429,16 @@ def _text_bundle_records(
             elif line == "canonical_clean_text:":
                 if current_id is None or index + 1 >= len(lines):
                     raise SchemaRefusal("a text-bundle section has no act identity or literal")
+                # One literal per section, so the literal `uncertainty:` anchored
+                # to below is the literal this section ends up recording. A second
+                # `canonical_clean_text:` after the layer would replace `pending`
+                # while `pending_uncertainty` kept the offsets checked against the
+                # first -- an act recorded beside a layer that anchors to a text it
+                # no longer carries. Two or more literal formats catch that drift
+                # as a projection-identity mismatch; the text bundle is a legal
+                # single literal format, where nothing else would.
+                if pending is not None:
+                    raise SchemaRefusal("a text-bundle section carries more than one literal")
                 try:
                     literal = json.loads(lines[index + 1])
                 except json.JSONDecodeError as error:
@@ -1400,6 +1456,35 @@ def _text_bundle_records(
                 ):
                     raise SchemaRefusal("a text-bundle literal identity or hash is invalid")
                 pending = (literal, digest, tuple(citations))
+            elif line == "uncertainty:":
+                # Read back beside the literal it anchors to, exactly like
+                # `canonical_clean_text:` above -- a text-bundle uncertainty
+                # layer that cannot re-validate against its own act's literal
+                # text is not a member `_compare_literal_projections` may treat
+                # as this act's one uncertainty record.
+                if current_id is None or pending is None or index + 1 >= len(lines):
+                    raise SchemaRefusal(
+                        "a text-bundle uncertainty layer has no literal to anchor to"
+                    )
+                if pending_uncertainty is not None:
+                    raise SchemaRefusal(
+                        "a text-bundle section carries more than one uncertainty layer"
+                    )
+                try:
+                    uncertainty = json.loads(lines[index + 1])
+                except json.JSONDecodeError as error:
+                    raise SchemaRefusal("a text-bundle uncertainty layer is not JSON") from error
+                try:
+                    # The round trip, not merely the shape: the text bundle is the
+                    # one format whose layer arrives as decoded UTF-8 text lines, so
+                    # this is where an encoding that changed offset meaning would
+                    # have to be caught.
+                    utf8_round_trip(uncertainty, pending[0])
+                    pending_uncertainty = uncertainty
+                except SchemaRefusal as error:
+                    raise SchemaRefusal(
+                        "a text-bundle uncertainty layer does not anchor to its own act's literal"
+                    ) from error
             elif line == "display:":
                 # Spec 11 test 2's second half, checked on the written product:
                 # render -> strip -> hash. The rendered display is a reading aid and
@@ -1407,6 +1492,14 @@ def _text_bundle_records(
                 # convention can never become characters in the hashed text.
                 if current_id is None or pending is None or index + 1 >= len(lines):
                     raise SchemaRefusal("a text-bundle display has no literal to render")
+                # Its own refusal rather than the one above: a section that reaches
+                # its display with no `uncertainty:` line has a literal and is
+                # missing the layer, which is the opposite defect and the one a
+                # reader of the message has to act on.
+                if pending_uncertainty is None:
+                    raise SchemaRefusal(
+                        "a text-bundle section carries a literal with no uncertainty layer"
+                    )
                 convention_line = lines[index - 1] if index else ""
                 if convention_line != f"display_convention: {DISPLAY_CONVENTION}":
                     raise SchemaRefusal("a text-bundle display names no known convention")
@@ -1426,17 +1519,17 @@ def _text_bundle_records(
                     raise SchemaRefusal(
                         "a text-bundle display does not strip back to its canonical clean text"
                     )
-                records[current_id] = pending
-                current_id, pending = None, None
+                records[current_id] = (*pending, pending_uncertainty)
+                current_id, pending, pending_uncertainty = None, None, None
         if current_id is not None:
             raise SchemaRefusal("a text-bundle section has no completed literal record")
     return records
 
 
-def _text_bundle_literals(root) -> dict[str, tuple[str, str]]:
+def _text_bundle_literals(root) -> dict[str, tuple[str, str, dict[str, Any]]]:
     return {
-        act_id: (literal, digest)
-        for act_id, (literal, digest, _citations) in _text_bundle_records(root).items()
+        act_id: (literal, digest, uncertainty)
+        for act_id, (literal, digest, _citations, uncertainty) in _text_bundle_records(root).items()
     }
 
 
@@ -1482,13 +1575,13 @@ def _open_acts_database(path) -> sqlite3.Connection:
     return connection
 
 
-def _database_literals(path) -> dict[str, tuple[str, str]]:
+def _database_literals(path) -> dict[str, tuple[str, str, dict[str, Any]]]:
     connection: sqlite3.Connection | None = None
     try:
         connection = _open_acts_database(path)
         rows = connection.execute(
             """
-            SELECT act_id, canonical_clean_text, canonical_text_sha256
+            SELECT act_id, canonical_clean_text, canonical_text_sha256, uncertainty_json
             FROM acts
             WHERE canonical_clean_text IS NOT NULL
             ORDER BY act_id
@@ -1499,22 +1592,27 @@ def _database_literals(path) -> dict[str, tuple[str, str]]:
     finally:
         if connection is not None:
             connection.close()
-    records: dict[str, tuple[str, str]] = {}
-    for act_id, literal, digest in rows:
+    records: dict[str, tuple[str, str, dict[str, Any]]] = {}
+    for act_id, literal, digest, uncertainty_json in rows:
         if (
             not isinstance(act_id, str)
             or not isinstance(literal, str)
             or not isinstance(digest, str)
+            or not isinstance(uncertainty_json, str)
         ):
             raise SchemaRefusal("the acts database has an untyped literal row")
         if digest != canonical_text_sha256(literal) or act_id in records:
             raise SchemaRefusal("the acts database literal identity or hash is invalid")
-        records[act_id] = (literal, digest)
+        try:
+            uncertainty = json.loads(uncertainty_json)
+        except json.JSONDecodeError as error:
+            raise SchemaRefusal("the acts database uncertainty layer is not JSON") from error
+        records[act_id] = (literal, digest, validate_uncertainty(uncertainty, literal))
     return records
 
 
-def _jsonl_literals(path) -> dict[str, tuple[str, str]]:
-    records: dict[str, tuple[str, str]] = {}
+def _jsonl_literals(path) -> dict[str, tuple[str, str, dict[str, Any]]]:
+    records: dict[str, tuple[str, str, dict[str, Any]]] = {}
     for line in _package_lines(path, "acts JSONL"):
         if not line:
             continue
@@ -1533,7 +1631,11 @@ def _jsonl_literals(path) -> dict[str, tuple[str, str]]:
             raise SchemaRefusal("an acts JSONL literal row is untyped")
         if digest != canonical_text_sha256(literal) or act_id in records:
             raise SchemaRefusal("an acts JSONL literal identity or hash is invalid")
-        records[act_id] = (literal, digest)
+        records[act_id] = (
+            literal,
+            digest,
+            validate_uncertainty(record.get("uncertainty"), literal),
+        )
     return records
 
 
@@ -1810,19 +1912,28 @@ def _export_manifest(
                 "resolution_claim": "artifact and receipt citations require retained-run access",
             },
             "annotations": {
-                "status": "not-produced-pending-architecture-approval",
+                "status": _ANNOTATIONS_CLAIM,
                 "text_writable": False,
             },
+            "uncertainty": _uncertainty_claim(formats.formats),
             # Labelled a proposal because it is one: spec 11 leaves the choice of
             # convention to Tyrel at this gate, and nothing hashed depends on it.
+            # `renders_canonical_uncertainty` is the declaration R8 owes: the
+            # record DOES carry the layer now, the `uncertainty:` field beside each
+            # literal carries it into the product, and this rendering deliberately
+            # does not -- said here rather than left for a reader to infer from a
+            # `display:` line that looks like a complete reading.
             "display": {
                 "convention": DISPLAY_CONVENTION,
                 "status": "proposed-pending-tyrels-choice",
                 "alters_stored_text": False,
+                "renders_canonical_uncertainty": False,
                 "exercised_against_real_spans": False,
                 "reason": (
-                    "the Archetypus record carries no uncertainty or gap layer yet, so "
-                    "every rendering in this build is the established text unchanged"
+                    "the rendering is not fed this package's canonical uncertainty "
+                    "layer, which travels beside each literal instead; marking spans "
+                    "inside a displayed reading would exercise a convention that "
+                    "remains Tyrel's choice at this gate"
                 ),
             },
             "salvage": salvage_claim,
@@ -2306,6 +2417,12 @@ def _jsonl_act_records(
             )
         elif literal is not None or digest is not None:
             raise SchemaRefusal("a non-delivered acts JSONL row carries purported clean text")
+        _verify_carried_uncertainty(
+            record.get("uncertainty"),
+            record.get("uncertainty_status"),
+            literal if category == ArmariumCategory.DELIVERED.value else None,
+            subject="acts JSONL",
+        )
         records[act_id] = {
             "act_key": act_key,
             "category": category,
@@ -2317,6 +2434,54 @@ def _jsonl_act_records(
     return records
 
 
+def _database_uncertainty(encoded: Any) -> Any:
+    """Decode the acts database's one uncertainty column, or refuse its bytes."""
+    if encoded is None:
+        return None
+    if not isinstance(encoded, str):
+        raise SchemaRefusal("the acts database has an untyped uncertainty column")
+    try:
+        return json.loads(encoded)
+    except json.JSONDecodeError as error:
+        raise SchemaRefusal("the acts database uncertainty layer is not JSON") from error
+
+
+def _verify_carried_uncertainty(
+    layer: Any, status: Any, literal: str | None, *, subject: str
+) -> None:
+    """Read one act row's uncertainty declaration and its payload as one statement.
+
+    Cross-format identity (``_compare_literal_projections``) only compares the
+    layers of two or more selected literal formats against each other, so on its
+    own it leaves two things unasked: a package that selects exactly ONE literal
+    format never has its layer read back at all, and ``uncertainty_status`` --
+    the field a recipient reads to learn whether the layer is there -- is
+    compared against nothing in any package. A row may not say
+    ``not-applicable`` while carrying a layer, or claim canonical offsets while
+    carrying none: the declaration and the payload are the same claim said twice,
+    and a verifier that checks only one of them is asserting the other.
+    """
+    if literal is None:
+        if layer is not None:
+            raise SchemaRefusal(f"a non-delivered {subject} row carries an uncertainty layer")
+        if status != _UNCERTAINTY_NOT_APPLICABLE:
+            raise SchemaRefusal(
+                f"a non-delivered {subject} row does not declare uncertainty not-applicable"
+            )
+        return
+    if status != _UNCERTAINTY_AVAILABLE:
+        raise SchemaRefusal(
+            f"a delivered {subject} row does not declare the canonical uncertainty carriage"
+        )
+    try:
+        utf8_round_trip(layer, literal)
+    except SchemaRefusal as error:
+        raise SchemaRefusal(
+            f"a delivered {subject} row's uncertainty layer does not anchor to its own "
+            "act's literal"
+        ) from error
+
+
 def _database_act_records(
     path: Path, source_graph_regions: list[dict[str, Any]]
 ) -> tuple[dict[str, dict[str, Any]], dict[str, tuple[str, str]]]:
@@ -2326,7 +2491,8 @@ def _database_act_records(
         connection = _open_acts_database(path)
         rows = connection.execute(
             "SELECT act_id, act_key, category, canonical_clean_text, canonical_text_sha256, "
-            "provenance_json, source_regions_json, evidence_json, reason FROM acts"
+            "provenance_json, source_regions_json, evidence_json, reason, "
+            "uncertainty_json, uncertainty_status FROM acts"
         ).fetchall()
     except sqlite3.DatabaseError as error:
         raise SchemaRefusal("the acts database cannot be read for product accounting") from error
@@ -2346,6 +2512,8 @@ def _database_act_records(
         source_regions,
         evidence,
         reason,
+        uncertainty_json,
+        uncertainty_status,
     ) in rows:
         if (
             not isinstance(act_id, str)
@@ -2381,6 +2549,12 @@ def _database_act_records(
             _verify_delivered_product_provenance(
                 decoded[0], decoded[1], source_graph_regions, subject="acts database"
             )
+        _verify_carried_uncertainty(
+            _database_uncertainty(uncertainty_json),
+            uncertainty_status,
+            literal if category == ArmariumCategory.DELIVERED.value else None,
+            subject="acts database",
+        )
         records[act_id] = {
             "act_key": act_key,
             "category": category,
@@ -2657,7 +2831,7 @@ def _verify_product_accounting(
             raise SchemaRefusal(
                 "the text bundle does not contain exactly the manifest's delivered acts"
             )
-        for act_id, (_literal, _digest, text_citations) in text_records.items():
+        for act_id, (_literal, _digest, text_citations, _uncertainty) in text_records.items():
             expected_citations = tuple(
                 (region["declared_path"], region["declared_sha256"])
                 for region in citations[act_id]["source_regions"]
@@ -2746,6 +2920,7 @@ def _verify_display_claim(manifest: dict[str, Any]) -> None:
         or display.get("convention") != DISPLAY_CONVENTION
         or display.get("status") != "proposed-pending-tyrels-choice"
         or display.get("alters_stored_text") is not False
+        or display.get("renders_canonical_uncertainty") is not False
         or display.get("exercised_against_real_spans") is not False
     ):
         raise SchemaRefusal("the package display claim is not the verified claim")
@@ -2805,8 +2980,24 @@ def _verify_annotations_claim(manifest: dict[str, Any]) -> None:
     """
     claims = manifest.get("claims")
     annotations = claims.get("annotations") if isinstance(claims, dict) else None
-    if annotations != {"status": _ANNOTATION_NOT_PRODUCED, "text_writable": False}:
+    if annotations != {"status": _ANNOTATIONS_CLAIM, "text_writable": False}:
         raise SchemaRefusal("the package annotations claim is not this build's fixed claim")
+
+
+def _verify_uncertainty_claim(manifest: dict[str, Any]) -> None:
+    """The carriage claim is a measurement, and is checked as one.
+
+    Unlike the annotations claim beside it, ``carried_by`` is not a constant: it
+    is exactly the literal-text formats this package selected, so a manifest that
+    named a format it does not carry the layer in -- or omitted one it does --
+    would be describing a different package.
+    """
+    claims = manifest.get("claims")
+    selected = manifest.get("formats")
+    format_rows = selected.get("formats") if isinstance(selected, dict) else None
+    uncertainty = claims.get("uncertainty") if isinstance(claims, dict) else None
+    if uncertainty != _uncertainty_claim(format_rows or []):
+        raise SchemaRefusal("the package uncertainty claim is not the canonical carriage claim")
 
 
 def _verify_manifest_source_counts(

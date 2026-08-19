@@ -52,6 +52,8 @@ from common.contracts.stages import (  # noqa: E402
     PERLECTOR,
     RECENSOR,
 )
+from common.contracts.uncertainty import from_perlectio  # noqa: E402
+from common.contracts.uncertainty import validate as validate_uncertainty
 from common.exemplar_boundary import (  # noqa: E402
     verify_exemplar_corpus_seal,
     verify_exemplar_crop_lineage,
@@ -535,6 +537,18 @@ def verify_established_record(
         raise FatalAccounting(
             "an Archetypus does not exactly preserve the Perlectio its review accepted"
         )
+    try:
+        expected_uncertainty = from_perlectio(reading_payload)
+    except SchemaRefusal as error:
+        raise FatalAccounting("an accepted Perlectio is malformed") from error
+    try:
+        if payload.get("uncertainty") != expected_uncertainty:
+            raise FatalAccounting(
+                "an Archetypus uncertainty layer differs from its accepted Perlectio"
+            )
+        validate_uncertainty(payload["uncertainty"], payload["text"])
+    except SchemaRefusal as error:
+        raise FatalAccounting("an Archetypus uncertainty layer is malformed") from error
 
     expected_inputs = [review_ref, reading_ref] + [
         context.input_ref(region["image_path"]) for region in reading_regions
@@ -701,6 +715,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                             "recensor_ref": payload["recensor_ref"],
                             "witnesses": witnesses,
                             "dissent_ref": payload["dissent_ref"],
+                            "uncertainty": payload["uncertainty"],
                         }
                     )
                     delivered.append(entry)
@@ -750,6 +765,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "recensor_ref": entry.get("recensor_ref"),
                 "dissent_ref": entry.get("dissent_ref"),
                 "approval_ref": entry.get("approval_ref"),
+                "uncertainty": entry.get("uncertainty"),
             }
         )
 

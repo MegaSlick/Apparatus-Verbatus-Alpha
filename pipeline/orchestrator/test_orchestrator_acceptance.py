@@ -412,6 +412,11 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # correction moves every dependent artifact. Fresh real runs again measured 54
 # files for happy (exit 0) and 58 for review (exit 3).
 #
+# Re-pinned host-side after the R8 uncertainty build added the canonical
+# uncertainty layer to each established Archetypus record. On that build's
+# pre-R5b base, fresh real orchestrator runs measured 60 files for happy (exit 0)
+# and 65 files for review (exit 3).
+#
 # R4 audit verified that the apparent Linux/macOS divergence was a snapshot-root
 # error, not different recorded bytes. Passing `<runs-root>/r` instead of
 # `<runs-root>` removes the `r/` prefix from every relative inventory key and
@@ -451,8 +456,22 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # `by_chair`/`shortfall` plus a reason. Neither acceptance scenario exercises that
 # unavailable shape -- every reviewed page has reported page-witness text -- so
 # both digest literals remain byte-identical, with file counts still 64/71.
-HAPPY_RUN_TREE_DIGEST = "59605960127ef8740b9acf838e6c355d6d15e3e4cd0613fb33ef0a133bde5cc5"
-REVIEW_RUN_TREE_DIGEST = "cdf4dc49ef2a93fdf5509aebc9ec912cc29d6de1d57b1d55fad2cb6468435976"
+#
+# Re-measured host-side after rebasing R8 onto merged R6. R8 carries the
+# canonical uncertainty layer through Archetypus and the Armarium exports:
+# recorded bytes move in the acts table, export manifest, and display
+# projections, while no new files are written. Fresh real runs via this
+# module's `orchestrate` and `semantic_snapshot_digest` helpers measured
+# 64 files for happy (exit 0) and 71 for review (exit 3) — the counts R5b
+# established, unmoved by R6 and R8 alike.
+#
+# Re-pinned for R8 CodeRabbit round 2 finding 2. The acts.sqlite column named
+# `uncertainty_spans_json` actually stores the complete canonical uncertainty
+# layer, so it is now truthfully named `uncertainty_json`. Only that SQLite
+# schema identifier changed; fresh runs through this module's own helpers held
+# the file counts at 64/71 while the two semantic database identities moved.
+HAPPY_RUN_TREE_DIGEST = "27423cd9a5dafbd50144322577dc51b3b4f5db7c49d75cc5b339acb7fbf7ea98"
+REVIEW_RUN_TREE_DIGEST = "cff96edca88623b7bd1311ff28e665c481ee0821af89369d089c51099ebdf09f"
 
 
 def orchestrate(
@@ -2415,6 +2434,12 @@ def test_archetypus_refuses_to_call_an_accepted_empty_reading_blank_without_proo
     reading_path = tree.resolve(old_ref["relative_path"])
     reading = json.loads(reading_path.read_text(encoding="utf-8"))
     reading["payload"]["text"] = ""
+    # R8: the canonical uncertainty layer anchors to the text; a forged blank
+    # reading must stay schema-consistent or the uncertainty refusal fires
+    # before the boundary this test exercises (host fix at R8 integration).
+    reading["payload"]["self_revision"] = []
+    reading["payload"]["uncertain_spans"] = []
+    reading["payload"]["gaps"] = []
     reading["self_hash"] = self_hash(reading)
     reading_path.write_bytes(canonical_bytes(reading))
     new_ref = {
@@ -2498,6 +2523,12 @@ def test_archetypus_establishes_no_readable_text_once_the_review_retains_real_bl
     reading_path = tree.resolve(old_ref["relative_path"])
     reading = json.loads(reading_path.read_text(encoding="utf-8"))
     reading["payload"]["text"] = ""
+    # R8: the canonical uncertainty layer anchors to the text; a forged blank
+    # reading must stay schema-consistent or the uncertainty refusal fires
+    # before the boundary this test exercises (host fix at R8 integration).
+    reading["payload"]["self_revision"] = []
+    reading["payload"]["uncertain_spans"] = []
+    reading["payload"]["gaps"] = []
     reading["self_hash"] = self_hash(reading)
     reading_path.write_bytes(canonical_bytes(reading))
     new_ref = {
@@ -2563,6 +2594,12 @@ def test_archetypus_refuses_a_blank_proof_that_is_the_reading_itself(tmp_path):
     reading_path = tree.resolve(old_ref["relative_path"])
     reading = json.loads(reading_path.read_text(encoding="utf-8"))
     reading["payload"]["text"] = ""
+    # R8: the canonical uncertainty layer anchors to the text; a forged blank
+    # reading must stay schema-consistent or the uncertainty refusal fires
+    # before the boundary this test exercises (host fix at R8 integration).
+    reading["payload"]["self_revision"] = []
+    reading["payload"]["uncertain_spans"] = []
+    reading["payload"]["gaps"] = []
     reading["self_hash"] = self_hash(reading)
     reading_path.write_bytes(canonical_bytes(reading))
     new_ref = {
@@ -2622,6 +2659,12 @@ def test_archetypus_refuses_a_blank_proof_that_is_the_readings_own_crop(tmp_path
         "the review's inputs are the reading plus its crops"
     )
     reading["payload"]["text"] = ""
+    # R8: the canonical uncertainty layer anchors to the text; a forged blank
+    # reading must stay schema-consistent or the uncertainty refusal fires
+    # before the boundary this test exercises (host fix at R8 integration).
+    reading["payload"]["self_revision"] = []
+    reading["payload"]["uncertain_spans"] = []
+    reading["payload"]["gaps"] = []
     reading["self_hash"] = self_hash(reading)
     reading_path.write_bytes(canonical_bytes(reading))
     new_ref = {
@@ -2784,6 +2827,49 @@ def test_armarium_refuses_a_resealed_archetypus_text_that_disagrees_with_its_par
     result = invoke_stage(root, "r", "happy", "pipeline/7_armarium/run.py")
     assert result.returncode == 2
     assert "does not exactly preserve the Perlectio" in result.stderr
+    assert snapshot(root) == before
+
+
+def test_armarium_refuses_a_resealed_archetypus_uncertainty_layer_its_parent_never_said(tmp_path):
+    """The text's sibling, for the layer that anchors to it.
+
+    R8's canonical layer is bound to its act by exactly one gate: the Armarium
+    re-derives it from the accepted Perlectio at export and refuses a stored
+    layer that disagrees. Nothing inside a delivered package can catch a layer
+    substituted before the package was built -- a bundle verifies its own
+    internal agreement, and every format would agree on the forgery -- so this
+    is the boundary that makes the exported layer THIS act's uncertainty rather
+    than a well-formed one. The forged span is valid against the established
+    text and leaves it and its hash untouched, so only the re-derivation can
+    refuse it.
+    """
+    root = tmp_path / "runs"
+    assert orchestrate(root, "r", "happy").returncode == 0
+    tree = RunTree(root, "r")
+    entry = next(
+        entry
+        for entry in tree.build_manifest(ARCHETYPUS)["artifacts"]
+        if entry["kind"] == "archetypus"
+    )
+    path = tree.resolve(entry["relative_path"])
+    record = json.loads(path.read_text(encoding="utf-8"))
+    assert record["payload"]["uncertainty"] == {
+        "uncertain_spans": [],
+        "gaps": [],
+        "self_revisions": [],
+    }
+    assert len(record["payload"]["text"]) >= 1
+    record["payload"]["uncertainty"]["uncertain_spans"] = [
+        {"start": 0, "end": 1, "alternatives": ["?"], "confidence": "low"}
+    ]
+    record["payload"]["self_hash"] = self_hash(record["payload"])
+    record["self_hash"] = self_hash(record)
+    path.write_bytes(canonical_bytes(record))
+    before = snapshot(root)
+
+    result = invoke_stage(root, "r", "happy", "pipeline/7_armarium/run.py")
+    assert result.returncode == 2
+    assert "uncertainty layer differs from its accepted Perlectio" in result.stderr
     assert snapshot(root) == before
 
 

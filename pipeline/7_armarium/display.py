@@ -17,13 +17,16 @@ and a terminal, not an XML toolchain. Literal bracket glyphs are escaped before
 rendering, so even an established text containing the proposed delimiters remains
 byte-identical after stripping; rarity is not used as a correctness argument.
 
-**What is not exercised against real data, said rather than left to be found.** The
-Archetypus record this stage reads carries one `text` field and no uncertainty or gap
-layer yet, so every run this repository can produce renders established text with no
-generated span markers (literal delimiter glyphs are escaped reversibly). The round
-trip below is exercised only against spans built by hand in this module's tests. That
-is a real gap: the pair is ready for the annotation layer the day it lands, and
-nothing here has yet run against a real gap or a real uncertain span.
+**What is not exercised against real data, said rather than left to be found.** Since
+R8 the Archetypus record does carry a canonical uncertainty layer, and the export
+carries it beside each literal in every selected format -- but no writer feeds it to
+`render_display`, so every rendering this repository produces is still established
+text with no generated span markers (literal delimiter glyphs are escaped reversibly),
+and the round trip below is still exercised only against spans built by hand in this
+module's tests. The reason is no longer that the layer does not exist: marking spans
+inside a displayed reading would exercise a convention spec 11 reserves to Tyrel at
+this gate. EXPORT_MANIFEST.json states that non-carriage as
+`claims.display.renders_canonical_uncertainty`; the pair here is ready for his word.
 """
 
 import json

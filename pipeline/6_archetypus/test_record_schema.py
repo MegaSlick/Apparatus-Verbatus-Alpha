@@ -20,6 +20,7 @@ from common.contracts.canonical import digest_of, self_hash, verify_self_hash
 from common.contracts.errors import FatalAccounting, SchemaRefusal
 from common.contracts.outcomes import VOCABULARIES
 from common.contracts.stages import PERLECTOR
+from common.contracts.uncertainty import from_perlectio
 
 
 def _load_archetypus():
@@ -64,6 +65,7 @@ def seal_record(**overrides) -> dict:
         "regions": [dict(REGION)],
         "provenance": {"chair": "perlector"},
         "annotations": [],
+        "uncertainty": {"uncertain_spans": [], "gaps": [], "self_revisions": []},
         "evidence_ref": None,
         "dissent_ref": READING_REF,
         "perlectio_ref": READING_REF,
@@ -126,6 +128,7 @@ def test_exactly_one_field_holds_the_established_characters():
             "regions",
             "provenance",
             "annotations",
+            "uncertainty",
             "evidence_ref",
             "dissent_ref",
             "perlectio_ref",
@@ -208,6 +211,23 @@ def test_record_validation_refuses_a_resealed_dishonest_text_status():
     record["self_hash"] = self_hash(record)
     with pytest.raises(SchemaRefusal, match="disagrees with its text"):
         archetypus.validate_record(record)
+
+
+def test_record_validation_accepts_a_partial_text_with_an_internal_gap():
+    gap = {
+        "position": "internal",
+        "start": 2,
+        "end": 2,
+        "witness_evidence": [],
+    }
+
+    record = make_record(
+        text_status="partial",
+        uncertainty={"uncertain_spans": [], "gaps": [gap], "self_revisions": []},
+    )
+
+    assert record["text_status"] == "partial"
+    assert record["uncertainty"]["gaps"] == [gap]
 
 
 def test_record_validation_refuses_a_bad_nested_self_hash():
@@ -314,6 +334,171 @@ def test_record_validation_refuses_a_resealed_malformed_annotation(note, expecte
     """
     with pytest.raises(SchemaRefusal, match=expected):
         archetypus.validate_record(seal_record(annotations=[note], text_status="partial"))
+
+
+@pytest.mark.parametrize(
+    ("gap", "expected"),
+    [
+        (
+            {"position": "not-a-real-position", "start": 2, "end": 2, "witness_evidence": []},
+            "is not one of",
+        ),
+        (
+            {"position": "leading", "start": 3, "end": 3, "witness_evidence": []},
+            "declared leading but does not start at 0",
+        ),
+        (
+            {"position": "trailing", "start": 2, "end": 2, "witness_evidence": []},
+            "declared trailing but does not end at len\\(text\\)",
+        ),
+        (
+            {"position": "internal", "start": 0, "end": 0, "witness_evidence": []},
+            "declared internal but is not strictly inside",
+        ),
+    ],
+)
+def test_record_validation_refuses_a_gap_whose_position_label_lies_about_its_own_bounds(
+    gap, expected
+):
+    """The canonical uncertainty layer's gap position is a claim, not free text.
+
+    U2: the closed field-set check alone accepted any `position` value and never
+    checked a labelled gap's bounds against what that label means, so a resealed
+    record could claim `leading` three characters in, or `internal` at the very
+    edge of the text. Both are checked the same way `pipeline/4_perlector/
+    annotations.py`'s producer-side `validate_gaps` already checks them, so the
+    canonical projection layer does not trust a restatement its own producer
+    would have refused to write.
+    """
+    with pytest.raises(SchemaRefusal, match=expected):
+        archetypus.validate_record(
+            seal_record(uncertainty={"uncertain_spans": [], "gaps": [gap], "self_revisions": []})
+        )
+
+
+def test_record_validation_refuses_a_self_revision_with_a_negative_prior_offset():
+    """A prior-draft offset can never be negative, whatever draft it indexes.
+
+    U2: `prior_span` anchors into the Perlector's prior draft, a string this
+    layer never sees, so it cannot bound-check the offset against that draft's
+    length -- but a negative offset is nonsensical regardless of which string
+    it indexes, and was previously accepted uncaught.
+    """
+    revision = {
+        "reading_span": {"start": 0, "end": 0},
+        "prior_span": {"start": -5, "end": -1},
+    }
+    with pytest.raises(SchemaRefusal, match="negative offset"):
+        archetypus.validate_record(
+            seal_record(
+                uncertainty={"uncertain_spans": [], "gaps": [], "self_revisions": [revision]}
+            )
+        )
+
+
+def test_record_validation_refuses_an_uncertain_span_outside_the_canonical_text():
+    """Canonical offsets are measured only against this record's one text."""
+    span = {"start": 0, "end": 6, "alternatives": ["Mariam"], "confidence": "low"}
+    with pytest.raises(SchemaRefusal, match="outside the canonical text's Unicode offsets"):
+        archetypus.validate_record(
+            seal_record(uncertainty={"uncertain_spans": [span], "gaps": [], "self_revisions": []})
+        )
+
+
+def test_record_validation_refuses_a_whole_act_gap_beside_any_other_gap():
+    """Wholly unread and partly read are mutually exclusive canonical claims."""
+    gaps = [
+        {"position": "whole-act", "start": 0, "end": 0, "witness_evidence": []},
+        {"position": "leading", "start": 0, "end": 0, "witness_evidence": []},
+    ]
+    with pytest.raises(SchemaRefusal, match="whole-act gap must be the only gap"):
+        archetypus.validate_record(
+            seal_record(
+                text="",
+                text_hash=digest_of(""),
+                text_status="partial",
+                uncertainty={"uncertain_spans": [], "gaps": gaps, "self_revisions": []},
+            )
+        )
+
+
+def test_record_validation_refuses_a_proved_blank_that_also_declares_a_gap():
+    """The same exclusivity, reached from the side the position rules leave open.
+
+    Every bounds rule is satisfied vacuously over an empty text -- `leading`
+    starts at 0 and `trailing` ends at `len("")` -- and the whole-act rule only
+    runs when the label already says `whole-act`. So this record sealed clean:
+    `no_readable_text` with the blank proof that finding owes, and beside it a
+    gap declaring a partly-read position. Two claims about the same act, one
+    saying the page held no readable ink and the other that ink was seen and
+    not read.
+
+    `whole-act` is the position the pipeline binds to `no-readable-text`
+    upstream (`validate_whole_act_consistency`), so requiring it here is what
+    makes the reseal gate ask the question the producer already asks.
+    """
+    gap = {"position": "leading", "start": 0, "end": 0, "witness_evidence": []}
+    with pytest.raises(SchemaRefusal, match="over an empty text"):
+        archetypus.validate_record(
+            seal_record(
+                text="",
+                text_hash=digest_of(""),
+                text_status="no_readable_text",
+                evidence_ref=READING_REF,
+                uncertainty={"uncertain_spans": [], "gaps": [gap], "self_revisions": []},
+            )
+        )
+
+
+def test_record_validation_refuses_unvalidated_gap_witness_evidence():
+    """Every nested field retained by the canonical layer is validated on reseal."""
+    gap = {
+        "position": "internal",
+        "start": 2,
+        "end": 2,
+        "witness_evidence": [{"chair": "attestator_1"}],
+    }
+    with pytest.raises(SchemaRefusal, match=r"witness_evidence\[0\].*record"):
+        archetypus.validate_record(
+            seal_record(uncertainty={"uncertain_spans": [], "gaps": [gap], "self_revisions": []})
+        )
+
+
+def test_record_validation_refuses_gap_evidence_with_a_non_digest_reference():
+    """Canonical provenance cannot retain an uncheckable digest-shaped claim."""
+    evidence = {
+        "chair": "attestator_1",
+        "testimonium_id": "testimonium-1",
+        "reference": {"relative_path": "3_attestatores/testimonium.json", "sha256": "nope"},
+        "variant": "Maria",
+    }
+    gap = {"position": "internal", "start": 2, "end": 2, "witness_evidence": [evidence]}
+    with pytest.raises(SchemaRefusal, match="has no sha256 digest"):
+        archetypus.validate_record(
+            seal_record(uncertainty={"uncertain_spans": [], "gaps": [gap], "self_revisions": []})
+        )
+
+
+def test_record_validation_refuses_an_open_self_revision_bound():
+    """A nested offset object cannot smuggle an unvalidated field through reseal."""
+    revision = {
+        "reading_span": {"start": 0, "end": 0, "unit": "bytes"},
+        "prior_span": {"start": 0, "end": 0},
+    }
+    with pytest.raises(SchemaRefusal, match="reading_span has no exact offset range"):
+        archetypus.validate_record(
+            seal_record(
+                uncertainty={"uncertain_spans": [], "gaps": [], "self_revisions": [revision]}
+            )
+        )
+
+
+def test_from_perlectio_refuses_a_non_object_self_revision_by_name():
+    """A resealed producer value is a schema refusal, never an AttributeError."""
+    with pytest.raises(SchemaRefusal, match=r"self_revision\[0\].*closed source schema"):
+        from_perlectio(
+            {"text": "Maria", "uncertain_spans": [], "gaps": [], "self_revision": [None]}
+        )
 
 
 def test_record_validation_refuses_an_annotation_short_of_its_validated_form():
