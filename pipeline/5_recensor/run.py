@@ -1697,10 +1697,16 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     "pages_without_residual_ink_outside_coverage": page_coverage["checked_pages"],
                 }
             else:
+                route_reason = (
+                    f"; its corroboration is blocked because {findings_route[1]}"
+                    if findings_route is not None
+                    else ""
+                )
                 outcome, reason = (
                     "held-for-review",
                     f"the latest reading is {latest['outcome']!r} ({reading_class.value}); "
-                    "accepting would establish text that nobody successfully read",
+                    "accepting would establish text that nobody successfully read"
+                    f"{route_reason}",
                 )
         elif not isinstance(latest_payload.get("text"), str) or not latest_payload["text"].strip():
             outcome, reason = (

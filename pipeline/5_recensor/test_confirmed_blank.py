@@ -75,6 +75,18 @@ def _run_through_recensor(root: Path, run_id: str, scenario: str) -> subprocess.
     return result
 
 
+def _run_through_perlector(root: Path, run_id: str, scenario: str) -> None:
+    for program in (
+        "pipeline/1_exemplar/door.py",
+        "pipeline/1_exemplar/run.py",
+        "pipeline/2_designator/run.py",
+        "pipeline/3_attestatores/run.py",
+        "pipeline/4_perlector/run.py",
+    ):
+        result = _invoke(root, run_id, scenario, program)
+        assert result.returncode in (0, 3), f"{program}: {result.stderr}"
+
+
 def _review_of(tree: RunTree, act_key: str) -> dict:
     reviews = [
         tree.read_artifact(RECENSOR, "review", entry["artifact_id"])
@@ -143,6 +155,55 @@ def test_a_dissenting_witness_holds_instead_of_confirming_blank(tmp_path):
     # No evidence field at all, rather than an empty one: nothing was sealed, so
     # there is nothing this act was sealed on.
     assert "blank_evidence" not in review["payload"]
+
+
+def test_no_readable_text_hold_names_the_testimony_shortfall_that_blocked_its_seal(
+    tmp_path, monkeypatch
+):
+    """A route that closes the blank gate remains visible in the hold reason.
+
+    The page-content instrument and route composer have their own focused tests;
+    this test injects that instrument's measured-shortfall shape into a real
+    unanimously corroborated blank run to isolate the terminal composition seam.
+    """
+    root = tmp_path / "runs"
+    _run_through_perlector(root, "r", "confirmed-blank")
+
+    measured_findings = RECENSOR_RUN.testimony_content_findings
+
+    def findings_with_shortfall(context):
+        findings = measured_findings(context)
+        assert findings[1]["shortfall"] is False
+        findings[1]["shortfall"] = True
+        measurement = findings[1]["by_chair"]["attestator_1"]
+        measurement["uncovered_non_whitespace"] = {
+            "ranges": [{"start": 0, "end": 1}],
+            "count": 1,
+        }
+        return findings
+
+    monkeypatch.setattr(RECENSOR_RUN, "testimony_content_findings", findings_with_shortfall)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(ROOT / "pipeline/5_recensor/run.py"),
+            "--run-root",
+            str(root),
+            "--run-id",
+            "r",
+            "--scenario",
+            "confirmed-blank",
+        ],
+    )
+
+    assert RECENSOR_RUN.main() == 3
+    review = _review_of(RunTree(root, "r"), "a1")
+    reason = review["payload"]["reason"]
+    assert review["outcome"] == "held-for-review"
+    assert review["payload"]["testimony_content_coverage"]["shortfall"] is True
+    assert "no-readable-text" in reason
+    assert "testimony coverage is incomplete at the whole-page level" in reason
 
 
 def test_confirmed_blank_is_a_completed_class_terminal_outcome(tmp_path):
