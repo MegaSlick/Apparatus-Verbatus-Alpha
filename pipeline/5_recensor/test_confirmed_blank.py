@@ -60,31 +60,34 @@ def _invoke(root: Path, run_id: str, scenario: str, program: str) -> subprocess.
     )
 
 
-def _run_through_recensor(root: Path, run_id: str, scenario: str) -> subprocess.CompletedProcess:
+# One runner for both stop points: the stage list and exit-code contract live
+# in exactly one place, so the two entry helpers below cannot drift apart.
+_STAGES_THROUGH_RECENSOR = (
+    "pipeline/1_exemplar/door.py",
+    "pipeline/1_exemplar/run.py",
+    "pipeline/2_designator/run.py",
+    "pipeline/3_attestatores/run.py",
+    "pipeline/4_perlector/run.py",
+    "pipeline/5_recensor/run.py",
+)
+
+
+def _run_through(
+    root: Path, run_id: str, scenario: str, programs: tuple[str, ...]
+) -> subprocess.CompletedProcess:
     result = None
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/2_designator/run.py",
-        "pipeline/3_attestatores/run.py",
-        "pipeline/4_perlector/run.py",
-        "pipeline/5_recensor/run.py",
-    ):
+    for program in programs:
         result = _invoke(root, run_id, scenario, program)
         assert result.returncode in (0, 3), f"{program}: {result.stderr}"
     return result
 
 
+def _run_through_recensor(root: Path, run_id: str, scenario: str) -> subprocess.CompletedProcess:
+    return _run_through(root, run_id, scenario, _STAGES_THROUGH_RECENSOR)
+
+
 def _run_through_perlector(root: Path, run_id: str, scenario: str) -> None:
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/2_designator/run.py",
-        "pipeline/3_attestatores/run.py",
-        "pipeline/4_perlector/run.py",
-    ):
-        result = _invoke(root, run_id, scenario, program)
-        assert result.returncode in (0, 3), f"{program}: {result.stderr}"
+    _run_through(root, run_id, scenario, _STAGES_THROUGH_RECENSOR[:-1])
 
 
 def _review_of(tree: RunTree, act_key: str) -> dict:
