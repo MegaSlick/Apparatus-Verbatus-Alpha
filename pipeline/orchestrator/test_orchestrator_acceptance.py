@@ -456,8 +456,16 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # `by_chair`/`shortfall` plus a reason. Neither acceptance scenario exercises that
 # unavailable shape -- every reviewed page has reported page-witness text -- so
 # both digest literals remain byte-identical, with file counts still 64/71.
-HAPPY_RUN_TREE_DIGEST = "8dd407cf70e42b102c601a7202ae1b06a58efd37e01710343e933b0f8592a9a5"
-REVIEW_RUN_TREE_DIGEST = "ac64073d23a6273e7a307874da8255600ebe85c029ac5aa31ff2f80095bd0f15"
+#
+# Re-measured host-side after rebasing R8 onto merged R6. R8 carries the
+# canonical uncertainty layer through Archetypus and the Armarium exports:
+# recorded bytes move in the acts table, export manifest, and display
+# projections, while no new files are written. Fresh real runs via this
+# module's `orchestrate` and `semantic_snapshot_digest` helpers measured
+# 64 files for happy (exit 0) and 71 for review (exit 3) — the counts R5b
+# established, unmoved by R6 and R8 alike.
+HAPPY_RUN_TREE_DIGEST = "3f59dafcf5ae5e95a428371a15b8edf17cd33a05b649b29d6c1ee89ed83e3dda"
+REVIEW_RUN_TREE_DIGEST = "71ead5cc1affa0f7bff3b5df82604ee1ee0d91966160ea5e0c434f47d0657d67"
 
 
 def orchestrate(
