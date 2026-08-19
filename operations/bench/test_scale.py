@@ -73,3 +73,28 @@ def test_scale_runner_refuses_a_dropped_artifact_before_writing_a_census(tmp_pat
         run_scale(root, shards=2, pages_per_shard=3, allow_undersized_smoke=True)
 
     assert not (root / "aggregate-census.json").exists()
+
+
+def test_scale_runner_refuses_resume_if_a_shard_loses_its_run_authority(tmp_path, monkeypatch):
+    root = tmp_path / "scale-missing-run-authority"
+    real_perf_counter = scale.time.perf_counter
+    perf_counter_calls = 0
+
+    def remove_authority_between_create_and_resume():
+        nonlocal perf_counter_calls
+        perf_counter_calls += 1
+        if perf_counter_calls == 4:
+            authority = root / "bench-scale-01" / "run.json"
+            assert authority.is_file(), "the create phase must publish the run authority"
+            authority.unlink()
+        return real_perf_counter()
+
+    monkeypatch.setattr(scale.time, "perf_counter", remove_authority_between_create_and_resume)
+
+    with pytest.raises(
+        FileNotFoundError,
+        match="scale resume requires existing RunTree authority run.json",
+    ):
+        run_scale(root, shards=2, pages_per_shard=3, allow_undersized_smoke=True)
+
+    assert not (root / "aggregate-census.json").exists()

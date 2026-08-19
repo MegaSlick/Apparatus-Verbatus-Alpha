@@ -108,6 +108,15 @@ def test_forged_measured_result_and_tampered_row_are_both_refused():
         validate_result(tampered)
 
 
+def test_rehashed_not_run_result_cannot_carry_observations():
+    forged = not_run("B2", fixture_verified=True)
+    forged["observations"] = [{"measure": "forged execution"}]
+    forged["self_hash"] = self_hash(forged)
+
+    with pytest.raises(SchemaRefusal, match="not-run bench result has no observations"):
+        validate_result(forged)
+
+
 def test_rehashed_reason_and_rehashed_extra_fields_do_not_forge_sealed_records():
     result = not_run("B2", fixture_verified=True)
     result["reason"] = "operator chose not to run this cell"

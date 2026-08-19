@@ -18,8 +18,10 @@ A preflight proves a flag profile *against a checkpoint*, so a proven row also
 carries `preflight_identity_digest`, the digest of that chair's cache
 descriptor (`chair_preflight_identity_digest`). Repointing the chair in
 `config/models.toml` leaves the catalogue row byte-identical, so the row digest
-cannot see it and the manager refuses the mismatch at launch instead. Both
-halves are stamped after a green preflight and removed together when a row
+cannot see it and the manager refuses the mismatch at launch instead.
+`verify_recipes_cover_chairs` performs that same chair-identity reconciliation
+offline, so a repointed chair fails in the test suite without a GPU launch.
+Both halves are stamped after a green preflight and removed together when a row
 returns to `unproven`. Stamp the identity digest *first*: `preflight_digest`
 covers every field of the row except `preflight_state` and itself, and that
 includes `preflight_identity_digest`, so a row digest taken before the identity

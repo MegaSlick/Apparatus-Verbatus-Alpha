@@ -11,7 +11,7 @@ from common.contracts.canonical import canonical_bytes, digest_bytes
 from common.contracts.envelope import build_envelope
 from common.contracts.identities import artifact_id, page_id
 from common.contracts.stages import DESIGNATOR
-from common.runtree.store import PublishResult, RunTree
+from common.runtree.store import RUN_FILE, PublishResult, RunTree
 
 _SEALED_SHARDS: Final = 10
 _SEALED_PAGES_PER_SHARD: Final = 1_000
@@ -106,6 +106,12 @@ def run_scale(
     for shard in range(1, shards + 1):
         run_id = f"bench-scale-{shard:02d}"
         source = [_source(shard, ordinal) for ordinal in range(1, pages_per_shard + 1)]
+        authority = root / run_id / RUN_FILE
+        if not authority.is_file():
+            raise FileNotFoundError(
+                f"scale resume requires existing RunTree authority {RUN_FILE}; "
+                f"missing regular file: {authority}"
+            )
         RunTree.create(
             root,
             run_id,
