@@ -416,8 +416,17 @@ FIXTURE = "synthetic-two-page-v0"
 # file counts from R4's 60/65 to 64/71 (each act gains an audit draft and an
 # audit finding); the counts then held at 64/71 across every one of this
 # loop's re-measurements while only digests moved.
-HAPPY_RUN_TREE_DIGEST = "735fa1431092462c81a3d9a6bda282ac779873cd1d9385b9ac9720c7799cf756"
-REVIEW_RUN_TREE_DIGEST = "3babc06829db1d2bf51152de7881bebf9aea5b9fbb54b79e712bbff849203474"
+#
+# Re-measured host-side after rebasing R6 onto merged R5b. R6 changes recorded
+# bytes without adding files: witness_span now stores RAW page-text indices
+# (translated from the matcher's normalized space at the one storage point),
+# every Recensor review gains the coverage fact set, and the review route
+# composes testimony/audit/floor causes in stable order. Fresh real runs via
+# this module's `orchestrate` and `semantic_snapshot_digest` helpers measured
+# 64 files for happy (exit 0) and 71 for review (exit 3) — the counts R5b
+# established, unmoved by R6.
+HAPPY_RUN_TREE_DIGEST = "2ef604ca5749a47ae16b080fce7a27f393020b7946e0152a41c699bd57a5f4f3"
+REVIEW_RUN_TREE_DIGEST = "eac9535415f065041069e8dcaf404a46fb3c430e45a020016f26efd2c6f17db7"
 
 
 def orchestrate(
