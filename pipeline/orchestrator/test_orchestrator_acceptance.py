@@ -11,6 +11,7 @@ asserts an exact expected count.
 """
 
 import hashlib
+import importlib.util
 import json
 import shutil
 import sqlite3
@@ -55,6 +56,19 @@ from common.stage import (
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
 FIXTURE = "synthetic-two-page-v0"
+
+
+def _load_recensor():
+    path = ROOT / "pipeline/5_recensor/run.py"
+    spec = importlib.util.spec_from_file_location("recensor_run_acceptance", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+RECENSOR_RUN = _load_recensor()
+NO_PAGE_CONSERVATION = RECENSOR_RUN.NO_PAGE_CONSERVATION
+NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 
 # Each of these is the digest of a whole run tree's relative-path -> file-digest
 # inventory, per spec 02's test 9. They are re-pinned in the commit that changes
@@ -1377,7 +1391,14 @@ def _designator_context_for(root: Path, run_id: str, scenario: str):
     consumers below, per meta-invariant #86.
     """
     args = stage_parser("test-only residual denominator context").parse_args(
-        ["--run-root", str(root), "--run-id", run_id, "--scenario", scenario]
+        [
+            "--run-root",
+            str(root),
+            "--run-id",
+            run_id,
+            "--scenario",
+            scenario,
+        ]
     )
     return open_context(args, DESIGNATOR)
 
@@ -3493,23 +3514,11 @@ def test_losing_the_first_page_holds_every_act_and_delivers_nothing(refused_firs
         record["payload"]["act_key"]: record for record in artifacts(tree, RECENSOR, "review")
     }
     for act_key in ("a1", "a2"):
-        assert reviews_by_key[act_key]["payload"]["geometry_coverage"] == {
-            "ink_measurable": None,
-            "residual_component_count": None,
-            "residual_act_count": None,
-            "reason": (
-                "the Designator published no conservation record for this page, so nothing on "
-                "it was measured; its acts are held for the reason the page itself carries"
-            ),
-        }
-        assert reviews_by_key[act_key]["payload"]["testimony_content_coverage"] == {
-            "by_chair": None,
-            "shortfall": None,
-            "reason": (
-                "no page witness reported text for this page, so testimony content coverage "
-                "was not measured; its acts are already held or floored by their own causes"
-            ),
-        }
+        assert reviews_by_key[act_key]["payload"]["geometry_coverage"] == NO_PAGE_CONSERVATION
+        assert (
+            reviews_by_key[act_key]["payload"]["testimony_content_coverage"]
+            == NO_PAGE_CONTENT_COVERAGE
+        )
     assert artifacts(tree, DESIGNATOR, "region") == [], (
         "no region may be cut for an act that cannot be fully marked out — an "
         "orphan continuation crop would be evidence of an act nothing accounts for"

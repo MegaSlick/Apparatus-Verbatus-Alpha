@@ -912,6 +912,7 @@ def geometry_coverage_inputs(context) -> dict[int, dict]:
                 )
                 or not isinstance(pixel_count, int)
                 or isinstance(pixel_count, bool)
+                or pixel_count < 0
             ):
                 raise FatalAccounting(
                     f"Designator conservation page {ordinal} residual component {index} "
@@ -1069,7 +1070,7 @@ def testimony_content_findings(context) -> dict[int, dict]:
                 raise FatalAccounting(f"act {act['act_id']} has no attachment for content coverage")
             rows = _payload(attachment, f"attachment for {act['act_id']}").get("attachments")
             if not isinstance(rows, list):
-                continue
+                raise FatalAccounting(f"attachment for {act['act_id']} has no rows")
             for row in rows:
                 if (
                     not isinstance(row, dict)

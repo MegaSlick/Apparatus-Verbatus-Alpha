@@ -203,9 +203,13 @@ of:
   confirmation stays open), or `act-line-not-located` (the page's anchor
   exists but locates no line for this act — the Recensor's
   `blank_corroboration` refuses to seal a terminal blank on it).
-  `witness_span` indexes the raw retained page reading; alignment is computed
-  over the markup-stripped, whitespace-collapsed view and translated back to
-  raw character offsets before publication.
+  `witness_span` and its top-level `span` mirror index the raw retained page
+  reading. Alignment is computed over the markup-stripped,
+  whitespace-collapsed view and translated back to raw character offsets before
+  publication. `offset_maps` instead map normalized-text positions to raw
+  offsets, with `None` for synthesized separators, while `loss` records what
+  normalization changed. Never index an `offset_maps` entry with
+  `witness_span` or `span`: they use different coordinate spaces.
 - unaligned: `{status, reason}`, reasons among `missing-chandra-page-anchor`,
   `act-anchor-line-not-located`, `no-overlap-with-act-anchor`,
   `no-raw-counterpart-for-aligned-span`,

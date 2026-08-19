@@ -231,6 +231,28 @@ def test_a_held_act_without_an_attachment_refuses_even_without_page_testimony(mo
         RUN.testimony_content_findings(context)
 
 
+def test_an_attachment_without_rows_refuses_even_without_page_testimony(monkeypatch):
+    context = _context()
+    attachment = _attachment(context, end=0)
+    attachment["payload"]["attachments"] = {}
+    context.tree.records["attachment-1"] = attachment
+    monkeypatch.setattr(
+        RUN,
+        "expected_acts",
+        lambda unused: [
+            {
+                "act_id": "act-1",
+                "act_key": "a1",
+                "page_ordinal": 1,
+                "outcome": "held",
+            }
+        ],
+    )
+
+    with pytest.raises(FatalAccounting, match="attachment for act-1 has no rows"):
+        RUN.testimony_content_findings(context)
+
+
 def test_each_act_gets_a_private_copy_of_its_pages_content_finding():
     """V3: mutating one act's nested payload cannot corrupt a sibling review."""
     findings = {
@@ -398,6 +420,26 @@ def test_geometry_coverage_refuses_malformed_component_bounds(monkeypatch):
 def test_geometry_coverage_refuses_a_non_integer_component_pixel_count(monkeypatch):
     context = _context(_conservation("conservation-1", components=[_component(pixel_count=True)]))
     monkeypatch.setattr(RUN, "expected_acts", lambda unused: [])
+
+    with pytest.raises(FatalAccounting, match="page 1.*component 0.*malformed"):
+        RUN.geometry_coverage_inputs(context)
+
+
+def test_geometry_coverage_refuses_a_negative_component_pixel_count(monkeypatch):
+    context = _context(
+        _conservation(
+            "conservation-1",
+            components=[_component(pixel_count=-1), _component(pixel_count=13)],
+        )
+    )
+    monkeypatch.setattr(
+        RUN,
+        "expected_acts",
+        lambda unused: [
+            {"act_key": "residual:1:0", "page_ordinal": 1, "outcome": "held"},
+            {"act_key": "residual:1:1", "page_ordinal": 1, "outcome": "held"},
+        ],
+    )
 
     with pytest.raises(FatalAccounting, match="page 1.*component 0.*malformed"):
         RUN.geometry_coverage_inputs(context)
