@@ -425,8 +425,14 @@ FIXTURE = "synthetic-two-page-v0"
 # this module's `orchestrate` and `semantic_snapshot_digest` helpers measured
 # 64 files for happy (exit 0) and 71 for review (exit 3) — the counts R5b
 # established, unmoved by R6.
-HAPPY_RUN_TREE_DIGEST = "2ef604ca5749a47ae16b080fce7a27f393020b7946e0152a41c699bd57a5f4f3"
-REVIEW_RUN_TREE_DIGEST = "eac9535415f065041069e8dcaf404a46fb3c430e45a020016f26efd2c6f17db7"
+#
+# Re-pinned for R6 CodeRabbit round 3 because every Recensor review's testimony
+# coverage fact replaces per-character uncovered offsets with lossless half-open
+# ranges plus their explicit count. That field-shape change moves recorded bytes
+# but writes no new files: fresh real runs through this module's own helpers held
+# at 64 files for happy (exit 0) and 71 for review (exit 3).
+HAPPY_RUN_TREE_DIGEST = "59605960127ef8740b9acf838e6c355d6d15e3e4cd0613fb33ef0a133bde5cc5"
+REVIEW_RUN_TREE_DIGEST = "cdf4dc49ef2a93fdf5509aebc9ec912cc29d6de1d57b1d55fad2cb6468435976"
 
 
 def orchestrate(

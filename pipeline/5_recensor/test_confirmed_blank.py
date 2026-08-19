@@ -123,6 +123,7 @@ def test_unanimous_absence_seals_confirmed_blank(tmp_path):
     measurement = content_coverage["by_chair"].get("attestator_1")
     assert measurement
     assert measurement["attached_spans"]
+    assert measurement["uncovered_non_whitespace"] == {"ranges": [], "count": 0}
     assert content_coverage["shortfall"] is False
 
 

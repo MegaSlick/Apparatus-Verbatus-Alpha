@@ -992,6 +992,21 @@ def current_page_testimonia(context) -> dict[tuple[int, str], dict]:
     }
 
 
+def uncovered_non_whitespace_ranges(text: str, covered: list[bool]) -> dict:
+    """Losslessly compact uncovered non-whitespace offsets into half-open ranges."""
+    ranges = []
+    count = 0
+    for index, char in enumerate(text):
+        if covered[index] or char.isspace():
+            continue
+        count += 1
+        if ranges and ranges[-1]["end"] == index:
+            ranges[-1]["end"] = index + 1
+        else:
+            ranges.append({"start": index, "end": index + 1})
+    return {"ranges": ranges, "count": count}
+
+
 def testimony_content_findings(context) -> dict[int, dict]:
     """Compare each page witness's text to its own aligned act attachments.
 
@@ -1097,18 +1112,16 @@ def testimony_content_findings(context) -> dict[int, dict]:
                 raise FatalAccounting("act attachment span lies outside its page Testimonium")
             for index in range(start, end):
                 covered[index] = True
-        uncovered = [
-            index for index, char in enumerate(text) if not covered[index] and not char.isspace()
-        ]
+        uncovered = uncovered_non_whitespace_ranges(text, covered)
         finding = findings.setdefault(ordinal, {"by_chair": {}, "shortfall": False})
         finding["by_chair"][chair] = {
             "attached_spans": [
                 {"start": start, "end": end, "act_id": act_id}
                 for start, end, act_id in sorted(spans)
             ],
-            "uncovered_non_whitespace_offsets": uncovered,
+            "uncovered_non_whitespace": uncovered,
         }
-        finding["shortfall"] = finding["shortfall"] or bool(uncovered)
+        finding["shortfall"] = finding["shortfall"] or bool(uncovered["count"])
     return findings
 
 
@@ -1155,7 +1168,7 @@ def testimony_content_for_page(findings: dict[int, dict], ordinal: int) -> dict:
 def review_route_from_findings(
     *,
     testimony_shortfall: bool,
-    audit_unresolved: bool,
+    audit_unresolved: bool | None,
     under_witnessed: bool,
     unreconciled: bool = False,
 ) -> tuple[str, str] | None:
@@ -1165,16 +1178,19 @@ def review_route_from_findings(
     then the witness floor. Every active reason is retained in that stable order;
     they all map to the same `held-for-review` outcome. `audit_unresolved` is
     wired to the Recensor's verified `audit_state` since the wave restacked R5b
-    below this branch. `unreconciled` folds the scenario hold into the composer
-    (R6 audit F-O5): it was the one preempted cause with no independent field,
-    so an act simultaneously under-witnessed and scenario-held recorded only
-    the floor cause.
+    below this branch; `None` means no audit exists and routes like `False` by
+    design, because absence of an audit is not an unresolved audit. `unreconciled`
+    folds the scenario hold into the composer (R6 audit F-O5): it was the one
+    preempted cause with no independent field, so an act simultaneously
+    under-witnessed and scenario-held recorded only the floor cause.
     """
     reasons = []
     if testimony_shortfall:
         reasons.append(
             "a page Testimonium contains non-whitespace text outside the ordered union "
-            "of that witness's aligned act attachments; testimony coverage is incomplete"
+            "of that witness's aligned act attachments; testimony coverage is incomplete "
+            "at the whole-page level, so the uncovered text may belong to another act on "
+            "the same page and the hold is page-scoped by design"
         )
     if audit_unresolved:
         reasons.append(

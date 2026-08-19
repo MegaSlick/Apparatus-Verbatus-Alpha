@@ -36,11 +36,13 @@ class _ArtifactTree:
                     "subject_id": record["subject_id"],
                 }
                 for record in self.records.values()
+                if record["stage"] == stage
             ]
         }
 
     def read_artifact(self, stage, kind, artifact_id):
         record = self.records[artifact_id]
+        assert record["stage"] == stage
         assert record["kind"] == kind
         return record
 
@@ -78,6 +80,7 @@ def _page_testimonium(*, outcome, reported=..., attempt_ordinal=1, artifact_id=N
         payload["reported"] = reported
     return {
         "artifact_id": artifact_id or f"page-witness-{attempt_ordinal}",
+        "stage": RUN.ATTESTATORES,
         "kind": "page-testimonium",
         "subject_id": subject_id,
         "attempt_id": attempt_id(subject_id, f"read:{chair}", attempt_ordinal),
@@ -89,6 +92,7 @@ def _page_testimonium(*, outcome, reported=..., attempt_ordinal=1, artifact_id=N
 def _conservation(artifact_id, *, ordinal=1, measurable=True, components=None):
     return {
         "artifact_id": artifact_id,
+        "stage": RUN.DESIGNATOR,
         "kind": "conservation",
         "subject_id": f"page-{artifact_id}",
         "outcome": "measured",
@@ -115,6 +119,7 @@ def _attachment(context, *, end, testimonium_id="page-witness-1"):
     # without them would pass a check the real artifact has to satisfy.
     return {
         "artifact_id": "attachment-1",
+        "stage": RUN.ATTESTATORES,
         "kind": "act-attachment",
         "subject_id": "act-1",
         "attempt_id": attempt_id("act-1", "act-attachment", 1),
@@ -139,10 +144,27 @@ def _attachment(context, *, end, testimonium_id="page-witness-1"):
     }
 
 
+def test_artifact_tree_preserves_stage_ownership_in_manifests_and_reads():
+    page = _page_testimonium(outcome="read", reported="page text")
+    conservation = _conservation("conservation-1")
+    tree = _ArtifactTree([page, conservation])
+
+    assert [
+        entry["artifact_id"] for entry in tree.build_manifest(RUN.DESIGNATOR)["artifacts"]
+    ] == ["conservation-1"]
+    assert [
+        entry["artifact_id"] for entry in tree.build_manifest(RUN.ATTESTATORES)["artifacts"]
+    ] == ["page-witness-1"]
+    assert tree.read_artifact(RUN.DESIGNATOR, "conservation", "conservation-1") is conservation
+    with pytest.raises(AssertionError):
+        tree.read_artifact(RUN.ATTESTATORES, "conservation", "conservation-1")
+
+
 def test_a_reading_page_testimonium_cannot_lose_its_reported_text_and_take_the_skip():
     """V4: the no-report skip belongs only to a non-reading page record."""
     act_reading = {
         "artifact_id": "act-reading-1",
+        "stage": RUN.ATTESTATORES,
         "kind": "testimonium",
         "subject_id": "act-1",
         "outcome": "read",
@@ -183,7 +205,10 @@ def test_each_act_gets_a_private_copy_of_its_pages_content_finding():
             "by_chair": {
                 "attestator_1": {
                     "attached_spans": [{"start": 0, "end": 5, "act_id": "act-1"}],
-                    "uncovered_non_whitespace_offsets": [5],
+                    "uncovered_non_whitespace": {
+                        "ranges": [{"start": 5, "end": 6}],
+                        "count": 1,
+                    },
                 }
             },
             "shortfall": True,
@@ -192,17 +217,23 @@ def test_each_act_gets_a_private_copy_of_its_pages_content_finding():
 
     first = RUN.testimony_content_for_page(findings, 1)
     sibling = RUN.testimony_content_for_page(findings, 1)
-    first["by_chair"]["attestator_1"]["uncovered_non_whitespace_offsets"].clear()
+    first["by_chair"]["attestator_1"]["uncovered_non_whitespace"]["ranges"].clear()
     first["shortfall"] = False
 
-    assert sibling["by_chair"]["attestator_1"]["uncovered_non_whitespace_offsets"] == [5]
+    assert sibling["by_chair"]["attestator_1"]["uncovered_non_whitespace"] == {
+        "ranges": [{"start": 5, "end": 6}],
+        "count": 1,
+    }
     assert sibling["shortfall"] is True
-    assert findings[1]["by_chair"]["attestator_1"]["uncovered_non_whitespace_offsets"] == [5]
+    assert findings[1]["by_chair"]["attestator_1"]["uncovered_non_whitespace"] == {
+        "ranges": [{"start": 5, "end": 6}],
+        "count": 1,
+    }
 
 
-def test_a_real_uncovered_testimony_character_routes_to_review(monkeypatch):
+def test_real_uncovered_testimony_ranges_route_to_review_losslessly(monkeypatch):
     """V2a: a genuine content shortfall is measured and reaches the hold route."""
-    page = _page_testimonium(outcome="read", reported="alphaX")
+    page = _page_testimonium(outcome="read", reported="alphaXYZ \tQ")
     context = _context(page)
     context.tree.records["attachment-1"] = _attachment(context, end=5)
     monkeypatch.setattr(
@@ -213,7 +244,14 @@ def test_a_real_uncovered_testimony_character_routes_to_review(monkeypatch):
 
     finding = RUN.testimony_content_findings(context)[1]
 
-    assert finding["by_chair"]["attestator_1"]["uncovered_non_whitespace_offsets"] == [5]
+    uncovered = finding["by_chair"]["attestator_1"]["uncovered_non_whitespace"]
+    assert uncovered == {
+        "ranges": [{"start": 5, "end": 8}, {"start": 10, "end": 11}],
+        "count": 4,
+    }
+    assert uncovered["count"] == sum(
+        item["end"] - item["start"] for item in uncovered["ranges"]
+    )
     assert finding["shortfall"] is True
     outcome, reason = RUN.review_route_from_findings(
         testimony_shortfall=finding["shortfall"],
@@ -221,7 +259,8 @@ def test_a_real_uncovered_testimony_character_routes_to_review(monkeypatch):
         under_witnessed=False,
     )
     assert outcome == "held-for-review"
-    assert "testimony coverage is incomplete" in reason
+    assert "testimony coverage is incomplete at the whole-page level" in reason
+    assert "may belong to another act on the same page" in reason
 
 
 def test_content_coverage_uses_only_the_current_retained_page_testimonium(monkeypatch):
@@ -243,7 +282,7 @@ def test_content_coverage_uses_only_the_current_retained_page_testimonium(monkey
         "by_chair": {
             "attestator_1": {
                 "attached_spans": [{"start": 0, "end": 3, "act_id": "act-1"}],
-                "uncovered_non_whitespace_offsets": [],
+                "uncovered_non_whitespace": {"ranges": [], "count": 0},
             }
         },
         "shortfall": False,
