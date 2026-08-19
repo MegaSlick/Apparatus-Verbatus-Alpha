@@ -199,6 +199,30 @@ def test_every_literal_projection_has_the_same_clean_text_and_hash(tmp_path):
     }
 
 
+def test_manifest_uncertainty_status_reflects_no_literal_format_carriage(tmp_path):
+    formats = ArmariumFormats(("review-items", "salvage-tier"), embed_pixels=False)
+    bundle = build_armarium_bundle(_projection(), formats, _source_bytes)
+    manifest = json.loads(_members(bundle.data)[EXPORT_MANIFEST_NAME])
+
+    assert manifest["claims"]["uncertainty"] == {
+        "status": "not-applicable",
+        "offset_unit": "unicode-code-point",
+        "carried_by": [],
+    }
+
+
+def test_manifest_refuses_available_uncertainty_with_no_literal_carrier(tmp_path):
+    formats = ArmariumFormats(("review-items", "salvage-tier"), embed_pixels=False)
+    bundle = build_armarium_bundle(_projection(), formats, _source_bytes)
+    members = _members(bundle.data)
+    manifest = json.loads(members[EXPORT_MANIFEST_NAME])
+    manifest["claims"]["uncertainty"]["status"] = "canonical-unicode-codepoint-offsets"
+    _refresh_manifest(members, manifest)
+
+    with pytest.raises(SchemaRefusal, match="canonical carriage claim"):
+        verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
+
+
 def test_literal_display_markers_do_not_refuse_or_change_an_established_text(tmp_path):
     projection = _projection()
     literal = r"Act ⟨literal⟩, gap glyphs ⟦not markup⟧, and a \\ path"

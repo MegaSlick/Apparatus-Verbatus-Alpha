@@ -104,7 +104,7 @@ def validate(layer: Any, text: Any) -> dict[str, Any]:
             raise SchemaRefusal(
                 f"gaps[{index}] is declared internal but is not strictly inside the text"
             )
-        if position == "whole-act" and (text != "" or gap["start"] != 0):
+        if position == "whole-act" and (text.strip() != "" or gap["start"] != 0):
             raise SchemaRefusal(f"gaps[{index}] is declared whole-act but the text is not empty")
         if position == "whole-act":
             whole_act_rows += 1
@@ -139,7 +139,7 @@ def validate(layer: Any, text: Any) -> dict[str, Any]:
     # only position that says anything, and it is the one the producer binds to
     # the `no-readable-text` outcome. Asked after exclusivity so a layer that
     # breaks both is refused by the stronger statement.
-    if text == "":
+    if text.strip() == "":
         for index, gap in enumerate(gaps):
             if gap["position"] != "whole-act":
                 raise SchemaRefusal(

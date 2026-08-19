@@ -74,9 +74,9 @@ _SOURCE_ACCESS_REQUIRED: Final = "requires-source-access"
 _RUN_ACCESS_REQUIRED: Final = "requires-retained-run-access"
 _EMBEDDED: Final = "embedded"
 _UNCERTAINTY_AVAILABLE: Final = "canonical-unicode-codepoint-offsets"
-# The other half of the same declaration. An act with no established text has no
-# offsets for a layer to anchor to, so its row says so in the one vocabulary a
-# reader of any format can compare against the payload beside it.
+# The other half of the same declaration. An act with no established text, or a
+# package with no literal-text format, has no offsets for a layer to anchor to or
+# carry, so it says so in the one vocabulary every reader can compare.
 _UNCERTAINTY_NOT_APPLICABLE: Final = "not-applicable"
 _ANNOTATION_NOT_PRODUCED: Final = "not-produced-pending-architecture-approval"
 # The manifest-level claim, distinct from the per-row status above since R8:
@@ -170,6 +170,16 @@ class ArmariumBundle:
 
     data: bytes
     manifest: dict[str, Any]
+
+
+def _uncertainty_claim(formats: tuple[str, ...] | list[str]) -> dict[str, Any]:
+    """Measure which selected formats carry canonical uncertainty."""
+    carried_by = sorted(set(formats) & set(_LITERAL_TEXT_FORMATS))
+    return {
+        "status": _UNCERTAINTY_AVAILABLE if carried_by else _UNCERTAINTY_NOT_APPLICABLE,
+        "offset_unit": "unicode-code-point",
+        "carried_by": carried_by,
+    }
 
 
 def canonical_text_sha256(text: str) -> str:
@@ -1905,11 +1915,7 @@ def _export_manifest(
                 "status": _ANNOTATIONS_CLAIM,
                 "text_writable": False,
             },
-            "uncertainty": {
-                "status": _UNCERTAINTY_AVAILABLE,
-                "offset_unit": "unicode-code-point",
-                "carried_by": sorted(set(formats.formats) & set(_LITERAL_TEXT_FORMATS)),
-            },
+            "uncertainty": _uncertainty_claim(formats.formats),
             # Labelled a proposal because it is one: spec 11 leaves the choice of
             # convention to Tyrel at this gate, and nothing hashed depends on it.
             # `renders_canonical_uncertainty` is the declaration R8 owes: the
@@ -2989,13 +2995,8 @@ def _verify_uncertainty_claim(manifest: dict[str, Any]) -> None:
     claims = manifest.get("claims")
     selected = manifest.get("formats")
     format_rows = selected.get("formats") if isinstance(selected, dict) else None
-    carried = sorted(set(format_rows or []) & set(_LITERAL_TEXT_FORMATS))
     uncertainty = claims.get("uncertainty") if isinstance(claims, dict) else None
-    if uncertainty != {
-        "status": _UNCERTAINTY_AVAILABLE,
-        "offset_unit": "unicode-code-point",
-        "carried_by": carried,
-    }:
+    if uncertainty != _uncertainty_claim(format_rows or []):
         raise SchemaRefusal("the package uncertainty claim is not the canonical carriage claim")
 
 

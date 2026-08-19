@@ -538,7 +538,11 @@ def verify_established_record(
             "an Archetypus does not exactly preserve the Perlectio its review accepted"
         )
     try:
-        if payload.get("uncertainty") != from_perlectio(reading_payload):
+        expected_uncertainty = from_perlectio(reading_payload)
+    except SchemaRefusal as error:
+        raise FatalAccounting("an accepted Perlectio is malformed") from error
+    try:
+        if payload.get("uncertainty") != expected_uncertainty:
             raise FatalAccounting(
                 "an Archetypus uncertainty layer differs from its accepted Perlectio"
             )

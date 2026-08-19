@@ -413,9 +413,9 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # files for happy (exit 0) and 58 for review (exit 3).
 #
 # Re-pinned host-side after the R8 uncertainty build added the canonical
-# uncertainty layer to each established Archetypus record. Fresh real
-# orchestrator runs measured 60 files for happy (exit 0) and 65 files for review
-# (exit 3); the counts and semantic digests below came from those same trees.
+# uncertainty layer to each established Archetypus record. On that build's
+# pre-R5b base, fresh real orchestrator runs measured 60 files for happy (exit 0)
+# and 65 files for review (exit 3).
 #
 # R4 audit verified that the apparent Linux/macOS divergence was a snapshot-root
 # error, not different recorded bytes. Passing `<runs-root>/r` instead of

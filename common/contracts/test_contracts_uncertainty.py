@@ -11,12 +11,48 @@ every other suite in this repository.
 
 from __future__ import annotations
 
+import importlib.util
+from pathlib import Path
+
 import pytest
 
+from common.contracts import uncertainty as canonical_uncertainty
 from common.contracts.errors import SchemaRefusal
 from common.contracts.uncertainty import from_perlectio, utf8_round_trip, validate
 
+ROOT = Path(__file__).resolve().parents[2]
 _EMPTY = {"uncertain_spans": [], "gaps": [], "self_revisions": []}
+
+
+def test_canonical_vocabulary_matches_the_perlector_producer() -> None:
+    path = ROOT / "pipeline/4_perlector/annotations.py"
+    spec = importlib.util.spec_from_file_location("perlector_annotations_contract_drift", path)
+    annotations = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(annotations)
+
+    assert canonical_uncertainty._CONFIDENCE == annotations.CONFIDENCE_LEVELS
+    assert canonical_uncertainty._GAP_POSITIONS == annotations.GAP_POSITIONS
+
+
+def test_whitespace_only_text_accepts_a_whole_act_gap() -> None:
+    layer = {
+        "uncertain_spans": [],
+        "gaps": [{"position": "whole-act", "start": 0, "end": 0, "witness_evidence": []}],
+        "self_revisions": [],
+    }
+
+    assert validate(layer, " \t\n") == layer
+
+
+def test_whitespace_only_text_refuses_a_partly_read_gap_position() -> None:
+    layer = {
+        "uncertain_spans": [],
+        "gaps": [{"position": "trailing", "start": 3, "end": 3, "witness_evidence": []}],
+        "self_revisions": [],
+    }
+
+    with pytest.raises(SchemaRefusal, match="over an empty text"):
+        validate(layer, " \t\n")
 
 
 def test_projection_renames_the_prior_draft_span_and_keeps_its_offsets() -> None:

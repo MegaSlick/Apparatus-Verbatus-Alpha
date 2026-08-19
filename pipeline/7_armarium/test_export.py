@@ -9,6 +9,7 @@ import subprocess
 import sys
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 from zipfile import ZipFile
 
 import pytest
@@ -436,6 +437,82 @@ def _armarium_module():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _established_uncertainty_case(armarium, monkeypatch):
+    act = {"act_id": "act-1", "act_key": "a1", "page_id": "page-1"}
+    reading_ref = {"relative_path": "perlectio.json", "sha256": "a" * 64}
+    review_ref = {"relative_path": "review.json", "sha256": "b" * 64}
+    provenance = {"chair": "perlector"}
+    layer = {"uncertain_spans": [], "gaps": [], "self_revisions": []}
+    reading = {
+        "artifact_id": "reading-1",
+        "payload": {"text": "Maria", "provenance": provenance},
+    }
+    checked_review = {
+        "artifact_id": "review-1",
+        "outcome": "accepted",
+        "payload": {"perlectio_ref": reading_ref},
+        "inputs": [reading_ref],
+    }
+    payload = {
+        **act,
+        "status": "established",
+        "text": "Maria",
+        "regions": [],
+        "provenance": provenance,
+        "dissent_ref": reading_ref,
+        "perlectio_ref": reading_ref,
+        "recensor_ref": review_ref,
+        "uncertainty": layer,
+    }
+    payload["self_hash"] = self_hash(payload)
+    established = {"payload": payload, "inputs": [review_ref, reading_ref]}
+    review = {"artifact_id": "review-1"}
+
+    def read_artifact_reference(_reference, *, stage, **_kwargs):
+        return checked_review if stage == RECENSOR else reading
+
+    context = SimpleNamespace(
+        artifact_ref=lambda *_args: review_ref,
+        tree=SimpleNamespace(read_artifact_reference=read_artifact_reference),
+    )
+    monkeypatch.setattr(
+        armarium,
+        "artifacts_for",
+        lambda _context, stage, *_args: [] if stage == armarium.DESIGNATOR else [reading],
+    )
+    monkeypatch.setattr(armarium, "latest_attempt", lambda *_args, **_kwargs: reading)
+    monkeypatch.setattr(armarium, "recovery_region_count", lambda *_args: 0)
+    monkeypatch.setattr(armarium, "reading_basis_regions", lambda *_args: [])
+    return context, act, review, established, layer
+
+
+def test_malformed_perlectio_is_attributed_to_the_perlectio(monkeypatch):
+    armarium = _armarium_module()
+    context, act, review, established, _layer = _established_uncertainty_case(armarium, monkeypatch)
+
+    def refuse_perlectio(_payload):
+        raise armarium.SchemaRefusal("malformed producer layer")
+
+    monkeypatch.setattr(armarium, "from_perlectio", refuse_perlectio)
+
+    with pytest.raises(FatalAccounting, match="accepted Perlectio is malformed"):
+        armarium.verify_established_record(context, act, review, established, {})
+
+
+def test_malformed_archetypus_uncertainty_is_attributed_to_the_archetypus(monkeypatch):
+    armarium = _armarium_module()
+    context, act, review, established, layer = _established_uncertainty_case(armarium, monkeypatch)
+    monkeypatch.setattr(armarium, "from_perlectio", lambda _payload: layer)
+
+    def refuse_archetypus(_layer, _text):
+        raise armarium.SchemaRefusal("malformed established layer")
+
+    monkeypatch.setattr(armarium, "validate_uncertainty", refuse_archetypus)
+
+    with pytest.raises(FatalAccounting, match="Archetypus uncertainty layer is malformed"):
+        armarium.verify_established_record(context, act, review, established, {})
 
 
 def test_an_established_reading_without_its_act_attachment_view_is_refused_at_export():
