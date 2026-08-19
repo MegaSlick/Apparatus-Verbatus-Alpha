@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
+import stat
 import time
 from pathlib import Path
 from typing import Any, Final
@@ -36,12 +38,25 @@ _RESULT_FIELDS: Final = {
     "disk_bytes",
     "inodes",
 }
+_SECONDS_FIELDS: Final = (
+    "create_seconds",
+    "resume_seconds",
+    "manifest_export_seconds",
+    "wall_seconds",
+)
+_DECIMAL_SECONDS_PATTERN: Final = re.compile(r"[0-9]+\.[0-9]{9}")
 
 
 def _decimal_seconds(nanoseconds: int) -> str:
     """Represent an observed duration exactly in canonical-JSON-compatible seconds."""
     whole, fractional = divmod(nanoseconds, 1_000_000_000)
     return f"{whole}.{fractional:09d}"
+
+
+def _tree_storage(root: Path) -> tuple[int, int]:
+    entries = list(root.rglob("*"))
+    disk_bytes = sum(path.stat().st_size for path in entries if path.is_file())
+    return disk_bytes, len(entries)
 
 
 def _source(shard: int, ordinal: int) -> dict[str, object]:
@@ -160,8 +175,7 @@ def run_scale(
     }
     (root / _CENSUS_FILE).write_bytes(canonical_bytes(census))
     export_seconds = _decimal_seconds(time.perf_counter_ns() - export_started)
-    pre_result_disk_bytes = sum(path.stat().st_size for path in root.rglob("*") if path.is_file())
-    pre_result_inodes = sum(1 for _ in root.rglob("*"))
+    pre_result_disk_bytes, pre_result_inodes = _tree_storage(root)
     result = {
         "schema": _RESULT_SCHEMA,
         "state": state,
@@ -249,7 +263,14 @@ def _validate_scale_census(census: Any) -> list[str]:
     return expected_run_ids
 
 
-def _validate_scale_result(result: Any, census: dict[str, Any]) -> None:
+def _is_regular_nonsymlink_file(path: Path) -> bool:
+    try:
+        return stat.S_ISREG(path.lstat().st_mode)
+    except OSError:
+        return False
+
+
+def _validate_scale_result(result: Any, census: dict[str, Any], root: Path) -> None:
     if not isinstance(result, dict) or set(result) != _RESULT_FIELDS:
         raise ValueError(f"scale cleanup {_RESULT_FILE} has the wrong fields")
     if result["schema"] != _RESULT_SCHEMA:
@@ -257,14 +278,27 @@ def _validate_scale_result(result: Any, census: dict[str, Any]) -> None:
     for field in ("state", "shards", "pages_per_shard", "artifact_count"):
         if type(result[field]) is not type(census[field]) or result[field] != census[field]:
             raise ValueError(f"scale cleanup {_RESULT_FILE} has a {field} mismatch with the census")
+    for field in _SECONDS_FIELDS:
+        value = result[field]
+        if not isinstance(value, str) or _DECIMAL_SECONDS_PATTERN.fullmatch(value) is None:
+            raise ValueError(f"scale cleanup {_RESULT_FILE} has an invalid {field}")
+    for field in ("disk_bytes", "inodes"):
+        value = result[field]
+        if type(value) is not int or value < 0:
+            raise ValueError(f"scale cleanup {_RESULT_FILE} has an invalid {field}")
+    tree_disk_bytes, tree_inodes = _tree_storage(root)
+    for field, observed in (("disk_bytes", tree_disk_bytes), ("inodes", tree_inodes)):
+        if result[field] != observed:
+            raise ValueError(f"scale cleanup {_RESULT_FILE} has {field} mismatch with the tree")
 
 
 def cleanup_scale(root: Path) -> None:
     """Remove a validated scale scratch directory after its result is recorded."""
     marker = root / _CENSUS_FILE
-    if not marker.is_file():
+    if not _is_regular_nonsymlink_file(marker):
         raise FileNotFoundError(
-            f"scale cleanup requires the {_CENSUS_FILE} marker; missing regular file: {marker}"
+            f"scale cleanup requires the {_CENSUS_FILE} marker as a regular non-symlink file: "
+            f"{marker}"
         )
     try:
         census = json.loads(marker.read_bytes())
@@ -274,9 +308,9 @@ def cleanup_scale(root: Path) -> None:
         ) from error
     run_ids = _validate_scale_census(census)
     result_path = root / _RESULT_FILE
-    if not result_path.is_file():
+    if not _is_regular_nonsymlink_file(result_path):
         raise FileNotFoundError(
-            f"scale cleanup requires {_RESULT_FILE}; missing regular file: {result_path}"
+            f"scale cleanup requires {_RESULT_FILE} as a regular non-symlink file: {result_path}"
         )
     try:
         result_bytes = result_path.read_bytes()
@@ -289,12 +323,12 @@ def cleanup_scale(root: Path) -> None:
         raise ValueError(f"scale cleanup {_RESULT_FILE} is not canonical JSON") from error
     if result_bytes != canonical_result_bytes:
         raise ValueError(f"scale cleanup {_RESULT_FILE} is not canonical bytes")
-    _validate_scale_result(result, census)
     for run_id in run_ids:
         authority = root / run_id / RUN_FILE
-        if not authority.is_file():
+        if not _is_regular_nonsymlink_file(authority):
             raise FileNotFoundError(
                 "scale cleanup census names a run without its RunTree authority; "
-                f"missing regular file: {authority}"
+                f"expected a regular non-symlink file: {authority}"
             )
+    _validate_scale_result(result, census, root)
     shutil.rmtree(root)

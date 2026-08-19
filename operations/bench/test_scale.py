@@ -144,6 +144,88 @@ def test_cleanup_scale_refuses_noncanonical_scale_result_bytes(tmp_path):
 @pytest.mark.parametrize(
     ("field", "altered"),
     [
+        ("create_seconds", "arbitrary"),
+        ("resume_seconds", "1.0"),
+        ("manifest_export_seconds", "1.0000000000"),
+        ("wall_seconds", "-1.000000000"),
+        pytest.param("disk_bytes", -1, id="negative-disk-bytes"),
+        pytest.param("disk_bytes", True, id="boolean-disk-bytes"),
+        pytest.param("disk_bytes", "0", id="string-disk-bytes"),
+        pytest.param("inodes", -1, id="negative-inodes"),
+        pytest.param("inodes", False, id="boolean-inodes"),
+        pytest.param("inodes", "0", id="string-inodes"),
+    ],
+)
+def test_cleanup_scale_refuses_invalid_measurement_values(tmp_path, field, altered):
+    root = tmp_path / f"scale-invalid-{field}"
+    run_scale(root, shards=1, pages_per_shard=1, allow_undersized_smoke=True)
+    result_path = root / "scale-result.json"
+    result = json.loads(result_path.read_bytes())
+    result[field] = altered
+    result_path.write_bytes(canonical_bytes(result))
+
+    with pytest.raises(ValueError, match=rf"scale-result\.json has an invalid {field}"):
+        cleanup_scale(root)
+
+    assert root.is_dir()
+
+
+@pytest.mark.parametrize("field", ["disk_bytes", "inodes"])
+def test_cleanup_scale_refuses_a_storage_measurement_that_disagrees_with_the_tree(tmp_path, field):
+    root = tmp_path / f"scale-result-{field}-tree-mismatch"
+    run_scale(root, shards=1, pages_per_shard=1, allow_undersized_smoke=True)
+    result_path = root / "scale-result.json"
+    result = json.loads(result_path.read_bytes())
+    result[field] += 1
+    result_path.write_bytes(canonical_bytes(result))
+
+    with pytest.raises(
+        ValueError,
+        match=rf"scale-result\.json has {field} mismatch with the tree",
+    ):
+        cleanup_scale(root)
+
+    assert root.is_dir()
+    assert json.loads(result_path.read_bytes()) == result
+
+
+def test_cleanup_scale_refuses_disk_bytes_after_tree_contents_are_altered(tmp_path):
+    root = tmp_path / "scale-tree-disk-bytes-tamper"
+    result = run_scale(root, shards=1, pages_per_shard=1, allow_undersized_smoke=True)
+    census_path = root / "aggregate-census.json"
+    census_path.write_bytes(census_path.read_bytes() + b" ")
+
+    with pytest.raises(
+        ValueError,
+        match=r"scale-result\.json has disk_bytes mismatch with the tree",
+    ):
+        cleanup_scale(root)
+
+    assert root.is_dir()
+    assert census_path.read_bytes().endswith(b" ")
+    assert json.loads((root / "scale-result.json").read_bytes()) == result
+
+
+def test_cleanup_scale_refuses_inodes_after_a_tree_entry_is_added(tmp_path):
+    root = tmp_path / "scale-tree-inodes-tamper"
+    result = run_scale(root, shards=1, pages_per_shard=1, allow_undersized_smoke=True)
+    added = root / "added-empty-file"
+    added.touch()
+
+    with pytest.raises(
+        ValueError,
+        match=r"scale-result\.json has inodes mismatch with the tree",
+    ):
+        cleanup_scale(root)
+
+    assert root.is_dir()
+    assert added.is_file()
+    assert json.loads((root / "scale-result.json").read_bytes()) == result
+
+
+@pytest.mark.parametrize(
+    ("field", "altered"),
+    [
         ("schema", "counterfeit-result.v1"),
         ("state", "measured"),
         ("shards", 2),
@@ -164,6 +246,53 @@ def test_cleanup_scale_refuses_a_result_that_disagrees_with_its_census(tmp_path,
         cleanup_scale(root)
 
     assert root.is_dir()
+
+
+@pytest.mark.parametrize("linked_name", ["census", "result", "authority"])
+def test_cleanup_scale_refuses_each_checked_file_when_it_is_a_symlink(tmp_path, linked_name):
+    authority = tmp_path / "scale-authority"
+    candidate = tmp_path / f"scale-symlinked-{linked_name}"
+    run_scale(authority, shards=1, pages_per_shard=1, allow_undersized_smoke=True)
+    run_scale(candidate, shards=1, pages_per_shard=1, allow_undersized_smoke=True)
+    relative_path = {
+        "census": ("aggregate-census.json",),
+        "result": ("scale-result.json",),
+        "authority": ("bench-scale-01", scale.RUN_FILE),
+    }[linked_name]
+    candidate_path = candidate.joinpath(*relative_path)
+    authority_path = authority.joinpath(*relative_path)
+    candidate_path.unlink()
+    candidate_path.symlink_to(authority_path)
+
+    with pytest.raises(FileNotFoundError, match="regular non-symlink file"):
+        cleanup_scale(candidate)
+
+    assert candidate.is_dir()
+    assert candidate_path.is_symlink()
+    assert authority.is_dir()
+    assert authority_path.is_file()
+
+
+def test_cleanup_scale_refuses_a_counterfeit_tree_of_symlinked_authorities(tmp_path):
+    authority = tmp_path / "scale-authority"
+    counterfeit = tmp_path / "scale-counterfeit"
+    run_scale(authority, shards=1, pages_per_shard=1, allow_undersized_smoke=True)
+    counterfeit.mkdir()
+    (counterfeit / "bench-scale-01").mkdir()
+    for relative_path in (
+        ("aggregate-census.json",),
+        ("scale-result.json",),
+        ("bench-scale-01", scale.RUN_FILE),
+    ):
+        counterfeit.joinpath(*relative_path).symlink_to(authority.joinpath(*relative_path))
+
+    with pytest.raises(FileNotFoundError, match="regular non-symlink file"):
+        cleanup_scale(counterfeit)
+
+    assert counterfeit.is_dir()
+    assert (counterfeit / "aggregate-census.json").is_symlink()
+    assert authority.is_dir()
+    assert (authority / "aggregate-census.json").is_file()
 
 
 def test_scale_runner_refuses_a_dropped_artifact_before_writing_a_census(tmp_path, monkeypatch):
