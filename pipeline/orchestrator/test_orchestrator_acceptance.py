@@ -3489,6 +3489,27 @@ def test_losing_the_first_page_holds_every_act_and_delivers_nothing(refused_firs
         "a2": "held",
         "residual:2:0": "held",
     }
+    reviews_by_key = {
+        record["payload"]["act_key"]: record for record in artifacts(tree, RECENSOR, "review")
+    }
+    for act_key in ("a1", "a2"):
+        assert reviews_by_key[act_key]["payload"]["geometry_coverage"] == {
+            "ink_measurable": None,
+            "residual_component_count": None,
+            "residual_act_count": None,
+            "reason": (
+                "the Designator published no conservation record for this page, so nothing on "
+                "it was measured; its acts are held for the reason the page itself carries"
+            ),
+        }
+        assert reviews_by_key[act_key]["payload"]["testimony_content_coverage"] == {
+            "by_chair": None,
+            "shortfall": None,
+            "reason": (
+                "no page witness reported text for this page, so testimony content coverage "
+                "was not measured; its acts are already held or floored by their own causes"
+            ),
+        }
     assert artifacts(tree, DESIGNATOR, "region") == [], (
         "no region may be cut for an act that cannot be fully marked out — an "
         "orphan continuation crop would be evidence of an act nothing accounts for"

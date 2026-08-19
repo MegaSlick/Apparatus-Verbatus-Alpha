@@ -163,9 +163,9 @@ def test_artifact_tree_preserves_stage_ownership_in_manifests_and_reads():
     conservation = _conservation("conservation-1")
     tree = _ArtifactTree([page, conservation])
 
-    assert [
-        entry["artifact_id"] for entry in tree.build_manifest(RUN.DESIGNATOR)["artifacts"]
-    ] == ["conservation-1"]
+    assert [entry["artifact_id"] for entry in tree.build_manifest(RUN.DESIGNATOR)["artifacts"]] == [
+        "conservation-1"
+    ]
     assert [
         entry["artifact_id"] for entry in tree.build_manifest(RUN.ATTESTATORES)["artifacts"]
     ] == ["page-witness-1"]
@@ -209,6 +209,25 @@ def test_an_attached_page_witness_requires_its_current_page_testimonium(monkeypa
         FatalAccounting,
         match="act act-1.*attestator_1.*no current page Testimonium",
     ):
+        RUN.testimony_content_findings(context)
+
+
+def test_a_held_act_without_an_attachment_refuses_even_without_page_testimony(monkeypatch):
+    context = _context()
+    monkeypatch.setattr(
+        RUN,
+        "expected_acts",
+        lambda unused: [
+            {
+                "act_id": "act-1",
+                "act_key": "a1",
+                "page_ordinal": 1,
+                "outcome": "held",
+            }
+        ],
+    )
+
+    with pytest.raises(FatalAccounting, match="act act-1 has no attachment for content coverage"):
         RUN.testimony_content_findings(context)
 
 
@@ -282,9 +301,7 @@ def test_real_uncovered_testimony_ranges_route_to_review_losslessly(monkeypatch)
         "ranges": [{"start": 5, "end": 8}, {"start": 10, "end": 11}],
         "count": 4,
     }
-    assert uncovered["count"] == sum(
-        item["end"] - item["start"] for item in uncovered["ranges"]
-    )
+    assert uncovered["count"] == sum(item["end"] - item["start"] for item in uncovered["ranges"])
     assert finding["shortfall"] is True
     outcome, reason = RUN.review_route_from_findings(
         testimony_shortfall=finding["shortfall"],
@@ -421,6 +438,14 @@ def test_unmeasured_geometry_requires_all_pixel_counts_to_be_none(monkeypatch):
     monkeypatch.setattr(RUN, "expected_acts", lambda unused: [])
 
     with pytest.raises(FatalAccounting, match="unmeasured.*page 1.*must carry None"):
+        RUN.geometry_coverage_inputs(context)
+
+
+def test_unmeasured_geometry_cannot_list_residual_components(monkeypatch):
+    context = _context(_conservation("conservation-1", measurable=False, components=[_component()]))
+    monkeypatch.setattr(RUN, "expected_acts", lambda unused: [])
+
+    with pytest.raises(FatalAccounting, match="unmeasured.*page 1.*no residual components"):
         RUN.geometry_coverage_inputs(context)
 
 

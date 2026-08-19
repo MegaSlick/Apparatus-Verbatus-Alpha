@@ -1812,9 +1812,7 @@ def test_a_page_scope_claim_cannot_hide_an_act_scoped_attempt_from_the_history(t
     )
 
 
-def test_a_normalized_match_with_no_raw_counterpart_is_retained_as_unaligned(
-    tmp_path, monkeypatch
-):
+def test_a_normalized_match_with_no_raw_counterpart_is_retained_as_unaligned(tmp_path, monkeypatch):
     """A synthesized separator is not a raw span at the normalized offset.
 
     The caller used to publish `(start, start)` in raw coordinates when every
@@ -1865,18 +1863,15 @@ def test_a_normalized_match_with_no_raw_counterpart_is_retained_as_unaligned(
         tree.read_artifact(ATTESTATORES, "act-attachment", entry["artifact_id"])
         for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
         if entry["kind"] == "act-attachment"
-        and tree.read_artifact(ATTESTATORES, "act-attachment", entry["artifact_id"])[
-            "payload"
-        ]["act_key"]
+        and tree.read_artifact(ATTESTATORES, "act-attachment", entry["artifact_id"])["payload"][
+            "act_key"
+        ]
         == "a1"
     )
-    page_attachments = [
-        row for row in a1["payload"]["attachments"] if row["page_witness"]
-    ]
+    page_attachments = [row for row in a1["payload"]["attachments"] if row["page_witness"]]
     assert page_attachments
     assert all(
-        row["alignment"]
-        == {"status": "unaligned", "reason": "no-raw-counterpart-for-aligned-span"}
+        row["alignment"] == {"status": "unaligned", "reason": "no-raw-counterpart-for-aligned-span"}
         for row in page_attachments
     )
     assert all(row["attached"] is False and row["span"] is None for row in page_attachments)

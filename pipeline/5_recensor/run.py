@@ -894,6 +894,11 @@ def geometry_coverage_inputs(context) -> dict[int, dict]:
             or ordinal in findings
         ):
             raise FatalAccounting("Designator conservation has malformed or duplicate page facts")
+        if not measurable and components:
+            raise FatalAccounting(
+                f"unmeasured Designator conservation page {ordinal} must carry no residual "
+                "components"
+            )
         for index, component in enumerate(components):
             bounds = component.get("bounds") if isinstance(component, dict) else None
             pixel_count = component.get("pixel_count") if isinstance(component, dict) else None
@@ -1061,7 +1066,7 @@ def testimony_content_findings(context) -> dict[int, dict]:
         for act in acts:
             attachment = attachments.get(act["act_id"])
             if attachment is None:
-                continue
+                raise FatalAccounting(f"act {act['act_id']} has no attachment for content coverage")
             rows = _payload(attachment, f"attachment for {act['act_id']}").get("attachments")
             if not isinstance(rows, list):
                 continue
@@ -1074,9 +1079,7 @@ def testimony_content_findings(context) -> dict[int, dict]:
                     continue
                 chair = row.get("chair")
                 page_testimonium = page_testimonia.get((ordinal, chair))
-                if page_testimonium is None or row.get(
-                    "testimonium_ref"
-                ) != context.artifact_ref(
+                if page_testimonium is None or row.get("testimonium_ref") != context.artifact_ref(
                     ATTESTATORES, "page-testimonium", page_testimonium["artifact_id"]
                 ):
                     raise FatalAccounting(
