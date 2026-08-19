@@ -862,9 +862,12 @@ def geometry_coverage_inputs(context) -> dict[int, dict]:
     """Consume, and independently reconcile, R2's conservation denominator.
 
     A conservation record is not a conclusion this stage may copy into its own
-    review.  Its residual components must have become exactly the held residual
-    acts in the proposal seal.  Reading both sides here makes a broken R2
-    invariant-8 partition a refusal, rather than a reassuring Recensor record.
+    review.  Every sealed page represented by a non-held act must have one, and
+    its residual components must have become exactly the held residual acts in
+    the proposal seal.  Reading both sides here makes a broken R2 invariant-8
+    partition or a missing sealed-page denominator a refusal, rather than a
+    reassuring Recensor record.  An all-held page is the distinct door-refusal
+    shape: it never reached sealing, so absence remains absence for its reviews.
     """
     acts = expected_acts(context)
     residual_keys = {act["act_key"] for act in acts if act["act_key"].startswith("residual:")}
@@ -885,6 +888,24 @@ def geometry_coverage_inputs(context) -> dict[int, dict]:
             or ordinal in findings
         ):
             raise FatalAccounting("Designator conservation has malformed or duplicate page facts")
+        for index, component in enumerate(components):
+            bounds = component.get("bounds") if isinstance(component, dict) else None
+            pixel_count = component.get("pixel_count") if isinstance(component, dict) else None
+            if (
+                not isinstance(component, dict)
+                or not isinstance(bounds, dict)
+                or set(bounds) != {"x", "y", "w", "h"}
+                or any(
+                    not isinstance(bounds[side], int) or isinstance(bounds[side], bool)
+                    for side in ("x", "y", "w", "h")
+                )
+                or not isinstance(pixel_count, int)
+                or isinstance(pixel_count, bool)
+            ):
+                raise FatalAccounting(
+                    f"Designator conservation page {ordinal} residual component {index} "
+                    "is malformed"
+                )
         expected = {f"residual:{ordinal}:{index}" for index in range(len(components))}
         actual = {key for key in residual_keys if key.startswith(f"residual:{ordinal}:")}
         if measurable and actual != expected:
@@ -901,6 +922,19 @@ def geometry_coverage_inputs(context) -> dict[int, dict]:
             "residual_component_count": len(components),
             "residual_act_count": len(actual),
         }
+    required_ordinals = {act["page_ordinal"] for act in acts if act["outcome"] != "held"}
+    missing = sorted(required_ordinals - findings.keys())
+    if missing:
+        pages = ", ".join(str(ordinal) for ordinal in missing)
+        if len(missing) == 1:
+            raise FatalAccounting(
+                f"Designator conservation page {pages} carries a non-held expected act "
+                "but has no conservation record"
+            )
+        raise FatalAccounting(
+            f"Designator conservation pages {pages} carry non-held expected acts "
+            "but have no conservation records"
+        )
     return findings
 
 
@@ -928,6 +962,36 @@ def current_act_attachments(context) -> dict[str, dict]:
     }
 
 
+def current_page_testimonia(context) -> dict[tuple[int, str], dict]:
+    """The current page Testimonium per page and chair, from retained history.
+
+    Testimony is append-only, so the Attestatores manifest legitimately carries
+    superseded page records after a later pass.  Group by the semantic subject
+    and use the shared attempt derivation: manifest order is a hash, not a
+    currency signal, and duplicate or gapped ordinals are accounting failures.
+    """
+    records: dict[tuple[int, str], list[dict]] = {}
+    for entry in context.tree.build_manifest(ATTESTATORES)["artifacts"]:
+        if entry["kind"] != "page-testimonium":
+            continue
+        record = context.tree.read_artifact(ATTESTATORES, "page-testimonium", entry["artifact_id"])
+        payload = _payload(record, f"page Testimonium {record['artifact_id']}")
+        ordinal, chair = payload.get("page_ordinal"), payload.get("chair")
+        # A boolean ordinal hashes as its integer counterpart, so accepting one
+        # here would merge page `true` into page 1 before currency is derived.
+        if not isinstance(ordinal, int) or isinstance(ordinal, bool) or not isinstance(chair, str):
+            raise FatalAccounting("page Testimonium has no textual page identity")
+        records.setdefault((ordinal, chair), []).append(record)
+    return {
+        (ordinal, chair): latest_attempt(
+            group,
+            f"page Testimonium for page {ordinal}, chair {chair}",
+            operation=f"read:{chair}",
+        )
+        for (ordinal, chair), group in records.items()
+    }
+
+
 def testimony_content_findings(context) -> dict[int, dict]:
     """Compare each page witness's text to its own aligned act attachments.
 
@@ -944,18 +1008,8 @@ def testimony_content_findings(context) -> dict[int, dict]:
     for act in expected_acts(context):
         acts_by_page.setdefault(act["page_ordinal"], []).append(act)
     findings: dict[int, dict] = {}
-    for entry in context.tree.build_manifest(ATTESTATORES)["artifacts"]:
-        if entry["kind"] != "page-testimonium":
-            continue
-        record = context.tree.read_artifact(ATTESTATORES, "page-testimonium", entry["artifact_id"])
+    for (ordinal, chair), record in current_page_testimonia(context).items():
         payload = _payload(record, f"page Testimonium {record['artifact_id']}")
-        ordinal, chair = payload.get("page_ordinal"), payload.get("chair")
-        # `isinstance(ordinal, bool)` is excluded for the reason
-        # `geometry_coverage_inputs` excludes it, and it matters more here: `True`
-        # is an `int` that hashes as `1`, so a page Testimonium claiming
-        # `page_ordinal: true` would silently merge its findings into page 1's.
-        if not isinstance(ordinal, int) or isinstance(ordinal, bool) or not isinstance(chair, str):
-            raise FatalAccounting("page Testimonium has no textual page identity")
         if "reported" not in payload:
             if record.get("outcome") in WITNESS_READING_OUTCOMES:
                 raise FatalAccounting(

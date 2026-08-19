@@ -70,14 +70,17 @@ def _no_expected_acts(monkeypatch):
     monkeypatch.setattr(RUN, "expected_acts", lambda unused: [])
 
 
-def _page_testimonium(*, outcome, reported=...):
-    payload = {"page_ordinal": 1, "chair": "attestator_1"}
+def _page_testimonium(*, outcome, reported=..., attempt_ordinal=1, artifact_id=None):
+    subject_id = "page-1"
+    chair = "attestator_1"
+    payload = {"page_ordinal": 1, "chair": chair, "attempt_ordinal": attempt_ordinal}
     if reported is not ...:
         payload["reported"] = reported
     return {
-        "artifact_id": "page-witness-1",
+        "artifact_id": artifact_id or f"page-witness-{attempt_ordinal}",
         "kind": "page-testimonium",
-        "subject_id": "page-1",
+        "subject_id": subject_id,
+        "attempt_id": attempt_id(subject_id, f"read:{chair}", attempt_ordinal),
         "outcome": outcome,
         "payload": payload,
     }
@@ -97,7 +100,15 @@ def _conservation(artifact_id, *, ordinal=1, measurable=True, components=None):
     }
 
 
-def _attachment(context, *, end):
+def _component(*, bounds=None, pixel_count=12):
+    return {
+        "bounds": {"x": 2, "y": 3, "w": 4, "h": 5} if bounds is None else bounds,
+        "pixel_count": pixel_count,
+        "review_priority": "normal",
+    }
+
+
+def _attachment(context, *, end, testimonium_id="page-witness-1"):
     # `attempt_id`/`attempt_ordinal` are not decoration: `current_act_attachments`
     # derives "current" through `latest_attempt`, which refuses a record whose
     # sealed attempt identity does not bind the ordinal it claims. A double
@@ -115,7 +126,7 @@ def _attachment(context, *, end):
                     "chair": "attestator_1",
                     "page_witness": True,
                     "testimonium_ref": context.artifact_ref(
-                        RUN.ATTESTATORES, "page-testimonium", "page-witness-1"
+                        RUN.ATTESTATORES, "page-testimonium", testimonium_id
                     ),
                     "attached": True,
                     "alignment": {
@@ -197,12 +208,48 @@ def test_a_real_uncovered_testimony_character_routes_to_review(monkeypatch):
     assert "testimony coverage is incomplete" in reason
 
 
-def test_geometry_coverage_accepts_a_matching_residual_partition(monkeypatch):
-    context = _context(_conservation("conservation-1", components=[{"bounds": {}}]))
+def test_content_coverage_uses_only_the_current_retained_page_testimonium(monkeypatch):
+    historical = _page_testimonium(outcome="read", reported="obsolete", attempt_ordinal=1)
+    current = _page_testimonium(outcome="read", reported="new", attempt_ordinal=2)
+    context = _context(historical, current)
+    context.tree.records["attachment-1"] = _attachment(
+        context, end=3, testimonium_id="page-witness-2"
+    )
     monkeypatch.setattr(
         RUN,
         "expected_acts",
-        lambda unused: [{"act_key": "residual:1:0"}],
+        lambda unused: [{"act_id": "act-1", "act_key": "a1", "page_ordinal": 1}],
+    )
+
+    finding = RUN.testimony_content_findings(context)[1]
+
+    assert finding == {
+        "by_chair": {
+            "attestator_1": {
+                "attached_spans": [{"start": 0, "end": 3, "act_id": "act-1"}],
+                "uncovered_non_whitespace_offsets": [],
+            }
+        },
+        "shortfall": False,
+    }
+
+
+def test_ambiguous_current_page_testimonia_refuse():
+    first = _page_testimonium(outcome="read", reported="first", artifact_id="page-witness-a")
+    duplicate = _page_testimonium(
+        outcome="read", reported="duplicate", artifact_id="page-witness-b"
+    )
+
+    with pytest.raises(FatalAccounting, match="duplicate attempt ordinal 1"):
+        RUN.testimony_content_findings(_context(first, duplicate))
+
+
+def test_geometry_coverage_accepts_a_matching_residual_partition(monkeypatch):
+    context = _context(_conservation("conservation-1", components=[_component()]))
+    monkeypatch.setattr(
+        RUN,
+        "expected_acts",
+        lambda unused: [{"act_key": "residual:1:0", "page_ordinal": 1, "outcome": "held"}],
     )
 
     assert RUN.geometry_coverage_inputs(context) == {
@@ -215,10 +262,39 @@ def test_geometry_coverage_accepts_a_matching_residual_partition(monkeypatch):
 
 
 def test_geometry_coverage_refuses_a_divergent_residual_partition(monkeypatch):
-    context = _context(_conservation("conservation-1", components=[{"bounds": {}}]))
+    context = _context(_conservation("conservation-1", components=[_component()]))
     monkeypatch.setattr(RUN, "expected_acts", lambda unused: [])
 
     with pytest.raises(FatalAccounting, match="held-act partition diverges"):
+        RUN.geometry_coverage_inputs(context)
+
+
+def test_geometry_coverage_refuses_a_non_object_component(monkeypatch):
+    context = _context(_conservation("conservation-1", components=[None]))
+    monkeypatch.setattr(RUN, "expected_acts", lambda unused: [])
+
+    with pytest.raises(FatalAccounting, match="page 1.*component 0.*malformed"):
+        RUN.geometry_coverage_inputs(context)
+
+
+def test_geometry_coverage_refuses_malformed_component_bounds(monkeypatch):
+    context = _context(
+        _conservation(
+            "conservation-1",
+            components=[_component(bounds={"x": 2, "y": 3, "w": 4, "h": True})],
+        )
+    )
+    monkeypatch.setattr(RUN, "expected_acts", lambda unused: [])
+
+    with pytest.raises(FatalAccounting, match="page 1.*component 0.*malformed"):
+        RUN.geometry_coverage_inputs(context)
+
+
+def test_geometry_coverage_refuses_a_non_integer_component_pixel_count(monkeypatch):
+    context = _context(_conservation("conservation-1", components=[_component(pixel_count=True)]))
+    monkeypatch.setattr(RUN, "expected_acts", lambda unused: [])
+
+    with pytest.raises(FatalAccounting, match="page 1.*component 0.*malformed"):
         RUN.geometry_coverage_inputs(context)
 
 
@@ -246,11 +322,38 @@ def test_unmeasured_geometry_cannot_mint_a_residual_act(monkeypatch):
     monkeypatch.setattr(
         RUN,
         "expected_acts",
-        lambda unused: [{"act_key": "residual:1:0"}],
+        lambda unused: [{"act_key": "residual:1:0", "page_ordinal": 1, "outcome": "held"}],
     )
 
     with pytest.raises(FatalAccounting, match="unmeasured.*minted residual acts"):
         RUN.geometry_coverage_inputs(context)
+
+
+def test_a_non_held_act_requires_its_pages_conservation_record(monkeypatch):
+    monkeypatch.setattr(
+        RUN,
+        "expected_acts",
+        lambda unused: [{"act_key": "declared:1", "page_ordinal": 7, "outcome": "proposed"}],
+    )
+
+    with pytest.raises(FatalAccounting, match="page 7.*no conservation record"):
+        RUN.geometry_coverage_inputs(_context())
+
+
+def test_an_all_held_page_keeps_absent_conservation_as_absence(monkeypatch):
+    monkeypatch.setattr(
+        RUN,
+        "expected_acts",
+        lambda unused: [
+            {"act_key": "declared:1", "page_ordinal": 7, "outcome": "held"},
+            {"act_key": "declared:2", "page_ordinal": 7, "outcome": "held"},
+        ],
+    )
+
+    findings = RUN.geometry_coverage_inputs(_context())
+
+    assert findings == {}
+    assert RUN.geometry_coverage_for(findings, 7) == RUN.NO_PAGE_CONSERVATION
 
 
 def test_a_page_with_no_conservation_record_is_not_recorded_as_measured():
