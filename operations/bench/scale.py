@@ -23,6 +23,19 @@ _CENSUS_FILE: Final = "aggregate-census.json"
 _CENSUS_SCHEMA: Final = "r7b-runtree-scale-census.v1"
 _RESULT_FILE: Final = "scale-result.json"
 _RESULT_SCHEMA: Final = "r7b-runtree-scale-result.v1"
+_RESULT_FIELDS: Final = {
+    "schema",
+    "state",
+    "shards",
+    "pages_per_shard",
+    "artifact_count",
+    "create_seconds",
+    "resume_seconds",
+    "manifest_export_seconds",
+    "wall_seconds",
+    "disk_bytes",
+    "inodes",
+}
 
 
 def _decimal_seconds(nanoseconds: int) -> str:
@@ -236,6 +249,16 @@ def _validate_scale_census(census: Any) -> list[str]:
     return expected_run_ids
 
 
+def _validate_scale_result(result: Any, census: dict[str, Any]) -> None:
+    if not isinstance(result, dict) or set(result) != _RESULT_FIELDS:
+        raise ValueError(f"scale cleanup {_RESULT_FILE} has the wrong fields")
+    if result["schema"] != _RESULT_SCHEMA:
+        raise ValueError(f"scale cleanup {_RESULT_FILE} has a schema mismatch")
+    for field in ("state", "shards", "pages_per_shard", "artifact_count"):
+        if type(result[field]) is not type(census[field]) or result[field] != census[field]:
+            raise ValueError(f"scale cleanup {_RESULT_FILE} has a {field} mismatch with the census")
+
+
 def cleanup_scale(root: Path) -> None:
     """Remove a validated scale scratch directory after its result is recorded."""
     marker = root / _CENSUS_FILE
@@ -250,6 +273,23 @@ def cleanup_scale(root: Path) -> None:
             "scale cleanup marker is not a valid R7b scale census: unreadable JSON"
         ) from error
     run_ids = _validate_scale_census(census)
+    result_path = root / _RESULT_FILE
+    if not result_path.is_file():
+        raise FileNotFoundError(
+            f"scale cleanup requires {_RESULT_FILE}; missing regular file: {result_path}"
+        )
+    try:
+        result_bytes = result_path.read_bytes()
+        result = json.loads(result_bytes)
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError(f"scale cleanup {_RESULT_FILE} is unreadable JSON") from error
+    try:
+        canonical_result_bytes = canonical_bytes(result)
+    except (TypeError, ValueError, RecursionError) as error:
+        raise ValueError(f"scale cleanup {_RESULT_FILE} is not canonical JSON") from error
+    if result_bytes != canonical_result_bytes:
+        raise ValueError(f"scale cleanup {_RESULT_FILE} is not canonical bytes")
+    _validate_scale_result(result, census)
     for run_id in run_ids:
         authority = root / run_id / RUN_FILE
         if not authority.is_file():

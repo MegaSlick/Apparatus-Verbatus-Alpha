@@ -118,6 +118,54 @@ def test_cleanup_scale_refuses_a_census_whose_named_run_lost_its_authority(tmp_p
     assert json.loads((root / "scale-result.json").read_bytes()) == result
 
 
+def test_cleanup_scale_refuses_a_missing_scale_result(tmp_path):
+    root = tmp_path / "scale-missing-result"
+    run_scale(root, shards=1, pages_per_shard=1, allow_undersized_smoke=True)
+    (root / "scale-result.json").unlink()
+
+    with pytest.raises(FileNotFoundError, match="scale-result.json"):
+        cleanup_scale(root)
+
+    assert root.is_dir()
+
+
+def test_cleanup_scale_refuses_noncanonical_scale_result_bytes(tmp_path):
+    root = tmp_path / "scale-noncanonical-result"
+    run_scale(root, shards=1, pages_per_shard=1, allow_undersized_smoke=True)
+    result_path = root / "scale-result.json"
+    result_path.write_bytes(result_path.read_bytes() + b"\n")
+
+    with pytest.raises(ValueError, match=r"scale-result\.json is not canonical bytes"):
+        cleanup_scale(root)
+
+    assert root.is_dir()
+
+
+@pytest.mark.parametrize(
+    ("field", "altered"),
+    [
+        ("schema", "counterfeit-result.v1"),
+        ("state", "measured"),
+        ("shards", 2),
+        pytest.param("shards", True, id="boolean-shards"),
+        ("pages_per_shard", 2),
+        ("artifact_count", 2),
+    ],
+)
+def test_cleanup_scale_refuses_a_result_that_disagrees_with_its_census(tmp_path, field, altered):
+    root = tmp_path / f"scale-result-{field}-mismatch"
+    run_scale(root, shards=1, pages_per_shard=1, allow_undersized_smoke=True)
+    result_path = root / "scale-result.json"
+    result = json.loads(result_path.read_bytes())
+    result[field] = altered
+    result_path.write_bytes(canonical_bytes(result))
+
+    with pytest.raises(ValueError, match=rf"scale-result\.json has a {field} mismatch"):
+        cleanup_scale(root)
+
+    assert root.is_dir()
+
+
 def test_scale_runner_refuses_a_dropped_artifact_before_writing_a_census(tmp_path, monkeypatch):
     real_publish = scale.RunTree.publish_artifact
     publish_calls = 0
