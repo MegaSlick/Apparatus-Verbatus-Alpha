@@ -346,14 +346,17 @@ def main() -> int:
             if halted is not None:
                 break
         result = invoke(program, args)
-        if name == "door" and result == 0:
+        if name == "door" and result in (EXIT_COMPLETE, EXIT_HELD):
             # On a FIRST run there was no authority to prove the policy against
             # before this moment; the Door has just created one from its own
             # read of the same path. Proving the two reads against each other
             # here closes the first-run window in which the file could change
             # between the orchestrator's read above and the Door's — the exact
             # straddle the sealing family exists to catch. On a resume this is
-            # a harmless re-proof of the check already made at preflight.
+            # a harmless re-proof of the check already made at preflight. A
+            # completed-but-partial Door (EXIT_HELD) has created the authority
+            # just as surely as a complete one, so both named exits prove it;
+            # `invoke` returns no other code.
             require_sealed_config(
                 run_sealed_config_digests(tree.read_run()),
                 "hard-failure",

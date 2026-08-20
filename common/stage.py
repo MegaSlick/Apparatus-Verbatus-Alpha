@@ -2388,6 +2388,11 @@ def require_current_witness_basis(
     cited = basis.get("testimonia") if isinstance(basis, dict) else None
     if not cited:
         return
+    if not isinstance(cited, list):
+        # A truthy non-list would either iterate its fragments into the
+        # per-entry refusal below or crash as a bare TypeError; a malformed
+        # basis is refused as itself instead.
+        raise FatalAccounting(f"{what} has a malformed witness basis: testimonia is not a list")
     current = {
         record["payload"]["chair"]: record["artifact_id"]
         for record in latest_per_chair(testimonia, f"testimonium for {act_id}")

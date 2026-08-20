@@ -767,6 +767,7 @@ def _latest_attachment(tree: RunTree, act_id: str) -> tuple[Path, dict]:
         for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
         if entry["kind"] == "act-attachment" and entry["subject_id"] == act_id
     ]
+    assert entries, f"no act-attachment custody record exists for act {act_id}"
     entry = max(
         entries,
         key=lambda item: tree.read_artifact(ATTESTATORES, "act-attachment", item["artifact_id"])[

@@ -398,6 +398,14 @@ def test_a_hard_failure_policy_swapped_between_orchestrations_is_refused_on_resu
     policy.write_text(
         _shipped_hard_failure() + "\n# a byte this run never sealed\n", encoding="utf-8"
     )
+    # The refusal must arrive before any stage is re-entered: a tree byte moving
+    # under the resumed invocation would mean work was spent under the unsealed
+    # cap before the proof fired.
+    before = {
+        str(path.relative_to(root)): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
     second = subprocess.run(
         [
             sys.executable,
@@ -420,3 +428,9 @@ def test_a_hard_failure_policy_swapped_between_orchestrations_is_refused_on_resu
 
     assert second.returncode != 0, "a resumed run re-entered every stage under an unsealed cap"
     assert "hard-failure configuration changed between" in second.stderr, second.stderr
+    after = {
+        str(path.relative_to(root)): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+    assert after == before, "the refused resume wrote to the run tree before the proof fired"
