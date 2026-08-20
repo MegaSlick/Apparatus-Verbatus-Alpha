@@ -168,27 +168,25 @@ def test_a_whole_pass_resolves_designator_inputs_once_per_act_not_once_per_chair
     """Preflight and publication share regions and exact resolved attempts.
 
     The append/collision history is indexed by one manifest walk, while the
-    closing tally remains an independent rebuild. Page-fallback bounds are also
-    indexed once rather than by every act/chair resolution.
+    closing tally remains an independent rebuild.
+
+    A per-pass page-fallback bounds index used to be counted here too. It fed
+    the identity branch that minted `genuinely-empty` for a fallback act's
+    chairs without asking anything (Sol-S1); the branch and the index went
+    together, and this stage no longer reads the Designator's `page-fallback`
+    records at all.
     """
     run_root, tree = run_to_designator(tmp_path, "happy")
     region_calls: list[str] = []
-    bounds_calls = 0
     attempt_calls = 0
     attestatores_manifest_calls = 0
     real_proposed_regions = attestatores.proposed_regions
-    real_page_fallback_bounds = attestatores._page_fallback_bounds
     real_resolve_attempt = attestatores.resolve_attempt
     real_build_manifest = RunTree.build_manifest
 
     def counted_regions(context, act_id):
         region_calls.append(act_id)
         return real_proposed_regions(context, act_id)
-
-    def counted_bounds(context):
-        nonlocal bounds_calls
-        bounds_calls += 1
-        return real_page_fallback_bounds(context)
 
     def counted_attempt(*args, **kwargs):
         nonlocal attempt_calls
@@ -202,7 +200,6 @@ def test_a_whole_pass_resolves_designator_inputs_once_per_act_not_once_per_chair
         return real_build_manifest(self, stage)
 
     monkeypatch.setattr(attestatores, "proposed_regions", counted_regions)
-    monkeypatch.setattr(attestatores, "_page_fallback_bounds", counted_bounds)
     monkeypatch.setattr(attestatores, "resolve_attempt", counted_attempt)
     monkeypatch.setattr(RunTree, "build_manifest", counted_manifest)
     monkeypatch.setattr(
@@ -227,7 +224,6 @@ def test_a_whole_pass_resolves_designator_inputs_once_per_act_not_once_per_chair
 
     act_ids = {record["subject_id"] for record in _testimonia(tree)}
     assert len(act_ids) == 2
-    assert bounds_calls == 1
     assert {act_id: region_calls.count(act_id) for act_id in act_ids} == {
         act_id: 2 for act_id in act_ids
     }

@@ -87,6 +87,28 @@ proposal regions, and cannot corroborate absence in witness-uncovered ink they
 never saw. The expanded act remains held even when every inherited Testimonium
 reported `genuinely-empty`.
 
+**The seal's own evidence claim is checked before it is published.** The record
+this outcome writes says that named chairs actually read this act and
+independently report the same absence, and until Sol-S1 nothing verified that
+sentence: the Attestatores could mint a completed `genuinely-empty` for every
+chair from a Designator page-fallback act's identity, without asking anything,
+and this stage read the three artifacts as three independent completed reads.
+Stage 3 no longer produces such a record (`pipeline/3_attestatores/HANDOFF.md`,
+"Outcomes and provenance") — that upstream deletion is the Sol-S1 repair, and
+this gate is defence in depth against a resealed or foreign artifact rather
+than a second catch for Sol-S1 itself (whose fabricated records carried both
+facts, minted by the same buggy writer). `blank_corroboration` requires each
+corroborating chair's current Testimonium to retain the regions it was shown
+and the serving receipt for the attempt; a completed-class outcome missing
+either is a record this pipeline's own writer cannot produce, so it is
+`FatalAccounting` rather than a quiet hold: a hold would say the evidence was
+weak, and what is true is that it is not this stage's to interpret. This is a
+presence check; its strong per-byte counterpart runs at the Perlector
+(`validate_serving_provenance` and region-identity verification) over the same
+artifacts earlier in every run. `chair_read_evidence` derives those facts from the same
+`chair_current_attempts` collapse `chair_outcomes` uses, so the two cannot
+disagree about which attempt is current.
+
 `confirmed-blank` is COMPLETED-class and terminal at the Recensor
 (`ArmariumCategory.CONFIRMED_BLANK`) — Archetypus's existing `review["outcome"]
 != "accepted": continue` guard and Armarium's existing generic

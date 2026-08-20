@@ -89,6 +89,7 @@ _PRIOR_READING_SCENARIOS = (
     "engine-truncated-reading",
     "no-readable-text-reading",
     "ink-free-page",
+    "ink-free-page-unwitnessed",
     "reread-failure",
     "reread-success",
     "not-run-witness",
@@ -206,8 +207,25 @@ PAGE_REFUSALS = (
     {"scenario": "refused-page", "ordinal": 2},
     {"scenario": "refused-first-page", "ordinal": 1},
 )
+# A `witness_empty` row declares one provider RESPONSE -- an empty body for that
+# chair on that act at that ordinal -- and the Attestatores derives
+# `genuinely-empty` from the retained payload
+# (`pipeline/3_attestatores/run.py::declared_response`). It is not a declaration
+# of the outcome, and there is no longer any path that reaches that outcome
+# without a row here.
+#
+# `page-fallback:3` is the Designator-minted act over the ink-free page. Its
+# three rows are what `ink-free-page` used to get for free: the stage recognized
+# the minted identity and wrote `genuinely-empty` for every configured chair with
+# no response boundary consulted at all, so three chairs were recorded as having
+# independently read a page none of them was asked about (Sol-S1). The scenario
+# now declares what each chair returned, and `ink-free-page-unwitnessed` is the
+# same page with those declarations deliberately absent.
 WITNESS_EMPTY = (
     {"scenario": "genuinely-empty-witness", "act_key": "a1", "chair": "attestator_3"},
+    {"scenario": "ink-free-page", "act_key": "page-fallback:3", "chair": "attestator_1"},
+    {"scenario": "ink-free-page", "act_key": "page-fallback:3", "chair": "attestator_2"},
+    {"scenario": "ink-free-page", "act_key": "page-fallback:3", "chair": "attestator_3"},
     # All three configured chairs, so the Recensor's blank corroboration has a
     # genuine unanimous absence to confirm -- not merely one dissenting-from-
     # nothing chair beside two that never ran.
@@ -612,6 +630,16 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
         "recover_acts = []",
         "hold_acts = []",
         "",
+        "# The same ink-free page with no witness response declared for the",
+        "# minted fallback act. Every configured chair must therefore end",
+        "# `not-run` -- no receipt, no regions, no reading -- and the act must",
+        "# hold rather than be sealed a proved blank on testimony nobody gave.",
+        "",
+        "[[scenario]]",
+        'name = "ink-free-page-unwitnessed"',
+        "recover_acts = []",
+        "hold_acts = []",
+        "",
         "[[scenario]]",
         'name = "reread-failure"',
         "recover_acts = []",
@@ -696,8 +724,13 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
             "",
         ]
     lines += [
-        "# A completed empty Testimonium means the chair read the region and found no",
-        "# reportable text. It is deliberately distinct from a missing or failed attempt.",
+        "# One declared provider RESPONSE per row: an empty body from that chair on",
+        "# that act. The Attestatores derives `genuinely-empty` from the retained",
+        "# payload, so a completed empty Testimonium always means the chair was asked",
+        "# and returned nothing -- deliberately distinct from a missing or failed",
+        "# attempt, and no longer reachable without a row here. `page-fallback:3` is",
+        "# the minted act over the ink-free page; `ink-free-page-unwitnessed` is the",
+        "# same page with these three rows deliberately absent.",
         "",
         "# Per-scenario declared digests the checked-in bytes cannot match, so the",
         "# door refuses those pages through its real inspection path. The declared",

@@ -33,7 +33,6 @@ from common.alignment import align_to_anchor, load_alignment_limits, markup_text
 from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal  # noqa: E402
-from common.contracts.identities import act_id as derive_act_id  # noqa: E402
 from common.contracts.identities import artifact_id, attempt_id  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR  # noqa: E402
 from common.exemplar_boundary import verify_exemplar_crop_lineage  # noqa: E402
@@ -41,7 +40,6 @@ from common.stage import (  # noqa: E402
     ATTEMPTED_WITNESS_OUTCOMES,
     EXIT_COMPLETE,
     EXIT_HELD,
-    FALLBACK_PAGE_ACT_ORDINAL,
     WITNESS_READING_OUTCOMES,
     expected_acts,
     fixture_serving_details,
@@ -180,37 +178,24 @@ def _declared_pairs(context, ordinal: int, fixture_key: str) -> set[tuple[str, s
                 f"fixture [[{fixture_key}]] row {row_number} has no scenario: {row!r}"
             )
         if scenario == context.scenario and _declared_for_ordinal(row, ordinal):
-            pairs.add((row["act_key"], row["chair"]))
+            pair = (row["act_key"], row["chair"])
+            if pair in pairs:
+                raise SchemaRefusal(
+                    f"fixture [[{fixture_key}]] declares {pair!r} twice for attempt ordinal "
+                    f"{ordinal}; a repeated declaration is a copy-paste error or two answers "
+                    "to one question, and neither may collapse silently into one"
+                )
+            pairs.add(pair)
     return pairs
 
 
-def _page_fallback_bounds(context) -> dict[str, dict]:
-    """Index the Designator rectangles already verified by `expected_acts`."""
-    bounds_by_act = {}
-    for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]:
-        if entry["kind"] != "page-fallback":
-            continue
-        act_id = entry["subject_id"]
-        if act_id in bounds_by_act:
-            raise SchemaRefusal(f"act {act_id} has more than one Designator page-fallback record")
-        record = context.tree.read_artifact(DESIGNATOR, "page-fallback", entry["artifact_id"])
-        page_bounds = record.get("payload", {}).get("page_bounds")
-        if not isinstance(page_bounds, dict):
-            raise SchemaRefusal(
-                f"act {act_id}'s Designator page-fallback record carries no page rectangle"
-            )
-        bounds_by_act[act_id] = page_bounds
-    return bounds_by_act
-
-
-def _is_page_fallback(context, act: dict, bounds_by_act: dict[str, dict] | None = None) -> bool:
-    """Recognize the reserved minted identity, not merely its human-readable key."""
-    if bounds_by_act is None:
-        bounds_by_act = _page_fallback_bounds(context)
-    page_bounds = bounds_by_act.get(act["act_id"])
-    if page_bounds is None:
-        return False
-    return act["act_id"] == derive_act_id(act["page_id"], FALLBACK_PAGE_ACT_ORDINAL, page_bounds)
+# A Designator page-fallback act used to be recognized here, by its derived
+# identity, and given `genuinely-empty` for every configured chair without any
+# response boundary being consulted (Sol-S1). Nothing in this stage asks what
+# kind of act it is reading any more: a fallback crop is a proposed region like
+# any other, its chairs are asked like any other, and what comes back decides
+# the outcome. The identity check that guarded the branch went with the branch --
+# an unforgeable selector for a branch that must not exist is still the branch.
 
 
 def declared_malformed(context, ordinal: int) -> dict[tuple[str, str], str]:
@@ -256,6 +241,47 @@ def testimony_for(context, act_key: str, chair: str, ordinal: int) -> dict[str, 
     if len(matches) > 1:
         raise SchemaRefusal(f"fixture declares more than one response for {(act_key, chair)!r}")
     return matches[0] if matches else None
+
+
+def declared_response(
+    context, act_key: str, chair: str, declarations: dict[str, Any]
+) -> dict[str, Any] | None:
+    """The one response the fixture declares this chair returned for this request.
+
+    Two tables reach this boundary and both declare a *response*, never an
+    outcome. `[[testimony]]` carries whatever the witness returned;
+    `[[witness_empty]]` carries the one response whose whole body is the empty
+    string, kept as its own table so a reviewer reading the fixture can see at a
+    glance which chairs returned nothing. Either way the declared bytes come back
+    through `prepared_response` and `resolve_attempt` derives the outcome from
+    what was actually retained.
+
+    The tables handled before this one -- `witness_failure`, `witness_not_run`,
+    `witness_malformed` -- are its exact complement: each declares the *absence*
+    of a usable response, which is the only thing that may name an outcome with
+    nothing retained. That line is what this stage's `genuinely-empty` no longer
+    crosses; there is no third shape, and in particular no act identity, that
+    mints a completed reading without a response to it.
+
+    Every `witness_empty` row is scenario-scoped, so it sits at the same
+    precedence as a scenario-specific `[[testimony]]` row and overrides the
+    scenario-agnostic base response for its own scenario exactly as one does --
+    that is how a shipped blank scenario says "this chair returned nothing here"
+    over the base table's declared text. Two declarations at *that* precedence
+    are two answers to one question, and the elif chain would have resolved them
+    silently in `witness_empty`'s favour. `declarations_for`'s cross-table check
+    cannot see this pair, because `[[testimony]]` is looked up per request rather
+    than collected into a declared-pair set.
+    """
+    response = testimony_for(context, act_key, chair, declarations["ordinal"])
+    if (act_key, chair) not in declarations["empty"]:
+        return response
+    if response is not None and response.get("scenario") == context.scenario:
+        raise SchemaRefusal(
+            "fixture declares both an empty response and a scenario response for "
+            f"{(act_key, chair)!r} at attempt ordinal {declarations['ordinal']}"
+        )
+    return {"payload": ""}
 
 
 def _native_problem(value: Any, path: str = "payload", *, depth: int = 0) -> str | None:
@@ -753,7 +779,6 @@ def preflight_appendable_ordinals(
     acts: list[dict[str, Any]],
     ordinal: int,
     declarations: dict[str, Any],
-    page_fallback_bounds: dict[str, dict],
     history: AttemptHistory,
 ) -> tuple[
     dict[str, tuple[list[dict], str | None]],
@@ -766,10 +791,10 @@ def preflight_appendable_ordinals(
     ordinal a targeted reread has already sealed a *different* record at for one
     chair, and the collision then surfaces reactively, mid-pass, at whichever
     pair the loop reaches it on — see `_refuse_write_collision`. The caller
-    supplies one declaration set and one page-fallback index for both
-    this preflight and `attempt_pass`, since the two must agree on what this
-    ordinal means. The returned region map lets publication use the exact regions
-    preflight already verified instead of walking and hashing Designator again.
+    supplies one declaration set for both this preflight and `attempt_pass`,
+    since the two must agree on what this ordinal means. The returned region map
+    lets publication use the exact regions preflight already verified instead of
+    walking and hashing Designator again.
     """
     regions_by_act: dict[str, tuple[list[dict], str | None]] = {}
     attempts_by_pair: dict[tuple[str, str], Attempt] = {}
@@ -801,7 +826,6 @@ def preflight_appendable_ordinals(
                     chair,
                     resolved,
                     declarations,
-                    page_fallback_bounds=page_fallback_bounds,
                 )
             )
             attempts_by_pair[(act["act_id"], chair)] = attempt
@@ -1124,8 +1148,11 @@ def declarations_for(context, ordinal: int) -> dict[str, Any]:
     Read once per pass rather than once per chair, and bound to the ordinal, so a
     declared first-attempt failure cannot silently describe a later reread.
 
-    `empty` is a completed empty reading, distinct from an absent response;
-    `not_run` is a configured chair deliberately never asked for this attempt.
+    `empty` is a declared empty *response* — the fixture's stand-in for a
+    provider that returned an empty body — and `declared_response` sends it back
+    through the same retention boundary as any declared text, so the outcome is
+    derived from what was retained rather than named here. `not_run` is a
+    configured chair deliberately never asked for this attempt.
     """
     declarations = {
         "ordinal": ordinal,
@@ -1157,7 +1184,6 @@ def resolve_attempt(
     resolved: ChairIdentity | AbsentChair,
     declarations: dict[str, Any],
     *,
-    page_fallback_bounds: dict[str, dict],
     reread: bool = False,
 ) -> Attempt:
     """What one configured chair's attempt at one act came to.
@@ -1206,12 +1232,8 @@ def resolve_attempt(
         reason = (
             f"the provider response was refused without repair: {declarations['malformed'][key]}"
         )
-    elif _is_page_fallback(context, act, page_fallback_bounds) or key in declarations["empty"]:
-        outcome = "genuinely-empty"
-        native_payload = ""
-        health = content_health(native_payload, completed=True)
     else:
-        response = testimony_for(context, act["act_key"], chair, declarations["ordinal"])
+        response = declared_response(context, act["act_key"], chair, declarations)
         if response is None and reread:
             outcome = "failed"
             health = no_response_health(reason="attempted-but-no-usable-response")
@@ -1227,11 +1249,23 @@ def resolve_attempt(
                 health,
                 recording_problem,
             ) = prepared_response(response)
-            if recording_problem is None:
-                outcome = "read"
-            else:
+            if recording_problem is not None:
                 outcome = "failed"
                 reason = f"the provider response was refused without repair: {recording_problem}"
+            elif isinstance(native_payload, str) and native_payload == "":
+                # Derived from the response this chair actually returned, never
+                # asserted about it. `genuinely-empty` is the one completed
+                # outcome whose whole content is an absence, so it is the one
+                # most easily minted from something other than evidence -- and
+                # it used to be: a Designator page-fallback act took this
+                # outcome for every configured chair from its own derived
+                # identity, before any response boundary was consulted at all
+                # (Sol-S1). Nothing reaches here without a retained, recordable
+                # response to this exact request; a missing one is the
+                # `not-run`/`failed` above and holds the act.
+                outcome = "genuinely-empty"
+            else:
+                outcome = "read"
 
     return Attempt(outcome, native_payload, witness_reported, capabilities, health, reason)
 
@@ -1319,6 +1353,109 @@ def _raw_span_from_normalized(
     return min(raw_indices), max(raw_indices) + 1
 
 
+class PageJoin(NamedTuple):
+    """R0's synthetic page reading for one chair: the text, what it amounts to,
+    and every act attempt the join could not carry."""
+
+    native_payload: str
+    outcome: str
+    unjoined_act_attempts: list[dict[str, Any]]
+
+
+def page_join(pairs: list[tuple[dict[str, Any], Attempt]]) -> PageJoin:
+    """Concatenate one chair's delivered act readings into its page reading.
+
+    Only a genuine reading contributes text. An attempt whose *outcome* is
+    `failed` can still carry a parsed `native_payload` string (a bad
+    `witness_reported`/`format_capabilities` fails the whole attempt without
+    clearing the text `prepared_response` already parsed) -- filtering on
+    `isinstance(..., str)` alone let that failed act's own text be silently
+    folded into a page witness's "read" testimony, laundering a recorded failure
+    into apparent coverage (D2/D3; GOVERNANCE 2). Found in audit; F-S1.
+
+    The disclosure is the exact complement of that filter, computed from one
+    partition rather than from a second predicate. They were two predicates, and
+    they did not agree: the join also dropped an act whose reading is a
+    structured native object (a dict or list rather than text), while the closed
+    `unjoined_act_attempts` list named only non-reading OUTCOMES. In the shipped
+    `structured-witness` scenario that made attestator_1's page-1 record report
+    `read`, carry act a2's text alone, and disclose nothing -- act a1 gone behind
+    a successful status, which is F-P3's own defect through F-S1's own door.
+    Found in audit; F-O7.
+
+    **A separator is not a reading.** The join used to be `"\n".join(readable)`
+    over every joined payload including the empty ones, and the outcome was
+    `read` whenever `readable` was non-empty -- so a page whose every act this
+    chair genuinely read as empty produced `payload="\n"` and a `read` page
+    Testimonium: characters no act delivered, under an outcome claiming a
+    reading of them (CodeRabbit W44). Separators are therefore placed only
+    *between* delivered characters, and the outcome is derived from the joined
+    text rather than from the length of the list that produced it:
+
+    - `failed`: no act attempt joined at all. Nothing on this page was read by
+      this chair, so there is no page reading and no receipt to carry.
+    - `genuinely-empty`: acts joined and every one of them delivered an empty
+      body. The chair read the page's acts and reported nothing on each, which
+      is the same fact at page scope that the act-scoped outcome records, and
+      `payload=""` is what `genuinely-empty` means everywhere in this stage.
+    - `read`: the joined text carries at least one delivered character.
+
+    A joined-but-empty act is not listed in `unjoined_act_attempts`: it was
+    carried, faithfully, and its zero characters are in the text. What it read
+    stays visible in its own act-scoped Testimonium and in the act attachment.
+    """
+    joined: list[tuple[dict[str, Any], Attempt]] = []
+    unjoined: list[tuple[dict[str, Any], Attempt]] = []
+    for act, attempt in pairs:
+        target = (
+            joined
+            if attempt.outcome in WITNESS_READING_OUTCOMES
+            and isinstance(attempt.native_payload, str)
+            else unjoined
+        )
+        target.append((act, attempt))
+    native_payload = "\n".join(
+        attempt.native_payload for _, attempt in joined if attempt.native_payload
+    )
+    if not joined:
+        outcome = "failed"
+    elif native_payload == "":
+        # A completed absence is claimed only over a page this chair's join
+        # fully carried: `genuinely-empty` says "read the page's acts and
+        # reported nothing on each", and an act the join could not carry is an
+        # act this record did not read — a proved absence over unread ground
+        # would be the fabrication defect one scope up (invariant 6). `read`
+        # beside unjoined rows stays honest because delivered characters plus
+        # a disclosure claim less, not more. Nothing seals on a page record's
+        # outcome today; the act-scoped Testimonia carry the read-empty facts
+        # either way.
+        outcome = "genuinely-empty" if not unjoined else "failed"
+    else:
+        outcome = "read"
+    return PageJoin(
+        native_payload=native_payload,
+        outcome=outcome,
+        unjoined_act_attempts=[
+            {
+                "act_id": act["act_id"],
+                "act_key": act["act_key"],
+                "outcome": attempt.outcome,
+                # A non-reading attempt always carries its own reason. A reading
+                # the join could not carry has none to borrow, and an omission
+                # with no reason is the silent loss this list exists to refuse --
+                # so the join states its own limit instead.
+                "reason": attempt.reason
+                if attempt.outcome not in WITNESS_READING_OUTCOMES
+                else (
+                    "this chair delivered a structured native reading for the act; R0's "
+                    "synthetic page join concatenates delivered text only"
+                ),
+            }
+            for act, attempt in unjoined
+        ],
+    )
+
+
 def publish_page_testimonia_and_attachments(
     context,
     *,
@@ -1355,59 +1492,24 @@ def publish_page_testimonia_and_attachments(
     for page_ordinal, page_acts in sorted(by_page.items()):
         page_subject = page_identity(context.fixture, page_ordinal)
         for chair in sorted(page_chairs):
-            attempts = [attempts_by_pair[(act["act_id"], chair)] for act in page_acts]
-            # Only a genuine reading contributes text. An attempt whose *outcome*
-            # is `failed` can still carry a parsed `native_payload` string (a bad
-            # `witness_reported`/`format_capabilities` fails the whole attempt
-            # without clearing the text `prepared_response` already parsed) --
-            # filtering on `isinstance(..., str)` alone let that failed act's own
-            # text be silently folded into a page witness's "read" testimony,
-            # laundering a recorded failure into apparent coverage (D2/D3;
-            # GOVERNANCE 2). Found in audit; F-S1.
-            #
-            # The disclosure below is the exact complement of this filter, computed
-            # from one partition rather than from a second predicate. They were two
-            # predicates, and they did not agree: the join also dropped an act whose
-            # reading is a structured native object (a dict or list rather than
-            # text), while the closed `unjoined_act_attempts` list named only
-            # non-reading OUTCOMES. In the shipped `structured-witness` scenario
-            # that made attestator_1's page-1 record report `read`, carry act a2's
-            # text alone, and disclose nothing -- act a1 gone behind a successful
-            # status, which is F-P3's own defect through F-S1's own door. Found in
-            # audit; F-O7.
-            joined: list[tuple[dict[str, Any], Attempt]] = []
-            unjoined: list[tuple[dict[str, Any], Attempt]] = []
-            for act, attempt in zip(page_acts, attempts, strict=True):
-                target = (
-                    joined
-                    if attempt.outcome in WITNESS_READING_OUTCOMES
-                    and isinstance(attempt.native_payload, str)
-                    else unjoined
-                )
-                target.append((act, attempt))
-            readable = [attempt.native_payload for _, attempt in joined]
-            unjoined_act_attempts = [
-                {
-                    "act_id": act["act_id"],
-                    "act_key": act["act_key"],
-                    "outcome": attempt.outcome,
-                    # A non-reading attempt always carries its own reason. A
-                    # reading the join could not carry has none to borrow, and an
-                    # omission with no reason is the silent loss this list exists
-                    # to refuse -- so the join states its own limit instead.
-                    "reason": attempt.reason
-                    if attempt.outcome not in WITNESS_READING_OUTCOMES
-                    else (
-                        "this chair delivered a structured native reading for the act; R0's "
-                        "synthetic page join concatenates delivered text only"
-                    ),
-                }
-                for act, attempt in unjoined
-            ]
-            native_payload = "\n".join(readable)
+            join = page_join([(act, attempts_by_pair[(act["act_id"], chair)]) for act in page_acts])
+            native_payload, outcome = join.native_payload, join.outcome
+            unjoined_act_attempts = join.unjoined_act_attempts
+            reading = outcome in WITNESS_READING_OUTCOMES
+            # A failed page record has two distinct causes and the reason names
+            # the right one: nothing was carried at all, or empty readings were
+            # carried but the join could not carry every attempt — where a
+            # completed absence is deliberately not claimed (invariant 6), and
+            # "no recordable response" would misdescribe requests that were
+            # made and answered.
+            failure_reason = (
+                "the page join carried only empty readings and could not carry every "
+                "act attempt; a completed absence is not claimed over a page partly unread"
+                if len(join.unjoined_act_attempts) < len(page_acts)
+                else "page witness had no recordable response"
+            )
             page_texts[(page_ordinal, chair)] = native_payload
-            outcome = "read" if readable else "failed"
-            health = content_health(native_payload, completed=outcome == "read")
+            health = content_health(native_payload, completed=reading)
             resolved = context.registry.resolve(chair)
             page_attempt = attempt_id(page_subject, f"read:{chair}", ordinal)
             context.publish(
@@ -1421,17 +1523,13 @@ def publish_page_testimonia_and_attachments(
                         act_key=f"page-{page_ordinal}",
                         ordinal=ordinal,
                         regions=[],
-                        provenance=provenance_for(context, resolved, attempted=outcome == "read"),
+                        provenance=provenance_for(context, resolved, attempted=reading),
                         format_capabilities=DEFAULT_FORMAT_CAPABILITIES,
-                        native_payload=native_payload if outcome == "read" else None,
+                        native_payload=native_payload if reading else None,
                         witness_reported=None,
-                        health=health
-                        if outcome == "read"
-                        else no_response_health(reason="page witness had no recordable response"),
+                        health=health if reading else no_response_health(reason=failure_reason),
                         outcome=outcome,
-                        reason=None
-                        if outcome == "read"
-                        else "page witness had no recordable response",
+                        reason=None if reading else failure_reason,
                     ),
                     "scope": "page",
                     "page_ordinal": page_ordinal,
@@ -1904,7 +2002,6 @@ def reread_pass(
     # No `require_appendable_ordinal` here: `next_attempt_ordinal` returns the
     # current ordinal plus one, off the same history, so the bound cannot fire.
     ordinal = next_attempt_ordinal(history, act_id, chair)
-    page_fallback_bounds = _page_fallback_bounds(context)
     publish_attempt(
         context,
         act=act,
@@ -1918,7 +2015,6 @@ def reread_pass(
             chair,
             resolved,
             declarations_for(context, ordinal),
-            page_fallback_bounds=page_fallback_bounds,
             reread=True,
         ),
     )
@@ -1996,13 +2092,11 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         ordinal = 1 if args.attempt_ordinal is None else args.attempt_ordinal
         try:
             declarations = declarations_for(context, ordinal)
-            page_fallback_bounds = _page_fallback_bounds(context)
             regions_by_act, attempts_by_pair = preflight_appendable_ordinals(
                 context,
                 acts,
                 ordinal,
                 declarations,
-                page_fallback_bounds,
                 history,
             )
         except ContractError as error:
