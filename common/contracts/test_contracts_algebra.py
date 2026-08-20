@@ -14,7 +14,7 @@ quietly emptied would fail rather than pass vacuously.
 import pytest
 
 from common.contracts import outcomes
-from common.contracts.errors import ApprovalRefusal, FatalAccounting
+from common.contracts.errors import ApprovalRefusal, FatalAccounting, SchemaRefusal
 from common.contracts.outcomes import (
     NO_ATTRIBUTION_REASON,
     SILENT_PAGE_REASON,
@@ -260,6 +260,7 @@ def test_a_fully_delivered_well_witnessed_run_is_complete():
         },
         {1: {"outcome": "sealed"}},
         act_pages={"act_a": [1], "act_b": [1]},
+        act_text_status={"act_a": "established"},
     )
     assert aggregate["status"] == "complete"
     assert aggregate["reasons"] == []
@@ -303,6 +304,7 @@ def test_one_silent_page_beside_a_busy_one_still_forces_partial():
         {"act_a": witness_coverage({"s1": "read"}, 1)},
         {1: {"outcome": "sealed"}, 2: {"outcome": "sealed"}},
         act_pages={"act_a": [1]},
+        act_text_status={"act_a": "established"},
     )
     assert aggregate["status"] == "partial"
     assert aggregate["reasons"] == [SILENT_PAGE_REASON.format(ordinal=2)]
@@ -319,6 +321,7 @@ def test_a_run_that_names_no_page_for_its_acts_cannot_check_silence_and_says_so(
         {"act_a": ArmariumCategory.DELIVERED},
         {"act_a": witness_coverage({"s1": "read"}, 1)},
         {1: {"outcome": "sealed"}},
+        act_text_status={"act_a": "established"},
     )
     assert aggregate["status"] == "partial"
     assert aggregate["reasons"] == [NO_ATTRIBUTION_REASON]
@@ -333,6 +336,7 @@ def test_an_act_with_no_page_of_its_own_is_named_rather_than_skipped():
         },
         {1: {"outcome": "sealed"}},
         act_pages={"act_a": [1]},
+        act_text_status={"act_a": "established", "act_b": "established"},
     )
     assert aggregate["status"] == "partial"
     assert aggregate["reasons"] == [
@@ -380,6 +384,7 @@ def test_a_held_act_forces_partial_and_names_itself():
         },
         {1: {"outcome": "sealed"}},
         act_pages={"act_a": [1], "act_b": [1]},
+        act_text_status={"act_a": "established"},
     )
     assert aggregate["status"] == "partial"
     assert aggregate["reasons"] == ["act act_b is held-for-review"]
@@ -419,6 +424,7 @@ def test_under_witnessed_coverage_forces_partial_even_when_every_act_delivered()
         {"act_a": witness_coverage({"s1": "read", "s2": "dead", "s3": "dead"}, 3)},
         {1: {"outcome": "sealed"}},
         act_pages={"act_a": [1]},
+        act_text_status={"act_a": "established"},
     )
     assert aggregate["status"] == "partial"
     assert aggregate["by_category"] == {"delivered": 1}
@@ -456,6 +462,7 @@ def test_a_fully_sealed_census_leaves_a_complete_run_complete():
         },
         {1: {"outcome": "sealed"}, 2: {"outcome": "sealed"}},
         act_pages={"act_a": [1], "act_b": [2]},
+        act_text_status={"act_a": "established", "act_b": "established"},
     )
     assert aggregate["status"] == "complete"
     assert aggregate["reasons"] == []
@@ -474,6 +481,7 @@ def test_a_refused_page_forces_partial_and_names_the_loss():
             2: {"outcome": "refused", "reason": "digest mismatch at the door"},
         },
         act_pages={"act_a": [1]},
+        act_text_status={"act_a": "established"},
     )
     assert aggregate["status"] == "partial"
     assert aggregate["reasons"] == ["page 2 was refused: digest mismatch at the door"]
@@ -487,6 +495,7 @@ def test_a_refused_page_with_no_recorded_reason_still_forces_partial():
         {"act_a": witness_coverage({"s1": "read"}, 1)},
         {1: {"outcome": "sealed"}, 2: {"outcome": "refused"}},
         act_pages={"act_a": [1]},
+        act_text_status={"act_a": "established"},
     )
     assert aggregate["status"] == "partial"
     assert aggregate["reasons"] == ["page 2 was refused: no reason was recorded"]
@@ -515,6 +524,7 @@ def test_missing_coverage_or_page_census_cannot_look_complete():
         {},
         {1: {"outcome": "sealed"}},
         act_pages={"act_a": [1]},
+        act_text_status={"act_a": "established"},
     )
     assert missing_coverage["status"] == "partial"
     assert missing_coverage["reasons"] == ["act act_a has no witness-coverage record"]
@@ -522,6 +532,7 @@ def test_missing_coverage_or_page_census_cannot_look_complete():
     missing_census = run_aggregate(
         {"act_a": ArmariumCategory.DELIVERED},
         {"act_a": witness_coverage({"s1": "read"}, 1)},
+        act_text_status={"act_a": "established"},
     )
     assert missing_census["status"] == "partial"
     assert missing_census["reasons"] == [
@@ -570,6 +581,7 @@ def test_the_under_witnessed_count_is_the_attached_reads_never_the_wider_class()
         {"act_a": coverage},
         {1: {"outcome": "sealed"}},
         act_pages={"act_a": [1]},
+        act_text_status={"act_a": "established"},
     )
     assert aggregate["reasons"] == ["act act_a is under-witnessed (2 of a floor of 3)"]
 
@@ -598,6 +610,7 @@ def test_the_legacy_under_witnessed_message_prints_the_count_that_raised_the_fla
         {"act_a": coverage},
         {1: {"outcome": "sealed"}},
         act_pages={"act_a": [1]},
+        act_text_status={"act_a": "established"},
     )
     assert aggregate["reasons"] == ["act act_a is under-witnessed (2 of a floor of 3)"]
 
@@ -620,3 +633,151 @@ def test_an_unknown_granularity_basis_is_refused_never_guessed_from():
             {1: {"outcome": "sealed"}},
             act_pages={"act_a": [1]},
         )
+
+
+# --- The established text's own status: damage the category cannot express ------
+#
+# Opus-F1 / Sol-S4 (T0 export honesty). `delivered` says where an act ended and nothing about
+# whether the reading that left is whole, so an act whose own Perlectio recorded a
+# gap -- ink the reader knows is present and could not read -- aggregated to
+# `complete` with an empty reason list. GOVERNANCE 2: a partial result is visibly
+# partial, and Tyrel expects damage to be ordinary ("many of our records are
+# damaged"), so this is the common case rather than the edge one.
+
+
+def _delivered_with(status=None, **kwargs):
+    """One delivered act over one sealed page, varying only its text status."""
+    return run_aggregate(
+        {"act_a": ArmariumCategory.DELIVERED},
+        {"act_a": witness_coverage({"s1": "read"}, 1)},
+        {1: {"outcome": "sealed"}},
+        act_pages={"act_a": [1]},
+        act_text_status=({"act_a": status} if status is not None else None),
+        **kwargs,
+    )
+
+
+def test_a_delivered_act_with_partial_text_forces_partial_and_names_itself():
+    aggregate = _delivered_with("partial")
+    assert aggregate["status"] == "partial"
+    # The act's own category is untouched: a damaged reading is still delivered,
+    # exactly as an under-witnessed act stays delivered. The run says so beside it.
+    assert aggregate["by_category"] == {"delivered": 1}
+    assert aggregate["reasons"] == [
+        "act act_a was delivered with partial text: its record carries ink the Perlector "
+        "knows is present and could not read"
+    ]
+
+
+def test_a_delivered_act_whose_text_is_established_leaves_the_run_complete():
+    aggregate = _delivered_with("established")
+    assert aggregate["status"] == "complete"
+    assert aggregate["reasons"] == []
+
+
+def test_a_delivered_act_that_established_no_readable_text_is_named():
+    aggregate = _delivered_with("no_readable_text")
+    assert aggregate["status"] == "partial"
+    assert aggregate["reasons"] == [
+        "act act_a was delivered with a record that establishes no readable text; a proved "
+        "blank is confirmed-blank business, and a delivered act with no text is not reconciled"
+    ]
+
+
+def test_a_delivered_act_with_no_text_status_is_named_rather_than_assumed_whole():
+    """GOVERNANCE 10 — a metric that cannot be measured is a failure, not a pass.
+
+    The same self-enforcement as the missing page attribution beside it: a caller
+    that supplies nothing is told so, because a default of "every delivered act
+    was whole" is how this check would quietly become optional again.
+    """
+    aggregate = _delivered_with(None)
+    assert aggregate["status"] == "partial"
+    assert aggregate["reasons"] == [outcomes.NO_TEXT_STATUS_REASON.format(act="act_a")]
+
+
+def test_a_text_status_on_an_act_that_was_not_delivered_is_fatal():
+    """No Archetypus record exists for a held act, so a status about its text is a
+    claim about a reading that is not there -- an imbalance, not a partial run."""
+    with pytest.raises(FatalAccounting, match="only a delivered act has an Archetypus record"):
+        run_aggregate(
+            {"act_a": ArmariumCategory.HELD_FOR_REVIEW},
+            {"act_a": witness_coverage({"s1": "read"}, 1)},
+            {1: {"outcome": "sealed"}},
+            act_pages={"act_a": [1]},
+            act_text_status={"act_a": "established"},
+        )
+
+
+def test_a_text_status_naming_an_act_the_run_never_had_is_fatal():
+    with pytest.raises(FatalAccounting, match="text status names unknown act"):
+        run_aggregate(
+            {"act_a": ArmariumCategory.DELIVERED},
+            {"act_a": witness_coverage({"s1": "read"}, 1)},
+            {1: {"outcome": "sealed"}},
+            act_pages={"act_a": [1]},
+            act_text_status={"act_a": "established", "act_ghost": "partial"},
+        )
+
+
+def test_a_text_status_outside_the_closed_vocabulary_is_fatal():
+    """Unknown is never `established`: a word this module never produced is
+    malformed evidence, and guessing it whole is the failure mode being repaired."""
+    with pytest.raises(FatalAccounting, match="which is not one of"):
+        _delivered_with("mostly-fine")
+
+
+# --- The derivation both stages share ------------------------------------------
+
+
+def _layer(gaps=()):
+    return {"uncertain_spans": [], "gaps": list(gaps), "self_revisions": []}
+
+
+def _illegible(position=0):
+    return {"kind": "illegible", "start": position, "end": position, "witness_evidence": []}
+
+
+def test_a_clean_reading_over_both_layers_is_established():
+    assert outcomes.derive_record_text_status("some real ink", [], _layer()) == "established"
+
+
+def test_a_canonical_gap_makes_an_otherwise_readable_record_partial():
+    gap = {"position": "internal", "start": 4, "end": 4, "witness_evidence": []}
+    assert outcomes.derive_record_text_status("some real ink", [], _layer([gap])) == "partial"
+
+
+def test_an_older_illegible_annotation_still_makes_a_record_partial():
+    """Both layers travel, and either one recording unread ink is enough. Neither
+    can hide damage the other saw, which is what makes carrying both honest."""
+    assert (
+        outcomes.derive_record_text_status("some real ink", [_illegible(3)], _layer()) == "partial"
+    )
+
+
+def test_a_canonical_gap_over_empty_text_is_partial_and_never_a_proved_blank():
+    """ "We could not read it" must never quietly become "there was nothing to read".
+
+    A whole-act gap is the middle silence -- ink present, wholly unread. Asking
+    about the canonical gaps only where the rest already said `established`
+    returned `no_readable_text` for exactly this record, which is a proved blank
+    sealed beside a gap saying the opposite. The older annotation layer has always
+    been ordered this way (`pipeline/6_archetypus/test_text_status.py`).
+    """
+    gap = {"position": "whole-act", "start": 0, "end": 0, "witness_evidence": []}
+    assert outcomes.derive_record_text_status("", [], _layer([gap])) == "partial"
+
+
+def test_an_empty_reading_with_no_damage_recorded_anywhere_is_no_readable_text():
+    assert outcomes.derive_record_text_status("", [], _layer()) == "no_readable_text"
+
+
+def test_a_damage_layer_that_cannot_be_read_is_refused_rather_than_called_whole():
+    """A malformed layer is not a zero. Refusing here is what lets the Armarium
+    turn it into a named fatal refusal instead of exporting `established`."""
+    with pytest.raises(SchemaRefusal, match="carries no kind"):
+        outcomes.derive_record_text_status("ink", [{"start": 0, "end": 0}], _layer())
+    with pytest.raises(SchemaRefusal, match="canonical uncertainty layer's own gap list"):
+        outcomes.derive_record_text_status("ink", [], {"uncertain_spans": []})
+    with pytest.raises(SchemaRefusal, match="exactly one string text"):
+        outcomes.derive_record_text_status(None, [], _layer())

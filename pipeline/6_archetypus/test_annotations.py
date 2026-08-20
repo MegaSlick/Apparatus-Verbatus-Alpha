@@ -10,8 +10,11 @@ and badly at fifty is a defect. Hence the multi-gap cases below.
 """
 
 import importlib.util
+import io
 import json
+import sqlite3
 import subprocess
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -22,6 +25,7 @@ from common.contracts.errors import SchemaRefusal
 from common.contracts.identities import artifact_id
 from common.contracts.stages import ARCHETYPUS, RECENSOR
 from common.runtree.store import RunTree
+from common.stage import EXIT_HELD
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -414,7 +418,7 @@ def invoke_armarium(root: Path, run_id: str, scenario: str) -> subprocess.Comple
     return stage_driver.invoke(root, run_id, scenario, "pipeline/7_armarium/run.py")
 
 
-def test_a_partial_record_is_exportable_by_the_frozen_armarium(tmp_path):
+def test_a_partial_record_is_exportable_by_the_armarium(tmp_path):
     """The record this stage writes for a damaged act must survive its consumer.
 
     This is why `status` stays the literal `"established"` and does not mirror
@@ -422,9 +426,12 @@ def test_a_partial_record_is_exportable_by_the_frozen_armarium(tmp_path):
     verbatim, so a record whose `status` said `partial` would be refused at
     export -- every damaged act, and damage is the common case.
 
-    The known dishonesty on the export side lives in the strict-xfail test
-    below, so a real regression in *this* test's live assertions can never be
-    reported as merely expected. Stage 7 was off-limits this round.
+    `EXIT_HELD` rather than 0 since the export became honest about damage: the
+    act is still delivered and its text still leaves whole, which is what this
+    test is about; the run reports `partial` beside it because one of its acts
+    carries ink nobody could read. Those two are the same sentence, not a
+    contradiction, and keeping them apart is the whole reason `status` and
+    `text_status` are separate fields.
     """
     root = tmp_path / "runs"
     _run_through_recensor(root, "r")
@@ -440,7 +447,7 @@ def test_a_partial_record_is_exportable_by_the_frozen_armarium(tmp_path):
     assert record["payload"]["text_status"] == "partial"
 
     result = invoke_armarium(root, "r", "happy")
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == EXIT_HELD, result.stderr
 
     export = tree.read_artifact(
         "armarium", "export", artifact_id("armarium", "export", "export", None)
@@ -449,21 +456,16 @@ def test_a_partial_record_is_exportable_by_the_frozen_armarium(tmp_path):
     assert delivered["text"] == record["payload"]["text"]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="spec 11: the export drops text_status and annotations, so a partial act "
-    "is delivered as if it were whole and the run still aggregates to complete; "
-    "when the Armarium becomes honest about damage this xpasses loudly — remove the "
-    "marker and update HANDOFF.md's consumer-obligations section together",
-)
 def test_the_export_carries_a_partial_acts_damage(tmp_path):
-    """The honest export shape, asserted so its arrival is announced.
+    """The honest export shape. Live, and no longer a strict xfail.
 
-    This fails today — the Armarium reads neither `text_status` nor
-    `annotations` — and `strict=True` turns the day it starts passing into a
-    suite failure that names exactly what to clean up. An imperative
-    `pytest.xfail()` could never do that: it reports xfail unconditionally and
-    the reminder it installs is dormant forever.
+    This was the pin on the Stage 6→7 seam: the Armarium read neither
+    `text_status` nor `annotations`, so a partial act was delivered as though it
+    were whole and the run still aggregated to `complete`. `strict=True` made the
+    day it started passing a suite failure naming exactly what to clean up. That
+    day is this change — the marker is gone, the assertions below run for real,
+    and `pipeline/6_archetypus/HANDOFF.md`'s consumer-obligations section no
+    longer says the Armarium ignores these fields.
     """
     root = tmp_path / "runs"
     _run_through_recensor(root, "r")
@@ -473,14 +475,196 @@ def test_the_export_carries_a_partial_acts_damage(tmp_path):
 
     tree, act_id = _tamper_reading_annotations(root, "r", mutate)
     assert invoke_archetypus(root, "r", "happy").returncode == 0
-    assert invoke_armarium(root, "r", "happy").returncode == 0
+    # EXIT_HELD, not 0: an act delivered with ink nobody could read is a run that
+    # did not lose the act and did not read all of it either, and the terminal
+    # ledger folds the aggregate's reason into its own.
+    assert invoke_armarium(root, "r", "happy").returncode == EXIT_HELD
 
     export = tree.read_artifact(
         "armarium", "export", artifact_id("armarium", "export", "export", None)
     )["payload"]
     delivered = next(item for item in export["delivered"] if item["act_id"] == act_id)
-    assert "text_status" in delivered
+    assert delivered["text_status"] == "partial"
     assert export["aggregate"]["status"] != "complete"
+
+
+# --- The red demonstration, kept: one internal gap, honest all the way out -----
+
+
+def _tamper_every_reviewed_reading(root: Path, run_id: str, mutate) -> tuple[RunTree, list[str]]:
+    """Reseal every accepted act's reviewed Perlectio, not only the first.
+
+    The audit's demonstration injected its gap into *each* Perlectio of a `happy`
+    run, and that matters: a single damaged act among whole ones is the case a
+    reader excuses, while a run where every act carries known-unread ink and still
+    reports `complete` is the one that cannot be argued with.
+    """
+    tree = RunTree(root, run_id)
+    act_ids: list[str] = []
+    for entry in tree.build_manifest(RECENSOR)["artifacts"]:
+        if entry["kind"] != "review" or entry["outcome"] != "accepted":
+            continue
+        review = json.loads(tree.resolve(entry["relative_path"]).read_text(encoding="utf-8"))
+        act_ids.append(reseal_chain.reseal_reviewed_reading(tree, review, mutate))
+    assert act_ids, "the fixture accepted no act, so this demonstration would prove nothing"
+    return tree, sorted(act_ids)
+
+
+def _internal_gap(payload: dict) -> None:
+    """One schema-legal internal gap: ink the reader knows it did not read."""
+    middle = len(payload["text"]) // 2
+    assert 0 < middle < len(payload["text"]), "the fixture reading is too short to gap internally"
+    payload["gaps"] = [
+        {"position": "internal", "start": middle, "end": middle, "witness_evidence": []}
+    ]
+
+
+def _bundle_members(tree: RunTree) -> dict[str, bytes]:
+    export = tree.read_artifact(
+        "armarium", "export", artifact_id("armarium", "export", "export", None)
+    )["payload"]
+    data = tree.read_bytes(export["bundle"]["reference"]["relative_path"])
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        return {name: archive.read(name) for name in archive.namelist()}
+
+
+def _jsonl_rows(members: dict[str, bytes]) -> dict[str, dict]:
+    rows = [json.loads(line) for line in members["acts.jsonl"].decode("utf-8").splitlines() if line]
+    return {row["act_id"]: row for row in rows}
+
+
+def _database_rows(members: dict[str, bytes], tmp_path: Path) -> dict[str, tuple]:
+    """Read the packaged acts database the way a recipient with only the ZIP would.
+
+    Stage 7's own reader is off-limits here: a stage's test file may not import a
+    module owned by another stage (`pipeline/test_stage_import_boundaries.py`), so
+    this opens the member with stdlib sqlite3 and asks the product itself.
+    """
+    path = tmp_path / "acts.sqlite"
+    path.write_bytes(members["acts.sqlite"])
+    with sqlite3.connect(path) as connection:
+        rows = connection.execute(
+            "SELECT act_id, text_status, transcription_annotations_json, "
+            "semantic_annotations_json, semantic_annotation_status FROM acts"
+        ).fetchall()
+    return {row[0]: row[1:] for row in rows}
+
+
+def test_an_internal_gap_in_every_reading_leaves_the_run_visibly_partial(tmp_path):
+    """The audit's red demonstration, kept as a test rather than as a memory.
+
+    Before this change: one schema-legal internal gap injected into each Perlectio
+    of a `happy` run produced `export outcome: delivered`, an aggregate of
+    `{"by_category": {"delivered": 2}, "reasons": [], "status": "complete"}`, and
+    a text bundle that said nothing about the damage at all. The Archetypus knew
+    (`text_status: partial` on every record); nothing downstream read the field.
+
+    After it: the status reaches the projection, every selected literal format and
+    the run aggregate, which names each act and reports `partial`.
+
+    What this deliberately does not assert is anything about the `display:`
+    rendering. Whether a gap is *shown* inside a rendered reading is Tyrel's
+    choice of convention (spec 11), and the manifest says so on its own face.
+    Counting the damage is this seam's business; showing it is not.
+    """
+    root = tmp_path / "runs"
+    _run_through_recensor(root, "r")
+    tree, act_ids = _tamper_every_reviewed_reading(root, "r", _internal_gap)
+
+    assert invoke_archetypus(root, "r", "happy").returncode == 0
+    for act_id in act_ids:
+        record = tree.read_artifact(
+            ARCHETYPUS, "archetypus", artifact_id(ARCHETYPUS, "archetypus", act_id)
+        )
+        assert record["payload"]["text_status"] == "partial"
+
+    result = invoke_armarium(root, "r", "happy")
+    assert result.returncode == EXIT_HELD, result.stderr
+
+    export = tree.read_artifact(
+        "armarium", "export", artifact_id("armarium", "export", "export", None)
+    )["payload"]
+    aggregate = export["aggregate"]
+    assert aggregate["status"] == "partial"
+    assert aggregate["by_category"] == {"delivered": len(act_ids)}
+    # Named, not merely counted: every damaged act appears in `reasons` by key.
+    keys = {item["act_key"] for item in export["delivered"]}
+    assert keys, "the run delivered nothing, so there is no damaged delivery to check"
+    for act_key in keys:
+        assert any(
+            reason.startswith(f"act {act_key} was delivered with partial text")
+            for reason in aggregate["reasons"]
+        ), aggregate["reasons"]
+    assert all(item["text_status"] == "partial" for item in export["delivered"])
+    assert export["bundle"]["claims_status"] == "partial"
+
+    members = _bundle_members(tree)
+    readable = "\n".join(
+        content.decode("utf-8")
+        for name, content in sorted(members.items())
+        if name.startswith("text/")
+    )
+    assert readable.count("text_status: partial") == len(keys)
+    rows = _jsonl_rows(members)
+    database = _database_rows(members, tmp_path)
+    for act_id in act_ids:
+        assert rows[act_id]["text_status"] == "partial"
+        assert rows[act_id]["uncertainty"]["gaps"], "the layer the status was derived from"
+        assert database[act_id][0] == "partial"
+
+
+def test_a_sealed_annotation_is_carried_out_rather_than_replaced_by_not_produced(tmp_path):
+    """Sol-S4's second field failure: the layer was not dropped, it was overwritten.
+
+    Every exported row carried `annotations: []` and `annotation_status:
+    "not-produced"` — a true statement about the *semantic* annotation layer
+    `annotation_boundary.py` has never built, written over an act whose Archetypus
+    record sealed a real `illegible` mark. Two different things wore one word and
+    the sealed one lost, so the export made a positive claim that no annotations
+    were produced for an act that carried one.
+
+    Both layers now travel under their own names, and both are asserted here: the
+    transcription layer arrives intact, and the semantic claim stays exactly the
+    true statement it always was about the layer it actually describes.
+    """
+    root = tmp_path / "runs"
+    _run_through_recensor(root, "r")
+
+    def mutate(payload):
+        payload["annotations"] = [gap(3)]
+
+    tree, act_id = _tamper_reading_annotations(root, "r", mutate)
+    assert invoke_archetypus(root, "r", "happy").returncode == 0
+    record = tree.read_artifact(
+        ARCHETYPUS, "archetypus", artifact_id(ARCHETYPUS, "archetypus", act_id)
+    )
+    sealed = record["payload"]["annotations"]
+    assert sealed == [gap(3)]
+
+    assert invoke_armarium(root, "r", "happy").returncode == EXIT_HELD
+
+    export = tree.read_artifact(
+        "armarium", "export", artifact_id("armarium", "export", "export", None)
+    )["payload"]
+    delivered = next(item for item in export["delivered"] if item["act_id"] == act_id)
+    assert delivered["transcription_annotations"] == sealed
+
+    members = _bundle_members(tree)
+    row = _jsonl_rows(members)[act_id]
+    assert row["transcription_annotations"] == sealed
+    assert row["semantic_annotations"] == []
+    assert row["semantic_annotation_status"] == "not-produced-pending-architecture-approval"
+    database = _database_rows(members, tmp_path)
+    _status, transcription_json, semantic_json, semantic_status = database[act_id]
+    assert json.loads(transcription_json) == sealed
+    assert json.loads(semantic_json) == []
+    assert semantic_status == "not-produced-pending-architecture-approval"
+    readable = "\n".join(
+        content.decode("utf-8")
+        for name, content in sorted(members.items())
+        if name.startswith("text/")
+    )
+    assert json.dumps(sealed, ensure_ascii=False, sort_keys=True) in readable
 
 
 def _reported_by(tree: RunTree, reference: dict) -> str:

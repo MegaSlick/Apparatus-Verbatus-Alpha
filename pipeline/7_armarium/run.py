@@ -35,10 +35,13 @@ from armarium_export import (  # noqa: E402
 )
 
 from common.chairs.registry import ChairRegistry  # noqa: E402
+from common.contracts.annotations import validate_annotations  # noqa: E402
 from common.contracts.canonical import digest_bytes, verify_self_hash  # noqa: E402
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal  # noqa: E402
 from common.contracts.outcomes import (  # noqa: E402
+    TEXT_STATUSES,
     ArmariumCategory,
+    derive_record_text_status,
     require_approval,
     run_aggregate,
     terminal_category,
@@ -528,11 +531,35 @@ def verify_established_record(
     if not isinstance(reading_payload, dict):
         raise FatalAccounting("an established Perlectio has no payload")
     reading_regions = reading_basis_regions(reading, f"established Perlectio of {act['act_id']}")
+    # The older annotation layer, reconciled through the one shared validator
+    # rather than by raw equality. The Archetypus NORMALIZES what it seals — an
+    # `illegible` note may legally arrive without `witness_evidence` and the
+    # sealed form always carries it — so comparing the sealed (normalized) copy
+    # against the reading's raw one would refuse a perfectly correct record the
+    # day the first real annotation is produced. Both sides go through
+    # `validate_annotations` (witnesses=None: the roster lives in the reading's
+    # basis, and attribution was already checked where it was sealed), and the
+    # validated forms must be identical.
+    try:
+        sealed_annotations = validate_annotations(
+            payload.get("annotations"), payload.get("text", ""), None, "Archetypus annotation"
+        )
+        reading_annotations = validate_annotations(
+            reading_payload.get("annotations", []),
+            payload.get("text", ""),
+            None,
+            "accepted Perlectio annotation",
+        )
+    except SchemaRefusal as error:
+        raise FatalAccounting(
+            "an Archetypus damage layer cannot be reconciled with its accepted Perlectio"
+        ) from error
     if (
         payload.get("text") != reading_payload.get("text")
         or payload.get("regions") != reading_regions
         or payload.get("provenance") != reading_payload.get("provenance")
         or payload.get("dissent_ref") != reading_ref
+        or sealed_annotations != reading_annotations
     ):
         raise FatalAccounting(
             "an Archetypus does not exactly preserve the Perlectio its review accepted"
@@ -549,6 +576,28 @@ def verify_established_record(
         validate_uncertainty(payload["uncertainty"], payload["text"])
     except SchemaRefusal as error:
         raise FatalAccounting("an Archetypus uncertainty layer is malformed") from error
+
+    # Recomputed from the two damage layers just proven equal to the reading's own,
+    # never read out of the record and believed. `text_status` is the field that
+    # says whether the one established reading is whole, and export had no opinion
+    # about it at all: a record could claim `established` over a text its own gap
+    # list says was partly unread, and every other check here would pass. This is
+    # also where that word enters the export -- the projection, the products, and
+    # the run aggregate all take it from this checked value.
+    try:
+        expected_text_status = derive_record_text_status(
+            payload.get("text"), payload.get("annotations"), payload.get("uncertainty")
+        )
+    except SchemaRefusal as error:
+        raise FatalAccounting(
+            "an Archetypus damage layer cannot be read for the status of its own text"
+        ) from error
+    if payload.get("text_status") != expected_text_status:
+        raise FatalAccounting(
+            f"an Archetypus claims text_status {payload.get('text_status')!r} over a reading "
+            f"whose own gaps and annotations say {expected_text_status!r}; a damaged act may "
+            "not leave the pipeline described as a whole one"
+        )
 
     expected_inputs = [review_ref, reading_ref] + [
         context.input_ref(region["image_path"]) for region in reading_regions
@@ -641,6 +690,10 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
 
     categories: dict[str, ArmariumCategory] = {}
     coverages: dict[str, dict] = {}
+    # One entry per *delivered* act: what its Archetypus record says about its own
+    # text. A held act has no record for a status to describe, so it has no entry
+    # here, and `run_aggregate` refuses one.
+    act_text_status: dict[str, str] = {}
     # The page each act was marked out on, straight from the proposal seal, so the
     # aggregate can tell a sealed page that produced nothing from one that produced
     # acts. Without it a silent page reconciles behind its busy neighbours.
@@ -709,6 +762,12 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                         {
                             # The Archetypus's own field. Nothing else may reach here.
                             "text": payload["text"],
+                            # The two things the record says *about* that text, which
+                            # travel with it or the export describes a damaged act as
+                            # a whole one: the status verified above, and the older
+                            # annotation layer carried whole rather than replaced.
+                            "text_status": payload["text_status"],
+                            "transcription_annotations": payload["annotations"],
                             "provenance": provenance,
                             "source_regions": source_regions,
                             "perlectio_ref": payload["perlectio_ref"],
@@ -746,6 +805,16 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     "a delivered Armarium entry has no literal Archetypus text; an export "
                     "may not substitute or fall back to another reading"
                 )
+            # Checked the same way and for the same reason as the literal beside it:
+            # a delivered act reaching the aggregate with no status would be counted
+            # as merely unmeasured, and this stage has just verified one.
+            text_status = entry.get("text_status")
+            if text_status not in TEXT_STATUSES:
+                raise FatalAccounting(
+                    "a delivered Armarium entry has no established-text status; an act the "
+                    "pipeline knows is damaged may not be aggregated as an unmeasured one"
+                )
+            act_text_status[act_key] = text_status
         else:
             canonical_clean_text = None
         projected_acts.append(
@@ -756,6 +825,12 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 # This is intentionally the same literal object value just read
                 # from the Archetypus; no writer receives another text source.
                 "canonical_clean_text": canonical_clean_text,
+                # Beside the literal, never instead of it, and `None` for an act
+                # with no established reading exactly as the literal is: an
+                # absent status is "this act has no record", not "this act was
+                # whole".
+                "text_status": entry.get("text_status"),
+                "transcription_annotations": entry.get("transcription_annotations"),
                 "provenance": entry.get("provenance"),
                 "source_regions": entry.get("source_regions", []),
                 "reason": entry.get("reason"),
@@ -784,6 +859,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         census,
         unaddressed_chairs=unaddressed,
         act_pages=act_pages,
+        act_text_status=act_text_status,
     )
     expected_count = len(expected)
     if len(categories) != expected_count:
@@ -809,6 +885,9 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "coverage_records": coverages,
                 "unaddressed_chairs": unaddressed,
                 "act_pages": act_pages,
+                # Non-text, and the reason the exported `partial` over a damaged act
+                # is recomputable on a clean machine rather than merely asserted.
+                "act_text_status": act_text_status,
             },
         ),
         formats,

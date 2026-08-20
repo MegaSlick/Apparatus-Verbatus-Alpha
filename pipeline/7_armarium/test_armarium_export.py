@@ -11,9 +11,11 @@ from zipfile import ZIP_DEFLATED, ZIP_STORED, ZipFile
 
 import pytest
 from armarium_export import (
+    CANONICAL_TEXT_FIELD,
     EXPORT_MANIFEST_NAME,
     ArmariumProjection,
     _page_ledger_category,
+    _terminal_ledger,
     _zip_bytes,
     build_armarium_bundle,
     canonical_text_sha256,
@@ -80,6 +82,8 @@ def _projection(*, salvage_items=()) -> ArmariumProjection:
                 "category": "delivered",
                 "canonical_clean_text": "Cǣsar d’Amours",
                 "uncertainty": {"uncertain_spans": [], "gaps": [], "self_revisions": []},
+                "text_status": "established",
+                "transcription_annotations": [],
                 "provenance": {"chair": "perlector"},
                 "source_regions": [region],
                 "reason": None,
@@ -136,9 +140,37 @@ def _projection(*, salvage_items=()) -> ArmariumProjection:
             },
             "unaddressed_chairs": [],
             "act_pages": {"one": [1], "two": [1]},
+            "act_text_status": {"one": "established"},
         },
         salvage_items=tuple(salvage_items),
     )
+
+
+def _damaged_delivered(
+    projection: ArmariumProjection, *, text_status: str, **act_fields
+) -> ArmariumProjection:
+    """A projection whose delivered act is damaged, said the same way everywhere.
+
+    The act's own `text_status`, the aggregate basis's `act_text_status`, and the
+    aggregate measured from that basis are one statement, and the export now
+    refuses a projection where they disagree. Building them by hand per test is
+    how they would come to disagree for a reason nobody meant.
+    """
+    delivered = {**projection.acts[0], "text_status": text_status, **act_fields}
+    acts = (delivered, *projection.acts[1:])
+    basis = {
+        **projection.aggregate_basis,
+        "act_text_status": {delivered["act_key"]: text_status},
+    }
+    aggregate = run_aggregate(
+        {act["act_key"]: ArmariumCategory(act["category"]) for act in acts},
+        basis["coverage_records"],
+        {page["ordinal"]: page for page in projection.pages},
+        unaddressed_chairs=basis["unaddressed_chairs"],
+        act_pages=basis["act_pages"],
+        act_text_status=basis["act_text_status"],
+    )
+    return replace(projection, acts=acts, aggregate=aggregate, aggregate_basis=basis)
 
 
 def _two_region_projection() -> ArmariumProjection:
@@ -629,6 +661,7 @@ def test_unselected_format_members_cannot_hide_inside_a_self_consistent_bundle(t
     # mismatch a single selected literal format now produces.
     manifest["canonical_text"]["identity_verified_across"] = []
     manifest["claims"]["uncertainty"]["carried_by"] = ["jsonl"]
+    manifest["claims"]["transcription_annotations"]["carried_by"] = ["jsonl"]
     manifest["self_hash"] = self_hash(manifest)
     members[EXPORT_MANIFEST_NAME] = canonical_bytes(manifest)
 
@@ -865,6 +898,8 @@ def test_text_bundle_keeps_every_cited_source_folder_when_no_act_is_delivered(tm
             category="held-for-review",
             canonical_clean_text=None,
             uncertainty=None,
+            text_status=None,
+            transcription_annotations=None,
             provenance=None,
             source_regions=[],
         )
@@ -873,6 +908,7 @@ def test_text_bundle_keeps_every_cited_source_folder_when_no_act_is_delivered(tm
         replace(
             original,
             acts=tuple(held),
+            aggregate_basis={**original.aggregate_basis, "act_text_status": {}},
             aggregate={
                 "status": "partial",
                 "reasons": ["act one is held-for-review", "act two is held-for-review"],
@@ -922,6 +958,8 @@ def test_source_root_and_a_named_source_root_folder_cannot_collide(tmp_path):
             "category": "held-for-review",
             "canonical_clean_text": None,
             "uncertainty": None,
+            "text_status": None,
+            "transcription_annotations": None,
             "provenance": None,
             "source_regions": [],
         }
@@ -950,6 +988,7 @@ def test_source_root_and_a_named_source_root_folder_cannot_collide(tmp_path):
             aggregate_basis={
                 **original.aggregate_basis,
                 "act_pages": {"one": [1, 2], "two": [1, 2]},
+                "act_text_status": {},
             },
         ),
         _formats(embed_pixels=False),
@@ -1428,6 +1467,8 @@ def test_a_held_page_makes_the_bundle_partial_where_the_run_aggregate_reconciles
             "category": ArmariumCategory.CONFIRMED_BLANK.value,
             "canonical_clean_text": None,
             "uncertainty": None,
+            "text_status": None,
+            "transcription_annotations": None,
             "provenance": None,
             "source_regions": [],
             "reason": None,
@@ -1448,11 +1489,17 @@ def test_a_held_page_makes_the_bundle_partial_where_the_run_aggregate_reconciles
         {1: dict(original.pages[0])},
         unaddressed_chairs=[],
         act_pages=original.aggregate_basis["act_pages"],
+        act_text_status={},
     )
     assert aggregate == {**aggregate, "status": "complete", "reasons": []}
 
     bundle = build_armarium_bundle(
-        replace(original, acts=acts, aggregate=aggregate),
+        replace(
+            original,
+            acts=acts,
+            aggregate=aggregate,
+            aggregate_basis={**original.aggregate_basis, "act_text_status": {}},
+        ),
         _formats(embed_pixels=False),
         _source_bytes,
     )
@@ -1512,6 +1559,7 @@ def test_a_refused_source_and_a_silent_page_each_land_in_a_named_set(tmp_path):
             {page["ordinal"]: page for page in pages},
             unaddressed_chairs=[],
             act_pages=base.aggregate_basis["act_pages"],
+            act_text_status=base.aggregate_basis["act_text_status"],
         ),
     )
     bundle = build_armarium_bundle(projection, _formats(embed_pixels=False), _source_bytes)
@@ -1872,9 +1920,12 @@ def test_unicode_uncertainty_offsets_survive_every_literal_projection(tmp_path, 
             }
         ],
     }
-    projection = _projection()
-    delivered = {**projection.acts[0], "canonical_clean_text": text, "uncertainty": layer}
-    projection = replace(projection, acts=(delivered, projection.acts[1]))
+    # A trailing gap is unread ink, so the act's own status is `partial` and the
+    # run that delivered it says so; this test is about the offsets surviving,
+    # and the damage record travelling with them is the rest of the same claim.
+    projection = _damaged_delivered(
+        _projection(), text_status="partial", canonical_clean_text=text, uncertainty=layer
+    )
     bundle = build_armarium_bundle(projection, _formats(embed_pixels=False), _source_bytes)
     members = _members(bundle.data)
     assert json.loads(members["acts.jsonl"].splitlines()[0])["uncertainty"] == layer
@@ -1889,3 +1940,321 @@ def test_unicode_uncertainty_offsets_survive_every_literal_projection(tmp_path, 
             "SELECT uncertainty_json FROM acts WHERE act_id = 'act-1'"
         ).fetchone()[0]
     assert json.loads(stored) == layer
+
+
+# --- The damage record: text_status and the transcription annotation layer ------
+#
+# Opus-F1 / Sol-S4 (T0 export honesty). The Archetypus knew an act was damaged; nothing here read
+# the field, so a partial act was exported and aggregated exactly like a whole one
+# and the run said `complete` with an empty reason list. These are the projection-
+# layer half of that repair; the end-to-end demonstration through the real CLIs is
+# `pipeline/6_archetypus/test_annotations.py`.
+
+
+def _internal_gap_layer(text: str) -> dict:
+    middle = len(text) // 2
+    return {
+        "uncertain_spans": [],
+        "gaps": [{"position": "internal", "start": middle, "end": middle, "witness_evidence": []}],
+        "self_revisions": [],
+    }
+
+
+def _partial_projection() -> ArmariumProjection:
+    base = _projection()
+    literal = base.acts[0][CANONICAL_TEXT_FIELD]
+    return _damaged_delivered(base, text_status="partial", uncertainty=_internal_gap_layer(literal))
+
+
+def test_a_delivered_act_with_a_gap_reaches_every_selected_literal_format(tmp_path):
+    """Spec 11's honesty, measured on the written product rather than asserted.
+
+    One schema-legal internal gap: the status says `partial` in the readable
+    bundle, the JSONL hand-off and the acts database, the run aggregate names the
+    act, and the terminal ledger folds that reason in.
+    """
+    bundle = build_armarium_bundle(
+        _partial_projection(), _formats(embed_pixels=False), _source_bytes
+    )
+    members = _members(bundle.data)
+
+    assert "text_status: partial" in members[TEXT_REGISTER].decode("utf-8")
+    row = json.loads(members["acts.jsonl"].splitlines()[0])
+    assert row["text_status"] == "partial"
+    assert row["transcription_annotations"] == []
+    database = tmp_path / "acts.sqlite"
+    database.write_bytes(members["acts.sqlite"])
+    with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            "SELECT text_status FROM acts WHERE act_id = 'act-1'"
+        ).fetchone() == ("partial",)
+
+    manifest = verify_export_bundle(bundle.data, tmp_path / "clean")
+    assert manifest["aggregate"]["status"] == "partial"
+    assert any(
+        reason.startswith("act one was delivered with partial text")
+        for reason in manifest["aggregate"]["reasons"]
+    ), manifest["aggregate"]["reasons"]
+    assert manifest["claims"]["status"] == "partial"
+
+
+def test_a_projection_claiming_established_over_its_own_gap_is_refused():
+    """The status is recomputed, never carried: the whole finding in one assertion."""
+    projection = _partial_projection()
+    dishonest = {**projection.acts[0], "text_status": "established"}
+    with pytest.raises(SchemaRefusal, match="may not be projected as a whole one"):
+        build_armarium_bundle(
+            replace(projection, acts=(dishonest, *projection.acts[1:])),
+            _formats(embed_pixels=False),
+            _source_bytes,
+        )
+
+
+def test_a_package_edited_to_call_a_damaged_act_whole_is_refused_on_a_clean_machine(tmp_path):
+    """A self-hash proves the manifest was not edited afterwards, not that it was true.
+
+    Every row, the source graph, the aggregate and its basis are rewritten here to
+    the reassuring value, so nothing inside the package disagrees with anything
+    else. What refuses it is the layer the damage actually lives in: the gap is
+    still carried beside the literal, and the verifier derives the status from it.
+    """
+    bundle = build_armarium_bundle(
+        _partial_projection(), _formats(embed_pixels=False), _source_bytes
+    )
+    members = _members(bundle.data)
+
+    rows = [json.loads(line) for line in members["acts.jsonl"].decode("utf-8").splitlines()]
+    for row in rows:
+        if row["text_status"] == "partial":
+            row["text_status"] = "established"
+    members["acts.jsonl"] = b"".join(canonical_bytes(row) + b"\n" for row in rows)
+    text = (
+        members[TEXT_REGISTER]
+        .decode("utf-8")
+        .replace("text_status: partial", "text_status: established")
+    )
+    members[TEXT_REGISTER] = text.encode("utf-8")
+    sources = json.loads(members["sources.json"])
+    for outcome in sources["act_outcomes"]:
+        if outcome["text_status"] == "partial":
+            outcome["text_status"] = "established"
+    sources["aggregate_basis"]["act_text_status"] = {"one": "established"}
+    members["sources.json"] = canonical_bytes(sources)
+    manifest = json.loads(members[EXPORT_MANIFEST_NAME])
+    manifest["aggregate"] = run_aggregate(
+        {"one": ArmariumCategory.DELIVERED, "two": ArmariumCategory.HELD_FOR_REVIEW},
+        sources["aggregate_basis"]["coverage_records"],
+        {page["ordinal"]: page for page in sources["pages"]},
+        unaddressed_chairs=[],
+        act_pages=sources["aggregate_basis"]["act_pages"],
+        act_text_status={"one": "established"},
+    )
+    manifest["aggregate_basis"] = sources["aggregate_basis"]
+    # And the ledger the manifest's own top-level status is read from, so the
+    # package is green everywhere and nothing inside it disagrees with anything
+    # else. Without this the (correct) ledger mismatch refuses first and the
+    # row-level derivation this test is about is never reached.
+    ledger = _terminal_ledger(
+        sources["act_outcomes"],
+        sources["pages"],
+        sources["aggregate_basis"]["act_pages"],
+        manifest["aggregate"],
+    )
+    manifest["claims"]["terminal_ledger"] = ledger
+    manifest["claims"]["status"] = ledger["status"]
+    manifest["claims"]["partial_reasons"] = ledger["unresolved_reasons"]
+    for member in ("acts.jsonl", TEXT_REGISTER, "sources.json"):
+        row = next(item for item in manifest["members"] if item["path"] == member)
+        row["sha256"] = digest_bytes(members[member])
+        row["bytes"] = len(members[member])
+    _refresh_manifest(members, manifest)
+
+    with pytest.raises(SchemaRefusal, match="may not be projected as a whole one"):
+        verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
+
+
+def test_a_row_claiming_produced_semantic_annotations_is_refused(tmp_path):
+    """The fixed claim is checked from the product side, not only asserted.
+
+    Nothing in this repository produces a semantic annotation, so a packaged row
+    saying one was produced must be refused by the verifier that knows that —
+    not accepted because nothing disproves it.
+    """
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    rows = [json.loads(line) for line in members["acts.jsonl"].decode("utf-8").splitlines()]
+    for row in rows:
+        if row["category"] == "delivered":
+            row["semantic_annotations"] = [{"kind": "person", "value": "Jean"}]
+    members["acts.jsonl"] = b"".join(canonical_bytes(row) + b"\n" for row in rows)
+    _refresh_manifest_member(members, "acts.jsonl")
+
+    with pytest.raises(SchemaRefusal, match="semantic annotation claim"):
+        verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
+
+
+def test_a_non_delivered_row_carrying_a_text_status_is_refused(tmp_path):
+    """An act with no Archetypus record has no status for a row to describe.
+
+    The projection boundary already refuses this shape at build time; this pins
+    the same refusal on a clean machine reading the packaged product, where a
+    rebuilt-around package would otherwise be the only carrier.
+    """
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    rows = [json.loads(line) for line in members["acts.jsonl"].decode("utf-8").splitlines()]
+    for row in rows:
+        if row["category"] != "delivered":
+            row["text_status"] = "established"
+    members["acts.jsonl"] = b"".join(canonical_bytes(row) + b"\n" for row in rows)
+    _refresh_manifest_member(members, "acts.jsonl")
+
+    with pytest.raises(SchemaRefusal, match="non-delivered acts JSONL row"):
+        verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
+
+
+def test_a_package_whose_basis_alone_calls_a_damaged_act_whole_is_refused(tmp_path):
+    """The smaller, easier edit than the full rewrite above: ONLY the aggregate
+    basis — the copy the run's verdict is computed from — is edited to
+    `established`, while every row honestly still says `partial`. The row-level
+    derivation cannot see this one; the basis-vs-rows comparison is what
+    refuses it, so the verdict can never rest on an unchecked copy of the
+    damage record.
+    """
+    bundle = build_armarium_bundle(
+        _partial_projection(), _formats(embed_pixels=False), _source_bytes
+    )
+    members = _members(bundle.data)
+
+    sources = json.loads(members["sources.json"])
+    sources["aggregate_basis"]["act_text_status"] = {"one": "established"}
+    members["sources.json"] = canonical_bytes(sources)
+    manifest = json.loads(members[EXPORT_MANIFEST_NAME])
+    manifest["aggregate"] = run_aggregate(
+        {"one": ArmariumCategory.DELIVERED, "two": ArmariumCategory.HELD_FOR_REVIEW},
+        sources["aggregate_basis"]["coverage_records"],
+        {page["ordinal"]: page for page in sources["pages"]},
+        unaddressed_chairs=[],
+        act_pages=sources["aggregate_basis"]["act_pages"],
+        act_text_status={"one": "established"},
+    )
+    manifest["aggregate_basis"] = sources["aggregate_basis"]
+    ledger = _terminal_ledger(
+        sources["act_outcomes"],
+        sources["pages"],
+        sources["aggregate_basis"]["act_pages"],
+        manifest["aggregate"],
+    )
+    manifest["claims"]["terminal_ledger"] = ledger
+    manifest["claims"]["status"] = ledger["status"]
+    manifest["claims"]["partial_reasons"] = ledger["unresolved_reasons"]
+    row = next(item for item in manifest["members"] if item["path"] == "sources.json")
+    row["sha256"] = digest_bytes(members["sources.json"])
+    row["bytes"] = len(members["sources.json"])
+    _refresh_manifest(members, manifest)
+
+    with pytest.raises(SchemaRefusal, match="does not carry exactly the delivered acts"):
+        verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
+
+
+def test_a_sealed_transcription_annotation_is_never_replaced_by_the_semantic_claim(tmp_path):
+    """Sol-S4's second field failure, at the layer that wrote the replacement.
+
+    Every row used to carry `annotations: []` and `annotation_status:
+    "not-produced"` — a true statement about the unbuilt *semantic* layer, written
+    over an act whose Archetypus record had sealed a real `illegible` mark. Both
+    layers now travel under their own names and both are asserted here.
+    """
+    literal = _projection().acts[0][CANONICAL_TEXT_FIELD]
+    mark = {"kind": "illegible", "start": 3, "end": 3, "witness_evidence": []}
+    projection = _damaged_delivered(
+        _projection(), text_status="partial", transcription_annotations=[mark]
+    )
+    bundle = build_armarium_bundle(projection, _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+
+    row = json.loads(members["acts.jsonl"].splitlines()[0])
+    assert row["transcription_annotations"] == [mark]
+    assert row["semantic_annotations"] == []
+    assert row["semantic_annotation_status"] == "not-produced-pending-architecture-approval"
+    assert json.dumps([mark], ensure_ascii=False, sort_keys=True) in members[TEXT_REGISTER].decode(
+        "utf-8"
+    )
+    database = tmp_path / "acts.sqlite"
+    database.write_bytes(members["acts.sqlite"])
+    with sqlite3.connect(database) as connection:
+        stored, semantic, status = connection.execute(
+            "SELECT transcription_annotations_json, semantic_annotations_json, "
+            "semantic_annotation_status FROM acts WHERE act_id = 'act-1'"
+        ).fetchone()
+    assert json.loads(stored) == [mark]
+    assert json.loads(semantic) == []
+    assert status == "not-produced-pending-architecture-approval"
+
+    manifest = verify_export_bundle(bundle.data, tmp_path / "clean")
+    # The package says both things about annotations, and says which is which.
+    assert manifest["claims"]["semantic_annotations"] == {
+        "status": "semantic-annotations-not-produced",
+        "text_writable": False,
+    }
+    assert manifest["claims"]["transcription_annotations"]["carried_by"] == [
+        "acts-database",
+        "jsonl",
+        "text-bundle",
+    ]
+    # The literal that the mark anchors to is untouched by carrying it.
+    assert verify_projection_identity(bundle.data, tmp_path / "identity") == {"act-1": literal}
+
+
+def test_projection_identity_refuses_a_package_whose_formats_disagree_about_damage(tmp_path):
+    """Two deliverables cannot disagree about whether the same act is damaged.
+
+    The literal is byte-identical in every format, so the text comparison passes
+    by construction; the damage record is part of the same one reading and rides
+    in the same equality check (GOVERNANCE 5 does not stop at the characters).
+    """
+    bundle = build_armarium_bundle(
+        _partial_projection(), _formats(embed_pixels=False), _source_bytes
+    )
+    members = _members(bundle.data)
+    mark = {"kind": "illegible", "start": 1, "end": 1, "witness_evidence": []}
+    rows = [json.loads(line) for line in members["acts.jsonl"].decode("utf-8").splitlines()]
+    for row in rows:
+        if row["text_status"] is not None:
+            row["transcription_annotations"] = [mark]
+    members["acts.jsonl"] = b"".join(canonical_bytes(row) + b"\n" for row in rows)
+    _refresh_manifest_member(members, "acts.jsonl")
+
+    tampered = _zip_bytes(members)
+    # Package verification alone is green: the edited layer is well-formed, and
+    # `partial` is still the honest status for a row that carries a gap either way.
+    verify_export_bundle(tampered, tmp_path / "clean")
+    with pytest.raises(SchemaRefusal, match="projection differs"):
+        verify_projection_identity(tampered, tmp_path / "identity")
+
+
+def test_the_text_bundle_refuses_a_literal_section_with_no_damage_record(tmp_path):
+    """The status is not optional beside a delivered literal, and says so by name."""
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    lines = members[TEXT_REGISTER].decode("utf-8").split("\n")
+    marker = lines.index("text_status: established")
+    del lines[marker]
+    members[TEXT_REGISTER] = "\n".join(lines).encode("utf-8")
+    _refresh_manifest_member(members, TEXT_REGISTER)
+
+    with pytest.raises(SchemaRefusal, match="no established-text status"):
+        verify_projection_identity(_zip_bytes(members), tmp_path)
+
+
+def test_the_text_bundle_refuses_two_established_text_statuses_for_one_literal(tmp_path):
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    lines = members[TEXT_REGISTER].decode("utf-8").split("\n")
+    marker = lines.index("text_status: established")
+    lines[marker:marker] = [lines[marker]]
+    members[TEXT_REGISTER] = "\n".join(lines).encode("utf-8")
+    _refresh_manifest_member(members, TEXT_REGISTER)
+
+    with pytest.raises(SchemaRefusal, match="more than one established-text status"):
+        verify_projection_identity(_zip_bytes(members), tmp_path)
