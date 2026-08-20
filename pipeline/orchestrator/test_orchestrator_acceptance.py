@@ -3707,6 +3707,14 @@ def test_hard_failure_policy_is_a_run_bound_configuration_not_a_late_local_defau
     edit to the recovery budget beside it — and refuses the sealed run for the
     same reason, before any stage reads a failure under a list it did not run
     under.
+
+    The refusal now comes from the orchestrator's own point of use rather than
+    from the Door's `config_digest`, and names this file instead of reporting that
+    *something* in the run's configuration moved. That is what sealing the policy
+    by name buys, and it is why the message this asserts changed: the test beside
+    it still shows `config_digest` refusing `recovery.toml` at the Door, because
+    the Door is where a run id is reused, while the run-level cap has a reader
+    that runs before any stage is invoked at all.
     """
     root = tmp_path / "runs"
     policy = tmp_path / "hard_failure.toml"
@@ -3722,7 +3730,7 @@ def test_hard_failure_policy_is_a_run_bound_configuration_not_a_late_local_defau
     )
     result = orchestrate(root, "r", "happy", hard_failure_config=policy)
     assert result.returncode == 2
-    assert "different config_digest" in result.stderr
+    assert "hard-failure configuration changed between" in result.stderr, result.stderr
     assert snapshot(root) == before
 
 
