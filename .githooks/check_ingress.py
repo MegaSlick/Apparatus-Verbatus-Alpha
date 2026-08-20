@@ -121,12 +121,15 @@ SECRET_PATTERNS = (
     # The exemption ends where the topic character set ends, not at a word
     # boundary: a hyphen is a topic character, so "docs-secret" is a topic,
     # not the docs path.
+    # Case-insensitivity covers only the host: topics are case-sensitive, so
+    # DOCS is a possible topic, not the docs path. The lookbehind is the host
+    # boundary — a word boundary would let example-ntfy.sh match.
     (
         "ntfy-topic",
         re.compile(
-            rb"\bntfy\.sh/(?!(?:docs|publish|app)(?![A-Za-z0-9_-]))"
-            rb"[A-Za-z0-9_-]{1,64}(?![A-Za-z0-9_-])",
-            re.I,
+            rb"(?<![A-Za-z0-9.-])(?i:ntfy\.sh)/"
+            rb"(?!(?:docs|publish|app)(?![A-Za-z0-9_-]))"
+            rb"[A-Za-z0-9_-]{1,64}(?![A-Za-z0-9_-])"
         ),
     ),
     (

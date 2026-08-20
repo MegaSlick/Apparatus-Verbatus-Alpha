@@ -599,6 +599,21 @@ def test_ntfy_topic_url_is_refused_regardless_of_host_case_or_topic_length(repo)
 
 
 @SCANNER_CORE
+def test_the_exemption_is_case_sensitive_and_the_host_boundary_is_real(repo):
+    # Topics are case-sensitive: DOCS is a possible topic, not the docs path.
+    upper_reserved = "# see https://ntfy" + ".sh/" + "DOCS" + "\n"
+    write(repo, "notes.py", upper_reserved)
+    stage(repo, "notes.py")
+    assert run_scan(repo, "--staged").returncode == 1
+
+    # An unrelated host that merely ends in the letters is not ntfy.
+    other_host = "# see https://example-ntfy" + ".sh/" + "sometopic" + "\n"
+    write(repo, "notes.py", other_host)
+    stage(repo, "notes.py")
+    assert run_scan(repo, "--staged").returncode == 0
+
+
+@SCANNER_CORE
 def test_a_sixty_five_character_run_is_not_a_topic_in_either_shape(repo):
     # ntfy's topic limit is 64 characters: a longer run cannot be a working
     # topic, and refusing its first 64 characters would be the over-refusal
