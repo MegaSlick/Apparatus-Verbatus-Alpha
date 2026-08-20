@@ -147,9 +147,20 @@ def test_declared_pages_match_the_rendered_pages(skeleton):
         assert hashlib.sha256(stored.read_bytes()).hexdigest() == declared["sha256"]
 
 
-def test_the_ink_free_page_is_restricted_to_its_integration_scenario(skeleton):
+def test_the_ink_free_page_is_restricted_to_its_integration_scenarios(skeleton):
     blank = next(page for page in skeleton["page"] if page["ordinal"] == 3)
-    assert blank["scenarios"] == ["ink-free-page"]
+    # Two scenarios, the same page: one declares an empty witness response per
+    # chair for the minted fallback act and completes as a proved blank; the
+    # other declares none and must hold instead (Sol-S1).
+    assert blank["scenarios"] == ["ink-free-page", "ink-free-page-unwitnessed"]
+    # Both scenarios declare no recovery and no scenario-level holds: the
+    # unwitnessed act holds through the WITNESS shortfall alone, so a stray
+    # declaration here would let the red demonstration pass for the wrong
+    # reason.
+    for name in ("ink-free-page", "ink-free-page-unwitnessed"):
+        scenario = next(row for row in skeleton["scenario"] if row["name"] == name)
+        assert scenario["recover_acts"] == []
+        assert scenario["hold_acts"] == []
     source = next(page for page in ALL_PAGES if page["ordinal"] == 3)
     assert source["acts"] == ()
     _, _, rows = decode_grayscale_png(render_page(source))
@@ -289,6 +300,7 @@ def test_the_scenarios_are_exactly_the_declared_ones(skeleton):
         "no-readable-text-reading",
         "structure-failure",
         "ink-free-page",
+        "ink-free-page-unwitnessed",
         "reread-failure",
         "reread-success",
         "not-run-witness",
@@ -371,6 +383,17 @@ def test_the_completed_empty_witness_is_declared_for_a_known_scenario_and_chair(
             "act_key": "a1",
             "chair": "attestator_3",
         },
+        # The minted fallback act over the ink-free page. These three rows are
+        # what `ink-free-page` used to get for free from the act's identity,
+        # with no response boundary consulted at all: three chairs recorded as
+        # having independently read a page none of them was asked about
+        # (Sol-S1). `ink-free-page-unwitnessed` is deliberately absent from
+        # this table, and its act must therefore hold.
+        {"scenario": "ink-free-page", "act_key": "page-fallback:3", "chair": "attestator_1"},
+        {"scenario": "ink-free-page", "act_key": "page-fallback:3", "chair": "attestator_2"},
+        {"scenario": "ink-free-page", "act_key": "page-fallback:3", "chair": "attestator_3"},
+        # (Held below to exactly the configured roster, derived rather than
+        # listed, so adding a fourth chair to models.toml turns this red.)
         # Every configured chair, so `confirmed-blank` has a genuine unanimous
         # absence for the Recensor's blank corroboration to confirm.
         {"scenario": "confirmed-blank", "act_key": "a1", "chair": "attestator_1"},
@@ -388,6 +411,15 @@ def test_the_completed_empty_witness_is_declared_for_a_known_scenario_and_chair(
     # equally describe a chair whose declared testimony was itself blank. The
     # dissent this scenario exists to exercise requires real, non-empty text.
     assert TESTIMONY["a1"]["attestator_3"].strip()
+
+    # Derived, not listed: the fallback act's empty responses must cover
+    # exactly the configured witness roster, one row per chair, so a roster
+    # change turns this red instead of silently under-witnessing the blank.
+    fallback_rows = [row for row in rows if row["scenario"] == "ink-free-page"]
+    assert sorted(row["chair"] for row in fallback_rows) == sorted(
+        configured_witness_chairs(models_config)
+    )
+    assert {row["act_key"] for row in fallback_rows} == {"page-fallback:3"}
 
 
 def test_the_declared_reading_failure_outcomes_are_never_completed_class(skeleton):

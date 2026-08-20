@@ -79,7 +79,11 @@ Every configured chair has one explicit outcome per act per attempt:
 
 - `read` and `genuinely-empty` mean a chair actually read the exact regions and
   carry a serving receipt. `genuinely-empty` has native `payload=""`; it is never
-  represented by an empty file.
+  represented by an empty file. Both are **derived from a retained, recordable
+  response to that exact request** — same boundary, same retention, and the only
+  difference between them is whether the retained body has characters in it. No
+  act, page, or identity reaches either outcome by being a particular kind of
+  thing.
 - `failed` means an attempt reached the response boundary but produced no usable
   Testimonium. It also carries the attempted region inputs and a receipt.
 - `dead` means an `AbsentChair`: the chair was unavailable and no attempt reached
@@ -91,14 +95,36 @@ Every configured chair has one explicit outcome per act per attempt:
   Stage 3 does not yet resolve that identifier to verified Tyrel approval-record
   bytes. The positive approved-exclusion path is therefore not implemented.
 
-For a Designator page-fallback act, this stage computes `genuinely-empty` for
-every configured chair from the act's derived identity (`_is_page_fallback`),
-with no fixture declaration. This is the one witness outcome not driven by a
-declaration table. Whether a real serving implementation may keep that
-short-circuit and skip provider calls for fallback pages remains an open ruling
-for Tyrel: the 2026-08-11 fallback ruling intended fallback crops to be read
-downstream. The current path is pinned by
-`test_an_ink_free_page_fallback_is_witnessed_and_read_end_to_end`.
+A Designator page-fallback act is witnessed exactly like any other proposed act.
+This used to be the one exception: the stage recognized the minted identity
+(`_is_page_fallback`) and wrote `genuinely-empty` for every configured chair
+before consulting any response boundary, then gave each record the proposal
+regions, marked it attempted, minted a serving receipt and recorded
+trusted-boundary health — three chairs on disk as having independently read a
+page none of them was asked about, which the Recensor could then seal
+`confirmed-blank` on (Sol-S1). The branch and its identity check are both gone;
+nothing in this stage asks what kind of act it is reading.
+
+So the fallback crop goes through the same response boundary as any other
+proposed region, and a missing response is `not-run` (whole pass) or `failed`
+(targeted reread) and holds the act. It is never an empty report: a `not-run`
+record leaves every content-health fact `null`, because emptiness that nobody
+measured is unknown rather than absent. `ink-free-page` declares one empty
+witness response per chair for `page-fallback:3` and completes as a
+`confirmed-blank`; `ink-free-page-unwitnessed` is the same page with those three
+declarations removed and holds instead. Both are pinned end to end
+(`test_an_ink_free_page_fallback_is_witnessed_and_read_end_to_end`,
+`test_an_undeclared_fallback_witness_holds_the_act_instead_of_reporting_it_blank`),
+and the resolution itself in
+`pipeline/3_attestatores/test_page_fallback_witnessing.py`.
+
+That closes the open ruling this section used to carry. It asked whether a real
+serving implementation might keep the short-circuit and skip provider calls for
+fallback pages; the question does not survive the answer to the narrower one,
+because the outcome it would have skipped to is a positive claim about what a
+witness reported. A real implementation may make fallback pages cheap however it
+likes — a cheaper model, a coarser crop, a page-scoped call — but whatever it
+does has to produce a response this stage retains, or the act holds.
 
 `provenance` holds the exact resolved identity/revision and, only for attempted
 outcomes, the digest-checked serving receipt. A failed or absent chair cannot be
@@ -180,6 +206,24 @@ through the shared `latest_attempt()` discipline. Thus a later `failed` attempt
 is current and visible, while the earlier successful attempt remains retained
 history. A missing or gapped history is refused rather than repaired or selected
 around.
+
+### The page record's own outcome
+
+R0 has no live page-scoped witness. A page Testimonium is `page_join`'s
+concatenation of one chair's own act attempts on that page, so its outcome comes
+from the joined text and not from the shape of the list that produced it:
+`failed` when no attempt joined at all — or when the join could not carry
+every attempt and the carried ones were all empty, because a completed absence
+may only be claimed over a page this chair's join fully read (invariant 6);
+`genuinely-empty` when every attempt joined and every one delivered an empty
+body; `read` when the text carries a delivered character (delivered characters
+beside disclosed omissions claim less, not more). Separators are placed only *between* delivered characters.
+Joining every payload including the empty ones and calling the result `read`
+whenever the list was non-empty gave a page of genuinely-empty acts
+`payload="\n"` under a reading outcome — characters no act delivered, retained
+as testimony to them (CodeRabbit W44). An act whose reading the join could not
+carry is disclosed in `unjoined_act_attempts`; an act it carried as empty is not,
+because it was carried.
 
 ## Act-attachment schema (R4)
 
