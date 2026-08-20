@@ -599,9 +599,13 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # (Values below re-measured twice at the final candidate — after the last byte
 # changed — through this module's own `orchestrate` and `semantic_snapshot_digest`
 # helpers, per the Tier-0 loop lesson that a pin measured mid-branch is a pin
-# measured against a tree nobody pushed.)
-HAPPY_RUN_TREE_DIGEST = "0be2bd427b5ecd6331e6ed039fdefbb797851c782db7e5c9dd1fb1daade3794a"
-REVIEW_RUN_TREE_DIGEST = "160e6352c589f3b39564ce6637fa6ff94104c0ee26fac9e1001805a9a625ee60"
+# measured against a tree nobody pushed. They moved a second time when the
+# CodeRabbit round reworded `config/designator_geometry.toml`'s caveat, which is
+# that lesson arriving on schedule: the first measurement was taken before the
+# review, and a review that changes a sealed configuration file changes the pins
+# with it.)
+HAPPY_RUN_TREE_DIGEST = "c612c175e613a64adc9c4d8bb44586a675dd7b32f5bbe82a5e07d8eab9dfb248"
+REVIEW_RUN_TREE_DIGEST = "d5c9470301b4cb1c82c1f4d0a1d2486136ef8c53079f93abacf53840e21648a2"
 
 
 def orchestrate(
