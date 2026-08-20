@@ -142,8 +142,8 @@ independent, page-edge-based check for whether the *geometry itself* looks like
 a page-break continuation; it is recorded, never gating, because a declared
 continuation whose crops do not happen to touch either page's edge (as in this
 stage's own synthetic fixture) is still a genuine continuation. **Continuation
-ownership itself is unresolved between specs 06 and 09** — see "What this
-handoff does not settle" below.
+ownership is settled and is the Recensor's** — see "Continuation ownership"
+below; this record is corroboration, never the relation itself.
 
 ## `kind="page-fallback"`
 

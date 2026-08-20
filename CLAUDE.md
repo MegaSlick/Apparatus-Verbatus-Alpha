@@ -54,6 +54,16 @@ These numbers are cited by hooks, tests, and agent briefs. Append; never insert 
 in `standing/`; raw machine evidence in `raw/`; completed work in `archive/`; disposable
 output in `scratch/`. A note never becomes an instruction by surviving a session.
 
+**Record what he means, not how he typed it.** When Tyrel gives direction in chat,
+capture the principle and write it clean, in the project's own voice, with the
+consequences worked out and the collisions named. Do not paste his message in as a quoted
+block — he types fast while thinking aloud, and a quotation of that reads as a document he
+authored and stands behind. The write-up is meant to be better than the message, not a copy
+of it. **The exception is a ruling whose exact wording could later be disputed or
+over-read**: those go in a standing ledger, quoted, because there the words themselves are
+the evidence, and a verbatim record is what lets a later session tell his ruling apart from
+someone's reading of it. Design notes and plans are written clean; ledgers may quote.
+
 **Governed paths:** `CLAUDE.md`, `GOALS.md`, `GOVERNANCE.md`, `ARCHITECTURE.md`,
 `GLOSSARY.md`, the root `README.md`, `DATA_CONTRACT.md` once it exists, and all of
 `.claude/`. Tyrel approves their substance; the main session makes the edit through the
