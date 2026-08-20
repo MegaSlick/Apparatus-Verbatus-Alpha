@@ -497,6 +497,49 @@ recovery kind names a different owning stage and not a substitute crop. A comman
 without that exact request does not cut a crop. The orchestrator, not this stage,
 decides whether such a request is outstanding and invokes this program.
 
+**A recrop must add coverage, and that is checked over pixels rather than over
+transform identity.** The requested rectangle is validated against its page
+first, so a degenerate or off-page one is refused as a rectangle rather than
+measured as one. Then two refusals in order: the rectangle already cut for this
+act under the same transform is a duplicate (identical crop bytes, identical
+`region_id`, a re-read rather than a recovery); and a rectangle every one of
+whose pixels already lies inside the union of the act's existing regions *on
+that page* recovers nothing at all. `_uncovered_area` computes that union
+exactly, through the same `_subtract_rectangle` fold the fallback tiling already
+uses, rather than by pairwise containment — two regions of one act can jointly
+cover a rectangle neither covers alone, and the guard and the tiling must not
+come to disagree about what "already covered" means. The
+union is taken over each region's final `transform["bounds"]` — the capture
+rectangle actually cut and shown — and not over `raw_bounds`, or a recrop back
+inside a proposal's own padding would count as recovery. It is scoped to the
+page being recropped, because a continuation region shares the act's identity
+and none of its geometry.
+
+The second refusal is what GOVERNANCE 11 ("Recovery exists for **completeness
+and coverage**") and ARCHITECTURE's "fallback or **expanded** recrop" have
+always said. Until it existed, `proof/skeleton_fixture.toml` declared act a1's
+recovery rectangle as `16,16,168,88` against a padded proposal capture rect of
+`12,15,188,99` — strictly inside it. The `review` scenario, the walking
+skeleton's single proof that bounded recovery works, spent its whole
+`fallback_recrop` budget on a crop that recovered not one pixel, and the export
+then carried a `witness_covered: false` caveat ("ink a recovery uncovers was
+never shown to them") over pixels every witness had already seen. Refused rather
+than flagged: a spent recovery budget does not come back, so accepting the
+recrop costs the act its one recorded chance to widen its crop.
+
+Two consequences worth stating plainly. **The refusal is fatal, like every other
+refusal in `recovery_pass`** — a held act, a wrong recovery kind, a stale
+ordinal, an off-page rectangle — so a Recensor that asks for a recrop it cannot
+have stops the run rather than holding the act. That is this stage's established
+failure mode for an impossible request and not a new severity class; a recovery
+invocation publishes no holds. **And an act whose capture rectangle has already
+clamped to all four page edges can never satisfy this check**, because there is
+no page pixel left for it to recover. That is the honest answer rather than a
+defect: the recrop it was asked for does not exist. It is reachable on a real
+page — the shipped right/bottom padding clamps a large act to the page edge, and
+in the synthetic fixture a1's capture rectangle already reaches `x=200` — so the
+first real corpus should expect it.
+
 ## Consumers
 
 Attestatores reads proposal regions only and records which pixels each witness
