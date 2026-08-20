@@ -26,6 +26,7 @@ and zero dissent there is the correct output.
     python pipeline/4_perlector/run.py --run-root <dir> --run-id <id>
 """
 
+import copy
 import sys
 from pathlib import Path
 from typing import Any, Final
@@ -42,7 +43,7 @@ import protocol  # noqa: E402
 import regime  # noqa: E402
 import truncation  # noqa: E402
 from dissent import departures, dissent_against, validate_dissent  # noqa: E402
-from reader import FixtureReader  # noqa: E402
+from reader import FixtureReader, validate_audit_delivery  # noqa: E402
 
 from common.alignment import markup_text_view  # noqa: E402
 from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
@@ -1959,21 +1960,19 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         draft_ref = context.input_ref(draft.relative_path)
         final_text = payload["text"]
         unresolved = bool(flags) and audit_policy["round_cap"] == 0
-        reproofs = [
-            {
-                "class": flag["class"],
-                "location": flag["location"],
-                "prompt": audit.neutral_prompt(
-                    start=flag["location"]["start"],
-                    end=flag["location"]["end"],
-                    text_length=len(final_text),
-                ),
-            }
-            for flag in flags
-        ]
+        # The plan this act's frozen flags imply, computed once by the function
+        # `validate_chain` re-derives it with and `audit.audit_request` builds
+        # the reader's copy from. What is sealed below, what the reader is
+        # handed, and what every later consumer recomputes are therefore the
+        # same computation over the same frozen flags rather than three
+        # spellings that have to be kept agreeing.
+        reproofs = audit.reproof_plan(flags, text_length=len(final_text))
+        request_digest: str | None = None
         changes: list[dict[str, Any]] = []
         uncertainty: list[dict[str, Any]] = []
-        if flags and audit_policy["round_cap"]:
+        # The same predicate `validate_chain` re-derives from the frozen draft:
+        # one spelling of "a re-proof request exists for this act".
+        if audit.reproof_delivery_due(flags, audit_policy["round_cap"]):
             # Exactly one reader invocation for this act and audit round.  The
             # list of neutral locations is retained on the Perlectio below;
             # no flag result can reopen this page's frozen calculation.
@@ -2001,10 +2000,50 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 prior_draft=row["prior"],
                 prior_draft_view="fed" if context.draft_fed else "withheld",
             )
+            # Ordering constraint: `payload["text"]` and `payload["dossier"]`
+            # are read here, BEFORE the re-proof result overwrites the final
+            # text below — the request must carry the frozen semi-final its
+            # locations index into, and the dossier must stay the sealed one.
+            #
+            # The instrument, delivered rather than only sealed. The draft is
+            # already published, so its reference names bytes that exist and
+            # carries their digest: the request the reader receives is bound to
+            # the exact frozen semi-final its locations index into. `pass_kind`
+            # stays routing -- everything the reader needs to know about this
+            # pass is in the request (`reader.py`'s module docstring).
+            #
+            # The dossier goes through untouched. It used to travel as
+            # `{**dossier, "semi_final_text": ...}`, which handed the reader an
+            # object whose own `dossier_digest` no longer covered its contents.
+            audit_request = audit.audit_request(
+                act_key=row["act"]["act_key"],
+                attempt_ordinal=payload["attempt_ordinal"],
+                draft_ref=draft_ref,
+                semi_final_text=payload["text"],
+                flags=flags,
+            )
+            request_digest = audit.audit_digest(audit_request)
+            # The producer enforces the delivery contract itself, so the
+            # obligation binds whichever reader sits in the chair rather than
+            # resting on each implementation remembering to call the seam's
+            # validator (FixtureReader also calls it; twice is harmless).
+            validate_audit_delivery(
+                payload["dossier"], pass_kind="audit-reproof", audit_request=audit_request
+            )
             reproof = reader.read(
-                {**payload["dossier"], "semi_final_text": payload["text"]},
+                payload["dossier"],
+                # The literal, not `audit.REPROOF_PASS_KIND`: every producer
+                # call site spells its pass so `test_reader.py`'s pin can read
+                # them out of this file and hold `reader.PASS_KINDS` to exactly
+                # the set run.py calls. That pin is also what makes the literal
+                # safe here -- a misspelling fails it rather than falling
+                # through to the establishing branch.
                 pass_kind="audit-reproof",
                 delivered_pixels=reproof_pixels,
+                # A copy, so a reader that mutated its input could not leave
+                # the sealed digest describing an object that no longer exists
+                # -- the exact shape of lie this seam was rebuilt to end.
+                audit_request=copy.deepcopy(audit_request),
             )
             final_text = reproof["text"]
             pre_audit_text = payload["text"]
@@ -2129,6 +2168,14 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             "finding_digest": audit.audit_digest(finding_payload),
             "unresolved": unresolved,
             "reproofs": reproofs,
+            # Which request the reader was actually handed, or `None` where
+            # none was: an act with no flag has nothing to re-prove, and an act
+            # whose sealed cap is spent records its flags as exhausted-cap
+            # uncertainty instead of running a round it may not run. Both are
+            # honest absences, and a record that could not tell them from a
+            # delivered re-proof is the ambiguity `reproofs` alone used to
+            # carry.
+            "request_digest": request_digest,
         }
         reading_inputs = row["inputs"] + [draft_ref, finding_ref]
         # The producer and every later consumer use the same cross-record

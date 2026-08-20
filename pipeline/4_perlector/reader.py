@@ -19,6 +19,22 @@ measure the pipeline's own label instead of the model, which is GOVERNANCE 10's
 `FixtureReader` reads it because it has no model behind it and must stand in
 for one; that is the exception the docstring on `_declared_prior_reading`
 names, not the pattern to copy.
+
+**`audit_request` is why that rule costs nothing.** Pass C asks for one
+span-scoped, neutrally-prompted re-examination, and a reader forbidden to read
+`pass_kind` cannot learn from a label which span or which task that is. So the
+instrument travels as input: a closed request carrying the frozen draft's
+reference, its exact semi-final text, and every neutral location-only prompt,
+digest-bound to what the Perlectio seals under `payload.audit`. Conditioning on
+that is conditioning on delivered evidence, which is what a reader is for; it
+is the opposite of the `pass_kind` exemption, not a version of it. Before it
+existed, Pass C sealed a re-proof plan and called `read` with the Pass-B dossier
+plus a bare `semi_final_text` — the reader received no flag, location or prompt
+at all, and a changed final text was published as the result of a measured,
+neutral, span-scoped re-proof that had never been presented (Sol-S2). The
+consequence for every implementation of this protocol: a reader that is given
+`pass_kind="audit-reproof"` and no request must refuse, and
+`validate_audit_delivery` below is that refusal.
 """
 
 from __future__ import annotations
@@ -28,6 +44,7 @@ from typing import Any, Final, Protocol, TypedDict
 from common.contracts.errors import ContractError
 from common.contracts.identities import act_id as derive_act_id
 from common.imaging import grayscale_rows
+from common.perlector_audit import REPROOF_PASS_KIND, validate_audit_request
 from common.stage import FALLBACK_PAGE_ACT_ORDINAL
 
 # The page-fallback reader must be at least as sensitive as the Designator's
@@ -42,11 +59,14 @@ PAGE_FALLBACK_INK_MARGIN: Final = 2
 # establishing branch below, so a misspelt `"lectio_prior"` would serve Pass B's
 # own text as the Pass-A draft and publish a `self_revision` of nothing at all.
 # A refusal is the only reading of that a record can carry.
-# `audit-reproof` joins at R5b, which adds the Pass-C span re-proof pass; the
-# reader has carried its dispatch branch since that build, and the producer-
-# literal pin below holds the set to exactly what `run.py` calls.
+# `audit-reproof` joins at R5b, which adds the Pass-C span re-proof pass. It is
+# the one member the reader does *not* dispatch on: since the Sol-S2 repair the
+# re-proof is chosen by the delivered `audit_request`, and this membership only
+# decides that the pass is nameable and that its instrument had to travel with
+# it. The producer-literal pin in `test_reader.py` holds the set to exactly what
+# `run.py` calls.
 PASS_KINDS: Final = frozenset(
-    {"perlectio", "lectio-nuda", "lectio-prior", "primed-without-prior", "audit-reproof"}
+    {"perlectio", "lectio-nuda", "lectio-prior", "primed-without-prior", REPROOF_PASS_KIND}
 )
 
 
@@ -67,8 +87,56 @@ class Reader(Protocol):
         *,
         pass_kind: str,
         delivered_pixels: DeliveredPixels | None = None,
+        audit_request: dict[str, Any] | None = None,
     ) -> LectioResult:
-        """Produce one Lectio over one dossier."""
+        """Produce one Lectio over one dossier, and over its audit request if one came."""
+
+
+def validate_audit_delivery(
+    dossier: dict[str, Any], *, pass_kind: str, audit_request: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """The re-proof instrument this call actually carries, or a refusal.
+
+    Belongs to the protocol rather than to `FixtureReader`, because it is the
+    obligation every implementation inherits: the pass and its instrument travel
+    together or the call is refused. Both directions are refusals, and each
+    names a different failure.
+
+    A re-proof pass with no request is the Sol-S2 defect itself — the record
+    would seal a delivered plan while the reader was handed nothing to work
+    from, and a reader forbidden to condition on `pass_kind` has no honest way
+    to fill the gap in. A request on any other pass is the mirror image: a
+    location-scoped task delivered to the establishing read, the nuda baseline
+    or the Pass-A draft would narrow a pass whose whole job is to read the act
+    through to its end.
+
+    The act cross-check is not ceremony. The request and the dossier are two
+    arguments assembled from different frozen objects, so nothing but this
+    equality stops one act's frozen text and locations arriving beside another
+    act's pixels — the reader would then re-examine offsets into text it was
+    never shown.
+    """
+    if audit_request is None:
+        if pass_kind == REPROOF_PASS_KIND:
+            raise ContractError(
+                f"a {REPROOF_PASS_KIND!r} pass reached the reader with no audit request; the "
+                "re-proof plan a Perlectio seals as delivered is exactly what the reader must "
+                "receive, and a reader may not read pass_kind to guess the rest"
+            )
+        return None
+    if pass_kind != REPROOF_PASS_KIND:
+        raise ContractError(
+            f"an audit request was delivered to a {pass_kind!r} pass; a re-proof task "
+            "belongs to the pass that seals it, and its scope is its flagged locations — "
+            "which for some flag classes is the whole act"
+        )
+    request = validate_audit_request(audit_request)
+    if request["act_key"] != dossier.get("act_key"):
+        raise ContractError(
+            f"an audit request for act {request['act_key']!r} was delivered beside the dossier "
+            f"of act {dossier.get('act_key')!r}"
+        )
+    return request
 
 
 class FixtureReader:
@@ -85,16 +153,21 @@ class FixtureReader:
         *,
         pass_kind: str,
         delivered_pixels: DeliveredPixels | None = None,
+        audit_request: dict[str, Any] | None = None,
     ) -> LectioResult:
         if pass_kind not in PASS_KINDS:
             raise ContractError(
                 f"unknown Perlector pass kind {pass_kind!r}; a pass this reader cannot name "
                 f"would be served as the establishing read, not refused"
             )
+        request = validate_audit_delivery(dossier, pass_kind=pass_kind, audit_request=audit_request)
         act_key = dossier["act_key"]
         return {
             "text": self._reading_text(
-                dossier, pass_kind=pass_kind, delivered_pixels=delivered_pixels
+                dossier,
+                pass_kind=pass_kind,
+                delivered_pixels=delivered_pixels,
+                audit_request=request,
             ),
             "stop_reason": self._declared_stop_reason(act_key),
         }
@@ -105,19 +178,30 @@ class FixtureReader:
         *,
         pass_kind: str,
         delivered_pixels: DeliveredPixels | None,
+        audit_request: dict[str, Any] | None,
     ) -> str:
         act_key = dossier["act_key"]
         if self._is_page_fallback(dossier):
             # Identity, not the review-facing key, proves this dossier belongs
             # to the reserved whole-page fallback act. A key can drift or be
             # forged; the derived identity binds the page and rectangle.
+            #
+            # Ahead of the re-proof branch, as it always was: a fallback act's
+            # emptiness is proved from delivered pixels, and a re-proof of one
+            # re-observes them rather than reciting a declared reading.
             return self._observed_page_fallback_text(dossier, delivered_pixels)
         for act in self._fixture["act"]:
             if act["key"] == act_key:
+                # The re-proof branch turns on the delivered instrument, never
+                # on `pass_kind`. That is the difference the module docstring
+                # draws: `_declared_prior_reading` below is a fixture standing
+                # in for a model where only a label distinguishes two identical
+                # dossiers, while a re-proof is distinguished by evidence a real
+                # reader receives and reads.
+                if audit_request is not None:
+                    return self._declared_reproof_text(audit_request, act_key)
                 if pass_kind == "lectio-prior":
                     return self._declared_prior_reading(act_key)
-                if pass_kind == "audit-reproof":
-                    return self._declared_reproof_text(dossier, act_key)
                 return act["text"]
         raise KeyError(f"the fixture declares no act {act_key!r}")
 
@@ -156,21 +240,27 @@ class FixtureReader:
                 return row
         return None
 
-    def _declared_reproof_text(self, dossier, act_key: str) -> str:
+    def _declared_reproof_text(self, audit_request: dict[str, Any], act_key: str) -> str:
         """This scenario's declared re-proof result, or an honest confirmation.
 
         The whole table validates before any row is selected
         (`_validated_rows`) -- and here a miss falls through to "confirmed
         unchanged", so a fixture meaning to exercise a changed re-proof would
         otherwise silently exercise the no-change path instead.
+
+        Reads the delivered request, not the dossier: the frozen semi-final is
+        the request's own field now, because it is part of the instrument
+        rather than part of what the act looked like to Pass B. The dossier
+        used to carry it spliced in beside a `dossier_digest` that did not
+        cover it -- a sealed digest describing bytes the object no longer had.
         """
         row = self._matching_row("audit_reproof", act_key)
         if row is not None:
             return row["text"]
-        return self._confirmed_unchanged_text(dossier)
+        return self._confirmed_unchanged_text(audit_request)
 
     @staticmethod
-    def _confirmed_unchanged_text(dossier: dict[str, Any]) -> str:
+    def _confirmed_unchanged_text(audit_request: dict[str, Any]) -> str:
         """A re-proof with no declared change reports exactly what it was shown.
 
         Pass C is span-scoped: it re-examines one flagged location, never the
@@ -179,14 +269,12 @@ class FixtureReader:
         no-readable-text act back to full prose, contradicting the whole-act
         gap its empty reading already carries. Absent a declared change, the
         honest report is "confirmed unchanged".
+
+        No re-check that the text is there: `validate_audit_delivery` refused
+        a request without it before this reader looked at anything, and it
+        names the missing instrument rather than the missing field.
         """
-        text = dossier.get("semi_final_text")
-        if not isinstance(text, str):
-            raise ContractError(
-                "the fixture Perlector received an audit re-proof dossier without its "
-                "semi-final text; a re-proof cannot confirm what it was not shown"
-            )
-        return text
+        return audit_request["semi_final_text"]
 
     def _observed_page_fallback_text(
         self, dossier: dict[str, Any], delivered_pixels: DeliveredPixels | None

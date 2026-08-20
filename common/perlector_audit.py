@@ -10,6 +10,19 @@ uniquely named module (`pipeline/test_stage_import_boundaries.py`), so the
 shared validation surface lives here; `pipeline/4_perlector/audit.py` keeps
 its producer-only logic (the flag pass and sealed policy loader) and re-exports
 these names so its own public API is unchanged.
+
+**The audit request is the instrument, and it lives here too.** A re-proof plan
+computed, sealed under `payload.audit.reproofs`, and then not handed to the
+reader is an instrument misreporting itself (GOVERNANCE 10): the record would
+say a measured, neutral, span-scoped re-examination produced the published text
+while the reader was shown only the Pass-B dossier and a bare string. So one
+function (`reproof_plan`) defines the plan, `audit_request` wraps it into the
+closed object the reader is actually given, and `validate_chain` re-derives both
+from the frozen draft — the seal, the delivery and the check are the same
+computation over the same frozen flags rather than three that happen to agree.
+`payload.audit.request_digest` is what binds a response to the request that
+produced it; it is `None` exactly when no request was delivered, because "no
+re-proof ran" and "a re-proof ran" are different recorded facts.
 """
 
 from __future__ import annotations
@@ -22,6 +35,19 @@ from common.contracts.errors import SchemaRefusal
 from common.contracts.stages import PERLECTOR
 
 SCHEMA: Final = "perlector-audit.v1"
+# The rendered instrument's own label. Separate from `SCHEMA` because the two
+# are versioned by different things: `SCHEMA` names the sealed policy an audit
+# record was computed under, while this names the shape of the object a reader
+# is handed. A serving path that learns to render this into prompt bytes moves
+# this label without touching the policy seal.
+REQUEST_SCHEMA: Final = "perlector-audit-request.v1"
+# The pass this instrument belongs to, named on the consuming side so
+# `reader.py`'s delivery check and its closed pass vocabulary compare against
+# one spelling. The producer deliberately keeps its own literal at the call
+# site: `test_reader.py` reads every `pass_kind="..."` out of `run.py` and pins
+# `PASS_KINDS` to exactly that set, which is a stronger guard against a
+# misspelt pass than a shared constant would be, and it only works on literals.
+REPROOF_PASS_KIND: Final = "audit-reproof"
 AUDIT_CAP_EXHAUSTED: Final = "audit-round-cap-exhausted"
 FLAG_CLASSES: Final = frozenset(
     {"date-sequence", "numbering", "order", "testimony-diff", "repetition", "within-crop"}
@@ -43,7 +69,15 @@ _FINDING_FIELDS: Final = frozenset(
     }
 )
 _PERLECTIO_AUDIT_FIELDS: Final = frozenset(
-    {"draft_ref", "finding_ref", "finding_digest", "unresolved", "reproofs"}
+    {"draft_ref", "finding_ref", "finding_digest", "unresolved", "reproofs", "request_digest"}
+)
+# The closed shape of what the reader receives. `draft_ref` is both the frozen
+# draft's reference and its digest, so the request names the exact bytes the
+# locations index into without restating them; `semi_final_text` is those bytes'
+# text, delivered because a re-proof that is asked to "record confirmed
+# unchanged" must be shown what unchanged means.
+_AUDIT_REQUEST_FIELDS: Final = frozenset(
+    {"schema", "act_key", "attempt_ordinal", "draft_ref", "semi_final_text", "reproofs"}
 )
 
 
@@ -76,6 +110,35 @@ def neutral_prompt(*, start: int, end: int, text_length: int) -> str:
     return prompt
 
 
+def reproof_plan(flags: list[dict[str, Any]], *, text_length: int) -> list[dict[str, Any]]:
+    """One neutral, location-only re-proof per frozen flag, in the flags' own order.
+
+    The single definition of what Pass C intends to ask. Three callers need it:
+    two used to spell it out — the producer building the seal and
+    `validate_chain` re-deriving the expected seal — and the third, the reader's
+    delivered request, is new with this repair. Every extra spelling of one
+    plan is another chance for the sealed plan and
+    the delivered plan to differ while every local check still passes — which is
+    exactly the shape of the defect this function exists to close.
+
+    Locations are copied rather than aliased. The plan travels out to a reader,
+    and a caller that mutated a delivered row would otherwise reach back into
+    the frozen flag set the whole page pass was computed from.
+    """
+    return [
+        {
+            "class": flag["class"],
+            "location": {"start": flag["location"]["start"], "end": flag["location"]["end"]},
+            "prompt": neutral_prompt(
+                start=flag["location"]["start"],
+                end=flag["location"]["end"],
+                text_length=text_length,
+            ),
+        }
+        for flag in flags
+    ]
+
+
 def _closed(payload: Any, fields: frozenset[str], label: str) -> dict[str, Any]:
     if not isinstance(payload, dict) or set(payload) != fields:
         raise SchemaRefusal(f"an {label} is not its closed schema")
@@ -95,6 +158,127 @@ def _location(value: Any, *, text_length: int | None, label: str) -> dict[str, i
         or (text_length is not None and end > text_length)
     ):
         raise SchemaRefusal(f"an {label} lies outside the delivered text")
+    return value
+
+
+def _validate_reproof_rows(rows: list[Any], *, text_length: int | None, subject: str) -> None:
+    """The neutrality screen, applied identically wherever a re-proof row appears.
+
+    `text_length=None` is the pre-read pass's contract: shape and location
+    structure are held, and the prompt is checked against the location's own
+    end. `validate_chain` re-runs this with the frozen semi-final's real
+    length, so a location that only fits a longer text than the draft carries
+    is still refused where the draft is in hand.
+
+    The sealed copy on the Perlectio and the delivered copy in the audit request
+    are the same rows read by different halves of the same claim, so they get the
+    same screen: closed shape, a known flag class, a location inside the frozen
+    text, and a prompt that is *exactly* `neutral_prompt` for that location.
+    Equality against the generated prompt is the whole discipline — it leaves no
+    room for a sentence that tells the reader which way to argue (GOVERNANCE 10),
+    because anything but the generated string is refused rather than screened for
+    forbidden words.
+    """
+    for reproof in rows:
+        if not isinstance(reproof, dict) or set(reproof) != {"class", "location", "prompt"}:
+            raise SchemaRefusal(f"a {subject} re-proof is not its closed schema")
+        if reproof["class"] not in FLAG_CLASSES or not isinstance(reproof["prompt"], str):
+            raise SchemaRefusal(f"a {subject} re-proof has an unknown class or prompt")
+        location = _location(
+            reproof["location"], text_length=text_length, label=f"{subject} re-proof"
+        )
+        if reproof["prompt"] != neutral_prompt(
+            start=location["start"],
+            end=location["end"],
+            text_length=text_length if text_length is not None else location["end"],
+        ):
+            raise SchemaRefusal(f"a {subject} re-proof is not a neutral location-only prompt")
+
+
+def reproof_delivery_due(flags: list[Any], round_cap: int) -> bool:
+    """One spelling of "this act's re-proof request exists": a plan and a round.
+
+    The producer decides delivery with it, and `validate_chain` re-derives the
+    same fact from the frozen draft with it. Two spellings of that condition
+    would be the exact drift this module repairs elsewhere: an act one side
+    thinks delivered and the other thinks had nothing to deliver.
+    """
+    return bool(flags) and round_cap > 0
+
+
+def audit_request(
+    *,
+    act_key: str,
+    attempt_ordinal: int,
+    draft_ref: dict[str, str],
+    semi_final_text: str,
+    flags: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """The closed instrument Pass C hands the reader, built from the frozen draft.
+
+    Everything here is derivable from the published audit draft plus its own
+    reference, which is what makes the delivery checkable: `validate_chain`
+    rebuilds this object from the draft it reads back and compares digests, so
+    the request the record names is the request the frozen flags imply. Nothing
+    in it is a Pass-C-only fact the producer could have chosen freely.
+
+    It carries no witness material, no ranking, and no wanted reading — only the
+    frozen text, the locations, and the generated neutral prompts. The field set
+    is closed rather than swept for preference-bearing names the way a dossier
+    is (`dossier.assert_no_order_bearing_field`): a closed set is the stronger
+    guard, because a new field cannot appear at all without an editor coming
+    through this validator first.
+    """
+    request = {
+        "schema": REQUEST_SCHEMA,
+        "act_key": act_key,
+        "attempt_ordinal": attempt_ordinal,
+        "draft_ref": dict(draft_ref),
+        "semi_final_text": semi_final_text,
+        "reproofs": reproof_plan(flags, text_length=len(semi_final_text)),
+    }
+    return validate_audit_request(request)
+
+
+def validate_audit_request(payload: Any) -> dict[str, Any]:
+    """Refuse an audit request at the seam, in the producer and in the reader alike.
+
+    A reader is entitled to refuse rather than guess: the pass label alone can
+    never tell it which span to re-examine or what task was delivered, and a
+    reader that read `pass_kind` and invented the rest is the failure this
+    request exists to end.
+    """
+    value = _closed(payload, _AUDIT_REQUEST_FIELDS, "audit request")
+    if value["schema"] != REQUEST_SCHEMA:
+        raise SchemaRefusal("an audit request does not declare the audit-request schema")
+    if not isinstance(value["act_key"], str) or not value["act_key"]:
+        raise SchemaRefusal("an audit request has no act identity")
+    if (
+        not isinstance(value["attempt_ordinal"], int)
+        or isinstance(value["attempt_ordinal"], bool)
+        or value["attempt_ordinal"] < 1
+    ):
+        raise SchemaRefusal("an audit request has no integer attempt ordinal")
+    validate_input_refs([value["draft_ref"]])
+    # `validate_input_refs` reads two keys and ignores the rest; an extra field
+    # here would ride to the reader, into the digest, and back out of
+    # `validate_chain`'s rebuild without ever meeting the neutrality screen. The
+    # closed-set claim above is only true if the nested shape is closed too.
+    if set(value["draft_ref"]) != {"relative_path", "sha256"}:
+        raise SchemaRefusal("an audit request's draft reference is not its closed shape")
+    if not isinstance(value["semi_final_text"], str):
+        raise SchemaRefusal(
+            "an audit request carries no frozen semi-final text; a re-proof cannot confirm "
+            "what it was not shown"
+        )
+    if not isinstance(value["reproofs"], list) or not value["reproofs"]:
+        raise SchemaRefusal(
+            "an audit request delivers no re-proof location; a request asking the reader to "
+            "re-examine nothing would seal a measurement nobody could have made"
+        )
+    _validate_reproof_rows(
+        value["reproofs"], text_length=len(value["semi_final_text"]), subject="audit request"
+    )
     return value
 
 
@@ -200,20 +384,13 @@ def validate_perlectio_audit(record: Any, *, text_length: int | None) -> dict[st
         raise SchemaRefusal("a Perlectio audit record has no finding payload digest")
     if not isinstance(value["unresolved"], bool) or not isinstance(value["reproofs"], list):
         raise SchemaRefusal("a Perlectio audit record has malformed resolution facts")
-    for reproof in value["reproofs"]:
-        if not isinstance(reproof, dict) or set(reproof) != {"class", "location", "prompt"}:
-            raise SchemaRefusal("a Perlectio audit re-proof is not its closed schema")
-        if reproof["class"] not in FLAG_CLASSES or not isinstance(reproof["prompt"], str):
-            raise SchemaRefusal("a Perlectio audit re-proof has an unknown class or prompt")
-        location = _location(
-            reproof["location"], text_length=text_length, label="Perlectio audit re-proof"
-        )
-        if reproof["prompt"] != neutral_prompt(
-            start=location["start"],
-            end=location["end"],
-            text_length=text_length if text_length is not None else location["end"],
-        ):
-            raise SchemaRefusal("a Perlectio audit re-proof is not a neutral location-only prompt")
+    # `None` is a fact, not an absence: it says no audit request was delivered
+    # to the reader for this act, which is what a flagless act and an
+    # exhausted-cap act both record. Anything else must be a real digest, so a
+    # record cannot claim a delivery with a placeholder.
+    if value["request_digest"] is not None and not is_sha256(value["request_digest"]):
+        raise SchemaRefusal("a Perlectio audit record has no delivered audit-request digest")
+    _validate_reproof_rows(value["reproofs"], text_length=text_length, subject="Perlectio audit")
     return value
 
 
@@ -320,20 +497,36 @@ def validate_chain(tree, reading: dict[str, Any], act_id: str) -> dict[str, Any]
         "finding_ref"
     ] not in reading.get("inputs", []):
         raise SchemaRefusal(f"reading of {act_id} does not bind both audit artifacts as inputs")
-    expected_reproofs = [
-        {
-            "class": flag["class"],
-            "location": flag["location"],
-            "prompt": neutral_prompt(
-                start=flag["location"]["start"],
-                end=flag["location"]["end"],
-                text_length=len(draft_payload["semi_final_text"]),
-            ),
-        }
-        for flag in draft_payload["flags"]
-    ]
+    expected_reproofs = reproof_plan(
+        draft_payload["flags"], text_length=len(draft_payload["semi_final_text"])
+    )
     if record["reproofs"] != expected_reproofs:
         raise SchemaRefusal(f"reading of {act_id} does not retain exactly its frozen re-proof plan")
+    # The delivery half of the same claim. A sealed plan says what Pass C
+    # *intended* to ask; `request_digest` says which closed request the reader
+    # was actually handed, and rebuilding that request here from the frozen
+    # draft is what stops the two drifting. Delivery is not the producer's word
+    # for it either: a request exists exactly when there was a plan to deliver
+    # and a round left to spend, so an act with no flags, or one whose cap was
+    # already exhausted, must name no request at all.
+    if reproof_delivery_due(draft_payload["flags"], draft_payload["round_cap"]):
+        expected_request = audit_request(
+            act_key=draft_payload["act_key"],
+            attempt_ordinal=draft_payload["attempt_ordinal"],
+            draft_ref=record["draft_ref"],
+            semi_final_text=draft_payload["semi_final_text"],
+            flags=draft_payload["flags"],
+        )
+        if record["request_digest"] != audit_digest(expected_request):
+            raise SchemaRefusal(
+                f"reading of {act_id} does not name the exact audit request its frozen "
+                "re-proof plan renders"
+            )
+    elif record["request_digest"] is not None:
+        raise SchemaRefusal(
+            f"reading of {act_id} names a delivered audit request although its frozen plan "
+            "and round cap left nothing to deliver"
+        )
     expected_uncertainty = [
         {
             "start": span["start"],

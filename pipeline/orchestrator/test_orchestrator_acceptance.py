@@ -470,8 +470,18 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # layer, so it is now truthfully named `uncertainty_json`. Only that SQLite
 # schema identifier changed; fresh runs through this module's own helpers held
 # the file counts at 64/71 while the two semantic database identities moved.
-HAPPY_RUN_TREE_DIGEST = "27423cd9a5dafbd50144322577dc51b3b4f5db7c49d75cc5b339acb7fbf7ea98"
-REVIEW_RUN_TREE_DIGEST = "cff96edca88623b7bd1311ff28e665c481ee0821af89369d089c51099ebdf09f"
+#
+# Re-pinned for the Sol-S2 repair: every Perlectio's `payload.audit` now carries
+# `request_digest` — the digest of the re-proof request the reader actually
+# received, or None exactly when no request was delivered (no flags, or a spent
+# round_cap). The field is present in every scenario's Perlectio records, so
+# recorded bytes move in both trees even though only audit-bearing acts deliver
+# a request; no new file is written. Both values were measured twice from fresh
+# real runs through this module's own `orchestrate` and
+# `semantic_snapshot_digest` helpers; counts held at 64 files for happy
+# (exit 0) and 71 for review (exit 3).
+HAPPY_RUN_TREE_DIGEST = "ea364ee66c5a6270a7dc55ef28b29add5abbf917afda3cf9af295442b42aec79"
+REVIEW_RUN_TREE_DIGEST = "6cabfbb034e917b188307205e04c8d5a9edf231ef814ebf09fe39fb2424780fa"
 
 
 def orchestrate(
