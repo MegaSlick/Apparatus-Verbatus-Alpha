@@ -17,6 +17,7 @@ from common.contracts.identities import artifact_id, attempt_id
 from common.contracts.stages import DESIGNATOR, PERLECTOR, RECENSOR
 from common.perlector_audit import (
     audit_digest,
+    audit_request,
     neutral_prompt,
     validate_chain,
     validate_draft,
@@ -267,6 +268,19 @@ def test_an_empty_completed_reading_is_held_not_accepted(tmp_path):
     ]
     changed["payload"]["audit"]["draft_ref"]["sha256"] = draft_digest
     changed["payload"]["audit"]["finding_ref"]["sha256"] = finding_digest
+    # Pass C's re-proof plan is delivered to the reader as a closed request and
+    # the Perlectio names that request's digest, so the forgery has to restate
+    # the instrument as well as the plan: a blanked draft renders a different
+    # request, and `validate_chain` rebuilds it from the draft it reads back.
+    changed["payload"]["audit"]["request_digest"] = audit_digest(
+        audit_request(
+            act_key=draft["payload"]["act_key"],
+            attempt_ordinal=draft["payload"]["attempt_ordinal"],
+            draft_ref=changed["payload"]["audit"]["draft_ref"],
+            semi_final_text="",
+            flags=blank_flags,
+        )
+    )
     # The reading's own envelope-level `inputs` also names the draft and
     # finding it bound (`row["inputs"] + [draft_ref, finding_ref]` in
     # pipeline/4_perlector/run.py), independent of the payload's copies.

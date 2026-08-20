@@ -7,10 +7,12 @@ character or claim the semi-final is wrong.
 
 The validation surface both this stage and the Recensor need
 (`validate_draft`, `validate_finding`, `audit_digest`, `FLAG_CLASSES`,
-`neutral_prompt`) lives in `common/perlector_audit.py` — a stage may not
-import another stage's uniquely named module
-(`pipeline/test_stage_import_boundaries.py`) — and is re-exported here so
-this module's public API is unchanged for its own run.py and tests.
+`neutral_prompt`, and the `audit_request`/`reproof_plan` pair that makes the
+re-proof plan a delivered instrument rather than a sealed claim about one)
+lives in `common/perlector_audit.py` — a stage may not import another stage's
+uniquely named module (`pipeline/test_stage_import_boundaries.py`) — and is
+re-exported here so this module's public API is unchanged for its own run.py
+and tests.
 """
 
 from __future__ import annotations
@@ -25,11 +27,17 @@ from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.perlector_audit import (  # noqa: F401  (re-export)
     FLAG_CLASSES,
+    REPROOF_PASS_KIND,
+    REQUEST_SCHEMA,
     SCHEMA,
     audit_digest,
+    audit_request,
     change_record,
     neutral_prompt,
+    reproof_delivery_due,
+    reproof_plan,
     text_change_span,
+    validate_audit_request,
     validate_chain,
     validate_draft,
     validate_finding,

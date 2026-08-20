@@ -53,6 +53,9 @@ truncation       -- {classification, signals}, present on every attempted
                     reading regardless of outcome (see below)
 uncertain_spans  -- [{start, end, alternatives, confidence}, ...]
 gaps             -- [{position, start, end, witness_evidence}, ...]
+audit            -- {draft_ref, finding_ref, finding_digest, unresolved,
+                    reproofs, request_digest}: the R5b Pass-C chain, and which
+                    re-proof instrument was actually delivered (see below)
 provenance
 ```
 
@@ -341,6 +344,88 @@ tally's `instrument_by_kind` and on the orchestrator's checkpoint line. It is
 recorded here rather than left to be rediscovered, because it is a change to
 the meaning of a ruled threshold and Tyrel is the one who ruled it.
 
+## R5b Pass-C audit, and the request the reader actually receives
+
+Pass C is one deterministic flag pass over a page's frozen Pass-B semi-finals,
+followed by at most one re-proof per act, scoped to the flagged locations —
+which for the `within-crop`, `date-sequence`, `numbering` and `order` classes
+is the whole act (`audit.py` emits `[0, len(text))` for those), so "span-scoped"
+without that caveat would overclaim. The chain is three
+records, and `common/perlector_audit.py::validate_chain` is the single
+cross-record validation the producer and the Recensor both run:
+
+```text
+kind="audit-draft"    {act_key, attempt_ordinal, semi_final_text, page_id,
+                       round_cap, policy, flags}
+kind="audit-finding"  {act_key, attempt_ordinal, page_id, round_cap, policy,
+                       flags, change_record, uncertain_spans, unresolved}
+payload.audit         {draft_ref, finding_ref, finding_digest, unresolved,
+                       reproofs, request_digest}
+```
+
+The flags are computed once per page, before any re-proof result exists, so no
+result can reopen the calculation. `change_record` attributes a changed span to
+the *narrowest* flag containing it and refuses a change that escapes every
+flagged location. Nothing in this pass selects among witnesses: the request
+carries no witness identity, no witness text and no ranking, and the prompt is
+byte-identical for every flag class. A `testimony-diff` flag's *location* is
+witness-derived, though, and now that the instrument is actually delivered the
+reader is directed to the exact spans where it disagreed with witnesses while
+the tree measures movement toward them — whether that is compatible with
+GOVERNANCE 3 ("never picks") and 10 ("the instrument may not constrain what it
+measures") is an open interpretation question routed to Tyrel with the Tier-0
+reproof change, not settled by this sentence.
+
+**The re-proof plan is a delivered instrument, not a claim about one.** One
+function, `perlector_audit.reproof_plan`, turns the frozen flags into one
+neutral, location-only prompt each; `audit_request` wraps that plan into the
+closed object the reader is handed:
+
+```text
+audit_request = {schema: "perlector-audit-request.v1", act_key, attempt_ordinal,
+                 draft_ref, semi_final_text, reproofs}
+reproofs      = [{class, location: {start, end}, prompt}, ...]   # non-empty
+```
+
+`draft_ref` is the published audit draft's reference *and* the digest of its
+bytes, so the request names exactly the frozen semi-final its offsets index
+into. `reader.read` takes it as its own `audit_request` argument beside the
+unmodified Pass-B dossier and the act's delivered pixels; `payload.audit.
+request_digest` is `digest_of` that request, and `validate_chain` rebuilds the
+request from the draft it reads back and requires the digest to match. Sealed
+plan, delivered instrument and later recomputation are therefore the same
+function over the same frozen flags.
+
+`request_digest` is `None` **exactly** when no request was delivered — an act
+with no flags, or one whose sealed `round_cap` is spent (which still seals its
+plan, because the exhausted-cap `uncertain_spans` point at those locations).
+"No re-proof ran" and "a re-proof ran and confirmed this span" are different
+recorded facts, and `reproofs` alone could not tell them apart. The rendered
+request is deliberately derivation-only — not stored as a fourth artifact —
+because every field re-derives from the published draft (`validate_chain` does
+exactly that), and a second copy of the frozen text would be a second thing to
+drift.
+
+**Neutrality and the `pass_kind` rule both hold, in the same mechanism.** Every
+prompt in a request and in the sealed copy must equal `neutral_prompt` for its
+location exactly — not merely avoid forbidden words — so nothing can tell the
+reader which way to argue (GOVERNANCE 10). And because the instrument travels
+as input, a reader still may not condition generation on `pass_kind`: a
+re-proof pass arriving with no request is refused by
+`reader.validate_audit_delivery`, as is a request delivered to any other pass,
+or one naming a different act than the dossier beside it. `FixtureReader`
+branches on the request, never on the pass label.
+
+This is the post-stack Tier-0 repair of audit finding **Sol-S2**. Before it, Pass C computed
+the plan, sealed it under `payload.audit.reproofs`, and then called `read` with
+the Pass-B dossier plus a spliced `semi_final_text` — no flags, no locations,
+no prompts, and a `dossier_digest` that no longer covered the object carrying
+it. A changed final text was published as the result of a measured, neutral,
+span-scoped re-proof that was never presented. `test_audit_pass.py::
+test_the_reader_receives_exactly_the_reproof_plan_the_perlectio_seals` captures
+the real reader call and requires exact equality with the sealed plan; it is the
+test that fails if the two ever part again.
+
 ## Not built here
 
 - Real serving (vLLM, LoRA-unmerged adapter, revision pinning, readiness
@@ -393,3 +478,12 @@ the meaning of a ruled threshold and Tyrel is the one who ruled it.
   routes it to `held-for-review` instead. Nothing is lost and no stale text is
   established — the safe half of the requirement holds — but the bounded retry the spec
   names is the Recensor's own file and has not been built.
+- **The audit request is a structure, not yet rendered prompt bytes.** `request_digest`
+  digests the canonical request object, which is the honest claim available offline:
+  invariant #49's `rendered_sha256` needs a declared per-recipe builder, and
+  `prompts.py` has none for a re-proof. The chair, serving recipe and builder digest a
+  Pass-C call runs under are unchanged from the same act's Pass B and already recorded
+  once on `payload.prompt`, so what was missing — and what `request_digest` now names —
+  is the instrument's *content*. A real serving path registers a re-proof builder and
+  binds its rendered bytes at this same seam; nothing about the record's shape has to
+  move for it.

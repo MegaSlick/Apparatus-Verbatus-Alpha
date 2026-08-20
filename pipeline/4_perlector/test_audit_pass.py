@@ -12,13 +12,25 @@ from types import SimpleNamespace
 
 import audit
 import pytest
+import reader as reader_module
 
+from common.contracts.canonical import digest_of
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.stages import PERLECTOR
 from common.runtree.store import RunTree
 
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
+# Everything ahead of the Perlector, run as real programs. The Pass-C delivery
+# proof needs the stage's own `main()` in this process — that is the only way to
+# hold the reader object it actually called — so the evidence it reads must be
+# built by the real chain first, exactly as the Sol-S2 demonstration built it.
+CHAIN_THROUGH_ATTESTATORES = (
+    "pipeline/1_exemplar/door.py",
+    "pipeline/1_exemplar/run.py",
+    "pipeline/2_designator/run.py",
+    "pipeline/3_attestatores/run.py",
+)
 
 
 def _recensor():
@@ -68,6 +80,347 @@ def _records(tree: RunTree, kind: str) -> list[dict]:
         for entry in tree.build_manifest(PERLECTOR)["artifacts"]
         if entry["kind"] == kind
     ]
+
+
+def _chain_through_attestatores(root: Path, scenario: str) -> None:
+    for program in CHAIN_THROUGH_ATTESTATORES:
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / program),
+                "--run-root",
+                str(root),
+                "--run-id",
+                "r",
+                "--scenario",
+                scenario,
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+        # `audit-change` is a clean-run scenario: every upstream stage exits 0.
+        # Accepting a held exit here would let a silently degraded chain feed
+        # the capture, and the act-count assertions downstream would report the
+        # wrong defect.
+        assert result.returncode == 0, f"{program}: {result.stderr}"
+
+
+class _CapturingReader:
+    """Records what the Perlector actually handed its reader, argument for argument.
+
+    The keyword signature is spelled out rather than swallowed into `**kwargs`
+    deliberately: it is the `reader.Reader` protocol, and a stage that started
+    delivering the re-proof instrument by some other name would fail here rather
+    than quietly capture nothing. `delivered_pixels` is reduced to counts — the
+    buffers are page-sized and the claim under test is that they arrived, not
+    what they contain.
+    """
+
+    def __init__(self, inner, calls: list[dict]):
+        self._inner = inner
+        self._calls = calls
+
+    def read(self, dossier, *, pass_kind, delivered_pixels=None, audit_request=None):
+        self._calls.append(
+            {
+                "pass_kind": pass_kind,
+                "act_key": dossier.get("act_key"),
+                "dossier_keys": sorted(dossier),
+                "audit_request": copy.deepcopy(audit_request),
+                "region_images": len((delivered_pixels or {}).get("region_images", [])),
+                "page_render_images": len((delivered_pixels or {}).get("page_render_images", [])),
+            }
+        )
+        return self._inner.read(
+            dossier,
+            pass_kind=pass_kind,
+            delivered_pixels=delivered_pixels,
+            audit_request=audit_request,
+        )
+
+
+def _perlector_with_capturing_reader(root: Path, scenario: str, monkeypatch):
+    """Run the real Perlector stage in this process, holding every reader call."""
+    perlector = _perlector()
+    declared = perlector.FixtureReader
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        perlector,
+        "FixtureReader",
+        lambda fixture, fixture_scenario: _CapturingReader(
+            declared(fixture, fixture_scenario), calls
+        ),
+    )
+    monkeypatch.chdir(ROOT)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(ROOT / "pipeline" / "4_perlector" / "run.py"),
+            "--run-root",
+            str(root),
+            "--run-id",
+            "r",
+            "--scenario",
+            scenario,
+        ],
+    )
+    return perlector, perlector.main(), calls
+
+
+def test_the_reader_receives_exactly_the_reproof_plan_the_perlectio_seals(tmp_path, monkeypatch):
+    """Sol-S2, red-proved: Pass C sealed an instrument the reader never received.
+
+    The audit ran the real Door-through-Attestatores chain for `audit-change`
+    and then ran the Perlector with a capturing reader. Both audit calls
+    contained exactly `act_attachment, act_id, act_key, dossier_digest,
+    page_renders, prior_draft, prior_draft_view, regions, semi_final_text,
+    testimonia, witness_regime`; `HAS_REPROOFS`, `HAS_FLAGS`, `HAS_LOCATION`
+    and `HAS_PROMPT` were all false, and the stage still exited 0. A changed
+    final text was therefore published as the result of a measured, neutral,
+    span-scoped re-proof that had never been presented to anything.
+
+    The existing Pass-C tests could not see it: every one of them inspects the
+    reproof strings stored *after* the call. So this test captures the call,
+    and asserts the delivered instrument equals the sealed one field for field
+    — including the digest the Perlectio now binds its response to. The four
+    probes the audit ran are asserted in their true direction rather than
+    described.
+    """
+    root = tmp_path / "runs"
+    _chain_through_attestatores(root, "audit-change")
+    _, code, calls = _perlector_with_capturing_reader(root, "audit-change", monkeypatch)
+    assert code == 0
+
+    tree = RunTree(root, "r")
+    finals = {record["subject_id"]: record for record in _records(tree, "perlectio")}
+    delivered = {
+        record["payload"]["act_key"]: record
+        for record in finals.values()
+        if record["payload"]["audit"]["request_digest"] is not None
+    }
+    audit_calls = [call for call in calls if call["pass_kind"] == audit.REPROOF_PASS_KIND]
+    # Every act that seals a delivered request had exactly one reader call, and
+    # no act had one it did not seal. A count that drifted either way would mean
+    # the record and the instrument had parted again.
+    assert len(audit_calls) == len(delivered) == len(finals) == 2
+    assert sorted(call["act_key"] for call in audit_calls) == sorted(delivered)
+
+    for call in audit_calls:
+        final = delivered[call["act_key"]]
+        record = final["payload"]["audit"]
+        draft = tree.read_artifact_reference(
+            record["draft_ref"],
+            stage=PERLECTOR,
+            kind="audit-draft",
+            subject_id=final["subject_id"],
+        )
+        request = call["audit_request"]
+
+        # HAS_REPROOFS, HAS_FLAGS, HAS_LOCATION, HAS_PROMPT -- all four, true,
+        # and equal to the frozen flag set rather than merely present.
+        assert request is not None
+        assert request["reproofs"]
+        assert [reproof["class"] for reproof in request["reproofs"]] == [
+            flag["class"] for flag in draft["payload"]["flags"]
+        ]
+        assert [reproof["location"] for reproof in request["reproofs"]] == [
+            flag["location"] for flag in draft["payload"]["flags"]
+        ]
+        assert all(
+            reproof["prompt"]
+            == audit.neutral_prompt(
+                start=reproof["location"]["start"],
+                end=reproof["location"]["end"],
+                text_length=len(draft["payload"]["semi_final_text"]),
+            )
+            for reproof in request["reproofs"]
+        )
+        # The prompt's exact words, pinned as a LITERAL rather than derived
+        # through `audit.neutral_prompt`: every other check in this suite
+        # compares the instrument against its own generator, so an edit that
+        # made the generator directional would agree with its own output
+        # everywhere. This is the one place the delivered text is held still
+        # from outside the instrument (GOVERNANCE 10).
+        for reproof in request["reproofs"]:
+            start = reproof["location"]["start"]
+            end = reproof["location"]["end"]
+            assert reproof["prompt"] == (
+                f"Re-examine the ink at character location [{start}, {end}) of the "
+                "delivered act. Report only what the ink supports there; "
+                "if it supports the existing text, record confirmed unchanged."
+            )
+
+        # Delivered == sealed, exactly: the plan, the frozen draft it indexes
+        # into, and the digest the response is bound to.
+        assert request["reproofs"] == record["reproofs"]
+        assert request["draft_ref"] == record["draft_ref"]
+        assert request["semi_final_text"] == draft["payload"]["semi_final_text"]
+        assert request["act_key"] == draft["payload"]["act_key"]
+        assert request["attempt_ordinal"] == final["payload"]["attempt_ordinal"]
+        assert digest_of(request) == record["request_digest"]
+        assert request == audit.audit_request(
+            act_key=draft["payload"]["act_key"],
+            attempt_ordinal=draft["payload"]["attempt_ordinal"],
+            draft_ref=record["draft_ref"],
+            semi_final_text=draft["payload"]["semi_final_text"],
+            flags=draft["payload"]["flags"],
+        )
+
+        # The applicable pixels, and a dossier that is still the sealed one.
+        # `semi_final_text` used to be spliced into it, which handed the reader
+        # an object whose own `dossier_digest` no longer covered its contents.
+        assert call["region_images"] == len(final["payload"]["dossier"]["regions"])
+        assert call["page_render_images"] == len(final["payload"]["dossier"]["page_renders"])
+        assert call["dossier_keys"] == sorted(final["payload"]["dossier"])
+        assert "semi_final_text" not in call["dossier_keys"]
+
+    # The changed act is still the changed act: the delivered instrument is what
+    # the published text now comes out of, not a plan sealed beside it.
+    changed = next(
+        record for record in _records(tree, "audit-finding") if record["payload"]["change_record"]
+    )
+    assert finals[changed["subject_id"]]["payload"]["text"] == "SYNTHETIC ACT ONE alpha beta gamma!"
+
+
+def test_the_reader_refuses_a_reproof_pass_whose_instrument_never_arrived():
+    """The seam's own half of the repair, independent of any run.
+
+    `run.py` building the request correctly is one claim; a reader that would
+    have carried on without one is the other, and it is the half that made the
+    defect invisible. A reader may not condition generation on `pass_kind`, so
+    a re-proof pass with no request is not a call it can complete honestly --
+    there is no span to re-examine and no delivered task to answer.
+    """
+    request = audit.audit_request(
+        act_key="a1",
+        attempt_ordinal=1,
+        draft_ref={"relative_path": "4_perlector/artifacts/draft.json", "sha256": "a" * 64},
+        semi_final_text="alpha beta gamma",
+        flags=[{"class": "testimony-diff", "location": {"start": 6, "end": 10}}],
+    )
+
+    with pytest.raises(ContractError, match="no audit request"):
+        reader_module.validate_audit_delivery(
+            {"act_key": "a1"}, pass_kind=audit.REPROOF_PASS_KIND, audit_request=None
+        )
+    # The mirror: a span-scoped task delivered to a read of the whole act.
+    with pytest.raises(ContractError, match="belongs to the pass that seals it"):
+        reader_module.validate_audit_delivery(
+            {"act_key": "a1"}, pass_kind="perlectio", audit_request=request
+        )
+    # And one act's frozen locations beside another act's pixels.
+    with pytest.raises(ContractError, match="delivered beside the dossier"):
+        reader_module.validate_audit_delivery(
+            {"act_key": "a2"}, pass_kind=audit.REPROOF_PASS_KIND, audit_request=request
+        )
+    assert (
+        reader_module.validate_audit_delivery(
+            {"act_key": "a1"}, pass_kind=audit.REPROOF_PASS_KIND, audit_request=request
+        )
+        == request
+    )
+
+
+def test_a_directional_or_empty_audit_request_is_refused_at_the_delivery_boundary():
+    """Neutrality is screened where the instrument is handed over, not only where
+    it is stored. `payload.audit.reproofs` was already held to `neutral_prompt`
+    exactly; the request now goes through the same screen, so a prompt telling
+    the reader which way to argue cannot reach a reader by travelling on the
+    delivered copy instead of the sealed one (GOVERNANCE 10)."""
+    request = audit.audit_request(
+        act_key="a1",
+        attempt_ordinal=1,
+        draft_ref={"relative_path": "4_perlector/artifacts/draft.json", "sha256": "b" * 64},
+        semi_final_text="alpha beta gamma",
+        flags=[{"class": "testimony-diff", "location": {"start": 6, "end": 10}}],
+    )
+
+    directional = copy.deepcopy(request)
+    directional["reproofs"][0]["prompt"] = "The reading is wrong; replace it with gamma."
+    with pytest.raises(SchemaRefusal, match="neutral location-only"):
+        audit.validate_audit_request(directional)
+
+    moved = copy.deepcopy(request)
+    moved["reproofs"][0]["location"] = {"start": 6, "end": 99}
+    with pytest.raises(SchemaRefusal, match="lies outside the delivered text"):
+        audit.validate_audit_request(moved)
+
+    empty = copy.deepcopy(request)
+    empty["reproofs"] = []
+    with pytest.raises(SchemaRefusal, match="delivers no re-proof location"):
+        audit.validate_audit_request(empty)
+
+    # `validate_input_refs` reads two keys and ignores the rest, so without the
+    # nested closure an extra field here would reach the reader, enter the
+    # digest, and survive `validate_chain`'s rebuild -- directional text riding
+    # past the neutrality screen on the reference.
+    widened = copy.deepcopy(request)
+    widened["draft_ref"]["note"] = "the reading is probably gamma"
+    with pytest.raises(SchemaRefusal, match="draft reference is not its closed shape"):
+        audit.validate_audit_request(widened)
+
+
+def test_the_chain_refuses_a_request_digest_that_is_not_the_frozen_plans_own(tmp_path):
+    """The sealed digest is re-derived from the draft, never taken on trust.
+
+    Without this the new field would be decoration: a producer could name any
+    digest and the record would still validate, which is the same "the record
+    says so" the delivery defect rested on. Both directions are refused -- a
+    digest that does not render from the frozen plan, and a claimed delivery on
+    an act whose plan or cap left nothing to deliver.
+    """
+    result = _run(tmp_path / "runs")
+    assert result.returncode == 0, result.stderr
+    tree = RunTree(tmp_path / "runs", "r")
+    final = _records(tree, "perlectio")[0]
+    assert final["payload"]["audit"]["request_digest"] is not None
+
+    forged = copy.deepcopy(final)
+    forged["payload"]["audit"]["request_digest"] = "c" * 64
+    with pytest.raises(SchemaRefusal, match="does not name the exact audit request"):
+        audit.validate_chain(tree, forged, final["subject_id"])
+
+    undelivered = copy.deepcopy(final)
+    undelivered["payload"]["audit"]["request_digest"] = None
+    with pytest.raises(SchemaRefusal, match="does not name the exact audit request"):
+        audit.validate_chain(tree, undelivered, final["subject_id"])
+
+
+def test_an_exhausted_cap_seals_its_plan_without_claiming_a_delivered_request(tmp_path):
+    """`reproofs` alone could not tell a plan that ran from one that never could.
+
+    With `round_cap = 0` the flags are frozen and their neutral locations are
+    still sealed -- they are what the exhausted-cap uncertainty spans point at --
+    but no reader is called at all. Recording that as an absent request is the
+    difference between "a re-proof confirmed this span" and "nothing re-examined
+    it", which is exactly the distinction GOVERNANCE 10 asks a measurement to
+    keep.
+    """
+    exhausted = tmp_path / "exhausted.toml"
+    exhausted.write_text(
+        'schema = "perlector-audit.v1"\n'
+        "default_round_cap = 1\n"
+        "absolute_round_cap = 2\n"
+        "round_cap = 0\n"
+        'approval_ref = ""\n'
+    )
+    result = _run(tmp_path / "runs", "--perlector-audit-config", str(exhausted))
+    assert result.returncode == 3, result.stderr
+    tree = RunTree(tmp_path / "runs", "r")
+    finals = _records(tree, "perlectio")
+    assert finals
+    for final in finals:
+        record = final["payload"]["audit"]
+        assert record["reproofs"], "the frozen plan is still sealed for the review to read"
+        assert record["request_digest"] is None
+        audit.validate_chain(tree, final, final["subject_id"])
+
+        claimed = copy.deepcopy(final)
+        claimed["payload"]["audit"]["request_digest"] = "d" * 64
+        with pytest.raises(SchemaRefusal, match="left nothing to deliver"):
+            audit.validate_chain(tree, claimed, final["subject_id"])
 
 
 def test_fixture_produces_each_audit_kind_and_records_unchanged_reproof(tmp_path):
