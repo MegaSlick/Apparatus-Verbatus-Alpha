@@ -173,7 +173,8 @@ def test_an_empty_reading_beside_an_unjoinable_one_claims_no_completed_absence()
 
 def _reason(*pairs) -> str:
     """The reason a failed page record would carry for this exact set of attempts."""
-    return attestatores.page_failure_reason(_join(*pairs).unjoined_act_attempts)
+    join = _join(*pairs)
+    return attestatores.page_failure_reason(join.unjoined_act_attempts, join.joined_act_attempts)
 
 
 def test_a_structured_reading_the_join_cannot_carry_is_not_called_unread():
@@ -198,16 +199,42 @@ def test_a_structured_reading_the_join_cannot_carry_is_not_called_unread():
     assert "the page was read and no part of it is claimed unread" in reason
 
 
-def test_a_page_of_only_non_readings_still_says_the_page_was_partly_unread():
-    """The half that was always true, kept: nothing here was read, so saying so
-    is honest. The rewrite must not soften a genuine absence into a join detail."""
+def test_an_act_read_as_empty_beside_a_failure_is_the_partly_unread_page():
+    """One act joined as genuinely empty, one attempt that was not a reading.
+
+    "Only empty readings, and not every attempt carried" is exactly true here, so
+    this wording stays. The rewrite must not soften a genuine absence into a join
+    detail.
+    """
     reason = _reason(
         ("a1", _attempt("genuinely-empty", "")),
         ("a2", _attempt("failed", None, reason="provider returned nothing")),
     )
 
     assert "partly unread" in reason
+    assert "only empty readings" in reason
     assert "structured" not in reason
+
+
+def test_a_page_where_nothing_joined_is_unread_not_read_and_empty():
+    """CodeRabbit CLI, PR #63 — the defect the previous fix introduced.
+
+    Every attempt failed, so the join carried nothing at all. The reason said "the
+    page join carried only empty readings", which names readings that do not exist:
+    an unjoined list of non-readings looks identical whether one act joined empty or
+    none did, and only the joined count separates a page read as blank from a page
+    not read. Reporting the first over the second would send a reviewer looking for
+    a blank page instead of a dead chair.
+    """
+    reason = _reason(
+        ("a1", _attempt("failed", None, reason="provider returned nothing")),
+        ("a2", _attempt("failed", None, reason="provider returned nothing")),
+    )
+
+    assert "no act attempt on this page was a reading at all" in reason
+    assert "2 attempts" in reason
+    assert "empty readings" not in reason
+    assert "unread rather than read and empty" in reason
 
 
 def test_a_mixed_page_names_both_kinds_and_their_counts():

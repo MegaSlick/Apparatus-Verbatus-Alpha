@@ -1477,9 +1477,14 @@ class PageJoin(NamedTuple):
     native_payload: str
     outcome: str
     unjoined_act_attempts: list[dict[str, Any]]
+    # How many attempts the join DID carry. Carried rather than derived, because
+    # `page_failure_reason` cannot tell "some acts joined empty" from "nothing
+    # joined at all" out of the unjoined list alone, and the difference is the
+    # difference between a page read as blank and a page not read.
+    joined_act_attempts: int
 
 
-def page_failure_reason(unjoined_act_attempts: list[dict[str, Any]]) -> str:
+def page_failure_reason(unjoined_act_attempts: list[dict[str, Any]], joined: int) -> str:
     """Why a page record failed, derived from the unjoined attempts' own outcomes.
 
     **Never from their count.** Two different things land in
@@ -1492,8 +1497,15 @@ def page_failure_reason(unjoined_act_attempts: list[dict[str, Any]]) -> str:
     response" wording this stage already replaced, one case over.
 
     So the page-level reason reads the partition the rows already carry rather
-    than re-deriving a worse one from a length comparison. A page record only ever
-    fails, and only these four shapes reach it.
+    than re-deriving a worse one from a length comparison.
+
+    **`joined` is needed and is not derivable from the list.** The first version of
+    this function reported "the page join carried only empty readings" for a page
+    where *nothing* joined — every attempt a failure, no reading of any kind — which
+    is the same misdescription one case further along, introduced by the commit that
+    fixed the previous one. An unjoined list of non-readings is identical in both
+    cases; only the joined count separates a page read as blank from a page not read
+    (CodeRabbit CLI, PR #63).
     """
 
     unread = [
@@ -1513,6 +1525,12 @@ def page_failure_reason(unjoined_act_attempts: list[dict[str, Any]]) -> str:
             f"{len(unread)} were not readings, and {unjoinable} were structured native "
             "readings the join cannot concatenate; a completed absence is not claimed "
             "while either kind is outstanding"
+        )
+    if not joined:
+        return (
+            f"no act attempt on this page was a reading at all: {len(unread)} attempts, "
+            "none of them carrying a reading this join could take; the page is unread "
+            "rather than read and empty"
         )
     return (
         "the page join carried only empty readings and could not carry every act attempt; "
@@ -1593,6 +1611,7 @@ def page_join(pairs: list[tuple[dict[str, Any], Attempt]]) -> PageJoin:
     return PageJoin(
         native_payload=native_payload,
         outcome=outcome,
+        joined_act_attempts=len(joined),
         unjoined_act_attempts=[
             {
                 "act_id": act["act_id"],
@@ -1700,7 +1719,7 @@ def publish_page_testimonia_and_attachments(
             native_payload, outcome = join.native_payload, join.outcome
             unjoined_act_attempts = join.unjoined_act_attempts
             reading = outcome in WITNESS_READING_OUTCOMES
-            failure_reason = page_failure_reason(unjoined_act_attempts)
+            failure_reason = page_failure_reason(unjoined_act_attempts, join.joined_act_attempts)
             page_texts[(page_ordinal, chair)] = native_payload
             health = content_health(native_payload, completed=reading)
             resolved = context.registry.resolve(chair)
