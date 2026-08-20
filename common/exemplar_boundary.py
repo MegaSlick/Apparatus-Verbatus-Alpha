@@ -20,7 +20,7 @@ from common.contracts.envelope import validate_envelope, verify_input_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.identities import artifact_id, page_id, region_id
 from common.contracts.stages import DESIGNATOR, DOOR, EXEMPLAR, RECENSOR
-from common.imaging import crop_png, dimensions
+from common.imaging import carries_only_image_chunks, crop_png, dimensions, image_shown
 from common.runtree.store import RunTree
 
 
@@ -353,9 +353,7 @@ def verify_exemplar_crop_lineage(
     )
     expected_crop = crop_png(page_pixels, bounds)
     if crop != expected_crop:
-        raise ContractError(
-            "a crop region's pixels are not the exact crop of the Exemplar page its transform names"
-        )
+        _verify_crop_is_the_same_image(crop, expected_crop)
     width, height = dimensions(crop)
     if (width, height) != (bounds["w"], bounds["h"]):
         raise ContractError("a crop region's pixels disagree with its recorded bounds")
@@ -372,6 +370,57 @@ def verify_exemplar_crop_lineage(
         # the export can still name the chair that marked the ink out.
         "structure_provenance": payload.get("provenance"),
     }
+
+
+def _verify_crop_is_the_same_image(stored: bytes, derived: bytes) -> None:
+    """Decide what a byte difference between a sealed crop and the re-derived one
+    actually is, and refuse only the difference that matters.
+
+    ARCHITECTURE's third invariant is about the *image*: "the exact image shown to
+    a model is reproducible from the Exemplar plus the recorded transforms". A
+    byte comparison also asserts that the encoder which wrote the crop and the
+    encoder running now emit the same stream — true while one build writes both
+    sides, and false the moment a pod, a CI matrix, a Python upgrade or a resumed
+    run puts a different zlib or a different Pillow on the second side. That is a
+    benign environment change, and reporting it as tampered evidence is both a
+    false alarm and a lost one: an operator who has been told the pixels do not
+    trace stops looking at the pixels.
+
+    So the comparison that decides is on the image, and a crop that shows exactly
+    the derived crop passes however it was framed — which is also what lets a run
+    tree sealed by an earlier encoder still verify under this one. Two things the
+    byte comparison used to say are said explicitly instead: the stored crop must
+    decode at all, and it must be the picture and nothing else, because "the
+    pixels match" is silent about a text chunk or a block of bytes travelling
+    beside them. `image_sha256` is checked before this and still binds the crop's
+    bytes to its record; nothing here loosens immutability.
+    """
+    try:
+        stored_image = image_shown(stored)
+    except ValueError as error:
+        raise ContractError(
+            "a crop region's sealed pixels are not a decodable image to compare against "
+            "the Exemplar page its transform names"
+        ) from error
+    # The derived side was produced by `crop_png` a moment ago, so a failure here
+    # is this pipeline's own encoder, not the evidence, and the refusal must say
+    # so by name rather than escaping as a bare ValueError.
+    try:
+        derived_image = image_shown(derived)
+    except ValueError as error:
+        raise ContractError(
+            "the crop re-derived from the Exemplar page is not decodable; this is the "
+            "pipeline's own encoder failing, not a fault of the sealed evidence"
+        ) from error
+    if stored_image != derived_image:
+        raise ContractError(
+            "a crop region's pixels are not the exact crop of the Exemplar page its transform names"
+        )
+    if not carries_only_image_chunks(stored):
+        raise ContractError(
+            "a crop region's sealed image shows the right pixels but carries content beyond "
+            "the crop itself"
+        )
 
 
 def _verify_act_identity_binding(
