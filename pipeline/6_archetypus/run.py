@@ -79,6 +79,7 @@ from common.stage import (  # noqa: E402
     open_context,
     reading_basis_regions,
     recovery_region_count,
+    require_current_witness_basis,
     run_stage,
     stage_parser,
     validate_serving_provenance,
@@ -265,6 +266,16 @@ def reviewed_reading(context, review: dict, act_id: str) -> tuple[dict, dict[str
             f"act {act_id} has {recovery_regions} recovery crop(s) but {len(readings)} "
             "Perlectio attempt(s); a recovery crop must be reread before any text is established"
         )
+    # The same question on the other side of the reading. Above: is this the
+    # newest Perlectio, and does the crop history account for every attempt.
+    # Here: is the testimony it was established from still the current testimony.
+    # Nothing established a text over evidence a later attempt has superseded.
+    require_current_witness_basis(
+        act_id,
+        reading,
+        artifacts_for(context, ATTESTATORES, "testimonium", act_id),
+        f"the accepted Perlectio of {act_id}",
+    )
     return reading, reference
 
 

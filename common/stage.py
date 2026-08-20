@@ -2346,6 +2346,65 @@ def latest_per_chair(records: list[dict[str, Any]], what: str) -> list[dict[str,
     ]
 
 
+def require_current_witness_basis(
+    act_id: str,
+    reading: dict[str, Any],
+    testimonia: list[dict[str, Any]],
+    what: str,
+) -> None:
+    """Refuse a reading whose witness basis is no longer each chair's current attempt.
+
+    The counterpart, on the testimony side, of the newer-Perlectio check the
+    Archetypus and Armarium already make on the reading side. Both stages derive
+    everything they say about an act from the *latest* Recensor review and from
+    the reading's own basis references, and neither route passes back through
+    `latest_per_chair`. So a Testimonium appended after the reading was
+    established is structurally invisible at the point where the export decides
+    whether to say `complete`, and the sealed export keeps saying it (audit
+    Opus-F2, 2d).
+
+    GOVERNANCE 2 is the rule this serves and it is unconditional: "'complete' is
+    refused unless everything reconciles." A basis citing an attempt that has
+    since been superseded has not reconciled, whatever the reading itself says.
+    `pipeline/3_attestatores/run.py::require_open_witness_layer` closes the door
+    that makes this state reachable through the stage programs at all; this is the
+    structural refusal for a folder assembled, resumed or resealed some other way,
+    and it is deliberately independent of that one.
+
+    Held and absent-chair readings cite no testimony and are passed over: their
+    bytes do not depend on any Testimonium, so nothing about them can be
+    superseded.
+    """
+    basis = reading.get("payload", {}).get("basis")
+    cited = basis.get("testimonia") if isinstance(basis, dict) else None
+    if not cited:
+        return
+    current = {
+        record["payload"]["chair"]: record["artifact_id"]
+        for record in latest_per_chair(testimonia, f"testimonium for {act_id}")
+    }
+    superseded = []
+    for item in cited:
+        if not isinstance(item, dict):
+            raise FatalAccounting(f"{what} has a non-object witness basis entry")
+        chair, artifact = item.get("chair"), item.get("artifact_id")
+        if not isinstance(chair, str) or not isinstance(artifact, str):
+            raise FatalAccounting(f"{what} has an untyped witness basis entry")
+        if chair not in current:
+            raise FatalAccounting(
+                f"{what} cites chair {chair!r}, which has no current Testimonium on this act"
+            )
+        if current[chair] != artifact:
+            superseded.append(chair)
+    if superseded:
+        raise FatalAccounting(
+            f"{what} was established from Testimonium that chair(s) {sorted(superseded)} have "
+            "since superseded; the reading has not been reconciled against the current "
+            "witness evidence, and a superseded basis may not be carried past this stage as "
+            "though it were current"
+        )
+
+
 def page_for(fixture: dict[str, Any], ordinal: int) -> dict[str, Any]:
     for page in fixture["page"]:
         if page["ordinal"] == ordinal:

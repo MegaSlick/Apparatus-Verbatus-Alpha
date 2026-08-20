@@ -34,7 +34,7 @@ from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal  # noqa: E402
 from common.contracts.identities import artifact_id, attempt_id  # noqa: E402
-from common.contracts.stages import ATTESTATORES, DESIGNATOR  # noqa: E402
+from common.contracts.stages import ATTESTATORES, DESIGNATOR, PERLECTOR  # noqa: E402
 from common.exemplar_boundary import verify_exemplar_crop_lineage  # noqa: E402
 from common.stage import (  # noqa: E402
     ATTEMPTED_WITNESS_OUTCOMES,
@@ -658,16 +658,32 @@ def testimonium_payload(
 AttemptHistory = dict[tuple[str, str], list[dict[str, Any]]]
 
 
-def _attempt_history(context) -> tuple[bool, AttemptHistory]:
-    """Index immutable Testimonia once for this stage invocation.
+class AttemptIndex(NamedTuple):
+    """This stage's own prior output, indexed once per invocation."""
+
+    stage_has_artifacts: bool
+    by_pair: AttemptHistory
+    attachments_by_act: dict[str, list[dict[str, Any]]]
+
+
+def _attempt_history(context) -> AttemptIndex:
+    """Index immutable Testimonia and derived attachments once for this invocation.
 
     The independent tally deliberately rebuilds and validates the inventory for
     accounting. This index serves only append/collision decisions, whose repeated
-    per-pair manifest walks otherwise make a pass quadratic in the folder size.
+    per-pair manifest walks otherwise make a pass quadratic in the folder size —
+    which is why the derived act-attachments travel in the same walk rather than
+    in a second one per act.
     """
     manifest = context.tree.build_manifest(ATTESTATORES)
     by_pair: AttemptHistory = {}
+    attachments_by_act: dict[str, list[dict[str, Any]]] = {}
     for entry in manifest["artifacts"]:
+        if entry["kind"] == "act-attachment":
+            attachments_by_act.setdefault(entry["subject_id"], []).append(
+                context.tree.read_artifact(ATTESTATORES, "act-attachment", entry["artifact_id"])
+            )
+            continue
         if entry["kind"] != "testimonium":
             continue
         record = context.tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
@@ -682,7 +698,7 @@ def _attempt_history(context) -> tuple[bool, AttemptHistory]:
         chair = payload.get("chair") if isinstance(payload, dict) else None
         if isinstance(chair, str):
             by_pair.setdefault((entry["subject_id"], chair), []).append(record)
-    return bool(manifest["artifacts"]), by_pair
+    return AttemptIndex(bool(manifest["artifacts"]), by_pair, attachments_by_act)
 
 
 def require_appendable_ordinal(
@@ -774,12 +790,92 @@ def _refuse_write_collision(
         )
 
 
+def pass_would_append(history: AttemptHistory, act_id: str, chairs, ordinal: int) -> bool:
+    """Would a whole pass at this ordinal add an attempt to this act, or repeat one?
+
+    The bound in `require_appendable_ordinal` admits both, deliberately — a
+    targeted reread moves one chair's ordinal without moving any other's, so the
+    orchestrator's ordinal-1 pass has to stay a byte-identical resume over a
+    folder one chair has been reread in. The rules that close an act's witness
+    layer apply to the append and not to the repeat, so they need this told apart
+    rather than assumed.
+    """
+    for chair in chairs:
+        records = history.get((act_id, chair), [])
+        if not records:
+            return True
+        current = latest_attempt(
+            records, f"Testimonium for {(act_id, chair)!r}", operation=f"read:{chair}"
+        )
+        if ordinal > current["payload"]["attempt_ordinal"]:
+            return True
+    return False
+
+
+def require_shared_whole_pass_ordinal(
+    index: "AttemptIndex", act: dict[str, Any], chairs, ordinal: int
+) -> None:
+    """Refuse an appending whole pass on an act a targeted reread has moved.
+
+    The whole pass is a run-level instrument: every configured chair, every
+    expected act, at one ordinal. It also re-derives each act's act-attachment at
+    that same ordinal. A targeted reread moves exactly one chair and re-derives
+    the attachment one ordinal above whatever it found, so after a reread the
+    whole pass's next attachment ordinal is already taken — by a record describing
+    a different state.
+
+    `RunTree.publish_artifact` would refuse that write correctly but *late*: in
+    the derived-record loop, after every Testimonium of the pass had been written
+    and before `context.finish()` rewrote the inventory to describe them. The
+    folder would then hold attempts its own manifest does not name, which the next
+    pass can only report as UNKNOWN. Refused here instead, before anything is
+    written.
+
+    The condition is the model rather than the mechanism: **a targeted reread
+    takes its act off the shared whole-pass ordinal**, and an act is off it
+    exactly when its chairs no longer agree on one current ordinal. A pass that
+    only *repeats* attempts already sealed is untouched (see `pass_would_append`),
+    which is what keeps the orchestrator's ordinal-1 resume working over a folder
+    one chair has been reread in, and a partly-lost attempt layer — where some
+    pairs have no record at all — is a repair at the ordinal its surviving pairs
+    already share, not a mixed act.
+
+    One residual is deliberately left to the RunTree rather than checked here:
+    reread *every* chair on one act up to the same ordinal and the act agrees
+    again, so an appending whole pass at that ordinal passes this check and meets
+    the attachment collision at publication. Reaching it needs each chair's
+    whole-pass attempt at that ordinal to be byte-identical to its reread attempt
+    as well — otherwise `_refuse_write_collision` stops the pass first — so the
+    pass that survives to the collision is one that had nothing to add. The
+    outcome is a loud fatal refusal with `RunTree.write_manifest` as the recorded
+    one-step recovery, and a check for it would cost a second derivation of every
+    attachment in preflight to close a case whose worst outcome is a noisy stop.
+    """
+    current: dict[str, int] = {}
+    for chair in chairs:
+        records = index.by_pair.get((act["act_id"], chair), [])
+        if not records:
+            continue
+        current[chair] = latest_attempt(
+            records, f"Testimonium for {(act['act_id'], chair)!r}", operation=f"read:{chair}"
+        )["payload"]["attempt_ordinal"]
+    if len(set(current.values())) <= 1:
+        return
+    raise SchemaRefusal(
+        f"act {act['act_id']} ({act['act_key']}) carries chairs at different current "
+        f"ordinals {dict(sorted(current.items()))}: that act was reread, which takes it off "
+        f"the shared whole-pass ordinal. A whole pass at ordinal {ordinal} would re-derive "
+        "its act-attachment over the one the reread already sealed. Nothing was written "
+        "for this pass"
+    )
+
+
 def preflight_appendable_ordinals(
     context,
     acts: list[dict[str, Any]],
     ordinal: int,
     declarations: dict[str, Any],
-    history: AttemptHistory,
+    index: "AttemptIndex",
 ) -> tuple[
     dict[str, tuple[list[dict], str | None]],
     dict[tuple[str, str], "Attempt"],
@@ -798,6 +894,19 @@ def preflight_appendable_ordinals(
     """
     regions_by_act: dict[str, tuple[list[dict], str | None]] = {}
     attempts_by_pair: dict[tuple[str, str], Attempt] = {}
+    appending = [
+        act
+        for act in acts
+        if pass_would_append(index.by_pair, act["act_id"], context.witness_chairs, ordinal)
+    ]
+    closed = witness_bound_reading_acts(context) if appending else frozenset()
+    for act in appending:
+        # The whole pass is the other write path that can add testimony to an act,
+        # so it meets the same closed-layer rule the targeted reread does. Only an
+        # append: a whole pass that rewrites attempts already sealed at this
+        # ordinal is the orchestrator's ordinary resume, moves no chair's current
+        # record, and is untouched by this.
+        require_open_witness_layer(closed, act, f"a whole pass at ordinal {ordinal}")
     for act in acts:
         regions: list[dict] = []
         if act["outcome"] == "held":
@@ -815,7 +924,7 @@ def preflight_appendable_ordinals(
                 not_read = f"the proposed region was refused before this chair ran: {error}"
         regions_by_act[act["act_id"]] = (regions, not_read)
         for chair in context.witness_chairs:
-            require_appendable_ordinal(history, act["act_id"], chair, ordinal)
+            require_appendable_ordinal(index.by_pair, act["act_id"], chair, ordinal)
             resolved = context.registry.resolve(chair)
             attempt = (
                 not_read_attempt(resolved, not_read)
@@ -829,7 +938,14 @@ def preflight_appendable_ordinals(
                 )
             )
             attempts_by_pair[(act["act_id"], chair)] = attempt
-            _refuse_write_collision(history, act, chair, ordinal, attempt)
+            _refuse_write_collision(index.by_pair, act, chair, ordinal, attempt)
+    # Last, so a genuine witness-attempt disagreement is named for what it is
+    # rather than reported as its consequence one derivation downstream: the
+    # attachment collides *because* a reread already sealed an attempt this pass
+    # would contradict, and where that contradiction exists `_refuse_write_collision`
+    # says which chair and which two outcomes.
+    for act in appending:
+        require_shared_whole_pass_ordinal(index, act, context.witness_chairs, ordinal)
     return regions_by_act, attempts_by_pair
 
 
@@ -1456,6 +1572,52 @@ def page_join(pairs: list[tuple[dict[str, Any], Attempt]]) -> PageJoin:
     )
 
 
+def act_scoped_attachment_entry(
+    context,
+    act: dict[str, Any],
+    chair: str,
+    attempt: "Attempt",
+    ordinal: int,
+) -> dict[str, Any]:
+    """One act-scoped chair's derived attachment view of one attempt.
+
+    Shared by the whole pass and the targeted reread, because both derive the
+    same view of the same per-(act, chair) attempt stream and a second spelling
+    is how the two would come to disagree about what the derived record says —
+    the drift F-O1 was, one layer down.
+
+    An act-scoped chair reads the act crop directly, so there is no page reading
+    to place it inside and `alignment` is deliberately absent. The span is this
+    chair's own complete delivered reading, the interim measure that stands until
+    R4's alignment computes a true covered span (F-S2: it is derived from the
+    response, never fixture-declared).
+    """
+    attached = act["outcome"] == "proposed" and attempt.outcome in WITNESS_READING_OUTCOMES
+    act_attempt = attempt_id(act["act_id"], f"read:{chair}", ordinal)
+    return {
+        "chair": chair,
+        "page_witness": False,
+        "testimonium_ref": context.artifact_ref(
+            ATTESTATORES,
+            "testimonium",
+            artifact_id(ATTESTATORES, "testimonium", act["act_id"], act_attempt),
+        ),
+        "attached": attached,
+        "content_health": attempt.health,
+        "alignment": None,
+        "span": (
+            {
+                "start": 0,
+                "end": len(attempt.native_payload)
+                if isinstance(attempt.native_payload, str)
+                else 0,
+            }
+            if attached
+            else None
+        ),
+    }
+
+
 def publish_page_testimonia_and_attachments(
     context,
     *,
@@ -1839,49 +2001,28 @@ def publish_page_testimonia_and_attachments(
                 attached = (
                     alignment["status"] == "aligned" and attempt.outcome in WITNESS_READING_OUTCOMES
                 )
-            reference = page_records.get((act["page_ordinal"], chair)) if page_witness else None
-            if reference is None:
-                act_attempt = attempt_id(act["act_id"], f"read:{chair}", ordinal)
-                reference = context.artifact_ref(
-                    ATTESTATORES,
-                    "testimonium",
-                    artifact_id(ATTESTATORES, "testimonium", act["act_id"], act_attempt),
-                )
-            entries.append(
-                {
-                    "chair": chair,
-                    "page_witness": page_witness,
-                    "testimonium_ref": reference,
-                    "attached": attached,
-                    "content_health": attempt.health,
-                    "alignment": alignment,
-                    # Interim span, NOT fixture-declared (the fixture declares no
-                    # span anywhere): until R4's alignment computes the true
-                    # covered span, this treats this chair's own entire delivered
-                    # act-scoped reading as the one covered span. The prior
-                    # `len(act["act_key"])` synthesized a constant unrelated to any
-                    # reading (the act key is a short synthetic label like "a1"),
-                    # while the report and D1 both called it "fixture-declared" --
-                    # a provenance claim nothing backed. Found in audit; F-S2.
-                    "span": (
-                        {
-                            "start": alignment["witness_span"]["start"],
-                            "end": alignment["witness_span"]["end"],
-                        }
-                        if page_witness and attached
-                        else (
+            if page_witness:
+                reference = page_records[(act["page_ordinal"], chair)]
+                entries.append(
+                    {
+                        "chair": chair,
+                        "page_witness": True,
+                        "testimonium_ref": reference,
+                        "attached": attached,
+                        "content_health": attempt.health,
+                        "alignment": alignment,
+                        "span": (
                             {
-                                "start": 0,
-                                "end": len(attempt.native_payload)
-                                if isinstance(attempt.native_payload, str)
-                                else 0,
+                                "start": alignment["witness_span"]["start"],
+                                "end": alignment["witness_span"]["end"],
                             }
                             if attached
                             else None
-                        )
-                    ),
-                }
-            )
+                        ),
+                    }
+                )
+            else:
+                entries.append(act_scoped_attachment_entry(context, act, chair, attempt, ordinal))
         context.publish(
             kind="act-attachment",
             subject_id=act["act_id"],
@@ -1942,6 +2083,72 @@ def attempt_pass(
     return recorded, isolated_crop_failure
 
 
+def witness_bound_reading_acts(context) -> frozenset[str]:
+    """Every act whose reading was already established from this act's testimony.
+
+    The one question the attempt model turns on. `pipeline/4_perlector/run.py::
+    _next_attempt` derives the reading ordinal from the act's *crop* history —
+    one reading of the proposal, plus one for each recovery crop cut since — and
+    the Recensor, Archetypus and Armarium each enforce that same identity. So a
+    Testimonium that arrives after such a reading has nowhere to go: the Perlector
+    recomputes the same ordinal, builds a different payload from the new
+    testimony, and the run tree refuses the write against the record it already
+    sealed. There is no forward path, because the Perlectio that would have to
+    change is itself immutable (GOVERNANCE 4).
+
+    That is the model rather than an oversight. A Testimonium is a clue that
+    primes a reading, never the ink the reading is established from
+    (ARCHITECTURE; GOVERNANCE 3), so a second look by a witness does not make a
+    second reading exist — and re-reading an act because a witness spoke again is
+    the re-roll GOVERNANCE 11 refuses ("never re-rolled until it looks better").
+    The witness layer of an act is open until the act is read and closed
+    afterwards.
+
+    **Closed by a reading that cites testimony, not by any Perlectio at all.** A
+    held act and an absent Perlector chair both publish `not-run` records with no
+    witness basis; their bytes do not depend on the testimony, so new testimony
+    wedges nothing there and a whole second pass over a run holding one held act
+    must not be refused on its account.
+
+    One walk for the whole invocation, and read from the Perlector's own artifacts
+    rather than from a flag, so a folder assembled or resumed in any order answers
+    the same way.
+    """
+    closed = set()
+    for entry in context.tree.build_manifest(PERLECTOR)["artifacts"]:
+        if entry["kind"] != "perlectio" or entry["subject_id"] in closed:
+            continue
+        record = context.tree.read_artifact(PERLECTOR, "perlectio", entry["artifact_id"])
+        basis = record.get("payload", {}).get("basis")
+        if isinstance(basis, dict) and basis.get("testimonia"):
+            closed.add(entry["subject_id"])
+    return frozenset(closed)
+
+
+def require_open_witness_layer(closed: frozenset[str], act: dict[str, Any], what: str) -> None:
+    """Refuse a new witness attempt on an act the Perlector has already read.
+
+    At entry, before anything is written. The alternative is what the audit found:
+    the attempt is appended, and the wedge it makes is discovered three stages
+    later as an immutability refusal on a reading identity nothing can move — with
+    no forward path, because the Perlectio that would have to change is itself
+    immutable (GOVERNANCE 4).
+
+    A *rerun* of an attempt already sealed is untouched by this: it rewrites
+    byte-identical bytes, changes no chair's current record, and is how the
+    orchestrator resumes. Only an append is refused.
+    """
+    if act["act_id"] in closed:
+        raise ContractError(
+            f"act {act['act_id']} ({act['act_key']}) already carries a Perlectio, so its "
+            f"witness layer is closed: {what} would append testimony no reading can be "
+            "established from. The reading attempt ordinal is a function of the act's "
+            "recovery crops, not of its testimony, so a later Testimonium cannot be "
+            "answered by a new reading. Re-witness before the Perlector reads the act, or "
+            "let this reading stand and record the doubt as a review item"
+        )
+
+
 def next_attempt_ordinal(history: AttemptHistory, act_id: str, chair: str) -> int:
     """The ordinal a reread of this one chair appends at.
 
@@ -1967,7 +2174,7 @@ def reread_pass(
     acts: list[dict[str, Any]],
     act_id: str,
     chair: str,
-    history: AttemptHistory,
+    index: "AttemptIndex",
 ) -> int:
     """Append one new attempt for one named chair on one named act.
 
@@ -1998,10 +2205,38 @@ def reread_pass(
             f"chair {chair!r} is explicitly absent: {resolved.reason}; there is no witness "
             "to reread"
         )
+    if chair in declared_page_witness_chairs(context):
+        # A page witness reports one reading of one page. Its act-level view is
+        # *derived* — the page join, then the alignment of that join against the
+        # page anchor — so there is no act-scoped request to put to it a second
+        # time, and re-deriving one act's view from an attempt the page record
+        # does not describe would leave the page Testimonium and the attachment
+        # disagreeing about the same chair. The honest operation is a reread of
+        # the page, which the recovery vocabulary already names (`page-reread`,
+        # `common/recovery.py`) and which nothing has built. Refused by name
+        # rather than half-performed.
+        raise ContractError(
+            f"chair {chair!r} is a page witness on this fixture: it reports one reading per "
+            "page and its act-level view is derived from that page reading, so there is no "
+            f"act-scoped attempt for act {act_id} to repeat. The operation that would be "
+            "honest here is a page-level reread, which is named in the recovery vocabulary "
+            "and is not built"
+        )
+    require_open_witness_layer(
+        witness_bound_reading_acts(context), act, f"a reread of chair {chair!r}"
+    )
 
     # No `require_appendable_ordinal` here: `next_attempt_ordinal` returns the
     # current ordinal plus one, off the same history, so the bound cannot fire.
-    ordinal = next_attempt_ordinal(history, act_id, chair)
+    ordinal = next_attempt_ordinal(index.by_pair, act_id, chair)
+    attempt = resolve_attempt(
+        context,
+        act,
+        chair,
+        resolved,
+        declarations_for(context, ordinal),
+        reread=True,
+    )
     publish_attempt(
         context,
         act=act,
@@ -2009,16 +2244,85 @@ def reread_pass(
         resolved=resolved,
         ordinal=ordinal,
         regions=proposed_regions(context, act_id),
-        attempt=resolve_attempt(
-            context,
-            act,
-            chair,
-            resolved,
-            declarations_for(context, ordinal),
-            reread=True,
-        ),
+        attempt=attempt,
     )
+    republish_act_attachment(context, index, act, chair, attempt, ordinal)
     return 1
+
+
+def republish_act_attachment(
+    context,
+    index: "AttemptIndex",
+    act: dict[str, Any],
+    chair: str,
+    attempt: "Attempt",
+    ordinal: int,
+) -> None:
+    """Re-derive this act's attachment so the reread's evidence layer is complete.
+
+    The attachment is a *derived* record over the per-(act, chair) attempt stream,
+    and a reread appends to exactly that stream. Leaving it alone is what made the
+    reread unusable: `pipeline/4_perlector/run.py::act_attachment_view` compares
+    every entry against the chair's current Testimonium and refuses a record
+    describing a superseded attempt, so the very next Perlector invocation refused
+    — in the reread's own intended order, whole pass then targeted reread then
+    read. The write path existed and nothing could ever consume its product.
+
+    Only the reread chair's entry is re-derived. The other chairs' attempts did
+    not move, so their derived views did not move either, and re-running the page
+    join and its alignment to reproduce them would be a second derivation of an
+    unchanged fact. They are carried forward — but *checked* first: a stale entry
+    is refused here rather than laundered into a newer record by a reread that has
+    nothing to do with it.
+    """
+    records = index.attachments_by_act.get(act["act_id"], [])
+    if not records:
+        raise ContractError(
+            f"act {act['act_id']} has no act-attachment for the reread to re-derive; a "
+            "targeted reread follows a whole pass and never stands in for one"
+        )
+    current = latest_attempt(
+        records, f"act-attachment for {act['act_id']}", operation="act-attachment"
+    )
+    attachments = current.get("payload", {}).get("attachments")
+    if not isinstance(attachments, list) or {
+        item.get("chair") if isinstance(item, dict) else None for item in attachments
+    } != set(context.witness_chairs):
+        raise SchemaRefusal(
+            f"act {act['act_id']}'s current act-attachment does not describe this run's "
+            "configured witnesses; a reread may not re-derive it"
+        )
+    entries = []
+    for item in attachments:
+        if item["chair"] == chair:
+            entries.append(act_scoped_attachment_entry(context, act, chair, attempt, ordinal))
+            continue
+        other = latest_attempt(
+            index.by_pair.get((act["act_id"], item["chair"]), []),
+            f"Testimonium for {(act['act_id'], item['chair'])!r}",
+            operation=f"read:{item['chair']}",
+        )
+        if item.get("content_health") != other["payload"].get("content_health"):
+            raise SchemaRefusal(
+                f"act {act['act_id']}'s current act-attachment already describes an attempt "
+                f"that is no longer chair {item['chair']!r}'s current Testimonium; a reread "
+                "of another chair does not make that record current again"
+            )
+        entries.append(item)
+    context.publish(
+        kind="act-attachment",
+        subject_id=act["act_id"],
+        outcome="read",
+        attempt=attempt_id(
+            act["act_id"], "act-attachment", current["payload"]["attempt_ordinal"] + 1
+        ),
+        inputs=[],
+        payload={
+            "act_key": act["act_key"],
+            "attempt_ordinal": current["payload"]["attempt_ordinal"] + 1,
+            "attachments": entries,
+        },
+    )
 
 
 def main(registry_factory=ChairRegistry.from_toml) -> int:
@@ -2043,7 +2347,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     context = open_context(args, ATTESTATORES, registry_factory=registry_factory)
     acts = expected_acts(context)
     try:
-        has_existing_attempts, history = _attempt_history(context)
+        index = _attempt_history(context)
     except FatalAccounting:
         raise
     except ContractError as error:
@@ -2062,7 +2366,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     # deliberately (`RunTree.write_manifest`) remains the one-step way out, exactly
     # as it is for a pass interrupted before its manifest was written.
     stored_inventory = context.tree.resolve(context.tree.manifest_path(ATTESTATORES)).exists()
-    if has_existing_attempts or stored_inventory:
+    if index.stage_has_artifacts or stored_inventory:
         # No chair denominator here: this pass is what fills it. See `attempt_tally`.
         prior_tally = attempt_tally(context.tree, context=context, acts=acts)
         if prior_tally["hold"]:
@@ -2082,7 +2386,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 f"next; --attempt-ordinal {args.attempt_ordinal} names a different attempt "
                 "and honouring neither of the two silently is not an option"
             )
-        recorded = reread_pass(context, acts, args.act, args.chair, history)
+        recorded = reread_pass(context, acts, args.act, args.chair, index)
     else:
         if args.act or args.chair:
             raise ContractError(
@@ -2097,7 +2401,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 acts,
                 ordinal,
                 declarations,
-                history,
+                index,
             )
         except ContractError as error:
             # An ordinary preflight refusal holds this pass before it writes any

@@ -752,37 +752,58 @@ def test_perlector_refuses_an_act_scoped_testimonium_wearing_a_page_witness_flag
 # on what current means". The attachment was a third consumer that did drift.
 
 
-def test_perlector_refuses_an_attachment_describing_a_superseded_attempt(tmp_path):
-    """F-O1 (REOPENED on R4's audit): a targeted reread leaves the attachment
-    describing the old attempt, for a page witness exactly as for an act-scoped
-    one.
+def _latest_attachment(tree: RunTree, act_id: str) -> tuple[Path, dict]:
+    """The act's current derived attachment record and the path holding it."""
+    entries = [
+        entry
+        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
+        if entry["kind"] == "act-attachment" and entry["subject_id"] == act_id
+    ]
+    entry = max(
+        entries,
+        key=lambda item: tree.read_artifact(ATTESTATORES, "act-attachment", item["artifact_id"])[
+            "payload"
+        ]["attempt_ordinal"],
+    )
+    return (
+        tree.resolve(entry["relative_path"]),
+        tree.read_artifact(ATTESTATORES, "act-attachment", entry["artifact_id"]),
+    )
 
-    `reread-success` declares a second, longer response for attestator_1 (a
-    page witness) on act a2. Before this fix the run continued in silence with
-    the attachment still claiming `span 0..40` and the ordinal-1
-    `content_health`, while that chair's current Testimonium delivered 48
-    characters -- a positive alignment claim over text that is no longer the
-    reading, which is precisely the dishonesty F-S2 and F-P2 closed on the
-    first-pass path. R4's alignment made `attached` legitimately diverge from
-    a page witness's own outcome (alignment can honestly fail against live
-    text), and a repair scoped that divergence away entirely instead of to
-    just the `attached`/outcome comparison it applies to -- `content_health`
-    staleness is unconditional in `pipeline/4_perlector/run.py::
-    act_attachment_view` again, since it is recorded from the same per-(act,
-    chair) attempt stream a reread appends to whether or not the chair is
-    page-scoped.
+
+def test_perlector_refuses_an_attachment_describing_a_superseded_attempt(tmp_path):
+    """F-O1's guard, exercised as the structural guard it now is.
+
+    The producing path that once made this state is closed at its source: a
+    targeted reread of a page witness is refused by name (there is no act-scoped
+    attempt for a page witness to repeat), and an act-scoped reread re-derives
+    this act's attachment as part of its own write, so no ordinary invocation
+    leaves the record describing a superseded attempt any more. See
+    `pipeline/orchestrator/test_attempt_model.py` for that half.
+
+    What is asserted here is the other half, and it does not depend on which
+    invocation could produce it: a record on disk claiming a `content_health` that
+    is not the chair's current one is refused at the consumer. `attached` may
+    legitimately diverge from a page witness's own outcome — alignment can
+    honestly fail against live text — but the health of the attempt the record
+    actually describes must always still be that chair's current one, and R0's
+    `granularity_basis` claim rests on it.
     """
     root = tmp_path / "runs"
     fixture_data = load_fixture(str(FIXTURE_ROOT))
     act_a2_id = act_identity(fixture_data, act_by_key(fixture_data, "a2"))
-    _through_attestatores(root, "superseded", "reread-success")
-    first_read = invoke_stage(root, "superseded", "reread-success", "pipeline/4_perlector/run.py")
-    assert first_read.returncode == 0, first_read.stderr
+    tree = _through_attestatores(root, "superseded", "reread-success")
 
-    reread = _reread(root, "superseded", "reread-success", act_a2_id, "attestator_1")
-    assert reread.returncode == 0, reread.stderr
+    path, record = _latest_attachment(tree, act_a2_id)
+    entry = next(
+        row for row in record["payload"]["attachments"] if row["chair"] == PAGE_WITNESS_CHAIRS[0]
+    )
+    assert entry["page_witness"] is True
+    entry["content_health"] = {**entry["content_health"], "characters": 4096}
+    _reseal(path, record)
 
     result = invoke_stage(root, "superseded", "reread-success", "pipeline/4_perlector/run.py")
+
     assert result.returncode != 0, (
         "the Perlector accepted an act-attachment describing an attempt that is no longer "
         "the chair's current Testimonium"
@@ -791,42 +812,31 @@ def test_perlector_refuses_an_attachment_describing_a_superseded_attempt(tmp_pat
 
 
 def test_the_witness_floor_is_not_counted_from_a_superseded_attachment(tmp_path):
-    """F-O1 (REOPENED on R4's audit): the floor may not be counted from an
-    attachment the reread outdated -- for attestator_3, a page witness, exactly
-    as for an act-scoped chair. `pipeline/5_recensor/run.py::
-    chair_current_attempts` gives the Recensor the same per-chair staleness
-    signal `act_attachment_view` uses, since R4 removed this file's own
-    outcome-based version of the check for every page witness rather than only
-    exempting the narrower comparison that alignment legitimately disagrees
-    with.
+    """The Recensor's own copy of the check above, on the same damaged record.
 
-    Drives the natural order -- whole pass, targeted reread, Perlector, Recensor.
-    `reread-failure` declares attestator_3's second attempt on act a1 as a
-    failure, so that chair's current Testimonium is `failed` while its ordinal-1
-    attachment still says `attached: true` with the successful attempt's health.
-
-    Before this fix both stages exited 0 and the real partition receipt for act a1
-    recorded `by_outcome {failed: 1, read: 2}` beside `shortfalls {failed: 1,
-    truncated: 0, unaligned: 0}` and `health_unrecorded: 0` -- the outcome half
-    describing the current failed attempt and the attachment half describing the
-    superseded successful one, in one self-contradictory record. (Compare
-    `test_a_failed_act_scoped_attempt_produces_a_real_failed_and_unaligned_
-    shortfall`, which pins `unaligned: 1` for exactly this situation on the
-    first-pass path.) The same staleness in the other direction -- failed first,
-    read on the reread -- drops a recovered read out of `completed` and reports it
-    as a `page_granularity_only` contribution that never happened.
-
-    Both consumers are asserted, because either can be reached first by hand: the
+    Both consumers are asserted because either can be reached first by hand: the
     Perlector refuses the stale custody record, and the Recensor refuses to count
-    a floor from it before it publishes any review.
+    a floor from it before it publishes any review. `pipeline/5_recensor/run.py::
+    chair_current_attempts` gives the Recensor the same per-chair staleness signal
+    `act_attachment_view` uses, and the two must not drift.
+
+    Before F-O1's fix both stages exited 0 and the real partition receipt for act
+    a1 recorded `by_outcome {failed: 1, read: 2}` beside `shortfalls {failed: 1,
+    truncated: 0, unaligned: 0}` and `health_unrecorded: 0` — the outcome half
+    describing one attempt and the attachment half describing another, in one
+    self-contradictory record.
     """
     root = tmp_path / "runs"
     fixture_data = load_fixture(str(FIXTURE_ROOT))
     act_a1_id = act_identity(fixture_data, act_by_key(fixture_data, "a1"))
     tree = _through_attestatores(root, "stale-floor", "reread-failure")
 
-    reread = _reread(root, "stale-floor", "reread-failure", act_a1_id, "attestator_3")
-    assert reread.returncode == 0, reread.stderr
+    path, record = _latest_attachment(tree, act_a1_id)
+    entry = next(
+        row for row in record["payload"]["attachments"] if row["chair"] == PAGE_WITNESS_CHAIRS[1]
+    )
+    entry["content_health"] = {**entry["content_health"], "characters": 4096}
+    _reseal(path, record)
 
     perlector = invoke_stage(root, "stale-floor", "reread-failure", "pipeline/4_perlector/run.py")
     assert perlector.returncode != 0, (
@@ -847,10 +857,12 @@ def test_the_witness_floor_is_not_counted_from_a_superseded_attachment(tmp_path)
 def test_act_scoped_attachment_must_match_the_current_outcome_when_health_is_current(tmp_path):
     """F-O1's restored outcome guard carries evidence independent of health.
 
-    An act-scoped reread fails after the original successful read. This test then
-    makes the old attachment current in every health-derived respect while leaving
-    its positive ``attached`` fact untouched. Perlector and Recensor must each
-    refuse that one remaining contradiction rather than count a superseded read.
+    An act-scoped reread fails after the original successful read, and the reread
+    re-derives this act's attachment so the record on disk is correct. This test
+    then makes that correct record wrong in exactly one respect — its positive
+    `attached` fact — while leaving every health-derived field current. Perlector
+    and Recensor must each refuse that one remaining contradiction rather than
+    count a superseded read.
     """
     root = tmp_path / "runs"
     fixture_data = load_fixture(str(FIXTURE_ROOT))
@@ -878,28 +890,23 @@ def test_act_scoped_attachment_must_match_the_current_outcome_when_health_is_cur
     )
     assert current["outcome"] == "failed"
 
-    attachment_entry = next(
-        entry
-        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
-        if entry["kind"] == "act-attachment" and entry["subject_id"] == act_a1_id
-    )
-    attachment_path = tree.resolve(attachment_entry["relative_path"])
-    attachment_record = tree.read_artifact(
-        ATTESTATORES, "act-attachment", attachment_entry["artifact_id"]
-    )
+    attachment_path, attachment_record = _latest_attachment(tree, act_a1_id)
     attachment = next(
         row
         for row in attachment_record["payload"]["attachments"]
         if row["chair"] == RETAINED_ACT_WITNESS_CHAIR
     )
     assert attachment["page_witness"] is False
-    assert attachment["attached"] is True
-    attachment["content_health"] = current["payload"]["content_health"]
-    # The span must stay consistent with the health just copied in, or the
-    # Perlector refuses on the span before it reaches the outcome guard this
-    # test is named for: a non-integer character count skips that span check
-    # entirely, and 0 matches the forged {0, 0}. Any other value would go red
-    # on the span message instead of the outcome guard.
+    # The reread re-derived this record, so it correctly reports the failed
+    # attempt. Only the positive fact is forged back in.
+    assert attachment["attached"] is False
+    assert attachment["content_health"] == current["payload"]["content_health"]
+    attachment["attached"] = True
+    # The span must stay consistent with the current health, or the Perlector
+    # refuses on the span before it reaches the outcome guard this test is named
+    # for: a non-integer character count skips that span check entirely, and 0
+    # matches the forged {0, 0}. Any other value would go red on the span message
+    # instead of the outcome guard.
     assert current["payload"]["content_health"]["characters"] in (None, 0), current["payload"]
     attachment["span"] = {"start": 0, "end": 0}
     _reseal(attachment_path, attachment_record)

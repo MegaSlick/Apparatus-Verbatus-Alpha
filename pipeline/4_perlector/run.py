@@ -66,6 +66,7 @@ from common.stage import (  # noqa: E402
     latest_per_chair,
     open_context,
     reading_basis_regions,
+    recovery_region_count,
     run_stage,
     stage_parser,
     validate_serving_provenance,
@@ -1692,7 +1693,14 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             acknowledged += 1
             continue
 
-        ordinal = _next_attempt(context, act_id)
+        # Read once, before the ordinal is derived from it: the same region set
+        # answers both which attempt this is and which crops are read, and
+        # `_next_attempt` refuses an unplaceable origin here rather than leaving
+        # the next stage to discover it over an immutable Perlectio. Every act
+        # reaching this line already had its regions walked and validated by
+        # `preflight_testimonia_denominator`, absent chair or not.
+        regions, proposal_regions = act_regions(context, act_id)
+        ordinal = _next_attempt(context, act_id, regions)
         if isinstance(chair, AbsentChair):
             # No chair to read with. Every act still gets an explicit record
             # naming the absence: a stage that simply produced nothing would
@@ -1715,8 +1723,6 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             )
             acknowledged += 1
             continue
-
-        regions, proposal_regions = act_regions(context, act_id)
 
         # Every region of the act is verified and read, including a continuation
         # on the next page: an act that ran over the page break and was read only
@@ -2222,7 +2228,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     return EXIT_COMPLETE
 
 
-def _next_attempt(context, act_id: str) -> int:
+def _next_attempt(context, act_id: str, regions: list[dict]) -> int:
     """Which reading attempt this is, derived from the act rather than from history.
 
     Counting existing Perlectiones and adding one would make the answer depend on
@@ -2232,14 +2238,24 @@ def _next_attempt(context, act_id: str) -> int:
     reading of the proposal, and one more for each recovery region cut since. A
     rerun that changed nothing therefore recomputes the same ordinal, produces the
     same bytes, and is reused rather than rewritten.
+
+    **The one attempt model, and the one reader for it.** Witness testimony does
+    not appear in this derivation, and that is the model rather than an omission:
+    a Testimonium is a clue that primes a reading, never the ink the reading is
+    established from, so a second look by a witness does not make a second reading
+    attempt exist (GOVERNANCE 3, 11). `pipeline/3_attestatores/run.py::reread_pass`
+    therefore closes its own window at the reading rather than moving this number.
+
+    Counted through `recovery_region_count`, the same shared reader the Recensor,
+    Archetypus and Armarium ask, because this copy asked only whether an origin
+    equalled `"recovery"` and silently counted every other value — including an
+    unknown or malformed one — as zero. A resealed Designator tree carrying origin
+    `"mystery"` was therefore read and published here at attempt 1 and became fatal
+    only at the next stage, by which time this Perlectio was already immutable and
+    the retry had nowhere to go. Refused before any model call or publication now
+    (Sol-S5).
     """
-    recoveries = 0
-    for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]:
-        if entry["kind"] == "region" and entry["subject_id"] == act_id:
-            record = context.tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
-            if record["payload"]["origin"] == "recovery":
-                recoveries += 1
-    return recoveries + 1
+    return recovery_region_count(act_id, regions) + 1
 
 
 if __name__ == "__main__":
