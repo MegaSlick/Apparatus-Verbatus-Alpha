@@ -324,3 +324,99 @@ def test_a_breach_inside_a_recovery_round_stops_before_the_archetypus(monkeypatc
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))
+
+
+# --- The policy is sealed, and its point of use requires it ---------------------
+#
+# `config/hard_failure.toml` is the sealing family's fourth and last member. It is
+# the one policy the orchestrator must read BEFORE the run exists -- the threshold
+# has to be known to decide whether a resumed run may re-enter a stage at all --
+# and then holds for the whole run. Until it was sealed, a rewrite between one
+# orchestration and the next moved the cap that halts the run with nothing
+# recording that it had moved.
+
+
+def _shipped_hard_failure() -> str:
+    return (ROOT / "config" / "hard_failure.toml").read_text(encoding="utf-8")
+
+
+def test_the_run_authority_names_the_hard_failure_policy_it_was_sealed_under(tmp_path):
+    """Recorded by name, not merely folded into `config_digest`.
+
+    A reader holding only the tree can say which hard-failure bytes governed the
+    run, instead of testing a candidate file against one hash of everything.
+    """
+    from common.hard_failure import load_hard_failure_policy
+
+    root = tmp_path / "runs"
+    assert orchestrate(root, "sealed", "happy").returncode == 0
+
+    run = RunTree(root, "sealed").read_run()
+    assert (
+        run["sealed_config_digests"]["hard-failure"]
+        == load_hard_failure_policy(ROOT / "config" / "hard_failure.toml")["config_sha256"]
+    )
+
+
+def test_a_hard_failure_policy_swapped_between_orchestrations_is_refused_on_resume(tmp_path):
+    """The point of use, and the first moment a run authority exists to hold it to.
+
+    On a resume the orchestrator has both halves in hand -- the bytes it just read
+    and the digest the run sealed -- so it proves them against each other before
+    invoking anything. Without this the second orchestration would have re-entered
+    every stage under a cap the run never sealed, and the run's own record would
+    still name the old one.
+    """
+    root = tmp_path / "runs"
+    policy = tmp_path / "hard_failure.toml"
+    policy.write_text(_shipped_hard_failure(), encoding="utf-8")
+    first = subprocess.run(
+        [
+            sys.executable,
+            str(ORCHESTRATOR),
+            "--fixture",
+            FIXTURE,
+            "--scenario",
+            "happy",
+            "--run-id",
+            "swapped",
+            "--run-root",
+            str(root),
+            "--hard-failure-config",
+            str(policy),
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert first.returncode == 0, first.stderr
+
+    # A comment-only edit: the threshold is Tyrel's ruling and `RULED_THRESHOLD`
+    # refuses to move either way, so the swap this seal has to catch is any change
+    # to the bytes at all -- which is exactly what a digest says and what a reader
+    # of `config_digest` alone could not attribute to this file.
+    policy.write_text(
+        _shipped_hard_failure() + "\n# a byte this run never sealed\n", encoding="utf-8"
+    )
+    second = subprocess.run(
+        [
+            sys.executable,
+            str(ORCHESTRATOR),
+            "--fixture",
+            FIXTURE,
+            "--scenario",
+            "happy",
+            "--run-id",
+            "swapped",
+            "--run-root",
+            str(root),
+            "--hard-failure-config",
+            str(policy),
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+
+    assert second.returncode != 0, "a resumed run re-entered every stage under an unsealed cap"
+    assert "hard-failure configuration changed between" in second.stderr, second.stderr
