@@ -2622,7 +2622,11 @@ def _act_outcome_sources(sources: dict[str, list[dict[str, Any]]]) -> dict[str, 
         # Delivered means an Archetypus record exists, which means a status exists.
         # Any other category means there is no record, so a status would describe a
         # reading that is not there.
-        if (text_status in TEXT_STATUSES) is not (category == ArmariumCategory.DELIVERED.value):
+        # isinstance folded into the delivered-iff-status equivalence: a
+        # package-supplied unhashable value must be a named refusal, not a
+        # TypeError out of the membership test.
+        has_status = isinstance(text_status, str) and text_status in TEXT_STATUSES
+        if has_status is not (category == ArmariumCategory.DELIVERED.value):
             raise SchemaRefusal(
                 "a source act-outcome record's established-text status does not match whether "
                 "the act was delivered"

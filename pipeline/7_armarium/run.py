@@ -809,7 +809,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             # a delivered act reaching the aggregate with no status would be counted
             # as merely unmeasured, and this stage has just verified one.
             text_status = entry.get("text_status")
-            if text_status not in TEXT_STATUSES:
+            if not isinstance(text_status, str) or text_status not in TEXT_STATUSES:
                 raise FatalAccounting(
                     "a delivered Armarium entry has no established-text status; an act the "
                     "pipeline knows is damaged may not be aggregated as an unmeasured one"

@@ -678,7 +678,10 @@ def run_aggregate(
         status = text_status.get(act)
         if status is None:
             reasons.append(NO_TEXT_STATUS_REASON.format(act=act))
-        elif status not in TEXT_STATUSES:
+        # isinstance before membership: an unhashable value (a list, a dict)
+        # out of a hand-built basis would raise TypeError from the frozenset
+        # test, and this boundary owes a named fatal instead of a crash.
+        elif not isinstance(status, str) or status not in TEXT_STATUSES:
             raise FatalAccounting(
                 f"act {act} carries established-text status {status!r}, which is not one of "
                 f"{sorted(TEXT_STATUSES)}"

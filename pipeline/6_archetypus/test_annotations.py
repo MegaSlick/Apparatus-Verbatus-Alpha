@@ -506,7 +506,10 @@ def _tamper_every_reviewed_reading(root: Path, run_id: str, mutate) -> tuple[Run
             continue
         review = json.loads(tree.resolve(entry["relative_path"]).read_text(encoding="utf-8"))
         act_ids.append(reseal_chain.reseal_reviewed_reading(tree, review, mutate))
-    assert act_ids, "the fixture accepted no act, so this demonstration would prove nothing"
+    assert len(act_ids) >= 2, (
+        "the demonstration's strength is damage in EVERY act of a multi-act run; "
+        "a fixture shrunk to one accepted act would prove the weaker claim silently"
+    )
     return tree, sorted(act_ids)
 
 

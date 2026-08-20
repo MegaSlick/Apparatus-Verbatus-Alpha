@@ -506,10 +506,10 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # was measured before `_armarium_bundle_semantics` below learnt the v2
 # manifest id, so the bundle digested on its opaque fallback — the pin must
 # always be measured after the LAST byte of the candidate is in place.)
-# (Integrated-base values below are re-measured across ALL six Tier-0
-# themes together; each theme's own PR carries its branch-local pair.)
-HAPPY_RUN_TREE_DIGEST = "5850d7052cc79c842d0132f0950fe659b0b582eae4119dac10699b584e2fc504"
-REVIEW_RUN_TREE_DIGEST = "fac4c558b7d60d6f879cfb75237a2f641b8c9f07fd90ad0e0be6a6eec9d5ada9"
+# (Values below are re-measured on THIS branch rebased onto main with the
+# reproof theme merged — the combined tree, measured twice, fresh.)
+HAPPY_RUN_TREE_DIGEST = "8d35c50b925ddd5934e5a9bad7f71746894fb5443eaf3fc65bda920d721b5eb9"
+REVIEW_RUN_TREE_DIGEST = "0dfb3b8e402d978407c953ead4572ce11101a3767d4acc1ba0d63a197299281e"
 
 
 def orchestrate(

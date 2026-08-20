@@ -68,6 +68,11 @@ def validate_annotations(annotations, text: str, witnesses: dict | None, what: s
     """
     if not isinstance(annotations, list):
         raise SchemaRefusal(f"{what} is not a list")
+    # Package-sourced callers can hand a non-string here; the layer's offsets
+    # only mean anything against a real text, and a TypeError out of len()
+    # would be a crash where the contract owes a named refusal.
+    if not isinstance(text, str):
+        raise SchemaRefusal(f"{what} cannot be validated against a non-string text")
     length = len(text)
     validated: list[dict] = []
     for index, note in enumerate(annotations):
