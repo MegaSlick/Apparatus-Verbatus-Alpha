@@ -19,12 +19,20 @@ The project may also use ordinary imaging libraries where full decoding is neede
 Tyrel's ruling permits basic tools such as Pillow and PDFium, and the Exemplar uses
 them to preserve real source pages rather than refusing formats for lack of a
 decoder.
+
+Reading is Pillow's job wherever this codec cannot do it; *writing* run-time
+evidence is not. A crop is content-addressed, so its bytes name its blob path and
+every artifact digest above it, and bytes that depend on which zlib a wheel
+bundled are not reproducible from the Exemplar plus the record. Every encoder here
+that a run writes through is therefore this module's own, framed so that only the
+PNG and DEFLATE specifications decide any byte.
 """
 
+import hashlib
 import struct
 import zlib
 from io import BytesIO
-from typing import Final, TypedDict
+from typing import Final, NamedTuple, TypedDict
 
 import pillow_heif
 from PIL import Image, UnidentifiedImageError
@@ -34,6 +42,9 @@ pillow_heif.register_heif_opener()
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 _COLOR_TYPE_GRAYSCALE = 0
+_COLOR_TYPE_TRUECOLOR = 2
+_COLOR_TYPE_GRAYSCALE_ALPHA = 4
+_COLOR_TYPE_TRUECOLOR_ALPHA = 6
 _BIT_DEPTH = 8
 _FILTER_NONE = 0
 
@@ -148,29 +159,27 @@ def _deterministic_stored_deflate(data: bytes) -> bytes:
     return bytes(out)
 
 
-def encode_grayscale_png_deterministic(width: int, height: int, rows: list[bytearray]) -> bytes:
-    """`encode_grayscale_png`, but byte-identical on every platform.
+def _deterministic_png(
+    width: int,
+    height: int,
+    bit_depth: int,
+    color_type: int,
+    rows: list[bytearray],
+    *,
+    ancillary: bytes = b"",
+) -> bytes:
+    """The one PNG framing whose every byte is fixed by the specifications.
 
-    The ordinary encoder's output is pure only for a given zlib build — Pillow's
-    Linux wheels bundle a different zlib than macOS ships, and a run-time blob
-    whose bytes depend on the wheel renames its content-addressed path and every
-    artifact digest downstream of it. Evidence written *during* a run therefore
-    uses this encoder: filter 0 and a stored-block DEFLATE stream, every byte
-    fixed by the PNG and DEFLATE specifications. The cost is size — stored
-    blocks do not compress — which is acceptable for bounded page-context
-    renders and wrong for checked-in fixtures, so both encoders exist.
+    Filter 0 on every scanline and a stored-block DEFLATE stream, so no
+    compressor and no library version gets to choose anything. `ancillary`
+    carries already-built chunks that belong between IHDR and IDAT.
     """
-    if len(rows) != height:
-        raise ValueError(f"expected {height} scanlines, got {len(rows)}")
-    if any(len(row) != width for row in rows):
-        raise ValueError("a scanline is not the declared width")
-
     ihdr = struct.pack(
         ">IIBBBBB",
         width,
         height,
-        _BIT_DEPTH,
-        _COLOR_TYPE_GRAYSCALE,
+        bit_depth,
+        color_type,
         0,  # compression method
         0,  # filter method
         0,  # interlace method
@@ -180,7 +189,118 @@ def encode_grayscale_png_deterministic(width: int, height: int, rows: list[bytea
         raw.append(_FILTER_NONE)
         raw.extend(row)
     idat = _deterministic_stored_deflate(bytes(raw))
-    return PNG_SIGNATURE + _chunk(b"IHDR", ihdr) + _chunk(b"IDAT", idat) + _chunk(b"IEND", b"")
+    return (
+        PNG_SIGNATURE
+        + _chunk(b"IHDR", ihdr)
+        + ancillary
+        + _chunk(b"IDAT", idat)
+        + _chunk(b"IEND", b"")
+    )
+
+
+def encode_grayscale_png_deterministic(width: int, height: int, rows: list[bytearray]) -> bytes:
+    """`encode_grayscale_png`, but byte-identical on every platform.
+
+    The ordinary encoder's output is pure only for a given zlib build — Pillow's
+    Linux wheels bundle a different zlib than macOS ships, and a run-time blob
+    whose bytes depend on the wheel renames its content-addressed path and every
+    artifact digest downstream of it. Evidence written *during* a run therefore
+    uses this encoder: filter 0 and a stored-block DEFLATE stream, every byte
+    fixed by the PNG and DEFLATE specifications. The cost is size — stored
+    blocks do not compress — which is acceptable for the bounded renders and
+    crops a run writes, and wrong for checked-in fixtures, so both encoders
+    exist.
+    """
+    if len(rows) != height:
+        raise ValueError(f"expected {height} scanlines, got {len(rows)}")
+    if any(len(row) != width for row in rows):
+        raise ValueError("a scanline is not the declared width")
+
+    return _deterministic_png(width, height, _BIT_DEPTH, _COLOR_TYPE_GRAYSCALE, rows)
+
+
+# Pillow mode -> (PNG bit depth, PNG colour type, samples per pixel). Exactly the
+# modes a crop can still be in once `_crop_decoded_page` has put it into one PNG
+# can hold, and no others: an unlisted mode is refused rather than guessed at, the
+# same way the decoder refuses an encoding it does not own. `P` is deliberately
+# absent — see `_encode_crop_deterministic`.
+_PNG_LAYOUT: Final = {
+    "1": (1, _COLOR_TYPE_GRAYSCALE, 1),
+    "L": (_BIT_DEPTH, _COLOR_TYPE_GRAYSCALE, 1),
+    "LA": (_BIT_DEPTH, _COLOR_TYPE_GRAYSCALE_ALPHA, 2),
+    "RGB": (_BIT_DEPTH, _COLOR_TYPE_TRUECOLOR, 3),
+    "RGBA": (_BIT_DEPTH, _COLOR_TYPE_TRUECOLOR_ALPHA, 4),
+}
+
+# What Pillow's own PNG writer names an embedded colour profile.
+_ICC_PROFILE_NAME: Final = b"ICC Profile"
+
+
+def _encode_crop_deterministic(crop: Image.Image) -> bytes:
+    """Write a decoded crop as a PNG no library gets to choose the bytes of.
+
+    Pillow's PNG writer is a good encoder and the wrong one for evidence. Its
+    wheels bundle their own zlib, so `crop.save(..., compress_level=9)` emits a
+    different valid stream on a different build of the same version — and a crop
+    is content-addressed, so those bytes name its blob path, its region record's
+    `image_sha256`, and every artifact digest above it. The run-tree store is
+    write-once, so a resumed run that re-cut the same crop under a different
+    wheel would not merely differ, it would refuse to publish. This is the same
+    reason the Perlector's page-context render already goes through this
+    module's deterministic encoder rather than Pillow's.
+
+    Pixels, alpha and colour profile are carried over exactly; only the framing
+    changes.
+    """
+    profile = crop.info.get("icc_profile")
+    if crop.mode == "P":
+        # Expanded to true colour rather than re-serialised as a palette. PNG can
+        # hold PLTE and tRNS, but writing them here would make this module a
+        # second place that decides what a Pillow palette means — the int-versus-
+        # bytes transparency form, a palette shorter than the largest index in
+        # use, an RGBA palette — and this module exists so there is exactly one
+        # such place. The expansion is lossless in every rendered pixel; it costs
+        # bytes on an indexed page and buys no second palette semantics to drift.
+        #
+        # Both places alpha can hide are asked, not only the usual one. A decoded
+        # PNG or GIF puts its tRNS in `info["transparency"]`; a palette that
+        # carries alpha in the palette itself would otherwise convert to RGB and
+        # lose it silently, which is the one outcome this branch may not have.
+        keeps_alpha = "transparency" in crop.info or "A" in getattr(crop.palette, "mode", "RGB")
+        crop = crop.convert("RGBA" if keeps_alpha else "RGB")
+    layout = _PNG_LAYOUT.get(crop.mode)
+    if layout is None:
+        raise ValueError(f"a crop in mode {crop.mode!r} has no defined deterministic PNG layout")
+    bit_depth, color_type, samples = layout
+    width, height = crop.width, crop.height
+    # Pillow packs `tobytes()` in exactly PNG's own scanline layout for each of
+    # these modes, including the byte-aligned rows of a bilevel image, so no
+    # repacking is needed — only the assertion that it really did.
+    stride = (width * samples * bit_depth + 7) // 8
+    data = crop.tobytes()
+    if len(data) != stride * height:
+        raise ValueError(
+            f"a {crop.mode!r} crop packed {len(data)} bytes where PNG declares {stride * height}"
+        )
+    ancillary = b""
+    if isinstance(profile, bytes) and profile:
+        # Carried, not dropped. Pillow's own writer copies `icc_profile` into the
+        # crop today, and a crop that quietly lost its colour profile is a
+        # different image to anything that honours one — which is not an encoding
+        # change. Compressed by this module's stored-block deflate for the same
+        # reason the pixels are.
+        ancillary = _chunk(
+            b"iCCP",
+            _ICC_PROFILE_NAME + b"\x00\x00" + _deterministic_stored_deflate(profile),
+        )
+    return _deterministic_png(
+        width,
+        height,
+        bit_depth,
+        color_type,
+        [bytearray(data[row * stride : (row + 1) * stride]) for row in range(height)],
+        ancillary=ancillary,
+    )
 
 
 def decode_grayscale_png(png_bytes: bytes) -> tuple[int, int, list[bytearray]]:
@@ -285,6 +405,11 @@ def crop_png(png_bytes: bytes, bounds: Bounds) -> bytes:
     which is what makes ARCHITECTURE's third invariant — the exact image shown to
     a model is reproducible from the Exemplar plus the recorded transforms —
     a property of this code rather than a claim about it.
+
+    Both paths encode deterministically. A crop is evidence written during a run
+    and it is content-addressed, so its bytes may not depend on which zlib a
+    wheel happened to bundle: see `encode_grayscale_png_deterministic` and
+    `_encode_crop_deterministic`.
     """
     x, y, w, h = bounds["x"], bounds["y"], bounds["w"], bounds["h"]
     if w <= 0 or h <= 0:
@@ -295,7 +420,7 @@ def crop_png(png_bytes: bytes, bounds: Bounds) -> bytes:
         return _crop_decoded_page(png_bytes, x, y, w, h)
     if x < 0 or y < 0 or x + w > width or y + h > height:
         raise ValueError(f"crop bounds {bounds} fall outside a {width}x{height} page")
-    return encode_grayscale_png(w, h, [row[x : x + w] for row in rows[y : y + h]])
+    return encode_grayscale_png_deterministic(w, h, [row[x : x + w] for row in rows[y : y + h]])
 
 
 def dimensions(png_bytes: bytes) -> tuple[int, int]:
@@ -348,6 +473,105 @@ def grayscale_rows(png_bytes: bytes) -> tuple[int, int, list[bytearray]]:
     )
 
 
+class ShownImage(NamedTuple):
+    """What a PNG puts in front of a reader, independent of how it was written."""
+
+    width: int
+    height: int
+    # The digest of the straight-RGBA samples rather than the samples: a full
+    # page crop is 100 million pixels at this module's own ceiling, and two
+    # callers comparing identities should not have to hold 800 MB of them to
+    # find out they agree.
+    pixel_sha256: str
+    icc_profile: bytes | None
+
+
+def image_shown(png_bytes: bytes) -> ShownImage:
+    """The image a PNG shows: its size, every sample as straight RGBA, and the
+    colour profile that says how to read them.
+
+    Two encodings of one image are equal here and two different images are not,
+    whatever bit depth, colour type, palette or compression stream each was
+    written with. This is the comparison ARCHITECTURE's third invariant actually
+    asks for — "the exact *image* shown to a model is reproducible from the
+    Exemplar plus the recorded transforms". Comparing the bytes instead asserts
+    something stronger and unrelated: that two encoders agreed. They are the same
+    assertion only while one build writes both sides, which is exactly the
+    condition a pod, a CI matrix, or a resumed run breaks.
+
+    RGBA rather than each mode's own layout, because the two sides may
+    legitimately hold the same picture in different modes — an indexed crop and
+    its expansion, a bilevel crop and its 8-bit twin. The profile is part of the
+    identity: dropping or swapping it changes how the samples are meant to be
+    read, which is not an encoding difference.
+    """
+    try:
+        with Image.open(BytesIO(png_bytes)) as image:
+            _refuse_past_pixel_bound(image.width, image.height)
+            image.load()
+            profile = image.info.get("icc_profile")
+            rgba = image if image.mode == "RGBA" else image.convert("RGBA")
+            return ShownImage(
+                image.width,
+                image.height,
+                hashlib.sha256(rgba.tobytes()).hexdigest(),
+                profile if isinstance(profile, bytes) else None,
+            )
+    except (*_DECODE_FAILURES, ValueError) as error:
+        raise ValueError(f"image bytes are not decodable ({error})") from error
+
+
+# Every tag here either declares the pixels or says how to interpret them, and
+# each is a small fixed record. Anything else — a text chunk, an EXIF block, a
+# private tag — is payload riding inside an image rather than part of it.
+# Exactly the chunks this pipeline's own encoders can produce, and no other.
+# The wider PNG metadata family (sRGB, gAMA, cHRM, sBIT, bKGD, pHYs) changes
+# how pixels are *rendered* without changing the samples `image_shown`
+# compares — an allowed-but-uncompared chunk would be a channel for a crop
+# that passes the pixel identity and still displays differently. Neither the
+# deterministic encoder nor the previous zlib/Pillow paths emitted any of
+# them for run evidence, so refusing them costs no legitimate crop.
+_IMAGE_ONLY_CHUNKS: Final = frozenset(
+    {
+        b"IHDR",
+        b"PLTE",
+        b"IDAT",
+        b"IEND",
+        b"tRNS",
+        b"iCCP",
+    }
+)
+
+
+def carries_only_image_chunks(png_bytes: bytes) -> bool:
+    """True when a PNG holds its image and nothing else.
+
+    A caller that accepts two encodings of one image as equal has stopped
+    asserting anything about the bytes, and "the pixels match" says nothing about
+    a text chunk or a block of trailing bytes travelling beside them. This says
+    what the byte comparison used to say and the pixel comparison does not: that
+    the file is the picture and no more.
+
+    Its own walk rather than `decode_grayscale_png`'s, which decodes one narrow
+    encoding and raises a named ValueError per fault. This one must return a
+    verdict for any PNG at all, including every colour type that decoder refuses,
+    and a malformed structure is a `False` here rather than an error. Chunk CRCs
+    are not rechecked: whoever calls this has already decoded the image.
+    """
+    if png_bytes[:8] != PNG_SIGNATURE:
+        return False
+    offset = 8
+    while offset + 8 <= len(png_bytes):
+        length, tag = struct.unpack(">I4s", png_bytes[offset : offset + 8])
+        end = offset + 12 + length  # 4 length + 4 tag + data + 4 CRC
+        if end > len(png_bytes) or tag not in _IMAGE_ONLY_CHUNKS:
+            return False
+        if tag == b"IEND":
+            return end == len(png_bytes)
+        offset = end
+    return False
+
+
 def _crop_decoded_page(png_bytes: bytes, x: int, y: int, w: int, h: int) -> bytes:
     """Crop a decoded page and encode a PNG-compatible, display-ready result.
 
@@ -368,9 +592,7 @@ def _crop_decoded_page(png_bytes: bytes, x: int, y: int, w: int, h: int) -> byte
             crop = image.crop((x, y, x + w, y + h))
             if crop.mode not in {"1", "L", "LA", "P", "RGB", "RGBA"}:
                 crop = _to_display_mode(crop)
-            output = BytesIO()
-            crop.save(output, format="PNG", optimize=False, compress_level=9)
-            return output.getvalue()
+            return _encode_crop_deterministic(crop)
     except _DECODE_FAILURES as error:
         raise ValueError(f"sealed page bytes are not a decodable image ({error})") from error
 

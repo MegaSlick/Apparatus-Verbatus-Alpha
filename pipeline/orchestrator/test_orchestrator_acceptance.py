@@ -470,8 +470,21 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # layer, so it is now truthfully named `uncertainty_json`. Only that SQLite
 # schema identifier changed; fresh runs through this module's own helpers held
 # the file counts at 64/71 while the two semantic database identities moved.
-HAPPY_RUN_TREE_DIGEST = "27423cd9a5dafbd50144322577dc51b3b4f5db7c49d75cc5b339acb7fbf7ea98"
-REVIEW_RUN_TREE_DIGEST = "cff96edca88623b7bd1311ff28e665c481ee0821af89369d089c51099ebdf09f"
+#
+# Re-pinned for Opus-F3: act crops are evidence written during a run, and
+# `common/imaging.py::crop_png` now writes them through this project's own
+# deterministic encoder on both paths instead of `zlib.compress(level=9)` and
+# Pillow's PNG writer. The pixels are unchanged — `semantic_snapshot` already
+# binds a PNG's pixels rather than its compressor bytes, and the neighbouring
+# `test_semantic_snapshot_digest_binds_png_pixels_not_compressor_bytes` is the
+# proof — but a crop blob is content-addressed, so its *path* carries its byte
+# digest, and every artifact that names one moves with it. That is exactly the
+# property the change buys: those paths and digests are now the same on every
+# zlib build rather than only on this one. Fresh real runs through this module's
+# own helpers held the file counts at 64 for happy (exit 0) and 71 for review
+# (exit 3).
+HAPPY_RUN_TREE_DIGEST = "81b731ca8fcfdaf79081540859861d00da3104eb179baabfcddd5d76509eae28"
+REVIEW_RUN_TREE_DIGEST = "d754641684326ecb9404b9766d887ea1d1620ad327f61aad76a89937c5fccf0b"
 
 
 def orchestrate(

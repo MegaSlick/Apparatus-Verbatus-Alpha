@@ -549,11 +549,22 @@ def verify_region(context, region: dict) -> dict:
     that changed under a sealed reference, decoding catches a reference pointing at
     something that is not an image, and the dimensions catch a crop that does not
     match the transform it claims to be.
+
+    The underlying cause is carried into the refusal text, not only onto the
+    exception chain. `run_stage` prints the refusal it catches, so a cause left
+    behind on `__cause__` reached nobody: every one of those distinct faults —
+    a missing blob, a relabelled act, a transform outside the page — arrived at
+    the operator as the same nine words, and the one thing they needed to know,
+    which of them it was, had been thrown away one frame down (GOVERNANCE 2).
+    The boundary's own messages name ordinals and run-tree-relative paths, never
+    a submitted filename, so nothing this adds to stderr crosses the logging rule.
     """
     try:
         return verify_exemplar_crop_lineage(context.tree, context.run, region)
     except ContractError as error:
-        raise SchemaRefusal("a Designator region does not trace to its Exemplar page") from error
+        raise SchemaRefusal(
+            f"a Designator region does not trace to its Exemplar page: {error}"
+        ) from error
 
 
 # Moved into dossier.py so the dossier derives witness coverage from the same
