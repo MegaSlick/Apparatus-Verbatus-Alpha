@@ -608,11 +608,11 @@ def test_required_artifact_refuses_not_yet_fetched_by_name(tmp_path):
 
 def test_required_artifact_refuses_fetched_and_lost_bytes_by_filename(tmp_path):
     record = _store(tmp_path)
-    entry = next(item for item in record["artifacts"] if item["artifact"] == "qwen3.5-9B")
+    entry = next(item for item in record["artifacts"] if item["artifact"] == "qwen3.8-27B")
     (tmp_path / entry["snapshot"] / "model.safetensors").unlink()
 
     with pytest.raises(DigestMismatchRefusal, match="model.safetensors: missing file"):
-        require_store_artifact(tmp_path, "qwen3.5-9B")
+        require_store_artifact(tmp_path, "qwen3.8-27B")
 
 
 def test_required_artifact_names_every_chair_it_serves_not_one_rows_chair(tmp_path):
@@ -703,9 +703,9 @@ def test_write_download_record_can_express_a_partial_store(tmp_path):
 def test_every_store_chair_is_a_models_toml_role_or_one_recorded_exception():
     """A chair name the roster does not know cannot be joined to anything.
 
-    The store exists to be bound to `config/models.toml` at S8. If its chair
-    names drift from the roster's role keys, the divergence surfaces on the
-    rented card during pod assembly instead of here.
+    The store exists to be bound to `config/models.toml` when the real roster is
+    activated. If its chair names drift from the roster's role keys, the
+    divergence surfaces on the rented card during pod assembly instead of here.
     """
 
     config = load_models_toml(ROOT / "config" / "models.toml")
@@ -734,7 +734,7 @@ def test_pod_materialization_plan_splits_verified_store_halves(tmp_path):
         "attestator_2": "hf/dai-recordgold-atr",
         "attestator_3": "hf/churro-3B",
         "secondary_proposer": "hf/yolo26-detection",
-        "perlector": "hf/qwen3.5-9B",
+        "perlector": "hf/qwen3.8-27B",
     }
     assert len({row["snapshot"] for row in plan["cache_root_entries"].values()}) == 5
     # model_root is local-repository only; it is not a second cache.
@@ -752,7 +752,7 @@ def test_pod_materialization_plan_refuses_a_chair_not_fetched_yet(tmp_path):
 
 def test_pod_materialization_plan_reverifies_source_bytes(tmp_path):
     record = _store(tmp_path)
-    entry = next(item for item in record["artifacts"] if item["artifact"] == "qwen3.5-9B")
+    entry = next(item for item in record["artifacts"] if item["artifact"] == "qwen3.8-27B")
     (tmp_path / entry["snapshot"] / "config.json").write_text(
         '{"fixture":"swapped"}', encoding="utf-8"
     )
@@ -857,7 +857,7 @@ def test_the_ad_hoc_download_record_refusal_names_what_the_v1_record_needs(tmp_p
 
     ad_hoc = {
         "datalab-to/chandra-ocr-2": {"revision": "af93b47", "path": "chandra"},
-        "Qwen/Qwen3.5-9B": {"revision": "c202236", "path": "qwen"},
+        "Qwen/Qwen3.8-27B": {"revision": "1d4bf0f", "path": "qwen"},
     }
     (tmp_path / "download_record.json").write_bytes(canonical_bytes(ad_hoc))
 
@@ -866,7 +866,7 @@ def test_the_ad_hoc_download_record_refusal_names_what_the_v1_record_needs(tmp_p
 
     message = str(refusal.value)
     assert "missing=['artifacts', 'capacity', 'layout', 'schema']" in message
-    assert "unexpected=['Qwen/Qwen3.5-9B', 'datalab-to/chandra-ocr-2']" in message
+    assert "unexpected=['Qwen/Qwen3.8-27B', 'datalab-to/chandra-ocr-2']" in message
 
 
 def test_a_roster_divergence_names_the_pin_it_expected_and_the_one_it_found(tmp_path):
@@ -906,12 +906,12 @@ def test_a_digest_manifest_must_live_under_the_declared_manifests_root(tmp_path)
 def test_artifact_cannot_claim_another_artifacts_verified_snapshot(tmp_path):
     record = _store(tmp_path)
     chandra = next(item for item in record["artifacts"] if item["artifact"] == "chandra-ocr-2")
-    qwen = next(item for item in record["artifacts"] if item["artifact"] == "qwen3.5-9B")
+    qwen = next(item for item in record["artifacts"] if item["artifact"] == "qwen3.8-27B")
     qwen["snapshot"] = chandra["snapshot"]
     qwen["manifest"] = chandra["manifest"]
     qwen["digest_manifest"] = chandra["digest_manifest"]
 
-    with pytest.raises(DigestMismatchRefusal, match="artifact-keyed path 'hf/qwen3.5-9B'"):
+    with pytest.raises(DigestMismatchRefusal, match="artifact-keyed path 'hf/qwen3.8-27B'"):
         derived_inventory(record)
 
 
@@ -927,7 +927,7 @@ def test_store_refuses_a_required_weight_absent_from_a_rewritten_manifest(tmp_pa
     """A config-only snapshot cannot define its own smaller meaning of complete."""
 
     record = _store(tmp_path)
-    entry = next(item for item in record["artifacts"] if item["artifact"] == "qwen3.5-9B")
+    entry = next(item for item in record["artifacts"] if item["artifact"] == "qwen3.8-27B")
     snapshot = tmp_path / entry["snapshot"]
     (snapshot / "model.safetensors").unlink()
     entry["digest_manifest"] = write_manifest(

@@ -613,21 +613,33 @@ are disjoint by construction. It is nine orders of magnitude past the ~60,000
 above, so it bounds nothing anyone will reach; it is a proof of disjointness,
 not an operating limit, and the paragraph above is still the real one.
 
+## Continuation ownership
+
+**The relation is the Recensor's, and this stage proposes.** Spec 06's own test 3
+and spec 09 both name the Recensor's link "the authoritative relation" for a
+continuation, and that is what the tree does.
+`pipeline/5_recensor/run.py::recensor_continuation_link` derives the Recensor's
+own continuation fact from the proposal regions' page ordinals alone, and
+`reconcile_continuation` refuses a seal that denies a continuation its own
+evidence already shows — "the Recensor's own reconciliation is the authoritative
+continuation fact and may not be overridden by the seal". The reverse direction,
+a seal claiming a continuation the Recensor's link cannot corroborate, is a
+recorded `continuation_shortfall` that holds the act rather than establishing it.
+
+This stage's proposal-seal `has_continuation` flag is therefore a proposal, and
+`grouping.find_continuation_candidate`'s independent geometric check is recorded
+on `act-group` as `continuation.geometric_corroboration` — evidence for whoever
+reads the act, never a gate here.
+
 ## What this handoff does not settle
 
-**Continuation ownership.** Spec 06's own test 3 and spec 09 both say the
-Recensor's link is "the authoritative relation" for a continuation. In this
-tree, this stage's own proposal-seal `has_continuation` flag — derived from
-which regions were actually cut, per the module docstring above — is the only
-continuation fact that exists anywhere; `pipeline/5_recensor/run.py` only ever
-checks a *shortfall* against it (`continuation_shortfall`), it does not itself
-establish or override the relation. Closing this gap means changing which
-stage's record is authoritative, which is a decision spanning two specs and two
-stages' contracts, not something owned here. It is named, not silently
-resolved: `grouping.find_continuation_candidate`'s independent geometric check
-is recorded on `act-group` as `continuation.geometric_corroboration` precisely
-so the fact is visible for whoever does settle it, without this build changing
-`pipeline/5_recensor/run.py` to act on it.
+**An unproposed cross-page half act.** The Recensor reconciles only continuations
+this stage *proposed*, so an act split across a page break that was never
+declared produces no finding in any stage: grouping's geometric detector only
+corroborates declared continuations, residual ink misses it whenever the cut
+covers the visible half, and truncation signals are single-act. Same family as
+the zero-proposal-page gap, and it belongs to whichever work item settles that
+one.
 
 **Recovery from a structural hold.** Spec 06's test 4 asks for three things: the
 page held with a named reason, no silent gap downstream, and "the recovery
