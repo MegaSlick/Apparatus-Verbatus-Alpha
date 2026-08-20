@@ -110,11 +110,15 @@ SECRET_PATTERNS = (
         re.compile(rb"\bNTFY_TOPIC[\t ]*=[\t ]*[\"']?[A-Za-z0-9_-]{6,}"),
     ),
     # The URL form is how the old leak actually happened: a working command
-    # line pasted whole. Any topic-shaped path segment is refused — anchoring
-    # to this project's topic prefix would both publish the prefix and miss a
-    # rotated topic — with ntfy's own documentation URLs (ntfy.sh/publish,
-    # ntfy.sh/docs, ntfy.sh/app) allowlisted so they stay committable.
-    ("ntfy-topic", re.compile(rb"\bntfy\.sh/(?!(?:docs|publish|app)\b)[A-Za-z0-9_-]{6,}")),
+    # line pasted whole. Any topic-shaped path segment is refused, host
+    # case-insensitively — anchoring to this project's topic prefix would both
+    # publish the prefix and miss a rotated topic. ntfy's own documentation
+    # URLs (ntfy.sh/publish, ntfy.sh/docs, ntfy.sh/app) stay committable: an
+    # over-refusing scanner is the mechanism by which the guard gets bypassed.
+    (
+        "ntfy-topic",
+        re.compile(rb"\bntfy\.sh/(?!(?:docs|publish|app)\b)[A-Za-z0-9_-]{1,64}", re.I),
+    ),
     (
         "credential-url",
         re.compile(rb"https?://[^/\s:@]+:[^@\s/]{8,}@[^\s/]+", re.I),

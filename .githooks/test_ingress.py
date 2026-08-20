@@ -568,6 +568,22 @@ def test_ntfy_topic_is_a_secret_in_both_leak_shapes(repo):
     assert run_scan(repo, "--staged").returncode == 1
 
 
+@SCANNER_CORE
+def test_ntfy_topic_url_is_refused_regardless_of_host_case_or_topic_length(repo):
+    # The host is matched case-insensitively and a topic of any length is
+    # topic-shaped: a one-character topic is a working credential too. Built
+    # discontinuously so this file holds no scannable topic.
+    upper_host = "# see https://NTFY" + ".SH/" + "some-rotated-topic" + "\n"
+    write(repo, "notes.py", upper_host)
+    stage(repo, "notes.py")
+    assert run_scan(repo, "--staged").returncode == 1
+
+    one_char = "# see https://ntfy" + ".sh/" + "q" + "\n"
+    write(repo, "notes.py", one_char)
+    stage(repo, "notes.py")
+    assert run_scan(repo, "--staged").returncode == 1
+
+
 def test_ntfy_docs_and_explicit_angle_bracket_placeholder_stay_committable(repo):
     # The angle brackets keep the example visibly non-working and outside the
     # exact assignment grammar. Exact topic-shaped values receive no exemption.
