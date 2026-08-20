@@ -45,6 +45,7 @@ from common.imaging import PNG_SIGNATURE, decode_grayscale_png
 from common.runtree.store import RunTree
 from common.stage import (
     EXIT_FATAL,
+    EXIT_HELD,
     load_fixture,
     open_context,
     page_identity,
@@ -480,8 +481,35 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # real runs through this module's own `orchestrate` and
 # `semantic_snapshot_digest` helpers; counts held at 64 files for happy
 # (exit 0) and 71 for review (exit 3).
-HAPPY_RUN_TREE_DIGEST = "ea364ee66c5a6270a7dc55ef28b29add5abbf917afda3cf9af295442b42aec79"
-REVIEW_RUN_TREE_DIGEST = "6cabfbb034e917b188307205e04c8d5a9edf231ef814ebf09fe39fb2424780fa"
+#
+# Re-measured host-side for the T0 export-honesty repair, and this one is a
+# deliberate record change rather than drift. Every delivered `manifest-entry`
+# and export row now carries the Archetypus's own `text_status` and its
+# transcription annotation layer; the run aggregate's basis carries the per-act
+# status it was measured from; and the acts database, JSONL and readable text
+# bundle carry both beside each literal (with the semantic annotation row fields
+# renamed apart from them, `semantic_annotations` / `semantic_annotation_status`,
+# so one word no longer answers for two different layers). Recorded bytes move in
+# every Armarium artifact and in the sealed bundle blob; no new file is written.
+# Fresh real runs through this module's own `orchestrate` and
+# `semantic_snapshot_digest` helpers held the counts at 64 files for happy
+# (exit 0) and 71 for review (exit 3).
+# (Both values re-measured once more at host integration: the acts row and
+# sqlite schema ids were bumped to v2 for the shape change — CR W15's silent-
+# rename miss covered in the same bump — and `PRAGMA user_version` moved to 2
+# with them, which moves the recorded bytes again. Measured twice from fresh
+# runs; counts and exits held at 64/0 and 71/3.)
+# (And once more for the review-driven candidate 3: the export manifest and
+# sources ids moved to v2 with their own shape changes — the renamed
+# annotations claim and the now-required per-outcome text_status.)
+# (Final values, measured twice at the exact candidate tree: an interim pair
+# was measured before `_armarium_bundle_semantics` below learnt the v2
+# manifest id, so the bundle digested on its opaque fallback — the pin must
+# always be measured after the LAST byte of the candidate is in place.)
+# (Values below are re-measured on THIS branch rebased onto main with the
+# reproof theme merged — the combined tree, measured twice, fresh.)
+HAPPY_RUN_TREE_DIGEST = "8d35c50b925ddd5934e5a9bad7f71746894fb5443eaf3fc65bda920d721b5eb9"
+REVIEW_RUN_TREE_DIGEST = "0dfb3b8e402d978407c953ead4572ce11101a3767d4acc1ba0d63a197299281e"
 
 
 def orchestrate(
@@ -704,7 +732,7 @@ def _armarium_bundle_semantics(data: bytes) -> tuple[str, dict[str, str]] | None
             manifest = json.loads(manifest_data)
             if (
                 not isinstance(manifest, dict)
-                or manifest.get("schema") != "armarium-export-manifest.v1"
+                or manifest.get("schema") != "armarium-export-manifest.v2"
                 or canonical_bytes(manifest) != manifest_data
                 or manifest.get("self_hash") != self_hash(manifest)
             ):
@@ -1030,7 +1058,7 @@ def _write_acceptance_bundle_tree(root: Path, database_data: bytes, damage=None)
     """
     members = {"acts.sqlite": database_data, "acts.jsonl": b'{"act_id":"a1"}\n'}
     package_manifest = {
-        "schema": "armarium-export-manifest.v1",
+        "schema": "armarium-export-manifest.v2",
         "members": [
             {"path": name, "sha256": digest_bytes(content), "bytes": len(content)}
             for name, content in sorted(members.items())
@@ -2515,8 +2543,8 @@ def test_archetypus_establishes_no_readable_text_once_the_review_retains_real_bl
 
     The point is twofold: prove the constructor's success path actually writes
     the record spec 10 describes, not only that its refusal paths fire; and
-    prove the record it writes remains exportable through the (frozen,
-    off-limits this round) Armarium -- an Archetypus record that cannot survive
+    prove the record it writes remains exportable through the (now
+    damage-honest since the T0 export repair) Armarium -- an Archetypus record that cannot survive
     its own consumer is not established, whatever its own schema says.
     """
     root = tmp_path / "runs"
@@ -2568,7 +2596,11 @@ def test_archetypus_establishes_no_readable_text_once_the_review_retains_real_bl
     assert record["evidence_ref"] == evidence_ref
 
     export_result = invoke_stage(root, "r", "happy", "pipeline/7_armarium/run.py")
-    assert export_result.returncode == 0, export_result.stderr
+    # EXIT_HELD, not 0, since the export became honest about damage: an act
+    # delivered with a record that establishes no readable text is a delivered act
+    # the run cannot call complete, and the aggregate names it. Surviving the
+    # consumer is what this test is about, and the row below is still there.
+    assert export_result.returncode == EXIT_HELD, export_result.stderr
     # Surviving the consumer means being *in* its export, not merely not
     # crashing it: a delivered set that silently dropped the blank act would
     # exit 0 too. The export row carries the record's established empty text;

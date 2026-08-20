@@ -12,7 +12,10 @@ while leaving the other selected projections untouched.
 The bundle's first member is `EXPORT_MANIFEST.json`. Its companion formats are
 the run-sealed choices in `config/formats.toml`; the default includes a readable
 text bundle, SQLite/FTS database, JSONL hand-off, review items, and the separate
-salvage tier. The annotation layer remains only a boundary contract pending
+salvage tier. Every delivered act carries the Archetypus's own established-text
+status and transcription annotation layer, so an act the pipeline knows is
+damaged is visibly partial in the products and in the run's own verdict. The
+separate *semantic* annotation layer remains only a boundary contract pending
 Tyrel's ARCHITECTURE approval.
 
 `run.py` seals the bundle into the run tree; `bundle.py` publishes it to a

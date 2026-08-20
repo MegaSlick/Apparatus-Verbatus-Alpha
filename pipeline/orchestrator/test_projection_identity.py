@@ -6,7 +6,7 @@ that field's hash equals the record's text hash per act, mechanically." The old
 pipeline could never have passed this — the audit found the established text was
 decided *twice*, so there was no single record for an export format to agree
 with in the first place. This drives the real orchestrator end to end and checks
-the one export format the (unedited, off-limits this round) Armarium actually
+the one export format the Armarium actually
 produces today: its `delivered[i]["text"]` field must be byte-identical to, and
 therefore hash-identical to, the Archetypus record's own `text` and `text_hash`.
 
@@ -107,6 +107,9 @@ def test_every_delivered_export_text_hashes_to_its_archetypus_record(tmp_path, s
         # And its hash mechanically equals the record's own text hash — the
         # projection-identity claim, proven rather than asserted by construction.
         assert digest_of(delivered["text"]) == payload["text_hash"]
+        # The record's word about its own text travels with the text: one
+        # status, everywhere, exactly as GOVERNANCE 5 holds the characters.
+        assert delivered["text_status"] == payload["text_status"]
     # The whole delivered set, not a sample: a projection check that skipped an
     # act would pass while that act's export carried a different reading. These
     # comparisons — not the loop above, which visits whatever "delivered"
