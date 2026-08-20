@@ -537,8 +537,24 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # (Values below re-measured twice on the crops replacement branch — the
 # fallback theme's tree plus this theme — fresh runs through this module's
 # own helpers; counts and exits held at 64/0 and 71/3.)
-HAPPY_RUN_TREE_DIGEST = "6e378c186ad6d6021485be9e663953df882d58169da4c7da4f4d0850faca5d1e"
-REVIEW_RUN_TREE_DIGEST = "371d88a2e24d5d620d9d408fbda4dc5942d7400e6294c7c046628c8decfd0434"
+#
+# Re-measured after act a1's fixture recovery rectangle was repaired from
+# 16,16,168,88 to 0,0,200,114. The old rectangle was a strict subset of the
+# padded capture rect the proposal had already cut (12,15,188,99), so the
+# `review` scenario's one fallback recrop recovered no pixel at all; the
+# Designator now refuses such a recrop by name. **Both** digests move, not only
+# review's: `run_config_bindings` folds the fixture itself into `config_digest`
+# ("the digest of *everything* that shapes this run's behaviour"), so any fixture
+# byte moves every scenario's `run.json`. Review's tree moves twice over — its
+# recovery crop is a different, larger rectangle with different pixels. No new
+# files: fresh real runs via this module's `orchestrate` and
+# `semantic_snapshot_digest` helpers held at 64 files for happy (exit 0) and 71
+# for review (exit 3).
+# (Values below re-measured twice on the coverage replacement branch — the
+# crops theme's tree plus this theme — fresh runs through this module's own
+# helpers; counts and exits held at 64/0 and 71/3.)
+HAPPY_RUN_TREE_DIGEST = "89df3510c4687dd56beaadda6a0f26d7a054ffb25e66e8bc6b844c042a686edf"
+REVIEW_RUN_TREE_DIGEST = "1d248c9b3e761b37b6bbd8aab6e6797dc9edba86c6db11c73775980577cca5eb"
 
 
 def orchestrate(
@@ -3209,6 +3225,115 @@ def test_the_recovered_act_keeps_one_identity_across_two_regions(review_run):
     assert len({record["subject_id"] for record in regions}) == 1
     assert len({record["payload"]["region_id"] for record in regions}) == 2
     assert {record["payload"]["origin"] for record in regions} == {"proposal", "recovery"}
+
+
+def _pixels(bounds: dict) -> set[tuple[int, int]]:
+    """Every page pixel one rectangle covers, enumerated rather than reasoned.
+
+    Deliberately the slow, obvious construction: this is the independent check
+    on the Designator's own coverage arithmetic, and a second clever
+    implementation of it would agree with the first about the same mistake.
+    """
+    return {
+        (x, y)
+        for x in range(bounds["x"], bounds["x"] + bounds["w"])
+        for y in range(bounds["y"], bounds["y"] + bounds["h"])
+    }
+
+
+def test_the_recovery_recrop_actually_widened_the_crop_it_was_asked_for(review_run):
+    """GOVERNANCE 11: "Recovery exists for **completeness and coverage**."
+
+    This scenario is the walking skeleton's single proof that bounded recovery
+    works, so what it spends the `fallback_recrop` budget on has to be a crop
+    that recovers something. It did not: the fixture declared act a1's recovery
+    rectangle as 16,16,168,88 while the proposal had already cut the padded
+    12,15,188,99 -- `[16,184) x [16,104)` strictly inside `[12,200) x [15,114)`.
+    Every pixel the recrop "recovered" was a pixel the act already had, and the
+    only guard on the path compared transform identity, which a subset passes.
+
+    Measured over the run's own published regions, not over the fixture
+    declaration, so a padding change that swallowed the recovery rectangle would
+    fail here rather than quietly restore the defect.
+    """
+    _, tree = review_run
+    regions = [
+        record
+        for record in artifacts(tree, DESIGNATOR, "region")
+        if record["payload"]["act_key"] == "a1"
+    ]
+    by_origin = {record["payload"]["origin"]: record for record in regions}
+    assert sorted(by_origin) == ["proposal", "recovery"]
+
+    proposal = by_origin["proposal"]["payload"]["transform"]
+    recovery = by_origin["recovery"]["payload"]["transform"]
+    # Pixel sets only mean anything within one page's coordinate space.
+    assert proposal["source_page_id"] == recovery["source_page_id"]
+    assert proposal["source_page_ordinal"] == recovery["source_page_ordinal"] == 1
+
+    already_cut = _pixels(proposal["bounds"])
+    recropped = _pixels(recovery["bounds"])
+    assert recropped - already_cut, (
+        "a recovery that recovers no page pixel is a spent budget and a coverage "
+        "caveat about nothing"
+    )
+    # ARCHITECTURE calls the operation a "fallback or **expanded** recrop". An
+    # expansion adds coverage without trading any away: a rectangle that gained
+    # a left margin by giving up the right edge would satisfy the guard while
+    # dropping ink the proposal had already captured.
+    assert not already_cut - recropped, "an expanded recrop must not drop coverage it had"
+    assert len(recropped - already_cut) == 200 * 114 - 188 * 99 == 4188
+
+    # And it takes nothing from the neighbouring act: every page pixel stays cut
+    # under exactly one act identity. a2's *capture* rectangle begins at y=114,
+    # six rows above its declared structural top edge, so "clear of a2" has to
+    # be read against the rectangle that was actually cut.
+    neighbour = next(
+        record
+        for record in artifacts(tree, DESIGNATOR, "region")
+        if record["payload"]["act_key"] == "a2"
+        and record["payload"]["transform"]["source_page_ordinal"] == 1
+    )
+    assert not recropped & _pixels(neighbour["payload"]["transform"]["bounds"])
+
+
+def test_the_witness_uncovered_caveat_names_the_region_carrying_the_new_pixels(review_run):
+    """The second-order half of the same finding.
+
+    `witness_covered: false` means "ink a recovery uncovered was never shown to a
+    witness" (`pipeline/2_designator/run.py::cut_minted_region`). While the
+    recovery crop was a strict subset of the proposal crop it uncovered nothing,
+    so the export carried that caveat over pixels every witness had already
+    seen. Binding the flag to the geometry is what makes the caveat mean
+    something; `test_recovery_ink_is_recorded_as_witness_uncovered` asserts the
+    flag itself.
+    """
+    _, tree = review_run
+    regions = [
+        record
+        for record in artifacts(tree, DESIGNATOR, "region")
+        if record["payload"]["act_key"] == "a1"
+    ]
+    by_origin = {record["payload"]["origin"]: record for record in regions}
+    new_pixels = _pixels(by_origin["recovery"]["payload"]["transform"]["bounds"]) - _pixels(
+        by_origin["proposal"]["payload"]["transform"]["bounds"]
+    )
+    assert new_pixels
+
+    latest = max(
+        (
+            record
+            for record in artifacts(tree, PERLECTOR, "perlectio")
+            if record["payload"]["act_key"] == "a1"
+        ),
+        key=lambda record: record["payload"]["attempt_ordinal"],
+    )
+    uncovered = {
+        region["region_id"]
+        for region in latest["payload"]["basis"]["regions"]
+        if not region["witness_covered"]
+    }
+    assert uncovered == {by_origin["recovery"]["payload"]["region_id"]}
 
 
 def test_the_recovery_request_and_both_reading_attempts_survive(review_run):
