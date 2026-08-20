@@ -24,8 +24,9 @@ from pathlib import Path
 
 import pytest
 
+from common.contracts.errors import FatalAccounting
 from common.contracts.outcomes import witness_coverage
-from common.contracts.stages import RECENSOR
+from common.contracts.stages import ATTESTATORES, RECENSOR
 from common.runtree.store import RunTree
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -127,11 +128,23 @@ def test_unanimous_absence_seals_confirmed_blank(tmp_path):
     # The other act reads and accepts exactly as ever -- blank confirmation is
     # additive, not a change to the ordinary path. R6's own content-coverage
     # check (the other act's page Testimonium against its aligned attachments)
-    # also finds no shortfall: a1's genuinely-empty contribution joins the page
-    # text as a leading blank line, and the alignment correctly maps its
-    # matched span back to that raw page text (not the whitespace-collapsed
-    # comparison view `align_to_anchor` matches over) so the join never reads
-    # as lost coverage.
+    # also finds no shortfall: a1's genuinely-empty contribution adds no
+    # characters to the page text at all -- the join used to give it a leading
+    # separator no act delivered (CodeRabbit W44) -- and the alignment correctly
+    # maps a2's matched span back to that raw page text (not the
+    # whitespace-collapsed comparison view `align_to_anchor` matches over) so
+    # the join never reads as lost coverage.
+    page_witness = next(
+        record
+        for record in (
+            tree.read_artifact(ATTESTATORES, "page-testimonium", entry["artifact_id"])
+            for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
+            if entry["kind"] == "page-testimonium"
+        )
+        if record["payload"]["page_ordinal"] == 1 and record["payload"]["chair"] == "attestator_1"
+    )
+    assert page_witness["payload"]["payload"] == "SYNTHETIC ACT TWO delta epsilon zeta eta"
+
     other = _review_of(tree, "a2")
     assert other["outcome"] == "accepted"
     content_coverage = other["payload"]["testimony_content_coverage"]
@@ -240,10 +253,20 @@ def test_confirmed_blank_is_a_completed_class_terminal_outcome(tmp_path):
 # --- blank_corroboration: the pure gate, exercised directly -----------------
 
 
+def _proved(outcomes: dict) -> dict:
+    """`chair_read_evidence`'s shape for chairs whose attempts record a request.
+
+    Stage 3's one write path sets the region inputs and the serving receipt
+    together for every attempted outcome, so this is what the gate sees in every
+    run that is not broken. The tests that forge its absence say so by name.
+    """
+    return {chair: {"regions": True, "receipt": True} for chair in outcomes}
+
+
 def test_completed_reading_evidence_below_the_floor_never_corroborates_blank():
     coverage = {"under_witnessed": True, "unresolved_chairs": 0, "floor": 2}
     outcomes = {"attestator_1": "genuinely-empty"}
-    assert RECENSOR_RUN.blank_corroboration(coverage, outcomes, {}) is None
+    assert RECENSOR_RUN.blank_corroboration(coverage, outcomes, {}, _proved(outcomes)) is None
 
 
 def test_an_excluded_chair_cannot_stand_in_for_a_witness_that_never_read(tmp_path):
@@ -260,7 +283,7 @@ def test_an_excluded_chair_cannot_stand_in_for_a_witness_that_never_read(tmp_pat
     }
     coverage = witness_coverage(outcomes, configured_floor=3)
     assert coverage["under_witnessed"] is False
-    assert RECENSOR_RUN.blank_corroboration(coverage, outcomes, {}) is None
+    assert RECENSOR_RUN.blank_corroboration(coverage, outcomes, {}, _proved(outcomes)) is None
 
 
 def test_an_unresolved_chair_never_corroborates_blank():
@@ -271,7 +294,7 @@ def test_an_unresolved_chair_never_corroborates_blank():
     # the wrong branch.
     coverage = {"under_witnessed": False, "unresolved_chairs": 1, "floor": 2}
     outcomes = {"attestator_1": "genuinely-empty", "attestator_2": "not-run"}
-    assert RECENSOR_RUN.blank_corroboration(coverage, outcomes, {}) is None
+    assert RECENSOR_RUN.blank_corroboration(coverage, outcomes, {}, _proved(outcomes)) is None
 
 
 def test_testimonia_from_original_regions_cannot_confirm_a_recovery_region_blank():
@@ -282,7 +305,12 @@ def test_testimonia_from_original_regions_cannot_confirm_a_recovery_region_blank
         "attestator_2": "genuinely-empty",
         "attestator_3": "genuinely-empty",
     }
-    assert RECENSOR_RUN.blank_corroboration(coverage, outcomes, {}, witness_uncovered=True) is None
+    assert (
+        RECENSOR_RUN.blank_corroboration(
+            coverage, outcomes, {}, _proved(outcomes), witness_uncovered=True
+        )
+        is None
+    )
 
 
 def test_zero_completed_chairs_never_corroborates_blank():
@@ -290,7 +318,7 @@ def test_zero_completed_chairs_never_corroborates_blank():
     positive evidence of absence."""
     coverage = {"under_witnessed": False, "unresolved_chairs": 0, "floor": 0}
     outcomes = {"attestator_1": "failed", "attestator_2": "dead"}
-    assert RECENSOR_RUN.blank_corroboration(coverage, outcomes, {}) is None
+    assert RECENSOR_RUN.blank_corroboration(coverage, outcomes, {}, _proved(outcomes)) is None
 
 
 def test_one_dissenting_read_refuses_corroboration():
@@ -300,7 +328,7 @@ def test_one_dissenting_read_refuses_corroboration():
         "attestator_2": "genuinely-empty",
         "attestator_3": "read",
     }
-    assert RECENSOR_RUN.blank_corroboration(coverage, outcomes, {}) is None
+    assert RECENSOR_RUN.blank_corroboration(coverage, outcomes, {}, _proved(outcomes)) is None
 
 
 def test_unanimous_genuinely_empty_corroborates_blank():
@@ -310,11 +338,72 @@ def test_unanimous_genuinely_empty_corroborates_blank():
         "attestator_2": "genuinely-empty",
         "attestator_3": "genuinely-empty",
     }
-    assert RECENSOR_RUN.blank_corroboration(coverage, outcomes, {}) == [
+    assert RECENSOR_RUN.blank_corroboration(coverage, outcomes, {}, _proved(outcomes)) == [
         "attestator_1",
         "attestator_2",
         "attestator_3",
     ]
+
+
+def test_a_completed_outcome_with_no_receipt_cannot_corroborate_a_blank():
+    """A completed outcome with nothing recording a request cannot corroborate.
+
+    Defence against a resealed or foreign record, stated precisely: Sol-S1's
+    OWN fabricated records carried regions and a receipt (the buggy writer
+    attached both), so this gate would not have caught them -- the repair for
+    that is upstream, where the minting branch is deleted. What this refuses
+    is the record shape neither the current nor even the buggy writer produced:
+    a completed-class outcome that no request is on record as having produced.
+    It is a presence check; the strong per-byte counterpart
+    (`validate_serving_provenance`, region identity) runs at the Perlector over
+    the same artifacts earlier in every run.
+    """
+    coverage = {"under_witnessed": False, "unresolved_chairs": 0, "floor": 3}
+    outcomes = {
+        "attestator_1": "genuinely-empty",
+        "attestator_2": "genuinely-empty",
+        "attestator_3": "genuinely-empty",
+    }
+    evidence = dict(_proved(outcomes), attestator_2={"regions": True, "receipt": False})
+
+    with pytest.raises(FatalAccounting, match=r"attestator_2 has no serving receipt"):
+        RECENSOR_RUN.blank_corroboration(coverage, outcomes, {}, evidence)
+
+
+def test_a_completed_outcome_naming_no_regions_cannot_corroborate_a_blank():
+    """The other half of the same record: a chair said to have read the exact
+    regions, with no region named. `genuinely-empty` is a claim about a
+    specific rectangle of ink, and it cannot be made about none."""
+    coverage = {"under_witnessed": False, "unresolved_chairs": 0, "floor": 3}
+    outcomes = {
+        "attestator_1": "genuinely-empty",
+        "attestator_2": "genuinely-empty",
+        "attestator_3": "genuinely-empty",
+    }
+    evidence = dict(_proved(outcomes), attestator_3={"regions": False, "receipt": True})
+
+    with pytest.raises(FatalAccounting, match=r"attestator_3 has no region inputs"):
+        RECENSOR_RUN.blank_corroboration(coverage, outcomes, {}, evidence)
+
+
+def test_missing_read_evidence_for_a_non_reading_chair_is_not_a_fault():
+    """`dead` and `not-run` chairs legitimately carry neither fact. The gate
+    reads evidence only for the chairs it would name as corroborators, so an
+    absent chair beside a satisfied floor is refused on the floor arithmetic it
+    was always refused on -- not on a fatal about a receipt it should not have."""
+    coverage = {"under_witnessed": True, "unresolved_chairs": 0, "floor": 3}
+    outcomes = {
+        "attestator_1": "genuinely-empty",
+        "attestator_2": "genuinely-empty",
+        "attestator_3": "dead",
+    }
+    evidence = {
+        "attestator_1": {"regions": True, "receipt": True},
+        "attestator_2": {"regions": True, "receipt": True},
+        "attestator_3": {"regions": False, "receipt": False},
+    }
+
+    assert RECENSOR_RUN.blank_corroboration(coverage, outcomes, {}, evidence) is None
 
 
 def test_a_floor_met_only_by_trivially_attached_empty_readings_completes_only_as_a_blank():
@@ -358,7 +447,9 @@ def test_a_floor_met_only_by_trivially_attached_empty_readings_completes_only_as
     assert coverage["by_outcome"] == {"genuinely-empty": 3}
     assert coverage["shortfalls"] == {"failed": 0, "truncated": 0, "unaligned": 0}
     # The blank door, open only because the Perlector itself found no ink.
-    assert RECENSOR_RUN.blank_corroboration(coverage, outcomes, {}) == sorted(outcomes)
+    assert RECENSOR_RUN.blank_corroboration(coverage, outcomes, {}, _proved(outcomes)) == sorted(
+        outcomes
+    )
     # One chair that actually read text closes it, however satisfied the floor.
     contradicted = dict(outcomes, attestator_2="read")
     assert (
@@ -366,6 +457,7 @@ def test_a_floor_met_only_by_trivially_attached_empty_readings_completes_only_as
             witness_coverage(contradicted, 3, attachments={c: True for c in contradicted}),
             contradicted,
             {},
+            _proved(contradicted),
         )
         is None
     )
@@ -406,13 +498,19 @@ def test_an_unlocated_act_line_never_corroborates_a_terminal_blank():
         }
 
     anchored = {chair: _fact("act-anchor") for chair in outcomes}
-    assert RECENSOR_RUN.blank_corroboration(coverage, outcomes, anchored) == sorted(outcomes)
+    assert RECENSOR_RUN.blank_corroboration(
+        coverage, outcomes, anchored, _proved(outcomes)
+    ) == sorted(outcomes)
 
     anchorless_page = {chair: _fact("no-page-anchor") for chair in outcomes}
-    assert RECENSOR_RUN.blank_corroboration(coverage, outcomes, anchorless_page) == sorted(outcomes)
+    assert RECENSOR_RUN.blank_corroboration(
+        coverage, outcomes, anchorless_page, _proved(outcomes)
+    ) == sorted(outcomes)
 
     unlocated = dict(anchored, attestator_3=_fact("act-line-not-located"))
-    assert RECENSOR_RUN.blank_corroboration(coverage, outcomes, unlocated) is None
+    assert (
+        RECENSOR_RUN.blank_corroboration(coverage, outcomes, unlocated, _proved(outcomes)) is None
+    )
 
     # A page witness whose fact carries NO basis at all is geometry nobody
     # checked. `act_attachment_facts` refuses such a record at the producer
@@ -420,7 +518,9 @@ def test_an_unlocated_act_line_never_corroborates_a_terminal_blank():
     basisless_fact = _fact("act-anchor")
     del basisless_fact["anchor_basis"]
     basisless = dict(anchored, attestator_3=basisless_fact)
-    assert RECENSOR_RUN.blank_corroboration(coverage, outcomes, basisless) is None
+    assert (
+        RECENSOR_RUN.blank_corroboration(coverage, outcomes, basisless, _proved(outcomes)) is None
+    )
 
 
 if __name__ == "__main__":

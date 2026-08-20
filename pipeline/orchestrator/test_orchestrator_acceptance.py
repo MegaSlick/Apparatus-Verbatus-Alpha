@@ -470,8 +470,18 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # layer, so it is now truthfully named `uncertainty_json`. Only that SQLite
 # schema identifier changed; fresh runs through this module's own helpers held
 # the file counts at 64/71 while the two semantic database identities moved.
-HAPPY_RUN_TREE_DIGEST = "27423cd9a5dafbd50144322577dc51b3b4f5db7c49d75cc5b339acb7fbf7ea98"
-REVIEW_RUN_TREE_DIGEST = "cff96edca88623b7bd1311ff28e665c481ee0821af89369d089c51099ebdf09f"
+#
+# Re-pinned for the Sol-S1 fallback-witness fix. No behaviour in either scenario
+# changed and no file moved: what moved is the sealed fixture, which
+# `run_config_bindings` folds into `config_digest` whole (`"fixture": fixture`),
+# so declaring the ink-free page's three empty witness responses and the new
+# `ink-free-page-unwitnessed` scenario moves every artifact digest under happy
+# and review even though neither scenario reads a word of it. Both values were
+# measured from fresh real runs through this module's own `orchestrate` and
+# `semantic_snapshot_digest` helpers, never derived arithmetically; counts held
+# at 64 (happy, exit 0) and 71 (review, exit 3).
+HAPPY_RUN_TREE_DIGEST = "0e01173b09377cfd207f3bac9caae18f4c7792404320eca83789e8a5dd29824c"
+REVIEW_RUN_TREE_DIGEST = "2dc11c2bb2d0049ca86e3dbfee6186c6b9345e4c759567a3e5c1562b956ce97b"
 
 
 def orchestrate(
@@ -1336,6 +1346,23 @@ def test_a_genuinely_empty_testimonium_counts_as_a_witnessed_read(tmp_path):
     assert export_of(tree)["aggregate"]["status"] == "complete"
 
 
+def _fallback_testimonia(tree: RunTree) -> list[dict]:
+    """Every act-scoped Testimonium for the minted page-3 fallback act.
+
+    Every attempt, not a latest-per-chair collapse: both scenarios that use
+    this write exactly one attempt per chair, and the callers assert the
+    count. A reread scenario would need the collapse before reusing this.
+    """
+    records = []
+    for artifact in tree.build_manifest(ATTESTATORES)["artifacts"]:
+        if artifact["kind"] != "testimonium":
+            continue
+        record = tree.read_artifact(ATTESTATORES, "testimonium", artifact["artifact_id"])
+        if record["payload"]["act_key"] == "page-fallback:3":
+            records.append(record)
+    return records
+
+
 def test_an_ink_free_page_fallback_is_witnessed_and_read_end_to_end(tmp_path):
     """A Designator-minted act reaches both reader stages without fixture-key lookup failure."""
     root = tmp_path / "runs"
@@ -1343,16 +1370,17 @@ def test_an_ink_free_page_fallback_is_witnessed_and_read_end_to_end(tmp_path):
     assert result.returncode == 0, result.stderr
     tree = RunTree(root, "r")
 
-    testimonia = []
-    for artifact in tree.build_manifest(ATTESTATORES)["artifacts"]:
-        if artifact["kind"] != "testimonium":
-            continue
-        record = tree.read_artifact(ATTESTATORES, "testimonium", artifact["artifact_id"])
-        if record["payload"]["act_key"] == "page-fallback:3":
-            testimonia.append(record)
+    testimonia = _fallback_testimonia(tree)
     assert len(testimonia) == 3
     assert all(record["outcome"] == "genuinely-empty" for record in testimonia)
     assert all(record["payload"]["regions"] for record in testimonia)
+    # And each one rests on a declared response to this exact request rather
+    # than on the act's identity: `proof/skeleton_fixture.toml` declares an
+    # empty witness response per chair for `page-fallback:3` under this
+    # scenario, and `ink-free-page-unwitnessed` below is the same page with
+    # those three declarations removed.
+    assert all(record["payload"]["provenance"]["receipt_ref"] is not None for record in testimonia)
+    assert all(record["payload"]["payload"] == "" for record in testimonia)
 
     reading = next(
         tree.read_artifact(PERLECTOR, "perlectio", entry["artifact_id"])
@@ -1370,6 +1398,87 @@ def test_an_ink_free_page_fallback_is_witnessed_and_read_end_to_end(tmp_path):
     )
     assert entry["act_id"] == reading["subject_id"]
     assert entry["category"] == "confirmed-blank"
+
+
+def test_an_undeclared_fallback_witness_holds_the_act_instead_of_reporting_it_blank(tmp_path):
+    """Sol-S1's red demonstration, kept runnable.
+
+    `ink-free-page-unwitnessed` is the identical ink-free page with no witness
+    response declared for the minted fallback act. Before the fix the act's
+    identity alone produced `genuinely-empty` for every configured chair, with
+    the proposal regions attached, the attempt marked attempted, a serving
+    receipt minted and trusted-boundary health recorded — and the Recensor then
+    sealed `confirmed-blank`, stating that three chairs had actually and
+    independently read the page. The conclusion was true of that white page; the
+    evidence was not, and the same shape over a page with ink is GOALS 1's worst
+    failure arriving as a green run.
+
+    So: no response, no reading. Every chair is `not-run`, nothing claims a
+    receipt or a region it was never shown, no page witness reports a reading,
+    and the act ends held with the shortfall named rather than sealed blank.
+    """
+    root = tmp_path / "runs"
+    result = orchestrate(root, "r", "ink-free-page-unwitnessed")
+    # Exit 3 is "accounted, holdable": the run reached honest terminal states
+    # for every act and one of them is held. A zero here would be the vacuous
+    # green the finding was about.
+    assert result.returncode == 3, result.stderr
+    tree = RunTree(root, "r")
+
+    testimonia = _fallback_testimonia(tree)
+    assert len(testimonia) == 3
+    assert all(record["outcome"] == "not-run" for record in testimonia)
+    assert all(record["payload"]["regions"] == [] for record in testimonia)
+    assert all(record["payload"]["provenance"]["receipt_ref"] is None for record in testimonia)
+    assert all(record["payload"]["payload"] is None for record in testimonia)
+    # Not "measured empty": emptiness is unknown, because nothing was asked.
+    assert all(record["payload"]["content_health"]["empty"] is None for record in testimonia)
+    assert all("reported" not in record["payload"] for record in testimonia)
+
+    page_records = [
+        tree.read_artifact(ATTESTATORES, "page-testimonium", entry["artifact_id"])
+        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
+        if entry["kind"] == "page-testimonium"
+    ]
+    page_three = [row for row in page_records if row["payload"]["page_ordinal"] == 3]
+    assert len(page_three) == 2, "both declared page witnesses must still be accounted for"
+    assert all(row["outcome"] == "failed" for row in page_three)
+    assert all(row["payload"]["provenance"]["receipt_ref"] is None for row in page_three)
+
+    reading = next(
+        tree.read_artifact(PERLECTOR, "perlectio", entry["artifact_id"])
+        for entry in tree.build_manifest(PERLECTOR)["artifacts"]
+        if entry["kind"] == "perlectio"
+        and tree.read_artifact(PERLECTOR, "perlectio", entry["artifact_id"])["payload"]["act_key"]
+        == "page-fallback:3"
+    )
+    # The Perlector still reads the ink itself — its own autopsia is unaffected
+    # by the witnesses being absent, and that is exactly why the witnesses may
+    # not be invented to agree with it.
+    assert reading["outcome"] == "no-readable-text"
+    assert not any(region["witness_covered"] for region in reading["payload"]["basis"]["regions"])
+
+    review = next(
+        tree.read_artifact(RECENSOR, "review", entry["artifact_id"])
+        for entry in tree.build_manifest(RECENSOR)["artifacts"]
+        if entry["kind"] == "review" and entry["subject_id"] == reading["subject_id"]
+    )
+    assert review["outcome"] == "held-for-review"
+    assert review["payload"]["coverage"]["by_outcome"] == {"not-run": 3}
+    assert review["payload"]["coverage"]["unresolved_chairs"] == 3
+    assert "blank_evidence" not in review["payload"]
+    assert "independently" not in review["payload"]["reason"]
+
+    export = export_of(tree)
+    entry = next(row for row in export["non_delivered"] if row["act_key"] == "page-fallback:3")
+    assert entry["category"] == "held-for-review"
+    assert entry["under_witnessed"] is True
+    assert export["aggregate"]["status"] == "partial"
+    assert not any(
+        tree.read_artifact(RECENSOR, row["kind"], row["artifact_id"])["outcome"]
+        == "confirmed-blank"
+        for row in tree.build_manifest(RECENSOR)["artifacts"]
+    )
 
 
 def test_a_shortened_resealed_proposal_denominator_stops_the_first_consumer(tmp_path):

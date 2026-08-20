@@ -77,16 +77,18 @@ PAGES: tuple[Page, ...] = (
 )
 
 # A genuinely ink-free page is admitted only for the named integration
-# scenario. The two-page base fixture remains the input for every pre-existing
+# scenarios. The two-page base fixture remains the input for every pre-existing
 # scenario, while this extra page lets the real downstream stage programs prove
-# that a Designator-minted page fallback is witnessed and read.
+# that a Designator-minted page fallback is witnessed and read
+# (`ink-free-page`), and that it holds rather than reporting a blank when no
+# witness response is declared for it at all (`ink-free-page-unwitnessed`).
 SCENARIO_PAGES: tuple[Page, ...] = (
     {
         "ordinal": 3,
         "width": 200,
         "height": 260,
         "acts": (),
-        "scenarios": ("ink-free-page",),
+        "scenarios": ("ink-free-page", "ink-free-page-unwitnessed"),
     },
 )
 
