@@ -61,14 +61,17 @@ def churro_prompt() -> dict[str, str]:
     """The trained two-message XML framing, retained verbatim.
 
     These strings are carried bytes from the quarantined prior adapter,
-    ``/window/remote/pilot_churro.py`` (its transcription of the Churro model
-    release's ``prompts/ocr.py``), named as carried in the commit that brought
-    them per the quarantine rule. The Churro release is non-commercially
-    licensed; this repository's recorded posture is the research track
-    (workbench/standing/MASTER_PLAN.md, witness-licenses row): research use is
-    compliant, weights are never vendored, and any merging decision needs its
-    own licensing decision first. They are split by role because joining or
-    summarizing them changes the actual chat-template bytes the model receives.
+    ``/window/remote/pilot_churro.py`` (its transcription of ``prompts/ocr.py``
+    from the Churro release, https://github.com/stanford-oval/churro), named as
+    carried in the commit that brought them per the quarantine rule. Licensing,
+    per the upstream repository's own split: the Churro code — these prompt
+    strings included — is Apache-2.0, so carrying and redistributing them with
+    this attribution is permitted; the weights are under the Qwen research
+    license and the training dataset is research-use-only, so weights are never
+    vendored, this repository's use of the model stays on the research track,
+    and any merging decision needs its own licensing decision first. They are
+    split by role because joining or summarizing them changes the actual
+    chat-template bytes the model receives.
     """
     system = (
         "You are an expert in diplomatic transcription of historical documents from various "

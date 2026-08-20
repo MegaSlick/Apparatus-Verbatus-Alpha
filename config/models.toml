@@ -171,7 +171,7 @@ reason = "no secondary proposer is configured for the offline walking skeleton"
 # digest_manifest = "<sha256-of-canonical-manifest>"
 # manifest = "manifests/attestator_3-ca2150ea465d5a3d67818c50e234b9422619c75d.json"
 # serving_recipe = "<serving-recipe>"
-# license_note = "Non-commercial research only"
+# license_note = "Weights: Qwen research license (research only); code incl. prompts: Apache-2.0"
 #
 # [chairs.secondary_proposer]
 # state = "configured"
