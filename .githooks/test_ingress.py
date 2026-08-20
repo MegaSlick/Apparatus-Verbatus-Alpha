@@ -568,6 +568,76 @@ def test_ntfy_topic_is_a_secret_in_both_leak_shapes(repo):
     assert run_scan(repo, "--staged").returncode == 1
 
 
+@SCANNER_CORE
+def test_ntfy_topic_url_is_refused_regardless_of_host_case_or_topic_length(repo):
+    # The host is matched case-insensitively and a topic of any length is
+    # topic-shaped: a one-character topic is a working credential too. Built
+    # discontinuously so this file holds no scannable topic.
+    upper_host = "# see https://NTFY" + ".SH/" + "some-rotated-topic" + "\n"
+    write(repo, "notes.py", upper_host)
+    stage(repo, "notes.py")
+    assert run_scan(repo, "--staged").returncode == 1
+
+    one_char = "# see https://ntfy" + ".sh/" + "q" + "\n"
+    write(repo, "notes.py", one_char)
+    stage(repo, "notes.py")
+    assert run_scan(repo, "--staged").returncode == 1
+
+    # A documentation path name extended by a topic character is a topic, not
+    # documentation: the exemption must end with the topic character set.
+    docs_prefixed = "# see https://ntfy" + ".sh/" + "docs-secret" + "\n"
+    write(repo, "notes.py", docs_prefixed)
+    stage(repo, "notes.py")
+    assert run_scan(repo, "--staged").returncode == 1
+
+    # The assignment form refuses a one-character topic too; the two rules
+    # share the topic-length truth.
+    short_assignment = "NTFY_" + 'TOPIC = "q"\n'
+    write(repo, "notes.py", short_assignment)
+    stage(repo, "notes.py")
+    assert run_scan(repo, "--staged").returncode == 1
+
+
+@SCANNER_CORE
+def test_the_exemption_is_case_sensitive_and_the_host_boundary_is_real(repo):
+    # Topics are case-sensitive: DOCS is a possible topic, not the docs path.
+    upper_reserved = "# see https://ntfy" + ".sh/" + "DOCS" + "\n"
+    write(repo, "notes.py", upper_reserved)
+    stage(repo, "notes.py")
+    assert run_scan(repo, "--staged").returncode == 1
+
+    # An unrelated host that merely ends in the letters is not ntfy.
+    other_host = "# see https://example-ntfy" + ".sh/" + "sometopic" + "\n"
+    write(repo, "notes.py", other_host)
+    stage(repo, "notes.py")
+    assert run_scan(repo, "--staged").returncode == 0
+
+
+@SCANNER_CORE
+def test_a_sixty_five_character_run_is_not_a_topic_in_either_shape(repo):
+    # ntfy's topic limit is 64 characters: a longer run cannot be a working
+    # topic, and refusing its first 64 characters would be the over-refusal
+    # that pressures a bypass. The 64-character run stays refused.
+    run_64 = "x" * 64
+    run_65 = "x" * 65
+
+    write(repo, "notes.py", "NTFY_" + f'TOPIC = "{run_65}"\n')
+    stage(repo, "notes.py")
+    assert run_scan(repo, "--staged").returncode == 0
+
+    write(repo, "notes.py", "# see https://ntfy" + ".sh/" + run_65 + "\n")
+    stage(repo, "notes.py")
+    assert run_scan(repo, "--staged").returncode == 0
+
+    write(repo, "notes.py", "NTFY_" + f'TOPIC = "{run_64}"\n')
+    stage(repo, "notes.py")
+    assert run_scan(repo, "--staged").returncode == 1
+
+    write(repo, "notes.py", "# see https://ntfy" + ".sh/" + run_64 + "\n")
+    stage(repo, "notes.py")
+    assert run_scan(repo, "--staged").returncode == 1
+
+
 def test_ntfy_docs_and_explicit_angle_bracket_placeholder_stay_committable(repo):
     # The angle brackets keep the example visibly non-working and outside the
     # exact assignment grammar. Exact topic-shaped values receive no exemption.

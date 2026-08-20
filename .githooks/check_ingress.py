@@ -105,14 +105,33 @@ SECRET_PATTERNS = (
     # An ntfy topic is unauthenticated by design: the name IS the whole
     # credential, for reading and for forging. The old repository leaked its
     # topic into six committed paths, mostly as pasted working command lines.
+    # Both rules terminate at 64: ntfy's topic limit is 64 characters, so a
+    # 65-character run is not a working topic and refusing a prefix of it
+    # would be the over-refusal that pressures a bypass.
     (
         "ntfy-topic",
-        re.compile(rb"\bNTFY_TOPIC[\t ]*=[\t ]*[\"']?[A-Za-z0-9_-]{6,}"),
+        re.compile(rb"\bNTFY_TOPIC[\t ]*=[\t ]*[\"']?[A-Za-z0-9_-]{1,64}(?![A-Za-z0-9_-])"),
     ),
     # The URL form is how the old leak actually happened: a working command
-    # line pasted whole. Anchored to this project's topic prefix so ntfy's own
-    # documentation URLs (ntfy.sh/publish, ntfy.sh/docs) stay committable.
-    ("ntfy-topic", re.compile(rb"\bntfy\.sh/verbatus[A-Za-z0-9_-]{4,}")),
+    # line pasted whole. Any topic-shaped path segment is refused, host
+    # case-insensitively — anchoring to this project's topic prefix would both
+    # publish the prefix and miss a rotated topic. ntfy's own documentation
+    # URLs (ntfy.sh/publish, ntfy.sh/docs, ntfy.sh/app) stay committable: an
+    # over-refusing scanner is the mechanism by which the guard gets bypassed.
+    # The exemption ends where the topic character set ends, not at a word
+    # boundary: a hyphen is a topic character, so "docs-secret" is a topic,
+    # not the docs path.
+    # Case-insensitivity covers only the host: topics are case-sensitive, so
+    # DOCS is a possible topic, not the docs path. The lookbehind is the host
+    # boundary — a word boundary would let example-ntfy.sh match.
+    (
+        "ntfy-topic",
+        re.compile(
+            rb"(?<![A-Za-z0-9.-])(?i:ntfy\.sh)/"
+            rb"(?!(?:docs|publish|app)(?![A-Za-z0-9_-]))"
+            rb"[A-Za-z0-9_-]{1,64}(?![A-Za-z0-9_-])"
+        ),
+    ),
     (
         "credential-url",
         re.compile(rb"https?://[^/\s:@]+:[^@\s/]{8,}@[^\s/]+", re.I),
