@@ -45,6 +45,7 @@ from common.imaging import PNG_SIGNATURE, decode_grayscale_png
 from common.runtree.store import RunTree
 from common.stage import (
     EXIT_FATAL,
+    EXIT_HELD,
     load_fixture,
     open_context,
     page_identity,
@@ -480,8 +481,92 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # real runs through this module's own `orchestrate` and
 # `semantic_snapshot_digest` helpers; counts held at 64 files for happy
 # (exit 0) and 71 for review (exit 3).
-HAPPY_RUN_TREE_DIGEST = "ea364ee66c5a6270a7dc55ef28b29add5abbf917afda3cf9af295442b42aec79"
-REVIEW_RUN_TREE_DIGEST = "6cabfbb034e917b188307205e04c8d5a9edf231ef814ebf09fe39fb2424780fa"
+#
+# Re-measured host-side for the T0 export-honesty repair, and this one is a
+# deliberate record change rather than drift. Every delivered `manifest-entry`
+# and export row now carries the Archetypus's own `text_status` and its
+# transcription annotation layer; the run aggregate's basis carries the per-act
+# status it was measured from; and the acts database, JSONL and readable text
+# bundle carry both beside each literal (with the semantic annotation row fields
+# renamed apart from them, `semantic_annotations` / `semantic_annotation_status`,
+# so one word no longer answers for two different layers). Recorded bytes move in
+# every Armarium artifact and in the sealed bundle blob; no new file is written.
+# Fresh real runs through this module's own `orchestrate` and
+# `semantic_snapshot_digest` helpers held the counts at 64 files for happy
+# (exit 0) and 71 for review (exit 3).
+# (Both values re-measured once more at host integration: the acts row and
+# sqlite schema ids were bumped to v2 for the shape change — CR W15's silent-
+# rename miss covered in the same bump — and `PRAGMA user_version` moved to 2
+# with them, which moves the recorded bytes again. Measured twice from fresh
+# runs; counts and exits held at 64/0 and 71/3.)
+# (And once more for the review-driven candidate 3: the export manifest and
+# sources ids moved to v2 with their own shape changes — the renamed
+# annotations claim and the now-required per-outcome text_status.)
+# (Final values, measured twice at the exact candidate tree: an interim pair
+# was measured before `_armarium_bundle_semantics` below learnt the v2
+# manifest id, so the bundle digested on its opaque fallback — the pin must
+# always be measured after the LAST byte of the candidate is in place.)
+# (Values below are re-measured on THIS branch rebased onto main with the
+# reproof theme merged — the combined tree, measured twice, fresh.)
+#
+# Re-pinned for the Sol-S1 fallback-witness fix. No behaviour in either scenario
+# changed and no file moved: what moved is the sealed fixture, which
+# `run_config_bindings` folds into `config_digest` whole (`"fixture": fixture`),
+# so declaring the ink-free page's three empty witness responses and the new
+# `ink-free-page-unwitnessed` scenario moves every artifact digest under happy
+# and review even though neither scenario reads a word of it. Both values were
+# measured from fresh real runs through this module's own `orchestrate` and
+# `semantic_snapshot_digest` helpers, never derived arithmetically; counts held
+# at 64 (happy, exit 0) and 71 (review, exit 3).
+# (Values below re-measured twice on the fallback replacement branch — main
+# with the reproof and export themes merged plus this theme — fresh runs
+# through this module's own helpers; counts and exits held at 64/0 and 71/3.)
+#
+# Re-pinned for Opus-F3: act crops are evidence written during a run, and
+# `common/imaging.py::crop_png` now writes them through this project's own
+# deterministic encoder on both paths instead of `zlib.compress(level=9)` and
+# Pillow's PNG writer. The pixels are unchanged — `semantic_snapshot` already
+# binds a PNG's pixels rather than its compressor bytes, and the neighbouring
+# `test_semantic_snapshot_digest_binds_png_pixels_not_compressor_bytes` is the
+# proof — but a crop blob is content-addressed, so its *path* carries its byte
+# digest, and every artifact that names one moves with it. That is exactly the
+# property the change buys: those paths and digests are now the same on every
+# zlib build rather than only on this one. Fresh real runs through this module's
+# own helpers held the file counts at 64 for happy (exit 0) and 71 for review
+# (exit 3).
+# (Values below re-measured twice on the crops replacement branch — the
+# fallback theme's tree plus this theme — fresh runs through this module's
+# own helpers; counts and exits held at 64/0 and 71/3.)
+#
+# Re-measured after act a1's fixture recovery rectangle was repaired from
+# 16,16,168,88 to 0,0,200,114. The old rectangle was a strict subset of the
+# padded capture rect the proposal had already cut (12,15,188,99), so the
+# `review` scenario's one fallback recrop recovered no pixel at all; the
+# Designator now refuses such a recrop by name. **Both** digests move, not only
+# review's: `run_config_bindings` folds the fixture itself into `config_digest`
+# ("the digest of *everything* that shapes this run's behaviour"), so any fixture
+# byte moves every scenario's `run.json`. Review's tree moves twice over — its
+# recovery crop is a different, larger rectangle with different pixels. No new
+# files: fresh real runs via this module's `orchestrate` and
+# `semantic_snapshot_digest` helpers held at 64 files for happy (exit 0) and 71
+# for review (exit 3).
+# (Values below re-measured twice on the coverage replacement branch — the
+# crops theme's tree plus this theme — fresh runs through this module's own
+# helpers; counts and exits held at 64/0 and 71/3.)
+#
+# Re-pinned for the T7 config sealing family. Every run authority now records
+# `sealed_config_digests` — the digest of each configuration file the run sealed,
+# under the name its point of use asks for — so a reader holding only the tree can
+# name the policy bytes that governed it rather than only test a candidate file
+# against `config_digest`. That moves `run.json`'s recorded bytes in both scenarios
+# and writes no new file: fresh real runs through this module's own `orchestrate`
+# and `semantic_snapshot_digest` helpers held the counts at 64 files for happy
+# (exit 0) and 71 for review (exit 3), unmoved since R5b.
+# (Values below re-measured twice on the sealing replacement branch — the
+# coverage theme's tree plus this theme — fresh runs through this module's
+# own helpers; counts and exits held at 64/0 and 71/3.)
+HAPPY_RUN_TREE_DIGEST = "3d67756e9f12fc6db30cef4ba55c2d89bc6a8fefbc463ac8bca0c6d28574dbc4"
+REVIEW_RUN_TREE_DIGEST = "82c68eaf1dcf5a23042428ebbb2bdc7842bddea3c9208ce07f85b0d4c14ec040"
 
 
 def orchestrate(
@@ -704,7 +789,7 @@ def _armarium_bundle_semantics(data: bytes) -> tuple[str, dict[str, str]] | None
             manifest = json.loads(manifest_data)
             if (
                 not isinstance(manifest, dict)
-                or manifest.get("schema") != "armarium-export-manifest.v1"
+                or manifest.get("schema") != "armarium-export-manifest.v2"
                 or canonical_bytes(manifest) != manifest_data
                 or manifest.get("self_hash") != self_hash(manifest)
             ):
@@ -1030,7 +1115,7 @@ def _write_acceptance_bundle_tree(root: Path, database_data: bytes, damage=None)
     """
     members = {"acts.sqlite": database_data, "acts.jsonl": b'{"act_id":"a1"}\n'}
     package_manifest = {
-        "schema": "armarium-export-manifest.v1",
+        "schema": "armarium-export-manifest.v2",
         "members": [
             {"path": name, "sha256": digest_bytes(content), "bytes": len(content)}
             for name, content in sorted(members.items())
@@ -1346,6 +1431,23 @@ def test_a_genuinely_empty_testimonium_counts_as_a_witnessed_read(tmp_path):
     assert export_of(tree)["aggregate"]["status"] == "complete"
 
 
+def _fallback_testimonia(tree: RunTree) -> list[dict]:
+    """Every act-scoped Testimonium for the minted page-3 fallback act.
+
+    Every attempt, not a latest-per-chair collapse: both scenarios that use
+    this write exactly one attempt per chair, and the callers assert the
+    count. A reread scenario would need the collapse before reusing this.
+    """
+    records = []
+    for artifact in tree.build_manifest(ATTESTATORES)["artifacts"]:
+        if artifact["kind"] != "testimonium":
+            continue
+        record = tree.read_artifact(ATTESTATORES, "testimonium", artifact["artifact_id"])
+        if record["payload"]["act_key"] == "page-fallback:3":
+            records.append(record)
+    return records
+
+
 def test_an_ink_free_page_fallback_is_witnessed_and_read_end_to_end(tmp_path):
     """A Designator-minted act reaches both reader stages without fixture-key lookup failure."""
     root = tmp_path / "runs"
@@ -1353,16 +1455,17 @@ def test_an_ink_free_page_fallback_is_witnessed_and_read_end_to_end(tmp_path):
     assert result.returncode == 0, result.stderr
     tree = RunTree(root, "r")
 
-    testimonia = []
-    for artifact in tree.build_manifest(ATTESTATORES)["artifacts"]:
-        if artifact["kind"] != "testimonium":
-            continue
-        record = tree.read_artifact(ATTESTATORES, "testimonium", artifact["artifact_id"])
-        if record["payload"]["act_key"] == "page-fallback:3":
-            testimonia.append(record)
+    testimonia = _fallback_testimonia(tree)
     assert len(testimonia) == 3
     assert all(record["outcome"] == "genuinely-empty" for record in testimonia)
     assert all(record["payload"]["regions"] for record in testimonia)
+    # And each one rests on a declared response to this exact request rather
+    # than on the act's identity: `proof/skeleton_fixture.toml` declares an
+    # empty witness response per chair for `page-fallback:3` under this
+    # scenario, and `ink-free-page-unwitnessed` below is the same page with
+    # those three declarations removed.
+    assert all(record["payload"]["provenance"]["receipt_ref"] is not None for record in testimonia)
+    assert all(record["payload"]["payload"] == "" for record in testimonia)
 
     reading = next(
         tree.read_artifact(PERLECTOR, "perlectio", entry["artifact_id"])
@@ -1380,6 +1483,87 @@ def test_an_ink_free_page_fallback_is_witnessed_and_read_end_to_end(tmp_path):
     )
     assert entry["act_id"] == reading["subject_id"]
     assert entry["category"] == "confirmed-blank"
+
+
+def test_an_undeclared_fallback_witness_holds_the_act_instead_of_reporting_it_blank(tmp_path):
+    """Sol-S1's red demonstration, kept runnable.
+
+    `ink-free-page-unwitnessed` is the identical ink-free page with no witness
+    response declared for the minted fallback act. Before the fix the act's
+    identity alone produced `genuinely-empty` for every configured chair, with
+    the proposal regions attached, the attempt marked attempted, a serving
+    receipt minted and trusted-boundary health recorded — and the Recensor then
+    sealed `confirmed-blank`, stating that three chairs had actually and
+    independently read the page. The conclusion was true of that white page; the
+    evidence was not, and the same shape over a page with ink is GOALS 1's worst
+    failure arriving as a green run.
+
+    So: no response, no reading. Every chair is `not-run`, nothing claims a
+    receipt or a region it was never shown, no page witness reports a reading,
+    and the act ends held with the shortfall named rather than sealed blank.
+    """
+    root = tmp_path / "runs"
+    result = orchestrate(root, "r", "ink-free-page-unwitnessed")
+    # Exit 3 is "accounted, holdable": the run reached honest terminal states
+    # for every act and one of them is held. A zero here would be the vacuous
+    # green the finding was about.
+    assert result.returncode == 3, result.stderr
+    tree = RunTree(root, "r")
+
+    testimonia = _fallback_testimonia(tree)
+    assert len(testimonia) == 3
+    assert all(record["outcome"] == "not-run" for record in testimonia)
+    assert all(record["payload"]["regions"] == [] for record in testimonia)
+    assert all(record["payload"]["provenance"]["receipt_ref"] is None for record in testimonia)
+    assert all(record["payload"]["payload"] is None for record in testimonia)
+    # Not "measured empty": emptiness is unknown, because nothing was asked.
+    assert all(record["payload"]["content_health"]["empty"] is None for record in testimonia)
+    assert all("reported" not in record["payload"] for record in testimonia)
+
+    page_records = [
+        tree.read_artifact(ATTESTATORES, "page-testimonium", entry["artifact_id"])
+        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
+        if entry["kind"] == "page-testimonium"
+    ]
+    page_three = [row for row in page_records if row["payload"]["page_ordinal"] == 3]
+    assert len(page_three) == 2, "both declared page witnesses must still be accounted for"
+    assert all(row["outcome"] == "failed" for row in page_three)
+    assert all(row["payload"]["provenance"]["receipt_ref"] is None for row in page_three)
+
+    reading = next(
+        tree.read_artifact(PERLECTOR, "perlectio", entry["artifact_id"])
+        for entry in tree.build_manifest(PERLECTOR)["artifacts"]
+        if entry["kind"] == "perlectio"
+        and tree.read_artifact(PERLECTOR, "perlectio", entry["artifact_id"])["payload"]["act_key"]
+        == "page-fallback:3"
+    )
+    # The Perlector still reads the ink itself — its own autopsia is unaffected
+    # by the witnesses being absent, and that is exactly why the witnesses may
+    # not be invented to agree with it.
+    assert reading["outcome"] == "no-readable-text"
+    assert not any(region["witness_covered"] for region in reading["payload"]["basis"]["regions"])
+
+    review = next(
+        tree.read_artifact(RECENSOR, "review", entry["artifact_id"])
+        for entry in tree.build_manifest(RECENSOR)["artifacts"]
+        if entry["kind"] == "review" and entry["subject_id"] == reading["subject_id"]
+    )
+    assert review["outcome"] == "held-for-review"
+    assert review["payload"]["coverage"]["by_outcome"] == {"not-run": 3}
+    assert review["payload"]["coverage"]["unresolved_chairs"] == 3
+    assert "blank_evidence" not in review["payload"]
+    assert "independently" not in review["payload"]["reason"]
+
+    export = export_of(tree)
+    entry = next(row for row in export["non_delivered"] if row["act_key"] == "page-fallback:3")
+    assert entry["category"] == "held-for-review"
+    assert entry["under_witnessed"] is True
+    assert export["aggregate"]["status"] == "partial"
+    assert not any(
+        tree.read_artifact(RECENSOR, row["kind"], row["artifact_id"])["outcome"]
+        == "confirmed-blank"
+        for row in tree.build_manifest(RECENSOR)["artifacts"]
+    )
 
 
 def test_a_shortened_resealed_proposal_denominator_stops_the_first_consumer(tmp_path):
@@ -2515,8 +2699,8 @@ def test_archetypus_establishes_no_readable_text_once_the_review_retains_real_bl
 
     The point is twofold: prove the constructor's success path actually writes
     the record spec 10 describes, not only that its refusal paths fire; and
-    prove the record it writes remains exportable through the (frozen,
-    off-limits this round) Armarium -- an Archetypus record that cannot survive
+    prove the record it writes remains exportable through the (now
+    damage-honest since the T0 export repair) Armarium -- an Archetypus record that cannot survive
     its own consumer is not established, whatever its own schema says.
     """
     root = tmp_path / "runs"
@@ -2568,7 +2752,11 @@ def test_archetypus_establishes_no_readable_text_once_the_review_retains_real_bl
     assert record["evidence_ref"] == evidence_ref
 
     export_result = invoke_stage(root, "r", "happy", "pipeline/7_armarium/run.py")
-    assert export_result.returncode == 0, export_result.stderr
+    # EXIT_HELD, not 0, since the export became honest about damage: an act
+    # delivered with a record that establishes no readable text is a delivered act
+    # the run cannot call complete, and the aggregate names it. Surviving the
+    # consumer is what this test is about, and the row below is still there.
+    assert export_result.returncode == EXIT_HELD, export_result.stderr
     # Surviving the consumer means being *in* its export, not merely not
     # crashing it: a delivered set that silently dropped the blank act would
     # exit 0 too. The export row carries the record's established empty text;
@@ -3049,6 +3237,115 @@ def test_the_recovered_act_keeps_one_identity_across_two_regions(review_run):
     assert len({record["subject_id"] for record in regions}) == 1
     assert len({record["payload"]["region_id"] for record in regions}) == 2
     assert {record["payload"]["origin"] for record in regions} == {"proposal", "recovery"}
+
+
+def _pixels(bounds: dict) -> set[tuple[int, int]]:
+    """Every page pixel one rectangle covers, enumerated rather than reasoned.
+
+    Deliberately the slow, obvious construction: this is the independent check
+    on the Designator's own coverage arithmetic, and a second clever
+    implementation of it would agree with the first about the same mistake.
+    """
+    return {
+        (x, y)
+        for x in range(bounds["x"], bounds["x"] + bounds["w"])
+        for y in range(bounds["y"], bounds["y"] + bounds["h"])
+    }
+
+
+def test_the_recovery_recrop_actually_widened_the_crop_it_was_asked_for(review_run):
+    """GOVERNANCE 11: "Recovery exists for **completeness and coverage**."
+
+    This scenario is the walking skeleton's single proof that bounded recovery
+    works, so what it spends the `fallback_recrop` budget on has to be a crop
+    that recovers something. It did not: the fixture declared act a1's recovery
+    rectangle as 16,16,168,88 while the proposal had already cut the padded
+    12,15,188,99 -- `[16,184) x [16,104)` strictly inside `[12,200) x [15,114)`.
+    Every pixel the recrop "recovered" was a pixel the act already had, and the
+    only guard on the path compared transform identity, which a subset passes.
+
+    Measured over the run's own published regions, not over the fixture
+    declaration, so a padding change that swallowed the recovery rectangle would
+    fail here rather than quietly restore the defect.
+    """
+    _, tree = review_run
+    regions = [
+        record
+        for record in artifacts(tree, DESIGNATOR, "region")
+        if record["payload"]["act_key"] == "a1"
+    ]
+    by_origin = {record["payload"]["origin"]: record for record in regions}
+    assert sorted(by_origin) == ["proposal", "recovery"]
+
+    proposal = by_origin["proposal"]["payload"]["transform"]
+    recovery = by_origin["recovery"]["payload"]["transform"]
+    # Pixel sets only mean anything within one page's coordinate space.
+    assert proposal["source_page_id"] == recovery["source_page_id"]
+    assert proposal["source_page_ordinal"] == recovery["source_page_ordinal"] == 1
+
+    already_cut = _pixels(proposal["bounds"])
+    recropped = _pixels(recovery["bounds"])
+    assert recropped - already_cut, (
+        "a recovery that recovers no page pixel is a spent budget and a coverage "
+        "caveat about nothing"
+    )
+    # ARCHITECTURE calls the operation a "fallback or **expanded** recrop". An
+    # expansion adds coverage without trading any away: a rectangle that gained
+    # a left margin by giving up the right edge would satisfy the guard while
+    # dropping ink the proposal had already captured.
+    assert not already_cut - recropped, "an expanded recrop must not drop coverage it had"
+    assert len(recropped - already_cut) == 200 * 114 - 188 * 99 == 4188
+
+    # And it takes nothing from the neighbouring act: every page pixel stays cut
+    # under exactly one act identity. a2's *capture* rectangle begins at y=114,
+    # six rows above its declared structural top edge, so "clear of a2" has to
+    # be read against the rectangle that was actually cut.
+    neighbour = next(
+        record
+        for record in artifacts(tree, DESIGNATOR, "region")
+        if record["payload"]["act_key"] == "a2"
+        and record["payload"]["transform"]["source_page_ordinal"] == 1
+    )
+    assert not recropped & _pixels(neighbour["payload"]["transform"]["bounds"])
+
+
+def test_the_witness_uncovered_caveat_names_the_region_carrying_the_new_pixels(review_run):
+    """The second-order half of the same finding.
+
+    `witness_covered: false` means "ink a recovery uncovered was never shown to a
+    witness" (`pipeline/2_designator/run.py::cut_minted_region`). While the
+    recovery crop was a strict subset of the proposal crop it uncovered nothing,
+    so the export carried that caveat over pixels every witness had already
+    seen. Binding the flag to the geometry is what makes the caveat mean
+    something; `test_recovery_ink_is_recorded_as_witness_uncovered` asserts the
+    flag itself.
+    """
+    _, tree = review_run
+    regions = [
+        record
+        for record in artifacts(tree, DESIGNATOR, "region")
+        if record["payload"]["act_key"] == "a1"
+    ]
+    by_origin = {record["payload"]["origin"]: record for record in regions}
+    new_pixels = _pixels(by_origin["recovery"]["payload"]["transform"]["bounds"]) - _pixels(
+        by_origin["proposal"]["payload"]["transform"]["bounds"]
+    )
+    assert new_pixels
+
+    latest = max(
+        (
+            record
+            for record in artifacts(tree, PERLECTOR, "perlectio")
+            if record["payload"]["act_key"] == "a1"
+        ),
+        key=lambda record: record["payload"]["attempt_ordinal"],
+    )
+    uncovered = {
+        region["region_id"]
+        for region in latest["payload"]["basis"]["regions"]
+        if not region["witness_covered"]
+    }
+    assert uncovered == {by_origin["recovery"]["payload"]["region_id"]}
 
 
 def test_the_recovery_request_and_both_reading_attempts_survive(review_run):

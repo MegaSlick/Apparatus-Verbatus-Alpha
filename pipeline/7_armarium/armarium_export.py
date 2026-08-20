@@ -39,6 +39,7 @@ from display import DISPLAY_CONVENTION, render_display, strip_display
 from textnorm import TEXTNORM_REVISION, search_fold
 
 from common.armarium_formats import ArmariumFormats, armarium_formats_from_record
+from common.contracts.annotations import validate_annotations
 from common.contracts.canonical import (
     canonical_bytes,
     canonical_text,
@@ -49,7 +50,9 @@ from common.contracts.canonical import (
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.outcomes import (
     SILENT_PAGE_REASON,
+    TEXT_STATUSES,
     ArmariumCategory,
+    derive_record_text_status,
     require_approval,
     run_aggregate,
 )
@@ -63,9 +66,21 @@ EXPORT_MANIFEST_NAME: Final = "EXPORT_MANIFEST.json"
 # export payload) and bundle.py (which writes the file under it), so the two cannot
 # drift into naming two different files the same product.
 ARMARIUM_ARCHIVE_NAME: Final = "armarium-export.zip"
-EXPORT_MANIFEST_SCHEMA: Final = "armarium-export-manifest.v1"
-ACT_RECORD_SCHEMA: Final = "armarium-act.v1"
-SOURCES_SCHEMA: Final = "armarium-sources.v1"
+# v2: `claims.annotations` was renamed apart into `claims.semantic_annotations`
+# beside the new measured `claims.transcription_annotations` — a rename under
+# one id is the versioning miss the act-row bump below refuses, so the
+# manifest's id moves with its claims.
+EXPORT_MANIFEST_SCHEMA: Final = "armarium-export-manifest.v2"
+# v2: the damage record. `text_status` and `transcription_annotations` joined
+# the row, and the bare `annotations`/`annotation_status` pair was renamed
+# apart into `semantic_annotations`/`semantic_annotation_status`. A consumer
+# keying on the schema id must not read a v1 shape out of a v2 row — the
+# silent-rename-under-one-id miss (CR W15, on the sqlite id below) is the
+# defect a version bump exists to prevent, so both ids move with the shape.
+ACT_RECORD_SCHEMA: Final = "armarium-act.v2"
+# v2: every act-outcome row now REQUIRES `text_status` (exact-field-set
+# checked), so a v1 sources file and a v2 reader are mutually unreadable.
+SOURCES_SCHEMA: Final = "armarium-sources.v2"
 SALVAGE_RECORD_SCHEMA: Final = "armarium-salvage-item.v1"
 CANONICAL_TEXT_FIELD: Final = "canonical_clean_text"
 CANONICAL_TEXT_ENCODING: Final = "utf-8"
@@ -78,11 +93,23 @@ _UNCERTAINTY_AVAILABLE: Final = "canonical-unicode-codepoint-offsets"
 # package with no literal-text format, has no offsets for a layer to anchor to or
 # carry, so it says so in the one vocabulary every reader can compare.
 _UNCERTAINTY_NOT_APPLICABLE: Final = "not-applicable"
-_ANNOTATION_NOT_PRODUCED: Final = "not-produced-pending-architecture-approval"
+_SEMANTIC_ANNOTATION_NOT_PRODUCED: Final = "not-produced-pending-architecture-approval"
 # The manifest-level claim, distinct from the per-row status above since R8:
 # a row saying "annotations not produced" beside a carried uncertainty layer
 # needed to say *which* annotations, and the package claim says it once.
-_ANNOTATIONS_CLAIM: Final = "semantic-annotations-not-produced"
+_SEMANTIC_ANNOTATIONS_CLAIM: Final = "semantic-annotations-not-produced"
+# **Two layers, two words, because they are two things** (GLOSSARY: one concept
+# per word). The *semantic* layer is `annotation_boundary.py`'s unbuilt
+# person/date/kinship apparatus, and `not-produced` is true of it. The
+# *transcription* layer is the Archetypus record's own `annotations` -- the
+# `uncertain`/`illegible` marks over the established text, sealed at stage 6 and
+# real. Every row here carried the first one's `annotations: []` and
+# `annotation_status: not-produced` and nothing at all of the second, so an act
+# whose record sealed a genuine illegible gap left the pipeline carrying a
+# positive claim that no annotations were produced for it. Naming them apart is
+# what stops one word answering for both again; neither takes the bare name.
+_TRANSCRIPTION_ANNOTATIONS_CARRIED: Final = "archetypus-sealed-uncertain-and-illegible-marks"
+_TRANSCRIPTION_ANNOTATIONS_NOT_APPLICABLE: Final = "not-applicable"
 _LITERAL_TEXT_FORMATS: Final = ("text-bundle", "acts-database", "jsonl")
 _PIXEL_REFERENCE_CLAIM: Final = "reference validity only; pixel resolution requires source access"
 _PIXEL_EMBEDDED_CLAIM: Final = (
@@ -178,6 +205,30 @@ def _uncertainty_claim(formats: tuple[str, ...] | list[str]) -> dict[str, Any]:
     return {
         "status": _UNCERTAINTY_AVAILABLE if carried_by else _UNCERTAINTY_NOT_APPLICABLE,
         "offset_unit": "unicode-code-point",
+        "carried_by": carried_by,
+    }
+
+
+def _transcription_annotations_claim(formats: tuple[str, ...] | list[str]) -> dict[str, Any]:
+    """Measure which selected formats carry the Archetypus's own annotation layer.
+
+    A measurement rather than a constant, exactly like the uncertainty claim it
+    sits beside and unlike the semantic-annotation claim below it: this layer is
+    produced, it rides in the literal-text formats with the text it marks up, and
+    a package that named a format it does not carry it in would be describing a
+    different package. Published so that `claims` cannot be read as saying no
+    annotations of any kind exist -- which is what it said while the only
+    annotation claim in it was the semantic layer's `not-produced`.
+    """
+    carried_by = sorted(set(formats) & set(_LITERAL_TEXT_FORMATS))
+    return {
+        "status": (
+            _TRANSCRIPTION_ANNOTATIONS_CARRIED
+            if carried_by
+            else _TRANSCRIPTION_ANNOTATIONS_NOT_APPLICABLE
+        ),
+        "authority": "archetypus",
+        "text_writable": False,
         "carried_by": carried_by,
     }
 
@@ -377,7 +428,7 @@ def verify_export_bundle(data: bytes, clean_root) -> dict[str, Any]:
     _verify_display_claim(manifest)
     _verify_retained_run_claim(manifest)
     _verify_canonical_text_claim(manifest)
-    _verify_annotations_claim(manifest)
+    _verify_annotations_claims(manifest)
     _verify_uncertainty_claim(manifest)
     _verify_exact_product_members(formats, sources, actual_names)
     search_fold_verification = _verify_product_accounting(root, manifest, formats, sources)
@@ -438,14 +489,17 @@ def verify_delivered_bundle(data: bytes, clean_root) -> dict[str, Any]:
 def _compare_literal_projections(root: Path, formats: ArmariumFormats) -> dict[str, str]:
     """Compare already-verified literal members without extracting the package again.
 
-    Each format's rows carry ``(text, digest, uncertainty)``: the uncertainty layer
-    rides in the same equality check as the text it anchors to, so a format that
-    silently diverged on its uncertainty carriage -- present, well-formed, but
-    *different* from what the other formats say -- fails identity exactly as a
-    diverging literal would (U3: uncertainty is a projected reading like the text
-    it sits beside, and GOVERNANCE 5 does not stop at the characters).
+    Each format's rows carry ``(text, digest, uncertainty, text_status,
+    transcription_annotations)``: every layer rides in the same equality check as
+    the text it describes, so a format that silently diverged on one of them --
+    present, well-formed, but *different* from what the other formats say -- fails
+    identity exactly as a diverging literal would (U3: these are projected
+    readings like the text they sit beside, and GOVERNANCE 5 does not stop at the
+    characters). A `text_status` that read `partial` in one product and
+    `established` in another would be two deliverables disagreeing about whether
+    the same act is damaged.
     """
-    projections: dict[str, dict[str, tuple[str, str, dict[str, Any]]]] = {}
+    projections: dict[str, dict[str, tuple]] = {}
     selected_literal_formats = [name for name in _LITERAL_TEXT_FORMATS if name in formats.formats]
     if len(selected_literal_formats) < 2:
         raise SchemaRefusal("projection identity needs at least two selected literal-text formats")
@@ -462,10 +516,10 @@ def _compare_literal_projections(root: Path, formats: ArmariumFormats) -> dict[s
     for name, records in projections.items():
         if records != baseline:
             raise SchemaRefusal(
-                f"canonical clean-text or uncertainty projection differs between "
-                f"{baseline_name} and {name}"
+                f"canonical clean-text, uncertainty or damage-record projection differs "
+                f"between {baseline_name} and {name}"
             )
-    return {act_id: text for act_id, (text, _digest, _uncertainty) in baseline.items()}
+    return {act_id: record[0] for act_id, record in baseline.items()}
 
 
 def _validate_projection(projection: ArmariumProjection) -> None:
@@ -529,6 +583,13 @@ def _validate_projection(projection: ArmariumProjection) -> None:
             # `utf8_round_trip` runs `validate_uncertainty` itself, on exactly
             # these arguments, before it asks its own question.
             utf8_round_trip(act.get("uncertainty"), literal)
+            _require_damage_record(
+                act.get("text_status"),
+                act.get("transcription_annotations"),
+                act.get("uncertainty"),
+                literal,
+                subject="Armarium projection act",
+            )
         elif literal is not None:
             raise SchemaRefusal("a non-delivered act may not carry purported clean text")
         elif act.get("uncertainty") is not None:
@@ -536,9 +597,33 @@ def _validate_projection(projection: ArmariumProjection) -> None:
             # text: offsets into a text this act does not have are not a reading
             # the export may carry, and no writer would have anywhere to put them.
             raise SchemaRefusal("a non-delivered act may not carry an uncertainty layer")
+        elif act.get("text_status") is not None or act.get("transcription_annotations") is not None:
+            # And the same rule again for what a record says *about* its text. An
+            # act with no Archetypus record has no status and no annotation layer;
+            # a projection carrying either would be describing a reading that does
+            # not exist.
+            raise SchemaRefusal(
+                "a non-delivered act may not carry an established-text status or a "
+                "transcription annotation layer"
+            )
         if category == ArmariumCategory.EXCLUDED_WITH_APPROVAL.value:
             require_approval(ARMARIUM, category, act.get("approval_ref"))
         _reject_act_salvage_namespace(act)
+    # The basis is the copy the run's verdict is computed from, and it was the
+    # one copy of the damage record nothing compared to the acts it describes —
+    # the repaired defect's own shape, one level up. Delivered acts and the
+    # basis must state the damage identically, key for key.
+    recorded_basis_status = projection.aggregate_basis.get("act_text_status")
+    delivered_status = {
+        act["act_key"]: act.get("text_status")
+        for act in projection.acts
+        if act.get("category") == ArmariumCategory.DELIVERED.value
+    }
+    if recorded_basis_status != delivered_status:
+        raise SchemaRefusal(
+            "an Armarium projection's aggregate basis does not carry exactly the delivered "
+            "acts' own established-text statuses"
+        )
     expected_aggregate = _aggregate_from_basis(
         {act["act_key"]: act["category"] for act in projection.acts},
         projection.pages,
@@ -546,6 +631,64 @@ def _validate_projection(projection: ArmariumProjection) -> None:
     )
     if canonical_text(projection.aggregate) != canonical_text(expected_aggregate):
         raise SchemaRefusal("an Armarium projection aggregate does not match its measured basis")
+
+
+def _require_damage_record(
+    text_status: Any,
+    annotations: Any,
+    uncertainty: Any,
+    literal: str,
+    *,
+    subject: str,
+) -> None:
+    """Recompute a delivered act's text status from the layers carried beside it.
+
+    The status is never merely carried. `established | partial | no_readable_text`
+    is the one field that says whether the reading leaving the pipeline is whole,
+    and a value read out of a row and believed is an assertion, not a check: a
+    package could say `established` over an act whose own gap list records ink the
+    Perlector could not read, which is exactly the shape GOVERNANCE 2 refuses. The
+    two damage layers travel in every literal format, so every reader of one --
+    the projection boundary and each product verifier on a clean machine -- can
+    derive the word for itself and refuse the row if it disagrees.
+
+    An empty annotation layer is ordinary and is not an absent one: `[]` says the
+    reader marked no damage, and `None` would say this act has no record at all.
+    """
+    # `isinstance` before membership: package-sourced JSON can put an
+    # unhashable value here, and a TypeError out of the membership test would
+    # be a crash where the contract owes a named refusal.
+    if not isinstance(text_status, str) or text_status not in TEXT_STATUSES:
+        raise SchemaRefusal(
+            f"a delivered {subject} carries established-text status {text_status!r}, which is "
+            f"not one of {sorted(TEXT_STATUSES)}"
+        )
+    if not isinstance(annotations, list):
+        raise SchemaRefusal(f"a delivered {subject} carries no transcription annotation layer")
+    # The carried layer is the one exported layer that legitimately holds free
+    # text (a reader's alternatives, a witness's quoted variant), so it gets the
+    # producer's own validator on the clean machine too — closed kinds, closed
+    # field sets, offsets inside this row's own literal. `witnesses=None`: the
+    # roster lives in the retained run, so attribution and quotation were checked
+    # where the layer was sealed and cannot be re-checked from the package alone.
+    try:
+        validate_annotations(annotations, literal, None, f"{subject} transcription annotation")
+    except SchemaRefusal as error:
+        raise SchemaRefusal(
+            f"a delivered {subject}'s transcription annotation layer is not the closed "
+            f"layer this pipeline seals: {error}"
+        ) from error
+    try:
+        expected = derive_record_text_status(literal, annotations, uncertainty)
+    except SchemaRefusal as error:
+        raise SchemaRefusal(
+            f"a delivered {subject}'s damage layers cannot be read for the status of its own text"
+        ) from error
+    if text_status != expected:
+        raise SchemaRefusal(
+            f"a delivered {subject} claims established-text status {text_status!r} over damage "
+            f"layers that say {expected!r}; a damaged act may not be projected as a whole one"
+        )
 
 
 def _validate_witness_accounting(
@@ -610,18 +753,21 @@ def _aggregate_from_basis(
         "coverage_records",
         "unaddressed_chairs",
         "act_pages",
+        "act_text_status",
     }:
         raise SchemaRefusal("an Armarium aggregate has no recognized accounting basis")
-    coverage, chairs, act_pages = (
+    coverage, chairs, act_pages, act_text_status = (
         basis.get("coverage_records"),
         basis.get("unaddressed_chairs"),
         basis.get("act_pages"),
+        basis.get("act_text_status"),
     )
     if (
         not isinstance(coverage, dict)
         or not isinstance(chairs, list)
         or not all(isinstance(chair, str) and chair for chair in chairs)
         or not isinstance(act_pages, dict)
+        or not isinstance(act_text_status, dict)
     ):
         raise SchemaRefusal("an Armarium aggregate basis is malformed")
     normalized_categories: dict[str, ArmariumCategory] = {}
@@ -639,6 +785,7 @@ def _aggregate_from_basis(
             _pages_by_ordinal(pages),
             unaddressed_chairs=chairs,
             act_pages=act_pages,
+            act_text_status=act_text_status,
         )
     # `KeyError`/`TypeError` as well as the refusals: `run_aggregate` reaches inside a
     # coverage record for `by_class['completed']` and `floor`, which nothing above
@@ -886,6 +1033,15 @@ def _text_bundle_members(
                     json.dumps(act[CANONICAL_TEXT_FIELD], ensure_ascii=False),
                     "uncertainty:",
                     json.dumps(act["uncertainty"], ensure_ascii=False, sort_keys=True),
+                    # What the record says about its own text, and the older
+                    # annotation layer the status is partly derived from. The
+                    # readable bundle is the format a person actually reads, so a
+                    # damaged act saying so in words belongs here first.
+                    f"text_status: {act['text_status']}",
+                    "transcription_annotations:",
+                    json.dumps(
+                        act["transcription_annotations"], ensure_ascii=False, sort_keys=True
+                    ),
                     # Beside the canonical field, never instead of it: the clean
                     # verifier strips this back and requires the line above exactly.
                     f"display_convention: {DISPLAY_CONVENTION}",
@@ -1139,7 +1295,10 @@ def _acts_database_bytes(acts: tuple[dict[str, Any], ...]) -> bytes:
             connection.execute("PRAGMA page_size=4096")
             connection.execute("PRAGMA journal_mode=OFF")
             connection.execute("PRAGMA synchronous=OFF")
-            connection.execute("PRAGMA user_version=1")
+            # 2, with the schema id: the row shape changed (damage-record columns
+            # in, the bare annotations pair renamed apart), and a version the
+            # id moved without is the CR W15 miss wearing a different hat.
+            connection.execute("PRAGMA user_version=2")
             connection.executescript(
                 """
                 CREATE TABLE export_metadata (
@@ -1156,8 +1315,10 @@ def _acts_database_bytes(acts: tuple[dict[str, Any], ...]) -> bytes:
                     source_regions_json TEXT,
                     uncertainty_json TEXT,
                     uncertainty_status TEXT NOT NULL,
-                    annotations_json TEXT NOT NULL,
-                    annotation_status TEXT NOT NULL,
+                    text_status TEXT,
+                    transcription_annotations_json TEXT,
+                    semantic_annotations_json TEXT NOT NULL,
+                    semantic_annotation_status TEXT NOT NULL,
                     evidence_json TEXT NOT NULL,
                     approval_ref TEXT,
                     reason TEXT
@@ -1183,7 +1344,11 @@ def _acts_database_bytes(acts: tuple[dict[str, Any], ...]) -> bytes:
                 "canonical_text_encoding": CANONICAL_TEXT_ENCODING,
                 "canonical_text_field": CANONICAL_TEXT_FIELD,
                 "normalizer_revision": TEXTNORM_REVISION,
-                "schema": "armarium-acts-sqlite.v1",
+                # v2 covers two accumulated shape changes under what was one id:
+                # R8's `annotations_json` → `uncertainty_json` rename (CR W15, a
+                # real versioning miss) and this change's damage-record columns
+                # (text_status, transcription_annotations_json, semantic_* pair).
+                "schema": "armarium-acts-sqlite.v2",
                 "unidata_version": unicodedata.unidata_version,
             }
             connection.executemany(
@@ -1198,9 +1363,10 @@ def _acts_database_bytes(acts: tuple[dict[str, Any], ...]) -> bytes:
                     INSERT INTO acts(
                         act_id, act_key, category, canonical_clean_text,
                         canonical_text_sha256, provenance_json, source_regions_json,
-                        uncertainty_json, uncertainty_status, annotations_json,
-                        annotation_status, evidence_json, approval_ref, reason
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        uncertainty_json, uncertainty_status, text_status,
+                        transcription_annotations_json, semantic_annotations_json,
+                        semantic_annotation_status, evidence_json, approval_ref, reason
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         act["act_id"],
@@ -1214,8 +1380,12 @@ def _acts_database_bytes(acts: tuple[dict[str, Any], ...]) -> bytes:
                         _UNCERTAINTY_AVAILABLE
                         if literal is not None
                         else _UNCERTAINTY_NOT_APPLICABLE,
+                        act["text_status"] if literal is not None else None,
+                        canonical_text(act["transcription_annotations"])
+                        if literal is not None
+                        else None,
                         "[]",
-                        _ANNOTATION_NOT_PRODUCED,
+                        _SEMANTIC_ANNOTATION_NOT_PRODUCED,
                         canonical_text(_act_evidence(act)),
                         act.get("approval_ref"),
                         _export_reason(act),
@@ -1279,8 +1449,15 @@ def _act_json_records(acts: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
                 "uncertainty_status": _UNCERTAINTY_AVAILABLE
                 if literal is not None
                 else _UNCERTAINTY_NOT_APPLICABLE,
-                "annotations": [],
-                "annotation_status": _ANNOTATION_NOT_PRODUCED,
+                "text_status": act.get("text_status") if literal is not None else None,
+                "transcription_annotations": act.get("transcription_annotations")
+                if literal is not None
+                else None,
+                # The *other* annotation layer, named apart from the one above so
+                # that "not produced" can never again be read as a statement about
+                # the transcription marks an Archetypus record really did seal.
+                "semantic_annotations": [],
+                "semantic_annotation_status": _SEMANTIC_ANNOTATION_NOT_PRODUCED,
                 "witnesses": act.get("witnesses", []),
                 "perlectio_ref": act.get("perlectio_ref"),
                 "recensor_ref": act.get("recensor_ref"),
@@ -1377,7 +1554,7 @@ def _package_lines(path, subject: str) -> list[str]:
 
 def _text_bundle_records(
     root, source_pages: list[dict[str, Any]] | None = None
-) -> dict[str, tuple[str, str, tuple[tuple[str, str], ...]]]:
+) -> dict[str, tuple[str, str, tuple[tuple[str, str], ...], dict[str, Any], str, list[Any]]]:
     """Parse literal records and their page/hash citations from the readable bundle."""
     known_pages: set[tuple[str, str]] | None = None
     if source_pages is not None:
@@ -1391,12 +1568,14 @@ def _text_bundle_records(
             _require_sha256(digest, "a text-bundle source citation digest")
             known_pages.add((path, digest))
 
-    records: dict[str, tuple[str, str, tuple[tuple[str, str], ...], dict[str, Any]]] = {}
+    records: dict[str, tuple[str, str, tuple[tuple[str, str], ...], dict[str, Any], str, list]] = {}
     for path in sorted((root / "text").rglob("readings.txt")) if (root / "text").exists() else []:
         lines = _package_lines(path, "text bundle")
         current_id: str | None = None
         pending: tuple[str, str, tuple[tuple[str, str], ...]] | None = None
         pending_uncertainty: dict[str, Any] | None = None
+        pending_text_status: str | None = None
+        pending_annotations: list[Any] | None = None
         citations: list[tuple[str, str]] = []
         for index, line in enumerate(lines):
             if line.startswith("act-id: "):
@@ -1408,6 +1587,8 @@ def _text_bundle_records(
                 citations = []
                 pending = None
                 pending_uncertainty = None
+                pending_text_status = None
+                pending_annotations = None
             elif line.startswith("source-page: "):
                 if current_id is None or index + 1 >= len(lines):
                     raise SchemaRefusal(
@@ -1485,6 +1666,35 @@ def _text_bundle_records(
                     raise SchemaRefusal(
                         "a text-bundle uncertainty layer does not anchor to its own act's literal"
                     ) from error
+            elif line.startswith("text_status: "):
+                # Anchored to a literal exactly as the layers around it are: a
+                # status with no reading to describe is not this act's record of
+                # its own damage, and a second one would leave the earlier value
+                # unread beside the layer it was derived from.
+                if current_id is None or pending is None:
+                    raise SchemaRefusal(
+                        "a text-bundle established-text status has no literal to describe"
+                    )
+                if pending_text_status is not None:
+                    raise SchemaRefusal(
+                        "a text-bundle section carries more than one established-text status"
+                    )
+                pending_text_status = line.removeprefix("text_status: ")
+            elif line == "transcription_annotations:":
+                if current_id is None or pending is None or index + 1 >= len(lines):
+                    raise SchemaRefusal(
+                        "a text-bundle transcription annotation layer has no literal to mark up"
+                    )
+                if pending_annotations is not None:
+                    raise SchemaRefusal(
+                        "a text-bundle section carries more than one transcription annotation layer"
+                    )
+                try:
+                    pending_annotations = json.loads(lines[index + 1])
+                except json.JSONDecodeError as error:
+                    raise SchemaRefusal(
+                        "a text-bundle transcription annotation layer is not JSON"
+                    ) from error
             elif line == "display:":
                 # Spec 11 test 2's second half, checked on the written product:
                 # render -> strip -> hash. The rendered display is a reading aid and
@@ -1500,6 +1710,24 @@ def _text_bundle_records(
                     raise SchemaRefusal(
                         "a text-bundle section carries a literal with no uncertainty layer"
                     )
+                # And its own refusal again for the damage record, for the same
+                # reason: a section that reaches its display with no status, or
+                # with no annotation layer, is missing the fields that say whether
+                # the reading about to be rendered is whole. Recomputed rather than
+                # read: the readable bundle is a legal single literal format, where
+                # cross-format identity would catch nothing.
+                if pending_text_status is None or pending_annotations is None:
+                    raise SchemaRefusal(
+                        "a text-bundle section carries a literal with no established-text "
+                        "status or no transcription annotation layer"
+                    )
+                _require_damage_record(
+                    pending_text_status,
+                    pending_annotations,
+                    pending_uncertainty,
+                    pending[0],
+                    subject="text-bundle section",
+                )
                 convention_line = lines[index - 1] if index else ""
                 if convention_line != f"display_convention: {DISPLAY_CONVENTION}":
                     raise SchemaRefusal("a text-bundle display names no known convention")
@@ -1519,17 +1747,30 @@ def _text_bundle_records(
                     raise SchemaRefusal(
                         "a text-bundle display does not strip back to its canonical clean text"
                     )
-                records[current_id] = (*pending, pending_uncertainty)
+                records[current_id] = (
+                    *pending,
+                    pending_uncertainty,
+                    pending_text_status,
+                    pending_annotations,
+                )
                 current_id, pending, pending_uncertainty = None, None, None
+                pending_text_status, pending_annotations = None, None
         if current_id is not None:
             raise SchemaRefusal("a text-bundle section has no completed literal record")
     return records
 
 
-def _text_bundle_literals(root) -> dict[str, tuple[str, str, dict[str, Any]]]:
+def _text_bundle_literals(root) -> dict[str, tuple]:
     return {
-        act_id: (literal, digest, uncertainty)
-        for act_id, (literal, digest, _citations, uncertainty) in _text_bundle_records(root).items()
+        act_id: (literal, digest, uncertainty, text_status, annotations)
+        for act_id, (
+            literal,
+            digest,
+            _citations,
+            uncertainty,
+            text_status,
+            annotations,
+        ) in _text_bundle_records(root).items()
     }
 
 
@@ -1575,13 +1816,14 @@ def _open_acts_database(path) -> sqlite3.Connection:
     return connection
 
 
-def _database_literals(path) -> dict[str, tuple[str, str, dict[str, Any]]]:
+def _database_literals(path) -> dict[str, tuple]:
     connection: sqlite3.Connection | None = None
     try:
         connection = _open_acts_database(path)
         rows = connection.execute(
             """
-            SELECT act_id, canonical_clean_text, canonical_text_sha256, uncertainty_json
+            SELECT act_id, canonical_clean_text, canonical_text_sha256, uncertainty_json,
+                   text_status, transcription_annotations_json
             FROM acts
             WHERE canonical_clean_text IS NOT NULL
             ORDER BY act_id
@@ -1592,13 +1834,14 @@ def _database_literals(path) -> dict[str, tuple[str, str, dict[str, Any]]]:
     finally:
         if connection is not None:
             connection.close()
-    records: dict[str, tuple[str, str, dict[str, Any]]] = {}
-    for act_id, literal, digest, uncertainty_json in rows:
+    records: dict[str, tuple] = {}
+    for act_id, literal, digest, uncertainty_json, text_status, annotations_json in rows:
         if (
             not isinstance(act_id, str)
             or not isinstance(literal, str)
             or not isinstance(digest, str)
             or not isinstance(uncertainty_json, str)
+            or not isinstance(annotations_json, str)
         ):
             raise SchemaRefusal("the acts database has an untyped literal row")
         if digest != canonical_text_sha256(literal) or act_id in records:
@@ -1607,12 +1850,22 @@ def _database_literals(path) -> dict[str, tuple[str, str, dict[str, Any]]]:
             uncertainty = json.loads(uncertainty_json)
         except json.JSONDecodeError as error:
             raise SchemaRefusal("the acts database uncertainty layer is not JSON") from error
-        records[act_id] = (literal, digest, validate_uncertainty(uncertainty, literal))
+        annotations = _database_json_layer(annotations_json, "transcription annotation")
+        _require_damage_record(
+            text_status, annotations, uncertainty, literal, subject="acts database row"
+        )
+        records[act_id] = (
+            literal,
+            digest,
+            validate_uncertainty(uncertainty, literal),
+            text_status,
+            annotations,
+        )
     return records
 
 
-def _jsonl_literals(path) -> dict[str, tuple[str, str, dict[str, Any]]]:
-    records: dict[str, tuple[str, str, dict[str, Any]]] = {}
+def _jsonl_literals(path) -> dict[str, tuple]:
+    records: dict[str, tuple] = {}
     for line in _package_lines(path, "acts JSONL"):
         if not line:
             continue
@@ -1631,10 +1884,19 @@ def _jsonl_literals(path) -> dict[str, tuple[str, str, dict[str, Any]]]:
             raise SchemaRefusal("an acts JSONL literal row is untyped")
         if digest != canonical_text_sha256(literal) or act_id in records:
             raise SchemaRefusal("an acts JSONL literal identity or hash is invalid")
+        _require_damage_record(
+            record.get("text_status"),
+            record.get("transcription_annotations"),
+            record.get("uncertainty"),
+            literal,
+            subject="acts JSONL row",
+        )
         records[act_id] = (
             literal,
             digest,
             validate_uncertainty(record.get("uncertainty"), literal),
+            record.get("text_status"),
+            record.get("transcription_annotations"),
         )
     return records
 
@@ -1911,10 +2173,15 @@ def _export_manifest(
                 "availability": _RUN_ACCESS_REQUIRED,
                 "resolution_claim": "artifact and receipt citations require retained-run access",
             },
-            "annotations": {
-                "status": _ANNOTATIONS_CLAIM,
+            "semantic_annotations": {
+                "status": _SEMANTIC_ANNOTATIONS_CLAIM,
                 "text_writable": False,
             },
+            # Named beside it rather than folded into it: the package carries a
+            # real annotation layer, and a `claims` block whose only annotation
+            # entry said "not produced" was a true statement about one layer read
+            # by every recipient as a statement about both.
+            "transcription_annotations": _transcription_annotations_claim(formats.formats),
             "uncertainty": _uncertainty_claim(formats.formats),
             # Labelled a proposal because it is one: spec 11 leaves the choice of
             # convention to Tyrel at this gate, and nothing hashed depends on it.
@@ -2236,6 +2503,32 @@ def _verify_honest_status_claims(
     must_be_partial = must_be_partial or any(
         page.get("outcome") != "sealed" for page in sources["pages"] if isinstance(page, dict)
     )
+    # The third way a run can be incomplete, and the one a category-only reading
+    # could never see: an act that reached `delivered` carrying a reading its own
+    # Perlector recorded a gap in. The full recomputation below covers it too;
+    # this states it directly, so the refusal a tampered green package meets names
+    # the damaged act rather than only "the aggregate does not match its basis".
+    basis = sources["aggregate_basis"]
+    recorded_status = basis.get("act_text_status") if isinstance(basis, dict) else None
+    # The basis is the copy the verdict is computed from, so it is held to the
+    # rows before it is believed: editing ONLY `aggregate_basis.act_text_status`
+    # to `established` while every row honestly says `partial` would otherwise
+    # pass every check on a clean machine and report `complete` — the repaired
+    # defect's own shape, one level up.
+    expected_status = {
+        outcome["act_key"]: outcome["text_status"]
+        for outcome in sources.get("act_outcomes", [])
+        if outcome.get("category") == ArmariumCategory.DELIVERED.value
+    }
+    if (recorded_status or {}) != expected_status:
+        raise SchemaRefusal(
+            "the package's aggregate basis does not carry exactly the delivered acts' own "
+            "established-text statuses; a verdict computed from an edited basis is not a "
+            "measurement"
+        )
+    must_be_partial = must_be_partial or any(
+        recorded != "established" for recorded in (recorded_status or {}).values()
+    )
     if must_be_partial and (status != "partial" or not reasons):
         raise SchemaRefusal(
             "the exported aggregate claims complete despite measured incompleteness"
@@ -2306,13 +2599,15 @@ def _act_outcome_sources(sources: dict[str, list[dict[str, Any]]]) -> dict[str, 
             "act_key",
             "category",
             "reason",
+            "text_status",
         }:
             raise SchemaRefusal("a source act-outcome record has an unrecognized field set")
-        act_id, act_key, category, reason = (
+        act_id, act_key, category, reason, text_status = (
             record.get("act_id"),
             record.get("act_key"),
             record.get("category"),
             record.get("reason"),
+            record.get("text_status"),
         )
         if (
             not isinstance(act_id, str)
@@ -2324,6 +2619,18 @@ def _act_outcome_sources(sources: dict[str, list[dict[str, Any]]]) -> dict[str, 
             or act_id in records
         ):
             raise SchemaRefusal("a source act-outcome record has no valid terminal identity")
+        # Delivered means an Archetypus record exists, which means a status exists.
+        # Any other category means there is no record, so a status would describe a
+        # reading that is not there.
+        # isinstance folded into the delivered-iff-status equivalence: a
+        # package-supplied unhashable value must be a named refusal, not a
+        # TypeError out of the membership test.
+        has_status = isinstance(text_status, str) and text_status in TEXT_STATUSES
+        if has_status is not (category == ArmariumCategory.DELIVERED.value):
+            raise SchemaRefusal(
+                "a source act-outcome record's established-text status does not match whether "
+                "the act was delivered"
+            )
         if (
             category
             in {
@@ -2423,6 +2730,18 @@ def _jsonl_act_records(
             literal if category == ArmariumCategory.DELIVERED.value else None,
             subject="acts JSONL",
         )
+        _verify_carried_damage(
+            record.get("text_status"),
+            record.get("transcription_annotations"),
+            record.get("uncertainty"),
+            literal if category == ArmariumCategory.DELIVERED.value else None,
+            subject="acts JSONL",
+        )
+        _verify_semantic_annotation_row(
+            record.get("semantic_annotations"),
+            record.get("semantic_annotation_status"),
+            subject="acts JSONL",
+        )
         records[act_id] = {
             "act_key": act_key,
             "category": category,
@@ -2430,6 +2749,7 @@ def _jsonl_act_records(
             "provenance": record.get("provenance"),
             "source_regions": record.get("source_regions"),
             "reason": reason,
+            "text_status": record.get("text_status"),
         }
     return records
 
@@ -2444,6 +2764,18 @@ def _database_uncertainty(encoded: Any) -> Any:
         return json.loads(encoded)
     except json.JSONDecodeError as error:
         raise SchemaRefusal("the acts database uncertainty layer is not JSON") from error
+
+
+def _database_json_layer(encoded: Any, subject: str) -> Any:
+    """Decode one further JSON-encoded acts-database layer column, or refuse it."""
+    if encoded is None:
+        return None
+    if not isinstance(encoded, str):
+        raise SchemaRefusal(f"the acts database has an untyped {subject} column")
+    try:
+        return json.loads(encoded)
+    except json.JSONDecodeError as error:
+        raise SchemaRefusal(f"the acts database {subject} layer is not JSON") from error
 
 
 def _verify_carried_uncertainty(
@@ -2482,6 +2814,49 @@ def _verify_carried_uncertainty(
         ) from error
 
 
+def _verify_carried_damage(
+    text_status: Any, annotations: Any, uncertainty: Any, literal: str | None, *, subject: str
+) -> None:
+    """Read one act row's established-text status and the layer it derives from.
+
+    Sits beside `_verify_carried_uncertainty` and asks the question that one
+    cannot: uncertainty is checked for *anchoring*, and a well-anchored gap list
+    beside a row claiming `established` is exactly the dishonesty this repairs. So
+    the status is recomputed here, on a clean machine, from the row's own two
+    damage layers -- the transcription annotations carried beside it and the
+    canonical uncertainty that `_verify_carried_uncertainty` has just validated.
+
+    A non-delivered row has no Archetypus record and therefore neither field. `[]`
+    on a delivered row is a real answer -- no damage marked -- and is not the same
+    claim as `None`.
+    """
+    if literal is None:
+        if text_status is not None or annotations is not None:
+            raise SchemaRefusal(
+                f"a non-delivered {subject} row carries an established-text status or a "
+                "transcription annotation layer"
+            )
+        return
+    _require_damage_record(text_status, annotations, uncertainty, literal, subject=f"{subject} row")
+
+
+def _verify_semantic_annotation_row(layer: Any, status: Any, *, subject: str) -> None:
+    """The other annotation layer, checked as the fixed claim it still is.
+
+    Nothing in this repository produces a semantic annotation, so every row says
+    so. That was already true; what was not true is that the row said it under the
+    bare name `annotations`, beside no mention of the transcription layer at all,
+    so a reader met one word answering for two things and the sealed one lost.
+    Checked here rather than assumed, for the same reason the manifest claim is:
+    a row claiming a produced semantic layer must be refused by the verifier that
+    knows none exists, not accepted because nothing disproves it.
+    """
+    if layer != [] or status != _SEMANTIC_ANNOTATION_NOT_PRODUCED:
+        raise SchemaRefusal(
+            f"a {subject} row's semantic annotation claim is not this build's fixed claim"
+        )
+
+
 def _database_act_records(
     path: Path, source_graph_regions: list[dict[str, Any]]
 ) -> tuple[dict[str, dict[str, Any]], dict[str, tuple[str, str]]]:
@@ -2492,7 +2867,9 @@ def _database_act_records(
         rows = connection.execute(
             "SELECT act_id, act_key, category, canonical_clean_text, canonical_text_sha256, "
             "provenance_json, source_regions_json, evidence_json, reason, "
-            "uncertainty_json, uncertainty_status FROM acts"
+            "uncertainty_json, uncertainty_status, text_status, "
+            "transcription_annotations_json, semantic_annotations_json, "
+            "semantic_annotation_status FROM acts"
         ).fetchall()
     except sqlite3.DatabaseError as error:
         raise SchemaRefusal("the acts database cannot be read for product accounting") from error
@@ -2514,6 +2891,10 @@ def _database_act_records(
         reason,
         uncertainty_json,
         uncertainty_status,
+        text_status,
+        transcription_annotations_json,
+        semantic_annotations_json,
+        semantic_annotation_status,
     ) in rows:
         if (
             not isinstance(act_id, str)
@@ -2555,6 +2936,18 @@ def _database_act_records(
             literal if category == ArmariumCategory.DELIVERED.value else None,
             subject="acts database",
         )
+        _verify_carried_damage(
+            text_status,
+            _database_json_layer(transcription_annotations_json, "transcription annotation"),
+            _database_uncertainty(uncertainty_json),
+            literal if category == ArmariumCategory.DELIVERED.value else None,
+            subject="acts database",
+        )
+        _verify_semantic_annotation_row(
+            _database_json_layer(semantic_annotations_json, "semantic annotation"),
+            semantic_annotation_status,
+            subject="acts database",
+        )
         records[act_id] = {
             "act_key": act_key,
             "category": category,
@@ -2562,6 +2955,7 @@ def _database_act_records(
             "provenance": decoded[0],
             "source_regions": decoded[1],
             "reason": reason,
+            "text_status": text_status,
         }
     return records, literals
 
@@ -2677,6 +3071,7 @@ def _verify_exact_product_outcomes(
             record["act_key"] != outcome["act_key"]
             or record["category"] != outcome["category"]
             or record.get("reason") != outcome["reason"]
+            or record.get("text_status") != outcome["text_status"]
         ):
             raise SchemaRefusal(f"the {subject} does not retain its exact terminal reason")
 
@@ -2720,7 +3115,7 @@ def _verify_search_fold_claim(path: Path, literals: dict[str, tuple[str, str]]) 
     was ever actually a fold of its own act's canonical clean text -- a build
     defect or a package rebuilt around a tampered column would pass every
     other check in this file with the search projection carrying unrelated
-    text. Unlike ``claims.canonical_text``/``claims.annotations`` above, this
+    text. Unlike ``claims.canonical_text``/``claims.semantic_annotations`` above, this
     one *does* have a source graph to recompute against: the literal each row's
     own ``act_id`` already carries in ``acts``. That recomputation is meaningful
     only under the Unicode database version that created the fold. A different
@@ -2831,7 +3226,14 @@ def _verify_product_accounting(
             raise SchemaRefusal(
                 "the text bundle does not contain exactly the manifest's delivered acts"
             )
-        for act_id, (_literal, _digest, text_citations, _uncertainty) in text_records.items():
+        for act_id, (
+            _literal,
+            _digest,
+            text_citations,
+            _uncertainty,
+            _text_status,
+            _annotations,
+        ) in text_records.items():
             expected_citations = tuple(
                 (region["declared_path"], region["declared_sha256"])
                 for region in citations[act_id]["source_regions"]
@@ -2939,7 +3341,7 @@ def _verify_retained_run_claim(manifest: dict[str, Any]) -> None:
 def _verify_canonical_text_claim(manifest: dict[str, Any]) -> None:
     """The one field name and hash convention every literal projection is built from.
 
-    Unlike every other ``claims.*`` section, this one and ``claims.annotations``
+    Unlike every other ``claims.*`` section, this one and ``claims.semantic_annotations``
     below describe a fixed contract of this build rather than something computed
     from the package's own source graph -- there is nothing in ``sources.json`` to
     recompute them against. That is not a reason to leave them unchecked: without
@@ -2970,18 +3372,33 @@ def _verify_canonical_text_claim(manifest: dict[str, Any]) -> None:
         raise SchemaRefusal("the package canonical-text claim is not this build's fixed claim")
 
 
-def _verify_annotations_claim(manifest: dict[str, Any]) -> None:
-    """No build in this repository can produce a text-writable annotation layer.
+def _verify_annotations_claims(manifest: dict[str, Any]) -> None:
+    """Two annotation layers, two claims, neither allowed to answer for the other.
 
-    The annotator is unbuilt and unwired (HANDOFF.md), so this claim is a fixed
-    constant today, not a measurement -- but a tampered manifest claiming
+    The *semantic* annotator is unbuilt and unwired (HANDOFF.md), so its claim is
+    a fixed constant today, not a measurement -- but a tampered manifest claiming
     ``text_writable: true`` must still be refused here rather than accepted
     because nothing yet exists to disprove it.
+
+    The *transcription* claim beside it is a measurement, like the uncertainty
+    claim: the Archetypus's own `uncertain`/`illegible` marks are produced, and
+    they ride in exactly the literal-text formats this package selected. Checked
+    against the recomputed carriage rather than a constant, so a manifest naming a
+    format it does not carry them in is describing a different package.
     """
     claims = manifest.get("claims")
-    annotations = claims.get("annotations") if isinstance(claims, dict) else None
-    if annotations != {"status": _ANNOTATIONS_CLAIM, "text_writable": False}:
-        raise SchemaRefusal("the package annotations claim is not this build's fixed claim")
+    semantic = claims.get("semantic_annotations") if isinstance(claims, dict) else None
+    if semantic != {"status": _SEMANTIC_ANNOTATIONS_CLAIM, "text_writable": False}:
+        raise SchemaRefusal(
+            "the package semantic-annotations claim is not this build's fixed claim"
+        )
+    selected = manifest.get("formats")
+    format_rows = selected.get("formats") if isinstance(selected, dict) else None
+    transcription = claims.get("transcription_annotations") if isinstance(claims, dict) else None
+    if transcription != _transcription_annotations_claim(format_rows or []):
+        raise SchemaRefusal(
+            "the package transcription-annotations claim is not the measured carriage claim"
+        )
 
 
 def _verify_uncertainty_claim(manifest: dict[str, Any]) -> None:
@@ -3096,13 +3513,21 @@ def _verify_salvage_region_references(sources: dict[str, list[dict[str, Any]]], 
 
 
 def _act_outcomes(acts: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
-    """Keep the non-text terminal reason that review-items must reproduce exactly."""
+    """Keep the non-text terminal reason that review-items must reproduce exactly.
+
+    `text_status` rides here beside `reason` because it is the same kind of fact:
+    a closed word about how the act ended, carrying no characters of the reading.
+    Putting it in the text-free source graph is what lets `_verify_exact_product_
+    outcomes` require every selected format to retain it, rather than each format
+    being trusted to have written it.
+    """
     return [
         {
             "act_id": act["act_id"],
             "act_key": act["act_key"],
             "category": act["category"],
             "reason": _export_reason(act),
+            "text_status": act.get("text_status"),
         }
         for act in sorted(acts, key=lambda item: item["act_id"])
     ]

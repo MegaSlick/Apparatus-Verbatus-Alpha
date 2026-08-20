@@ -91,6 +91,12 @@ _INGRESS_FIELD: Final = "ingress"
 # escape as a traceback.
 _NO_HARD_LINKS: Final = frozenset({errno.EPERM, errno.EOPNOTSUPP, errno.ENOSYS})
 _RENDER_SETTINGS_FIELD: Final = "render_settings"
+# The digest of each configuration file this run sealed, under the name its point
+# of use asks for (`common/stage.py::require_sealed_config`). Recorded in the
+# authority, not only folded into `config_digest`, so a reader holding the tree
+# alone can *name* the policy bytes that governed the run instead of only being
+# able to test a candidate file against a hash of everything at once.
+_SEALED_CONFIG_DIGESTS_FIELD: Final = "sealed_config_digests"
 
 
 class PublishResult:
@@ -169,6 +175,7 @@ class RunTree:
         corpus_frame_membership: dict[str, str] | None = None,
         ingress: dict[str, Any] | None = None,
         render_settings: dict[str, Any] | None = None,
+        sealed_config_digests: dict[str, str] | None = None,
     ) -> "RunTree":
         """Open a run, creating it if new and refusing an incompatible reuse.
 
@@ -226,6 +233,21 @@ class RunTree:
             if not isinstance(render_settings, dict) or not render_settings:
                 raise SchemaRefusal("run render_settings must be a non-empty object when supplied")
             authority[_RENDER_SETTINGS_FIELD] = render_settings
+        if sealed_config_digests is not None:
+            if not isinstance(sealed_config_digests, dict) or not sealed_config_digests:
+                raise SchemaRefusal(
+                    "run sealed_config_digests must be a non-empty object when supplied"
+                )
+            if any(
+                not isinstance(name, str) or not name or not _is_sha256(digest)
+                for name, digest in sealed_config_digests.items()
+            ):
+                raise SchemaRefusal(
+                    "every sealed configuration digest must be a lowercase sha256 recorded "
+                    "under a named policy; an unnamed or malformed one names nothing a "
+                    "point of use could ask for"
+                )
+            authority[_SEALED_CONFIG_DIGESTS_FIELD] = dict(sorted(sealed_config_digests.items()))
         authority["self_hash"] = self_hash(authority)
 
         run_file = tree.root / RUN_FILE
@@ -247,7 +269,11 @@ class RunTree:
                 ) from None
             optional_bound_fields = tuple(
                 field
-                for field in (_INGRESS_FIELD, _RENDER_SETTINGS_FIELD)
+                for field in (
+                    _INGRESS_FIELD,
+                    _RENDER_SETTINGS_FIELD,
+                    _SEALED_CONFIG_DIGESTS_FIELD,
+                )
                 if field in authority or field in existing
             )
             bound_fields = _BOUND_FIELDS + optional_bound_fields

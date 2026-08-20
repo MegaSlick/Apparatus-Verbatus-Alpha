@@ -51,7 +51,6 @@ from common.recensor_receipt import build_recensor_partition_receipt  # noqa: E4
 from common.recovery import (  # noqa: E402
     FALLBACK_RECROP,
     RECOVERY_KINDS,
-    load_recovery_policy,
     reconcile_recovery_requests,
     recovery_kind_budget,
 )
@@ -144,22 +143,56 @@ def chair_current_attempts(context, act_id: str) -> dict[str, dict]:
     `attempts_by_pair`), not from its page-level Testimonium -- a targeted
     reread appends to this stream whether or not the chair is page-scoped, so
     this is a staleness signal for every chair alike (REOPENED F-O1).
+
+    `read_evidence` joins them for the same reason again: it is a fact about
+    the same current attempt, and `blank_corroboration` may not read it from a
+    second, independently derived idea of which attempt that is.
     """
     records = artifacts_for(context, ATTESTATORES, "testimonium", act_id)
     return {
         record["payload"]["chair"]: {
             "outcome": record["outcome"],
             "content_health": record["payload"].get("content_health"),
+            "read_evidence": _read_evidence(record["payload"]),
         }
         for record in latest_per_chair(records, f"testimonium for {act_id}")
     }
 
 
-def chair_outcomes(context, act_id: str) -> dict[str, str]:
-    """The current outcome per chair, from `chair_current_attempts`'s collapse."""
+def _read_evidence(payload: dict) -> dict[str, bool]:
+    """The two facts an Attestatores attempt leaves behind when a chair looked.
+
+    `pipeline/3_attestatores/HANDOFF.md`: `read` and `genuinely-empty` "mean a
+    chair actually read the exact regions and carry a serving receipt", and its
+    one write path sets both together for every attempted outcome. So these are
+    not a quality signal about the reading -- they are whether the record even
+    claims a request was made, and they are read here rather than assumed
+    because a completed *absence* is the outcome whose whole content is that
+    nothing was there, and therefore the one that can be produced without
+    anything having been asked (Sol-S1).
+    """
+    regions = payload.get("regions")
+    provenance = payload.get("provenance")
+    receipt = provenance.get("receipt_ref") if isinstance(provenance, dict) else None
     return {
-        chair: fact["outcome"] for chair, fact in chair_current_attempts(context, act_id).items()
+        "regions": isinstance(regions, list) and bool(regions),
+        "receipt": receipt is not None,
     }
+
+
+def chair_outcomes(current_attempts: dict[str, dict]) -> dict[str, str]:
+    """The current outcome per chair, projected from ONE passed collapse.
+
+    Takes the `chair_current_attempts` result rather than re-deriving it, so a
+    caller that needs outcomes and read evidence together provably reads both
+    from the same collapse instead of two identical walks happening to agree.
+    """
+    return {chair: fact["outcome"] for chair, fact in current_attempts.items()}
+
+
+def chair_read_evidence(current_attempts: dict[str, dict]) -> dict[str, dict[str, bool]]:
+    """Each chair's read evidence, projected from the same passed collapse."""
+    return {chair: fact["read_evidence"] for chair, fact in current_attempts.items()}
 
 
 def act_attachment_facts(context, act_id: str) -> dict[str, dict]:
@@ -271,6 +304,7 @@ def blank_corroboration(
     coverage: dict,
     outcomes: dict[str, str],
     attachments: dict[str, dict],
+    read_evidence: dict[str, dict[str, bool]],
     *,
     witness_uncovered: bool = False,
 ) -> list[str] | None:
@@ -320,12 +354,46 @@ def blank_corroboration(
     the different fact of a page with no anchor at all -- an ink-free or
     fallback page has nothing for Chandra to anchor, and refusing blank there
     would make the intended blank-page path unreachable.
+
+    `read_evidence` is `chair_current_attempts`'s per-chair record of the two
+    facts an actual request leaves behind: the regions the chair was shown, and
+    the serving receipt for the attempt. The sentence this function's caller
+    publishes is a claim about what happened -- "every witness that actually read
+    this act ... independently reports the same absence" -- and until Sol-S1 that
+    claim was made without anyone checking it. The Sol-S1 repair itself is
+    upstream (the minting branch is deleted); the fabricated records carried
+    regions AND receipts, so this gate is defence in depth against a resealed
+    or foreign artifact, not a second catch for that finding. A completed-class
+    outcome missing either fact is a record this pipeline's own writer cannot
+    produce, so it is `FatalAccounting` rather than a quiet `None`: a hold
+    would say the evidence was weak, and what is actually true is that the
+    evidence is not this stage's to interpret. A presence check -- the strong
+    per-byte counterpart runs at the Perlector over the same artifacts.
     """
     if witness_uncovered or coverage["unresolved_chairs"]:
         return None
     completed = sorted(
         chair for chair, outcome in outcomes.items() if outcome in WITNESS_READING_OUTCOMES
     )
+    # Named per chair AND per missing fact: "this record shows no request was
+    # made" sends an operator to the producer, and which half is absent says
+    # which producer branch to look at. One message for two faults would not.
+    unproved = []
+    for chair in completed:
+        evidence = read_evidence.get(chair, {})
+        missing = [
+            label
+            for fact, label in (("regions", "region inputs"), ("receipt", "serving receipt"))
+            if not evidence.get(fact)
+        ]
+        if missing:
+            unproved.append(f"{chair} has no {' and no '.join(missing)}")
+    if unproved:
+        raise FatalAccounting(
+            "a completed witness outcome for this act records no request having been made: "
+            f"{'; '.join(unproved)}. A blank may not be corroborated by a read that nothing "
+            "records having happened"
+        )
     if (
         len(completed) < coverage["floor"]
         or not completed
@@ -356,7 +424,7 @@ def validate_chair_coverage(context, act_id: str, floor: int) -> dict[str, objec
     witness denominator is validated before any of it is published.
     """
     current_attempts = chair_current_attempts(context, act_id)
-    outcomes = {chair: fact["outcome"] for chair, fact in current_attempts.items()}
+    outcomes = chair_outcomes(current_attempts)
     sealed = set(context.witness_chairs)
     missing = sealed - set(outcomes)
     if missing:
@@ -1424,7 +1492,18 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     """Run under the explicitly supplied chair/config implementation."""
     args = stage_parser(__doc__.splitlines()[0]).parse_args()
     context = open_context(args, RECENSOR, registry_factory=registry_factory)
-    budget = load_recovery_policy(args.recovery_config)
+    # The run's own sealed policy, parsed once when the run's binding was checked,
+    # never reopened here. `config/recovery.toml` used to be read a second time at
+    # this line: a rewrite landing between `open_context` and it published reviews
+    # and recovery-requests carrying an allowance the run never sealed — measured
+    # as both acts held for review with `budget_allowed: 0` under a run whose
+    # digest bound the stock allowance, and unrecoverable afterwards because the
+    # correct rerun computes different bytes under the same immutable review
+    # identity and stops with IncompatibleReuse (audit S3). The recheck below
+    # proves the carried policy is the sealed one, so a reintroduced second read
+    # refuses instead of publishing.
+    budget = context.recovery_policy
+    context.require_sealed_config("recovery", budget["config_sha256"])
 
     scenario = scenario_for(context.fixture, context.scenario)
     floor = context.witness_floor
@@ -1647,11 +1726,16 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             # `not-run`) falls straight through to the ordinary hold: none of
             # them is a positive claim of absence, so there is no absence here
             # to confirm.
+            # One `chair_current_attempts` collapse feeds both maps, so "the
+            # gate and the outcomes cannot disagree about which attempt is
+            # current" is structural rather than two identical walks agreeing.
+            current_attempts = chair_current_attempts(context, act_id)
             corroborating_chairs = (
                 blank_corroboration(
                     coverage,
-                    chair_outcomes(context, act_id),
+                    chair_outcomes(current_attempts),
                     act_attachment_facts(context, act_id),
+                    chair_read_evidence(current_attempts),
                     witness_uncovered=bool(state["recovery_regions"]),
                 )
                 if (

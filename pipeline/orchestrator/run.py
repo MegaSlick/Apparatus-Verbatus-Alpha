@@ -70,6 +70,8 @@ from common.stage import (  # noqa: E402
     current_recovery_request,
     latest_attempt,
     load_fixture,
+    require_sealed_config,
+    run_sealed_config_digests,
     scenario_for,
 )
 
@@ -435,6 +437,16 @@ def drive_recovery(args, hard_failure_policy: dict) -> dict | None:
     """
     tree = RunTree(Path(args.run_root), args.run_id)
     recovery_policy = load_recovery_policy(args.recovery_config)
+    # The orchestrator is not a stage and holds no `StageContext`, so it proves the
+    # policy it dispatches under against the digests the run authority recorded for
+    # itself. Without this, the dispatcher bounded the whole recovery loop — the
+    # round ceiling and every request it checked — on whatever `config/recovery.toml`
+    # said at this moment, which need not be what the run sealed (audit S3 names
+    # this the third point of use). Checked before the first round, so a swapped
+    # policy stops the loop rather than being discovered by the stage it dispatched.
+    require_sealed_config(
+        run_sealed_config_digests(tree.read_run()), "recovery", recovery_policy["config_sha256"]
+    )
     maximum_rounds = recovery_policy["absolute_cap"]
 
     for round_number in range(maximum_rounds + 1):

@@ -6,6 +6,7 @@ import tomllib
 from pathlib import Path
 from typing import Final, NamedTuple
 
+from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError
 
 DEFAULT_RENDER_CONFIG_PATH: Final = (
@@ -32,17 +33,40 @@ class PdfRenderSettings(NamedTuple):
         }
 
 
-def load_pdf_render_settings(
+class PdfRenderBinding(NamedTuple):
+    """One run's resolved render target and the digest of the bytes it came from.
+
+    The two travel together because they must be of the *same read*. The door used
+    to parse the settings here and then let `run_config_bindings` open the file
+    again for its digest; a rewrite between those two reads produced a run whose
+    `render_settings` recorded one target and whose `config_digest` bound the bytes
+    of another, so a proof run claimed a configuration it did not execute (audit
+    S6, reproduced with a one-DPI rewrite landing between the reads while the door
+    still exited 0).
+    """
+
+    settings: PdfRenderSettings
+    config_sha256: str
+
+
+def load_pdf_render_binding(
     path: Path = DEFAULT_RENDER_CONFIG_PATH,
     *,
     target_override: int | None = None,
     minimum_dpi: int,
-) -> PdfRenderSettings:
-    """Resolve one run's target, clamping only against the code-owned floor."""
+) -> PdfRenderBinding:
+    """Read the policy once; parse and hash those same bytes.
+
+    `config_sha256` is the digest of the file as read, not of the resolved
+    settings: `--pdf-target-dpi` may override the configured target, and the run
+    seals the override separately. What this digest answers is "which
+    `pdf_render.toml` did this run parse", which is the question a point-of-use
+    recheck asks.
+    """
     try:
-        with open(path, "rb") as handle:
-            document = tomllib.load(handle)
-    except (OSError, tomllib.TOMLDecodeError) as error:
+        raw = Path(path).read_bytes()
+        document = tomllib.loads(raw.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
         raise RenderConfigRefusal(
             f"the PDF render config at {path} could not be read: {error}"
         ) from error
@@ -53,4 +77,23 @@ def load_pdf_render_settings(
     if not isinstance(configured, int) or isinstance(configured, bool) or configured <= 0:
         source = "--pdf-target-dpi" if target_override is not None else f"{path} target_dpi"
         raise RenderConfigRefusal(f"{source} must be a positive whole DPI")
-    return PdfRenderSettings(configured, max(configured, minimum_dpi), minimum_dpi)
+    return PdfRenderBinding(
+        PdfRenderSettings(configured, max(configured, minimum_dpi), minimum_dpi),
+        digest_bytes(raw),
+    )
+
+
+def load_pdf_render_settings(
+    path: Path = DEFAULT_RENDER_CONFIG_PATH,
+    *,
+    target_override: int | None = None,
+    minimum_dpi: int,
+) -> PdfRenderSettings:
+    """Resolve one run's target, clamping only against the code-owned floor.
+
+    Callers that seal a run want `load_pdf_render_binding` instead: the digest of
+    the bytes these settings were parsed from is what makes the seal provable.
+    """
+    return load_pdf_render_binding(
+        path, target_override=target_override, minimum_dpi=minimum_dpi
+    ).settings

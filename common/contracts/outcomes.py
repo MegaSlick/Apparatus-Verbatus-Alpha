@@ -33,7 +33,7 @@ from collections.abc import Mapping, Sequence
 from enum import Enum
 from typing import Any, Final
 
-from .errors import ApprovalRefusal, FatalAccounting
+from .errors import ApprovalRefusal, FatalAccounting, SchemaRefusal
 from .stages import (
     ARCHETYPUS,
     ARMARIUM,
@@ -274,6 +274,84 @@ def check_algebra_is_total() -> None:
             )
 
 
+# --- The established text's own status: the three silences, kept apart ---------
+#
+# A closed vocabulary about *what one record's `text` contains*, beside — never
+# inside — the category vocabulary above, which is about *where the act ended*.
+# An act can be `delivered` and `partial` at once, and the whole point of keeping
+# the two words apart is that it can (Tyrel, 2026-08-05: "many of our records are
+# damaged").
+#
+# It lives here rather than in the Archetypus because two stages read it and
+# stages talk only through `common/` (`pipeline/test_stage_import_boundaries.py`):
+# the Archetypus derives it when it seals a record, and the Armarium *recomputes*
+# it from the layers travelling beside the text rather than believing the field.
+# One spelling, so the two cannot drift into disagreeing about the same record.
+
+TEXT_STATUSES: Final = frozenset({"established", "partial", "no_readable_text"})
+
+
+def derive_text_status(text: Any, annotations: Any) -> str:
+    """established | partial | no_readable_text, from the text and its gaps alone.
+
+    A gap anywhere means some ink is known and unread, whether `text` is otherwise
+    empty or full: `partial`. No gap and no text is the only remaining case, and
+    the only one that may be called `no_readable_text` — a positive finding that
+    owes its own evidence (`pipeline/6_archetypus/run.py::validate_text_status`).
+
+    "We could not read it" must never quietly become "there was nothing to read".
+    """
+    if not isinstance(text, str):
+        raise SchemaRefusal("a text status requires exactly one string text field")
+    if not isinstance(annotations, (list, tuple)):
+        raise SchemaRefusal("a text status cannot be derived from a non-list annotation layer")
+    for index, note in enumerate(annotations):
+        if not isinstance(note, Mapping) or "kind" not in note:
+            raise SchemaRefusal(
+                f"annotation {index} carries no kind, so whether it records unread ink "
+                "cannot be decided; an unreadable damage layer is refused, never skipped"
+            )
+    if any(note["kind"] == "illegible" for note in annotations):
+        return "partial"
+    if text.strip() == "":
+        return "no_readable_text"
+    return "established"
+
+
+def derive_record_text_status(text: Any, annotations: Any, uncertainty: Any) -> str:
+    """The same three words over *both* damage layers a sealed record carries.
+
+    A record carries the canonical `uncertainty` layer (`gaps`, the shape every
+    Perlectio actually produces) and the older `annotations` layer (`illegible`
+    notes, which nothing upstream populates yet). Either one recording unread ink
+    makes the record `partial`, and neither can hide damage the other saw, so the
+    two travelling together is honest even where they are not identical: this
+    union is the one status both of them answer to.
+
+    The canonical gaps are read *before* the empty-text case rather than only
+    where the rest already said `established`. A whole-act gap over empty text is
+    "ink present, wholly unread", which is the middle silence and not the last
+    one; asking about it second returned `no_readable_text` for it and would have
+    let a record be sealed claiming nothing was there while carrying a gap saying
+    otherwise. `derive_text_status` has always ordered the older layer this way
+    (`pipeline/6_archetypus/test_text_status.py::
+    test_any_gap_forces_partial_even_with_empty_text`); this is the same ruling
+    applied to the layer that superseded it.
+    """
+    if not isinstance(uncertainty, Mapping) or not isinstance(
+        uncertainty.get("gaps"), (list, tuple)
+    ):
+        raise SchemaRefusal(
+            "a record text status requires the canonical uncertainty layer's own gap list"
+        )
+    if uncertainty["gaps"]:
+        # The text is still read for its type, so a malformed record cannot reach a
+        # status by way of the one branch that never looked at it.
+        derive_text_status(text, annotations)
+        return "partial"
+    return derive_text_status(text, annotations)
+
+
 # --- Witness coverage: outcomes aggregate into counts, never into text ----------
 
 
@@ -385,6 +463,38 @@ NO_ATTRIBUTION_REASON: Final = (
     "silence; a page that produced nothing cannot be told from a page nobody marked out"
 )
 
+NO_TEXT_STATUS_REASON: Final = (
+    "act {act} was delivered with no established-text status record, so whether its "
+    "one reading is whole was never measured"
+)
+
+# Keyed on the closed vocabulary rather than tested for `!= "established"`, so a
+# status added to `TEXT_STATUSES` later has to be given its own sentence here
+# instead of inheriting a generic one — and an unknown status is fatal below
+# rather than silently reconciling. `established` is the only member with no
+# entry, because it is the only one that names no shortfall.
+TEXT_STATUS_REASONS: Final[dict[str, str]] = {
+    "partial": (
+        "act {act} was delivered with partial text: its record carries ink the Perlector "
+        "knows is present and could not read"
+    ),
+    "no_readable_text": (
+        "act {act} was delivered with a record that establishes no readable text; a proved "
+        "blank is confirmed-blank business, and a delivered act with no text is not reconciled"
+    ),
+}
+
+# Enforced at import, so the comment above is a checked claim rather than an
+# intention: a status added to `TEXT_STATUSES` without its own sentence fails
+# the first time anything touches this module, not the first time a run
+# happens to deliver an act carrying it.
+if TEXT_STATUSES - {"established"} != set(TEXT_STATUS_REASONS):
+    raise AssertionError(
+        "every established-text status except 'established' must carry its own "
+        f"aggregate reason sentence; statuses {sorted(TEXT_STATUSES)} vs reasons "
+        f"{sorted(TEXT_STATUS_REASONS)}"
+    )
+
 
 def _attributed_pages(
     act_categories: Mapping[str, ArmariumCategory],
@@ -452,6 +562,7 @@ def run_aggregate(
     page_census: Mapping[int, Mapping[str, Any]] | None = None,
     unaddressed_chairs: Sequence[str] | None = None,
     act_pages: Mapping[str, Sequence[int]] | None = None,
+    act_text_status: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """The run's own terminal state, and every reason it is not `complete`.
 
@@ -481,6 +592,24 @@ def run_aggregate(
     one silent page among ten thousand busy ones reconciled to `complete` with no
     reason named at all. Attribution is what closes it, and a run that supplies none
     is told so rather than believed.
+
+    `act_text_status` maps each *delivered* act key to the `TEXT_STATUSES` word its
+    Archetypus record sealed, and it carries the half of GOVERNANCE 2 the category
+    vocabulary alone can never state. `delivered` is a fact about where the act
+    ended; it says nothing about whether the reading that left is whole. An act the
+    Perlector itself recorded a gap in — ink known to be present and unread — was
+    aggregating to `complete` with an empty reason list, which is "a partial result
+    is visibly partial" failing at the last boundary in the one case Tyrel expects
+    to be ordinary rather than exceptional. A non-`established` status therefore
+    contributes its own named reason, exactly as an under-witnessed act or a refused
+    page does.
+
+    A delivered act with no status supplied is named too, rather than assumed whole:
+    that is the same "this run does not know" `NO_ATTRIBUTION_REASON` refuses to
+    round up, and an unmeasured metric is a failure rather than a pass
+    (GOVERNANCE 10). A status attached to an act that was *not* delivered is fatal
+    instead — no Archetypus record exists for it, so the claim describes a reading
+    that is not there.
     """
     reasons: list[str] = []
     by_category: dict[str, int] = {}
@@ -507,6 +636,14 @@ def run_aggregate(
     for act in sorted(set(act_categories) - set(coverage)):
         reasons.append(f"act {act} has no witness-coverage record")
 
+    text_status = act_text_status or {}
+    unexpected_status = sorted(set(text_status) - set(act_categories))
+    if unexpected_status:
+        raise FatalAccounting(
+            f"established-text status names unknown act(s) {unexpected_status}; text status and "
+            "terminal categories must describe the same act denominator"
+        )
+
     if act_categories and not page_census:
         reasons.append("the run has acts but no page census, so page conservation was not checked")
 
@@ -528,6 +665,29 @@ def run_aggregate(
         by_category[category.value] = by_category.get(category.value, 0) + 1
         if VOCABULARIES[ARMARIUM][category.value] is not OutcomeClass.COMPLETED:
             reasons.append(f"act {act} is {category.value}")
+        # Asked here, where `category` is already proven to be a real category, so
+        # a status beside a malformed one is refused by the message about the
+        # malformed category rather than by this one.
+        if category is not ArmariumCategory.DELIVERED:
+            if act in text_status:
+                raise FatalAccounting(
+                    f"act {act} is {category.value} and carries an established-text status; only "
+                    "a delivered act has an Archetypus record for a status to describe"
+                )
+            continue
+        status = text_status.get(act)
+        if status is None:
+            reasons.append(NO_TEXT_STATUS_REASON.format(act=act))
+        # isinstance before membership: an unhashable value (a list, a dict)
+        # out of a hand-built basis would raise TypeError from the frozenset
+        # test, and this boundary owes a named fatal instead of a crash.
+        elif not isinstance(status, str) or status not in TEXT_STATUSES:
+            raise FatalAccounting(
+                f"act {act} carries established-text status {status!r}, which is not one of "
+                f"{sorted(TEXT_STATUSES)}"
+            )
+        elif status in TEXT_STATUS_REASONS:
+            reasons.append(TEXT_STATUS_REASONS[status].format(act=act))
 
     for act in sorted(coverage):
         record = coverage[act]

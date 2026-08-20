@@ -169,6 +169,75 @@ class StageChairProtocol(ChairProtocol, Protocol):
     config: ModelsConfig
 
 
+# The name every run authority records its point-of-use recheck digests under.
+# Recorded rather than only folded into `config_digest`, because a digest that
+# exists only inside a hash can be *verified* against a candidate file and never
+# *named*: a later reader holding the run tree alone could not say which
+# data-handling policy governed admission (CodeRabbit CF01), which
+# `config/README.md` stated as a limitation of the run authority rather than of
+# the reader. The map is small, immutable, self-hashed with the rest of the
+# authority, and every entry in it is already bound into `config_digest`, so it
+# adds a readable name for a fact the run was already sealed to.
+SEALED_CONFIG_DIGESTS_FIELD: Final = "sealed_config_digests"
+
+
+def require_sealed_config(
+    sealed_config_digests: Mapping[str, str],
+    name: str,
+    observed_sha256: str,
+    owner: str = "this run",
+) -> None:
+    """Refuse a configuration whose bytes changed after this run bound them.
+
+    The one comparison behind every point of use in the sealing family. A stage
+    holds it through `StageContext.require_sealed_config`; the orchestrator, which
+    is not a stage and has no context, holds it through the digests `run.json`
+    itself recorded (`run_sealed_config_digests`).
+
+    An absent name is a different fault from a changed file and says so: one means
+    the binding step never sealed this policy, the other means the file moved
+    under a run that did.
+    """
+    sealed = sealed_config_digests.get(name)
+    if sealed is None:
+        raise ContractError(
+            f"{owner} sealed no digest for the {name} configuration, so the bytes "
+            "a stage just read cannot be proven to be the ones this run is bound to"
+        )
+    if sealed != observed_sha256:
+        raise ContractError(
+            f"the {name} configuration changed between this run's binding check and the "
+            f"read that used it: bound {sealed}, read {observed_sha256}. A stage may not "
+            "work under a policy the run never sealed"
+        )
+
+
+def run_sealed_config_digests(run: Mapping[str, Any]) -> dict[str, str]:
+    """The point-of-use recheck digests a run authority recorded for itself.
+
+    Refused rather than defaulted to an empty map: "this run sealed nothing" and
+    "this run sealed something I have not read" must not resolve the same way,
+    and an empty map would turn every `require_sealed_config` below it into the
+    absent-name refusal with a message pointing at the wrong step.
+    """
+    recorded = run.get(SEALED_CONFIG_DIGESTS_FIELD)
+    if not isinstance(recorded, dict) or not recorded:
+        raise ContractError(
+            "this run authority records no sealed configuration digests, so nothing here "
+            "can prove which policy bytes governed it; a run created before the sealing "
+            "family landed cannot be continued under a point-of-use recheck"
+        )
+    if any(
+        not isinstance(name, str) or not name or not is_sha256(digest)
+        for name, digest in recorded.items()
+    ):
+        raise ContractError(
+            "this run authority records a sealed configuration digest that is not a "
+            "sha256 under a named policy"
+        )
+    return dict(recorded)
+
+
 class StageContext:
     """One stage's view of the run it is part of."""
 
@@ -184,6 +253,7 @@ class StageContext:
         "sealed_config_digests",
         "armarium_formats",
         "serving_config_inputs",
+        "_recovery_policy",
     )
 
     def __init__(
@@ -199,6 +269,7 @@ class StageContext:
         sealed_config_digests=None,
         armarium_formats: ArmariumFormats | None = None,
         serving_config_inputs: Mapping[str, str] | None = None,
+        recovery_policy: Mapping[str, Any] | None = None,
     ):
         self.tree = tree
         self.run = run
@@ -227,6 +298,16 @@ class StageContext:
             if serving_config_inputs is not None
             else None
         )
+        # The bounded recovery policy, already parsed from the exact bytes whose
+        # digest went into this run's `config_digest`. Carried rather than re-read
+        # for the reason the whole sealing family exists: the Recensor and the
+        # Designator recovery pass used to open `config/recovery.toml` a second
+        # time for the budget they published, and a rewrite landing between
+        # `open_context`'s binding read and theirs sealed reviews and requests
+        # under an allowance the run never bound (audit S3). One read, one
+        # policy, and `require_sealed_config("recovery", ...)` at each point of
+        # use so a reintroduced second read cannot pass silently.
+        self._recovery_policy = dict(recovery_policy) if recovery_policy is not None else None
 
     @property
     def config_digest(self) -> str:
@@ -234,18 +315,25 @@ class StageContext:
 
     def require_sealed_config(self, name: str, observed_sha256: str) -> None:
         """Refuse a configuration whose bytes changed after this run bound them."""
-        sealed = self.sealed_config_digests.get(name)
-        if sealed is None:
+        require_sealed_config(self.sealed_config_digests, name, observed_sha256, "this context")
+
+    @property
+    def recovery_policy(self) -> dict[str, Any]:
+        """This run's sealed bounded-recovery policy, parsed once at binding.
+
+        A context built without one refuses rather than handing back a `None` a
+        caller would index into: a missing budget must not read as a zero budget,
+        which is exactly the value the S3 policy swap produced in published
+        reviews before the file was read only once.
+        """
+        if self._recovery_policy is None:
             raise ContractError(
-                f"this context sealed no digest for the {name} configuration, so the bytes "
-                "a stage just read cannot be proven to be the ones this run is bound to"
+                "this context carries no run-sealed recovery policy; a stage may not read "
+                "the budget from `config/recovery.toml` itself, because a rewrite between "
+                "the run's binding check and that read publishes reviews and requests "
+                "under an allowance the run never sealed. Open the run with `open_context`"
             )
-        if sealed != observed_sha256:
-            raise ContractError(
-                f"the {name} configuration changed between this run's binding check and the "
-                f"read that used it: bound {sealed}, read {observed_sha256}. A stage may not "
-                "work under a policy the run never sealed"
-            )
+        return dict(self._recovery_policy)
 
     @property
     def witness_chairs(self) -> list[str]:
@@ -791,6 +879,7 @@ def run_config_bindings(
     scenario: str,
     *,
     pdf_render_config_path: str | Path = DEFAULT_PDF_RENDER_CONFIG_PATH,
+    pdf_render_config_sha256: str | None = None,
     designator_padding_config_path: str | Path = DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH,
     designator_geometry_config_path: str | Path = DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH,
     alignment_config_path: str | Path = DEFAULT_ALIGNMENT_CONFIG_PATH,
@@ -831,12 +920,30 @@ def run_config_bindings(
     stages in before artifact immutability catches it. A late incidental
     refusal is not the sealed-tree guarantee spec 01 landed.
     """
-    try:
-        pdf_render_config_digest = digest_bytes(Path(pdf_render_config_path).read_bytes())
-    except OSError as error:
-        raise ContractError(
-            f"the PDF render configuration binding at {pdf_render_config_path} could not be read"
-        ) from error
+    # The Door parses `PdfRenderSettings` out of this file and then needed its
+    # digest; reading it here a second time is what let a rewrite between the two
+    # reads produce a run whose `render_settings` recorded one target DPI while
+    # `config_digest` bound the bytes of another (audit S6). The Door now reads
+    # once (`render_config.load_pdf_render_binding`) and hands the digest of the
+    # exact bytes it parsed down here. A stage that only needs the binding — every
+    # `open_context` caller — has nothing parsed to carry and reads the file
+    # itself; that read is proven against the run by the `config_digest`
+    # comparison in `open_context`.
+    if pdf_render_config_sha256 is not None:
+        if not is_sha256(pdf_render_config_sha256):
+            raise ContractError(
+                "the supplied PDF render configuration digest is not a sha256; a binding "
+                "may not be sealed under a value nothing could have hashed"
+            )
+        pdf_render_config_digest = pdf_render_config_sha256
+    else:
+        try:
+            pdf_render_config_digest = digest_bytes(Path(pdf_render_config_path).read_bytes())
+        except OSError as error:
+            raise ContractError(
+                "the PDF render configuration binding at "
+                f"{pdf_render_config_path} could not be read"
+            ) from error
     try:
         perlector_protocol_config_digest = digest_bytes(
             Path(perlector_protocol_config_path).read_bytes()
@@ -941,15 +1048,20 @@ def run_config_bindings(
         ),
         "adapter_recipes": dict(sorted(models.adapter_recipes.items())),
         "serving_config_inputs": serving_config_inputs,
-        # Not a run.json binding — every caller writing a run takes the three
-        # above by name. This is the record of which bytes each digest above was
-        # taken over, so a stage that re-reads one of these files for its values
-        # can prove it read what was bound (`StageContext.require_sealed_config`).
-        # Designator padding and geometry policies have point-of-use re-reads;
-        # Door's own second read of the PDF-render policy (`door.py`) neither
-        # takes a sealed digest nor calls `require_sealed_config`, so sealing a
-        # `pdf-render` entry here would read as a closed TOCTOU window that is
-        # not actually wired shut. Not this stage's window to close.
+        # The record of which bytes each digest above was taken over, so a stage
+        # that re-reads one of these files for its values can prove it read what
+        # was bound (`StageContext.require_sealed_config`). Every caller writing a
+        # run records this map in the run authority as well, so a later reader
+        # holding only the tree can name the policies that governed it rather than
+        # merely re-derive them.
+        #
+        # Every name here is bound into `config_digest` above, and every name here
+        # has a point of use that requires it: padding and geometry at the
+        # Designator's crop, alignment at the Attestatores, the shard limit at run
+        # creation, the two Perlector policies at the reading, `recovery` at the
+        # Recensor, the Designator recovery pass and the orchestrator's dispatch,
+        # and `pdf-render` at the Door that parsed it. A name sealed with no point
+        # of use would read as a closed window that nothing actually shuts.
         "sealed_config_digests": {
             "designator-padding": padding_config_digest,
             "designator-geometry": geometry_config_digest,
@@ -957,8 +1069,14 @@ def run_config_bindings(
             "corpus-frame-shard": corpus_frame_config_digest,
             "perlector-protocol": perlector_protocol_config_digest,
             "perlector-audit": perlector_audit_config_digest,
+            "pdf-render": pdf_render_config_digest,
+            "recovery": recovery_policy["config_sha256"],
         },
         "armarium_formats": armarium_formats,
+        # Parsed from the bytes `recovery_policy["config_sha256"]` names, and
+        # carried into `StageContext` so the Recensor and the Designator recovery
+        # pass never open the file a second time (audit S3).
+        "recovery_policy": recovery_policy,
     }
 
 
@@ -1887,10 +2005,26 @@ def open_context(
     )
     tree = RunTree(Path(args.run_root), args.run_id)
     run = tree.read_run()
+    # `sealed_config_digests` is compared as a field of its own, not left to be
+    # implied by `config_digest`. Every digest in it is inside `config_digest`, so
+    # an equal digest already proves the *bytes*; what it does not prove is that
+    # this build files those bytes under the same names the run recorded. A name
+    # wired to the wrong digest — the F-S5 shape, where the real Door's map was
+    # missing an entry the fixture path had — would otherwise be invisible until a
+    # stage reached the point of use and refused with "sealed no digest".
+    fields = ("config_digest", "adapter_recipes", "witness_chairs", SEALED_CONFIG_DIGESTS_FIELD)
     differing = [
         field
-        for field in ("config_digest", "adapter_recipes", "witness_chairs")
-        if run.get(field) != bindings[field]
+        for field in fields
+        # A run authority written before this map existed is not "differing" and
+        # is not rejected here: `StageContext.require_sealed_config` also
+        # tolerates it per-name only in the sense that an absent name refuses
+        # with "sealed no digest" at the point of use, and the orchestrator's
+        # `run_sealed_config_digests` is the one reader that refuses such an
+        # authority outright. Rejecting it here instead would name a
+        # configuration nobody changed.
+        if (field != SEALED_CONFIG_DIGESTS_FIELD or field in run)
+        and run.get(field) != bindings[field]
     ]
     if differing:
         raise IncompatibleReuse(
@@ -1913,6 +2047,7 @@ def open_context(
         sealed_config_digests=bindings["sealed_config_digests"],
         armarium_formats=bindings["armarium_formats"],
         serving_config_inputs=bindings["serving_config_inputs"],
+        recovery_policy=bindings["recovery_policy"],
     )
 
 

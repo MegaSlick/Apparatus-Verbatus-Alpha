@@ -32,7 +32,7 @@ path = "fixtures/synthetic-two-page-v0/page-3.png"
 sha256 = "080bd6a557c4806d8b3c2bd096e2773529b3afd46902d4edce3062dbe396e0a9"
 width = 200
 height = 260
-scenarios = ["ink-free-page"]
+scenarios = ["ink-free-page", "ink-free-page-unwitnessed"]
 
 [[act]]
 key = "a1"
@@ -180,6 +180,16 @@ act_key = "a2"
 text = "SYNTHETIC ACT TWO delta epsilon zeta eta"
 
 [[prior_reading]]
+scenario = "ink-free-page-unwitnessed"
+act_key = "a1"
+text = "SYNTHETIC ACT ONE alpha beta ganna"
+
+[[prior_reading]]
+scenario = "ink-free-page-unwitnessed"
+act_key = "a2"
+text = "SYNTHETIC ACT TWO delta epsilon zeta eta"
+
+[[prior_reading]]
 scenario = "reread-failure"
 act_key = "a1"
 text = "SYNTHETIC ACT ONE alpha beta ganna"
@@ -254,10 +264,10 @@ h = 60
 
 [[recovery]]
 act_key = "a1"
-x = 16
-y = 16
-w = 168
-h = 88
+x = 0
+y = 0
+w = 200
+h = 114
 
 [[testimony]]
 act_key = "a1"
@@ -418,6 +428,16 @@ name = "ink-free-page"
 recover_acts = []
 hold_acts = []
 
+# The same ink-free page with no witness response declared for the
+# minted fallback act. Every configured chair must therefore end
+# `not-run` -- no receipt, no regions, no reading -- and the act must
+# hold rather than be sealed a proved blank on testimony nobody gave.
+
+[[scenario]]
+name = "ink-free-page-unwitnessed"
+recover_acts = []
+hold_acts = []
+
 [[scenario]]
 name = "reread-failure"
 recover_acts = []
@@ -497,8 +517,13 @@ scenario = "engine-truncated-reading"
 act_key = "a1"
 stop_reason = "length"
 
-# A completed empty Testimonium means the chair read the region and found no
-# reportable text. It is deliberately distinct from a missing or failed attempt.
+# One declared provider RESPONSE per row: an empty body from that chair on
+# that act. The Attestatores derives `genuinely-empty` from the retained
+# payload, so a completed empty Testimonium always means the chair was asked
+# and returned nothing -- deliberately distinct from a missing or failed
+# attempt, and no longer reachable without a row here. `page-fallback:3` is
+# the minted act over the ink-free page; `ink-free-page-unwitnessed` is the
+# same page with these three rows deliberately absent.
 
 # Per-scenario declared digests the checked-in bytes cannot match, so the
 # door refuses those pages through its real inspection path. The declared
@@ -507,6 +532,21 @@ stop_reason = "length"
 [[witness_empty]]
 scenario = "genuinely-empty-witness"
 act_key = "a1"
+chair = "attestator_3"
+
+[[witness_empty]]
+scenario = "ink-free-page"
+act_key = "page-fallback:3"
+chair = "attestator_1"
+
+[[witness_empty]]
+scenario = "ink-free-page"
+act_key = "page-fallback:3"
+chair = "attestator_2"
+
+[[witness_empty]]
+scenario = "ink-free-page"
+act_key = "page-fallback:3"
 chair = "attestator_3"
 
 [[witness_empty]]
