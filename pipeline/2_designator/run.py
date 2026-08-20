@@ -359,6 +359,59 @@ def _overlap_area(a: dict, b: dict) -> int:
     return max(0, x1 - x0) * max(0, y1 - y0)
 
 
+def _uncovered_area(target: dict, covers: list[dict]) -> int:
+    """How many pixels of `target` no rectangle in `covers` already contains.
+
+    The fold `_unclaimed_fallback_tiles` already runs, asked for an area rather
+    than a tiling: `_subtract_rectangle` returns disjoint pieces, so subtracting
+    each cover in turn leaves disjoint pieces covering exactly `target` minus
+    the union of the covers, and their areas sum without double counting where
+    two covers overlap each other. Reused rather than rewritten -- a second
+    hand-written "this rectangle minus those rectangles" is one more thing to
+    drift, and the recovery guard and the fallback tiling must not come to
+    disagree about what "already covered" means.
+
+    A cheaper "is `target` inside any *single* cover" test would answer a
+    different question: two rectangles already cut for one act can jointly
+    contain a rectangle neither contains alone, and that recrop recovers
+    nothing while passing the pairwise check. `_overlap_area` above is that
+    pairwise question, asked where it belongs.
+
+    `target` must be a validated rectangle of positive area -- a degenerate one
+    yields a meaningless area rather than zero, so it would pass a guard that
+    only tests for zero. The one caller runs `geometry.validate_bounds` over it
+    first, which is what makes the precondition true.
+    """
+    pieces = [dict(target)]
+    for cover in covers:
+        pieces = [remainder for piece in pieces for remainder in _subtract_rectangle(piece, cover)]
+    return sum(piece["w"] * piece["h"] for piece in pieces)
+
+
+def _coverage_on_page(records: list[dict], page_ordinal: int, page_id: str) -> list[dict]:
+    """The capture rectangles those region records already cut from one page.
+
+    The *final* `transform["bounds"]` rather than `raw_bounds`: coverage is
+    about which pixels were actually cut and shown, and a proposal region's
+    capture rectangle is the padded one. Measuring against `raw_bounds` would
+    call the padding uncovered and let a recrop back inside it count as
+    recovery.
+
+    Scoped to one page because only pixels of *this* page can cover a rectangle
+    on it. A continuation region shares the act's identity and none of its
+    geometry (it is a second original region on the next page, not a later
+    attempt), so counting it would measure one page's rectangle against
+    another's. Both the ordinal and the page identity must match: an ordinal
+    alone would agree across two runs' different pages.
+    """
+    return [
+        record["payload"]["transform"]["bounds"]
+        for record in records
+        if record["payload"]["transform"]["source_page_ordinal"] == page_ordinal
+        and record["payload"]["transform"]["source_page_id"] == page_id
+    ]
+
+
 def _body_overlap_area(group: dict, declared_bounds: dict) -> int:
     """Sum of a group's own body members' overlap with `declared_bounds`.
 
@@ -1937,6 +1990,16 @@ def recovery_pass(context, act_id: str, request_id: str) -> None:
     pages = sealed_pages(page_records(context))
     bounds = _bounds_of(recovery[0])
     page_record = pages[act["page_ordinal"]]
+    # Checked here, before anything is computed from the rectangle, even though
+    # `cut_minted_region` checks it again as the crop author's own guard over
+    # every caller. The coverage refusal below is a statement about pixels, and
+    # a degenerate or off-page rectangle reaching it first would be refused for
+    # recovering no coverage rather than for not being a rectangle on this page
+    # -- a refusal that names the wrong defect sends its reader to the wrong
+    # place. The page is read twice per recovery invocation as a result; a
+    # recovery is bounded and rare, and the read re-verifies the sealed digest.
+    page_w, page_h = dimensions(_read_checked_page_bytes(context, page_record))
+    geometry.validate_bounds(bounds, page_w, page_h, "recovery bounds")
     # The same builder `cut_region` uses, so this duplicate check is computed
     # against the exact shape that would actually be published.
     transform = _crop_transform(act["page_ordinal"], page_record["subject_id"], bounds)
@@ -1953,6 +2016,29 @@ def recovery_pass(context, act_id: str, request_id: str) -> None:
         raise ContractError(
             f"recovery asked for {act_id}, which already has a region cut for this exact "
             "transform; a recovery must add coverage rather than re-read identical pixels"
+        )
+    # The same rule, stated over pixels instead of over identity. The check
+    # above only catches a recrop of the *exact* rectangle already cut, so a
+    # rectangle strictly inside what this act already has -- or one covered
+    # jointly by two of its regions -- passed it while recovering nothing.
+    # GOVERNANCE 11 gives the operation its purpose ("Recovery exists for
+    # completeness and coverage"), and ARCHITECTURE names it a "fallback or
+    # **expanded** recrop": a recrop that adds no page pixel expands nothing.
+    # It spends a bounded, recorded budget re-reading pixels the act already
+    # carries, and the Perlector then marks the region witness-uncovered
+    # (`cut_minted_region`: "ink a recovery uncovers was never shown to them"),
+    # so the export ends up carrying a coverage caveat over no new coverage.
+    #
+    # Refused rather than accepted-and-flagged because a spent recovery budget
+    # is not recoverable: the act's one recorded chance to widen its crop would
+    # be gone, which is the direction GOALS 1 cares about.
+    covered = _coverage_on_page(existing_regions, act["page_ordinal"], page_record["subject_id"])
+    if not _uncovered_area(bounds, covered):
+        raise ContractError(
+            f"recovery asked for {act_id} with bounds {bounds}, which recovers no page "
+            f"pixel the act does not already have: every pixel of it already lies inside "
+            f"the {len(covered)} region(s) cut for it on page {act['page_ordinal']}. A "
+            "recovery must add coverage, not recrop inside coverage it already has"
         )
     recovery_count = len(already_recovered)
     if request_payload.get("budget_used") != recovery_count or ordinal != recovery_count + 1:

@@ -195,8 +195,32 @@ SCENARIO_TESTIMONY = (
 
 # The recovery region for the review scenario: an expanded recrop of act a1. It
 # must stay inside the page and must not reach into act a2's bounds, or the
-# recovery would be inventing an overlap rather than widening a crop.
-RECOVERY_BOUNDS = {"a1": {"x": 16, "y": 16, "w": 168, "h": 88}}
+# recovery would be inventing an overlap rather than widening a crop. **Which of
+# a2's bounds** matters and is stated below: a2 has a declared structural
+# rectangle at y=120 and a wider padded *capture* rectangle that starts at
+# y=114, and only the second is a rectangle whose pixels were actually cut.
+#
+# **Expanded likewise means expanded against the rectangle that was actually
+# cut**, which is a1's *padded capture* rect and not its declared 20,20,160,80.
+# Under `config/designator_padding.toml` the proposal crop for a1 is
+# 12,15,188,99 -- [12,200) x [15,114) -- and this rectangle has to leave it, or
+# the scenario proves nothing. It used to be 16,16,168,88, a strict *subset* of
+# it: the walking skeleton's single proof that bounded recovery works spent its
+# whole `fallback_recrop` budget on a crop that recovered not one pixel, and the
+# export then carried a `witness_covered: false` caveat about nothing. It passed
+# the test below because that test compares against the *structural* rectangle,
+# which the subset does differ from. `recovery_pass` now refuses a subset by
+# name, so this rectangle turns the scenario red rather than passing silently.
+#
+# 0,0,200,114 is a strict *superset* of a1's padded capture rect, so it is a
+# widening and never a trade of one edge for another: it takes the page's own
+# left and top edges (the padded rect already reaches the right edge at x=200)
+# and stops at y=114. It adds 200*114 - 188*99 = 4188 page pixels that no
+# witness was ever shown. y=114 rather than a2's structural y=120 because 114 is
+# where a2's *capture* rectangle begins: stopping there keeps every page pixel
+# cut under exactly one act identity, which stopping at 120 would not (rows
+# 114-119 are inside a2's crop, background though they are).
+RECOVERY_BOUNDS = {"a1": {"x": 0, "y": 0, "w": 200, "h": 114}}
 
 # Per-scenario declared digests that will not match the checked-in bytes, so the
 # door refuses the page honestly through its real inspection path rather than
