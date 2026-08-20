@@ -521,8 +521,24 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # (Values below re-measured twice on the fallback replacement branch — main
 # with the reproof and export themes merged plus this theme — fresh runs
 # through this module's own helpers; counts and exits held at 64/0 and 71/3.)
-HAPPY_RUN_TREE_DIGEST = "06ae8a3e0752c5dbf4edd4f799933faffe46bdb65edaf340d8b76471f4ccb9c4"
-REVIEW_RUN_TREE_DIGEST = "0d6b46e3e419a1067af0e68082ed3fa9ffb7cf1583220f606df66cc0c18772c9"
+#
+# Re-pinned for Opus-F3: act crops are evidence written during a run, and
+# `common/imaging.py::crop_png` now writes them through this project's own
+# deterministic encoder on both paths instead of `zlib.compress(level=9)` and
+# Pillow's PNG writer. The pixels are unchanged — `semantic_snapshot` already
+# binds a PNG's pixels rather than its compressor bytes, and the neighbouring
+# `test_semantic_snapshot_digest_binds_png_pixels_not_compressor_bytes` is the
+# proof — but a crop blob is content-addressed, so its *path* carries its byte
+# digest, and every artifact that names one moves with it. That is exactly the
+# property the change buys: those paths and digests are now the same on every
+# zlib build rather than only on this one. Fresh real runs through this module's
+# own helpers held the file counts at 64 for happy (exit 0) and 71 for review
+# (exit 3).
+# (Values below re-measured twice on the crops replacement branch — the
+# fallback theme's tree plus this theme — fresh runs through this module's
+# own helpers; counts and exits held at 64/0 and 71/3.)
+HAPPY_RUN_TREE_DIGEST = "6e378c186ad6d6021485be9e663953df882d58169da4c7da4f4d0850faca5d1e"
+REVIEW_RUN_TREE_DIGEST = "371d88a2e24d5d620d9d408fbda4dc5942d7400e6294c7c046628c8decfd0434"
 
 
 def orchestrate(

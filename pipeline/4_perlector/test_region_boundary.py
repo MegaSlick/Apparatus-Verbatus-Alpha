@@ -4,9 +4,11 @@ import copy
 import importlib.util
 import subprocess
 import sys
+from io import BytesIO
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 from common.chairs import ChairRegistry
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
@@ -367,3 +369,66 @@ def test_a_genuinely_empty_testimonium_marks_its_actual_regions_witness_covered(
         },
     ]
     assert perlector.witnessed_region_ids(testimonia) == {"rgn_empty"}
+
+
+def test_the_refusal_names_the_cause_it_used_to_swallow(real_region):
+    """Opus-F3(c). Every distinct fault the shared boundary can find — a missing
+    blob, a transform outside the page, a crop relabelled onto another act,
+    pixels that are not the crop — reached the operator as the same nine words,
+    because the `ContractError` carrying the specific cause was left on
+    `__cause__` and `run_stage` prints only the refusal it catches.
+
+    Two causes rather than one, so this proves the message is *derived* from the
+    fault rather than merely longer. Both are checked against the exact sentence
+    the shared boundary raises, so a wording change there cannot leave this test
+    green with the cause gone.
+    """
+    context, region = real_region
+
+    outside = copy.deepcopy(region)
+    outside["payload"]["transform"]["bounds"] = dict(
+        outside["payload"]["transform"]["bounds"], w=100_000
+    )
+    outside["payload"]["region_id"] = region_id(
+        outside["subject_id"], outside["payload"]["transform"]
+    )
+    with pytest.raises(SchemaRefusal) as refused:
+        perlector.verify_region(context, outside)
+    assert str(refused.value) == (
+        "a Designator region does not trace to its Exemplar page: "
+        "a crop region's transform falls outside its Exemplar page"
+    )
+
+    relabelled = copy.deepcopy(region)
+    relabelled["payload"]["act_key"] = "an act key the proposal seal never named"
+    relabelled["payload"]["region_id"] = region_id(
+        relabelled["subject_id"], relabelled["payload"]["transform"]
+    )
+    with pytest.raises(SchemaRefusal) as refused:
+        perlector.verify_region(context, relabelled)
+    assert str(refused.value).startswith(
+        "a Designator region does not trace to its Exemplar page: a crop region names act_key"
+    )
+    assert "the proposal seal does not name exactly once" in str(refused.value)
+
+
+def test_a_crop_written_by_another_encoder_is_not_refused_as_untraceable(real_region):
+    """The composed half of Opus-F3, at the stage that reported it. The audit's
+    demonstration ended `exit=2, SchemaRefusal: a Designator region does not
+    trace to its Exemplar page. Every crop in the run is refused.` — with every
+    pixel reproducing exactly from the Exemplar and the recorded transform."""
+    context, region = real_region
+    crop = context.tree.read_bytes(region["payload"]["image_path"])
+    with Image.open(BytesIO(crop)) as image:
+        image.load()
+        output = BytesIO()
+        image.save(output, format="PNG", optimize=False, compress_level=1)
+    assert output.getvalue() != crop
+    digest, published = context.tree.put_blob(DESIGNATOR, output.getvalue())
+    reframed = copy.deepcopy(region)
+    reframed["payload"]["image_path"] = published.relative_path
+    reframed["payload"]["image_sha256"] = digest
+
+    verified = perlector.verify_region(context, reframed)
+
+    assert verified["region_id"] == region["payload"]["region_id"]
