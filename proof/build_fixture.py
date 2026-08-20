@@ -185,10 +185,17 @@ SCENARIO_TESTIMONY = (
         "payload": "SYNTHETIC ACT ONE alpha beta",
         "format_capabilities": "provider supplied a non-object capability declaration",
     },
+    # attestator_2 is the act-scoped chair. A targeted reread names one chair on
+    # one act, and only an act-scoped chair has an act-scoped attempt to repeat:
+    # a page witness reports one reading per page and its act view is derived
+    # from that, so `pipeline/3_attestatores/run.py::reread_pass` refuses it by
+    # name and points at the page-level reread nothing has built. Declaring these
+    # two scenarios' second attempts on a page witness meant neither scenario
+    # could ever perform the reread it is named for.
     {
         "scenario": "reread-success",
         "act_key": "a2",
-        "chair": "attestator_1",
+        "chair": "attestator_2",
         "attempt_ordinal": 2,
         "payload": "SYNTHETIC ACT TWO delta epsilon zeta eta, reread",
     },
@@ -280,10 +287,11 @@ STRUCTURE_FAILURES = (
 
 WITNESS_FAILURES = (
     {"scenario": "review", "act_key": "a2", "chair": "attestator_3", "attempt_ordinal": 1},
+    # Act-scoped, for the reason recorded beside `reread-success` above.
     {
         "scenario": "reread-failure",
         "act_key": "a1",
-        "chair": "attestator_3",
+        "chair": "attestator_2",
         "attempt_ordinal": 2,
     },
 )

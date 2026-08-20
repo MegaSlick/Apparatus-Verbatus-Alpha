@@ -1549,6 +1549,7 @@ def _real_bindings(
             "perlector-audit": perlector_audit_config_sha256,
             "pdf-render": pdf_render_config_sha256,
             "recovery": recovery_policy["config_sha256"],
+            "hard-failure": hard_failure_policy["config_sha256"],
             # Real ingress only: the fixture route is not gated, so a fixture run
             # seals no data-handling name and a point of use that asked for one
             # there would be asking about a check that never happened.

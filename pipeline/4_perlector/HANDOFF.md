@@ -27,6 +27,45 @@ Recovery regions are readable evidence for a later attempt. They remain marked
 `witness_covered=false` unless a completed Testimonium actually names that exact
 region; a recrop never rewrites what a witness saw.
 
+## The one attempt model
+
+**Which reading attempt this is, is a function of the act's crop history alone.**
+`_next_attempt` is `recovery_region_count(act_id, regions) + 1`: one reading of the
+proposal, plus one for each recovery crop cut since. Witness testimony never moves
+it, and the same identity is enforced downstream by the Recensor, the Archetypus
+and the Armarium — `len(readings) == recovery_regions + 1` — so a recovery crop
+must be reread before any text is established and a reading may not appear
+unrequested.
+
+Deriving it from the act's state rather than from how many times the stage has
+been invoked is what makes a rerun of an unchanged run recompute the same ordinal,
+produce the same bytes, and be reused rather than rewritten.
+
+Testimony is deliberately absent from the derivation. A Testimonium is a clue that
+primes a reading, never the ink the reading is established from (ARCHITECTURE;
+GOVERNANCE 3), so a second look by a witness does not make a second reading exist,
+and re-reading an act because a witness spoke again is the re-roll GOVERNANCE 11
+refuses. The consequence for the upstream stage is that an act's witness layer
+closes when this stage reads it, enforced at the Attestatores' own entry
+(`pipeline/3_attestatores/HANDOFF.md`, "The one attempt model") rather than
+discovered here as an immutability refusal on a reading identity nothing can move.
+
+The count comes from `common/stage.py::recovery_region_count` — the shared reader
+the other three stages ask — and the regions are read once, before the ordinal is
+derived from them. A private `origin == "recovery"` comparison scored every
+unrecognized origin as zero, so a resealed Designator tree could be read and
+published here at the wrong attempt and become fatal only at the next stage, over
+a Perlectio that is already immutable (Sol-S5). An unplaceable origin is now
+refused here, before any model call or publication, and named for what it is: a
+region whose place in the recovery denominator is unknown.
+
+**A reading whose witness basis has since been superseded is not reconciled.** The
+Recensor, Archetypus and Armarium each pass the current reading back through
+`common/stage.py::require_current_witness_basis` before accepting, establishing or
+exporting it, so a Testimonium appended after the reading was established cannot
+be structurally invisible at the point where the export decides to say `complete`
+(GOVERNANCE 2; audit Opus-F2, 2d).
+
 ## `kind="perlectio"`
 
 The subject is the stable act identity and the attempt is `perlegere:<ordinal>`.

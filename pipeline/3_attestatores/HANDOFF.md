@@ -171,15 +171,87 @@ spend a provider call per chair per act to do it. Every other chair's current
 record stays the attempt it already was. It is refused, writing nothing, for an
 act the proposal seal does not name, a chair the run is not sealed with, a
 Designator-held act (no witness was shown a reading there), an absent chair
-(a dead chair asked again is not a second attempt), and a chair with no first
-attempt to follow. The orchestrator never invokes it.
+(a dead chair asked again is not a second attempt), a chair with no first attempt
+to follow, a **page witness** (below), and an act whose **witness layer is
+closed** (below). The orchestrator never invokes it, and that is a decision
+rather than a gap: GOVERNANCE 11 gives recovery to *coverage* — a missed region,
+a cut crop, a continuation — while a witness reread recovers *priming*, so
+driving it from the recovery loop would make witness quality a loop variable.
+`RECOVERY_KINDS` is unchanged. This is an operator repair with a documented
+window.
 
-A targeted reread deliberately leaves the act attachment unchanged. If the
-reread changes the chair's outcome or its `content_health`, the Perlector and
-the Recensor both refuse the now-stale attachment by name. The recovery is a
-whole Attestatores pass with `--attempt-ordinal` set to the reread's ordinal,
-run before continuing, so the attachment describes the attempt that actually
-stands.
+A targeted reread re-derives that act's act-attachment as part of its own write,
+through the `act_scoped_attachment_entry` the whole pass uses for the same
+derivation. The attachment is a derived view of the per-`(act, chair)` attempt
+stream and the reread appends to exactly that stream, so a reread that left it
+alone wrote a Testimonium no later stage could consume: the very next Perlector
+invocation refused the stale record, in the reread's own intended order. Only the
+reread chair's entry is re-derived; the others are carried forward, and checked
+against their chairs' current attempts on the way so a stale entry is refused
+rather than laundered into a newer record.
+
+## The one attempt model
+
+**The reading attempt ordinal is a function of the act's crop history alone** —
+one reading of the proposal, plus one for each recovery crop cut since
+(`pipeline/4_perlector/run.py::_next_attempt`, and the identity the Recensor,
+Archetypus and Armarium each enforce). Witness testimony never moves it.
+
+That is a decision, not an omission. A Testimonium is a clue that primes a
+reading, never the ink the reading is established from (ARCHITECTURE; GOVERNANCE
+3), so a second look by a witness does not make a second reading exist — and
+re-reading an act because a witness spoke again is the re-roll GOVERNANCE 11
+refuses. The alternatives were weighed and rejected: advancing the ordinal on any
+new current evidence makes witness quality a loop variable at the four stages that
+decide whether text may be established, and deleting the reread outright leaves
+the whole pass as the only retry, which costs every chair on every act its
+currency to move one.
+
+Two consequences follow, and both are enforced at entry rather than discovered
+downstream.
+
+**The reread has a window.** It is open until the Perlector establishes a reading
+that cites this act's testimony, and closed afterwards. A new witness attempt on a
+closed act — targeted reread *or* appending whole pass — is refused by name. The
+deep reason is not the ordinal mechanics (a pending recovery reread means a new
+reading can be pending even on a closed act): it is that a witness is only ever
+shown the act's *original proposal crop* (`proposed_regions`; the Perlector
+refuses testimony naming a recovery crop), so a second look can only ever add
+priming, never coverage — and re-reading because a witness spoke again is
+GOVERNANCE 11's re-roll. Mechanically, the Perlector would also recompute the
+same ordinal, build a different payload, and meet its own immutable record. A held act's or an
+absent chair's `not-run` reading cites no testimony and closes nothing. A pass
+that only repeats attempts already sealed is a resume and is untouched.
+
+**A targeted reread takes its act off the shared whole-pass ordinal.** The whole
+pass is a run-level instrument at one ordinal and re-derives each act's attachment
+there; after a reread that ordinal is already taken by a record describing a
+different state. An appending whole pass on an act whose chairs no longer share
+one current ordinal is therefore refused before anything is written. A partly-lost
+attempt layer is not that case — its surviving pairs still share an ordinal — so
+the repair pass still works.
+
+**A page witness cannot be act-reread.** It reports one reading per page; its
+act-level view is derived from the page join and that join's alignment against the
+page anchor. An act-targeted reread would re-derive one act's view from an attempt
+the page record does not describe, leaving the two disagreeing about the same
+chair. No operation exists today to re-ask a page witness about anything —
+building one would be new, page-scoped Attestatores work — and the refusal says
+so rather than half-performing the act-scoped one. (The recovery vocabulary's
+`page-level-reread` is a *Perlector* operation; that name is not borrowed here.)
+
+One residual is left to the RunTree rather than checked at entry, deliberately:
+reread *every* chair on one act up to the same ordinal and the act agrees again,
+so an appending whole pass at that ordinal passes the shared-ordinal check and
+meets the attachment collision at publication. Reaching it also needs each chair's
+whole-pass attempt to be byte-identical to its reread attempt — otherwise
+`_refuse_write_collision` stops the pass first — so the pass that survives is one
+that had nothing to add. The outcome is a loud fatal refusal with
+`RunTree.write_manifest` as the recorded one-step recovery, and closing it would
+cost a second derivation of every attachment in preflight.
+
+The end-to-end assertions for all of this are
+`pipeline/orchestrator/test_attempt_model.py`.
 
 Neither path accepts the other's arguments: `--attempt-ordinal` beside a reread,
 or `--act`/`--chair` beside a whole pass, is refused rather than ignored. An

@@ -332,7 +332,7 @@ format_capabilities = "provider supplied a non-object capability declaration"
 [[testimony]]
 scenario = "reread-success"
 act_key = "a2"
-chair = "attestator_1"
+chair = "attestator_2"
 payload = "SYNTHETIC ACT TWO delta epsilon zeta eta, reread"
 attempt_ordinal = 2
 
@@ -591,7 +591,7 @@ attempt_ordinal = 1
 [[witness_failure]]
 scenario = "reread-failure"
 act_key = "a1"
-chair = "attestator_3"
+chair = "attestator_2"
 attempt_ordinal = 2
 
 [[witness_not_run]]

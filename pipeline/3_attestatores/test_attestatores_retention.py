@@ -118,7 +118,7 @@ def test_reread_appends_and_current_keeps_the_new_failed_outcome(tmp_path):
         attempt_ordinal=1,
     )
     assert first_result.returncode == 0, first_result.stderr
-    first = _testimonium_for(tree, act_key="a1", chair="attestator_3", ordinal=1)
+    first = _testimonium_for(tree, act_key="a1", chair="attestator_2", ordinal=1)
     first_path = tree.resolve(tree.artifact_path(ATTESTATORES, "testimonium", first["artifact_id"]))
     first_bytes = first_path.read_bytes()
 
@@ -144,7 +144,7 @@ def test_reread_appends_and_current_keeps_the_new_failed_outcome(tmp_path):
     records = [
         record
         for record in _testimonia(tree)
-        if record["payload"]["act_key"] == "a1" and record["payload"]["chair"] == "attestator_3"
+        if record["payload"]["act_key"] == "a1" and record["payload"]["chair"] == "attestator_2"
     ]
     assert [
         record["payload"]["attempt_ordinal"]
@@ -155,7 +155,7 @@ def test_reread_appends_and_current_keeps_the_new_failed_outcome(tmp_path):
     current = next(
         record
         for record in latest_per_chair(records, "reread Testimonia")
-        if record["payload"]["chair"] == "attestator_3"
+        if record["payload"]["chair"] == "attestator_2"
     )
     assert current["payload"]["attempt_ordinal"] == 2
     assert current["outcome"] == "failed"
@@ -267,7 +267,7 @@ def test_a_targeted_reread_moves_one_chair_and_leaves_every_other_chair_alone(tm
         ).returncode
         == 0
     )
-    first = _testimonium_for(tree, act_key="a1", chair="attestator_3", ordinal=1)
+    first = _testimonium_for(tree, act_key="a1", chair="attestator_2", ordinal=1)
     first_path = tree.resolve(tree.artifact_path(ATTESTATORES, "testimonium", first["artifact_id"]))
     first_bytes = first_path.read_bytes()
     untouched = {
@@ -277,7 +277,7 @@ def test_a_targeted_reread_moves_one_chair_and_leaves_every_other_chair_alone(tm
         for record in _testimonia(tree)
     }
 
-    result = _reread(run_root, "reread-failure", _act_id_for(tree, "a1"), "attestator_3")
+    result = _reread(run_root, "reread-failure", _act_id_for(tree, "a1"), "attestator_2")
     assert result.returncode == 0, result.stderr
 
     records = _testimonia(tree)
@@ -294,7 +294,7 @@ def test_a_targeted_reread_moves_one_chair_and_leaves_every_other_chair_alone(tm
     moved = [
         record
         for record in records
-        if record["payload"]["act_key"] == "a1" and record["payload"]["chair"] == "attestator_3"
+        if record["payload"]["act_key"] == "a1" and record["payload"]["chair"] == "attestator_2"
     ]
     assert sorted(record["payload"]["attempt_ordinal"] for record in moved) == [1, 2]
     others = [record for record in records if record not in moved]
@@ -305,7 +305,7 @@ def test_a_targeted_reread_moves_one_chair_and_leaves_every_other_chair_alone(tm
     current = next(
         record
         for record in latest_per_chair(moved, "reread Testimonia")
-        if record["payload"]["chair"] == "attestator_3"
+        if record["payload"]["chair"] == "attestator_2"
     )
     assert current["payload"]["attempt_ordinal"] == 2
     assert current["outcome"] == "failed"
@@ -325,7 +325,7 @@ def test_the_whole_pass_still_resumes_over_a_folder_one_chair_has_been_reread_in
         == 0
     )
     assert (
-        _reread(run_root, "reread-failure", _act_id_for(tree, "a1"), "attestator_3").returncode == 0
+        _reread(run_root, "reread-failure", _act_id_for(tree, "a1"), "attestator_2").returncode == 0
     )
     before = {
         record["artifact_id"]: tree.resolve(
@@ -375,7 +375,7 @@ def test_a_whole_pass_at_an_ordinal_a_reread_already_sealed_differently_is_refus
         for record in _testimonia(tree)
     }
 
-    reread = _reread(run_root, "happy", _act_id_for(tree, "a1"), "attestator_3")
+    reread = _reread(run_root, "happy", _act_id_for(tree, "a1"), "attestator_2")
     assert reread.returncode == 0, reread.stderr
 
     colliding = invoke_stage(
@@ -413,14 +413,14 @@ def test_a_successful_reread_retains_new_testimony_and_keeps_attempt_one(tmp_pat
         run_root, "retention", "reread-success", "pipeline/3_attestatores/run.py"
     )
     assert initial.returncode == 0, initial.stderr
-    first = _testimonium_for(tree, act_key="a2", chair="attestator_1", ordinal=1)
+    first = _testimonium_for(tree, act_key="a2", chair="attestator_2", ordinal=1)
     first_path = tree.resolve(tree.artifact_path(ATTESTATORES, "testimonium", first["artifact_id"]))
     first_bytes = first_path.read_bytes()
 
-    result = _reread(run_root, "reread-success", first["subject_id"], "attestator_1")
+    result = _reread(run_root, "reread-success", first["subject_id"], "attestator_2")
 
     assert result.returncode == 0, result.stderr
-    second = _testimonium_for(tree, act_key="a2", chair="attestator_1", ordinal=2)
+    second = _testimonium_for(tree, act_key="a2", chair="attestator_2", ordinal=2)
     assert second["outcome"] == "read"
     assert second["payload"]["payload"].endswith(", reread")
     assert second["payload"]["reported"] == second["payload"]["payload"]
@@ -548,13 +548,13 @@ def test_a_reread_that_gets_nothing_back_is_failed_rather_than_never_attempted(t
     )
     act_id = _act_id_for(tree, "a1")
 
-    assert _reread(run_root, "happy", act_id, "attestator_3").returncode == 0
+    assert _reread(run_root, "happy", act_id, "attestator_2").returncode == 0
 
-    second = _testimonium_for(tree, act_key="a1", chair="attestator_3", ordinal=2)
+    second = _testimonium_for(tree, act_key="a1", chair="attestator_2", ordinal=2)
     assert second["outcome"] == "failed"
     assert second["payload"]["reason"]
     assert (
-        _testimonium_for(tree, act_key="a1", chair="attestator_3", ordinal=1)["outcome"] == "read"
+        _testimonium_for(tree, act_key="a1", chair="attestator_2", ordinal=1)["outcome"] == "read"
     )
 
 
@@ -598,7 +598,7 @@ def test_neither_write_path_accepts_the_other_path_s_arguments(tmp_path):
     act_id = _act_id_for(tree, "a1")
     before = len(_testimonia(tree))
 
-    overridden = _reread(run_root, "happy", act_id, "attestator_3", attempt_ordinal=9)
+    overridden = _reread(run_root, "happy", act_id, "attestator_2", attempt_ordinal=9)
     assert overridden.returncode == 2
     assert "names a different attempt" in overridden.stderr
 
@@ -680,7 +680,7 @@ def test_a_wiped_attempt_layer_holds_rather_than_silently_restarting_history(tmp
         == 0
     )
     assert (
-        _reread(run_root, "reread-failure", _act_id_for(tree, "a1"), "attestator_3").returncode == 0
+        _reread(run_root, "reread-failure", _act_id_for(tree, "a1"), "attestator_2").returncode == 0
     )
     manifest = tree.resolve(tree.manifest_path(ATTESTATORES))
     stored = json.loads(manifest.read_text(encoding="utf-8"))
@@ -768,7 +768,7 @@ def test_a_reread_holds_when_the_folder_no_longer_accounts_for_every_pair(tmp_pa
     tree.write_manifest(ATTESTATORES)
     assert len(_testimonia(tree)) == 5
 
-    result = _reread(run_root, "happy", _act_id_for(tree, "a1"), "attestator_3")
+    result = _reread(run_root, "happy", _act_id_for(tree, "a1"), "attestator_2")
 
     assert result.returncode == 3, result.stderr
     assert "does not account for every expected act/chair pair" in result.stderr
@@ -1796,7 +1796,7 @@ def test_a_page_scope_claim_cannot_hide_an_act_scoped_attempt_from_the_history(t
     path.write_bytes(canonical_bytes(changed))
     tree.write_manifest(ATTESTATORES)
 
-    _, history = attestatores._attempt_history(SimpleNamespace(tree=tree))
+    history = attestatores._attempt_history(SimpleNamespace(tree=tree)).by_pair
 
     surviving = [
         item["artifact_id"] for item in history.get((record["subject_id"], "attestator_2"), [])

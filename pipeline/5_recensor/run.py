@@ -64,6 +64,7 @@ from common.stage import (  # noqa: E402
     open_context,
     reading_basis_regions,
     recovery_region_count,
+    require_current_witness_basis,
     run_stage,
     scenario_for,
     stage_parser,
@@ -1403,6 +1404,18 @@ def preflight_review_evidence(context, budget: dict) -> None:
                 "one recorded recrop and no reading may appear unrequested"
             )
         latest = latest_attempt(readings, f"reading of {act_id}", operation="perlegere")
+        # The earliest stage that can say so: a reading whose witness basis a
+        # later Testimonium has superseded is not reconciled, and the Recensor is
+        # what decides whether a reading may be accepted at all. Checked here as
+        # well as at the Archetypus and the export because one derivation with
+        # three consumers is what kept `recovery_region_count` from drifting, and
+        # each of the three can be reached first by hand.
+        require_current_witness_basis(
+            act_id,
+            latest,
+            artifacts_for(context, ATTESTATORES, "testimonium", act_id),
+            f"the current reading of {act_id}",
+        )
         context.artifact_ref(PERLECTOR, "perlectio", latest["artifact_id"])
         audit_state(context, latest, act_id)
         if classify(PERLECTOR, latest["outcome"]) is OutcomeClass.COMPLETED:

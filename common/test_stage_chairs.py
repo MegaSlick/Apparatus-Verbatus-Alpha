@@ -335,7 +335,7 @@ def test_receipt_reuse_is_by_full_serving_moment_not_only_model_identity(tmp_pat
     original = fixture_serving_details(identity)
     changed = replace(
         original,
-        endpoint="fixture://offline-seat-runner-restarted",
+        endpoint="fixture://offline-chair-runner-restarted",
         started_at="2026-08-03T00:01:00Z",
     )
 
