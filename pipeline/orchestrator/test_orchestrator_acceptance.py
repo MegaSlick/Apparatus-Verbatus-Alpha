@@ -470,8 +470,17 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # layer, so it is now truthfully named `uncertainty_json`. Only that SQLite
 # schema identifier changed; fresh runs through this module's own helpers held
 # the file counts at 64/71 while the two semantic database identities moved.
-HAPPY_RUN_TREE_DIGEST = "27423cd9a5dafbd50144322577dc51b3b4f5db7c49d75cc5b339acb7fbf7ea98"
-REVIEW_RUN_TREE_DIGEST = "cff96edca88623b7bd1311ff28e665c481ee0821af89369d089c51099ebdf09f"
+#
+# Re-pinned for the T7 config sealing family. Every run authority now records
+# `sealed_config_digests` — the digest of each configuration file the run sealed,
+# under the name its point of use asks for — so a reader holding only the tree can
+# name the policy bytes that governed it rather than only test a candidate file
+# against `config_digest`. That moves `run.json`'s recorded bytes in both scenarios
+# and writes no new file: fresh real runs through this module's own `orchestrate`
+# and `semantic_snapshot_digest` helpers held the counts at 64 files for happy
+# (exit 0) and 71 for review (exit 3), unmoved since R5b.
+HAPPY_RUN_TREE_DIGEST = "75b2a2253dea22957e018645e686d7d8cd97c7fcab30a355796fcef53fc1e995"
+REVIEW_RUN_TREE_DIGEST = "b4911fda9f594ef44883da82717725c0f4ed35c3636e4b9c50cb7e8a78b42aa5"
 
 
 def orchestrate(

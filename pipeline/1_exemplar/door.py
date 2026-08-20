@@ -1044,9 +1044,19 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     return fixture_submission(args, registry)
 
 
-def _load_pdf_render_settings(args) -> render_config.PdfRenderSettings:
-    """The one place a run's PDF target DPI is resolved, fixture or real."""
-    return render_config.load_pdf_render_settings(
+def _load_pdf_render_binding(args) -> render_config.PdfRenderBinding:
+    """The one place a run's PDF target DPI is resolved, fixture or real.
+
+    One read, returning the settings and the digest of the bytes they were parsed
+    from. The door used to resolve the settings here and then let the binding step
+    open `pdf_render.toml` again for its digest, so a rewrite between the two
+    reads sealed a run whose `render_settings` recorded one target while its
+    `config_digest` bound the bytes of another — a run claiming a configuration it
+    did not execute (audit S6). The digest travels into `config_digest` and into
+    the run's `sealed_config_digests`, and the door proves at its point of use
+    that the settings it renders with are the ones the run sealed.
+    """
+    return render_config.load_pdf_render_binding(
         Path(args.pdf_render_config),
         target_override=args.pdf_target_dpi,
         minimum_dpi=pdf_render.MIN_RENDER_DPI,
@@ -1071,12 +1081,14 @@ def fixture_submission(args, registry) -> int:
     pages = fixture_pages_for_scenario(fixture, args.scenario)
     declared = declared_digests(fixture, args.scenario)
     policy = admission.load_format_policy()
-    pdf_settings = _load_pdf_render_settings(args)
+    pdf_render_binding = _load_pdf_render_binding(args)
+    pdf_settings = pdf_render_binding.settings
     bindings = run_config_bindings(
         registry.config,
         fixture,
         args.scenario,
         pdf_render_config_path=args.pdf_render_config,
+        pdf_render_config_sha256=pdf_render_binding.config_sha256,
         designator_padding_config_path=args.designator_padding_config,
         designator_geometry_config_path=args.designator_geometry_config,
         alignment_config_path=args.alignment_config,
@@ -1116,8 +1128,21 @@ def fixture_submission(args, registry) -> int:
         witness_chairs=bindings["witness_chairs"],
         ingress=synthetic_fixture_ingress_record(),
         render_settings={"pdf": pdf_settings.to_record()},
+        sealed_config_digests=bindings["sealed_config_digests"],
     )
-    context = _door_context(tree, fixture, args.scenario, args, registry)
+    context = _door_context(
+        tree,
+        fixture,
+        args.scenario,
+        args,
+        registry,
+        sealed_config_digests=bindings["sealed_config_digests"],
+    )
+    # The point of use, on the same terms as the Designator's padding recheck: the
+    # bytes these settings were parsed from must be the bytes this run sealed. One
+    # read makes them so; this is what refuses if a later change reintroduces a
+    # second one, or seals the digest under a name nothing renders with.
+    context.require_sealed_config("pdf-render", pdf_render_binding.config_sha256)
     sources = [
         SourceEntry(page["ordinal"], page["path"], declared[page["ordinal"]]) for page in pages
     ]
@@ -1140,7 +1165,8 @@ def real_submission(args, registry) -> int:
     then the run is created, and only then is a byte published. A folder outside
     every approved root means nothing was read and nothing exists.
     """
-    data_policy = gate.load_policy(Path(args.data_gate_policy))
+    data_policy_binding = gate.load_policy_binding(Path(args.data_gate_policy))
+    data_policy = data_policy_binding.policy
     if args.submission_manifest is None:
         raise ContractError(
             "a real submission requires --submission-manifest: the self-hashed filename "
@@ -1170,7 +1196,8 @@ def real_submission(args, registry) -> int:
     ledger = submission_ledger.load_manifest(manifest_path)
 
     format_policy = admission.load_format_policy()
-    pdf_settings = _load_pdf_render_settings(args)
+    pdf_render_binding = _load_pdf_render_binding(args)
+    pdf_settings = pdf_render_binding.settings
     # Inventory streams every digest and retains no source body.  Later reads
     # reopen by directory descriptor, never by a reconstructed ordinary path: a
     # 15 GB PDF remains a stream, and the digest and PDFium renderer hold the same
@@ -1231,6 +1258,8 @@ def real_submission(args, registry) -> int:
         load_recovery_policy(args.recovery_config),
         load_hard_failure_policy(args.hard_failure_config),
         args.formats_config,
+        pdf_render_config_sha256=pdf_render_binding.config_sha256,
+        data_handling_config_sha256=data_policy_binding.config_sha256,
         designator_padding_config_sha256=_padding_config_digest(args.designator_padding_config),
         designator_geometry_config_sha256=_geometry_config_digest(args.designator_geometry_config),
         alignment_config_path=args.alignment_config,
@@ -1265,9 +1294,25 @@ def real_submission(args, registry) -> int:
         witness_chairs=bindings["witness_chairs"],
         ingress=real_ingress_record(),
         render_settings={"pdf": pdf_settings.to_record()},
+        sealed_config_digests=bindings["sealed_config_digests"],
     )
 
-    context = _door_context(tree, {}, "real-submission", args, registry)
+    context = _door_context(
+        tree,
+        {},
+        "real-submission",
+        args,
+        registry,
+        sealed_config_digests=bindings["sealed_config_digests"],
+    )
+    context.require_sealed_config("pdf-render", pdf_render_binding.config_sha256)
+    # CF01: the caller-selected data-handling policy that decided where this
+    # material may live is now named by the run it admitted. The gate itself
+    # already worked from one in-memory record, so this closes the *evidence*
+    # gap rather than a race — `config/README.md` said outright that nothing
+    # bound a run to the policy version governing it, and a later reader could
+    # not say which of two policy files admitted a corpus.
+    context.require_sealed_config("data-handling", data_policy_binding.config_sha256)
     admitted = process_sources(
         context,
         tree,
@@ -1361,6 +1406,8 @@ def _real_bindings(
     armarium_formats_config_path=DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH,
     corpus_frame_config_path=DEFAULT_CORPUS_FRAME_CONFIG_PATH,
     *,
+    pdf_render_config_sha256: str,
+    data_handling_config_sha256: str,
     designator_padding_config_sha256: str,
     designator_geometry_config_sha256: str,
     alignment_config_path=DEFAULT_ALIGNMENT_CONFIG_PATH,
@@ -1382,9 +1429,12 @@ def _real_bindings(
     routing is a different run wearing an old name, and `RunTree.create` refuses
     it before anything is written.
 
-    **Cut 2026-08-09.** This used to also bind the data-gate policy hash and the
-    approval reference that admitted the corpus. Neither exists any more: real
-    input is no longer approval-gated, so there is nothing left to bind here.
+    **Cut 2026-08-09, rebound for provenance under CF01.** The per-run APPROVAL
+    record and its currency check are gone and stay gone: real input is no
+    longer approval-gated. The data-handling policy's byte digest is bound
+    again — `data_handling_policy_sha256` above and the `data-handling` sealed
+    name — but as provenance and tamper-evidence only (WHICH caller-selected
+    policy performed the storage-root check), never as a sign-off.
     """
     witness_context_declaration_sha256 = validate_witness_context_bindings(
         models,
@@ -1440,6 +1490,13 @@ def _real_bindings(
                 ],
                 "submission_ledger_sha256": ledger["self_hash"],
                 "format_policy": format_policy,
+                "pdf_render_config_sha256": pdf_render_config_sha256,
+                # CodeRabbit CF01. Not an approval record and not a gate: the door
+                # still admits real material on the storage-root check alone. This
+                # binds *which* caller-selected policy performed that check, so a
+                # run can be reconciled against the policy that governed it instead
+                # of against whichever file happens to sit at the default path now.
+                "data_handling_policy_sha256": data_handling_config_sha256,
                 "door_execution_recipe": _door_execution_recipe(pdf_settings),
                 "door_implementation_revision": REAL_DOOR_ADAPTER_REVISION,
                 "armarium_formats_config_sha256": armarium_formats_digest,
@@ -1490,6 +1547,12 @@ def _real_bindings(
             "corpus-frame-shard": corpus_frame_config_sha256,
             "perlector-protocol": perlector_protocol_config_sha256,
             "perlector-audit": perlector_audit_config_sha256,
+            "pdf-render": pdf_render_config_sha256,
+            "recovery": recovery_policy["config_sha256"],
+            # Real ingress only: the fixture route is not gated, so a fixture run
+            # seals no data-handling name and a point of use that asked for one
+            # there would be asking about a check that never happened.
+            "data-handling": data_handling_config_sha256,
         },
     }
 
@@ -1507,7 +1570,22 @@ def _door_execution_recipe(pdf_settings) -> dict[str, Any]:
     }
 
 
-def _door_context(tree: RunTree, fixture: dict, scenario: str, args, registry) -> StageContext:
+def _door_context(
+    tree: RunTree,
+    fixture: dict,
+    scenario: str,
+    args,
+    registry,
+    *,
+    sealed_config_digests: dict[str, str] | None = None,
+) -> StageContext:
+    """The door's own context.
+
+    It carries the sealed digests because the door is a point of use as well as the
+    binding step: it parses the PDF render policy and, on the real route, the
+    data-handling policy, and it must be able to prove that what it acted on is what
+    the run recorded.
+    """
     run = tree.read_run()
     return StageContext(
         tree=tree,
@@ -1518,6 +1596,7 @@ def _door_context(tree: RunTree, fixture: dict, scenario: str, args, registry) -
         adapter_revision=adapter_recipe_for(run, DOOR),
         args=args,
         registry=registry,
+        sealed_config_digests=sealed_config_digests,
     )
 
 

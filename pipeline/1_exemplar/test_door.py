@@ -46,6 +46,30 @@ from common.stage import (
 from operations.submit import gate, submit
 
 POLICY = load_format_policy()
+
+
+def _sealed_binding_digests() -> dict[str, str]:
+    """The configuration digests every `_real_bindings` caller has to supply.
+
+    Read exactly as the door reads them, from one read each, so a test never seals
+    a name under bytes nothing parsed. Kept in one helper because the argument list
+    is the shape the fixture path's `run_config_bindings` has to match: the F-S5
+    defect was one map growing an entry the other did not.
+    """
+    return {
+        "pdf_render_config_sha256": door.render_config.load_pdf_render_binding(
+            minimum_dpi=door.pdf_render.MIN_RENDER_DPI
+        ).config_sha256,
+        "data_handling_config_sha256": gate.load_policy_binding().config_sha256,
+        "designator_padding_config_sha256": door._padding_config_digest(
+            DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH
+        ),
+        "designator_geometry_config_sha256": door._geometry_config_digest(
+            DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH
+        ),
+    }
+
+
 RECIPES = {"door": "fake-door-v0", "exemplar": "fake-exemplar-v0"}
 CHAIRS = ["attestator_1", "attestator_2", "attestator_3"]
 ROOT = Path(__file__).resolve().parents[2]
@@ -814,12 +838,7 @@ def test_real_run_bindings_change_with_a_renderer_recipe_before_a_page_is_writte
         settings,
         door.load_recovery_policy(),
         door.load_hard_failure_policy(),
-        designator_padding_config_sha256=door._padding_config_digest(
-            DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH
-        ),
-        designator_geometry_config_sha256=door._geometry_config_digest(
-            DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH
-        ),
+        **_sealed_binding_digests(),
     )
     altered_pdf_recipe = dict(door.pdf_render.renderer_recipe(settings), dpi=301)
     monkeypatch.setattr(door.pdf_render, "renderer_recipe", lambda _settings: altered_pdf_recipe)
@@ -830,12 +849,7 @@ def test_real_run_bindings_change_with_a_renderer_recipe_before_a_page_is_writte
         settings,
         door.load_recovery_policy(),
         door.load_hard_failure_policy(),
-        designator_padding_config_sha256=door._padding_config_digest(
-            DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH
-        ),
-        designator_geometry_config_sha256=door._geometry_config_digest(
-            DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH
-        ),
+        **_sealed_binding_digests(),
     )
 
     assert baseline["config_digest"] != changed["config_digest"]
@@ -867,12 +881,7 @@ def test_a_real_door_run_names_and_binds_its_non_fake_implementation_revision(mo
         settings,
         door.load_recovery_policy(),
         door.load_hard_failure_policy(),
-        designator_padding_config_sha256=door._padding_config_digest(
-            DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH
-        ),
-        designator_geometry_config_sha256=door._geometry_config_digest(
-            DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH
-        ),
+        **_sealed_binding_digests(),
     )
     assert baseline["adapter_recipes"]["door"] == door.REAL_DOOR_ADAPTER_REVISION
     assert baseline["adapter_recipes"]["door"] != "fake-door-v0"
@@ -885,12 +894,7 @@ def test_a_real_door_run_names_and_binds_its_non_fake_implementation_revision(mo
         settings,
         door.load_recovery_policy(),
         door.load_hard_failure_policy(),
-        designator_padding_config_sha256=door._padding_config_digest(
-            DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH
-        ),
-        designator_geometry_config_sha256=door._geometry_config_digest(
-            DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH
-        ),
+        **_sealed_binding_digests(),
     )
     assert baseline["config_digest"] != changed["config_digest"]
 
@@ -930,12 +934,7 @@ def test_a_real_door_run_binds_the_hard_failure_policy_before_any_page_is_writte
         settings,
         recovery,
         door.load_hard_failure_policy(),
-        designator_padding_config_sha256=door._padding_config_digest(
-            DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH
-        ),
-        designator_geometry_config_sha256=door._geometry_config_digest(
-            DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH
-        ),
+        **_sealed_binding_digests(),
     )
     changed = door._real_bindings(
         Models(),
@@ -949,12 +948,7 @@ def test_a_real_door_run_binds_the_hard_failure_policy_before_any_page_is_writte
             "kinds": [("perlector", "failed")],
             "reason_kinds": [],
         },
-        designator_padding_config_sha256=door._padding_config_digest(
-            DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH
-        ),
-        designator_geometry_config_sha256=door._geometry_config_digest(
-            DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH
-        ),
+        **_sealed_binding_digests(),
     )
 
     assert baseline["config_digest"] != changed["config_digest"]
@@ -2069,17 +2063,18 @@ def test_real_bindings_seal_designator_padding_alongside_the_shard_knob(monkeypa
     settings = door.render_config.load_pdf_render_settings(
         minimum_dpi=door.pdf_render.MIN_RENDER_DPI
     )
-    padding_digest = door._padding_config_digest(DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH)
-    geometry_digest = door._geometry_config_digest(DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH)
+    supplied = _sealed_binding_digests()
+    padding_digest = supplied["designator_padding_config_sha256"]
+    geometry_digest = supplied["designator_geometry_config_sha256"]
+    recovery = door.load_recovery_policy()
     bindings = door._real_bindings(
         Models(),
         ledger,
         POLICY,
         settings,
-        door.load_recovery_policy(),
+        recovery,
         door.load_hard_failure_policy(),
-        designator_padding_config_sha256=padding_digest,
-        designator_geometry_config_sha256=geometry_digest,
+        **supplied,
     )
     sealed = bindings["sealed_config_digests"]
     assert sealed.get("designator-padding") == padding_digest, (
@@ -2095,6 +2090,27 @@ def test_real_bindings_seal_designator_padding_alongside_the_shard_knob(monkeypa
     )
     assert "corpus-frame-shard" in sealed, (
         "the pre-existing corpus-frame-shard entry must survive this fix, not be replaced"
+    )
+    # The sealing family (audit S3/S6, CodeRabbit CF01). Each of these has a point
+    # of use on the real route: the door renders with the PDF policy it parsed, the
+    # storage-root gate ran under the data-handling policy it loaded, and the
+    # Designator recovery pass and the orchestrator's dispatch both work from the
+    # recovery budget. A real run whose door sealed none of them would refuse at
+    # the point of use with "sealed no digest" -- the F-S5 shape again.
+    assert sealed.get("pdf-render") == supplied["pdf_render_config_sha256"], (
+        f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing a "
+        "'pdf-render' entry bound to the digest of the bytes the settings were parsed "
+        "from; without it the door cannot prove what it rendered under (audit S6)"
+    )
+    assert sealed.get("recovery") == recovery["config_sha256"], (
+        f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing a "
+        "'recovery' entry; the Recensor, the Designator recovery pass and the "
+        "orchestrator all require this name at their point of use (audit S3)"
+    )
+    assert sealed.get("data-handling") == supplied["data_handling_config_sha256"], (
+        f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing a "
+        "'data-handling' entry naming the caller-selected policy that gated admission "
+        "(CodeRabbit CF01)"
     )
 
 
@@ -2124,12 +2140,7 @@ def test_real_bindings_refuse_an_unapproved_prior_control_before_run_creation():
             settings,
             door.load_recovery_policy(),
             door.load_hard_failure_policy(),
-            designator_padding_config_sha256=door._padding_config_digest(
-                DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH
-            ),
-            designator_geometry_config_sha256=door._geometry_config_digest(
-                DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH
-            ),
+            **_sealed_binding_digests(),
             perlector_instrument_per_mille=1,
         )
 
@@ -2162,3 +2173,133 @@ def test_each_door_path_enforces_the_shard_limit_at_run_creation(submission, den
     )
     assert ast.unparse(calls[0].args[0]) == f"len({denominator})"
     assert ast.unparse(calls[0].args[1]) == "bindings['sealed_config_digests']"
+
+
+def test_a_real_admission_names_the_data_handling_policy_that_governed_it(tmp_path, monkeypatch):
+    """CodeRabbit CF01: which caller-selected policy admitted this material.
+
+    Both entry points expose the policy as a flag, so "the current policy" is
+    whichever file the invoker names. `config/README.md` said outright that nothing
+    bound a run to the policy version governing it, which left later evidence
+    unable to establish which file's storage roots the corpus was admitted under —
+    a real gap even though the gate itself works from one in-memory record.
+
+    The run now names it. Not an approval record: nothing here refuses a submission
+    for want of a sign-off, and the per-run approval requirement cut on 2026-08-09
+    stays cut. This is provenance, which GOVERNANCE 6 asks travel with the record.
+    """
+    files = {"FS-9001.png": png(4, 3)}
+    approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
+        tmp_path, files
+    )
+    run_root = approved / "runs"
+    assert (
+        _run_real_door(
+            monkeypatch,
+            run_root=run_root,
+            source=source,
+            policy_path=policy_path,
+            ledger_path=ledger_path,
+            run_id="named-policy",
+        )
+        == 0
+    )
+
+    run = RunTree(run_root, "named-policy").read_run()
+    assert run["sealed_config_digests"]["data-handling"] == digest_bytes(policy_path.read_bytes())
+    assert run["sealed_config_digests"]["pdf-render"] == digest_bytes(
+        (ROOT / "config" / "pdf_render.toml").read_bytes()
+    )
+    assert run["sealed_config_digests"]["recovery"] == door.load_recovery_policy()["config_sha256"]
+
+
+def test_reusing_a_run_id_under_a_changed_data_handling_policy_is_refused(tmp_path, monkeypatch):
+    """Bound, not merely recorded: a second policy is a different run.
+
+    The two policies here name the same storage roots, so the gate admits the same
+    folder under both. What differs is the document — and until it was bound, the
+    same run id could hold material admitted under two of them with nothing in the
+    tree saying so.
+    """
+    files = {"FS-9002.png": png(4, 3)}
+    approved, source, policy, policy_path, ledger_path, _ledger = _approved_submission(
+        tmp_path, files
+    )
+    run_root = approved / "runs"
+    assert (
+        _run_real_door(
+            monkeypatch,
+            run_root=run_root,
+            source=source,
+            policy_path=policy_path,
+            ledger_path=ledger_path,
+            run_id="one-policy",
+        )
+        == 0
+    )
+    before = {
+        path.relative_to(run_root): digest_bytes(path.read_bytes())
+        for path in run_root.rglob("*")
+        if path.is_file()
+    }
+
+    edited = dict(policy, policy_version=f"{policy['policy_version']}-second")
+    second_policy = tmp_path / "policy-second.json"
+    second_policy.write_text(json.dumps(edited), encoding="utf-8")
+    with pytest.raises(ContractError, match="config_digest|sealed_config_digests"):
+        _run_real_door(
+            monkeypatch,
+            run_root=run_root,
+            source=source,
+            policy_path=second_policy,
+            ledger_path=ledger_path,
+            run_id="one-policy",
+        )
+    after = {
+        path.relative_to(run_root): digest_bytes(path.read_bytes())
+        for path in run_root.rglob("*")
+        if path.is_file()
+    }
+    assert after == before, "the refusal must land before anything is written"
+
+
+def test_the_fixture_run_authority_records_every_digest_its_stages_will_ask_for(
+    tmp_path, monkeypatch
+):
+    """The run names the policies it sealed, under the names points of use ask for.
+
+    The map in `run.json` and the one `run_config_bindings` computes are the same
+    map. F-S5 was the two drifting apart on the real route; recording it makes that
+    drift a refusal at `open_context` rather than a "sealed no digest" surprise at
+    whichever stage reached the point of use first.
+    """
+    from common.chairs.registry import ChairRegistry
+    from common.stage import load_fixture, run_config_bindings
+
+    run_root = tmp_path / "runs"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "door.py",
+            "--run-root",
+            str(run_root),
+            "--run-id",
+            "sealed-map",
+            "--fixture-root",
+            str(ROOT / "proof"),
+        ],
+    )
+    assert door.main() == 0
+
+    run = RunTree(run_root, "sealed-map").read_run()
+    expected = run_config_bindings(
+        ChairRegistry.from_toml(str(ROOT / "config" / "models.toml")).config,
+        load_fixture(str(ROOT / "proof")),
+        "happy",
+    )
+    assert run["sealed_config_digests"] == expected["sealed_config_digests"]
+    # Real ingress seals one name more; the fixture route is not gated, so a
+    # data-handling entry here would name a check that never happened.
+    assert "data-handling" not in run["sealed_config_digests"]
+    assert {"pdf-render", "recovery"} <= set(run["sealed_config_digests"])

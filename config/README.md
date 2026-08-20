@@ -63,6 +63,12 @@ ceiling remain in code; configuration cannot weaken them. The default is **unmea
 making it adjustable does not prove it suitable, and it should be checked against a
 real sample of real material (GOVERNANCE 9).
 
+The door reads this file exactly once and parses and hashes the same bytes
+(`render_config.load_pdf_render_binding`). It used to resolve the settings and then
+let the binding step open the file again, so a rewrite between the two reads left a
+run whose `render_settings` recorded one target while its `config_digest` bound
+another — a run claiming a configuration it did not execute.
+
 `designator_padding.toml` is the asymmetric capture-padding policy
 `pipeline/2_designator/geometry.py` applies to a structural proposal before
 cutting it: top/bottom/left/right, in integer basis points of the crop's own
@@ -78,12 +84,22 @@ so a padding change is traceable per artifact as well as per run.
 `operations/submit/gate.py` refuses a submission folder, run root or ledger outside
 them before a byte is read. **It no longer names an approval**: Tyrel's ruling of
 2026-08-09 cut the per-run approval record, and with it the policy-version hash that
-made an approval stale when the policy changed. Nothing now binds a run to the policy
-version that governed it.
+made an approval stale when the policy changed.
+
+**The run does bind the policy that governed its admission.** The Exemplar door
+reads the caller-named policy once, gates the submission on that record, and seals
+the digest of those same bytes into `config_digest` and into the run authority's
+`sealed_config_digests` under `data-handling`. So a run can be reconciled against
+the exact policy document that admitted it, rather than against whichever file now
+sits at the default path, and reusing a run id across a policy change is refused
+before a byte is written. This is provenance and tamper-evidence, not a revived
+approval: nothing refuses a submission for want of a sign-off, and the per-run
+approval record stays cut.
 
 Both entry points expose the policy's path as a flag, so "the current policy" is
 whichever file the invoker names — a documented limit, and the reason this is
-tamper-evidence rather than access control.
+tamper-evidence rather than access control. What the run now settles is *which*
+file that was.
 
 For real submissions, the local submit door writes a self-hashed filename ledger
 before any transfer. The Exemplar door requires that ledger and binds its filename,
@@ -160,3 +176,30 @@ and could not be pinned by it from anywhere else:
   repository exactly as `proof/fixtures/synthetic-two-page-v0/*.png` stand in for
   a scanned register. `proof/build_model_fixtures.py` regenerates both directories
   and prints the pins; a test refuses any drift between them.
+
+## Sealed configuration
+
+A policy that shapes a run is **read once as bytes, parsed and hashed from those same
+bytes, sealed into the run, and required by digest at every point of use.** Sealing
+means two things together: the digest goes into `run.json`'s `config_digest`, so
+reusing a run id across a change is refused before anything is written; and it is
+recorded by name in the run authority's `sealed_config_digests`, so a reader holding
+only the tree can *name* the policy bytes that governed the run instead of merely
+testing a candidate file against one hash of everything.
+
+`common/stage.py::require_sealed_config` is the point-of-use comparison. A stage asks
+through its `StageContext`; the orchestrator, which is not a stage, asks the run
+authority directly. A name that is sealed has a point of use that requires it, and a
+policy a stage needs the *values* of is carried already parsed rather than reopened —
+`recovery.toml` travels as `StageContext.recovery_policy`, `formats.toml` as
+`StageContext.armarium_formats`.
+
+Sealed names today: `designator-padding`, `designator-geometry`, `alignment`,
+`corpus-frame-shard`, `perlector-protocol`, `perlector-audit`, `pdf-render`,
+`recovery`, and — on real ingress only, because the fixture route is not gated —
+`data-handling`.
+
+`hard_failure.toml` is bound into `config_digest` but is **not** in that list: the
+orchestrator reads it before the run exists and holds it for the whole run, so it has
+no point of use a digest could be required at without changing where the run-level cap
+is resolved. Named here rather than left as an unexplained absence.

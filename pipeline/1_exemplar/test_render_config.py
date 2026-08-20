@@ -203,3 +203,130 @@ def test_run_override_is_sealed_in_authority_and_changed_resume_writes_nothing(
         if path.is_file()
     }
     assert after == before
+
+
+def test_the_policy_is_read_once_so_its_digest_is_of_the_bytes_that_were_parsed(tmp_path):
+    """`config_sha256` names the file as read, not the settings as resolved."""
+    configured = tmp_path / "render.toml"
+    configured.write_bytes(b"[pdf]\ntarget_dpi = 240\n")
+    binding = render_config.load_pdf_render_binding(configured, minimum_dpi=72)
+
+    assert binding.settings.configured_target_dpi == 240
+    assert binding.config_sha256 == digest_bytes(configured.read_bytes())
+    # The CLI override moves the target without moving the file: the digest still
+    # answers "which pdf_render.toml did this run parse", which is the question a
+    # point-of-use recheck asks.
+    overridden = render_config.load_pdf_render_binding(
+        configured, target_override=600, minimum_dpi=72
+    )
+    assert overridden.settings.configured_target_dpi == 600
+    assert overridden.config_sha256 == binding.config_sha256
+
+
+def test_a_render_policy_rewritten_while_the_door_binds_cannot_split_the_run(tmp_path, monkeypatch):
+    """The recorded settings and the sealed digest can no longer disagree.
+
+    The door used to resolve `PdfRenderSettings` from this file and then let
+    `run_config_bindings` open it a second time for the digest. A rewrite landing
+    between those reads produced a run that exited 0 while `run.json` recorded one
+    target DPI and its `config_digest` bound the bytes of another — a proof run
+    claiming a configuration it did not execute (audit S6, reproduced at a
+    one-DPI edit).
+
+    The rewrite here lands at exactly that instant: the moment the one read
+    returns. There is no second read for it to reach, so the run records the
+    target it rendered with, seals the digest of the bytes that target came from,
+    and leaves the changed file to be refused as an incompatible reuse next time.
+    """
+    from common.chairs.registry import ChairRegistry
+    from common.stage import load_fixture, run_config_bindings
+
+    run_root = tmp_path / "runs"
+    config_path = tmp_path / "pdf_render.toml"
+    original = (ROOT / "config" / "pdf_render.toml").read_bytes()
+    config_path.write_bytes(original)
+    text = original.decode("utf-8")
+    assert "target_dpi = 300" in text, "the shipped render config no longer targets 300 DPI"
+    raced = text.replace("target_dpi = 300", "target_dpi = 301")
+    read_once = render_config.load_pdf_render_binding
+
+    def rewriting_loader(path, **kwargs):
+        binding = read_once(path, **kwargs)
+        config_path.write_text(raced, encoding="utf-8")
+        return binding
+
+    monkeypatch.setattr(door.render_config, "load_pdf_render_binding", rewriting_loader)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "door.py",
+            "--run-root",
+            str(run_root),
+            "--run-id",
+            "raced-render",
+            "--fixture-root",
+            str(ROOT / "proof"),
+            "--pdf-render-config",
+            str(config_path),
+        ],
+    )
+    assert door.main() == 0
+    assert config_path.read_bytes() != original, "the rewrite this test is about did not happen"
+
+    run = RunTree(run_root, "raced-render").read_run()
+    assert run["render_settings"]["pdf"]["configured_target_dpi"] == 300
+    # The whole claim in one comparison: the run's configuration digest is the one
+    # taken over the bytes it recorded rendering under, not over the bytes that
+    # replaced them mid-binding.
+    expected = run_config_bindings(
+        ChairRegistry.from_toml(str(ROOT / "config" / "models.toml")).config,
+        load_fixture(str(ROOT / "proof")),
+        "happy",
+        pdf_render_config_sha256=digest_bytes(original),
+    )
+    assert run["config_digest"] == expected["config_digest"]
+    assert run["sealed_config_digests"] == expected["sealed_config_digests"]
+    assert run["sealed_config_digests"]["pdf-render"] == digest_bytes(original)
+
+
+def test_both_door_entry_points_seal_the_settings_they_actually_parsed():
+    """Neither route may fall back to an unbound read of the render policy.
+
+    Asserted on the source because the fallback it forbids is a default argument:
+    `process_sources` and `decide` will still load the policy themselves when no
+    settings are supplied, which is a convenience for direct callers and would be
+    an unsealed second read on a production path. Both production paths pass the
+    settings the run sealed, and this is what says so.
+    """
+    import ast
+
+    module = ast.parse((Path(__file__).resolve().parent / "door.py").read_text(encoding="utf-8"))
+    entry_points = {
+        node.name: node
+        for node in module.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name in {"fixture_submission", "real_submission"}
+    }
+    assert set(entry_points) == {"fixture_submission", "real_submission"}
+    for name, node in entry_points.items():
+        calls = [
+            call
+            for call in ast.walk(node)
+            if isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Name)
+            and call.func.id == "process_sources"
+        ]
+        assert len(calls) == 1, f"{name} does not admit its sources exactly once"
+        keywords = {keyword.arg: ast.unparse(keyword.value) for keyword in calls[0].keywords}
+        assert keywords.get("pdf_settings") == "pdf_settings", (
+            f"{name} lets process_sources fall back to its own unbound read of the render policy"
+        )
+        requires = [
+            ast.unparse(call)
+            for call in ast.walk(node)
+            if isinstance(call, ast.Call) and "require_sealed_config" in ast.unparse(call.func)
+        ]
+        assert "context.require_sealed_config('pdf-render', pdf_render_binding.config_sha256)" in (
+            requires
+        ), f"{name} never proves its render settings against the digest the run sealed"
