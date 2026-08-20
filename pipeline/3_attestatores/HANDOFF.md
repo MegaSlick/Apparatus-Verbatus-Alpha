@@ -226,7 +226,7 @@ act-level view is derived from the page join and that join's alignment against t
 page anchor. An act-targeted reread would re-derive one act's view from an attempt
 the page record does not describe, leaving the two disagreeing about the same
 chair. The honest operation is a page-level reread, which the recovery vocabulary
-already names (`common/recovery.py`) and which nothing has built; the refusal says
+already names (`PAGE_LEVEL_REREAD`, `common/recovery.py`) and which nothing has built; the refusal says
 so rather than half-performing the act-scoped one.
 
 One residual is left to the RunTree rather than checked at entry, deliberately:

@@ -500,7 +500,7 @@ def test_an_act_targeted_reread_of_a_page_witness_is_refused_by_name(tmp_path):
 
     assert result.returncode != 0, "an act-targeted reread of a page witness was accepted"
     assert "is a page witness" in result.stderr, result.stderr
-    assert "page-level reread" in result.stderr, result.stderr
+    assert "page-level-reread" in result.stderr, result.stderr
     assert snapshot(root) == before, "a refused reread wrote to the run tree"
     assert {
         record["payload"]["attempt_ordinal"]

@@ -36,6 +36,7 @@ from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusa
 from common.contracts.identities import artifact_id, attempt_id  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, PERLECTOR  # noqa: E402
 from common.exemplar_boundary import verify_exemplar_crop_lineage  # noqa: E402
+from common.recovery import PAGE_LEVEL_REREAD  # noqa: E402
 from common.stage import (  # noqa: E402
     ATTEMPTED_WITNESS_OUTCOMES,
     EXIT_COMPLETE,
@@ -2212,15 +2213,15 @@ def reread_pass(
         # time, and re-deriving one act's view from an attempt the page record
         # does not describe would leave the page Testimonium and the attachment
         # disagreeing about the same chair. The honest operation is a reread of
-        # the page, which the recovery vocabulary already names (`page-reread`,
-        # `common/recovery.py`) and which nothing has built. Refused by name
-        # rather than half-performed.
+        # the page, which the recovery vocabulary already names
+        # (`common/recovery.py::PAGE_LEVEL_REREAD`) and which nothing has built.
+        # Refused by name rather than half-performed.
         raise ContractError(
             f"chair {chair!r} is a page witness on this fixture: it reports one reading per "
             "page and its act-level view is derived from that page reading, so there is no "
             f"act-scoped attempt for act {act_id} to repeat. The operation that would be "
-            "honest here is a page-level reread, which is named in the recovery vocabulary "
-            "and is not built"
+            f"honest here is a {PAGE_LEVEL_REREAD!r}, which the recovery vocabulary names "
+            "and nothing has built"
         )
     require_open_witness_layer(
         witness_bound_reading_acts(context), act, f"a reread of chair {chair!r}"
