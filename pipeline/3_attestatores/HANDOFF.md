@@ -173,7 +173,12 @@ act the proposal seal does not name, a chair the run is not sealed with, a
 Designator-held act (no witness was shown a reading there), an absent chair
 (a dead chair asked again is not a second attempt), a chair with no first attempt
 to follow, a **page witness** (below), and an act whose **witness layer is
-closed** (below). The orchestrator never invokes it.
+closed** (below). The orchestrator never invokes it, and that is a decision
+rather than a gap: GOVERNANCE 11 gives recovery to *coverage* — a missed region,
+a cut crop, a continuation — while a witness reread recovers *priming*, so
+driving it from the recovery loop would make witness quality a loop variable.
+`RECOVERY_KINDS` is unchanged. This is an operator repair with a documented
+window.
 
 A targeted reread re-derives that act's act-attachment as part of its own write,
 through the `act_scoped_attachment_entry` the whole pass uses for the same
