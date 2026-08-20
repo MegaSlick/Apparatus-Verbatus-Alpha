@@ -107,7 +107,7 @@ SECRET_PATTERNS = (
     # topic into six committed paths, mostly as pasted working command lines.
     (
         "ntfy-topic",
-        re.compile(rb"\bNTFY_TOPIC[\t ]*=[\t ]*[\"']?[A-Za-z0-9_-]{6,}"),
+        re.compile(rb"\bNTFY_TOPIC[\t ]*=[\t ]*[\"']?[A-Za-z0-9_-]{1,64}"),
     ),
     # The URL form is how the old leak actually happened: a working command
     # line pasted whole. Any topic-shaped path segment is refused, host

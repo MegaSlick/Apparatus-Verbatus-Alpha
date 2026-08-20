@@ -590,6 +590,13 @@ def test_ntfy_topic_url_is_refused_regardless_of_host_case_or_topic_length(repo)
     stage(repo, "notes.py")
     assert run_scan(repo, "--staged").returncode == 1
 
+    # The assignment form refuses a one-character topic too; the two rules
+    # share the topic-length truth.
+    short_assignment = "NTFY_" + 'TOPIC = "q"\n'
+    write(repo, "notes.py", short_assignment)
+    stage(repo, "notes.py")
+    assert run_scan(repo, "--staged").returncode == 1
+
 
 def test_ntfy_docs_and_explicit_angle_bracket_placeholder_stay_committable(repo):
     # The angle brackets keep the example visibly non-working and outside the
