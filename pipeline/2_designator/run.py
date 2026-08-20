@@ -75,7 +75,7 @@ from common.exemplar_boundary import (  # noqa: E402
     verify_sealed_page_pixels,
 )
 from common.imaging import crop_png, decode_grayscale_png, dimensions  # noqa: E402
-from common.recovery import FALLBACK_RECROP, load_recovery_policy  # noqa: E402
+from common.recovery import FALLBACK_RECROP  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
 from common.stage import (  # noqa: E402
     DESIGNATOR_CHAIR,
@@ -1933,7 +1933,13 @@ def recovery_pass(context, act_id: str, request_id: str) -> None:
             "recropped back to life"
         )
 
-    policy = load_recovery_policy(context.args.recovery_config)
+    # The run's sealed policy, carried from the binding check rather than read
+    # again here. This was the second unbound read of `config/recovery.toml` at
+    # the recovery boundary (audit S3): the budget a recrop is authorized against
+    # must be the budget the run bound, and the recheck below refuses rather than
+    # cutting a crop under an allowance nothing sealed.
+    policy = context.recovery_policy
+    context.require_sealed_config("recovery", policy["config_sha256"])
     request = current_recovery_request(
         context.tree,
         act_id,
