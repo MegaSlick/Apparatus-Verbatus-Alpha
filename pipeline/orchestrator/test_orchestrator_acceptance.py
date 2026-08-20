@@ -565,8 +565,19 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # (Values below re-measured twice on the sealing replacement branch — the
 # coverage theme's tree plus this theme — fresh runs through this module's
 # own helpers; counts and exits held at 64/0 and 71/3.)
-HAPPY_RUN_TREE_DIGEST = "3d67756e9f12fc6db30cef4ba55c2d89bc6a8fefbc463ac8bca0c6d28574dbc4"
-REVIEW_RUN_TREE_DIGEST = "82c68eaf1dcf5a23042428ebbb2bdc7842bddea3c9208ce07f85b0d4c14ec040"
+#
+# Re-pinned again for the one attempt model. Three things move `run.json` and the
+# sealed receipts together: `sealed_config_digests` gains `hard-failure`, the
+# sealing family's fourth and last member; the fixture's two reread scenarios
+# declare their second attempts on the act-scoped chair, and the fixture is folded
+# into `config_digest`, so every scenario's authority moves with it; and the
+# offline serving-receipt endpoint is `fixture://offline-chair-runner`, since
+# *seat* is harness vocabulary that does not cross into the pipeline (GLOSSARY)
+# and that string rides in sealed receipt bytes. Neither reread scenario is
+# orchestrated, so no orchestrated tree gains a file: fresh real runs through this
+# module's own helpers held the counts at 64 for happy and 71 for review again.
+HAPPY_RUN_TREE_DIGEST = "063f879d028c9b74873553a35e404d9e38060d9b32fb90e65b51953561ab91ef"
+REVIEW_RUN_TREE_DIGEST = "a0fc210842824032d39fe25624ffda9449f53eb44d5304f18db989ba6418bd59"
 
 
 def orchestrate(

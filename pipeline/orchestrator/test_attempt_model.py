@@ -25,6 +25,7 @@ Findings: Opus-F2 (2a wedge, 2b whole-pass refusal, 2c currency loss, 2d stale
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -32,7 +33,7 @@ from pathlib import Path
 import pytest
 
 from common.contracts.canonical import canonical_bytes, self_hash
-from common.contracts.identities import artifact_id
+from common.contracts.identities import artifact_id, attempt_id
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, PERLECTOR
 from common.runtree.store import RunTree
 from common.stage import (
@@ -505,3 +506,87 @@ def test_an_act_targeted_reread_of_a_page_witness_is_refused_by_name(tmp_path):
         record["payload"]["attempt_ordinal"]
         for record in artifacts(tree, ATTESTATORES, "testimonium", act)
     } == {1}
+
+
+# --- Opus-F2 (2d): the export may not say `complete` over superseded evidence --
+#
+# Everything the Armarium says about an act is derived from the latest Recensor
+# review and from the reading's own basis references; neither route passes back
+# through `latest_per_chair`. So a Testimonium appended after the reading was
+# established was structurally invisible exactly where the export decides whether
+# to say `complete`. With the Recensor refusing the tree and no new review
+# published, stages 6 and 7 run by hand reproduced `delivered`/`complete` — and
+# the export sealed by an earlier successful orchestrated run stayed on disk
+# saying `complete` after a later reread contradicted it, with nothing marking it
+# stale.
+
+
+def _supersede_a_witness_basis(tree: RunTree, act: str, chair: str) -> None:
+    """Append a Testimonium the established reading's basis does not cite.
+
+    Written directly rather than through `reread_pass`, which now refuses this by
+    name at entry. The point of the tests below is that the refusal at the door is
+    not the only thing standing between a superseded basis and a `complete`
+    export: a folder assembled, resumed or resealed some other way must be refused
+    on its own structure.
+    """
+    records = [
+        record
+        for record in artifacts(tree, ATTESTATORES, "testimonium", act)
+        if record["payload"]["chair"] == chair
+    ]
+    current = max(records, key=lambda record: record["payload"]["attempt_ordinal"])
+    ordinal = current["payload"]["attempt_ordinal"] + 1
+    appended = json.loads(json.dumps(current))
+    appended["payload"]["attempt_ordinal"] = ordinal
+    appended["attempt_id"] = attempt_id(act, f"read:{chair}", ordinal)
+    appended["artifact_id"] = artifact_id(ATTESTATORES, "testimonium", act, appended["attempt_id"])
+    path = tree.resolve(tree.artifact_path(ATTESTATORES, "testimonium", appended["artifact_id"]))
+    reseal(path, appended)
+    tree.write_manifest(ATTESTATORES)
+
+
+def test_the_export_refuses_to_complete_over_a_superseded_witness_basis(tmp_path):
+    """2d, on a wedged tree, with stages 6 and 7 run by hand.
+
+    The audit's exact route: a green orchestrated run, a Testimonium appended
+    after it, the Recensor refusing, and then the Archetypus and Armarium invoked
+    directly. Each of the three must refuse rather than re-derive `complete` from
+    a review and a basis that no longer describe the current evidence.
+    """
+    root = tmp_path / "runs"
+    act = act_id_for("a2")
+    assert orchestrate(root, "r", "happy").returncode == 0
+    tree = RunTree(root, "r")
+    export = tree.read_artifact("armarium", "export", artifact_id("armarium", "export", "export"))
+    assert export["outcome"] == "delivered", "the run must be green before it is contradicted"
+
+    _supersede_a_witness_basis(tree, act, "attestator_2")
+
+    for program in (RECENSOR_PROGRAM, ARCHETYPUS_PROGRAM, ARMARIUM_PROGRAM):
+        result = invoke(root, "r", "happy", program)
+        assert result.returncode != 0, f"{program} accepted a superseded witness basis"
+        assert "since superseded" in result.stderr, f"{program}: {result.stderr}"
+
+
+def test_the_armarium_alone_refuses_a_superseded_basis_at_the_export_boundary(tmp_path):
+    """The export boundary carries the refusal on its own.
+
+    The Recensor and the Archetypus each hold the same rule, so an operator who
+    ran only the last stage would otherwise meet no check at all — which is the
+    shape 2d actually took: `categorize` derives everything from the latest
+    Recensor review, and the reading's basis is read only through its own
+    references. This drives the Armarium directly over an already-established act.
+    """
+    root = tmp_path / "runs"
+    act = act_id_for("a2")
+    assert orchestrate(root, "r", "happy").returncode == 0
+    tree = RunTree(root, "r")
+
+    _supersede_a_witness_basis(tree, act, "attestator_2")
+
+    result = invoke(root, "r", "happy", ARMARIUM_PROGRAM)
+
+    assert result.returncode != 0, "the export completed over a superseded witness basis"
+    assert "since superseded" in result.stderr, result.stderr
+    assert "attestator_2" in result.stderr, result.stderr

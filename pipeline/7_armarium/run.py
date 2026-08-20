@@ -71,6 +71,7 @@ from common.stage import (  # noqa: E402
     open_context,
     reading_basis_regions,
     recovery_region_count,
+    require_current_witness_basis,
     run_stage,
     stage_parser,
     unaddressed_chairs,
@@ -527,6 +528,20 @@ def verify_established_record(
             f"act {act['act_id']} has {recovery_regions} recovery crop(s) but {len(readings)} "
             "Perlectio attempt(s); export may not complete over an unre-read recrop"
         )
+    # The witness side of the same question, and the one route into this stage
+    # that did not exist. Everything this stage says about an act is derived from
+    # the latest Recensor review and from the reading's own basis references;
+    # neither route passes back through `latest_per_chair`, so a Testimonium
+    # appended after the reading was established was structurally invisible at
+    # the point where the export decides to say `complete` -- and the sealed
+    # export went on saying it (audit Opus-F2, 2d). GOVERNANCE 2 is
+    # unconditional: `complete` is refused unless everything reconciles.
+    require_current_witness_basis(
+        act["act_id"],
+        reading,
+        artifacts_for(context, ATTESTATORES, "testimonium", act["act_id"], manifest_cache),
+        f"the established Perlectio of {act['act_id']}",
+    )
     reading_payload = reading.get("payload")
     if not isinstance(reading_payload, dict):
         raise FatalAccounting("an established Perlectio has no payload")

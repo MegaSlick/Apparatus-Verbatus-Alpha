@@ -196,10 +196,15 @@ policy a stage needs the *values* of is carried already parsed rather than reope
 
 Sealed names today: `designator-padding`, `designator-geometry`, `alignment`,
 `corpus-frame-shard`, `perlector-protocol`, `perlector-audit`, `pdf-render`,
-`recovery`, and — on real ingress only, because the fixture route is not gated —
-`data-handling`.
+`recovery`, `hard-failure`, and — on real ingress only, because the fixture route is
+not gated — `data-handling`.
 
-`hard_failure.toml` is bound into `config_digest` but is **not** in that list: the
-orchestrator reads it before the run exists and holds it for the whole run, so it has
-no point of use a digest could be required at without changing where the run-level cap
-is resolved. Named here rather than left as an unexplained absence.
+`hard-failure` is the family's fourth member and the last to be sealed. It is the one
+policy the orchestrator must read *before* the run exists — the tally threshold has to
+be known to decide whether a resumed run may re-enter a stage at all — and then holds
+for the whole run, so it is read once, held, and proved against the run authority at
+the first moment such an authority exists: the resume preflight. On a first run there
+is nothing to prove it against until the Door creates the authority, and the Door seals
+these digests from the same bytes. What the file *says* remains Tyrel's: the threshold
+is his ruling and the proposed `[[kind]]` list is not approved. Sealing the file is
+engineering; changing its content is not.

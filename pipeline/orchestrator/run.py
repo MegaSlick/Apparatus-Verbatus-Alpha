@@ -303,7 +303,6 @@ def main() -> int:
     # class or a terminal decision should fail at the first run, not at the first
     # unusual page.
     check_algebra_is_total()
-    hard_failure_policy = load_hard_failure_policy(args.hard_failure_config)
 
     fixture = load_fixture(args.fixture_root)
     if fixture["fixture_id"] != args.fixture:
@@ -319,7 +318,25 @@ def main() -> int:
     # and replaying a model stage before rediscovering durable failure evidence
     # would spend work after the run was already known to need Tyrel.
     tree = RunTree(Path(args.run_root), args.run_id)
+    # Read once, here, and held for the whole run: every `checkpoint` below takes
+    # this exact policy object rather than reopening the file, so the cap that
+    # halts the run cannot move under it mid-orchestration (S3's shape, applied to
+    # the sealing family's fourth member).
+    #
+    # The proof is a step behind the read for a reason peculiar to this policy.
+    # The threshold has to be known before the resume preflight can decide whether
+    # a resumed run may re-enter a stage at all, and on a FIRST run there is no
+    # run authority to prove it against until the Door creates one -- so the point
+    # of use is the first moment such an authority exists. On a resume that is
+    # right here, before anything is invoked; on a first run the Door seals these
+    # digests from the same bytes and every stage after it rechecks its own.
+    hard_failure_policy = load_hard_failure_policy(args.hard_failure_config)
     if tree.resolve("run.json").exists():
+        require_sealed_config(
+            run_sealed_config_digests(tree.read_run()),
+            "hard-failure",
+            hard_failure_policy["config_sha256"],
+        )
         halted = checkpoint(args, "resume-preflight", hard_failure_policy)
     for name, program in SEQUENCE:
         if halted is not None:

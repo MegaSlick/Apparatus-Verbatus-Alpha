@@ -1060,8 +1060,16 @@ def run_config_bindings(
         # Designator's crop, alignment at the Attestatores, the shard limit at run
         # creation, the two Perlector policies at the reading, `recovery` at the
         # Recensor, the Designator recovery pass and the orchestrator's dispatch,
-        # and `pdf-render` at the Door that parsed it. A name sealed with no point
-        # of use would read as a closed window that nothing actually shuts.
+        # `pdf-render` at the Door that parsed it, and `hard-failure` at the
+        # orchestrator's own checkpoint. A name sealed with no point of use would
+        # read as a closed window that nothing actually shuts.
+        #
+        # `hard-failure` is the family's fourth member and the last to be sealed.
+        # It is the one the orchestrator reads BEFORE the run exists — the tally
+        # threshold has to be known to decide whether a resumed run may re-enter a
+        # stage at all — and then holds for the whole run, so its point of use is
+        # the first moment a run authority exists to prove it against, not the
+        # read itself.
         "sealed_config_digests": {
             "designator-padding": padding_config_digest,
             "designator-geometry": geometry_config_digest,
@@ -1071,6 +1079,7 @@ def run_config_bindings(
             "perlector-audit": perlector_audit_config_digest,
             "pdf-render": pdf_render_config_digest,
             "recovery": recovery_policy["config_sha256"],
+            "hard-failure": hard_failure_policy["config_sha256"],
         },
         "armarium_formats": armarium_formats,
         # Parsed from the bytes `recovery_policy["config_sha256"]` names, and
@@ -1230,7 +1239,7 @@ def fixture_serving_details(identity: ChairIdentity) -> ServingDetails:
         engine_version="fixture-v0",
         dtype="fixture",
         adapter_identity=None,
-        endpoint="fixture://offline-seat-runner",
+        endpoint="fixture://offline-chair-runner",
         started_at="2026-08-03T00:00:00Z",
     )
 
