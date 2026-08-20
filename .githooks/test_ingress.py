@@ -583,6 +583,13 @@ def test_ntfy_topic_url_is_refused_regardless_of_host_case_or_topic_length(repo)
     stage(repo, "notes.py")
     assert run_scan(repo, "--staged").returncode == 1
 
+    # A documentation path name extended by a topic character is a topic, not
+    # documentation: the exemption must end with the topic character set.
+    docs_prefixed = "# see https://ntfy" + ".sh/" + "docs-secret" + "\n"
+    write(repo, "notes.py", docs_prefixed)
+    stage(repo, "notes.py")
+    assert run_scan(repo, "--staged").returncode == 1
+
 
 def test_ntfy_docs_and_explicit_angle_bracket_placeholder_stay_committable(repo):
     # The angle brackets keep the example visibly non-working and outside the

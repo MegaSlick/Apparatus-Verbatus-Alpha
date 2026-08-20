@@ -115,9 +115,15 @@ SECRET_PATTERNS = (
     # publish the prefix and miss a rotated topic. ntfy's own documentation
     # URLs (ntfy.sh/publish, ntfy.sh/docs, ntfy.sh/app) stay committable: an
     # over-refusing scanner is the mechanism by which the guard gets bypassed.
+    # The exemption ends where the topic character set ends, not at a word
+    # boundary: a hyphen is a topic character, so "docs-secret" is a topic,
+    # not the docs path.
     (
         "ntfy-topic",
-        re.compile(rb"\bntfy\.sh/(?!(?:docs|publish|app)\b)[A-Za-z0-9_-]{1,64}", re.I),
+        re.compile(
+            rb"\bntfy\.sh/(?!(?:docs|publish|app)(?![A-Za-z0-9_-]))[A-Za-z0-9_-]{1,64}",
+            re.I,
+        ),
     ),
     (
         "credential-url",
