@@ -598,6 +598,31 @@ def test_ntfy_topic_url_is_refused_regardless_of_host_case_or_topic_length(repo)
     assert run_scan(repo, "--staged").returncode == 1
 
 
+@SCANNER_CORE
+def test_a_sixty_five_character_run_is_not_a_topic_in_either_shape(repo):
+    # ntfy's topic limit is 64 characters: a longer run cannot be a working
+    # topic, and refusing its first 64 characters would be the over-refusal
+    # that pressures a bypass. The 64-character run stays refused.
+    run_64 = "x" * 64
+    run_65 = "x" * 65
+
+    write(repo, "notes.py", "NTFY_" + f'TOPIC = "{run_65}"\n')
+    stage(repo, "notes.py")
+    assert run_scan(repo, "--staged").returncode == 0
+
+    write(repo, "notes.py", "# see https://ntfy" + ".sh/" + run_65 + "\n")
+    stage(repo, "notes.py")
+    assert run_scan(repo, "--staged").returncode == 0
+
+    write(repo, "notes.py", "NTFY_" + f'TOPIC = "{run_64}"\n')
+    stage(repo, "notes.py")
+    assert run_scan(repo, "--staged").returncode == 1
+
+    write(repo, "notes.py", "# see https://ntfy" + ".sh/" + run_64 + "\n")
+    stage(repo, "notes.py")
+    assert run_scan(repo, "--staged").returncode == 1
+
+
 def test_ntfy_docs_and_explicit_angle_bracket_placeholder_stay_committable(repo):
     # The angle brackets keep the example visibly non-working and outside the
     # exact assignment grammar. Exact topic-shaped values receive no exemption.

@@ -105,9 +105,12 @@ SECRET_PATTERNS = (
     # An ntfy topic is unauthenticated by design: the name IS the whole
     # credential, for reading and for forging. The old repository leaked its
     # topic into six committed paths, mostly as pasted working command lines.
+    # Both rules terminate at 64: ntfy's topic limit is 64 characters, so a
+    # 65-character run is not a working topic and refusing a prefix of it
+    # would be the over-refusal that pressures a bypass.
     (
         "ntfy-topic",
-        re.compile(rb"\bNTFY_TOPIC[\t ]*=[\t ]*[\"']?[A-Za-z0-9_-]{1,64}"),
+        re.compile(rb"\bNTFY_TOPIC[\t ]*=[\t ]*[\"']?[A-Za-z0-9_-]{1,64}(?![A-Za-z0-9_-])"),
     ),
     # The URL form is how the old leak actually happened: a working command
     # line pasted whole. Any topic-shaped path segment is refused, host
@@ -121,7 +124,8 @@ SECRET_PATTERNS = (
     (
         "ntfy-topic",
         re.compile(
-            rb"\bntfy\.sh/(?!(?:docs|publish|app)(?![A-Za-z0-9_-]))[A-Za-z0-9_-]{1,64}",
+            rb"\bntfy\.sh/(?!(?:docs|publish|app)(?![A-Za-z0-9_-]))"
+            rb"[A-Za-z0-9_-]{1,64}(?![A-Za-z0-9_-])",
             re.I,
         ),
     ),
