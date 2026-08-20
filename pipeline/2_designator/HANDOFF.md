@@ -633,13 +633,33 @@ reads the act, never a gate here.
 
 ## What this handoff does not settle
 
-**An unproposed cross-page half act.** The Recensor reconciles only continuations
-this stage *proposed*, so an act split across a page break that was never
-declared produces no finding in any stage: grouping's geometric detector only
-corroborates declared continuations, residual ink misses it whenever the cut
-covers the visible half, and truncation signals are single-act. Same family as
-the zero-proposal-page gap, and it belongs to whichever work item settles that
-one.
+**An unproposed cross-page half act — an ACCEPTED EVIDENCE DEFECT, not a benign
+limitation.** The Recensor reconciles only continuations this stage *proposed*, so
+an act split across a page break that was never declared produces no finding in
+any stage: grouping's geometric detector only corroborates declared
+continuations, residual ink misses it whenever the cut covers the visible half,
+and truncation signals are single-act.
+
+**State the consequence plainly, because a consumer of this contract must not
+read it as acceptable.** Such an act is lost with **no hold and no review item**,
+which means a downstream reader cannot distinguish "this act was not there" from
+"this act was missed" — the exact discrimination `GOALS.md`'s "a missed act is
+worse than a poorly read act" exists to preserve, and the one failure mode
+`GOVERNANCE.md` 2 refuses by name. Nothing in this stage's output marks the page
+as suspect, so no recovery loop can be aimed at it either.
+
+**This stage did not create the defect and does not close it here.** It predates
+this contract and was previously hidden behind a claim that continuation
+ownership was unresolved; naming it is what makes it fixable. Closing it needs
+bounded cross-page detection and an explicit hold or review outcome for the
+half act — a change to what this stage *proposes*, with its own tests and its own
+review, not a wording change. It is the same family as the zero-proposal-page
+gap, is tracked as an open evidence defect rather than as a known limitation, and
+belongs to whichever work item settles that one.
+
+**Until it is closed, no run over real material may be described as having
+accounted for every act on a page.** The accounting is honest about what it
+measured; it does not measure this.
 
 **Recovery from a structural hold.** Spec 06's test 4 asks for three things: the
 page held with a named reason, no silent gap downstream, and "the recovery

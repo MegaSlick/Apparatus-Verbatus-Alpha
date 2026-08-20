@@ -166,3 +166,69 @@ def test_an_empty_reading_beside_an_unjoinable_one_claims_no_completed_absence()
     assert join.native_payload == ""
     assert join.outcome == "failed"
     assert [row["act_key"] for row in join.unjoined_act_attempts] == ["a2"]
+
+
+# --- the page record's stated reason must match the evidence it retained ---------
+
+
+def _reason(*pairs) -> str:
+    """The reason a failed page record would carry for this exact set of attempts."""
+    return attestatores.page_failure_reason(_join(*pairs).unjoined_act_attempts)
+
+
+def test_a_structured_reading_the_join_cannot_carry_is_not_called_unread():
+    """CodeRabbit, PR #63. The defect this replaces, stated exactly.
+
+    An empty textual reading joins; a structured native reading does not, because
+    the synthetic page join concatenates text only. The old reason counted the
+    unjoined rows and, finding fewer than the acts on the page, said the page was
+    "partly unread" — of an act the chair had read and reported in full. That
+    points recovery at a missing-ink diagnosis for a page where no ink is missing.
+    """
+    reason = _reason(
+        ("a1", _attempt("genuinely-empty", "")),
+        ("a2", _attempt("read", {"lines": ["Maria"]})),
+    )
+
+    # The guard is the false CLAIM, not the word: the message may say "no part of
+    # it is claimed unread", which is the opposite assertion and contains the same
+    # substring. Pinning the bare word would fail on correct wording.
+    assert "partly unread" not in reason
+    assert "structured native reading" in reason
+    assert "the page was read and no part of it is claimed unread" in reason
+
+
+def test_a_page_of_only_non_readings_still_says_the_page_was_partly_unread():
+    """The half that was always true, kept: nothing here was read, so saying so
+    is honest. The rewrite must not soften a genuine absence into a join detail."""
+    reason = _reason(
+        ("a1", _attempt("genuinely-empty", "")),
+        ("a2", _attempt("failed", None, reason="provider returned nothing")),
+    )
+
+    assert "partly unread" in reason
+    assert "structured" not in reason
+
+
+def test_a_mixed_page_names_both_kinds_and_their_counts():
+    """Neither kind may hide behind the other. An operator reading this has to be
+    able to tell how much of the page needs a provider look and how much needs a
+    join that understands structured readings."""
+    reason = _reason(
+        ("a1", _attempt("genuinely-empty", "")),
+        ("a2", _attempt("read", {"lines": ["Maria"]})),
+        ("a3", _attempt("failed", None, reason="provider returned nothing")),
+    )
+
+    assert "2 act attempts" in reason
+    assert "1 were not readings" in reason
+    assert "1 were structured native readings" in reason
+
+
+def test_no_unjoined_attempts_at_all_names_the_join_and_blames_no_one():
+    """Every act joined and the joined text was still empty of delivered
+    characters. Nothing was lost and no chair failed; the page simply carries no
+    textual reading, and that is all the record may say."""
+    assert _reason(("a1", _attempt("genuinely-empty", ""))) == (
+        "the page join carried no textual reading"
+    )

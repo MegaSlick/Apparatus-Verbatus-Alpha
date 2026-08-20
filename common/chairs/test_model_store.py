@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import shutil
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -718,55 +719,92 @@ def test_every_store_chair_is_a_models_toml_role_or_one_recorded_exception():
     assert all(reason.strip() for reason in CHAIRS_WITHOUT_ROSTER_ROLE.values())
 
 
-def test_a_roster_chair_that_names_a_repo_must_name_the_store_s_exact_artifact():
+def _artifact_disagreements(chairs) -> list[str]:
+    """Reconcile a roster's Hugging Face chairs against the store's own pins.
+
+    Extracted so the reconciliation can be run against a roster that is not the
+    live one. The live roster is all `local-repository` fixtures, so running this
+    over it compares nothing — which is the correct answer for the current
+    repository state and is exactly why it cannot be the only test.
+    """
+
+    store = {item.chair: item for item in REQUIRED_ARTIFACTS}
+    problems = []
+    for role, identity in sorted(chairs.items()):
+        if not isinstance(identity, ChairIdentity) or identity.source != "huggingface":
+            continue
+        entry = store.get(role)
+        if entry is None:
+            problems.append(f"{role}: resolves to a fetched repository, store names no artifact")
+            continue
+        if (entry.source, entry.repo, entry.revision) != (
+            "huggingface",
+            identity.repo,
+            identity.revision,
+        ):
+            problems.append(
+                f"{role}: roster says {identity.repo}@{identity.revision}, "
+                f"store says {entry.repo}@{entry.revision}"
+            )
+    return problems
+
+
+def test_the_live_roster_never_disagrees_with_the_store_about_an_artifact():
     """Role keys reconciling is not the same as the artifacts reconciling.
 
     The test above proves the two lists agree on *which chairs exist*. It does not
     look at what each chair points AT, and that is the half that actually drifted:
-    when Tyrel's roster ruling moved the Perlector from `Qwen3.5-9B` to
-    `Qwen3.8-27B`, `models.toml` and `REQUIRED_ARTIFACTS` could have been changed
-    one without the other and every committed check would still have passed — while
-    a pod materialized the store and fetched the wrong weights. `models.toml` is the
-    sole chair-to-model authority (GLOSSARY, "chair"); this store is a
-    materialization inventory an operator fetches against *before* any chair
-    resolves, which is why it names the same pins a second time rather than deriving
-    them, and why they need reconciling rather than trusting.
+    when the Perlector moved from `Qwen3.5-9B` to `Qwen3.8-27B`, `models.toml` and
+    `REQUIRED_ARTIFACTS` could have been changed one without the other and every
+    committed check would still have passed, while a pod materialized the store and
+    fetched the wrong weights.
 
-    **Vacuous today, deliberately, and armed.** Every live chair is a
-    `local-repository` fixture snapshot with no `repo` or `revision`, so there is
-    nothing yet to compare — the real roster is still commented out. The moment a
-    chair is activated with a Hugging Face repo, this becomes a real check, and it
-    is written now precisely because that is the moment nobody would remember to
-    write it.
+    Vacuous against the live roster today — every live chair is a fixture snapshot —
+    so the test below it supplies a parseable Hugging Face roster and proves the
+    reconciliation actually fires. Both are kept: this one guards the file that
+    ships, that one guards the logic.
     """
 
     config = load_models_toml(ROOT / "config" / "models.toml")
-    store = {item.chair: item for item in REQUIRED_ARTIFACTS}
+    assert _artifact_disagreements(config.chairs) == []
 
-    compared = 0
-    for role, identity in sorted(config.chairs.items()):
-        if not isinstance(identity, ChairIdentity) or identity.source != "huggingface":
-            continue
-        entry = store.get(role)
-        assert entry is not None, (
-            f"chair {role!r} resolves to a fetched repository but the materialization "
-            "inventory names no artifact for it; the operator would have nothing to fetch"
-        )
-        assert (entry.source, entry.repo, entry.revision) == (
-            "huggingface",
-            identity.repo,
-            identity.revision,
-        ), (
-            f"chair {role!r} is bound to {identity.repo}@{identity.revision} in "
-            f"config/models.toml and to {entry.repo}@{entry.revision} in the store; "
-            "one of them is what a pod would actually fetch"
-        )
-        compared += 1
 
-    # Not an assertion that `compared` is non-zero: zero is the correct answer while
-    # the real roster is commented out, and demanding otherwise would fail the suite
-    # for the state the repository is deliberately in.
-    assert compared >= 0
+def test_a_huggingface_roster_must_name_the_store_s_exact_repo_and_revision():
+    """The reconciliation, exercised against a roster that actually has a repo.
+
+    `models.toml` is the sole chair-to-model authority (GLOSSARY, "chair"); this
+    store is a materialization inventory an operator fetches against *before* any
+    chair resolves, which is why it names the same pins a second time rather than
+    deriving them, and why they need reconciling rather than trusting.
+
+    Built from the store's own Perlector entry so the agreeing case cannot rot into
+    a second hard-coded pin that drifts alongside the first — the only literals here
+    are the mutations.
+    """
+
+    perlector = next(item for item in REQUIRED_ARTIFACTS if item.chair == "perlector")
+    assert perlector.source == "huggingface", "the Perlector pin stopped being a fetched repo"
+    live = load_models_toml(ROOT / "config" / "models.toml").chairs["perlector"]
+    agreeing = replace(
+        live,
+        source="huggingface",
+        repo=perlector.repo,
+        revision=perlector.revision,
+    )
+
+    assert _artifact_disagreements({"perlector": agreeing}) == []
+
+    drifted_revision = replace(agreeing, revision="0" * 40)
+    assert _artifact_disagreements({"perlector": drifted_revision}) == [
+        f"perlector: roster says {perlector.repo}@{'0' * 40}, "
+        f"store says {perlector.repo}@{perlector.revision}"
+    ]
+
+    drifted_repo = replace(agreeing, repo="Qwen/Qwen3.5-9B")
+    assert len(_artifact_disagreements({"perlector": drifted_repo})) == 1
+
+    unknown_chair = _artifact_disagreements({"annotator": agreeing})
+    assert unknown_chair == ["annotator: resolves to a fetched repository, store names no artifact"]
 
 
 # --- O3: the pod-sharing contract, encoded rather than described ----------------

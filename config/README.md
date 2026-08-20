@@ -4,22 +4,22 @@ The knobs. One question per planned file, each answerable without reading code.
 
 | File | Status and question |
 |---|---|
-| `models.toml` | present — which model and revision fills each numbered role |
-| `recovery.toml` | present — how many times rework may be asked for before review |
-| `hard_failure.toml` | present — how many accounted hard failures one run may carry before it stops; the threshold is Tyrel's ruling, the `[[kind]]` list is proposed and not yet approved (see the file's own header) |
-| `pdf_render.toml` | present — what whole-page PDF resolution the next run targets |
-| `designator_padding.toml` | present — how far a proposal crop is expanded past its structural bounds before it is cut |
-| `data_handling_policy.json` | present — how real material is stored, logged, retained and disposed of |
-| `spend.toml` | present, deliberately unconfigured — Tyrel's pod-plus-attached-volume money caps; both paid paths refuse it until configured |
-| `pod_placement.toml` | present — planning-only single-resident GPU resource tiers, dtype capability floors, and the reviewed price sheet for the cards this project rents |
-| `serving_recipes.toml` | present — the complete vLLM flag profile for one configured chair at one measured GPU tier |
-| `formats.toml` | present — which Armarium product projections are written and whether verified pixels are embedded |
-| `perlector_protocol.toml` | present — the sealed prior-draft protocol: Pass-B neutral fragment, page-shared-prefix policy, and control selection-rule name |
-| `alignment.toml` | present — sealed character, pair, and wall-clock ceilings for witness-to-Chandra alignment |
-| `corpus_frame.toml` | present — R0's sealed shard boundary: how many pages one bounded failure and accounting unit may hold |
-| `designator_geometry.toml` | present — the sealed tiling and crop-policy geometry the Designator's proposal adapters are built against |
-| `perlector_audit.toml` | present — the sealed Pass-C audit policy: flag classes and the round cap the audit refuses to exceed |
-| `witness_context.toml` | present — the factual per-witness context the Perlector's dossier may carry: identity, provenance, training domain, and nothing evaluative |
+| `models.toml` | which model and revision fills each numbered role |
+| `recovery.toml` | how many times rework may be asked for before review |
+| `hard_failure.toml` | how many accounted hard failures one run may carry before it stops; the threshold is Tyrel's ruling, the `[[kind]]` list is proposed and not yet approved (see the file's own header) |
+| `pdf_render.toml` | what whole-page PDF resolution the next run targets |
+| `designator_padding.toml` | how far a proposal crop is expanded past its structural bounds before it is cut |
+| `data_handling_policy.json` | how real material is stored, logged, retained and disposed of |
+| `spend.toml` | deliberately unconfigured — Tyrel's pod-plus-attached-volume money caps; both paid paths refuse it until configured |
+| `pod_placement.toml` | planning-only single-resident GPU resource tiers, dtype capability floors, and the reviewed price sheet for the cards this project rents |
+| `serving_recipes.toml` | the complete vLLM flag profile for one configured chair at one measured GPU tier |
+| `formats.toml` | which Armarium product projections are written and whether verified pixels are embedded |
+| `perlector_protocol.toml` | the sealed prior-draft protocol: Pass-B neutral fragment, page-shared-prefix policy, and control selection-rule name |
+| `alignment.toml` | sealed character, pair, and wall-clock ceilings for witness-to-Chandra alignment |
+| `corpus_frame.toml` | R0's sealed shard boundary: how many pages one bounded failure and accounting unit may hold |
+| `designator_geometry.toml` | the sealed tiling and crop-policy geometry the Designator's proposal adapters are built against |
+| `perlector_audit.toml` | the sealed Pass-C audit policy: flag classes and the round cap the audit refuses to exceed |
+| `witness_context.toml` | the factual per-witness context the Perlector's dossier may carry: identity, provenance, training domain, and nothing evaluative |
 
 ## R4 toggle register
 

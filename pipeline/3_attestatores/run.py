@@ -1479,6 +1479,47 @@ class PageJoin(NamedTuple):
     unjoined_act_attempts: list[dict[str, Any]]
 
 
+def page_failure_reason(unjoined_act_attempts: list[dict[str, Any]]) -> str:
+    """Why a page record failed, derived from the unjoined attempts' own outcomes.
+
+    **Never from their count.** Two different things land in
+    `unjoined_act_attempts`: an attempt that was not a reading at all, and a
+    reading this chair genuinely delivered as a structured native object that the
+    synthetic text join cannot concatenate (`page_join` above spells the second
+    out in each row's own `reason`). Counting them together called both "unread",
+    which is false of the second and sends an operator hunting a provider failure
+    that never happened — the same defect as the "page witness had no recordable
+    response" wording this stage already replaced, one case over.
+
+    So the page-level reason reads the partition the rows already carry rather
+    than re-deriving a worse one from a length comparison. A page record only ever
+    fails, and only these four shapes reach it.
+    """
+
+    unread = [
+        row for row in unjoined_act_attempts if row["outcome"] not in WITNESS_READING_OUTCOMES
+    ]
+    unjoinable = len(unjoined_act_attempts) - len(unread)
+    if not unjoined_act_attempts:
+        return "the page join carried no textual reading"
+    if not unread:
+        return (
+            "every act this chair reported was a structured native reading the page join "
+            "could not concatenate; the page was read and no part of it is claimed unread"
+        )
+    if unjoinable:
+        return (
+            f"the page join could not carry {len(unjoined_act_attempts)} act attempts: "
+            f"{len(unread)} were not readings, and {unjoinable} were structured native "
+            "readings the join cannot concatenate; a completed absence is not claimed "
+            "while either kind is outstanding"
+        )
+    return (
+        "the page join carried only empty readings and could not carry every act attempt; "
+        "a completed absence is not claimed over a page partly unread"
+    )
+
+
 def page_join(pairs: list[tuple[dict[str, Any], Attempt]]) -> PageJoin:
     """Concatenate one chair's delivered act readings into its page reading.
 
@@ -1659,22 +1700,7 @@ def publish_page_testimonia_and_attachments(
             native_payload, outcome = join.native_payload, join.outcome
             unjoined_act_attempts = join.unjoined_act_attempts
             reading = outcome in WITNESS_READING_OUTCOMES
-            # A failed page record has two distinct causes and the reason names
-            # the right one: empty readings were carried but the join could not
-            # carry every attempt — where a completed absence is deliberately not
-            # claimed (invariant 6) — or the join carried no textual reading at
-            # all. **Neither says the witness was silent.** The chair may have
-            # answered every request in full and had every answer be structured
-            # rather than joinable; "no recordable response" said the opposite,
-            # and would send an operator hunting a provider failure that never
-            # happened. What is true on this branch is a fact about the join,
-            # so that is what the reason states.
-            failure_reason = (
-                "the page join carried only empty readings and could not carry every "
-                "act attempt; a completed absence is not claimed over a page partly unread"
-                if len(join.unjoined_act_attempts) < len(page_acts)
-                else "the page join carried no textual reading"
-            )
+            failure_reason = page_failure_reason(unjoined_act_attempts)
             page_texts[(page_ordinal, chair)] = native_payload
             health = content_health(native_payload, completed=reading)
             resolved = context.registry.resolve(chair)
