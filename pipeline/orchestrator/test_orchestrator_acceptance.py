@@ -576,8 +576,21 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # and that string rides in sealed receipt bytes. Neither reread scenario is
 # orchestrated, so no orchestrated tree gains a file: fresh real runs through this
 # module's own helpers held the counts at 64 for happy and 71 for review again.
-HAPPY_RUN_TREE_DIGEST = "063f879d028c9b74873553a35e404d9e38060d9b32fb90e65b51953561ab91ef"
-REVIEW_RUN_TREE_DIGEST = "a0fc210842824032d39fe25624ffda9449f53eb44d5304f18db989ba6418bd59"
+#
+# Re-pinned on the cleanup branch, for CONFIGURATION BYTES ONLY — no stage logic
+# moved. `config/designator_geometry.toml` and `config/serving_recipes.toml` are
+# both digested as raw bytes into `config_digest` (`common/stage.py`), so a comment
+# rewritten in either one moves both scenarios' run authority; the S8 label was
+# dissolved in both. `config/models.toml` also changed, but only in comments, which
+# its parsed record does not carry. The one recorded-bytes change beyond
+# configuration is the Attestatores page-join failure reason, which no orchestrated
+# scenario reaches. Counts and exits held at 64/0 and 71/3.
+# (Values below re-measured twice at the final candidate — after the last byte
+# changed — through this module's own `orchestrate` and `semantic_snapshot_digest`
+# helpers, per the Tier-0 loop lesson that a pin measured mid-branch is a pin
+# measured against a tree nobody pushed.)
+HAPPY_RUN_TREE_DIGEST = "0be2bd427b5ecd6331e6ed039fdefbb797851c782db7e5c9dd1fb1daade3794a"
+REVIEW_RUN_TREE_DIGEST = "160e6352c589f3b39564ce6637fa6ff94104c0ee26fac9e1001805a9a625ee60"
 
 
 def orchestrate(
