@@ -577,14 +577,25 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # orchestrated, so no orchestrated tree gains a file: fresh real runs through this
 # module's own helpers held the counts at 64 for happy and 71 for review again.
 #
-# Re-pinned on the cleanup branch, for CONFIGURATION BYTES ONLY — no stage logic
-# moved. `config/designator_geometry.toml` and `config/serving_recipes.toml` are
-# both digested as raw bytes into `config_digest` (`common/stage.py`), so a comment
-# rewritten in either one moves both scenarios' run authority; the S8 label was
+# Re-pinned on the cleanup branch. What moved the digests is CONFIGURATION BYTES:
+# `config/designator_geometry.toml` and `config/serving_recipes.toml` are both
+# digested as raw bytes into `config_digest` (`common/stage.py`), so a comment
+# rewritten in either one moves both scenarios' run authority, and the S8 label was
 # dissolved in both. `config/models.toml` also changed, but only in comments, which
-# its parsed record does not carry. The one recorded-bytes change beyond
-# configuration is the Attestatores page-join failure reason, which no orchestrated
-# scenario reaches. Counts and exits held at 64/0 and 71/3.
+# its parsed record does not carry.
+#
+# Two things beyond configuration changed on this branch and NEITHER moves these
+# trees, which is a claim rather than an assumption — a stage change that happened
+# not to move a pin is exactly the thing a comment should not round down to "no
+# stage logic moved". The Attestatores page-join failure reason is recorded bytes,
+# but no orchestrated scenario reaches that branch. And
+# `pipeline/5_recensor/run.py::blank_corroboration` had its control flow reordered
+# so the completed-chair evidence validation runs before the witness_uncovered /
+# unresolved-chairs short-circuit: that changes only WHICH path raises
+# `FatalAccounting` over a record this pipeline's own writer could not produce, and
+# these scenarios publish no such record, so their bytes are untouched.
+#
+# Counts and exits held at 64/0 and 71/3.
 # (Values below re-measured twice at the final candidate — after the last byte
 # changed — through this module's own `orchestrate` and `semantic_snapshot_digest`
 # helpers, per the Tier-0 loop lesson that a pin measured mid-branch is a pin

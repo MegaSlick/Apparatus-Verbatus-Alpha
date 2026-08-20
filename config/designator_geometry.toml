@@ -24,9 +24,12 @@ rectify = false
 [geometry.provenance]
 source = "R2 binding: REBUILD_PLAN_three_stage.md and three_stage_reading_design.md v2.1"
 calibrated_for_this_corpus = false
-# Neither proposer is chaired. Tyrel's roster ruling of 2026-08-20 named a
-# Perlector and three witnesses and spoke to no proposer, and activating one
-# would be contract work in any case: the secondary-candidate contract reads a
-# pixel count rather than a detector, and no serving-recipe row exists for the
-# chair at any tier.
-caveat = "Fixture policy only; no proposer chair is configured or proposed."
+# No proposer chair is ACTIVE. `config/models.toml`'s live roster carries
+# `secondary_proposer` as an explicit `state = "absent"`, and its commented real
+# roster does carry a drafted YOLOv26 entry — so a proposer is drafted, just not
+# in force. Tyrel's roster ruling of 2026-08-20 named a Perlector and three
+# witnesses and spoke to no proposer, and activating the drafted one would be
+# contract work in any case: the secondary-candidate contract reads a pixel count
+# rather than a detector, and no serving-recipe row exists for the chair at any
+# tier.
+caveat = "Fixture policy only; no proposer chair is active in the live roster."

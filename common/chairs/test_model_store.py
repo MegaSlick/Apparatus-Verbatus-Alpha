@@ -29,6 +29,7 @@ from common.chairs.model_store import (
     write_derived_inventory,
     write_download_record,
 )
+from common.chairs.models import ChairIdentity
 from common.chairs.registry import CACHE_DESCRIPTOR
 from common.contracts.canonical import canonical_bytes, digest_bytes
 
@@ -715,6 +716,57 @@ def test_every_store_chair_is_a_models_toml_role_or_one_recorded_exception():
     assert store_chairs - set(config.chairs) == set(CHAIRS_WITHOUT_ROSTER_ROLE)
     assert set(CHAIRS_WITHOUT_ROSTER_ROLE) <= store_chairs
     assert all(reason.strip() for reason in CHAIRS_WITHOUT_ROSTER_ROLE.values())
+
+
+def test_a_roster_chair_that_names_a_repo_must_name_the_store_s_exact_artifact():
+    """Role keys reconciling is not the same as the artifacts reconciling.
+
+    The test above proves the two lists agree on *which chairs exist*. It does not
+    look at what each chair points AT, and that is the half that actually drifted:
+    when Tyrel's roster ruling moved the Perlector from `Qwen3.5-9B` to
+    `Qwen3.8-27B`, `models.toml` and `REQUIRED_ARTIFACTS` could have been changed
+    one without the other and every committed check would still have passed — while
+    a pod materialized the store and fetched the wrong weights. `models.toml` is the
+    sole chair-to-model authority (GLOSSARY, "chair"); this store is a
+    materialization inventory an operator fetches against *before* any chair
+    resolves, which is why it names the same pins a second time rather than deriving
+    them, and why they need reconciling rather than trusting.
+
+    **Vacuous today, deliberately, and armed.** Every live chair is a
+    `local-repository` fixture snapshot with no `repo` or `revision`, so there is
+    nothing yet to compare — the real roster is still commented out. The moment a
+    chair is activated with a Hugging Face repo, this becomes a real check, and it
+    is written now precisely because that is the moment nobody would remember to
+    write it.
+    """
+
+    config = load_models_toml(ROOT / "config" / "models.toml")
+    store = {item.chair: item for item in REQUIRED_ARTIFACTS}
+
+    compared = 0
+    for role, identity in sorted(config.chairs.items()):
+        if not isinstance(identity, ChairIdentity) or identity.source != "huggingface":
+            continue
+        entry = store.get(role)
+        assert entry is not None, (
+            f"chair {role!r} resolves to a fetched repository but the materialization "
+            "inventory names no artifact for it; the operator would have nothing to fetch"
+        )
+        assert (entry.source, entry.repo, entry.revision) == (
+            "huggingface",
+            identity.repo,
+            identity.revision,
+        ), (
+            f"chair {role!r} is bound to {identity.repo}@{identity.revision} in "
+            f"config/models.toml and to {entry.repo}@{entry.revision} in the store; "
+            "one of them is what a pod would actually fetch"
+        )
+        compared += 1
+
+    # Not an assertion that `compared` is non-zero: zero is the correct answer while
+    # the real roster is commented out, and demanding otherwise would fail the suite
+    # for the state the repository is deliberately in.
+    assert compared >= 0
 
 
 # --- O3: the pod-sharing contract, encoded rather than described ----------------
