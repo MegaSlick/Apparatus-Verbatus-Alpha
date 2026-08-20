@@ -741,15 +741,23 @@ def test_perlector_refuses_an_act_scoped_testimonium_wearing_a_page_witness_flag
     assert "page-witness scope this run did not declare" in result.stderr, result.stderr
 
 
-# --- 4. Audit-and-repair regression (F-O1): the reread path ----------------------
+# --- 4. Audit-and-repair regression (F-O1): the derived act-attachment ----------
 #
-# Opus audit-and-repair seat 3, R0. The derived act-attachment is written only by
-# the whole-pass path; `reread_pass` appends a new act-scoped attempt and writes no
-# new attachment. Every other consumer of these artifacts collapses each chair to
-# its latest attempt on purpose -- `testimonia_of` says so in its own docstring
-# ("cannot see a superseded attempt as though it were still live"), and
+# Opus audit-and-repair seat 3, R0. Every consumer of these artifacts collapses
+# each chair to its latest attempt on purpose -- `testimonia_of` says so in its own
+# docstring ("cannot see a superseded attempt as though it were still live"), and
 # `chair_outcomes` says the two derivations are shared so consumers "cannot drift
 # on what current means". The attachment was a third consumer that did drift.
+#
+# The producing path is closed at its source since the one attempt model: an
+# act-targeted reread of a page witness is refused by name, and an act-scoped
+# reread re-derives this act's attachment as part of its own write, so no ordinary
+# invocation leaves a record describing a superseded attempt. See
+# `pipeline/orchestrator/test_attempt_model.py` for that half. What these three
+# keep is the other half, which does not depend on which invocation could produce
+# it: a record on disk that contradicts the current testimony is refused at both
+# consumers. They reach it by resealing, because a structural guard is exactly
+# what a damaged record is for.
 
 
 def _latest_attachment(tree: RunTree, act_id: str) -> tuple[Path, dict]:
