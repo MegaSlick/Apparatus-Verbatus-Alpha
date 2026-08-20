@@ -237,9 +237,12 @@ direct-input chains, and exact equality of `text`, `regions`, `provenance`, `sta
 Exemplar filename ledger.
 
 **It also reads `text_status` and `annotations`, and does not take either on trust.**
-`verify_established_record` holds `annotations` to exact equality with the accepted
-Perlectio's own (absent upstream defaults to `[]`, exactly as this stage's constructor
-does), then *recomputes* `text_status` from that layer and the canonical `uncertainty`
+`verify_established_record` validates and NORMALIZES both annotation layers through
+the shared `validate_annotations` before comparing them — the sealed copy is
+normalized (an `illegible` note always carries `witness_evidence`, defaulted to
+`[]`) while the reading's raw copy may legally omit the field, so raw equality
+would refuse a correct record; the validated forms must be identical. It then
+*recomputes* `text_status` from that layer and the canonical `uncertainty`
 beside it, using the shared `derive_record_text_status`. A record claiming
 `established` over its own recorded gap is fatal at export. Both fields then travel:
 into the manifest entry, the projection, every selected literal format, the package's

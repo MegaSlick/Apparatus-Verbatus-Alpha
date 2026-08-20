@@ -720,6 +720,13 @@ def test_a_text_status_naming_an_act_the_run_never_had_is_fatal():
         )
 
 
+def test_a_non_string_text_status_is_fatal_rather_than_a_type_error():
+    """An unhashable value out of a hand-built basis must meet the named fatal,
+    not a TypeError from the frozenset membership test."""
+    with pytest.raises(FatalAccounting, match="which is not one of"):
+        _delivered_with(["partial"])
+
+
 def test_a_text_status_outside_the_closed_vocabulary_is_fatal():
     """Unknown is never `established`: a word this module never produced is
     malformed evidence, and guessing it whole is the failure mode being repaired."""

@@ -114,9 +114,12 @@ be ordinary ("many of our records are damaged").
 
 Both now travel, and neither is taken on trust:
 
-- `verify_established_record` holds `annotations` to exact equality with the accepted
-  Perlectio's own, then **recomputes** `text_status` from that layer and the canonical
-  `uncertainty` beside it (`common/contracts/outcomes.py::derive_record_text_status`,
+- `verify_established_record` validates and normalises both annotation layers
+  through the shared `validate_annotations` and requires the validated forms to be
+  identical (raw equality would refuse a correct record, since the sealed copy is
+  normalised and the reading's raw one may omit `witness_evidence`), then
+  **recomputes** `text_status` from that layer and the canonical `uncertainty`
+  beside it (`common/contracts/outcomes.py::derive_record_text_status`,
   the one spelling both stages share). A record claiming `established` over its own
   recorded gap is fatal here.
 - The manifest entry, the projection, `sources.json`'s text-free `act_outcomes`, and
