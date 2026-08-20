@@ -10,6 +10,37 @@ from common.contracts.errors import ContractError
 
 ROOT = Path(__file__).resolve().parents[2]
 
+# A stand-in digest for the run-sealed recovery policy. The dispatcher proves the
+# policy it reads against the digests the run authority recorded, so a stub that
+# omitted either half would be testing a loop nothing bounds.
+SEALED_RECOVERY_SHA = "1" * 64
+
+
+def _sealed_run_tree(sealed_recovery_sha: str = SEALED_RECOVERY_SHA):
+    """A minimal run tree whose authority names the sealed recovery policy."""
+
+    class _Tree:
+        def read_run(self):
+            return {"sealed_config_digests": {"recovery": sealed_recovery_sha}}
+
+    return lambda *_args: _Tree()
+
+
+def _sealed_policy(**fields):
+    return {"absolute_cap": 3, "config_sha256": SEALED_RECOVERY_SHA, **fields}
+
+
+def test_a_dispatch_under_a_policy_the_run_never_sealed_refuses(monkeypatch):
+    """The unit half of the orchestrator's point-of-use recheck: the run
+    authority names one digest, the file on disk carries another."""
+    orchestrator = _load_orchestrator()
+    monkeypatch.setattr(orchestrator, "RunTree", _sealed_run_tree("2" * 64))
+    monkeypatch.setattr(orchestrator, "load_recovery_policy", lambda _path: _sealed_policy())
+    args = SimpleNamespace(run_root="unused", run_id="unused", recovery_config="unused")
+
+    with pytest.raises(ContractError, match="recovery configuration changed between"):
+        orchestrator.drive_recovery(args, hard_failure_policy={})
+
 
 def _load_orchestrator():
     path = ROOT / "pipeline/orchestrator/run.py"
@@ -29,8 +60,8 @@ def test_orchestrator_stops_when_recovery_remains_outstanding_at_the_absolute_ca
     """
     orchestrator = _load_orchestrator()
     calls = []
-    monkeypatch.setattr(orchestrator, "RunTree", lambda *_args: object())
-    monkeypatch.setattr(orchestrator, "load_recovery_policy", lambda _path: {"absolute_cap": 3})
+    monkeypatch.setattr(orchestrator, "RunTree", _sealed_run_tree())
+    monkeypatch.setattr(orchestrator, "load_recovery_policy", lambda _path: _sealed_policy())
     monkeypatch.setattr(
         orchestrator,
         "pending_recoveries",
@@ -41,7 +72,8 @@ def test_orchestrator_stops_when_recovery_remains_outstanding_at_the_absolute_ca
     )
     # The run-level hard-failure checkpoint is a separate concern from the
     # recovery-round cap this test exercises; stub it to a permanent non-breach so
-    # the fake `RunTree` above (a bare `object()`) is never asked to behave like one.
+    # the fake `RunTree` above, which answers only `read_run`, is never asked to
+    # behave like a whole tree.
     monkeypatch.setattr(orchestrator, "checkpoint", lambda *_args: None)
 
     args = SimpleNamespace(run_root="unused", run_id="unused", recovery_config="unused")
@@ -60,8 +92,8 @@ def test_an_unimplemented_page_level_request_is_not_silently_dispatched_as_a_rec
     """
     orchestrator = _load_orchestrator()
     calls = []
-    monkeypatch.setattr(orchestrator, "RunTree", lambda *_args: object())
-    monkeypatch.setattr(orchestrator, "load_recovery_policy", lambda _path: {"absolute_cap": 3})
+    monkeypatch.setattr(orchestrator, "RunTree", _sealed_run_tree())
+    monkeypatch.setattr(orchestrator, "load_recovery_policy", lambda _path: _sealed_policy())
     monkeypatch.setattr(
         orchestrator,
         "pending_recoveries",
@@ -100,8 +132,8 @@ def test_a_recovery_checkpoint_waits_for_each_owner_stage_batch(monkeypatch):
             [],
         )
     )
-    monkeypatch.setattr(orchestrator, "RunTree", lambda *_args: object())
-    monkeypatch.setattr(orchestrator, "load_recovery_policy", lambda _path: {"absolute_cap": 3})
+    monkeypatch.setattr(orchestrator, "RunTree", _sealed_run_tree())
+    monkeypatch.setattr(orchestrator, "load_recovery_policy", lambda _path: _sealed_policy())
     monkeypatch.setattr(orchestrator, "pending_recoveries", lambda *_args: next(outstanding))
     monkeypatch.setattr(
         orchestrator, "invoke", lambda program, _args, **extra: calls.append((program, extra))
@@ -135,8 +167,8 @@ def test_a_breached_checkpoint_ends_the_recovery_round_where_it_was_found(monkey
     orchestrator = _load_orchestrator()
     calls = []
     breach = {"threshold": 2, "count": 3, "breached": True, "by_kind": {}, "checkpoint": None}
-    monkeypatch.setattr(orchestrator, "RunTree", lambda *_args: object())
-    monkeypatch.setattr(orchestrator, "load_recovery_policy", lambda _path: {"absolute_cap": 3})
+    monkeypatch.setattr(orchestrator, "RunTree", _sealed_run_tree())
+    monkeypatch.setattr(orchestrator, "load_recovery_policy", lambda _path: _sealed_policy())
     monkeypatch.setattr(
         orchestrator,
         "pending_recoveries",

@@ -553,8 +553,20 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # (Values below re-measured twice on the coverage replacement branch — the
 # crops theme's tree plus this theme — fresh runs through this module's own
 # helpers; counts and exits held at 64/0 and 71/3.)
-HAPPY_RUN_TREE_DIGEST = "89df3510c4687dd56beaadda6a0f26d7a054ffb25e66e8bc6b844c042a686edf"
-REVIEW_RUN_TREE_DIGEST = "1d248c9b3e761b37b6bbd8aab6e6797dc9edba86c6db11c73775980577cca5eb"
+#
+# Re-pinned for the T7 config sealing family. Every run authority now records
+# `sealed_config_digests` — the digest of each configuration file the run sealed,
+# under the name its point of use asks for — so a reader holding only the tree can
+# name the policy bytes that governed it rather than only test a candidate file
+# against `config_digest`. That moves `run.json`'s recorded bytes in both scenarios
+# and writes no new file: fresh real runs through this module's own `orchestrate`
+# and `semantic_snapshot_digest` helpers held the counts at 64 files for happy
+# (exit 0) and 71 for review (exit 3), unmoved since R5b.
+# (Values below re-measured twice on the sealing replacement branch — the
+# coverage theme's tree plus this theme — fresh runs through this module's
+# own helpers; counts and exits held at 64/0 and 71/3.)
+HAPPY_RUN_TREE_DIGEST = "3d67756e9f12fc6db30cef4ba55c2d89bc6a8fefbc463ac8bca0c6d28574dbc4"
+REVIEW_RUN_TREE_DIGEST = "82c68eaf1dcf5a23042428ebbb2bdc7842bddea3c9208ce07f85b0d4c14ec040"
 
 
 def orchestrate(

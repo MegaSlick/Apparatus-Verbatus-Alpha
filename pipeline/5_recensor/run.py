@@ -51,7 +51,6 @@ from common.recensor_receipt import build_recensor_partition_receipt  # noqa: E4
 from common.recovery import (  # noqa: E402
     FALLBACK_RECROP,
     RECOVERY_KINDS,
-    load_recovery_policy,
     reconcile_recovery_requests,
     recovery_kind_budget,
 )
@@ -1493,7 +1492,18 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     """Run under the explicitly supplied chair/config implementation."""
     args = stage_parser(__doc__.splitlines()[0]).parse_args()
     context = open_context(args, RECENSOR, registry_factory=registry_factory)
-    budget = load_recovery_policy(args.recovery_config)
+    # The run's own sealed policy, parsed once when the run's binding was checked,
+    # never reopened here. `config/recovery.toml` used to be read a second time at
+    # this line: a rewrite landing between `open_context` and it published reviews
+    # and recovery-requests carrying an allowance the run never sealed — measured
+    # as both acts held for review with `budget_allowed: 0` under a run whose
+    # digest bound the stock allowance, and unrecoverable afterwards because the
+    # correct rerun computes different bytes under the same immutable review
+    # identity and stops with IncompatibleReuse (audit S3). The recheck below
+    # proves the carried policy is the sealed one, so a reintroduced second read
+    # refuses instead of publishing.
+    budget = context.recovery_policy
+    context.require_sealed_config("recovery", budget["config_sha256"])
 
     scenario = scenario_for(context.fixture, context.scenario)
     floor = context.witness_floor

@@ -32,8 +32,9 @@ here keeps the dependency between the two trees pointing one way:
 
 import json
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, NamedTuple
 
+from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError
 
 ROOT: Final = Path(__file__).resolve().parents[2]
@@ -78,6 +79,35 @@ class GateRefusal(ContractError):
     """
 
 
+class DataHandlingPolicyBinding(NamedTuple):
+    """One loaded policy and the digest of the exact bytes it was parsed from.
+
+    Both entry points expose the policy path as a flag, so "the current policy" is
+    whichever file the invoker names. Until this digest existed, nothing recorded
+    *which* file that was: `config/README.md` said plainly that nothing bound a run
+    to the policy version that governed it, so later evidence could not establish
+    which caller-selected policy admitted the material (CodeRabbit CF01). The
+    digest is of the same read the record was parsed from, because two reads can
+    straddle a rewrite and a policy the run names must be the policy it enforced.
+
+    This is tamper-evidence and provenance, not a reinstated approval record:
+    nothing here refuses a submission for want of a sign-off, and the per-run
+    approval requirement cut on 2026-08-09 stays cut.
+    """
+
+    policy: dict[str, Any]
+    config_sha256: str
+
+
+def load_policy_binding(path: Path = DEFAULT_POLICY_PATH) -> DataHandlingPolicyBinding:
+    """The canonical policy record and the digest of the bytes behind it."""
+    try:
+        raw = Path(path).read_bytes()
+    except OSError as error:
+        raise GateRefusal(f"data-handling policy at {path} could not be read: {error}") from error
+    return DataHandlingPolicyBinding(_parse_policy(raw, path), digest_bytes(raw))
+
+
 def load_policy(path: Path = DEFAULT_POLICY_PATH) -> dict[str, Any]:
     """The canonical policy record, read fresh from disk every time.
 
@@ -97,10 +127,18 @@ def load_policy(path: Path = DEFAULT_POLICY_PATH) -> dict[str, Any]:
     entry points expose `--policy` / `--data-gate-policy`, so "the current policy" is
     whatever file the invoker names. It is disclosed here because a documented limit
     is not the same thing as a silent one.
+
+    A caller that seals a run wants `load_policy_binding` instead, so the record
+    and the digest of the bytes it came from are the product of one read.
     """
+    return load_policy_binding(path).policy
+
+
+def _parse_policy(raw: bytes, path: Path | str) -> dict[str, Any]:
+    """Validate one already-read policy document. The only parser for this file."""
     try:
-        record = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, ValueError) as error:
+        record = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as error:
         raise GateRefusal(f"data-handling policy at {path} could not be read: {error}") from error
     if not isinstance(record, dict):
         raise GateRefusal(f"{path} is not a data-handling policy record")
