@@ -36,7 +36,6 @@ from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusa
 from common.contracts.identities import artifact_id, attempt_id  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, PERLECTOR  # noqa: E402
 from common.exemplar_boundary import verify_exemplar_crop_lineage  # noqa: E402
-from common.recovery import PAGE_LEVEL_REREAD  # noqa: E402
 from common.stage import (  # noqa: E402
     ATTEMPTED_WITNESS_OUTCOMES,
     EXIT_COMPLETE,
@@ -843,11 +842,12 @@ def require_shared_whole_pass_ordinal(
 
     One residual is deliberately left to the RunTree rather than checked here:
     reread *every* chair on one act up to the same ordinal and the act agrees
-    again, so an appending whole pass at that ordinal passes this check and meets
-    the attachment collision at publication. Reaching it needs each chair's
-    whole-pass attempt at that ordinal to be byte-identical to its reread attempt
-    as well — otherwise `_refuse_write_collision` stops the pass first — so the
-    pass that survives to the collision is one that had nothing to add. The
+    again — and a whole pass at that ordinal is then a REPEAT, so
+    `pass_would_append` skips both new rules entirely and the pass proceeds to
+    the attachment derivation, whose next ordinal the rereads already took.
+    Reaching that collision needs each chair's whole-pass attempt to be
+    byte-identical to its reread attempt — otherwise `_refuse_write_collision`
+    stops the pass first — so the pass that survives had nothing to add. The
     outcome is a loud fatal refusal with `RunTree.write_manifest` as the recorded
     one-step recovery, and a check for it would cost a second derivation of every
     attachment in preflight to close a case whose worst outcome is a noisy stop.
@@ -2143,10 +2143,11 @@ def require_open_witness_layer(closed: frozenset[str], act: dict[str, Any], what
         raise ContractError(
             f"act {act['act_id']} ({act['act_key']}) already carries a Perlectio, so its "
             f"witness layer is closed: {what} would append testimony no reading can be "
-            "established from. The reading attempt ordinal is a function of the act's "
-            "recovery crops, not of its testimony, so a later Testimonium cannot be "
-            "answered by a new reading. Re-witness before the Perlector reads the act, or "
-            "let this reading stand and record the doubt as a review item"
+            "established from. A witness is only ever shown the act's original proposal "
+            "crop, so a second look adds priming, never coverage — and re-reading an act "
+            "because a witness spoke again is the re-roll GOVERNANCE 11 refuses. "
+            "Re-witness before the Perlector reads the act, or let this reading stand; "
+            "the doubt has no dedicated review channel today beyond the run's own records"
         )
 
 
@@ -2212,16 +2213,18 @@ def reread_pass(
         # page anchor — so there is no act-scoped request to put to it a second
         # time, and re-deriving one act's view from an attempt the page record
         # does not describe would leave the page Testimonium and the attachment
-        # disagreeing about the same chair. The honest operation is a reread of
-        # the page, which the recovery vocabulary already names
-        # (`common/recovery.py::PAGE_LEVEL_REREAD`) and which nothing has built.
-        # Refused by name rather than half-performed.
+        # disagreeing about the same chair. No operation exists today to re-ask
+        # a page witness about anything: building one would be new, page-scoped
+        # Attestatores work, and it is deliberately not half-performed here.
+        # (The recovery vocabulary's `page-level-reread` is a PERLECTOR
+        # operation — a different concept whose name must not be borrowed for
+        # this one; one word per concept.)
         raise ContractError(
             f"chair {chair!r} is a page witness on this fixture: it reports one reading per "
             "page and its act-level view is derived from that page reading, so there is no "
-            f"act-scoped attempt for act {act_id} to repeat. The operation that would be "
-            f"honest here is a {PAGE_LEVEL_REREAD!r}, which the recovery vocabulary names "
-            "and nothing has built"
+            f"act-scoped attempt for act {act_id} to repeat. No operation exists to re-ask "
+            "a page witness; building one would be new page-scoped Attestatores work, and "
+            "an act-scoped reread of a derived view is not it"
         )
     require_open_witness_layer(
         witness_bound_reading_acts(context), act, f"a reread of chair {chair!r}"
@@ -2238,6 +2241,7 @@ def reread_pass(
         declarations_for(context, ordinal),
         reread=True,
     )
+    next_ordinal, entries = prepared_act_attachment(context, index, act, chair)
     publish_attempt(
         context,
         act=act,
@@ -2247,34 +2251,32 @@ def reread_pass(
         regions=proposed_regions(context, act_id),
         attempt=attempt,
     )
-    republish_act_attachment(context, index, act, chair, attempt, ordinal)
+    republish_act_attachment(context, act, chair, attempt, ordinal, next_ordinal, entries)
     return 1
 
 
-def republish_act_attachment(
+def prepared_act_attachment(
     context,
     index: "AttemptIndex",
     act: dict[str, Any],
     chair: str,
-    attempt: "Attempt",
-    ordinal: int,
-) -> None:
-    """Re-derive this act's attachment so the reread's evidence layer is complete.
+) -> tuple[int, list[dict[str, Any] | None]]:
+    """Every refusal for the reread's re-derived attachment, WITHOUT writing.
 
-    The attachment is a *derived* record over the per-(act, chair) attempt stream,
-    and a reread appends to exactly that stream. Leaving it alone is what made the
-    reread unusable: `pipeline/4_perlector/run.py::act_attachment_view` compares
-    every entry against the chair's current Testimonium and refuses a record
-    describing a superseded attempt, so the very next Perlector invocation refused
-    — in the reread's own intended order, whole pass then targeted reread then
-    read. The write path existed and nothing could ever consume its product.
+    Split from the publication deliberately: all three refusals here depend only
+    on state that existed before the reread writes anything, and running them
+    after `publish_attempt` is how a damaged tree could strand a sealed
+    Testimonium its manifest does not yet name — the exact failure
+    `require_shared_whole_pass_ordinal`'s docstring condemns on the whole-pass
+    path. The reread preflights this first, publishes the Testimonium second,
+    and publishes the attachment last, so a refusal leaves the folder untouched.
 
-    Only the reread chair's entry is re-derived. The other chairs' attempts did
-    not move, so their derived views did not move either, and re-running the page
-    join and its alignment to reproduce them would be a second derivation of an
-    unchanged fact. They are carried forward — but *checked* first: a stale entry
-    is refused here rather than laundered into a newer record by a reread that has
-    nothing to do with it.
+    The reread chair's own slot comes back as `None`: its re-derived entry
+    references the NEW Testimonium by digest, so it can only be built after the
+    publish (`republish_act_attachment` fills it). The other chairs' attempts
+    did not move, so their entries are carried forward — but *checked* first,
+    so a stale entry is refused rather than laundered into a newer record by a
+    reread that has nothing to do with it.
     """
     records = index.attachments_by_act.get(act["act_id"], [])
     if not records:
@@ -2293,10 +2295,10 @@ def republish_act_attachment(
             f"act {act['act_id']}'s current act-attachment does not describe this run's "
             "configured witnesses; a reread may not re-derive it"
         )
-    entries = []
+    entries: list[dict[str, Any] | None] = []
     for item in attachments:
         if item["chair"] == chair:
-            entries.append(act_scoped_attachment_entry(context, act, chair, attempt, ordinal))
+            entries.append(None)
             continue
         other = latest_attempt(
             index.by_pair.get((act["act_id"], item["chair"]), []),
@@ -2309,19 +2311,54 @@ def republish_act_attachment(
                 f"that is no longer chair {item['chair']!r}'s current Testimonium; a reread "
                 "of another chair does not make that record current again"
             )
+        if (
+            not item.get("page_witness")
+            and item.get("attached")
+            and other["outcome"] not in WITNESS_READING_OUTCOMES
+        ):
+            # The other half of staleness for an act-scoped carried entry: a
+            # positive `attached` over a chair whose current outcome is not a
+            # reading. A page witness's `attached` is alignment-derived and may
+            # legitimately diverge; the Perlector's own guard holds that case.
+            raise SchemaRefusal(
+                f"act {act['act_id']}'s current act-attachment claims chair "
+                f"{item['chair']!r} attached while its current outcome is "
+                f"{other['outcome']!r}; a reread of another chair does not make that "
+                "claim current again"
+            )
         entries.append(item)
+    return current["payload"]["attempt_ordinal"] + 1, entries
+
+
+def republish_act_attachment(
+    context,
+    act: dict[str, Any],
+    chair: str,
+    attempt: "Attempt",
+    ordinal: int,
+    next_ordinal: int,
+    entries: list[dict[str, Any] | None],
+) -> None:
+    """Publish the attachment `prepared_act_attachment` already checked.
+
+    The reread chair's `None` slot is filled here, after its Testimonium exists
+    to be referenced by digest; every other entry was carried and checked in the
+    preflight.
+    """
+    filled = [
+        act_scoped_attachment_entry(context, act, chair, attempt, ordinal) if item is None else item
+        for item in entries
+    ]
     context.publish(
         kind="act-attachment",
         subject_id=act["act_id"],
         outcome="read",
-        attempt=attempt_id(
-            act["act_id"], "act-attachment", current["payload"]["attempt_ordinal"] + 1
-        ),
+        attempt=attempt_id(act["act_id"], "act-attachment", next_ordinal),
         inputs=[],
         payload={
             "act_key": act["act_key"],
-            "attempt_ordinal": current["payload"]["attempt_ordinal"] + 1,
-            "attachments": entries,
+            "attempt_ordinal": next_ordinal,
+            "attachments": filled,
         },
     )
 

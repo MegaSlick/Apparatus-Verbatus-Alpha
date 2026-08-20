@@ -346,6 +346,19 @@ def main() -> int:
             if halted is not None:
                 break
         result = invoke(program, args)
+        if name == "door" and result == 0:
+            # On a FIRST run there was no authority to prove the policy against
+            # before this moment; the Door has just created one from its own
+            # read of the same path. Proving the two reads against each other
+            # here closes the first-run window in which the file could change
+            # between the orchestrator's read above and the Door's — the exact
+            # straddle the sealing family exists to catch. On a resume this is
+            # a harmless re-proof of the check already made at preflight.
+            require_sealed_config(
+                run_sealed_config_digests(tree.read_run()),
+                "hard-failure",
+                hard_failure_policy["config_sha256"],
+            )
         # A held Attestatores exit is not an ordinary partial act result. Its own
         # forwarded stderr names whether the attempt tally was UNKNOWN or a whole
         # pass was refused during preflight; either cause stops orchestration.

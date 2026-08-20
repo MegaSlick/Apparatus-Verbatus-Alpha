@@ -34,7 +34,7 @@ import pytest
 
 from common.contracts.canonical import canonical_bytes, self_hash
 from common.contracts.identities import artifact_id, attempt_id
-from common.contracts.stages import ATTESTATORES, DESIGNATOR, PERLECTOR
+from common.contracts.stages import ATTESTATORES, DESIGNATOR, PERLECTOR, RECENSOR
 from common.runtree.store import RunTree
 from common.stage import (
     act_by_key,
@@ -232,8 +232,7 @@ def test_a_forged_region_origin_is_refused_at_the_perlector_naming_the_denominat
     recensor = invoke(root, "r", "review", RECENSOR_PROGRAM)
     assert recensor.returncode != 0, "the Recensor accepted a tree the Perlector had refused"
     assert "unrecognized origin 'mystery'" in recensor.stderr, recensor.stderr
-    unchanged = {path: body for path, body in snapshot(root).items() if path in before}
-    assert unchanged == before, "a refused pass rewrote bytes that were already sealed"
+    assert snapshot(root) == before, "a refused pass rewrote sealed bytes or wrote new files"
 
 
 def test_the_perlector_derives_its_ordinal_from_the_shared_recovery_reader(tmp_path):
@@ -394,7 +393,18 @@ def test_a_reread_of_a_failed_witness_is_retained_and_the_act_still_holds(tmp_pa
         "the reading was primed from the superseded successful attempt"
     )
     recensor = invoke(root, "r", "reread-failure", RECENSOR_PROGRAM)
-    assert recensor.returncode in (0, 3), recensor.stderr
+    # Pinned, not merely tolerated (measured, not assumed): the live `failed`
+    # witness drops act a1 under its floor, so the run HOLDS — exit 3 — and the
+    # review names the failed chair in its coverage rather than absorbing it.
+    assert recensor.returncode == 3, recensor.stderr
+    review = next(
+        record
+        for record in artifacts(tree, RECENSOR, "review", act)
+        if record["payload"]["act_key"] == "a1"
+    )
+    assert review["payload"]["coverage"]["by_outcome"].get("failed", 0) >= 1, (
+        "the reread's failed witness vanished from the review's coverage"
+    )
 
 
 # --- Opus-F2 (2b, 2c): the whole pass is not the remedy, and says so ----------
@@ -500,7 +510,7 @@ def test_an_act_targeted_reread_of_a_page_witness_is_refused_by_name(tmp_path):
 
     assert result.returncode != 0, "an act-targeted reread of a page witness was accepted"
     assert "is a page witness" in result.stderr, result.stderr
-    assert "page-level-reread" in result.stderr, result.stderr
+    assert "No operation exists to re-ask a page witness" in result.stderr, result.stderr
     assert snapshot(root) == before, "a refused reread wrote to the run tree"
     assert {
         record["payload"]["attempt_ordinal"]

@@ -212,9 +212,14 @@ downstream.
 
 **The reread has a window.** It is open until the Perlector establishes a reading
 that cites this act's testimony, and closed afterwards. A new witness attempt on a
-closed act — targeted reread *or* appending whole pass — is refused by name,
-because the Perlector would recompute the same ordinal, build a different payload
-from the new testimony, and meet its own immutable record. A held act's or an
+closed act — targeted reread *or* appending whole pass — is refused by name. The
+deep reason is not the ordinal mechanics (a pending recovery reread means a new
+reading can be pending even on a closed act): it is that a witness is only ever
+shown the act's *original proposal crop* (`proposed_regions`; the Perlector
+refuses testimony naming a recovery crop), so a second look can only ever add
+priming, never coverage — and re-reading because a witness spoke again is
+GOVERNANCE 11's re-roll. Mechanically, the Perlector would also recompute the
+same ordinal, build a different payload, and meet its own immutable record. A held act's or an
 absent chair's `not-run` reading cites no testimony and closes nothing. A pass
 that only repeats attempts already sealed is a resume and is untouched.
 
@@ -230,9 +235,10 @@ the repair pass still works.
 act-level view is derived from the page join and that join's alignment against the
 page anchor. An act-targeted reread would re-derive one act's view from an attempt
 the page record does not describe, leaving the two disagreeing about the same
-chair. The honest operation is a page-level reread, which the recovery vocabulary
-already names (`PAGE_LEVEL_REREAD`, `common/recovery.py`) and which nothing has built; the refusal says
-so rather than half-performing the act-scoped one.
+chair. No operation exists today to re-ask a page witness about anything —
+building one would be new, page-scoped Attestatores work — and the refusal says
+so rather than half-performing the act-scoped one. (The recovery vocabulary's
+`page-level-reread` is a *Perlector* operation; that name is not borrowed here.)
 
 One residual is left to the RunTree rather than checked at entry, deliberately:
 reread *every* chair on one act up to the same ordinal and the act agrees again,
