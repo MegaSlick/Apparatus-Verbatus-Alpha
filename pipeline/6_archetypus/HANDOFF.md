@@ -63,7 +63,7 @@ rebuilt one field at a time. A record missing a field, or carrying one it is not
 to carry, is refused before it is written.
 
 **`status` vs `text_status`.** `status` is a fixed literal, `"established"`, required
-verbatim by the Armarium's own (frozen, off-limits this round)
+verbatim by the Armarium's own
 `verify_established_record` — it means "this act has exactly one Archetypus record,"
 record-level. `text_status` is the richer, separate claim spec 10 asks for:
 `established | partial | no_readable_text`, describing what the record's `text` actually
@@ -71,13 +71,28 @@ contains. The two are deliberately different fields answering different question
 are **not** mirrors: mirroring them would make every damaged act fail the Armarium's
 literal check, and would put a second status decision where there is meant to be one.
 
-**`text_status` derivation.** Computed from the reading's own text and its carried
-annotations, never stored upstream:
+**`text_status` derivation.** Computed from the reading's own text and *both* damage
+layers it carries, never stored upstream:
 
-- any `illegible` gap present → `partial`, regardless of whether `text` is otherwise
-  empty or full (ink is known and unread somewhere in the act);
+- any canonical `uncertainty.gaps` row, or any `illegible` annotation, present →
+  `partial`, regardless of whether `text` is otherwise empty or full (ink is known and
+  unread somewhere in the act);
 - otherwise, empty or all-whitespace `text` → `no_readable_text`;
 - otherwise → `established`.
+
+The two layers are unioned rather than ranked, so neither can hide damage the other
+saw — which is what makes carrying both of them honest rather than redundant. The gap
+test precedes the empty-text test for both layers: a whole-act gap over empty text is
+"ink present, wholly unread", the middle silence, and reporting it as the last one
+would seal a proved blank beside a gap saying the opposite.
+
+**The derivation lives in `common/contracts/outcomes.py`** (`TEXT_STATUSES`,
+`derive_text_status`, `derive_record_text_status`), not in this file, because the
+Armarium recomputes the same word from the layers travelling beside the text at
+export and stages talk only through `common/`
+(`pipeline/test_stage_import_boundaries.py`). One spelling; the two cannot drift into
+disagreeing about the same record. This module re-exports all three under its own
+names, which is how this stage's tests reach them.
 
 An empty-text `established` record is refused at the schema (`validate_text_status`).
 `no_readable_text` requires `evidence_ref` — see below. A blank page is **not** a fatal
@@ -141,6 +156,15 @@ Rendering either of them — brackets, underdots, sigla — is the Armarium's bu
 export time and is deliberately not stored here. `annotations` is optional on the wire
 today: nothing upstream of this stage populates it yet, and it defaults to `[]`, which is
 exactly today's behaviour.
+
+**Beside, not instead of, the canonical `uncertainty` layer.** The two describe the same
+kinds of damage — `uncertain` against `uncertain_spans`, `illegible` against `gaps` — and
+each carries a fact the other's schema cannot hold: a `certainty` of `unknown` has no
+canonical equivalent, and a canonical gap's `position`, `chair` and `testimonium_id` have
+no place on an `illegible` note. Folding one into the other would therefore lose evidence,
+which GOVERNANCE 4 does not allow, so both are sealed and both travel. They cannot
+contradict each other into silence because `text_status` is the union of the two: either
+one recording unread ink makes the record `partial`.
 
 **A malformed annotation is run-fatal, with no per-act route around it — a producer
 obligation, not (only) a reader problem.** `validate_annotations` raises `SchemaRefusal`
@@ -212,14 +236,27 @@ direct-input chains, and exact equality of `text`, `regions`, `provenance`, `sta
 `dissent_ref` with the reviewed Perlectio. It then links each region back to the original
 Exemplar filename ledger.
 
-It does **not** read `text_status`, `annotations`, `evidence_ref`, `text_hash`, or
-`index.json` today — those are fields this stage carries for their own sake and for the
-Armarium lane's export and rendering work, not yet projected into the terminal export.
-Two consequences worth stating plainly for whoever picks that up:
+**It also reads `text_status` and `annotations`, and does not take either on trust.**
+`verify_established_record` holds `annotations` to exact equality with the accepted
+Perlectio's own (absent upstream defaults to `[]`, exactly as this stage's constructor
+does), then *recomputes* `text_status` from that layer and the canonical `uncertainty`
+beside it, using the shared `derive_record_text_status`. A record claiming
+`established` over its own recorded gap is fatal at export. Both fields then travel:
+into the manifest entry, the projection, every selected literal format, the package's
+text-free source graph, and the run aggregate, where a non-`established` status
+contributes its own named reason and the run reports `partial`. A run whose acts are
+all delivered but damaged therefore exits `EXIT_HELD` at the Armarium rather than 0 —
+the act is delivered, and the run did not read all of it.
 
-- an act delivered with `text_status: partial` or `no_readable_text` is currently
-  exported and aggregated exactly like a fully established one, so the export's own
-  honesty about damage is spec 11's to build; and
+Consequences worth stating plainly:
+
+- the older `annotations` layer is **carried, not migrated**. It is projected under the
+  name `transcription_annotations`, to keep it apart from the unbuilt *semantic*
+  annotation layer (`pipeline/7_armarium/annotation_boundary.py`), whose per-row
+  `not-produced` claim used to be written over it under the bare name `annotations`.
+  Nothing upstream populates this layer yet, so `[]` remains the ordinary value;
+- `evidence_ref`, `text_hash` and `index.json` are still not read at export. They
+  remain fields this stage carries for their own sake; and
 - the projection-identity test (`pipeline/orchestrator/test_projection_identity.py`)
   checks the one export format that exists. A second format must be added to it, or it
   will pass over the new one in silence.

@@ -70,10 +70,21 @@ projection configuration. The bundle may contain these plainly specified formats
   `claims.display.status` says so on the face of every bundle.
 - `acts.sqlite` — an `acts` table with the literal Archetypus field, and a
   separate `act_search` / FTS5 layer whose search fold is visibly derived and
-  revision-marked.
+  revision-marked. Metadata schema `armarium-acts-sqlite.v2`
+  (`PRAGMA user_version=2`): v2 covers R8's `annotations_json` →
+  `uncertainty_json` rename (CR W15, which kept v1 — a real versioning miss)
+  and this change's damage-record columns.
 - `acts.jsonl` — one record per expected act, with canonical text only for a
-  delivered act, provenance, source regions, and explicit unavailable/pending
-  annotation fields.
+  delivered act, provenance, source regions, its established-text status and
+  transcription annotation layer, and the explicit pending claim for the separate
+  semantic annotation layer. Record schema `armarium-act.v2`: v1's bare
+  `annotations`/`annotation_status` pair is renamed apart into
+  `semantic_annotations`/`semantic_annotation_status`, and `text_status`/
+  `transcription_annotations` join the row — a consumer keying on the schema id
+  must never read a v1 shape out of a v2 row. `sources.json` is
+  `armarium-sources.v2` for the same reason: its act-outcome rows now REQUIRE
+  `text_status` under exact-field-set validation, and the manifest is
+  `armarium-export-manifest.v2` for its renamed-apart annotation claims.
 - `review-items.jsonl` — held and refused act records with reasons and
   digest-checked evidence references.
 - `salvage/items.jsonl` — a structurally separate salvage namespace. It has no
@@ -89,6 +100,53 @@ If `embed_pixels = true`, verified page and crop bytes are included beneath
 `pixels/` and clean-machine verification opens them. If it is false, source and
 crop references remain valid and digest-named, but the manifest says plainly that
 pixel resolution requires retained-source access.
+
+### The damage record: `text_status` and the two annotation layers
+
+**A delivered act is not necessarily a whole one.** `delivered` says where the act
+ended; the Archetypus's `text_status` (`established | partial | no_readable_text`)
+says whether the reading that left carries ink the Perlector knew was there and
+could not read. Neither that field nor the record's `annotations` layer used to be
+read here at all, so an act the pipeline itself knew was damaged was exported and
+aggregated exactly like a whole one, and the run reported `complete` with an empty
+reason list — GOVERNANCE 2 failing at the last boundary in the case Tyrel expects to
+be ordinary ("many of our records are damaged").
+
+Both now travel, and neither is taken on trust:
+
+- `verify_established_record` holds `annotations` to exact equality with the accepted
+  Perlectio's own, then **recomputes** `text_status` from that layer and the canonical
+  `uncertainty` beside it (`common/contracts/outcomes.py::derive_record_text_status`,
+  the one spelling both stages share). A record claiming `established` over its own
+  recorded gap is fatal here.
+- The manifest entry, the projection, `sources.json`'s text-free `act_outcomes`, and
+  every selected literal format carry the status; the transcription annotation layer
+  rides in the literal formats beside the text it marks up, exactly as the canonical
+  uncertainty layer does. Cross-format projection identity compares both, so two
+  deliverables cannot disagree about whether the same act is damaged.
+- Every product verifier re-derives the status from the row's own layers on a clean
+  machine rather than reading it back. A single-literal-format package is covered too,
+  where cross-format identity would catch nothing.
+- `run_aggregate` takes the per-act status through `aggregate_basis.act_text_status`,
+  so a damaged act contributes its own named reason and the run reports `partial`. The
+  basis is packaged, so the clean verifier recomputes that verdict instead of believing
+  it. A run whose acts are all delivered but damaged therefore reports `partial` and
+  exits `EXIT_HELD`: the acts are delivered, and the run did not read all of them.
+
+**Two annotation layers, two names, because they are two things.** The *semantic*
+layer is `annotation_boundary.py`'s unbuilt person/date/kinship apparatus; the
+*transcription* layer is the Archetypus's own `uncertain`/`illegible` marks. Every row
+used to carry `annotations: []` with `annotation_status: not-produced` — true of the
+first, written over an act whose record had sealed a real mark of the second. The row
+fields are now `semantic_annotations` / `semantic_annotation_status` and
+`transcription_annotations`, and the manifest carries `claims.semantic_annotations`
+(the fixed not-produced claim) beside `claims.transcription_annotations` (a measured
+carriage claim, like `claims.uncertainty`). Neither takes the bare word.
+
+**What this deliberately does not do is render the damage.** Whether a gap is shown
+inside the `display:` reading remains Tyrel's choice of convention (spec 11), and
+`claims.display.renders_canonical_uncertainty` still says `false` on the face of every
+bundle. Counting damage is this stage's business; showing it is not.
 
 ### The terminal ledger
 
@@ -153,7 +211,9 @@ this stage's own tests. So, when selected, every real run's salvage member is pr
 but the manifest says `not-produced-no-sealed-salvage-inventory`, rather than claiming
 a measured zero.
 
-The annotation boundary in `annotation_boundary.py` is not wired into this
+The *semantic* annotation boundary in `annotation_boundary.py` — a different layer
+from the transcription annotations above, and the reason neither of them keeps the
+bare word — is not wired into this
 stage, configuration, or orchestrator, and is built only as the contract a future
 `annotator` chair would occupy — spec 11 gates the build itself on Tyrel approving
 the ARCHITECTURE wording that gives the layer its home. It carries the five fields

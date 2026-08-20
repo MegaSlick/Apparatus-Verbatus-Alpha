@@ -465,6 +465,11 @@ def _established_uncertainty_case(armarium, monkeypatch):
         "perlectio_ref": reading_ref,
         "recensor_ref": review_ref,
         "uncertainty": layer,
+        # The record's two damage fields, which export now reconciles like every
+        # other field it copies from the reading: an empty annotation layer, and
+        # the status that derives from it and from the empty gap list above.
+        "annotations": [],
+        "text_status": "established",
     }
     payload["self_hash"] = self_hash(payload)
     established = {"payload": payload, "inputs": [review_ref, reading_ref]}
