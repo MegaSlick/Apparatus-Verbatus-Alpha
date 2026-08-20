@@ -263,6 +263,59 @@ def _proved(outcomes: dict) -> dict:
     return {chair: {"regions": True, "receipt": True} for chair in outcomes}
 
 
+def test_a_writer_impossible_record_is_fatal_on_the_witness_uncovered_path_too():
+    """The two short-circuits return a quiet `None`; this does not.
+
+    "This act cannot be confirmed blank" and "the run tree holds a record this
+    pipeline's own writer could not have produced" are different findings, and
+    ordering the first ahead of the second made the alarm conditional on the act
+    being otherwise eligible. A recovery region is witness-uncovered by contract,
+    so before the reorder it was one of the paths where a completed outcome with
+    no request behind it travelled unexamined -- exactly the trees most likely to
+    be malformed were the ones that never looked.
+    """
+    coverage = {"under_witnessed": False, "unresolved_chairs": 0, "floor": 3}
+    outcomes = {
+        "attestator_1": "genuinely-empty",
+        "attestator_2": "genuinely-empty",
+        "attestator_3": "genuinely-empty",
+    }
+    evidence = dict(_proved(outcomes), attestator_1={"regions": False, "receipt": False})
+
+    with pytest.raises(FatalAccounting, match=r"attestator_1 has no region inputs and no"):
+        RECENSOR_RUN.blank_corroboration(coverage, outcomes, {}, evidence, witness_uncovered=True)
+
+
+def test_an_unresolved_chair_does_not_hide_a_writer_impossible_record_either():
+    """The other half of the same short-circuit, and the same reasoning: a run
+    that has not yet heard from every configured chair still may not carry a
+    completed outcome nothing records having produced."""
+    coverage = {"under_witnessed": False, "unresolved_chairs": 1, "floor": 3}
+    outcomes = {"attestator_1": "genuinely-empty", "attestator_2": "genuinely-empty"}
+    evidence = dict(_proved(outcomes), attestator_2={"regions": True, "receipt": False})
+
+    with pytest.raises(FatalAccounting, match=r"attestator_2 has no serving receipt"):
+        RECENSOR_RUN.blank_corroboration(coverage, outcomes, {}, evidence)
+
+
+def test_an_uncovered_act_with_a_sound_record_still_returns_the_quiet_none():
+    """The acceptance half beside the two refusals: the reorder moved the
+    short-circuit, it did not remove it. A witness-uncovered act whose records
+    are well formed is still simply not confirmable, with no alarm."""
+    coverage = {"under_witnessed": False, "unresolved_chairs": 0, "floor": 3}
+    outcomes = {
+        "attestator_1": "genuinely-empty",
+        "attestator_2": "genuinely-empty",
+        "attestator_3": "genuinely-empty",
+    }
+    assert (
+        RECENSOR_RUN.blank_corroboration(
+            coverage, outcomes, {}, _proved(outcomes), witness_uncovered=True
+        )
+        is None
+    )
+
+
 def test_completed_reading_evidence_below_the_floor_never_corroborates_blank():
     coverage = {"under_witnessed": True, "unresolved_chairs": 0, "floor": 2}
     outcomes = {"attestator_1": "genuinely-empty"}

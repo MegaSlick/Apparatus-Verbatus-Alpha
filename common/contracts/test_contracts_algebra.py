@@ -693,7 +693,13 @@ def test_a_delivered_act_with_no_text_status_is_named_rather_than_assumed_whole(
     """
     aggregate = _delivered_with(None)
     assert aggregate["status"] == "partial"
-    assert aggregate["reasons"] == [outcomes.NO_TEXT_STATUS_REASON.format(act="act_a")]
+    # The literal sentence, exactly as the two tests above it pin theirs. Comparing
+    # `NO_TEXT_STATUS_REASON` to itself would pass for any wording the constant
+    # ever held, including one that stopped saying the measurement never happened.
+    assert aggregate["reasons"] == [
+        "act act_a was delivered with no established-text status record, so whether its "
+        "one reading is whole was never measured"
+    ]
 
 
 def test_a_text_status_on_an_act_that_was_not_delivered_is_fatal():
@@ -777,6 +783,23 @@ def test_a_canonical_gap_over_empty_text_is_partial_and_never_a_proved_blank():
 
 def test_an_empty_reading_with_no_damage_recorded_anywhere_is_no_readable_text():
     assert outcomes.derive_record_text_status("", [], _layer()) == "no_readable_text"
+
+
+def test_a_malformed_record_that_also_carries_a_gap_is_refused_rather_than_partial():
+    """The one branch that could reach a status without ever looking at the text.
+
+    A canonical gap decides `partial` on its own, so this derivation could return
+    it over a text field that is not a string and an annotation layer nothing can
+    read -- and the record would leave the pipeline described by a word no one
+    had checked it against. The otherwise-unused `derive_text_status` call inside
+    the gap branch is the whole of what prevents that: remove it and both
+    assertions below return `"partial"` instead of refusing.
+    """
+    gap = {"position": "internal", "start": 4, "end": 4, "witness_evidence": []}
+    with pytest.raises(SchemaRefusal, match="exactly one string text"):
+        outcomes.derive_record_text_status(None, [], _layer([gap]))
+    with pytest.raises(SchemaRefusal, match="carries no kind"):
+        outcomes.derive_record_text_status("ink", [{"start": 0, "end": 0}], _layer([gap]))
 
 
 def test_a_damage_layer_that_cannot_be_read_is_refused_rather_than_called_whole():

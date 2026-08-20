@@ -371,8 +371,6 @@ def blank_corroboration(
     evidence is not this stage's to interpret. A presence check -- the strong
     per-byte counterpart runs at the Perlector over the same artifacts.
     """
-    if witness_uncovered or coverage["unresolved_chairs"]:
-        return None
     completed = sorted(
         chair for chair, outcome in outcomes.items() if outcome in WITNESS_READING_OUTCOMES
     )
@@ -395,6 +393,16 @@ def blank_corroboration(
             f"{'; '.join(unproved)}. A blank may not be corroborated by a read that nothing "
             "records having happened"
         )
+    # **Below the validation, deliberately.** These two are ordinary "this act
+    # cannot be confirmed blank" facts and they return a quiet `None`; the check
+    # above is a claim that the run tree holds a record this pipeline's own writer
+    # could not have produced. Ordering the short-circuit first made that alarm
+    # conditional on the act being otherwise eligible, so exactly the trees most
+    # likely to be malformed — a recovery region, a run still missing a chair —
+    # were the ones where a forged completed record travelled unexamined. A
+    # writer-impossible record is fatal on every path or it is not fatal at all.
+    if witness_uncovered or coverage["unresolved_chairs"]:
+        return None
     if (
         len(completed) < coverage["floor"]
         or not completed

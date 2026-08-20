@@ -118,13 +118,11 @@ declarations removed and holds instead. Both are pinned end to end
 and the resolution itself in
 `pipeline/3_attestatores/test_page_fallback_witnessing.py`.
 
-That closes the open ruling this section used to carry. It asked whether a real
-serving implementation might keep the short-circuit and skip provider calls for
-fallback pages; the question does not survive the answer to the narrower one,
-because the outcome it would have skipped to is a positive claim about what a
-witness reported. A real implementation may make fallback pages cheap however it
-likes — a cheaper model, a coarser crop, a page-scoped call — but whatever it
-does has to produce a response this stage retains, or the act holds.
+**A real implementation may make fallback pages cheap however it likes** — a
+cheaper model, a coarser crop, a page-scoped call — but whatever it does has to
+produce a response this stage retains, or the act holds. Skipping the provider
+call entirely is the one thing it may not do, because the outcome it would skip
+to is a positive claim about what a witness reported.
 
 `provenance` holds the exact resolved identity/revision and, only for attempted
 outcomes, the digest-checked serving receipt. A failed or absent chair cannot be

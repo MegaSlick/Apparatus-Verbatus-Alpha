@@ -24,6 +24,7 @@ from PIL import Image
 from common.imaging import (
     PNG_SIGNATURE,
     _encode_crop_deterministic,
+    _to_display_mode,
     carries_only_image_chunks,
     crop_png,
     encode_grayscale_png,
@@ -234,7 +235,11 @@ def test_an_indexed_crop_whose_alpha_lives_in_the_palette_keeps_it():
 
 def test_a_crop_keeps_the_colour_profile_its_page_carried():
     """Pillow's writer copies `icc_profile` into the crop today. Dropping it would
-    not be a framing change: it decides how the samples are meant to be read."""
+    not be a framing change: it decides how the samples are meant to be read.
+
+    This is the framing-only path — the page's mode is already PNG-representable,
+    so nothing converts. A crop whose mode DOES have to change colour class drops
+    the profile instead, and the tests below that one say why."""
     profile = b"a synthetic colour profile, opaque to this pipeline"
     page = colour_page(icc_profile=profile)
 
@@ -243,6 +248,67 @@ def test_a_crop_keeps_the_colour_profile_its_page_carried():
     assert [tag for tag, _ in chunks(crop)] == [b"IHDR", b"iCCP", b"IDAT", b"IEND"]
     assert image_shown(crop).icc_profile == profile
     assert carries_only_image_chunks(crop)
+
+
+def test_a_conversion_that_changes_colour_class_drops_the_profile_it_made_false():
+    """A CMYK profile attached to RGB samples is worse than no profile at all.
+
+    Anything honouring it re-reads the pixels through a transformation that
+    describes an image which no longer exists — and the crop is content-
+    addressed, so those wrong bytes become the region's `image_sha256`. Pillow
+    copies `info` straight across `convert()`, which is what makes this a real
+    branch rather than a hypothetical one.
+    """
+    profile = b"a synthetic CMYK profile, opaque to this pipeline"
+    page = Image.new("CMYK", (4, 2))
+    page.info["icc_profile"] = profile
+    assert "icc_profile" in page.convert("RGB").info, "Pillow stopped carrying it; test is moot"
+
+    converted = _to_display_mode(page)
+
+    assert converted.mode == "RGB"
+    assert "icc_profile" not in converted.info
+
+
+def test_a_rescaled_high_precision_crop_drops_the_profile_its_tone_response_named():
+    """The `I;16` family is scaled by its declared range on the way to 8 bits, so
+    a profile describing the 16-bit tone response describes nothing afterwards."""
+    profile = b"a synthetic 16-bit gray profile"
+    page = Image.new("I;16", (4, 2))
+    page.info["icc_profile"] = profile
+
+    converted = _to_display_mode(page)
+
+    assert converted.mode == "L"
+    assert "icc_profile" not in converted.info
+
+
+def test_a_class_preserving_hop_keeps_the_profile_it_did_not_invalidate():
+    """`La`→`LA` and `RGBa`→`RGBA` change how the same colours are stored, not
+    which colours they are. Dropping a profile there would lose a true record."""
+    profile = b"a synthetic colour profile, opaque to this pipeline"
+    page = Image.new("RGBa", (4, 2))
+    page.info["icc_profile"] = profile
+
+    converted = _to_display_mode(page)
+
+    assert converted.mode == "RGBA"
+    assert converted.info.get("icc_profile") == profile
+
+
+def test_an_indexed_crop_expanded_to_true_colour_keeps_its_profile():
+    """The palette expansion is the third class-preserving hop: a `P` image's
+    palette entries are already the colours the profile describes."""
+    profile = b"a synthetic RGB profile, opaque to this pipeline"
+    page = Image.new("P", (4, 2))
+    page.putpalette([255, 0, 0, 0, 255, 0] + [0] * (768 - 6))
+    page.putpixel((1, 0), 1)
+    page.info["icc_profile"] = profile
+
+    written = _encode_crop_deterministic(page)
+
+    assert [tag for tag, _ in chunks(written)] == [b"IHDR", b"iCCP", b"IDAT", b"IEND"]
+    assert image_shown(written).icc_profile == profile
 
 
 # --- the comparison the boundary makes -------------------------------------------

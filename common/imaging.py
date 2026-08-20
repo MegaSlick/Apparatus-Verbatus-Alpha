@@ -250,7 +250,9 @@ def _encode_crop_deterministic(crop: Image.Image) -> bytes:
     module's deterministic encoder rather than Pillow's.
 
     Pixels, alpha and colour profile are carried over exactly; only the framing
-    changes.
+    changes. A crop whose mode had to change colour class on the way here has
+    already lost its profile in `_to_display_mode`, which is where that decision
+    belongs — this encoder writes whatever it is handed.
     """
     profile = crop.info.get("icc_profile")
     if crop.mode == "P":
@@ -597,6 +599,25 @@ def _crop_decoded_page(png_bytes: bytes, x: int, y: int, w: int, h: int) -> byte
         raise ValueError(f"sealed page bytes are not a decodable image ({error})") from error
 
 
+def _without_colour_profile(crop: Image.Image) -> Image.Image:
+    """Drop an ICC profile the conversion just made false.
+
+    Pillow copies `info` across `convert()`, so a CMYK page's CMYK profile
+    arrives attached to RGB samples and a 16-bit scan's profile survives a
+    rescale that changed its tone response. Either one is a *worse* record than
+    no profile: anything honouring it re-interprets pixels through a
+    transformation describing an image that no longer exists, and the crop is
+    content-addressed, so the wrong bytes become the region's `image_sha256`.
+
+    The class-preserving hops keep theirs — a palette expanded to true colour,
+    `La` to `LA`, `RGBa` to `RGBA` — because those change the storage of the
+    same colours and leave the profile exactly as true as it was.
+    """
+
+    crop.info.pop("icc_profile", None)
+    return crop
+
+
 def _to_display_mode(crop: Image.Image) -> Image.Image:
     """Convert a crop to a PNG-representable mode without crushing its samples.
 
@@ -619,7 +640,9 @@ def _to_display_mode(crop: Image.Image) -> Image.Image:
         # pair, and `int()` raises a `TypeError` on that probe rather than on any
         # pixel — a plain multiply is what it can compile, and `convert("L")` does
         # the truncation to 8 bits.
-        return crop.point(lambda value: value * scale).convert("L")
+        # Rescaled samples: the profile described the 16-bit tone response and
+        # no longer describes these bytes.
+        return _without_colour_profile(crop.point(lambda value: value * scale).convert("L"))
     if mode in {"I", "F"}:
         # Genuinely undecided rather than quietly guessed. `I` is unbounded signed
         # integer and `F` is float: neither declares a range, so any mapping to 8
@@ -641,5 +664,8 @@ def _to_display_mode(crop: Image.Image) -> Image.Image:
     unpremultiplied = {"La": "LA", "RGBa": "RGBA"}.get(mode)
     if unpremultiplied is not None:
         return crop.convert(unpremultiplied)
+    # Everything reaching here changes colour class — CMYK, YCbCr, LAB and HSV
+    # are the modes the caller's allowed set leaves for this branch — so the
+    # profile that described the source space describes nothing about the result.
     has_alpha = any(band.upper() == "A" for band in crop.getbands())
-    return crop.convert("RGBA" if has_alpha else "RGB")
+    return _without_colour_profile(crop.convert("RGBA" if has_alpha else "RGB"))

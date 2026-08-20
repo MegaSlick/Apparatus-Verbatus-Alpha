@@ -27,11 +27,13 @@ from pathlib import Path
 import pytest
 
 from common.chairs.models import ChairIdentity
-from common.contracts.errors import SchemaRefusal
+from common.contracts.errors import ContractError, SchemaRefusal
+from common.contracts.identities import act_id
 from common.stage import (
     FALLBACK_PAGE_ACT_ORDINAL,
     RESIDUAL_ACT_ORDINAL_FLOOR,
     fallback_page_act_key,
+    residual_act_ordinal,
 )
 
 
@@ -197,6 +199,33 @@ def test_two_declared_responses_at_one_precedence_are_refused():
 
     with pytest.raises(SchemaRefusal, match="both an empty response and a scenario response"):
         _resolve(context, FALLBACK_KEY, _declarations(empty={(FALLBACK_KEY, CHAIR)}))
+
+
+def test_the_three_minted_act_classes_produce_three_different_identities():
+    """The producers, not the constants they are derived from.
+
+    Comparing `FALLBACK_PAGE_ACT_ORDINAL < RESIDUAL_ACT_ORDINAL_FLOOR` proves the
+    ordinals are disjoint, which is a tripwire worth keeping -- but the property
+    that actually matters downstream is that the three classes of act mint three
+    different `act_id`s **on the same page, from the same bounds**, since that is
+    the worst case: a page-fallback act and a residual both cover ink the
+    structure pass did not propose, and identity is all that separates them.
+    """
+    page = "page-0000000000000001"
+    bounds = {"x": 0, "y": 0, "w": 10, "h": 10}
+
+    proposed = act_id(page, 0, bounds)
+    residual = act_id(page, residual_act_ordinal(0), bounds)
+    fallback = act_id(page, FALLBACK_PAGE_ACT_ORDINAL, bounds)
+
+    assert len({proposed, residual, fallback}) == 3
+
+    # And no residual index can ever reach the fallback's ordinal: the producer
+    # refuses rather than minting the identity that would collide.
+    unreachable = -RESIDUAL_ACT_ORDINAL_FLOOR
+    assert residual_act_ordinal(unreachable - 1) == RESIDUAL_ACT_ORDINAL_FLOOR
+    with pytest.raises(ContractError, match="past the residual ordinal floor"):
+        residual_act_ordinal(unreachable)
 
 
 def test_the_reserved_fallback_ordinal_is_still_the_designator_side_guard():

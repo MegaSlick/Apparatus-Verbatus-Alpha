@@ -520,6 +520,32 @@ def test_malformed_archetypus_uncertainty_is_attributed_to_the_archetypus(monkey
         armarium.verify_established_record(context, act, review, established, {})
 
 
+def test_an_archetypus_claiming_whole_text_over_its_own_gap_is_refused_at_export(monkeypatch):
+    """`text_status` is recomputed here, never read out of the record and believed.
+
+    The record below is internally consistent in every other way -- self-hash
+    good, both parents digest-checked, both damage layers exactly the reading's
+    own -- and claims `established` over an uncertainty layer whose gap says the
+    Perlector knows ink is present and could not read it. Every other check in
+    this function passes; this one is the only thing standing between a damaged
+    act and an export that describes it as a whole one.
+    """
+    armarium = _armarium_module()
+    context, act, review, established, layer = _established_uncertainty_case(armarium, monkeypatch)
+    monkeypatch.setattr(armarium, "from_perlectio", lambda _payload: layer)
+
+    # Mutating the shared layer keeps the Archetypus and the Perlectio equal, so
+    # the reconciliation above this check still passes and this check is reached.
+    layer["gaps"].append({"position": "internal", "start": 2, "end": 2, "witness_evidence": []})
+    payload = established["payload"]
+    payload.pop("self_hash")
+    payload["self_hash"] = self_hash(payload)
+    assert payload["text_status"] == "established"
+
+    with pytest.raises(FatalAccounting, match="not leave the pipeline described as a whole one"):
+        armarium.verify_established_record(context, act, review, established, {})
+
+
 def test_an_established_reading_without_its_act_attachment_view_is_refused_at_export():
     """R0's exit criterion says the attachment is consumed, not consumed-if-present."""
     armarium = _armarium_module()
