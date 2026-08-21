@@ -20,6 +20,7 @@ The knobs. One question per planned file, each answerable without reading code.
 | `designator_geometry.toml` | the sealed tiling and crop-policy geometry the Designator's proposal adapters are built against |
 | `perlector_audit.toml` | the sealed Pass-C audit policy: flag classes and the round cap the audit refuses to exceed |
 | `witness_context.toml` | the factual per-witness context the Perlector's dossier may carry: identity, provenance, training domain, and nothing evaluative |
+| `triage_modes.toml` | the three pipeline-wide triage modes and their closed-ordinal review thresholds |
 
 ## R4 toggle register
 
@@ -203,7 +204,8 @@ policy a stage needs the *values* of is carried already parsed rather than reope
 Sealed names today: `designator-padding`, `designator-geometry`, `alignment`,
 `corpus-frame-shard`, `perlector-protocol`, `perlector-audit`, `pdf-render`,
 `recovery`, `hard-failure`, and — on real ingress only, because the fixture route is
-not gated — `data-handling`.
+not gated — `data-handling`. `triage-modes` is likewise sealed into every run; Unit 6's
+pre-door producer/door seam must call `require_triage_modes` before using its vocabulary.
 
 `hard-failure` is the family's fourth member and the last to be sealed. It is the one
 policy the orchestrator must read *before* the run exists — the tally threshold has to

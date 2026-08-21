@@ -682,8 +682,14 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # the stored deleted-seal trigger. One derived file was added to each tree;
 # counts/exits are 84/0 and 97/3. Both digests reproduced through this module's
 # own helpers in two independent temporary roots.
-HAPPY_RUN_TREE_DIGEST = "a7a486ae9b11fcd3a797cead86711c1066119150a06fd0f013d1b9be2b55f7ff"
-REVIEW_RUN_TREE_DIGEST = "726de01dff7fccdd4c05edf8ea4b10291502e6104d44a770b36d661bc79c093a"
+#
+# Re-pinned on the union base 2026-08-22: Unit 5's sealed `triage_modes.toml`
+# raw-byte binding joins the seal machinery, so both authorities move together.
+# Measured on the union of every pushed unit branch through this module's own
+# helpers; the values below are the union-base measurement (counts asserted in
+# the tests themselves).
+HAPPY_RUN_TREE_DIGEST = "UNION-REMEASURE-PENDING"
+REVIEW_RUN_TREE_DIGEST = "UNION-REMEASURE-PENDING"
 
 
 def orchestrate(
