@@ -495,8 +495,11 @@ cmd_new() {
         claude|codex|none) : ;;
         *) die "new takes 'claude', 'codex' or nothing as its vendor" ;;
     esac
-    acquire_lifecycle_lock "$task"
-
+    # **Above the lock, because the lock resolves the common git directory too.** With
+    # this below `acquire_lifecycle_lock`, the case this guard exists for -- a worktree
+    # whose main checkout is gone -- died inside the lock with "could not locate this
+    # repository's common git directory" and never reached the explanation or the path.
+    # The same ordering mistake this guard was written to fix, one level up.
     # **A linked worktree cannot be the source of a chamber, and it has to be refused
     # here rather than discovered later.** In a worktree, `.git` is a *file* holding
     # `gitdir: /the/main/checkout/.git/worktrees/<name>` — an absolute host path that is
@@ -532,6 +535,8 @@ cmd_new() {
         fi
         die "${REPO_ROOT}/.git is a file, not a directory — this is a linked worktree or a submodule, and a chamber cannot be cloned from one. Git could not say where its real git directory is, which usually means the checkout that owns it has been deleted. Run ${0} from a full checkout."
     fi
+
+    acquire_lifecycle_lock "$task"
 
     # Resolve the base to a commit on the host, so the chamber is pinned to an exact
     # tree rather than to whatever a name meant at clone time. It is git-only, so it

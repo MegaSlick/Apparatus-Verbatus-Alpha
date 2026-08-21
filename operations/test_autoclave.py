@@ -752,11 +752,13 @@ class TestLogin:
         assert "linked worktree" in result.stderr, (
             f"the refusal does not name the cause: {result.stderr}"
         )
-        # The path is the actionable half, and it used to be printable as an empty string
-        # when git could not answer. Asserted here so the refusal cannot regress to
-        # "look for  inside the container".
-        assert str(tmp_path) in result.stderr, (
-            f"the refusal does not name the git directory to look for: {result.stderr}"
+        # The *resolved* git directory, not the worktree root. Asserting `tmp_path` alone
+        # proved nothing: it is already inside the `${REPO_ROOT}/.git` the message opens
+        # with, so the assertion passed even when the resolved path was empty — the exact
+        # blank-path regression it was written to catch.
+        common = git(worktree, "rev-parse", "--path-format=absolute", "--git-common-dir")
+        assert common in result.stderr, (
+            f"the refusal does not name the resolved git directory {common}: {result.stderr}"
         )
         created = [call for call in docker_calls(log) if call[:1] == ["run"]]
         assert created == [], f"a container was created despite the refusal: {created}"
