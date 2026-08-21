@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -21,8 +22,10 @@ from zipfile import ZIP_STORED, ZipFile, ZipInfo
 import pytest
 from armarium_export import EXPORT_MANIFEST_NAME
 
-from common.contracts.canonical import digest_bytes
+from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.contracts.errors import ContractError, SchemaRefusal
+from common.contracts.identities import artifact_id
+from common.contracts.stages import ARMARIUM
 from common.runtree.store import RunTree
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -82,6 +85,60 @@ def review_run(tmp_path_factory):
     return root
 
 
+def _reseal_export_bundle(tree: RunTree, mutate) -> None:
+    """Rebuild the package, blob address, and export envelope after ``mutate``.
+
+    This is the package-editor threat model at the real publication boundary. The
+    callback receives the member map and decoded package manifest; every package
+    digest and both self-hashes are then refreshed around whatever it changed.
+    """
+    export_path = tree.resolve(
+        tree.artifact_path(
+            ARMARIUM,
+            "export",
+            artifact_id(ARMARIUM, "export", "export", None),
+        )
+    )
+    export = json.loads(export_path.read_text(encoding="utf-8"))
+    old_reference = export["payload"]["bundle"]["reference"]
+    with ZipFile(BytesIO(tree.read_bytes(old_reference["relative_path"]))) as archive:
+        members = {name: archive.read(name) for name in archive.namelist()}
+    package_manifest = json.loads(members[EXPORT_MANIFEST_NAME])
+    mutate(members, package_manifest)
+    for row in package_manifest["members"]:
+        row["sha256"] = digest_bytes(members[row["path"]])
+        row["bytes"] = len(members[row["path"]])
+    package_manifest["self_hash"] = self_hash(package_manifest)
+    members[EXPORT_MANIFEST_NAME] = canonical_bytes(package_manifest)
+
+    buffer = BytesIO()
+    with ZipFile(buffer, "w", compression=ZIP_STORED) as archive:
+        for name in [EXPORT_MANIFEST_NAME] + sorted(
+            name for name in members if name != EXPORT_MANIFEST_NAME
+        ):
+            info = ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+            info.compress_type = ZIP_STORED
+            info.external_attr = 0o100644 << 16
+            archive.writestr(info, members[name])
+    resealed = buffer.getvalue()
+    resealed_digest = digest_bytes(resealed)
+    resealed_relative = tree.blob_path(ARMARIUM, resealed_digest)
+    tree.resolve(resealed_relative).write_bytes(resealed)
+    new_reference = {"relative_path": resealed_relative, "sha256": resealed_digest}
+    export["inputs"] = [
+        new_reference if item == old_reference else item for item in export["inputs"]
+    ]
+    export["payload"]["bundle"].update(
+        {
+            "manifest_self_hash": package_manifest["self_hash"],
+            "reference": new_reference,
+            "sha256": resealed_digest,
+        }
+    )
+    export["self_hash"] = self_hash(export)
+    export_path.write_bytes(canonical_bytes(export))
+
+
 def test_the_sealed_bundle_is_published_and_verifies_outside_the_run_tree(tmp_path, happy_run):
     out = tmp_path / "delivery"
     result = _publish(happy_run, "r", out)
@@ -116,6 +173,92 @@ def test_publication_reports_which_checks_the_clean_pass_actually_made(tmp_path,
     assert result.returncode == 0, result.stderr
     assert "projection_identity: verified" in result.stdout
     assert "search_fold: verified" in result.stdout
+
+
+def test_a_resealed_bundle_that_declines_search_fold_recomputation_is_not_published(
+    tmp_path, happy_run
+):
+    """The real publisher must treat an unmade measurement as a refusal.
+
+    This is a whole-file reseal, not a mocked verifier result: the package editor
+    changes the Unicode-version row in the real SQLite member, refreshes the package
+    inventory and self-hash, stores the resulting ZIP under its new content address,
+    and updates the export artifact's reference and self-hash.  The subprocess then
+    drives the same verifier and filesystem publication path an operator invokes.
+    """
+    root = tmp_path / "runs"
+    shutil.copytree(happy_run / "r", root / "r")
+    tree = RunTree(root, "r")
+    tree.read_run()
+
+    def decline_recomputation(members, _manifest):
+        database = tmp_path / "acts.sqlite"
+        database.write_bytes(members["acts.sqlite"])
+        connection = sqlite3.connect(database)
+        try:
+            connection.execute(
+                "UPDATE export_metadata SET value = 'resealed-different-version' "
+                "WHERE key = 'unidata_version'"
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        members["acts.sqlite"] = database.read_bytes()
+
+    _reseal_export_bundle(tree, decline_recomputation)
+
+    out = tmp_path / "delivery"
+    result = _publish(root, "r", out)
+
+    assert result.returncode != 0
+    assert "search-fold recomputation was not run" in result.stderr
+    assert not out.exists()
+    assert not list(tmp_path.glob(".delivery.publishing-*"))
+
+
+def test_a_resealed_package_cannot_rebind_the_run_it_claims_to_export(tmp_path, happy_run):
+    """The clean verifier has no run tree; the publisher does, and must use it."""
+    root = tmp_path / "runs"
+    shutil.copytree(happy_run / "r", root / "r")
+    tree = RunTree(root, "r")
+    tree.read_run()
+    _reseal_export_bundle(
+        tree,
+        lambda _members, manifest: manifest["run"].update(scenario="a run that never happened"),
+    )
+
+    out = tmp_path / "delivery"
+    result = _publish(root, "r", out)
+
+    assert result.returncode != 0
+    assert "run binding" in result.stderr
+    assert not out.exists()
+
+
+def test_a_resealed_export_cannot_misreport_the_verified_package_aggregate(tmp_path, happy_run):
+    """The publisher must not print an envelope-only account of verified package bytes."""
+    root = tmp_path / "runs"
+    shutil.copytree(happy_run / "r", root / "r")
+    tree = RunTree(root, "r")
+    tree.read_run()
+    export_path = tree.resolve(
+        tree.artifact_path(
+            ARMARIUM,
+            "export",
+            artifact_id(ARMARIUM, "export", "export", None),
+        )
+    )
+    export = json.loads(export_path.read_text(encoding="utf-8"))
+    export["payload"]["aggregate"]["status"] = "fabricated-terminal-status"
+    export["self_hash"] = self_hash(export)
+    export_path.write_bytes(canonical_bytes(export))
+
+    out = tmp_path / "delivery"
+    result = _publish(root, "r", out)
+
+    assert result.returncode != 0
+    assert "aggregate disagrees" in result.stderr
+    assert not out.exists()
 
 
 def test_a_bundle_whose_formats_disagree_about_one_reading_is_never_published(
@@ -280,11 +423,19 @@ def test_a_cleanup_failure_names_the_leftover_staging_directory(
         "replace",
         lambda _src, _dst: (_ for _ in ()).throw(OSError("simulated rename failure")),
     )
-    monkeypatch.setattr(
-        bundle_module.shutil,
-        "rmtree",
-        lambda _path: (_ for _ in ()).throw(OSError("simulated cleanup failure")),
-    )
+    # Fail only the staging-directory removal at the publish gate. The patched
+    # attribute is the module-global shutil.rmtree, which newer Pythons' tempfile
+    # also delegates TemporaryDirectory cleanup to (with onexc=), so an
+    # unconditional stub would break verify's own scratch cleanup before
+    # os.replace is ever reached.
+    real_rmtree = bundle_module.shutil.rmtree
+
+    def failing_staging_rmtree(path, *args, **kwargs):
+        if ".publishing-" in str(path):
+            raise OSError("simulated cleanup failure")
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(bundle_module.shutil, "rmtree", failing_staging_rmtree)
 
     with pytest.raises(OSError, match="simulated rename failure"):
         bundle_module.publish(tree, tmp_path / "delivery")

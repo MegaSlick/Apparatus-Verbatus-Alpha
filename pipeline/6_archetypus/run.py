@@ -39,6 +39,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from common.alignment import markup_text_view  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.annotations import (  # noqa: E402, F401  (re-export)
     ANNOTATION_KINDS,
@@ -72,6 +73,7 @@ from common.contracts.uncertainty import validate as validate_uncertainty
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
     EXIT_HELD,
+    WITNESS_CONTEXT_REGIMES,
     WITNESS_READING_OUTCOMES,
     expected_acts,
     latest_attempt,
@@ -168,6 +170,158 @@ def _is_ref_shaped(value) -> bool:
 
 def _reference_key(reference: dict) -> tuple[str, str]:
     return (reference["relative_path"], reference["sha256"])
+
+
+def _verify_comparison_views(
+    act_id: str, derived: dict[str, str], embedded: dict, dossier: dict
+) -> None:
+    """Hold the embedded page-witness views to the retained page Testimonia they slice.
+
+    The views are keyed by *witness label*, not by chair
+    (`pipeline/4_perlector/dossier.py::build_dossier`): under `named` the label is
+    the chair itself, and under `blinded` it is a run-scoped pseudonym, because a
+    real chair name in the one object every reader sees is precisely what blinding
+    exists to withhold. Comparing the re-derived chair-keyed mapping straight
+    against the embedded one therefore held only under `named` and refused every
+    blinded run at this stage -- a whole configured run mode dead at the
+    establishing constructor.
+
+    Under `named` the check is the strict one: same labels, same text, chair by
+    chair. Under `blinded` the chair a view belongs to is a fact this stage cannot
+    recompute -- the pseudonym is a digest, and the function that computes it lives
+    in the Perlector, which the stage-import boundary keeps out of here
+    (`pipeline/test_stage_import_boundaries.py`). What is still checkable, and is
+    checked: every embedded label is one of the dossier's own witness labels rather
+    than an invented string, and the views themselves are exactly the slices of the
+    retained page Testimonia this function re-derived -- same count, same text, none
+    added and none dropped. What is not proved under blinding is the *attribution*
+    of a view to a pseudonym, and it is named here rather than left to look proved.
+    """
+    if not isinstance(embedded, dict):
+        raise SchemaRefusal(f"act {act_id} embedded comparison views are not a mapping")
+    regime = dossier.get("witness_regime")
+    if regime not in WITNESS_CONTEXT_REGIMES:
+        raise SchemaRefusal(
+            f"act {act_id} embeds a dossier under witness regime {regime!r}, which is not one "
+            f"of {sorted(WITNESS_CONTEXT_REGIMES)}; an unrecognized regime is refused, never "
+            "checked as though it were the default"
+        )
+    # The literal, not a constant: the two regime names are declared once in
+    # `common.stage.WITNESS_CONTEXT_REGIMES`, which is checked just above, and the
+    # `NAMED`/`BLINDED` constants spelling them live in `pipeline/4_perlector/regime.py`
+    # where the stage-import boundary keeps them. Moving that module into `common/`
+    # is the recommended follow-up and would give both stages one name for this.
+    if regime == "named":
+        if embedded != derived:
+            raise SchemaRefusal(
+                f"act {act_id} embedded comparison views disagree with its attachment"
+            )
+        return
+    if any(not isinstance(text, str) for text in embedded.values()):
+        raise SchemaRefusal(f"act {act_id} embeds a comparison view that is not text")
+    rows = dossier.get("testimonia")
+    if not isinstance(rows, list):
+        raise SchemaRefusal(f"act {act_id} embeds a dossier with no testimonium rows")
+    labels = {row.get("witness_label") for row in rows if isinstance(row, dict)}
+    unknown = sorted(label for label in embedded if label not in labels)
+    if unknown:
+        raise SchemaRefusal(
+            f"act {act_id} embeds comparison view(s) labelled {unknown}, which name no witness "
+            "this dossier carries"
+        )
+    if sorted(embedded.values()) != sorted(derived.values()):
+        raise SchemaRefusal(f"act {act_id} embedded comparison views disagree with its attachment")
+
+
+def _verify_act_attachment_view(
+    context, act_id: str, page_id: str, regions: list[dict], dossier: dict
+) -> None:
+    """Re-derive the page-witness facts a Perlectio embeds from its attachment."""
+    attachment_view = dossier.get("act_attachment")
+    if (
+        not isinstance(attachment_view, dict)
+        or set(attachment_view) != {"reference", "page_witness_count", "comparison_views"}
+        or not isinstance(attachment_view["page_witness_count"], int)
+        or isinstance(attachment_view["page_witness_count"], bool)
+        or attachment_view["page_witness_count"] < 0
+        or not isinstance(attachment_view["comparison_views"], dict)
+    ):
+        raise SchemaRefusal(f"act {act_id} has malformed embedded act-attachment facts")
+    reference = attachment_view["reference"]
+    if not _is_ref_shaped(reference):
+        raise SchemaRefusal(f"act {act_id} has no direct act-attachment reference")
+    attachment_record = context.tree.read_artifact_reference(
+        reference, stage=ATTESTATORES, kind="act-attachment", subject_id=act_id
+    )
+    payload = attachment_record.get("payload")
+    attachments = payload.get("attachments") if isinstance(payload, dict) else None
+    if not isinstance(attachments, list):
+        raise SchemaRefusal(f"act {act_id} referenced act-attachment has no attachment list")
+    # The act's own page identity, from the roster the run is accounted against --
+    # the same value the producer reads every page Testimonium under
+    # (`pipeline/4_perlector/run.py::act_attachment_view`, `subject_id=act["page_id"]`).
+    # This was `regions[0]["source_page_id"]`, which is a different fact: an act's
+    # basis regions legitimately span more than one source page in this pipeline's
+    # own fixtures, so the first region was an arbitrary pick that agreed with the
+    # producer only by sort order. Re-deriving the subject from the record under
+    # audit also asks the record to nominate the evidence it is checked against.
+    if not isinstance(page_id, str) or not page_id:
+        raise SchemaRefusal(f"act {act_id} has no source page for attachment verification")
+    # ...and the record does not get to be about a page its own reading never read.
+    # The Archetypus record carries `page_id` and `regions` side by side and nothing
+    # reconciled them, so a resealed record could name one page and cite crops from
+    # another.
+    if page_id not in {region.get("source_page_id") for region in regions}:
+        raise SchemaRefusal(
+            f"act {act_id} is accounted to page {page_id!r}, which none of its basis regions "
+            "cites; a record's page identity and the ink it was read from are one fact"
+        )
+    count = 0
+    views: dict[str, str] = {}
+    for item in attachments:
+        if not isinstance(item, dict) or not isinstance(item.get("page_witness"), bool):
+            raise SchemaRefusal(
+                f"act {act_id} referenced act-attachment has malformed witness scope"
+            )
+        if not item["page_witness"]:
+            continue
+        count += 1
+        if not item.get("attached"):
+            continue
+        chair, alignment, testimony_ref = (
+            item.get("chair"),
+            item.get("alignment"),
+            item.get("testimonium_ref"),
+        )
+        span = alignment.get("witness_span") if isinstance(alignment, dict) else None
+        if not isinstance(chair, str) or not _is_ref_shaped(testimony_ref):
+            raise SchemaRefusal(f"act {act_id} referenced act-attachment has malformed witness")
+        testimony = context.tree.read_artifact_reference(
+            testimony_ref, stage=ATTESTATORES, kind="page-testimonium", subject_id=page_id
+        )
+        reported = testimony.get("payload", {}).get("reported")
+        if (
+            not isinstance(reported, str)
+            or not isinstance(span, dict)
+            or set(span) != {"start", "end"}
+            or any(not isinstance(value, int) or isinstance(value, bool) for value in span.values())
+            or span["start"] < 0
+            or span["end"] < span["start"]
+            or span["end"] > len(reported)
+        ):
+            raise SchemaRefusal(
+                f"act {act_id} referenced act-attachment has no valid comparison view"
+            )
+        views[chair] = markup_text_view(reported[span["start"] : span["end"]])["text"]
+    if count != attachment_view["page_witness_count"]:
+        raise SchemaRefusal(
+            f"act {act_id} embedded page-witness count disagrees with its attachment"
+        )
+    _verify_comparison_views(act_id, views, attachment_view["comparison_views"], dossier)
+    if dossier.get("dossier_digest") != digest_of(
+        {key: value for key, value in dossier.items() if key != "dossier_digest"}
+    ):
+        raise SchemaRefusal(f"act {act_id} embedded dossier digest disagrees with its dossier")
 
 
 def validate_text_status(text: str, text_status: str, evidence_ref) -> None:
@@ -279,7 +433,7 @@ def reviewed_reading(context, review: dict, act_id: str) -> tuple[dict, dict[str
 
 
 def accepted_primed_perlectio(
-    context, review, reading, reading_ref, act_id
+    context, review, reading, reading_ref, act_id, *, page_id
 ) -> tuple[dict, dict, list]:
     """The only material permitted to reach the establishing constructor.
 
@@ -389,12 +543,6 @@ def accepted_primed_perlectio(
         raise SchemaRefusal(
             f"act {act_id} carries an act-attachment dossier view without a direct input reference"
         )
-    context.tree.read_artifact_reference(
-        reference,
-        stage=ATTESTATORES,
-        kind="act-attachment",
-        subject_id=act_id,
-    )
     # Unconditional: `lectio_kind` is already proved to be `primed-with-prior`
     # above, and nothing below it reassigns the name. Guarding these checks on
     # the value again read as though some other kind reached them, which would
@@ -427,6 +575,7 @@ def accepted_primed_perlectio(
         raise SchemaRefusal(
             f"act {act_id} embeds prior-draft text that disagrees with its referenced lectio-prior"
         )
+    _verify_act_attachment_view(context, act_id, page_id, regions, claimed_dossier)
     # The reference is bound to stage, kind, subject and digest above -- and
     # not, until here, to the attempt. A recovered act carries one Pass-A
     # draft per attempt, and a Perlectio citing a superseded one would
@@ -723,7 +872,7 @@ def establish_from_accepted_primed_perlectio(
     )
     reading, reading_ref = reviewed_reading(context, review, act["act_id"])
     payload, witnesses, regions = accepted_primed_perlectio(
-        context, review, reading, reading_ref, act["act_id"]
+        context, review, reading, reading_ref, act["act_id"], page_id=act.get("page_id")
     )
     # Before the record exists, not after: these regions are about to be
     # self-hashed into something write-once.

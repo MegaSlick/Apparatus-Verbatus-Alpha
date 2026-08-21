@@ -283,6 +283,115 @@ def test_embedded_prior_text_must_match_the_referenced_lectio_prior(tmp_path):
     assert "disagrees with its referenced lectio-prior" in result.stderr
 
 
+def test_embedded_page_witness_count_must_match_the_act_attachment(tmp_path):
+    """Archetypus independently re-derives the Perlector's attachment summary."""
+
+    def forge_count(payload):
+        dossier = dict(payload["dossier"])
+        attachment = dict(dossier["act_attachment"])
+        attachment["page_witness_count"] += 1
+        dossier["act_attachment"] = attachment
+        dossier["dossier_digest"] = digest_of(
+            {key: value for key, value in dossier.items() if key != "dossier_digest"}
+        )
+        payload["dossier"] = dossier
+
+    result = _archetypus_after(tmp_path, forge_count)
+    assert result.returncode == 2, result.stderr
+    assert "embedded page-witness count disagrees with its attachment" in result.stderr
+
+
+def _reseal_dossier(mutate_dossier):
+    """Edit a Perlectio's dossier in place and re-derive the digest it carries."""
+
+    def mutate(payload):
+        dossier = dict(payload["dossier"])
+        mutate_dossier(dossier)
+        dossier["dossier_digest"] = digest_of(
+            {key: value for key, value in dossier.items() if key != "dossier_digest"}
+        )
+        payload["dossier"] = dossier
+
+    return mutate
+
+
+def test_a_dossier_under_an_unrecognized_witness_regime_cannot_establish(tmp_path):
+    """A regime with no label rule is refused, never checked as though it were named.
+
+    The embedded comparison views are keyed by witness *label*, and what a label
+    means is the regime's answer: the chair itself under `named`, a run-scoped
+    pseudonym under `blinded`. A third regime reaching this stage has no answer, and
+    treating the absence of one as "named" would compare pseudonyms to chair names
+    and call the disagreement a forgery -- or, worse under some future regime, call
+    a forgery agreement.
+    """
+    result = _archetypus_after(
+        tmp_path, _reseal_dossier(lambda dossier: dossier.update(witness_regime="anonymous"))
+    )
+    assert result.returncode == 2, result.stderr
+    assert "Traceback" not in result.stderr
+    assert "which is not one of" in result.stderr
+
+
+def test_a_blinded_comparison_view_may_not_wear_a_label_the_dossier_never_carried(tmp_path):
+    """Blinding withholds which witness a view belongs to; it does not license any label.
+
+    Under `blinded` this stage cannot recompute the chair behind a pseudonym -- the
+    digest that makes one lives in the Perlector, behind the stage-import boundary --
+    so the attribution of a view to a pseudonym is the one fact the check cannot
+    prove. It can still require every label to be a witness label this dossier
+    actually carries, which is what stops the gap from widening into "any string
+    will do".
+    """
+
+    def relabel(dossier):
+        attachment = dict(dossier["act_attachment"])
+        views = dict(attachment["comparison_views"])
+        attachment["comparison_views"] = {
+            "witness-000000000000": views.pop(next(iter(views))),
+            **views,
+        }
+        dossier["act_attachment"] = attachment
+        dossier["witness_regime"] = "blinded"
+
+    result = _archetypus_after(tmp_path, _reseal_dossier(relabel))
+    assert result.returncode == 2, result.stderr
+    assert "Traceback" not in result.stderr
+    assert "name no witness this dossier carries" in result.stderr
+
+
+def test_a_reading_may_not_be_accounted_to_a_page_none_of_its_regions_cites(tmp_path):
+    """The record's `page_id` and the ink it was read from are one fact.
+
+    The Archetypus record carries `page_id` beside `regions`, and nothing
+    reconciled them: a resealed reading could be accounted to one page while
+    citing crops from another. It matters here because `page_id` is the subject
+    the page-witness custody check reads its Testimonia under -- the Perlector
+    writes the attachment under the act's own page, so a reading that nominated a
+    different page would be checked against evidence belonging to something else.
+
+    Deriving it from `regions[0]` instead was the same defect wearing the other
+    hat: this pipeline's own fixture reads an act whose basis regions span two
+    source pages, so the first region agreed with the Perlector by sort order and
+    nothing else. Before this binding existed the forgery below was still refused,
+    but by the artifact-reference subject check downstream -- naming the page
+    Testimonium for carrying the wrong subject rather than the record for
+    nominating a page it never read.
+    """
+
+    def repage_regions(payload):
+        basis = dict(payload["basis"])
+        basis["regions"] = [
+            {**region, "source_page_id": "page_ffffffffffffffff"} for region in basis["regions"]
+        ]
+        payload["basis"] = basis
+
+    result = _archetypus_after(tmp_path, repage_regions)
+    assert result.returncode == 2, result.stderr
+    assert "Traceback" not in result.stderr
+    assert "none of its basis regions cites" in result.stderr
+
+
 def test_a_prior_draft_from_another_reading_attempt_cannot_establish(tmp_path):
     """The last unbound relation in the series above.
 
