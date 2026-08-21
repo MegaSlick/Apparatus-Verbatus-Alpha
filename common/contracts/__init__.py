@@ -29,6 +29,7 @@ from .canonical import (
     digest_bytes,
     digest_of,
     self_hash,
+    self_hash_refusal,
     verify_self_hash,
 )
 from .envelope import (
@@ -105,6 +106,7 @@ __all__ = [
     "require_approval",
     "run_aggregate",
     "self_hash",
+    "self_hash_refusal",
     "stage_directory",
     "terminal_category",
     "synthetic_fixture_ingress_record",

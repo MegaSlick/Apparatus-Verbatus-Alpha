@@ -32,12 +32,69 @@ def test_an_uncertain_span_with_start_after_end_refuses():
         )
 
 
-@pytest.mark.parametrize("confidence", ["certain", "maybe", "", None, 1])
+@pytest.mark.parametrize(
+    "confidence",
+    [
+        "certain",
+        "maybe",
+        "",
+        None,
+        1,
+        True,
+        False,
+        [],
+        {},
+        [[]],
+        {"nested": []},
+        {"nested": {"deep": [{}]}},
+    ],
+)
 def test_an_uncertain_span_with_an_undeclared_confidence_refuses(confidence):
     with pytest.raises(SchemaRefusal, match="confidence"):
         annotations.validate_uncertain_spans(
             [{"start": 0, "end": 1, "alternatives": [], "confidence": confidence}], "reading"
         )
+
+
+def _recursive_list() -> list:
+    """A structure the parametrize lists above cannot hold: pytest reprs its
+    parameters at collection, and a self-referential default would be walked
+    there rather than by the validator under test."""
+    recursive: list = []
+    recursive.append(recursive)
+    return recursive
+
+
+@pytest.mark.parametrize(
+    "confidence",
+    [
+        # Not JSON, and this validator is not promised JSON: it reads whatever a
+        # chair's adapter handed back. A check that compared before it typed, or
+        # that walked the value to type it, would hang or crash on these instead
+        # of refusing them.
+        pytest.param(float("nan"), id="nan"),
+        pytest.param(float("inf"), id="inf"),
+        pytest.param(1.5, id="float"),
+        pytest.param(10**5000, id="huge-int"),
+        pytest.param(b"low", id="bytes"),
+        # A str, so it clears `isinstance` and lands in the message itself.
+        pytest.param("\ud800", id="lone-surrogate"),
+        pytest.param("NaN", id="nan-spelling"),
+        pytest.param("low\0", id="null-byte"),
+        pytest.param({"\ud800": "low"}, id="surrogate-key"),
+        pytest.param(_recursive_list(), id="recursive"),
+    ],
+)
+def test_an_undeclared_confidence_refuses_printably(confidence):
+    """The refusal interpolates the offending value, and the refusal is printed.
+    Strings use `!r`, which escapes a surrogate; every other type is named without
+    rendering its value, so a huge integer or recursive container cannot crash the
+    report of the refusal."""
+    with pytest.raises(SchemaRefusal, match="confidence") as caught:
+        annotations.validate_uncertain_spans(
+            [{"start": 0, "end": 1, "alternatives": [], "confidence": confidence}], "reading"
+        )
+    str(caught.value).encode("utf-8")
 
 
 def test_an_uncertain_span_with_a_non_string_alternative_refuses():

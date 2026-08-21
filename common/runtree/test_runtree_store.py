@@ -355,6 +355,36 @@ def test_an_edited_run_authority_is_refused(tmp_path):
     assert "self-hash" in str(caught.value)
 
 
+@pytest.mark.parametrize(
+    ("damage", "named"),
+    (
+        ('{"scale": 1.5}', "float at"),
+        ('{"name": "\\ud800"}', "unencodable character"),
+        ('{"count": ' + "9" * 700 + "}", "integer at"),
+    ),
+)
+def test_a_run_authority_that_was_never_hashable_is_not_accused_of_being_edited(
+    tmp_path, damage, named
+):
+    """`run.json` is read as bare JSON, never through an envelope, so this is the
+    only place its damage gets named. A record carrying a value the canonical
+    serializer refuses was never hashable at all, and "the run authority was edited
+    after it was sealed" sends an operator hunting an edit nobody made. Written as
+    bytes rather than through `canonical_bytes`, because the whole point is a file
+    this pipeline could not have produced."""
+    tree = make_run(tmp_path)
+    record = tree.read_run()
+    record["render_settings"] = json.loads(damage)
+    (tmp_path / "r1" / RUN_FILE).write_text(json.dumps(record), encoding="utf-8")
+
+    with pytest.raises(IncompatibleReuse) as caught:
+        tree.read_run()
+    message = str(caught.value)
+    assert named in message
+    assert "was edited" not in message
+    message.encode("utf-8")
+
+
 def test_an_old_schema_run_authority_is_refused_before_a_stage_can_use_it(tmp_path):
     tree = make_run(tmp_path)
     record = tree.read_run()
@@ -1802,8 +1832,8 @@ def test_an_artifact_parseable_but_too_deep_for_its_self_hash_walk_is_refused_no
         )
     try:
         canonical_bytes(parsed_deep)
-    except RecursionError:
-        pass
+    except TypeError as error:
+        assert "nests too deeply" in str(error)
     else:
         pytest.skip(
             f"this interpreter's canonical walk absorbs {nesting} levels, so the "

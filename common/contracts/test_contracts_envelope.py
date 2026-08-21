@@ -8,6 +8,10 @@ validator that refuses in isolation and is never called at a boundary would be
 meta-invariant #89's vacuous pass, so both exist on purpose.
 """
 
+import contextlib
+import io
+import json
+
 import pytest
 
 from common.contracts.canonical import SCHEMA_LABEL, digest_bytes, self_hash
@@ -168,6 +172,114 @@ def test_an_unresealed_payload_change_is_refused_when_the_identity_is_unchanged(
     with pytest.raises(SchemaRefusal, match="self-hash"):
         validate_envelope(changed)
     assert validate_envelope(reseal(changed))["payload"] == {"proposals": 99}
+
+
+@pytest.mark.parametrize("payload", ({"scale": 1.5}, {"box": [1, 2.0]}, {"nested": {"deep": 0.1}}))
+def test_a_parsed_artifact_with_a_float_is_refused_by_name_at_the_envelope_boundary(payload):
+    """Unsupported JSON numbers must not escape the consumer as a serializer traceback."""
+    parsed = json.loads(json.dumps(sound_envelope()))
+    parsed["payload"] = payload
+
+    with pytest.raises(SchemaRefusal, match="self-hash"):
+        validate_envelope(parsed)
+
+
+def test_the_float_refusal_names_the_offending_field_and_value():
+    """The point of recomputing on the refusal path is the diagnostic. A test that
+    only asserts `SchemaRefusal` passes just as happily on the generic "changed
+    after publication" sentence, which is the wrong story for a record that was
+    never hashable — so the assertion has to be on what it says."""
+    parsed = json.loads(json.dumps(sound_envelope()))
+    parsed["payload"] = {"nested": {"scale": 1.5}}
+
+    with pytest.raises(SchemaRefusal) as caught:
+        validate_envelope(parsed)
+    message = str(caught.value)
+    assert "float at $.payload.nested.scale" in message
+    assert "changed after publication" not in message
+
+
+@pytest.mark.parametrize(
+    "payload",
+    (
+        {"name": "\ud800"},
+        {"box": ["ok", "\udfff"]},
+        {"nested": {"deep": "\ud800"}},
+        {"\ud800": "in a key"},
+    ),
+)
+def test_a_parsed_artifact_with_a_lone_surrogate_is_refused_by_name(payload):
+    """The float's sibling, and it arrives the same way: `json.loads` builds a lone
+    surrogate from a `\\udXXX` escape without complaint, so a damaged artifact on
+    disk parses cleanly and then has no UTF-8 form to hash. It used to leave this
+    boundary as an uncaught `UnicodeEncodeError` — `UnicodeEncodeError` is a
+    `ValueError`, so neither `verify_self_hash`'s catch nor the recovery below
+    named it."""
+    parsed = json.loads(json.dumps(sound_envelope()))
+    parsed["payload"] = payload
+
+    with pytest.raises(SchemaRefusal) as caught:
+        validate_envelope(parsed)
+    message = str(caught.value)
+    assert "unencodable character" in message
+    assert "changed after publication" not in message
+    # The consumer prints this. A message carrying the offender raw would raise
+    # the same error again out of the report of the first one.
+    message.encode("utf-8")
+
+
+def test_a_record_too_deep_to_hash_is_not_accused_of_having_been_edited():
+    """`verify_self_hash` returns False for a record whose recursive walk exhausts
+    the stack. That is the right answer to the check and the wrong sentence for an
+    operator: nobody edited it, and no machine here could ever have verified it."""
+    nested: dict = {"leaf": 1}
+    for _ in range(2000):
+        nested = {"nested": nested}
+    parsed = sound_envelope()
+    parsed["payload"] = {"deep": nested}
+
+    try:
+        self_hash(parsed)
+    except TypeError as error:
+        assert "nests too deeply" in str(error)
+    else:
+        pytest.skip("this interpreter absorbs 2000 levels, so the guarded band is unreachable")
+
+    with pytest.raises(SchemaRefusal) as caught:
+        validate_envelope(parsed)
+    assert "nests too deeply" in str(caught.value)
+
+
+def test_a_huge_integer_is_named_at_the_envelope_boundary():
+    parsed = sound_envelope()
+    parsed["payload"] = {"count": 10**640}
+
+    with pytest.raises(SchemaRefusal) as caught:
+        validate_envelope(parsed)
+    assert "integer at $.payload.count exceeds 640 decimal digits" in str(caught.value)
+
+
+def test_the_refusal_an_operator_sees_carries_the_diagnostic_through_run_stage():
+    """`common/stage.py::run_stage` is the last thing between a refusal and stderr.
+    It catches `ContractError` and prints `type: message`, so the recovered
+    diagnostic survives — asserted here rather than assumed, because a boundary
+    that names the offending field into a handler that discards it has fixed
+    nothing an operator can see."""
+    from common.stage import EXIT_FATAL, run_stage
+
+    parsed = json.loads(json.dumps(sound_envelope()))
+    parsed["payload"] = {"scale": 1.5}
+
+    def main():
+        validate_envelope(parsed)
+
+    stream = io.StringIO()
+    with contextlib.redirect_stderr(stream):
+        assert run_stage(main) == EXIT_FATAL
+    printed = stream.getvalue()
+    assert printed.startswith(
+        "SchemaRefusal: artifact fails its self-hash: float at $.payload.scale"
+    )
 
 
 # --- Corruption kind 3: the input digest --------------------------------------
