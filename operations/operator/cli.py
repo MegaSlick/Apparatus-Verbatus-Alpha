@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import pwd
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -15,6 +17,54 @@ from . import notify_bridge
 from .errors import ErrorCode, OperatorError, strip_control_bytes
 from .surface import DEFAULT_FIXTURE, OperatorSurface
 from .volume_s3 import VolumeSpec, VolumeTransferRefusal
+
+
+def _default_state_dir() -> Path:
+    """Return durable operator state outside the checked-out project.
+
+    **`XDG_STATE_HOME` is honoured only when it is absolute**, which is what the
+    Base Directory specification requires of it and what this default depends
+    on. `main` resolves a *relative* `--state-dir` against the workspace, so
+    `XDG_STATE_HOME=` — an ordinary way to spell "unset", and what an empty
+    export leaves behind — made this function return the bare relative path
+    `verbatus`, and the operator's records went straight back inside the
+    checkout, silently, under a name the tool then had no reason to warn about.
+    That is the exact placement moving the default out of the checkout was for.
+    """
+
+    state_home = Path(os.environ.get("XDG_STATE_HOME", ""))
+    if not state_home.is_absolute():
+        home = Path.home()
+        # Path.home() honours HOME even when it is relative. Falling through
+        # with that value recreates the same checkout-relative state placement
+        # as a non-absolute XDG_STATE_HOME. The account database is the durable
+        # fallback on the POSIX systems this operator supports.
+        if not home.is_absolute():
+            home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+        if not home.is_absolute():
+            raise RuntimeError("the operator account has no absolute home directory")
+        state_home = home / ".local" / "state"
+    return state_home / "verbatus"
+
+
+def _warn_about_abandoned_state_dir(workspace: Path, state: Path) -> None:
+    """Name an old in-checkout `.verbatus/` this version no longer reads by default.
+
+    The default moved outside the checkout so records survive a `git clean`,
+    but a folder left behind by an earlier version holds real receipts. Silently
+    reading nothing where they used to be would read as "no records exist" —
+    GOVERNANCE 2 requires that gap to be named, not left for the operator to
+    discover by noticing `status` came back emptier than expected.
+    """
+
+    old_state = workspace / ".verbatus"
+    if state != _default_state_dir() or not old_state.is_dir():
+        return
+    _print(
+        f"Note: {old_state} holds operator records from before this version moved "
+        "the default state location outside the checkout. They are not read here "
+        f"automatically — point at them explicitly with: --state-dir {old_state}"
+    )
 
 
 def _print(text: str = "") -> None:
@@ -53,7 +103,7 @@ def build_parser() -> PlainParser:
         help="the checked-out Apparatus Verbatus folder (defaults to the current directory)",
     )
     parser.add_argument(
-        "--state-dir", type=Path, default=Path(".verbatus"), help="where local receipts are kept"
+        "--state-dir", type=Path, default=_default_state_dir(), help="where local receipts are kept"
     )
     parser.add_argument(
         "--notify",
@@ -148,6 +198,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         args = parser.parse_args(arguments)
         workspace = args.workspace.resolve()
         state = args.state_dir if args.state_dir.is_absolute() else workspace / args.state_dir
+        _warn_about_abandoned_state_dir(workspace, state)
         surface = OperatorSurface(
             workspace,
             state,

@@ -70,6 +70,19 @@ def open_regular(path: Path, flags: int, mode: int = 0o600):
         raise
 
 
+def source_is_in_drawer(source: Path, destination: Path) -> bool:
+    """Return whether SOURCE is beneath the agent-writable destination drawer.
+
+    This is lexical on purpose. Resolving SOURCE would follow the final symlink
+    before the helper has a chance to refuse it. ``abspath`` still collapses
+    ``..`` components, so an alias cannot escape this classification that way.
+    """
+
+    source_absolute = Path(os.path.abspath(source))
+    drawer_absolute = Path(os.path.abspath(destination.parent))
+    return source_absolute == drawer_absolute or drawer_absolute in source_absolute.parents
+
+
 def main() -> int:
     """Move untrusted bytes, or inspect worktree occupancy without flattening paths.
 
@@ -77,9 +90,10 @@ def main() -> int:
     `O_NOFOLLOW`.
 
     `write SOURCE SLOT` writes *into* `/out`: the slot is the agent's and is opened
-    with `O_NOFOLLOW`; the source is a path the session chose and is opened normally.
-    Refusing to follow a link there would break the ordinary way of pointing at a
-    standing brief, and would refuse it with a message naming the wrong file.
+    with `O_NOFOLLOW`. A source outside that drawer is a path the session chose and
+    may be a standing-brief symlink. A source inside the drawer is agent-writable,
+    so it receives the same regular-file/no-follow treatment as every other drawer
+    input. This distinction remains true while a dispatch waits for its lock.
 
     `bundle SLOT REF` opens the untrusted output slot once and gives that descriptor to
     `git bundle create - REF`, so Git never resolves the slot path itself.
@@ -96,9 +110,15 @@ def main() -> int:
                 shutil.copyfileobj(reading, sys.stdout.buffer)
             return 0
         if command == "write" and len(sys.argv) == 4:
+            destination = Path(sys.argv[3])
+            source_open = (
+                open_regular(source, os.O_RDONLY)
+                if source_is_in_drawer(source, destination)
+                else open(source, "rb")
+            )
             with (
-                open(source, "rb") as reading,
-                open_regular(Path(sys.argv[3]), os.O_WRONLY | os.O_CREAT) as writing,
+                source_open as reading,
+                open_regular(destination, os.O_WRONLY | os.O_CREAT) as writing,
             ):
                 # The launcher prints the drawer's brief path, so using that path as
                 # the next dispatch input is an ordinary workflow. Opening it again

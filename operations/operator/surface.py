@@ -581,8 +581,6 @@ class OperatorSurface:
                 {
                     "summary": "Upload is partial and can be resumed from its verified files.",
                     "state": "partial-transfer",
-                    "source": str(source_path.resolve()),
-                    "submission_manifest": str(manifest_path.resolve()),
                     "submission_manifest_sha256": manifest_sha256,
                     "detail": str(error),
                     "zero_gpu_hours": True,
@@ -601,8 +599,6 @@ class OperatorSurface:
                     else "Upload is complete; every recorded file was verified at its target."
                 ),
                 "state": "complete",
-                "source": str(source_path.resolve()),
-                "submission_manifest": str(manifest_path.resolve()),
                 "submission_manifest_sha256": manifest_sha256,
                 "transfer": report.to_record(),
                 "zero_gpu_hours": True,
@@ -1757,45 +1753,19 @@ def _status_projection(action: str, payload: dict[str, Any]) -> list[str]:
 
 
 def _status_manifest_projection(payload: dict[str, Any]) -> list[str]:
-    """Read only the exact sealed manifest bound into the upload receipt.
+    """Show the upload's manifest identity without retaining a local path.
 
-    The sealed manifest lives outside `.verbatus/`, at whatever path the
-    operator chose, and this tool does not own it or promise to keep it:
-    deleting it, or re-sealing a later batch to the same filename, is
-    ordinary housekeeping, not a corrupted operator record. Only a malformed
-    *receipt* — one that fails to bind a string path and digest at all — is
-    this operator's own saved record failing, and that alone is
-    `RecordError`/`STATUS_UNREADABLE`. A missing or since-changed external
-    file is its own named ledger line: the upload receipt still stands
-    either way, and `status` keeps showing every other record.
+    The receipt proves exactly which sealed record governed the transfer by
+    digest.  Local source and manifest paths are operator-machine details, not
+    durable evidence, so status cannot and must not reopen them later.
     """
 
-    path_text = payload.get("submission_manifest")
     recorded_sha256 = payload.get("submission_manifest_sha256")
-    if path_text is None and recorded_sha256 is None:
+    if recorded_sha256 is None:
         return []
-    if not isinstance(path_text, str) or not isinstance(recorded_sha256, str):
+    if not isinstance(recorded_sha256, str):
         raise RecordError("saved upload record does not bind its submission record digest")
-    try:
-        path = Path(path_text)
-        if sha256_file(path) != recorded_sha256:
-            raise ValueError("digest no longer matches the upload receipt")
-        manifest = submission_door.load_manifest(path)
-        files = manifest.get("files")
-        if not isinstance(files, list):
-            raise ValueError("has no file list")
-    except FileNotFoundError:
-        return [
-            f"  The sealed submission record at {path_text} is no longer present. "
-            "The upload receipt itself still stands."
-        ]
-    except Exception:
-        return [
-            f"  The sealed submission record at {path_text} no longer matches what the "
-            "upload receipt recorded, or could not be read. The upload receipt itself "
-            "still stands."
-        ]
-    return [f"  Saved sealed submission record names {len(files)} file(s)."]
+    return [f"  Sealed submission record digest: {recorded_sha256}."]
 
 
 def _load_policy(path: str | Path) -> SpendPolicy:

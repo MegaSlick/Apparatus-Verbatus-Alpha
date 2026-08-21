@@ -41,6 +41,15 @@ requires = ["setuptools==83.0.0"]
 build-backend = "setuptools.build_meta"
 
 [dependency-groups]
+# The full gate executes its tests and static tooling from uv's frozen
+# environment. Keep these direct values identical to requirements-dev.txt,
+# which builds the chamber image and the everyday non-frozen environment.
+test = [
+    "pytest==9.1.1",
+    "ruff==0.15.4",
+    "PyYAML==6.0.3",
+    "shellcheck-py==0.11.0.1",
+]
 # The dependency-audit gate invokes this exact pinned tool.  An unavailable
 # advisory service is a failed gate, never an implied clean audit.
 audit = ["pip-audit==2.10.1"]

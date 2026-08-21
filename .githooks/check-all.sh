@@ -14,6 +14,57 @@ elif [ "$#" -ne 0 ]; then
   exit 2
 fi
 
+chamber_environment_followup() {
+  [ -f /opt/autoclave/CLAUDE.md ] || return 0
+  echo "check-all: this chamber image cannot construct the required checkout-local .venv." >&2
+  echo "check-all: follow-up: install pinned uv==0.12.1 in operations/autoclave/Dockerfile; in cmd_new, after checkout, run '/opt/venv/bin/uv sync --frozen --group test --group audit'; add operations/autoclave/autoclave.sh to operations/autoclave/fingerprint.py INPUTS; then rebuild the image." >&2
+  echo "check-all: do not link .venv to /opt/venv: that image environment is resolved from requirements-dev.txt and does not freeze uv.lock's transitive versions." >&2
+}
+
+# CI and this gate share the exact environment described by uv.lock.  Refuse to
+# fall back to PATH's python: its installed packages are not evidence about the
+# frozen environment the project actually declares.
+#
+# What follows proves identity (the interpreter that runs pytest below is this
+# exact binary, not a PATH shadow), not currency: it does not run `uv lock
+# --check` or `uv sync --frozen` itself, so a `.venv` that predates a lockfile
+# change still passes here. CI is the source of truth for that (D:C1) — it
+# runs both commands fresh in the same job, right before this script. A
+# network-dependent freshness check does not belong ahead of pytest in the
+# *local* gate: that ordering mistake is exactly what moved pip_audit to the
+# end of this file below, and an offline developer would hit it again here.
+# `uv sync --frozen ...` (named in the message below) is how a developer
+# brings a stale `.venv` back in sync; nothing here does it for them.
+frozen_python="$root/.venv/bin/python"
+[ -x "$frozen_python" ] || {
+  echo "check-all: frozen interpreter is missing at $frozen_python; run 'uv sync --frozen --group test --group audit'" >&2
+  chamber_environment_followup
+  exit 1
+}
+#
+# **The thing to compare is `sys.prefix`, not `sys.executable`.** Python reports
+# the path it was *invoked through*, so `.venv/bin/python` symlinked straight
+# onto PATH's interpreter reports `$root/.venv/bin/python` while importing
+# another environment's site-packages — which is precisely the PATH shadow this
+# refuses, waved through by the check written to catch it. Measured, not
+# reasoned: a bare symlink onto this machine's `python3` answered
+# `sys.executable = <root>/.venv/bin/python` and `sys.prefix = /usr`.
+# `sys.prefix` is the environment the imports actually come from. Compared
+# through `realpath` on both sides so a `.venv` that is itself a link to a real
+# frozen environment elsewhere still passes: that is a different arrangement of
+# the same environment, not a different environment.
+[ "$("$frozen_python" -c 'import os, sys; print(os.path.realpath(sys.prefix))')" \
+  = "$(CDPATH='' cd -- "$root/.venv" && pwd -P)" ] || {
+  echo "check-all: $frozen_python does not import from the frozen environment at $root/.venv; run 'uv sync --frozen --group test --group audit'" >&2
+  chamber_environment_followup
+  exit 1
+}
+
+# Static tools are part of the same reproducible check surface.  Put their
+# scripts ahead of PATH only after proving the environment we selected is real.
+PATH="$root/.venv/bin:$PATH"
+export PATH
+
 sh .githooks/check-static.sh
 
 if [ "$mode" = local ]; then
@@ -22,18 +73,21 @@ if [ "$mode" = local ]; then
   python3 .githooks/check_ingress.py --worktree
 fi
 
-python3 -m pytest
+"$frozen_python" -m pytest
 
 # Dependency vulnerability audit, fired by the deferred-tooling trigger the
 # moment dependencies stopped being an empty list. `--strict` makes an
 # unreachable advisory service or an unresolvable requirement a failing gate:
 # a check that cannot run is a failure, not a pass.
 #
-# It audits requirements-dev.txt, which carries every runtime dependency as well
-# as the tools this gate installs. That is only true because it is kept true —
-# `test_every_runtime_dependency_is_inside_what_the_audit_reads` in
-# .githooks/test_ci_workflow.py fails if a dependency is added to pyproject.toml
-# and not here, which would otherwise leave it silently unaudited.
+# Audit the exact installed inventory, not requirements-dev.txt. That file pins
+# every direct dependency, but `pip_audit --requirement` asks pip to resolve the
+# transitive closure again. A later compatible transitive release can therefore
+# be audited even though uv.lock installed an older one. The helper projects the
+# distributions this already-proved interpreter imports into exact pins; the
+# project itself is omitted because it is an editable local distribution with no
+# PyPI advisory identity. `--no-deps --disable-pip` makes pip-audit consume those
+# pins without resolving or installing anything.
 #
 # **Last, and that is the point.** `set -e` makes every step a barrier to the ones
 # after it, and this is the only step that needs a network and a tool the gate does
@@ -42,4 +96,14 @@ python3 -m pytest
 # that keeps credentials out of outgoing history was sitting downstream of an
 # advisory service. It still fails the gate; it no longer decides whether the rest
 # of the gate happens.
-python3 -m pip_audit --strict --requirement requirements-dev.txt
+audit_inventory=$(mktemp "${TMPDIR:-/tmp}/verbatus-frozen-audit.XXXXXX") || {
+  echo "check-all: could not create the frozen audit inventory" >&2
+  exit 1
+}
+cleanup_audit_inventory() { rm -f -- "$audit_inventory"; }
+trap cleanup_audit_inventory 0 1 2 15
+"$frozen_python" .githooks/frozen_audit_requirements.py > "$audit_inventory"
+"$frozen_python" -m pip_audit --strict --no-deps --disable-pip \
+  --requirement "$audit_inventory"
+cleanup_audit_inventory
+trap - 0 1 2 15
