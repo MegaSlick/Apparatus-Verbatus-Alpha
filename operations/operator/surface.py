@@ -252,6 +252,18 @@ class FixtureBootstrapActions:
             return {"state": "no-upload-recorded", "mode": "fixture-only"}
         return {"state": "recorded-upload", "receipt": str(self.transfer_receipt)}
 
+    def materialize_model_store(self) -> dict[str, object]:
+        """The one step that would fetch real weights, and the reason it must not here.
+
+        This surface is fixture-only by construction, and ledger ruling 14 puts
+        the acquisition of real weights at the pod's launch and nowhere else. So
+        the step runs and reports honestly that it acquired nothing, exactly as
+        its siblings do. Leaving the method off did not make that true: the
+        bootstrapper still reached for it, the boot went red on a missing
+        attribute, and eleven operator tests failed with it.
+        """
+        return {"state": "no-materialization", "mode": "fixture-only; no weights are fetched"}
+
     def verify_chair_cache(self) -> dict[str, object]:
         return {"state": "fixture-cache-check", "mode": "no download"}
 

@@ -6,6 +6,7 @@ without the paired red path would not establish that the guard is wired.
 
 from __future__ import annotations
 
+import inspect
 import itertools
 import json
 import subprocess
@@ -23,11 +24,13 @@ from . import cli
 from . import launch as launch_module
 from .arming import ControllerArming, ControllerReadiness
 from .bootstrap import (
+    BootstrapActions,
     BootstrapJournal,
     Bootstrapper,
     BootstrapPlan,
     BootstrapStep,
     BootstrapStepFailure,
+    ModelStoreBootstrapAction,
     SubprocessBootstrapActions,
 )
 from .controllers import ControllerResult, ControllerState, LaptopSupervisor, PodDeadmanTimer
@@ -2579,11 +2582,87 @@ class FakeBootstrapActions:
     def resume_transfer(self) -> dict[str, object]:
         return self._step(BootstrapStep.TRANSFER)
 
+    def materialize_model_store(self) -> dict[str, object]:
+        return self._step(BootstrapStep.MODEL_STORE)
+
     def verify_chair_cache(self) -> dict[str, object]:
         return self._step(BootstrapStep.CHAIR_CACHE)
 
     def run_preflight(self) -> dict[str, object]:
         return self._step(BootstrapStep.PREFLIGHT) | {"color": "green"}
+
+
+def test_model_store_bootstrap_action_delegates_pinned_materialization(
+    monkeypatch, tmp_path: Path
+) -> None:
+    observed: dict[str, object] = {}
+
+    def materialize(root, fetcher, *, capacity):  # type: ignore[no-untyped-def]
+        observed.update(root=root, fetcher=fetcher, capacity=capacity)
+        return {"artifacts": [], "complete": False}
+
+    monkeypatch.setattr("operations.pod.bootstrap.materialize_real_roster", materialize)
+    fetcher = object()
+    action = ModelStoreBootstrapAction(
+        tmp_path / "models",
+        fetcher,
+        capacity={"cleanup_owner": "pod operator"},  # type: ignore[arg-type]
+    )
+
+    assert action.materialize() == {"artifacts": [], "complete": False}
+    assert observed == {
+        "root": tmp_path / "models",
+        "fetcher": fetcher,
+        "capacity": {"cleanup_owner": "pod operator"},
+    }
+
+
+def test_every_bootstrap_actions_implementation_covers_every_step() -> None:
+    """A step added to the enum must fail here, not turn a real boot red.
+
+    `BootstrapActions` is a structural Protocol, so an implementation that has
+    not caught up with a new step is invisible until the bootstrapper reaches
+    for the missing method — and then it is a red boot report rather than a
+    named failure. That is what happened when the `model-store` step landed:
+    `FixtureBootstrapActions` never grew the method, and eleven operator-surface
+    tests failed on an attribute error dressed as a red environment.
+    """
+    from operations.operator.surface import FixtureBootstrapActions
+
+    required = {name for name, _ in inspect.getmembers(BootstrapActions, inspect.isfunction)} - {
+        "__init__"
+    }
+    assert len(required) == len(BootstrapStep), (
+        "every bootstrap step needs exactly one action method on the protocol; "
+        f"steps={[step.value for step in BootstrapStep]}, methods={sorted(required)}"
+    )
+    for implementation in (
+        FixtureBootstrapActions,
+        SubprocessBootstrapActions,
+        FakeBootstrapActions,
+    ):
+        missing = sorted(name for name in required if not hasattr(implementation, name))
+        assert not missing, f"{implementation.__name__} implements no {missing}"
+
+
+def test_bootstrapper_refuses_any_unregistered_structural_implementation_that_drifted(
+    tmp_path: Path,
+) -> None:
+    """The guard applies to future implementations, not only today's test roster."""
+
+    class DriftedActions(FakeBootstrapActions):
+        materialize_model_store = None  # type: ignore[assignment]
+
+    lockfile = tmp_path / "uv.lock"
+    lockfile.write_text("version = 1\n", encoding="utf-8")
+
+    with pytest.raises(TypeError, match="materialize_model_store"):
+        Bootstrapper(
+            BootstrapJournal(
+                tmp_path / "bootstrap.json", BootstrapPlan("c" * 40, lockfile), now=lambda: START
+            ),
+            DriftedActions(),  # type: ignore[arg-type]
+        )
 
 
 def test_bootstrap_crash_resumes_only_the_unfinished_idempotent_step(tmp_path: Path) -> None:
@@ -2601,6 +2680,7 @@ def test_bootstrap_crash_resumes_only_the_unfinished_idempotent_step(tmp_path: P
     assert report.green
     assert actions.calls.count(BootstrapStep.REPOSITORY) == 1
     assert actions.calls.count(BootstrapStep.UV_ENVIRONMENT) == 2
+    assert actions.calls.count(BootstrapStep.MODEL_STORE) == 1
     assert actions.calls.count(BootstrapStep.PREFLIGHT) == 1
 
 
@@ -2645,6 +2725,7 @@ def test_production_bootstrap_refuses_a_lockfile_other_than_checked_out_uv_lock(
     actions = SubprocessBootstrapActions(
         repository=repository,
         transfer=lambda: {},
+        materialize_model_store=lambda: {},
         cache=None,  # type: ignore[arg-type]
         preflight=lambda: {"color": "green"},
         runner=lambda argv, cwd: (_ for _ in ()).throw(AssertionError(f"unexpected {argv}")),
@@ -2654,12 +2735,29 @@ def test_production_bootstrap_refuses_a_lockfile_other_than_checked_out_uv_lock(
         actions.sync_uv_environment(other)
 
 
+def test_production_bootstrap_refuses_an_incomplete_model_store_receipt(tmp_path: Path) -> None:
+    actions = SubprocessBootstrapActions(
+        repository=tmp_path,
+        transfer=lambda: {},
+        materialize_model_store=lambda: {
+            "complete": False,
+            "real_roster_complete": False,
+        },
+        cache=None,  # type: ignore[arg-type]
+        preflight=lambda: {"color": "green"},
+    )
+
+    with pytest.raises(BootstrapStepFailure, match="every real-roster repository"):
+        actions.materialize_model_store()
+
+
 def test_red_preflight_details_survive_into_the_bootstrap_failure(tmp_path: Path) -> None:
     repository = tmp_path / "repository"
     repository.mkdir()
     actions = SubprocessBootstrapActions(
         repository=repository,
         transfer=lambda: {},
+        materialize_model_store=lambda: {},
         cache=None,  # type: ignore[arg-type]
         preflight=lambda: {
             "color": "red",

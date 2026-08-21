@@ -14,11 +14,12 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import Any, Mapping, Protocol
 
 from common.contracts.canonical import canonical_bytes, digest_bytes
 
@@ -72,10 +73,26 @@ class RequiredArtifact:
     source: str
     repo: str | None
     revision: str | None
+    # The licence the pinned repository *declares*, or None where it declares
+    # none at all.  This is roster policy in the same sense as the revision
+    # beside it, and it exists because a licence is not always a file: the
+    # materializer looks for LICENSE/COPYING in the fetched snapshot, and a
+    # repository can be plainly licensed while shipping neither.  Without this
+    # column that case was recorded as "no licence text was present", which
+    # reads — and was commented in the code — as evidence that the repository
+    # declares no licence.  See `_snapshot_licence`.
+    license_declaration: str | None = None
 
 
 # This is the roster policy, not a second copy of store facts.  The inventory is
 # computed from download_record.json and refuses any disagreement with this list.
+#
+# Each `license_declaration` is the licence id the repository's own model card
+# carries at the pinned revision, read the same way and at the same time as the
+# revisions themselves (`config/models.toml` records that resolution and its
+# dates).  It is not a reading of the licence's terms — the roster rows'
+# `license_note` fields hold those, and `test_model_store.py` reconciles the two
+# so a row and this column cannot drift apart.
 REQUIRED_ARTIFACTS = (
     RequiredArtifact(
         "designator_structure",
@@ -83,6 +100,7 @@ REQUIRED_ARTIFACTS = (
         "huggingface",
         "datalab-to/chandra-ocr-2",
         "af93b47dba1b47b6640c86ccf487ed2260ab9a09",
+        "openrail",
     ),
     RequiredArtifact(
         "attestator_1",
@@ -90,6 +108,7 @@ REQUIRED_ARTIFACTS = (
         "huggingface",
         "datalab-to/chandra-ocr-2",
         "af93b47dba1b47b6640c86ccf487ed2260ab9a09",
+        "openrail",
     ),
     RequiredArtifact(
         "attestator_2",
@@ -97,6 +116,8 @@ REQUIRED_ARTIFACTS = (
         "huggingface",
         "Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR",
         "e371095d4ffe585f31f4974462931ddbac61ff64",
+        # The one roster repository that declares no licence anywhere.
+        None,
     ),
     RequiredArtifact(
         "attestator_3",
@@ -104,6 +125,7 @@ REQUIRED_ARTIFACTS = (
         "huggingface",
         "stanford-oval/churro-3B",
         "ca2150ea465d5a3d67818c50e234b9422619c75d",
+        "other: qwen-research",
     ),
     RequiredArtifact(
         "secondary_proposer",
@@ -111,6 +133,8 @@ REQUIRED_ARTIFACTS = (
         "huggingface",
         "Teklia/YOLOv26-DAI-CReTDHI-Record-Detection",
         "0c57f057391113579e7af170b864542f049e67aa",
+        # Declared in the model card; the pinned revision ships no licence file.
+        "agpl-3.0",
     ),
     RequiredArtifact("proposer_surya2", "surya2-detection", "local-repository", None, None),
     RequiredArtifact(
@@ -119,6 +143,7 @@ REQUIRED_ARTIFACTS = (
         "huggingface",
         "Qwen/Qwen3.8-27B",
         "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+        "apache-2.0",
     ),
 )
 # The `chair` column above is a `config/models.toml` role key, not a label: an
@@ -154,12 +179,493 @@ DAI_PROMPT_CITATION = (
 MODEL_PAYLOAD_SUFFIXES = frozenset({".bin", ".gguf", ".onnx", ".pt", ".pth", ".safetensors"})
 
 
+class MaterializationFetcher(Protocol):
+    """Fetch one complete, pinned repository snapshot into an empty directory."""
+
+    def fetch(self, repo: str, revision: str, destination: Path) -> None:
+        """Write the exact repository revision below ``destination``, or raise."""
+
+
+def materialize_real_roster(
+    store_root: str | Path,
+    fetcher: MaterializationFetcher,
+    *,
+    capacity: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Fetch each real pinned repository once and publish its measured evidence.
+
+    This is the one boot-time writer for real model bytes.  It deliberately does
+    not update ``config/models-real.toml``: a manifest digest becomes a config
+    pin only after this function has measured a verified fetch, through an
+    ordinary reviewed config edit.  The durable record makes an interrupted boot
+    visible as ``pending-fetch`` rather than treating missing weights as success.
+
+    **Pending artifacts are materialized before present ones are re-verified,
+    and the order is what makes an interrupted boot recoverable.**  A pod dies
+    mid-fetch at some point between publishing an artifact's manifest and
+    recording it present; the store is then briefly a real thing that
+    ``verify_store`` is right to refuse — a ``pending-fetch`` entry with
+    acquisition evidence beside it.  Re-verifying an already-present artifact
+    goes through ``require_store_artifact``, which verifies the *whole* store,
+    so in artifact order the very first present entry re-raised that refusal and
+    the boot could never reach the half-materialized artifact that caused it.
+    Every later boot failed the same way, on a store that a re-fetch would have
+    closed: the pinned revision yields the same bytes, so the orphaned manifest
+    is republished identically and reused.  Doing the pending work first brings
+    record and disk back into agreement before anything asks the store as a
+    whole.  Nothing is loosened — differing bytes are still refused at
+    publication and at promotion, and the final ``verify_store`` still has the
+    last word.
+    """
+
+    root = Path(store_root).resolve()
+    record = _initial_materialization_record(capacity)
+    active = root / "download_record.json"
+    if active.exists():
+        record = load_download_record(root)
+        # Materialization indexes this record by the fixed roster immediately
+        # below.  Perform the join first so a renamed/missing artifact is a
+        # named store refusal rather than a bare StopIteration from `_record_artifact`.
+        derived_inventory(record)
+    else:
+        write_download_record(record, root)
+
+    completed: dict[str, dict[str, str]] = {}
+    requirements = _unique_huggingface_requirements()
+    already_present = {
+        item.artifact
+        for item in requirements
+        if _record_artifact(record, item.artifact)["state"] == "present"
+    }
+    for requirement in requirements:
+        if requirement.artifact in already_present:
+            continue
+        if not requirement.repo or not requirement.revision:  # closed by RequiredArtifact policy
+            raise DigestMismatchRefusal(requirement.artifact, "Hugging Face artifact lacks a pin")
+        staging_root = _under(root, "staging")
+        staging_root.mkdir(parents=True, exist_ok=True)
+        staging = Path(tempfile.mkdtemp(prefix=f".{requirement.artifact}.fetch-", dir=staging_root))
+        try:
+            fetcher.fetch(requirement.repo, requirement.revision, staging)
+            licence = _snapshot_licence(staging, requirement)
+            carried = _carried_content(requirement, staging)
+            payloads = sorted(
+                path.relative_to(staging).as_posix()
+                for path in staging.rglob("*")
+                if path.is_file() and path.suffix in MODEL_PAYLOAD_SUFFIXES
+            )
+            if not payloads:
+                raise DigestMismatchRefusal(
+                    requirement.artifact, "fetched revision has no supported model payload"
+                )
+            _refuse_unpinned_additions(staging, requirement.artifact)
+            indexed = _indexed_shards(staging, requirement.artifact)
+            licence_evidence = {licence}
+            if licence == UNTEXTED_LICENCE_SNAPSHOT:
+                # The synthetic observation says the repository's own model card
+                # carries the declaration.  Requiring that card keeps a broken
+                # fetch from making the store say evidence arrived when it did not.
+                licence_evidence.add(MODEL_CARD_PATH)
+            required_files = sorted(
+                {*licence_evidence, *payloads, *indexed, *(x["path"] for x in carried)}
+            )
+            manifest = f"manifests/{requirement.artifact}.json"
+            digest = promote_verified_snapshot(
+                root,
+                {
+                    "artifact": requirement.artifact,
+                    "staging": staging.relative_to(root).as_posix(),
+                    "manifest": manifest,
+                    "required_files": required_files,
+                },
+            )
+            destination = _under(root, f"hf/{requirement.artifact}")
+            _promote_materialized_snapshot(staging, destination, requirement.artifact)
+            present = {
+                "artifact": requirement.artifact,
+                "state": "present",
+                "source": requirement.source,
+                "repo": requirement.repo,
+                "revision": requirement.revision,
+                "snapshot": f"hf/{requirement.artifact}",
+                "manifest": manifest,
+                "digest_manifest": digest,
+                "license": licence,
+                "carried": carried,
+                "required_files": required_files,
+            }
+            record = _replace_record_artifact(record, present)
+            write_download_record(record, root)
+            completed[requirement.artifact] = _materialization_receipt(present)
+        except BaseException:
+            # `BaseException`, not `Exception`: a multi-hour weights fetch is
+            # interrupted by ^C or a shutdown signal far more often than by a
+            # Python error, and those raise `KeyboardInterrupt` — which the
+            # narrower clause let past, leaving a part-fetched staging tree on
+            # the volume the record's own capacity plan is trying to account for.
+            if staging.exists():
+                shutil.rmtree(staging, ignore_errors=True)
+            raise
+
+    # One whole-store verification, after every fetch and before any claim is made
+    # from it.  `verify_store` verifies the *whole* store each time it is called,
+    # so re-verifying per already-present artifact — which is what
+    # `require_store_artifact` does — hashed the entire volume once per artifact.
+    # On the real roster that is five passes over roughly a hundred gigabytes to
+    # learn one thing five times.  GOVERNANCE 1 pays for extra passes that read
+    # more carefully; this one read the same bytes to the same conclusion. The
+    # single call below verifies every present artifact, backs each receipt, and
+    # settles `complete`.
+    inventory = verify_store(root)
+    verified = {row["artifact"]: row for row in inventory["artifacts"]}
+    for artifact in already_present:
+        completed[artifact] = _materialization_receipt(verified[artifact])
+    real_roster_complete = all(
+        verified.get(item.artifact, {}).get("state") == "present" for item in requirements
+    )
+
+    return {
+        "store": str(root),
+        # Emitted in roster order rather than the order the work happened in, so
+        # a resumed boot's receipt reads the same as a first boot's.
+        "artifacts": [
+            completed[item.artifact] for item in requirements if item.artifact in completed
+        ],
+        "download_record_sha256": digest_bytes(canonical_bytes(load_download_record(root))),
+        "complete": inventory["complete"],
+        # The durable store also inventories the non-roster Surya adapter bundle,
+        # so its whole-store `complete` remains false here by design. Bootstrap
+        # advances on this narrower, byte-verified fact: every selectable real
+        # roster repository fetched at its pin and survived `verify_store`.
+        "real_roster_complete": real_roster_complete,
+        # A hard kill takes the `finally`-equivalent cleanup above with it, while
+        # a concurrent materializer can also have a live tree here. Remaining
+        # entries are named rather than deleted or classified: this call cannot
+        # tell those states apart, and `capacity.cleanup_owner` already says who
+        # owns reclaiming store space. Unnamed, they would be exactly the silent
+        # loss of a fact GOVERNANCE 2 forbids.
+        "unattributed_staging_entries": _unattributed_staging_entries(root),
+    }
+
+
+# A fetcher's contract is the pinned revision and nothing else, so anything a
+# client leaves in the staged tree of its own accord is refused here rather than
+# measured. `registry.HuggingFaceMaterializationFetcher` keeps the client's cache
+# outside staging; this is the store checking rather than trusting, because the
+# cost of trusting is a pin that no second fetch can reproduce.  Only the
+# client's exact `.cache/huggingface` namespace is reserved: a repository-owned
+# `.cache/*` file is upstream content and must not be silently deleted or refused.
+CLIENT_BOOKKEEPING_PREFIX = (".cache", "huggingface")
+
+
+def _refuse_unpinned_additions(snapshot: Path, artifact: str) -> None:
+    found = sorted(
+        path.relative_to(snapshot).as_posix()
+        for path in snapshot.rglob("*")
+        if path.is_file()
+        and (
+            ".git" in path.relative_to(snapshot).parts
+            or path.relative_to(snapshot).parts[:2] == CLIENT_BOOKKEEPING_PREFIX
+        )
+    )
+    if found:
+        raise DigestMismatchRefusal(
+            artifact,
+            "the fetched tree carries client bookkeeping rather than only the pinned "
+            f"revision: {found}. These are not repository bytes, some of them are not "
+            "reproducible, and the manifest measured here becomes this artifact's pin",
+        )
+
+
+def _unique_huggingface_requirements() -> list[RequiredArtifact]:
+    """Roster order, one entry per artifact: chandra fills two chairs at one pin."""
+
+    unique: dict[str, RequiredArtifact] = {}
+    for item in REQUIRED_ARTIFACTS:
+        if item.source == "huggingface":
+            unique.setdefault(item.artifact, item)
+    return list(unique.values())
+
+
+def _unattributed_staging_entries(root: Path) -> list[str]:
+    """Name staging entries without claiming whether their writer is alive.
+
+    A completed call has moved or removed its own staging directory.  Anything
+    left belongs to another invocation or to an interrupted earlier one, but a
+    directory listing cannot distinguish those states.  Calling every entry an
+    orphan turned that uncertainty into a false observation during concurrent
+    materialization; ``unattributed`` says exactly what was measured.
+    """
+
+    staging = _under(root, "staging")
+    if not staging.is_dir():
+        return []
+    return sorted(path.name for path in staging.iterdir())
+
+
+# The shard indexes a Hugging Face repository publishes for a split checkpoint.
+# `weight_map` names every shard the model needs, so the pinned revision carries
+# its own statement of how many files a complete fetch has.
+SHARD_INDEX_NAMES = ("model.safetensors.index.json", "pytorch_model.bin.index.json")
+
+
+def _indexed_shards(snapshot: Path, artifact: str) -> list[str]:
+    """Reconcile a fetched snapshot against the shard index it fetched with.
+
+    Without this, a fetch that stops early is measured rather than caught. The
+    manifest is built from whatever landed, that manifest becomes the artifact's
+    pin, and every later verification compares the snapshot against a pin
+    derived from the same short fetch — so seventeen of Qwen3.8-27B's eighteen
+    shards would record `present`, report `complete`, and agree with itself
+    forever. The store has no external anchor for a first materialization (see
+    `promote_verified_snapshot`), but it does not need one here: a sharded
+    repository ships `weight_map`, and that is the pinned revision's own account
+    of what a complete fetch contains. GOVERNANCE 2 — a partial result is
+    visibly partial, not a smaller successful one.
+
+    Returns the index and its shards so they join `required_files`, which makes
+    the same reconciliation run at every later `verify_store` rather than only
+    at the fetch. An unsharded repository publishes no index and is unaffected.
+    """
+
+    found: set[str] = set()
+    for path in sorted(snapshot.rglob("*")):
+        if not path.is_file() or path.name not in SHARD_INDEX_NAMES:
+            continue
+        try:
+            index = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise DigestMismatchRefusal(
+                artifact, f"shard index {path.name!r} is unreadable: {error}"
+            ) from error
+        weight_map = index.get("weight_map") if isinstance(index, Mapping) else None
+        if not isinstance(weight_map, Mapping) or not weight_map:
+            raise DigestMismatchRefusal(
+                artifact, f"shard index {path.name!r} names no weight map to reconcile"
+            )
+        raw_shards = list(weight_map.values())
+        if not all(isinstance(name, str) and name.strip() for name in raw_shards):
+            raise DigestMismatchRefusal(
+                artifact,
+                f"shard index {path.name!r} must name shards as nonblank relative POSIX paths",
+            )
+        shards = sorted(set(raw_shards))
+        unsafe = [
+            name
+            for name in shards
+            if PurePosixPath(name).is_absolute()
+            or not PurePosixPath(name).parts
+            or ".." in PurePosixPath(name).parts
+            or "\\" in name
+        ]
+        if unsafe:
+            raise DigestMismatchRefusal(
+                artifact,
+                f"shard index {path.name!r} names unsafe shard paths: {unsafe}",
+            )
+        missing = [name for name in shards if not (path.parent / name).is_file()]
+        if missing:
+            raise DigestMismatchRefusal(
+                artifact,
+                f"the fetch is incomplete: {path.name!r} names {len(shards)} shards and "
+                f"{missing} did not arrive",
+            )
+        found.add(path.relative_to(snapshot).as_posix())
+        found.update((path.parent / name).relative_to(snapshot).as_posix() for name in shards)
+    return sorted(found)
+
+
+def _initial_materialization_record(capacity: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "schema": STORE_SCHEMA,
+        "layout": {
+            "hf": "hf",
+            "local": "local",
+            "manifests": "manifests",
+            "records": "records",
+            "staging": "staging",
+        },
+        "capacity": dict(capacity),
+        "artifacts": [
+            {
+                "artifact": item.artifact,
+                "state": "pending-fetch",
+                "source": item.source,
+                "repo": item.repo,
+                "revision": item.revision,
+                "reason": "awaiting pinned pod-launch materialization",
+            }
+            for item in sorted(
+                {item.artifact: item for item in REQUIRED_ARTIFACTS}.values(),
+                key=lambda item: item.artifact,
+            )
+        ],
+    }
+
+
+def _record_artifact(record: Mapping[str, Any], artifact: str) -> Mapping[str, Any]:
+    return next(item for item in record["artifacts"] if item["artifact"] == artifact)
+
+
+def _replace_record_artifact(
+    record: Mapping[str, Any], replacement: Mapping[str, Any]
+) -> dict[str, Any]:
+    result = dict(record)
+    result["artifacts"] = [
+        dict(replacement) if item["artifact"] == replacement["artifact"] else dict(item)
+        for item in record["artifacts"]
+    ]
+    return result
+
+
+LICENCE_FILE_NAMES = frozenset(
+    {"license", "license.md", "license.txt", "copying", "copying.md", "copying.txt"}
+)
+UNDECLARED_LICENCE_SNAPSHOT = "LICENSE-NOT-DECLARED.txt"
+UNTEXTED_LICENCE_SNAPSHOT = "LICENSE-DECLARED-WITHOUT-TEXT.txt"
+MODEL_CARD_PATH = "README.md"
+
+
+def _snapshot_licence(snapshot: Path, requirement: RequiredArtifact) -> str:
+    """Name the licence evidence for this fetch, and never overstate it.
+
+    A repository that ships a licence file is the easy case.  The two hard ones
+    are different facts and were being recorded as one: a repository can ship no
+    licence file and still declare a licence — this roster's YOLOv26 detector
+    declares AGPL-3.0 in its model card and ships only `.gitattributes`,
+    `README.md` and `model.pt` — while another declares nothing anywhere, which
+    is the DAI witness.  Writing "no licence text was present" for both put a
+    sentence in the store that contradicted the roster row's own
+    `license_note = "AGPL-3.0."`, on the one roster licence whose obligations can
+    reach this repository's own source.  The roster's `license_declaration` is
+    what tells them apart, and the sentinel now says which case it is.
+
+    Either sentinel is written into the staged snapshot before its manifest is
+    built, so it is covered by the artifact's digest manifest and cannot be
+    edited afterwards without the store refusing (GOVERNANCE 4).  Neither
+    invents terms: the first records a declaration and where to read it, the
+    second records that there is nothing to read.
+    """
+
+    candidates = sorted(
+        path
+        for path in snapshot.rglob("*")
+        if path.is_file() and path.name.lower() in LICENCE_FILE_NAMES
+    )
+    if candidates:
+        return candidates[0].relative_to(snapshot).as_posix()
+    if requirement.license_declaration is not None:
+        model_card = snapshot / MODEL_CARD_PATH
+        if model_card.is_symlink() or not model_card.is_file():
+            raise DigestMismatchRefusal(
+                requirement.artifact,
+                f"the fetched revision has no regular {MODEL_CARD_PATH} to support its "
+                f"declared licence {requirement.license_declaration!r}",
+            )
+        path = snapshot / UNTEXTED_LICENCE_SNAPSHOT
+        _write_licence_observation(
+            path,
+            _licence_observation_text(requirement),
+            requirement.artifact,
+        )
+        return path.name
+    # A repository that declares no licence still needs an explicit, immutable
+    # observation at its pinned revision.  This is evidence of absence, never a
+    # licence invented for the upstream bytes.
+    path = snapshot / UNDECLARED_LICENCE_SNAPSHOT
+    _write_licence_observation(
+        path,
+        _licence_observation_text(requirement),
+        requirement.artifact,
+    )
+    return path.name
+
+
+def _licence_observation_text(requirement: RequiredArtifact) -> str:
+    origin = f"{requirement.repo}@{requirement.revision}"
+    if requirement.license_declaration is not None:
+        return (
+            f"{origin} ships no licence file at this revision.\n"
+            f"Its model card declares: {requirement.license_declaration}\n"
+            "That declaration is the repository's own, recorded here because the "
+            "pinned revision carries no licence text to snapshot. The card itself "
+            f"is {MODEL_CARD_PATH} in this snapshot and is covered by this artifact's "
+            "digest manifest; the licence's full terms are not in the pinned "
+            "revision and must be read from the licence's canonical source.\n"
+        )
+    return (
+        f"No licence file and no licence declaration were present in {origin} at "
+        "fetch time: neither a licence file in the repository nor a licence in "
+        "its model card.\n"
+    )
+
+
+def _write_licence_observation(path: Path, text: str, artifact: str) -> None:
+    """Create synthetic evidence once, never overwrite repository bytes.
+
+    The reserved name is inside the fetched tree.  A hostile or simply unlucky
+    repository can therefore already contain it; ``write_text`` used to replace
+    those upstream bytes before the manifest measured the tree.  Exclusive
+    creation makes the collision a refusal, including when another writer wins
+    the race between inspection and publication.
+    """
+
+    try:
+        with path.open("x", encoding="utf-8") as handle:
+            handle.write(text)
+    except FileExistsError as error:
+        raise DigestMismatchRefusal(
+            artifact,
+            f"reserved synthetic licence evidence name {path.name!r} already exists in "
+            "the fetched repository; upstream bytes are never overwritten",
+        ) from error
+    except OSError as error:
+        raise DigestMismatchRefusal(
+            artifact, f"cannot publish synthetic licence evidence {path.name!r}: {error}"
+        ) from error
+
+
+def _carried_content(requirement: RequiredArtifact, snapshot: Path) -> list[dict[str, str]]:
+    if requirement.artifact != "dai-recordgold-atr":
+        return []
+    paths = ("system.txt", "query.txt")
+    missing = [path for path in paths if not (snapshot / path).is_file()]
+    if missing:
+        raise DigestMismatchRefusal(
+            requirement.artifact, f"pinned prompt files are absent: {missing}"
+        )
+    return [{"name": path, "path": path, "citation": DAI_PROMPT_CITATION} for path in paths]
+
+
+def _promote_materialized_snapshot(staging: Path, destination: Path, artifact: str) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists():
+        if build_manifest(staging).to_record() != build_manifest(destination).to_record():
+            raise DigestMismatchRefusal(
+                artifact, "existing snapshot differs from the newly fetched pinned bytes"
+            )
+        shutil.rmtree(staging)
+        return
+    os.replace(staging, destination)
+
+
+def _materialization_receipt(entry: Mapping[str, Any]) -> dict[str, str]:
+    return {
+        "artifact": str(entry["artifact"]),
+        "repo": str(entry["repo"]),
+        "revision": str(entry["revision"]),
+        "manifest": str(entry["manifest"]),
+        "digest_manifest": str(entry["digest_manifest"]),
+        "license": str(entry["license"]),
+    }
+
+
 def load_download_record(store_root: str | Path) -> dict[str, Any]:
     """Load the canonical active record and prove its immutable version exists."""
 
     root = Path(store_root).resolve()
     active = root / "download_record.json"
-    if active.is_symlink():
+    if active.is_symlink() or (active.exists() and not active.is_file()):
         raise DigestMismatchRefusal(
             "model-store", "download_record.json must be a regular in-store active copy"
         )
@@ -180,9 +686,9 @@ def load_download_record(store_root: str | Path) -> dict[str, Any]:
     _validate_record(raw)
     digest = digest_bytes(raw_bytes)
     archive = _under(root, f"records/{digest}.json")
-    if archive.is_symlink():
+    if archive.is_symlink() or (archive.exists() and not archive.is_file()):
         raise DigestMismatchRefusal(
-            "model-store", "immutable download record version must not be a symlink"
+            "model-store", "immutable download record version must be a regular in-store file"
         )
     try:
         archived_bytes = archive.read_bytes()
@@ -218,7 +724,7 @@ def write_download_record(record: Mapping[str, Any], store_root: str | Path) -> 
     _validate_record(record)
     root = Path(store_root).resolve()
     destination = root / "download_record.json"
-    if destination.is_symlink():
+    if destination.is_symlink() or (destination.exists() and not destination.is_file()):
         raise DigestMismatchRefusal(
             "model-store", "download_record.json must be a regular in-store active copy"
         )
@@ -475,6 +981,11 @@ def verify_store(store_root: str | Path) -> dict[str, Any]:
             # named in the record and travels out in the inventory's `pending`.
             continue
         manifest_path = _under(root, item["manifest"])
+        if not manifest_path.is_file():
+            raise DigestMismatchRefusal(
+                item["artifact"],
+                f"digest manifest {item['manifest']!r} must be a regular file",
+            )
         manifest = read_manifest(
             manifest_path, expected_digest=item["digest_manifest"], chair=item["artifact"]
         )
@@ -528,7 +1039,34 @@ def verify_store(store_root: str | Path) -> dict[str, Any]:
             license_note="verified in off-repo model store",
         )
         verify_snapshot(identity, snapshot, manifest)
+        _verify_synthetic_licence_observation(snapshot, item)
     return inventory
+
+
+def _verify_synthetic_licence_observation(snapshot: Path, item: Mapping[str, Any]) -> None:
+    if item["license"] not in {
+        UNDECLARED_LICENCE_SNAPSHOT,
+        UNTEXTED_LICENCE_SNAPSHOT,
+    }:
+        return
+    requirement = next(
+        required for required in REQUIRED_ARTIFACTS if required.artifact == item["artifact"]
+    )
+    path = snapshot / item["license"]
+    try:
+        actual = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        raise DigestMismatchRefusal(
+            item["artifact"],
+            f"synthetic licence evidence {item['license']!r} is not readable UTF-8 text: {error}",
+        ) from error
+    expected = _licence_observation_text(requirement)
+    if actual != expected:
+        raise DigestMismatchRefusal(
+            item["artifact"],
+            f"synthetic licence evidence {item['license']!r} does not match the pinned "
+            "repository and roster declaration",
+        )
 
 
 def promote_verified_snapshot(store_root: str | Path, artifact: Mapping[str, Any]) -> str:
@@ -607,6 +1145,13 @@ def _publish_once(destination: Path, payload: bytes, *, chair: str, label: str) 
     temporary: Path | None = None
     try:
         destination.parent.mkdir(parents=True, exist_ok=True)
+        if destination.is_symlink() or (destination.exists() and not destination.is_file()):
+            raise DigestMismatchRefusal(
+                chair,
+                f"cannot publish {label} at {destination}: the name already exists and "
+                "is not a regular file; "
+                "publication never replaces existing evidence",
+            )
         # A unique per-call temporary, exactly as `_write_temporary` makes one
         # for run artifacts: a PID-derived name collides between two calls in
         # one process, and a crashed earlier call could leave its name taken.
@@ -900,6 +1445,47 @@ def _validate_record(raw: Mapping[str, Any]) -> None:
                 item["artifact"],
                 f"required_files omits mandatory licence or carried content: {missing}",
             )
+        licence_name = PurePosixPath(item["license"]).name.lower()
+        synthetic_licence_names = {
+            UNDECLARED_LICENCE_SNAPSHOT,
+            UNTEXTED_LICENCE_SNAPSHOT,
+        }
+        if (
+            item["license"] not in synthetic_licence_names
+            and licence_name not in LICENCE_FILE_NAMES
+        ):
+            raise DigestMismatchRefusal(
+                item["artifact"],
+                f"license snapshot {item['license']!r} is neither a repository licence "
+                "file nor a recognized synthetic observation",
+            )
+        if item["license"] in synthetic_licence_names:
+            requirement = next(
+                (
+                    required
+                    for required in REQUIRED_ARTIFACTS
+                    if required.artifact == item["artifact"]
+                ),
+                None,
+            )
+            if requirement is not None:
+                expected = (
+                    UNTEXTED_LICENCE_SNAPSHOT
+                    if requirement.license_declaration is not None
+                    else UNDECLARED_LICENCE_SNAPSHOT
+                )
+                if item["license"] != expected:
+                    raise DigestMismatchRefusal(
+                        item["artifact"],
+                        f"synthetic licence evidence must be {expected!r} for this roster "
+                        f"declaration, not {item['license']!r}",
+                    )
+                if expected == UNTEXTED_LICENCE_SNAPSHOT and MODEL_CARD_PATH not in required_files:
+                    raise DigestMismatchRefusal(
+                        item["artifact"],
+                        f"declared-without-text evidence cites {MODEL_CARD_PATH}, which must "
+                        "therefore be a required file",
+                    )
         if not any(PurePosixPath(path).suffix in MODEL_PAYLOAD_SUFFIXES for path in required_files):
             raise DigestMismatchRefusal(
                 item["artifact"],
@@ -973,7 +1559,17 @@ def _safe(value: object, label: str) -> None:
 
 def _under(root: Path, relative: str) -> Path:
     _safe(relative, "store path")
-    result = (root / relative).resolve()
-    if root != result and root not in result.parents:
+    result = root / relative
+    resolved = result.resolve()
+    if root != resolved and root not in resolved.parents:
         raise DigestMismatchRefusal("model-store", "store path escapes configured root")
+    candidate = root
+    for part in PurePosixPath(relative).parts:
+        candidate /= part
+        if candidate.is_symlink():
+            raise DigestMismatchRefusal(
+                "model-store",
+                f"store path {relative!r} must not traverse symlink component "
+                f"{candidate.relative_to(root).as_posix()!r}",
+            )
     return result
