@@ -7,6 +7,8 @@ claims about bytes, so the serialization has to be the same on every machine bef
 either is worth asserting.
 """
 
+import json
+
 import pytest
 
 from common.contracts.approval import (
@@ -18,6 +20,7 @@ from common.contracts.canonical import (
     canonical_bytes,
     digest_of,
     self_hash,
+    self_hash_refusal,
     verify_self_hash,
 )
 from common.contracts.errors import ApprovalRefusal
@@ -37,16 +40,102 @@ def test_text_is_stored_as_itself_rather_than_escaped():
     assert canonical_bytes({"name": "Étienne"}) == '{"name":"Étienne"}'.encode()
 
 
-def test_a_float_is_refused_rather_than_silently_rounded():
+@pytest.mark.parametrize("bad", (1.5, float("nan"), float("inf"), float("-inf")))
+def test_a_float_is_refused_rather_than_silently_rounded(bad):
     """A float's JSON form is at the mercy of repr, so a float that reached an
     artifact would be a quiet determinism defect. It is a loud one instead."""
-    for bad in ({"scale": 1.5}, {"box": [1, 2.0]}, {"nested": {"deep": 0.1}}):
-        with pytest.raises(TypeError):
-            canonical_bytes(bad)
+    with pytest.raises(TypeError, match=r"float at \$\.nested\.value"):
+        canonical_bytes({"nested": {"value": bad}})
 
 
 def test_booleans_are_not_mistaken_for_numbers():
     assert canonical_bytes({"ok": True}) == b'{"ok":true}'
+
+
+def test_nan_spelled_as_text_and_null_characters_remain_lossless_text():
+    """Quoted NaN is testimony, not the non-standard JSON number NaN. A NUL is
+    escaped in stored JSON and restored on read, so accepting both loses no bytes
+    and does not admit a float."""
+    encoded = canonical_bytes({"reported": "NaN\0verbatim"})
+    assert encoded == b'{"reported":"NaN\\u0000verbatim"}'
+    assert json.loads(encoded)["reported"] == "NaN\0verbatim"
+
+
+@pytest.mark.parametrize("spelling", ("NaN", "Infinity", "-Infinity"))
+def test_nonstandard_nan_spellings_parse_to_floats_and_are_refused(spelling):
+    parsed = json.loads(spelling)
+    with pytest.raises(TypeError, match=r"float at \$"):
+        canonical_bytes(parsed)
+
+
+def test_an_integer_above_the_portable_decimal_limit_is_refused_by_path():
+    with pytest.raises(TypeError, match=r"integer at \$\.count exceeds 640 decimal digits"):
+        canonical_bytes({"count": 10**640})
+
+    # The largest accepted magnitude has 640 digits and therefore behaves the
+    # same even when a host lowers CPython's configurable conversion limit to its
+    # documented floor.
+    assert canonical_bytes({"count": 10**640 - 1}).startswith(b'{"count":999')
+
+
+def test_deep_nesting_is_a_named_serializer_refusal_not_recursion_error():
+    nested: object = "leaf"
+    for _ in range(2000):
+        nested = [nested]
+    with pytest.raises(TypeError, match="recursive or nests too deeply"):
+        canonical_bytes(nested)
+
+
+# A lone surrogate is the one value that clears `_refuse_floats`, clears
+# `json.dumps`, and still has no bytes. `json.loads` builds one from a `\udXXX`
+# escape without complaint, so it arrives the same way a float does: parsed off
+# disk out of a damaged or hand-edited artifact.
+SURROGATE = "\ud800"
+
+
+@pytest.mark.parametrize(
+    "damaged",
+    (
+        {"name": SURROGATE},
+        {"box": ["ok", SURROGATE]},
+        {"nested": {"deep": SURROGATE}},
+        {SURROGATE: "in a key"},
+    ),
+)
+def test_a_lone_surrogate_is_refused_by_name_rather_than_crashing(damaged):
+    """It used to leave here as an uncaught `UnicodeEncodeError` — a traceback out
+    of the one function whose job is to refuse what it cannot serialize, and past
+    every guard written for the float case, since none of them names `ValueError`.
+    `TypeError` is this module's word for "outside the canonical vocabulary", so
+    raising it here is what puts the surrogate through the same four boundaries the
+    float already goes through."""
+    with pytest.raises(TypeError) as caught:
+        canonical_bytes(damaged)
+    assert "unencodable character" in str(caught.value)
+
+
+def test_a_legitimate_non_ascii_key_is_still_named_as_itself_in_a_path():
+    """This is a project about the very words, and `$.Étienne` is the path an
+    operator wants to read. Escaping every non-ASCII key to make the surrogate
+    case safe would have mangled the ordinary ones."""
+    with pytest.raises(TypeError) as caught:
+        canonical_bytes({"Étienne": {"scale": 1.5}})
+    assert "$.Étienne.scale" in str(caught.value)
+
+
+def test_a_surrogate_refusal_is_itself_printable():
+    """The message reaches an operator through `run_stage`'s `print` to stderr. A
+    message that embedded the offending text raw would raise `UnicodeEncodeError`
+    a second time out of the print reporting the first one — the boundary crashing
+    while naming the reason it refused."""
+    with pytest.raises(TypeError) as caught:
+        canonical_bytes({SURROGATE: {"scale": SURROGATE}})
+    str(caught.value).encode("utf-8")
+
+
+def test_a_record_carrying_a_surrogate_fails_its_hash_rather_than_crashing():
+    record = {"a": SURROGATE, "self_hash": "0" * 64}
+    assert verify_self_hash(record) is False
 
 
 def test_a_non_string_key_is_refused():
@@ -97,8 +186,8 @@ def test_a_deeply_nested_record_fails_its_hash_rather_than_crashing():
     # would make the test pass without ever exercising the RecursionError path.
     try:
         canonical_bytes(nested)
-    except RecursionError:
-        pass
+    except TypeError as error:
+        assert "nests too deeply" in str(error)
     else:
         pytest.skip(
             "this interpreter's canonical walk absorbs 2000 levels, so the "
@@ -138,6 +227,40 @@ def test_only_tyrel_approves():
     with pytest.raises(ApprovalRefusal) as caught:
         validate_approval_record(record)
     assert "only Tyrel approves" in str(caught.value)
+
+
+def test_an_unhashable_record_is_told_apart_from_an_edited_one():
+    """`verify_self_hash` answers one boolean, which is right for a check and
+    wrong for a message: "changed after publication" accuses someone of an edit,
+    and a record that never had a canonical form was not edited by anybody."""
+    edited = sound_approval()
+    edited["reason"] = "actually it was fine"
+    assert self_hash_refusal(edited) is None
+
+    assert "float" in (self_hash_refusal({"scale": 1.5, "self_hash": "0" * 64}) or "")
+    assert "unencodable" in (self_hash_refusal({"a": SURROGATE, "self_hash": "0" * 64}) or "")
+
+
+def test_an_approval_that_was_never_hashable_is_not_accused_of_being_edited():
+    """This record is the evidence that Tyrel approved something, so why it was
+    refused is the first thing anyone will want. Both facts are refusals; they are
+    not the same accusation."""
+    record = sound_approval()
+    record["reason"] = SURROGATE
+    with pytest.raises(ApprovalRefusal) as caught:
+        validate_approval_record(record)
+    message = str(caught.value)
+    assert "unencodable character" in message
+    assert "edited after it was sealed" not in message
+    message.encode("utf-8")
+
+
+def test_an_approval_with_a_huge_integer_is_refused_by_name():
+    record = sound_approval()
+    record["unexpected_count"] = 10**640
+    with pytest.raises(ApprovalRefusal) as caught:
+        validate_approval_record(record)
+    assert "integer at $.unexpected_count exceeds 640 decimal digits" in str(caught.value)
 
 
 def test_an_approval_edited_after_sealing_is_refused():

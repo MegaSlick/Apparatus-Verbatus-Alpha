@@ -209,6 +209,49 @@ def testimonia_of(context, act_id: str, proposal_regions: list[dict]) -> list[di
     return current
 
 
+def declared_page_witness_chairs(context) -> set[str]:
+    """The fixture's page-witness declaration, as this *reader* holds it.
+
+    The producer validates the same declaration in
+    `pipeline/3_attestatores/run.py::declared_page_witness_chairs`, and this is
+    deliberately a second implementation rather than a shared one: the stage
+    directories are not importable packages, and more to the point a consumer
+    that trusts a producer's validation has no boundary of its own. The rule
+    must be the same rule, though, and it was not — the reader checked only
+    that the declaration was a list of strings, so two of the producer's three
+    refusals had no counterpart here.
+
+    Uniqueness, because `set(declared)` silently absorbs a duplicate that the
+    producer refuses outright, and a run whose fixture the producer would not
+    have accepted must not read as sound one stage later.
+
+    The roster, because a declaration naming only chairs this run was never
+    sealed with makes `expected_page_witness` false for every real chair — and
+    every attachment and Testimonium in the tree agrees with it, since none of
+    them is a page witness either. The reader then validates a run in which the
+    page-witness mechanism silently did not exist, reports nothing, and the
+    coverage GOALS 3 requires to be accounted for has shrunk without a word.
+    That is the same silent drop the producer's own roster refusal exists to
+    stop, arriving from the other side of the handoff.
+    """
+    declared = context.fixture.get("page_witness_chairs", [])
+    if (
+        not isinstance(declared, list)
+        or any(not isinstance(item, str) for item in declared)
+        or len(declared) != len(set(declared))
+    ):
+        raise SchemaRefusal(
+            "the fixture's page_witness_chairs declaration is not a unique list of chair names"
+        )
+    unknown = set(declared) - set(context.witness_chairs)
+    if unknown:
+        raise SchemaRefusal(
+            "the fixture's page_witness_chairs declaration names chair(s) outside this run's "
+            f"configured witness roster: {sorted(unknown)} not in {sorted(context.witness_chairs)}"
+        )
+    return set(declared)
+
+
 def act_attachment_view(context, act: dict[str, Any], testimonia: list[dict]) -> dict[str, Any]:
     """Validate the R0 attachment that makes a page witness act-addressable.
 
@@ -254,6 +297,11 @@ def act_attachment_view(context, act: dict[str, Any], testimonia: list[dict]) ->
         raise FatalAccounting(
             f"act {act_id} attachment chairs do not equal this run's configured witnesses"
         )
+    # Read once, above the loop, because this is a fact about the run's fixture
+    # rather than about any one attachment: checking it per attachment would
+    # re-derive the same answer for every chair and would say "this attachment
+    # is wrong" about a malformation that belongs to the declaration.
+    declared_page_chairs = declared_page_witness_chairs(context)
     page_witness_count = 0
     comparison_views: dict[str, str] = {}
     for attachment in attachments:
@@ -330,19 +378,12 @@ def act_attachment_view(context, act: dict[str, Any], testimonia: list[dict]) ->
                 f"act {act_id} attachment for chair {chair!r} describes an attempt that is no "
                 "longer this chair's current Testimonium"
             )
-        declared_chairs = context.fixture.get("page_witness_chairs", [])
-        # The producer (`pipeline/3_attestatores/run.py::declared_page_witness_chairs`)
-        # refuses a declaration that is not a unique list of strings; this reader
-        # holds the same key to the same shape, or a string-valued declaration
-        # would degrade into per-character membership and blame the attachment
-        # for the fixture's own malformation.
-        if not isinstance(declared_chairs, list) or any(
-            not isinstance(item, str) for item in declared_chairs
-        ):
-            raise SchemaRefusal(
-                "the fixture's page_witness_chairs declaration is not a list of chair names"
-            )
-        expected_page_witness = chair in set(declared_chairs)
+        # `declared_page_witness_chairs` above holds the producer's whole key:
+        # a unique list of strings, every one of them a chair this run was
+        # actually sealed with. A string-valued declaration would otherwise
+        # degrade into per-character membership and blame the attachment for
+        # the fixture's own malformation.
+        expected_page_witness = chair in declared_page_chairs
         if attachment["page_witness"] != expected_page_witness:
             raise SchemaRefusal(
                 f"act {act_id} attachment changes page-witness scope for chair {chair!r}"

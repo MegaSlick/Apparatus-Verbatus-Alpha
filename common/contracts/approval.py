@@ -28,7 +28,7 @@ exclusion, and that is governance, not something this cut touches.
 
 from typing import Any, Final
 
-from .canonical import self_hash, verify_self_hash
+from .canonical import self_hash, self_hash_refusal, verify_self_hash
 from .errors import ApprovalRefusal
 
 # The only human in these rules. Recorded as a value rather than assumed, so an
@@ -196,6 +196,16 @@ def validate_approval_record(record: Any) -> dict[str, Any]:
             "without a checkable target version cannot be current"
         )
     if not verify_self_hash(record):
+        # Same recovery as the envelope boundary, and it matters more here: this
+        # record is the evidence that Tyrel approved something, so the reason it
+        # was refused is the first thing anyone will want. "Edited after it was
+        # sealed" accuses someone of an edit; a record carrying a float, a
+        # non-string key or a lone surrogate was never hashable at all and
+        # nobody edited anything. Both are refusals, and they are not the same
+        # accusation.
+        unhashable = self_hash_refusal(record)
+        if unhashable is not None:
+            raise ApprovalRefusal(f"approval record fails its own self-hash: {unhashable}")
         raise ApprovalRefusal(
             "approval record fails its own self-hash: it was edited after it was "
             "sealed, and an edited approval is not an approval"

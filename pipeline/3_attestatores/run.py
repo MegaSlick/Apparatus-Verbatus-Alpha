@@ -1391,20 +1391,44 @@ def declared_page_witness_chairs(context) -> set[str]:
     """The fixture's page-witness declaration, validated before any use.
 
     One accessor for both write paths (the act-scoped compatibility flag in
-    `publish_attempt` and the page join in
+    `publish_attempt`, the reread refusal in `reread_pass`, and the page join in
     `publish_page_testimonia_and_attachments`), so a malformed declaration is a
     named refusal before the first attempt publishes rather than a TypeError
     mid-pass after some artifacts already sealed (CodeRabbit chain-end review;
     host disposition: fixed).
+
+    The roster check lives here rather than only in the page-join caller for the
+    same reason: `publish_attempt` reads this accessor once per act per chair
+    inside `attempt_pass`, which runs and seals Testimonium records *before*
+    `publish_page_testimonia_and_attachments` ever runs on the whole-pass path,
+    and `reread_pass` never calls the page-join function at all. A typo'd chair
+    name checked only downstream would let every attempt in between seal with a
+    silently wrong (or silently absent) `page_witness` flag — an unnamed, sealed
+    misreading of the fixture's own declaration, exactly the coverage GOALS 3
+    requires never shrink without saying so.
     """
     declared = context.fixture.get("page_witness_chairs", [])
     if (
         not isinstance(declared, list)
-        or len(declared) != len(set(declared))
         or any(not isinstance(chair, str) for chair in declared)
+        or len(declared) != len(set(declared))
     ):
         raise SchemaRefusal("fixture page_witness_chairs is not a unique string list")
-    return set(declared)
+    declared_chairs = set(declared)
+    unknown_chairs = declared_chairs - set(context.witness_chairs)
+    if unknown_chairs:
+        # Both halves, because a name alone does not tell an operator which of
+        # the two mistakes they made. `attestator_33` is either a typo for a
+        # chair that exists or a chair this run was never sealed with, and the
+        # roster is the only thing that says which. Naming just the offender
+        # leaves them opening `config/models.toml` to find out what the run
+        # actually holds — which is the fixture's own declaration read back at
+        # them, one step short of useful.
+        raise SchemaRefusal(
+            "fixture page_witness_chairs names chair(s) outside the configured witness roster: "
+            f"{sorted(unknown_chairs)} not in {sorted(context.witness_chairs)}"
+        )
+    return declared_chairs
 
 
 def publish_attempt(
@@ -1694,7 +1718,9 @@ def publish_page_testimonia_and_attachments(
     compatibility view for the current Perlector; each is explicitly linked below
     to the immutable page Testimonium that supplied it.
     """
-    page_chairs = declared_page_witness_chairs(context) & set(context.witness_chairs)
+    # `declared_page_witness_chairs` already refuses a chair outside the
+    # configured roster, so a validated declaration needs no further narrowing.
+    page_chairs = declared_page_witness_chairs(context)
     limits, limits_digest = load_alignment_limits(context.args.alignment_config)
     context.require_sealed_config("alignment", limits_digest)
     page_records: dict[tuple[int, str], dict[str, str]] = {}

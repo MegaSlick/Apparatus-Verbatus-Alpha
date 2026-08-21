@@ -55,6 +55,7 @@ from common.contracts.canonical import (
     canonical_bytes,
     digest_bytes,
     self_hash,
+    self_hash_refusal,
     verify_self_hash,
 )
 from common.contracts.envelope import validate_envelope, validate_input_refs, verify_input_bytes
@@ -316,6 +317,19 @@ class RunTree:
             )
         record = _read_json(run_file)
         if not verify_self_hash(record):
+            # `run.json` is read here as bare JSON, not through an envelope, so
+            # this is the first and only place its damage is named. A record
+            # carrying a value the canonical serializer refuses — a float, a
+            # non-string key, a lone surrogate — was never hashable to begin
+            # with, and telling an operator it "was edited after it was sealed"
+            # sends them hunting an edit nobody made. Both are refusals; they
+            # are different facts about the tree.
+            unhashable = self_hash_refusal(record)
+            if unhashable is not None:
+                raise IncompatibleReuse(
+                    f"{run_file} fails its own self-hash: {unhashable}. Nothing in this "
+                    "tree can be trusted against it"
+                )
             raise IncompatibleReuse(
                 f"{run_file} fails its own self-hash: the run authority was edited "
                 "after it was sealed, so nothing in this tree can be trusted against it"

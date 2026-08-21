@@ -661,8 +661,14 @@ def test_policy_content_that_cannot_be_canonicalized_refuses_rather_than_aliasin
         DataGateAuthority.scope_digest(
             policy_content={"policy_version": "test-v1", "retention_days": 1.5}
         )
+    # This gate names `ValueError` in its catch precisely because a lone surrogate
+    # used to reach it as a bare `UnicodeEncodeError` out of `str.encode`, wearing
+    # the stdlib's words and naming no field. `canonical_bytes` now refuses it by
+    # path as a `TypeError`, the same way it refuses a float, so the assertion is
+    # on the offender and where it lives rather than on a codec's phrasing.
     with pytest.raises(
-        DisclosureRefusal, match="cannot be canonically bound.*surrogates not allowed"
+        DisclosureRefusal,
+        match=r"cannot be canonically bound: unencodable character '\\ud800' at \$\.purpose",
     ):
         DataGateAuthority.scope_digest(
             policy_content={"policy_version": "test-v1", "purpose": chr(0xD800)}

@@ -72,9 +72,21 @@ def validate_uncertain_spans(spans: Any, text: str) -> list[dict]:
             isinstance(alternative, str) for alternative in alternatives
         ):
             raise SchemaRefusal(f"uncertain_spans[{index}] has no list of string alternatives")
-        if span.get("confidence") not in CONFIDENCE_LEVELS:
+        confidence = span.get("confidence")
+        if not isinstance(confidence, str):
             raise SchemaRefusal(
-                f"uncertain_spans[{index}] confidence {span.get('confidence')!r} is not one "
+                f"uncertain_spans[{index}] confidence has type "
+                f"{type(confidence).__name__}, not a declared string level from "
+                f"{sorted(CONFIDENCE_LEVELS)}"
+            )
+        if confidence not in CONFIDENCE_LEVELS:
+            # ``repr`` is safe here because the type check above has proved this
+            # is a string: it escapes lone surrogates and control characters.
+            # Rendering an arbitrary integer here used to raise ValueError for a
+            # value above CPython's decimal conversion limit, turning the refusal
+            # itself into the crash it was meant to prevent.
+            raise SchemaRefusal(
+                f"uncertain_spans[{index}] confidence {confidence!r} is not one "
                 f"of {sorted(CONFIDENCE_LEVELS)}"
             )
         validated.append(span)
