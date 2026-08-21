@@ -131,8 +131,26 @@ def flags_once_per_page(semi_finals: list[dict[str, Any]]) -> dict[str, list[dic
 
     The result is keyed by act id.  It contains no re-proof result or mutable
     state, so callers cannot make a changed result trigger flags for another act.
+
+    **An act contributing pixels to more than one page appears here once per
+    page**, because the cross-act classes below are page comparisons and a
+    continuation belongs in both of them
+    (`pipeline/4_perlector/run.py::audit_semi_finals_for_pages`). Its ACT-LOCAL
+    classes are facts about one text and one witness set, so they fire once for
+    the act — not once for every page its crop happens to span. Running them
+    inside the page loop gave act a2 four `testimony-diff` flags where two
+    witnesses disagreed, and every consumer of that count read it as evidence:
+    the re-proof plan asked the reader the identical neutral question twice, and
+    an exhausted round cap projected each uncertain span onto the export twice
+    (GOVERNANCE 10 — the instrument reported the crop's page span, not the ink).
+
+    The two cross-act classes that *are* page facts (`date-sequence`,
+    `numbering`, `order`) stay inside the page loop, and are deduplicated per
+    act at the end: they carry no page identity, so the same observation made on
+    two of an act's pages is one recorded flag, not two indistinguishable ones.
     """
     by_page: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    by_act: dict[str, dict[str, Any]] = {}
     for row in semi_finals:
         if not isinstance(row.get("act_id"), str) or not isinstance(row.get("page_id"), str):
             raise SchemaRefusal("an audit semi-final has no act or page identity")
@@ -157,43 +175,70 @@ def flags_once_per_page(semi_finals: list[dict[str, Any]]) -> dict[str, list[dic
         if not isinstance(row.get("within_crop"), bool):
             raise SchemaRefusal("an audit semi-final does not say whether it stays within its crop")
         by_page[row["page_id"]].append(row)
+        # One act's rows restate the same reading. A producer that let them
+        # disagree would make the act-local pass below depend on which page
+        # happened to be visited first, so the disagreement is refused here
+        # rather than silently resolved by iteration order.
+        first = by_act.setdefault(row["act_id"], row)
+        if (first["text"], first["testimonia"], first["within_crop"]) != (
+            row["text"],
+            row["testimonia"],
+            row["within_crop"],
+        ):
+            raise SchemaRefusal(
+                "two audit semi-finals for one act state different text, testimony or "
+                "crop containment"
+            )
     output: dict[str, list[dict[str, Any]]] = {row["act_id"]: [] for row in semi_finals}
+    # The act-local classes, once per act, in the acts' first-seen order.
+    for row in by_act.values():
+        text = row["text"]
+        for testimony in row["testimonia"]:
+            if not isinstance(testimony, str):
+                raise SchemaRefusal("an audit testimony comparison is not text")
+            if testimony != text:
+                start, end = text_change_span(text, testimony)
+                output[row["act_id"]].append(_flag("testimony-diff", start, end))
+        repeated = re.search(r"\b(\w+)\s+\1\b", text, flags=re.IGNORECASE)
+        if repeated:
+            output[row["act_id"]].append(_flag("repetition", repeated.start(), repeated.end()))
+        # The audit only records locations in the text delivered from this
+        # act's crop. It deliberately has no page partition or residual-ink
+        # predicate; those belong to the Recensor.
+        if not row["within_crop"]:
+            output[row["act_id"]].append(_flag("within-crop", 0, len(text)))
+    # The cross-act classes, once per page, because each is a statement about
+    # this act's place among the others on THAT page.
+    cross_act: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for rows in by_page.values():
         ordered = sorted(rows, key=lambda row: (row["order"], row["act_id"]))
         dates: list[tuple[tuple[int, str], dict[str, Any]]] = []
         numbers: list[tuple[tuple[int, str], dict[str, Any]]] = []
         for row in ordered:
-            text = row["text"]
-            for testimony in row["testimonia"]:
-                if not isinstance(testimony, str):
-                    raise SchemaRefusal("an audit testimony comparison is not text")
-                if testimony != text:
-                    start, end = text_change_span(text, testimony)
-                    output[row["act_id"]].append(_flag("testimony-diff", start, end))
-            repeated = re.search(r"\b(\w+)\s+\1\b", text, flags=re.IGNORECASE)
-            if repeated:
-                output[row["act_id"]].append(_flag("repetition", repeated.start(), repeated.end()))
-            date = re.search(r"\b(\d{4})\b", text)
+            date = re.search(r"\b(\d{4})\b", row["text"])
             if date:
                 dates.append((_numeric_key(date.group(1)), row))
-            number = re.search(r"\b(?:no\.?|number)\s*(\d+)\b", text, flags=re.IGNORECASE)
+            number = re.search(r"\b(?:no\.?|number)\s*(\d+)\b", row["text"], flags=re.IGNORECASE)
             if number:
                 numbers.append((_numeric_key(number.group(1)), row))
-            # The audit only records locations in the text delivered from this
-            # act's crop. It deliberately has no page partition or residual-ink
-            # predicate; those belong to the Recensor.
-            if not row["within_crop"]:
-                output[row["act_id"]].append(_flag("within-crop", 0, len(text)))
         for values, flag_class in ((dates, "date-sequence"), (numbers, "numbering")):
             for previous, current in zip(values, values[1:], strict=False):
                 if current[0] < previous[0]:
-                    output[current[1]["act_id"]].append(
+                    cross_act[current[1]["act_id"]].append(
                         _flag(flag_class, 0, len(current[1]["text"]))
                     )
         expected_order = sorted(rows, key=lambda row: (row["geometry_order"], row["act_id"]))
         for declared, geometric in zip(ordered, expected_order, strict=True):
             if declared["act_id"] != geometric["act_id"]:
-                output[declared["act_id"]].append(_flag("order", 0, len(declared["text"])))
+                cross_act[declared["act_id"]].append(_flag("order", 0, len(declared["text"])))
+    for act_id, flags in cross_act.items():
+        seen: set[tuple[str, int, int]] = set()
+        for flag in flags:
+            key = (flag["class"], flag["location"]["start"], flag["location"]["end"])
+            if key in seen:
+                continue
+            seen.add(key)
+            output[act_id].append(flag)
     return {
         act_id: sorted(flags, key=lambda row: (row["location"]["start"], row["class"]))
         for act_id, flags in output.items()

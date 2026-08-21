@@ -217,7 +217,7 @@ def act_attachment_facts(context, act_id: str) -> dict[str, dict]:
         if not isinstance(entry, dict) or not isinstance(entry.get("chair"), str):
             raise FatalAccounting(f"act {act_id} has malformed derived act-attachment entry")
         chair = entry["chair"]
-        if chair in facts or not isinstance(entry.get("attached"), bool):
+        if not isinstance(entry.get("attached"), bool):
             raise FatalAccounting(f"act {act_id} has ambiguous derived act-attachment facts")
         health = entry.get("content_health")
         # A malformed health record and an absent one are different facts: only
@@ -281,7 +281,7 @@ def act_attachment_facts(context, act_id: str) -> dict[str, dict]:
                     f"act {act_id} page witness {chair!r} carries an unaligned record with "
                     "no usable reason; an unexplained failure is a silent loss"
                 )
-        facts[chair] = {
+        fact = {
             "attached": entry["attached"],
             "truncated": truncated,
             "health_unrecorded": truncated is None,
@@ -298,6 +298,17 @@ def act_attachment_facts(context, act_id: str) -> dict[str, dict]:
                 else None
             ),
         }
+        if chair in facts:
+            if not (page_witness and facts[chair]["page_witness"]):
+                raise FatalAccounting(f"act {act_id} has ambiguous derived act-attachment facts")
+            # A page witness has one attachment for every contributing page.
+            # Its act-level floor remains the one act attempt, so a continuation
+            # whose page has no anchor cannot erase the primary page's valid
+            # attachment; all page references remain separately checked by the
+            # content denominator below.
+            facts[chair]["attached"] = facts[chair]["attached"] or fact["attached"]
+            continue
+        facts[chair] = fact
     return facts
 
 
@@ -1124,6 +1135,75 @@ def uncovered_non_whitespace_ranges(text: str, covered: list[bool]) -> dict:
     return {"ranges": ranges, "count": count}
 
 
+def reconcile_page_roles(
+    context,
+    attachments: dict[str, dict],
+    page_testimonia: dict[tuple[int, str], dict],
+) -> None:
+    """Re-derive every page Testimonium's `page_role` from the whole page.
+
+    The Perlector already refuses a role that one act's own sealed
+    `page_ordinal` contradicts, but it reads one act at a time and so can only
+    catch the two labels a single act disproves
+    (`pipeline/4_perlector/run.py::act_attachment_view`, which says as much).
+    `mixed` contradicts no single act: it claims the page holds a primary region
+    AND a continuation, and only a stage holding every act on the page can tell
+    whether that is true. So a resealed continuation-only page could wear
+    `mixed` and pass every check downstream of the producer — the same hole as
+    the `primary` forgery, one label along.
+
+    The denominator here is the producer's own published attachment set, not a
+    second walk of the Designator: an act contributes to page P exactly when its
+    current attachment carries a page-witness row for P. Deriving it from the
+    regions again would be a second spelling of the producer's grouping, free to
+    drift from it — and the Perlector already binds each act's attachment pages
+    to the regions it actually read, so the attachments cannot quietly claim a
+    page the ink does not support.
+    """
+    primary_page = {act["act_id"]: act["page_ordinal"] for act in expected_acts(context)}
+    contributors: dict[int, set[str]] = {}
+    for act_id, attachment in attachments.items():
+        rows = _payload(attachment, f"attachment for {act_id}").get("attachments")
+        if not isinstance(rows, list):
+            raise FatalAccounting(f"attachment for {act_id} has no rows")
+        for row in rows:
+            if not isinstance(row, dict) or not row.get("page_witness"):
+                continue
+            ordinal = row.get("page_ordinal")
+            if not isinstance(ordinal, int) or isinstance(ordinal, bool):
+                raise FatalAccounting(
+                    f"act {act_id} page-witness attachment carries no integer page ordinal"
+                )
+            if act_id not in primary_page:
+                raise FatalAccounting(
+                    f"act {act_id} carries a page-witness attachment but the proposal seal "
+                    "names no such act"
+                )
+            contributors.setdefault(ordinal, set()).add(
+                "primary" if primary_page[act_id] == ordinal else "continuation"
+            )
+    for (ordinal, chair), record in page_testimonia.items():
+        payload = _payload(record, f"page Testimonium {record['artifact_id']}")
+        roles = contributors.get(ordinal)
+        if not roles:
+            # No act's attachment reaches this page, so there is no denominator
+            # to derive a role from and nothing here to refuse. That is not a
+            # silent pass: the content-coverage loop below reads the same page
+            # record and finds every character of it uncovered, which is a
+            # visible shortfall routed to review.
+            continue
+        # `next(iter(...))`, never `set.pop()`: `roles` is the shared set held in
+        # `contributors`, and popping it would empty the page's own denominator
+        # for the second chair that reads it.
+        expected = next(iter(roles)) if len(roles) == 1 else "mixed"
+        if payload.get("page_role") != expected:
+            raise FatalAccounting(
+                f"page {ordinal}'s Testimonium for chair {chair!r} claims page_role "
+                f"{payload.get('page_role')!r}; the acts attached to that page make it "
+                f"{expected!r}"
+            )
+
+
 def testimony_content_findings(context) -> dict[int, dict]:
     """Compare each page witness's text to its own aligned act attachments.
 
@@ -1134,12 +1214,31 @@ def testimony_content_findings(context) -> dict[int, dict]:
     """
     attachments = current_act_attachments(context)
     page_testimonia = current_page_testimonia(context)
+    reconcile_page_roles(context, attachments, page_testimonia)
     # Read and validated once, not once per page witness: `expected_acts` re-reads
     # the proposal seal and re-verifies its self-hash on every call, and this stage
     # never writes to the Designator's seal while it runs.
     acts_by_page: dict[int, list[dict]] = {}
     for act in expected_acts(context):
-        acts_by_page.setdefault(act["page_ordinal"], []).append(act)
+        found_page = False
+        for region in artifacts_for(context, DESIGNATOR, "region", act["act_id"]):
+            payload = _payload(region, f"Designator region of {act['act_id']}")
+            transform = payload.get("transform")
+            if payload.get("origin") != "proposal" or not isinstance(transform, dict):
+                continue
+            ordinal = transform.get("source_page_ordinal")
+            if not isinstance(ordinal, int) or isinstance(ordinal, bool):
+                raise FatalAccounting(f"Designator region of {act['act_id']} has no page ordinal")
+            page_acts = acts_by_page.setdefault(ordinal, [])
+            if act not in page_acts:
+                page_acts.append(act)
+            found_page = True
+        # Unit-level consumers can supply only the proposal denominator, before
+        # a Designator-region fixture exists. That is still one known primary
+        # page, not an empty denominator; real continuation evidence always
+        # takes the branch above.
+        if not found_page:
+            acts_by_page.setdefault(act["page_ordinal"], []).append(act)
     for ordinal, acts in acts_by_page.items():
         for act in acts:
             attachment = attachments.get(act["act_id"])
@@ -1153,6 +1252,12 @@ def testimony_content_findings(context) -> dict[int, dict]:
                     not isinstance(row, dict)
                     or not row.get("page_witness")
                     or not row.get("attached")
+                    # Indexed, not defaulted: `reconcile_page_roles` above has
+                    # already proved every page-witness row carries an integer
+                    # page ordinal. A default of `ordinal` read "absent means
+                    # this page", so a row that lost its ordinal would have
+                    # counted on EVERY page it was compared against.
+                    or row["page_ordinal"] != ordinal
                 ):
                     continue
                 chair = row.get("chair")
@@ -1202,6 +1307,12 @@ def testimony_content_findings(context) -> dict[int, dict]:
                     not isinstance(row, dict)
                     or row.get("chair") != chair
                     or not row.get("page_witness")
+                    # Indexed, not defaulted: `reconcile_page_roles` above has
+                    # already proved every page-witness row carries an integer
+                    # page ordinal. A default of `ordinal` read "absent means
+                    # this page", so a row that lost its ordinal would have
+                    # counted on EVERY page it was compared against.
+                    or row["page_ordinal"] != ordinal
                 ):
                     continue
                 if row.get("testimonium_ref") != context.artifact_ref(

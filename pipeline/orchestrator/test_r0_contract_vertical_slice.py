@@ -713,6 +713,123 @@ def test_perlector_refuses_a_referenced_page_ordinal_outside_the_fixture(tmp_pat
     assert "wrong page Testimonium" in result.stderr
 
 
+def test_perlector_refuses_a_page_role_its_own_ordinal_contradicts(tmp_path):
+    """A continuation page's Testimonium may not wear the `primary` label.
+
+    `page_ordinal` is the fact the attachment already reconciles independently
+    (`test_perlector_refuses_a_referenced_page_ordinal_outside_the_fixture`
+    above); `page_role` was written but never read back against it, so a
+    resealed continuation record could claim `primary` and nothing caught the
+    flip. Act a2's own contributing pages ({1, 2}) say which page is its
+    primary one, so a page-2 record claiming `primary` contradicts a fact the
+    reader already holds -- no second artifact needed to see the lie.
+    """
+    root = tmp_path / "runs"
+    tree = _through_attestatores(root, "forged-role")
+    manifest = tree.build_manifest(ATTESTATORES)
+    page_entry = next(
+        row
+        for row in manifest["artifacts"]
+        if row["kind"] == "page-testimonium"
+        and tree.read_artifact(ATTESTATORES, "page-testimonium", row["artifact_id"])["payload"][
+            "page_ordinal"
+        ]
+        == 2
+    )
+    page_path = tree.resolve(page_entry["relative_path"])
+    page = tree.read_artifact(ATTESTATORES, "page-testimonium", page_entry["artifact_id"])
+    assert page["payload"]["page_role"] == "continuation"
+    page["payload"]["page_role"] = "primary"
+    _reseal(page_path, page)
+    page_digest = digest_bytes(page_path.read_bytes())
+
+    for attachment_entry in manifest["artifacts"]:
+        if attachment_entry["kind"] != "act-attachment":
+            continue
+        attachment_path = tree.resolve(attachment_entry["relative_path"])
+        attachment = tree.read_artifact(
+            ATTESTATORES, "act-attachment", attachment_entry["artifact_id"]
+        )
+        changed = False
+        for row in attachment["payload"]["attachments"]:
+            reference = row["testimonium_ref"]
+            if reference["relative_path"] == page_entry["relative_path"]:
+                reference["sha256"] = page_digest
+                changed = True
+        if changed:
+            _reseal(attachment_path, attachment)
+
+    result = invoke_stage(root, "forged-role", "happy", "pipeline/4_perlector/run.py")
+    assert result.returncode != 0
+    assert "page_role" in result.stderr and "contradicts" in result.stderr
+
+
+def test_the_recensor_refuses_a_page_role_only_the_whole_page_disproves(tmp_path):
+    """`mixed` is the label one act can never contradict, so a later stage must.
+
+    The check above is the Perlector's, and it reads one act at a time: it can
+    refuse `primary` on a page this act only continues onto, and `continuation`
+    on the act's own primary page, because those two contradict a fact the act
+    itself holds. `mixed` claims the page carries BOTH a primary region and a
+    continuation, which no single act can disprove -- so the same forgery, one
+    label along, walked past the Perlector untouched.
+
+    The Recensor holds every act on the page, so it re-derives the role from the
+    acts actually attached to that page and refuses the claim there. Page 2 in
+    this fixture is reached only by a2's continuation, so `mixed` is a lie about
+    a page whose evidence the run has in full.
+    """
+    root = tmp_path / "runs"
+    tree = _through_attestatores(root, "forged-mixed")
+    manifest = tree.build_manifest(ATTESTATORES)
+    page_entry = next(
+        row
+        for row in manifest["artifacts"]
+        if row["kind"] == "page-testimonium"
+        and tree.read_artifact(ATTESTATORES, "page-testimonium", row["artifact_id"])["payload"][
+            "page_ordinal"
+        ]
+        == 2
+    )
+    page_path = tree.resolve(page_entry["relative_path"])
+    page = tree.read_artifact(ATTESTATORES, "page-testimonium", page_entry["artifact_id"])
+    assert page["payload"]["page_role"] == "continuation"
+    page["payload"]["page_role"] = "mixed"
+    _reseal(page_path, page)
+    page_digest = digest_bytes(page_path.read_bytes())
+
+    for attachment_entry in manifest["artifacts"]:
+        if attachment_entry["kind"] != "act-attachment":
+            continue
+        attachment_path = tree.resolve(attachment_entry["relative_path"])
+        attachment = tree.read_artifact(
+            ATTESTATORES, "act-attachment", attachment_entry["artifact_id"]
+        )
+        changed = False
+        for row in attachment["payload"]["attachments"]:
+            reference = row["testimonium_ref"]
+            if reference["relative_path"] == page_entry["relative_path"]:
+                reference["sha256"] = page_digest
+                changed = True
+        if changed:
+            _reseal(attachment_path, attachment)
+    # The forged bytes are now the tree's own record of themselves, so the
+    # Recensor's manifest reconciliation refuses the *cache* rather than the
+    # claim. Rewriting it is what puts the forgery in front of the check under
+    # test instead of in front of an earlier one.
+    tree.write_manifest(ATTESTATORES)
+
+    # The Perlector is the control: it accepts what it structurally cannot
+    # disprove, which is exactly why the Recensor's check has to exist.
+    forward = invoke_stage(root, "forged-mixed", "happy", "pipeline/4_perlector/run.py")
+    assert forward.returncode == 0, forward.stderr
+
+    result = invoke_stage(root, "forged-mixed", "happy", "pipeline/5_recensor/run.py")
+    assert result.returncode != 0
+    assert "page_role 'mixed'" in result.stderr
+    assert "'continuation'" in result.stderr
+
+
 # --- Fresh-context review (P2): the second spelling of the scope claim -----------
 #
 # The act-scoped Testimonium carries the page-witness claim a second time, as the

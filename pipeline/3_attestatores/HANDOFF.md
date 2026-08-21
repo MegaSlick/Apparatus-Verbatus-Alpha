@@ -277,6 +277,40 @@ is current and visible, while the earlier successful attempt remains retained
 history. A missing or gapped history is refused rather than repaired or selected
 around.
 
+### Closed page-continuation record
+
+`kind="page-testimonium"` is a closed producer record. It carries the ordinary
+Testimonium fields plus exactly `scope="page"`, `page_ordinal`, `page_role`, and
+`unjoined_act_attempts`; `reason` and the textual `reported` projection remain
+the only conditional fields. The writer validates that exact shape before it
+publishes, refusing unknown fields at this producing boundary.
+
+`page_role` is one of `primary`, `continuation`, or `mixed`. It describes the
+relationship of the page's contributing proposal acts to their scalar primary
+page: a page reached only by continuations is `continuation`; a page containing
+only primary regions is `primary`; and a page containing both is `mixed`.
+Every proposed act joins every page represented by its proposal regions. Thus a
+continuation publishes one page Testimonium per contributing page and per page
+chair, and its act attachment carries one explicitly page-ordinalled reference
+to each. The primary scalar remains act identity, never a reduction of the
+evidence denominator.
+
+An act whose crop was refused has no proposal regions to read pages off, and its
+pages come from the sealed proposal facts instead — its own `page_ordinal` plus
+the fixture's declared continuation page. A refused crop was never shown to a
+witness, but the page-level non-reading Testimonium is still published for every
+page it covered: turning an isolated crop failure into a page that vanishes from
+the denominator is the silent loss GOALS 1 is about.
+
+`page_role` is written by a producer that holds one page's whole act list, and
+read back by two stages that hold different amounts of it. The Perlector holds
+one act, so it refuses only the two labels that act's own primary-page fact
+contradicts. `mixed` contradicts no single act, so the **Recensor** re-derives
+the role from every act attached to the page and refuses a claim the whole page
+disproves (`pipeline/5_recensor/run.py::reconcile_page_roles`). Its denominator
+is this stage's own published attachments, not a second walk of the Designator's
+regions, so the two groupings cannot drift apart.
+
 ### The page record's own outcome
 
 R0 has no live page-scoped witness. A page Testimonium is `page_join`'s
@@ -300,14 +334,28 @@ because it was carried.
 Written by the same stage invocation that writes page testimony, one
 `act-attachment` record per act in the proposal seal, held acts included
 (`subject_id == act_id`). A held act carries one entry per chair with
-`page_witness` false, `attached` false, and `alignment` null. Its payload
-carries `attachments`: one entry per configured chair, each with `chair`,
+`page_witness` false, `attached` false, `page_ordinal` null, and `alignment`
+null. Its payload carries `attachments`: each entry with `chair`,
 `attached` (bool), `span` (`{start, end}`), `content_health` (dict or null —
 null is "health not recorded", a distinct fact), `page_witness` (bool,
-strictly), a `testimonium_ref` pointing at the chair's Testimonium or
+strictly), `page_ordinal` (int for a page witness, **null** for an act-scoped
+chair — the field is required either way, and the Perlector refuses a
+page-scoped attachment that omits it as readily as an act-scoped one that
+carries it), a `testimonium_ref` pointing at the chair's Testimonium or
 page-Testimonium, and
 `alignment` — null for an act-scoped chair, and for a page witness exactly one
 of:
+
+**The denominator is `(chair, contributing page)`, not `chair`.** An act-scoped
+chair contributes exactly one entry. A page witness contributes one entry per
+page the act's proposal regions came from, so an act that runs across the page
+break carries two — the primary page's entry holds the real comparison view, and
+each continuation page's entry is explicitly unaligned with reason
+`continuation-page-no-act-anchor` (a page anchor locates a line for an act it
+begins, not for the tail that runs onto it). The Perlector reconciles that exact
+pair set against the regions it actually read
+(`pipeline/4_perlector/run.py::act_attachment_view`), so an attachment cannot
+claim a page the ink does not support, or drop one the ink does.
 
 - aligned: the closed key set `{status, anchor_basis, anchor_span,
   witness_span, line_geometry, loss, offset_maps}`, with `anchor_basis` one of
@@ -329,14 +377,21 @@ of:
   `no-raw-counterpart-for-aligned-span`,
   `character-limit`, `character-pair-limit`, `timeout`,
   `no-common-anchor-text` (the aligner's own reasons pass through
-  verbatim), and `non-reading-page-attempt-<outcome>` for an attempt that
-  produced no reading.
+  verbatim), `non-reading-page-attempt-<outcome>` for an attempt that
+  produced no reading, and `continuation-page-no-act-anchor` for a
+  contributing page that is not the act's primary one.
 
 For a page witness, `attached` is true exactly when `alignment.status` is
 `aligned` and the attempt outcome is a reading — both the Perlector
 (`act_attachment_view`) and the Recensor (`act_attachment_facts`) refuse any
 other combination, and both pin the shapes above; a field change here is an
 interface change and lands in all three files in the same commit.
+
+The Recensor takes an act's chair-level `attached` as the OR across that chair's
+contributing pages (`act_attachment_facts`): the act-level floor asks whether the
+chair delivered this act at all, and a continuation page with no anchor of its own
+may not erase the primary page's valid attachment. Every page reference stays
+separately checked by the page-scoped content denominator beside it.
 
 ## Attempt tally
 

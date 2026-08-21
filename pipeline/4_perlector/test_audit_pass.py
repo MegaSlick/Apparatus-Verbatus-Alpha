@@ -589,6 +589,43 @@ def test_recovery_flag_pass_merges_sibling_rows_before_the_page_calculation(monk
     assert {flag["class"] for flag in flags["a2"]} == {"date-sequence", "numbering"}
 
 
+def test_omitting_an_intermediate_sibling_can_invent_an_adjacency_flag():
+    """A shortened recovery denominator is not conservative in either direction."""
+    first = {
+        "act_id": "a1",
+        "page_id": "p1",
+        "order": 0,
+        "geometry_order": (0, 0),
+        "text": "1689 first",
+        "testimonia": ["1689 first"],
+        "within_crop": True,
+    }
+    intermediate = {
+        "act_id": "a2",
+        "page_id": "p1",
+        "order": 1,
+        "geometry_order": (1, 0),
+        "text": "1688 intermediate",
+        "testimonia": ["1688 intermediate"],
+        "within_crop": True,
+    }
+    recovered = {
+        "act_id": "a3",
+        "page_id": "p1",
+        "order": 2,
+        "geometry_order": (2, 0),
+        "text": "1688 recovered",
+        "testimonia": ["1688 recovered"],
+        "within_crop": True,
+    }
+
+    complete = audit.flags_once_per_page([first, intermediate, recovered])
+    shortened = audit.flags_once_per_page([first, recovered])
+
+    assert "date-sequence" not in {flag["class"] for flag in complete["a3"]}
+    assert "date-sequence" in {flag["class"] for flag in shortened["a3"]}
+
+
 def test_recovery_sibling_context_is_sealed_and_never_republished(tmp_path):
     result = _run(tmp_path / "runs", scenario="review")
     assert result.returncode == 3, result.stderr
@@ -621,8 +658,18 @@ def test_recovery_sibling_context_is_sealed_and_never_republished(tmp_path):
         protocol_sha256=protocol_sha256,
     )
 
-    assert [row["act_id"] for row in merged] == [sibling["subject_id"]]
-    assert merged[0]["text"] == sibling["payload"]["text"]
+    # The sibling here is a2, the act that runs across the page break, so it
+    # contributes one row per page its sealed basis spans -- the same
+    # page-multiplication the recovered act's own rows get, and the same one the
+    # first whole-run pass gave it. Every row restates the one sealed reading;
+    # nothing here republishes it.
+    sibling_pages = sorted(
+        {region["source_page_id"] for region in sibling["payload"]["basis"]["regions"]}
+    )
+    assert len(sibling_pages) == 2
+    assert [row["act_id"] for row in merged] == [sibling["subject_id"]] * 2
+    assert [row["page_id"] for row in merged] == sibling_pages
+    assert {row["text"] for row in merged} == {sibling["payload"]["text"]}
     assert tree.build_manifest(PERLECTOR)["artifacts"] == before
 
     sibling_path = tree.resolve(tree.artifact_path(PERLECTOR, "perlectio", sibling["artifact_id"]))
@@ -635,6 +682,51 @@ def test_recovery_sibling_context_is_sealed_and_never_republished(tmp_path):
             [{"act_id": recovered["subject_id"], "page_id": page_id}],
             expected=expected,
         )
+
+
+def test_recovery_selects_a_sibling_reaching_the_page_only_by_continuation(tmp_path):
+    """Selection uses the sealed Perlectio page set, not its primary-page scalar.
+
+    The real a2 Perlectio starts on page 1 and carries page 2. Presenting page 2
+    as the recovered comparison page reproduces the old blind spot without
+    inventing an artifact shape: the sibling's complete page set comes from the
+    real run tree, and its proposal row still names page 1 as primary.
+    """
+    result = _run(tmp_path / "runs")
+    assert result.returncode == 0, result.stderr
+    tree = RunTree(tmp_path / "runs", "r")
+    perlector = _perlector()
+    sibling = next(
+        record
+        for record in _records(tree, "perlectio")
+        if len({region["source_page_id"] for region in record["payload"]["basis"]["regions"]}) == 2
+    )
+    pages_by_ordinal = {
+        region["source_page_ordinal"]: region["source_page_id"]
+        for region in sibling["payload"]["basis"]["regions"]
+    }
+    sibling_pages = [pages_by_ordinal[ordinal] for ordinal in sorted(pages_by_ordinal)]
+    primary_page, continuation_page = pages_by_ordinal[1], pages_by_ordinal[2]
+    recovered_id = "recovery-subject-not-in-the-tree"
+    expected = [
+        {"act_id": recovered_id, "page_id": continuation_page},
+        {"act_id": sibling["subject_id"], "page_id": primary_page},
+    ]
+    context = SimpleNamespace(tree=tree, config_digest=tree.read_run()["config_digest"])
+    protocol_config, protocol_sha256 = perlector.protocol.load(
+        ROOT / "config" / "perlector_protocol.toml"
+    )
+
+    merged = perlector._sealed_sibling_semi_finals(
+        context,
+        [{"act_id": recovered_id, "page_id": continuation_page}],
+        expected=expected,
+        protocol_config=protocol_config,
+        protocol_sha256=protocol_sha256,
+    )
+
+    assert [row["act_id"] for row in merged] == [sibling["subject_id"]] * 2
+    assert sorted(row["page_id"] for row in merged) == sorted(sibling_pages)
 
 
 def test_a_degenerate_digit_run_flags_instead_of_ending_the_stage():
@@ -989,6 +1081,7 @@ def test_shared_chain_refuses_draft_finding_restatement_drift(tmp_path):
     )
     drifted_finding = copy.deepcopy(finding)
     drifted_finding["payload"]["page_id"] = "pg_drifted"
+    drifted_finding["payload"]["page_ids"] = ["pg_drifted"]
     audit.validate_finding(drifted_finding["payload"], text=final["payload"]["text"])
 
     class DriftedTree:
@@ -998,3 +1091,47 @@ def test_shared_chain_refuses_draft_finding_restatement_drift(tmp_path):
 
     with pytest.raises(SchemaRefusal, match="restate different frozen facts"):
         audit.validate_chain(DriftedTree(), final, final["subject_id"])
+
+
+def test_shared_chain_refuses_a_page_set_forged_back_to_the_primary_page(tmp_path):
+    """A coordinated draft/finding reseal cannot erase page 2 from the audit.
+
+    Draft and finding already reconcile with each other. The independent fact is
+    the Perlectio's own sealed region basis, which still carries both pages.
+    """
+    result = _run(tmp_path / "runs")
+    assert result.returncode == 0, result.stderr
+    tree = RunTree(tmp_path / "runs", "r")
+    final = next(
+        record
+        for record in _records(tree, "perlectio")
+        if len({region["source_page_id"] for region in record["payload"]["basis"]["regions"]}) == 2
+    )
+    draft = tree.read_artifact_reference(
+        final["payload"]["audit"]["draft_ref"],
+        stage=PERLECTOR,
+        kind="audit-draft",
+        subject_id=final["subject_id"],
+    )
+    finding = tree.read_artifact_reference(
+        final["payload"]["audit"]["finding_ref"],
+        stage=PERLECTOR,
+        kind="audit-finding",
+        subject_id=final["subject_id"],
+    )
+    forged_draft = copy.deepcopy(draft)
+    forged_finding = copy.deepcopy(finding)
+    primary_page = forged_draft["payload"]["page_id"]
+    assert len(forged_draft["payload"]["page_ids"]) == 2
+    forged_draft["payload"]["page_ids"] = [primary_page]
+    forged_finding["payload"]["page_ids"] = [primary_page]
+    forged_final = copy.deepcopy(final)
+    forged_final["payload"]["audit"]["finding_digest"] = digest_of(forged_finding["payload"])
+
+    class ForgedTree:
+        def read_artifact_reference(self, _reference, *, stage, kind, subject_id):
+            assert stage == PERLECTOR and subject_id == final["subject_id"]
+            return forged_draft if kind == "audit-draft" else forged_finding
+
+    with pytest.raises(SchemaRefusal, match="page set.*sealed region basis"):
+        audit.validate_chain(ForgedTree(), forged_final, final["subject_id"])

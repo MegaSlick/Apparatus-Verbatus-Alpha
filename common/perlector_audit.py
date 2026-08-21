@@ -53,13 +53,23 @@ FLAG_CLASSES: Final = frozenset(
     {"date-sequence", "numbering", "order", "testimony-diff", "repetition", "within-crop"}
 )
 _DRAFT_FIELDS: Final = frozenset(
-    {"act_key", "attempt_ordinal", "semi_final_text", "page_id", "round_cap", "policy", "flags"}
+    {
+        "act_key",
+        "attempt_ordinal",
+        "semi_final_text",
+        "page_id",
+        "page_ids",
+        "round_cap",
+        "policy",
+        "flags",
+    }
 )
 _FINDING_FIELDS: Final = frozenset(
     {
         "act_key",
         "attempt_ordinal",
         "page_id",
+        "page_ids",
         "round_cap",
         "policy",
         "flags",
@@ -288,6 +298,11 @@ def _validate_common(value: dict[str, Any], *, text_length: int) -> None:
         or not value["act_key"]
         or not isinstance(value["page_id"], str)
         or not value["page_id"]
+        or not isinstance(value["page_ids"], list)
+        or not value["page_ids"]
+        or any(not isinstance(page_id, str) or not page_id for page_id in value["page_ids"])
+        or len(value["page_ids"]) != len(set(value["page_ids"]))
+        or value["page_id"] != value["page_ids"][0]
     ):
         raise SchemaRefusal("an audit record has no act or page identity")
     if (
@@ -475,9 +490,45 @@ def validate_chain(tree, reading: dict[str, Any], act_id: str) -> dict[str, Any]
         text=payload["text"],
         flag_text=draft_payload["semi_final_text"],
     )
-    shared_fields = ("act_key", "attempt_ordinal", "page_id", "round_cap", "policy", "flags")
+    shared_fields = (
+        "act_key",
+        "attempt_ordinal",
+        "page_id",
+        "page_ids",
+        "round_cap",
+        "policy",
+        "flags",
+    )
     if any(draft_payload[field] != finding_payload[field] for field in shared_fields):
         raise SchemaRefusal(f"audit draft and finding for {act_id} restate different frozen facts")
+    basis = payload.get("basis")
+    if not isinstance(basis, dict):
+        raise SchemaRefusal(f"reading of {act_id} has no object basis for its completed reading")
+    regions = basis.get("regions")
+    if not isinstance(regions, list) or not regions:
+        raise SchemaRefusal(
+            f"reading of {act_id} has no non-empty region basis for its completed reading"
+        )
+    pages_by_ordinal: dict[int, str] = {}
+    for region in regions:
+        ordinal = region.get("source_page_ordinal") if isinstance(region, dict) else None
+        page_id = region.get("source_page_id") if isinstance(region, dict) else None
+        if (
+            not isinstance(ordinal, int)
+            or isinstance(ordinal, bool)
+            or not isinstance(page_id, str)
+            or not page_id
+            or (ordinal in pages_by_ordinal and pages_by_ordinal[ordinal] != page_id)
+        ):
+            raise SchemaRefusal(
+                f"reading of {act_id} has an unusable source page in its region basis"
+            )
+        pages_by_ordinal[ordinal] = page_id
+    basis_page_ids = [pages_by_ordinal[ordinal] for ordinal in sorted(pages_by_ordinal)]
+    if draft_payload["page_ids"] != basis_page_ids:
+        raise SchemaRefusal(
+            f"audit page set for {act_id} disagrees with the reading's sealed region basis"
+        )
     if draft_payload["act_key"] != payload.get("act_key") or draft_payload[
         "attempt_ordinal"
     ] != payload.get("attempt_ordinal"):

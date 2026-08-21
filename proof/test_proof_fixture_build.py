@@ -189,26 +189,44 @@ def test_there_are_two_acts_and_exactly_one_cross_page_continuation(skeleton):
     assert continuation["page_ordinal"] == 2
 
 
-def test_the_recovery_region_stays_on_the_page_and_clear_of_the_other_act(skeleton):
-    assert len(skeleton["recovery"]) == 1
-    recovery = skeleton["recovery"][0]
+def test_every_recovery_region_stays_on_the_page_and_clear_of_the_other_act(skeleton):
+    """Both declared recrops widen into empty margin, never into a neighbour.
+
+    One rectangle per act, and each is checked against every OTHER act's
+    declared bounds rather than against one hard-coded neighbour: a recrop that
+    reached into the act next to it would be inventing an overlap rather than
+    widening a crop, and the Designator would answer with a coverage refusal
+    that named the wrong defect.
+    """
+    assert len(skeleton["recovery"]) == len(ACTS) == 2
     page = next(item for item in PAGES if item["ordinal"] == 1)
-    assert recovery["x"] >= 0 and recovery["y"] >= 0
-    assert recovery["x"] + recovery["w"] <= page["width"]
-    assert recovery["y"] + recovery["h"] <= page["height"]
+    for recovery in skeleton["recovery"]:
+        assert recovery["x"] >= 0 and recovery["y"] >= 0
+        assert recovery["x"] + recovery["w"] <= page["width"]
+        assert recovery["y"] + recovery["h"] <= page["height"]
 
-    other = act_descriptor(1, 1)["bounds"]
-    assert recovery["y"] + recovery["h"] <= other["y"], (
-        "an expanded recrop that reached into the neighbouring act would be "
-        "inventing an overlap rather than widening a crop"
-    )
+        for act in ACTS:
+            if act["key"] == recovery["act_key"]:
+                continue
+            other = act_descriptor(act["page_ordinal"], act["proposal_ordinal"])["bounds"]
+            disjoint = (
+                recovery["y"] + recovery["h"] <= other["y"]
+                or other["y"] + other["h"] <= recovery["y"]
+                or recovery["x"] + recovery["w"] <= other["x"]
+                or other["x"] + other["w"] <= recovery["x"]
+            )
+            assert disjoint, f"the {recovery['act_key']} recrop reaches into act {act['key']}"
 
 
-def test_the_recovery_region_differs_from_the_original_proposal(skeleton):
-    original = act_descriptor(1, 0)["bounds"]
-    recovery = skeleton["recovery"][0]
-    assert {key: recovery[key] for key in ("x", "y", "w", "h")} != original
-    assert RECOVERY_BOUNDS["a1"] == {key: recovery[key] for key in ("x", "y", "w", "h")}
+def test_every_recovery_region_differs_from_its_own_original_proposal(skeleton):
+    declared = {
+        row["act_key"]: {key: row[key] for key in ("x", "y", "w", "h")}
+        for row in skeleton["recovery"]
+    }
+    assert declared == RECOVERY_BOUNDS
+    for act in ACTS:
+        original = act_descriptor(act["page_ordinal"], act["proposal_ordinal"])["bounds"]
+        assert declared[act["key"]] != original
 
 
 # --- Witness declarations leave no silent gap ----------------------------------
@@ -289,6 +307,7 @@ def test_the_scenarios_are_exactly_the_declared_ones(skeleton):
         "happy",
         "witness-capabilities",
         "review",
+        "continuation-recovery",
         "audit-change",
         "refused-page",
         "refused-first-page",
@@ -315,6 +334,12 @@ def test_the_scenarios_are_exactly_the_declared_ones(skeleton):
     assert by_name["witness-capabilities"]["hold_acts"] == []
     assert by_name["review"]["recover_acts"] == ["a1"]
     assert by_name["review"]["hold_acts"] == ["a2"]
+    # The recrop subject here is a2 -- the act that runs across the page break.
+    # `review` only ever recrops a1, which lives on one page, so without this
+    # scenario nothing exercised an expanded crop on an act whose evidence
+    # spans two pages.
+    assert by_name["continuation-recovery"]["recover_acts"] == ["a2"]
+    assert by_name["continuation-recovery"]["hold_acts"] == []
     # The scenario's data, not only its presence in the name census: a wrong
     # recover/hold declaration or a missing re-proof row would leave the
     # audit-change path measuring nothing while this file stayed green.

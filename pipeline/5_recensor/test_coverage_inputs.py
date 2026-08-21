@@ -75,7 +75,15 @@ def _no_expected_acts(monkeypatch):
 def _page_testimonium(*, outcome, reported=..., attempt_ordinal=1, artifact_id=None):
     subject_id = "page-1"
     chair = "attestator_1"
-    payload = {"page_ordinal": 1, "chair": chair, "attempt_ordinal": attempt_ordinal}
+    # `page_role` is part of the closed page-Testimonium shape the producer
+    # publishes; act-1's only region is on page 1, so `primary` is what
+    # `reconcile_page_roles` re-derives for this double.
+    payload = {
+        "page_ordinal": 1,
+        "page_role": "primary",
+        "chair": chair,
+        "attempt_ordinal": attempt_ordinal,
+    }
     if reported is not ...:
         payload["reported"] = reported
     return {
@@ -144,6 +152,10 @@ def _attachment(context, *, end, testimonium_id="page-witness-1"):
                 {
                     "chair": "attestator_1",
                     "page_witness": True,
+                    # Required of every page-witness row since the attachment
+                    # became page-scoped: `reconcile_page_roles` derives each
+                    # page's role denominator from exactly this field.
+                    "page_ordinal": 1,
                     "testimonium_ref": context.artifact_ref(
                         RUN.ATTESTATORES, "page-testimonium", testimonium_id
                     ),

@@ -617,8 +617,25 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # `(perlector, failed)` written into it. Comment bytes only; both digests
 # re-measured twice through this module's own helpers at the same tree, counts
 # and exits held at 64/0 and 71/3.
-HAPPY_RUN_TREE_DIGEST = "1f36941dd9f33167cfd87d5bb7a2d7921577db8fc1b0caeeed34c11db9bf0d94"
-REVIEW_RUN_TREE_DIGEST = "5e8333d054306c3dcc5030a1ac668543b67a96dd6aa4d1c6bccb463dc9d57649"
+#
+# Re-pinned 2026-08-21: `proof/skeleton_fixture.toml` gained the
+# `continuation-recovery` scenario and act a2's recovery rectangle. The fixture
+# declaration is bound into every run's `config_digest`
+# (`common/stage.py::run_config_bindings` — "the digest of everything that shapes
+# this run's behaviour ... model configuration, fixture, scenario"), so declaring
+# a scenario that neither pinned run executes still moves both authorities. That
+# is the seal behaving correctly, and it is why the pin moves in a commit that
+# changed no stage code. Counts and exits held at 67/0 and 74/3; both digests
+# re-measured twice through this module's own helpers, and each reproduced at a
+# second independent run root.
+#
+# Moved again the same day, one commit along: the Pass-C audit stopped
+# multiplying an act's ACT-LOCAL flags by the number of pages its crop spans, so
+# a2's audit draft and finding carry two `testimony-diff` flags rather than four,
+# and its sealed re-proof plan two rows rather than four. A deliberate record
+# change; counts and exits again held at 67/0 and 74/3, re-measured the same way.
+HAPPY_RUN_TREE_DIGEST = "402cbff8087f80b88011cd517fc838d4e38cba2afec36e46dc3c4aa0fd3108ec"
+REVIEW_RUN_TREE_DIGEST = "d0f6c7a9df545cf602640d5622fa1a6a3b53f01321edf7fd912dc324e8136578"
 
 
 def orchestrate(
@@ -1306,6 +1323,22 @@ def export_of(tree: RunTree) -> dict:
 def happy_run(tmp_path_factory):
     root = tmp_path_factory.mktemp("happy")
     result = orchestrate(root, "r", "happy")
+    assert result.returncode == 0, result.stderr
+    return root, RunTree(root, "r")
+
+
+@pytest.fixture(scope="module")
+def continuation_recovery_run(tmp_path_factory):
+    """A recrop of the act that runs across the page break.
+
+    `review` only ever recrops a1, which lives on one page, so nothing exercised
+    an expanded crop on an act whose evidence spans two. The recovery loop
+    re-enters the Designator and the Perlector but NOT the Attestatores, so
+    whether page two survives the round is a property of what the re-entering
+    stages rebuild — not something any single-page scenario can show.
+    """
+    root = tmp_path_factory.mktemp("continuation-recovery")
+    result = orchestrate(root, "r", "continuation-recovery")
     assert result.returncode == 0, result.stderr
     return root, RunTree(root, "r")
 
@@ -2303,6 +2336,172 @@ def test_the_seal_carries_an_outcome_and_a_derived_continuation_for_every_act(ha
     assert by_key["a2"]["has_continuation"] is True
 
 
+def test_a_continuation_has_page_scoped_testimony_and_audit_on_its_far_page(happy_run):
+    """GOALS 3/5: page two retains and audits the pixels a2 contributes there."""
+    _, tree = happy_run
+    a2 = next(
+        act
+        for act in tree.read_artifact(
+            DESIGNATOR,
+            "proposal-seal",
+            artifact_id(DESIGNATOR, "proposal-seal", "proposal-seal", None),
+        )["payload"]["expected_acts"]
+        if act["act_key"] == "a2"
+    )
+    continuation = [
+        tree.read_artifact(ATTESTATORES, "page-testimonium", entry["artifact_id"])
+        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
+        if entry["kind"] == "page-testimonium"
+        and tree.read_artifact(ATTESTATORES, "page-testimonium", entry["artifact_id"])[
+            "payload"
+        ].get("page_ordinal")
+        == 2
+    ]
+    assert {record["payload"]["chair"] for record in continuation} == {
+        "attestator_1",
+        "attestator_3",
+    }
+    assert {record["payload"]["page_role"] for record in continuation} == {"continuation"}
+    attachment = tree.read_artifact(
+        ATTESTATORES,
+        "act-attachment",
+        next(
+            entry["artifact_id"]
+            for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
+            if entry["kind"] == "act-attachment" and entry["subject_id"] == a2["act_id"]
+        ),
+    )
+    assert {
+        row["page_ordinal"] for row in attachment["payload"]["attachments"] if row["page_witness"]
+    } == {1, 2}
+    draft = next(
+        tree.read_artifact(PERLECTOR, "audit-draft", entry["artifact_id"])
+        for entry in tree.build_manifest(PERLECTOR)["artifacts"]
+        if entry["kind"] == "audit-draft" and entry["subject_id"] == a2["act_id"]
+    )
+    assert draft["payload"]["page_ids"] == [
+        page_identity(load_fixture(str(ROOT / "proof")), 1),
+        page_identity(load_fixture(str(ROOT / "proof")), 2),
+    ]
+
+
+def test_a_recrop_of_a_continuation_act_keeps_its_far_page_in_the_evidence(
+    continuation_recovery_run,
+):
+    """ARCHITECTURE invariant 1 + GOALS 3/5, through the recovery loop.
+
+    "Act identity survives recropping" is asserted elsewhere. This is the
+    denominator the same recrop could quietly shrink: the Designator cuts a
+    recovery region on the act's PRIMARY page only, and the Perlector then
+    rebuilds the act's page set from every region it reads. Had it rebuilt from
+    the recovery crop, or from the act's scalar `page_ordinal`, page two would
+    have dropped out of the attachment pairing and the page audit at attempt 2
+    while the run still exited 0 -- a continuation silently established from
+    half its ink.
+
+    Asserted at the SECOND attempt ordinal specifically, and against the first,
+    so a pass that never actually recropped cannot satisfy it.
+    """
+    _, tree = continuation_recovery_run
+    a2 = next(
+        act
+        for act in tree.read_artifact(
+            DESIGNATOR,
+            "proposal-seal",
+            artifact_id(DESIGNATOR, "proposal-seal", "proposal-seal", None),
+        )["payload"]["expected_acts"]
+        if act["act_key"] == "a2"
+    )
+    regions = [
+        tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
+        for entry in tree.build_manifest(DESIGNATOR)["artifacts"]
+        if entry["kind"] == "region" and entry["subject_id"] == a2["act_id"]
+    ]
+    origins = sorted(
+        (region["payload"]["origin"], region["payload"]["transform"]["source_page_ordinal"])
+        for region in regions
+    )
+    # The recrop really happened, and really landed on the primary page alone.
+    assert origins == [("proposal", 1), ("proposal", 2), ("recovery", 1)]
+
+    readings = {
+        record["payload"]["attempt_ordinal"]: record
+        for record in (
+            tree.read_artifact(PERLECTOR, "perlectio", entry["artifact_id"])
+            for entry in tree.build_manifest(PERLECTOR)["artifacts"]
+            if entry["kind"] == "perlectio" and entry["subject_id"] == a2["act_id"]
+        )
+    }
+    assert sorted(readings) == [1, 2], "the recovery round must add exactly one attempt"
+    for ordinal, reading in readings.items():
+        pages = {basis["source_page_ordinal"] for basis in reading["payload"]["basis"]["regions"]}
+        assert pages == {1, 2}, f"attempt {ordinal} lost the continuation page"
+
+    drafts = {
+        record["payload"]["attempt_ordinal"]: record["payload"]["page_ids"]
+        for record in (
+            tree.read_artifact(PERLECTOR, "audit-draft", entry["artifact_id"])
+            for entry in tree.build_manifest(PERLECTOR)["artifacts"]
+            if entry["kind"] == "audit-draft" and entry["subject_id"] == a2["act_id"]
+        )
+    }
+    fixture = load_fixture(str(ROOT / "proof"))
+    both_pages = [page_identity(fixture, 1), page_identity(fixture, 2)]
+    assert drafts == {1: both_pages, 2: both_pages}
+
+    attachment = tree.read_artifact(
+        ATTESTATORES,
+        "act-attachment",
+        next(
+            entry["artifact_id"]
+            for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
+            if entry["kind"] == "act-attachment" and entry["subject_id"] == a2["act_id"]
+        ),
+    )
+    # The Attestatores is NOT re-entered by recovery, so this record is the one
+    # written before the recrop. The Perlector reconciles the act's rebuilt page
+    # set against it on the way back through, which is what would have failed
+    # had the recrop moved the page set at all.
+    assert {
+        row["page_ordinal"] for row in attachment["payload"]["attachments"] if row["page_witness"]
+    } == {1, 2}
+
+
+def test_a_continuation_act_is_flagged_once_per_witness_not_once_per_page(happy_run):
+    """GOVERNANCE 10: the audit measures the ink, never the crop's page span.
+
+    a2's two disagreeing witnesses produce two `testimony-diff` flags, exactly as
+    a1's do. Placing the act in both of its pages' comparisons is right for the
+    cross-act classes and wrong for the act-local ones, and doubling them
+    doubled everything computed from them -- the re-proof plan asked the same
+    neutral question twice, and an exhausted round cap would have projected each
+    uncertain span onto the export twice.
+    """
+    _, tree = happy_run
+    drafts = {
+        entry["subject_id"]: tree.read_artifact(PERLECTOR, "audit-draft", entry["artifact_id"])[
+            "payload"
+        ]
+        for entry in tree.build_manifest(PERLECTOR)["artifacts"]
+        if entry["kind"] == "audit-draft"
+    }
+    seal = tree.read_artifact(
+        DESIGNATOR, "proposal-seal", artifact_id(DESIGNATOR, "proposal-seal", "proposal-seal", None)
+    )["payload"]
+    by_key = {entry["act_key"]: entry["act_id"] for entry in seal["expected_acts"]}
+    single_page, continuation = drafts[by_key["a1"]], drafts[by_key["a2"]]
+    assert len(single_page["page_ids"]) == 1 and len(continuation["page_ids"]) == 2
+    for draft in (single_page, continuation):
+        flags = draft["flags"]
+        assert [flag["class"] for flag in flags] == ["testimony-diff", "testimony-diff"]
+        # Two distinct witnesses, two distinct spans -- not one span stated
+        # twice, which is what page-multiplied flags looked like.
+        assert len({(flag["location"]["start"], flag["location"]["end"]) for flag in flags}) == 2
+        assert len(draft["flags"]) == len(
+            {(flag["class"], flag["location"]["start"], flag["location"]["end"]) for flag in flags}
+        )
+
+
 def test_the_run_used_no_network_and_no_model(happy_run):
     """The adapters are all fakes, declared as such. A run that had reached a real
     model would carry a resolved identity that was not a `fake-*` recipe."""
@@ -3157,7 +3356,7 @@ def test_repeating_the_identical_command_leaves_every_byte_unchanged(tmp_path):
 
     # R0 adds two retained page Testimonia and two derived act attachments to
     # the happy walking skeleton; repeatability still compares every byte.
-    assert len(before) == 65
+    assert len(before) == 67
     assert semantic_snapshot_digest(root) == HAPPY_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "happy").returncode == 0
     after = snapshot(root)
@@ -3204,7 +3403,7 @@ def test_repeating_the_review_scenario_also_changes_nothing(tmp_path):
 
     # R0 adds the same four retained page/attachment artifacts before review's
     # recovery loop; its append-only invariant is unchanged.
-    assert len(before) == 72
+    assert len(before) == 74
     assert semantic_snapshot_digest(root) == REVIEW_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "review").returncode == 3
     assert snapshot(root) == before
