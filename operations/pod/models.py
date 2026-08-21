@@ -611,6 +611,23 @@ class PodRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class AccountBalanceObservation:
+    """The available account balance an explicitly configured source observed."""
+
+    available_usd: Decimal
+    observed_at: datetime
+    source: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "available_usd", as_decimal(self.available_usd, "available account balance")
+        )
+        require_utc(self.observed_at, "account balance observed_at")
+        if not isinstance(self.source, str) or not self.source.strip():
+            raise ValueError("account balance source must be non-blank")
+
+
+@dataclass(frozen=True, slots=True)
 class ProviderStatus:
     """The result of the exact-pod GET observation."""
 
