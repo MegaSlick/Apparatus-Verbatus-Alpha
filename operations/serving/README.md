@@ -231,3 +231,55 @@ The assembly remains caller-injected:
 `SubprocessBootstrapActions` accepts. Spec 04's utilization readings remain the
 page-specific smoke callable's responsibility; preflight is red when that
 callable supplies no samples.
+
+## The golden-page vision smoke callable
+
+`VisionSmokeCall` is the production page-specific callable that seam expects.
+It asks the chair for a **page witness** — an unguessable string printed on the
+golden page and deliberately absent from the prompt — and requires the answer to
+be exactly `PAGE-WITNESS: <witness>`. The lifecycle already proves the request
+carried the exact local fixture bytes; this adds the semantic half, that
+something on the far side of the wire read them. An answer assembled from the
+prompt alone yields the literal `PAGE-WITNESS: <the page witness string>` and is
+refused. The receipt records the resolved identity and revision, the
+`served_model_id` the *response body itself* named (`parse_openai_answer` refuses
+a response whose `model` is not the exact served alias, so this is per-answer and
+not per-connection state), the response digest that binds the receipt to the one
+request just made, and `sha256(witness)` — never the witness, the prompt, or the
+answer text. Nothing in this package logs, and vLLM request logging is forced
+off, so the witness leaves the process only as that digest.
+
+**Whose job the witness is.** Nothing here generates one, and that is not an
+omission: the witness proves a page read only because someone rendered it into
+the page's pixels, so entropy, lifetime and rotation belong to whoever authors
+the fixture. This callable refuses only what could not do the job whatever its
+origin — a value under 32 characters, a blank one, one carrying visually
+ambiguous whitespace despite being a token on one line, and one that occurs in
+the prompt. It cannot measure entropy, and does not pretend to. A weak or reused
+witness can be guessed or memorized and can therefore make the smoke falsely
+green without a page read;
+the caller contract is a precondition of the claim, not a property inferred from
+the supplied string. Entropy and rotation remain the fixture author's
+responsibility and are named open rather than reported closed.
+
+The request declares `image/png` and the fixture bytes are checked against the
+PNG signature, because nothing else on this path inspects them for format —
+`AdapterCalibration` binds their digest and `ServingSmokeReader` re-hashes them,
+and `PreflightRunner` takes any `Path`. A non-PNG golden page is refused by name
+rather than travelling under a declaration the bytes do not support.
+
+`SmokeResult.nonempty` is structurally equal to `shape_valid` here. It is kept
+because the result type requires the field, not because it adds a measurement:
+`parse_openai_answer` already refuses a blank choice, so a blank answer reaches
+the runner as `smoke-read-failed`, earlier and louder than a format flag would
+be.
+
+**One call at a time.** `ServiceHandle` records its last fixture request on
+itself and `ServingSmokeReader` corroborates the returned receipt against that
+record after the callable returns, so a handle carries one smoke call at a time.
+Two concurrent calls on one handle would cross those records. Nothing reaches
+this seam concurrently today — `ServingManager.start` refuses a second start
+while a handle is active, and `PreflightRunner` reads its chairs in sequence — so
+the precondition is stated rather than locked: a lock inside the handle would not
+make the reader's read-after-write atomic, and would advertise a concurrency this
+seam does not support.

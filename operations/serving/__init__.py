@@ -23,6 +23,7 @@ from .manager import (
     StageContextReceiptPublisher,
 )
 from .preflight import ServingSmokeReader
+from .smoke import VisionSmokeCall
 
 __all__ = [
     "SCHEMA",
@@ -37,6 +38,7 @@ __all__ = [
     "ServingProfile",
     "ServingRecipes",
     "ServingSmokeReader",
+    "VisionSmokeCall",
     "StageContextReceiptPublisher",
     "assemble_serving_preflight_callback",
     "assemble_serving_smoke_reader",
