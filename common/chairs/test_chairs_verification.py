@@ -15,6 +15,7 @@ the seam for, and what it did with what came back.
 """
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -26,7 +27,8 @@ from common.chairs.manifests import (
     read_manifest,
     write_manifest,
 )
-from common.chairs.registry import CACHE_DESCRIPTOR
+from common.chairs.models import ChairIdentity
+from common.chairs.registry import CACHE_DESCRIPTOR, ChairRegistry
 from common.contracts.canonical import canonical_bytes, digest_bytes
 
 from .conftest import (
@@ -35,8 +37,11 @@ from .conftest import (
     hf_chair,
     pin_snapshot,
     registry_for,
+    serving_details,
     write_snapshot,
 )
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_file_digest_streams_the_snapshot_file_in_bounded_chunks(tmp_path, monkeypatch):
@@ -407,3 +412,94 @@ def test_the_written_manifest_round_trips_through_its_own_reader(tmp_path):
     assert json.loads(path.read_text(encoding="utf-8")) == manifest.to_record()
     assert manifest_digest(manifest) == pin
     assert read_manifest(path, expected_digest=pin, chair="attestator_1") == manifest
+
+
+def test_an_unmeasured_all_zero_pin_is_refused_by_name_before_anything_reads_it(tmp_path):
+    """The real roster's rows pin nothing yet, and must say so when asked to serve.
+
+    `config/models-real.toml` carries an all-zero `digest_manifest` on every row
+    by design: a manifest can only be built from a verified fetch, the pod
+    materializes the pinned repositories at launch, and the measured digests
+    reach the config through a reviewed edit afterwards. The sentinel was
+    already refused — but only incidentally, as "cannot read manifest ... no
+    such file", which invites an operator to supply the missing file rather than
+    to materialize the store, and which would have become a bare digest mismatch
+    the moment any file sat at that path.
+
+    Every door that relies on a pin goes through `_require_current_identity`, so
+    a sentinel cannot serve, cannot be verified, and cannot reach a receipt's
+    GOVERNANCE 6 provenance.
+    """
+    from common.chairs.config import load_models_toml
+    from common.chairs.errors import ConfigurationRefusal
+    from common.chairs.registry import PRE_MATERIALIZATION_SENTINEL
+
+    snapshot = write_snapshot(tmp_path / "cache" / "attestator_1", {"model.bin": b"weights\n"})
+    pin_snapshot(snapshot, tmp_path / "manifests" / "attestator_1.json")
+    config = config_of(
+        tmp_path,
+        {"attestator_1": hf_chair("attestator_1", PRE_MATERIALIZATION_SENTINEL)},
+    )
+    registry = registry_for(config, tmp_path)
+    identity = config.chairs["attestator_1"]
+
+    with pytest.raises(ConfigurationRefusal, match="pre-materialization sentinel"):
+        registry.ensure(identity)
+    with pytest.raises(ConfigurationRefusal, match="pre-materialization sentinel"):
+        registry.receipt(identity, serving_details())
+
+    # The refusal is about the shipped roster, not only about a synthetic one.
+    real = load_models_toml(ROOT / "config" / "models-real.toml")
+    for role, configured in real.chairs.items():
+        if not isinstance(configured, ChairIdentity):
+            continue
+        assert configured.digest_manifest == PRE_MATERIALIZATION_SENTINEL, role
+        with pytest.raises(ConfigurationRefusal, match="pre-materialization sentinel"):
+            ChairRegistry(real).ensure(configured)
+
+
+def test_the_materialization_fetcher_separates_client_state_without_deleting_repo_bytes(tmp_path):
+    """The Hugging Face client's bookkeeping must not become part of a pin.
+
+    `snapshot_download(local_dir=...)` keeps its own state inside the directory
+    it fills. Observed against the pinned huggingface_hub 1.26.0, downloading one
+    file writes `.cache/huggingface/` with a `.gitignore`, a `CACHEDIR.TAG`, a
+    `trees/<sha>.json`, a `download/<name>.lock` and a `download/<name>.metadata`
+    whose three lines are a commit hash, an etag and `time.time()`.
+
+    The store measures every regular file under the staging root into the
+    canonical manifest whose digest becomes the artifact's pin, so left in place
+    that timestamp makes the pin a function of when the fetch happened. Deleting
+    all of `.cache` after the fact is not equivalent: a pinned repository can own
+    bytes under that name, and removing them would make the measured tree smaller
+    than the revision. The adapter therefore copies the returned cached snapshot
+    instead of asking the client to put its state inside staging.
+    """
+    from common.chairs.registry import HuggingFaceMaterializationFetcher
+
+    class CachedSnapshotClientFake:
+        def snapshot_download(self, **kwargs):
+            assert "local_dir" not in kwargs
+            cache = Path(kwargs["cache_dir"])
+            source = cache / "snapshot"
+            source.mkdir(parents=True)
+            (source / "config.json").write_bytes(b'{"pinned":true}')
+            repository_cache = source / ".cache"
+            repository_cache.mkdir()
+            (repository_cache / "repository-owned.json").write_text(
+                "pinned bytes", encoding="utf-8"
+            )
+            return str(source)
+
+    destination = tmp_path / "staging"
+    destination.mkdir()
+    HuggingFaceMaterializationFetcher(CachedSnapshotClientFake()).fetch(
+        "fixture-org/pinned", "a" * 40, destination
+    )
+
+    assert [
+        path.relative_to(destination).as_posix()
+        for path in sorted(destination.rglob("*"))
+        if path.is_file()
+    ] == [".cache/repository-owned.json", "config.json"]
+    assert not Path(f"{destination}.huggingface-cache").exists()

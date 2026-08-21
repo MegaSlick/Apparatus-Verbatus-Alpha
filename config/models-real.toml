@@ -1,0 +1,83 @@
+# The real roster is selected explicitly with `--models-config config/models-real.toml`.
+# It leaves the fixture roster at config/models.toml byte-for-byte intact.  Every
+# all-zero digest below is an intentional pre-materialization sentinel, not a
+# manifest pin: the pod's materializer fetches each exact revision, builds the
+# canonical manifests, snapshots the licence text, and returns measured digests
+# for an ordinary reviewed edit here.  Until then `ensure()` refuses because no
+# manifest exists; this file never turns an unmeasured fetch into a serving claim.
+
+witness_floor = 3
+
+[adapter_recipes]
+door = "unproven-real-door"
+exemplar = "unproven-real-exemplar"
+designator = "unproven-real-designator"
+attestatores = "unproven-real-attestatores"
+perlector = "unproven-real-perlector"
+recensor = "unproven-real-recensor"
+archetypus = "unproven-real-archetypus"
+armarium = "unproven-real-armarium"
+
+[chairs.designator_structure]
+state = "configured"
+source = "huggingface"
+repo = "datalab-to/chandra-ocr-2"
+revision = "af93b47dba1b47b6640c86ccf487ed2260ab9a09"
+digest_manifest = "0000000000000000000000000000000000000000000000000000000000000000"
+manifest = "manifests/chandra-ocr-2.json"
+serving_recipe = "unproven-real-designator"
+license_note = "Revenue-capped; competitive use barred. Accepted under the research track (Tyrel, 2026-08-20)"
+
+[chairs.attestator_1]
+state = "configured"
+source = "huggingface"
+repo = "datalab-to/chandra-ocr-2"
+revision = "af93b47dba1b47b6640c86ccf487ed2260ab9a09"
+digest_manifest = "0000000000000000000000000000000000000000000000000000000000000000"
+manifest = "manifests/chandra-ocr-2.json"
+serving_recipe = "unproven-real-attestatores"
+license_note = "Revenue-capped (>$2M revenue/funding barred; competitive use barred). Accepted under the research track (Tyrel, 2026-08-20)"
+
+[chairs.attestator_2]
+state = "configured"
+source = "huggingface"
+repo = "Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR"
+revision = "e371095d4ffe585f31f4974462931ddbac61ff64"
+digest_manifest = "0000000000000000000000000000000000000000000000000000000000000000"
+manifest = "manifests/dai-recordgold-atr.json"
+serving_recipe = "unproven-real-attestatores"
+license_note = "No licence declared at all; accepted under the research track (Tyrel, 2026-08-20) — weights are pulled from the repository at the pinned revision, never vendored, and a downstream operator fetches them and accepts whatever terms apply at the source"
+
+[chairs.attestator_3]
+state = "configured"
+source = "huggingface"
+repo = "stanford-oval/churro-3B"
+revision = "ca2150ea465d5a3d67818c50e234b9422619c75d"
+digest_manifest = "0000000000000000000000000000000000000000000000000000000000000000"
+manifest = "manifests/churro-3B.json"
+serving_recipe = "unproven-real-attestatores"
+license_note = "Weights: Qwen research licence (research only); code incl. prompts: Apache-2.0. Accepted under the research track (Tyrel, 2026-08-20)"
+
+[chairs.secondary_proposer]
+state = "configured"
+source = "huggingface"
+repo = "Teklia/YOLOv26-DAI-CReTDHI-Record-Detection"
+revision = "0c57f057391113579e7af170b864542f049e67aa"
+digest_manifest = "0000000000000000000000000000000000000000000000000000000000000000"
+manifest = "manifests/yolo26-detection.json"
+serving_recipe = "unproven-real-secondary-proposer"
+license_note = "AGPL-3.0. Accepted under the research track (Tyrel, 2026-08-20)"
+
+[chairs.perlector]
+state = "configured"
+source = "huggingface"
+repo = "Qwen/Qwen3.8-27B"
+revision = "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0"
+digest_manifest = "0000000000000000000000000000000000000000000000000000000000000000"
+manifest = "manifests/qwen3.8-27B.json"
+serving_recipe = "unproven-real-perlector"
+license_note = "Apache-2.0, read from the repository card 2026-08-20; accepted under the research track (Tyrel, 2026-08-20)"
+
+[chairs.annotator]
+state = "absent"
+reason = "the ARCHITECTURE annotation-layer wording is owed before Spec 11 builds"

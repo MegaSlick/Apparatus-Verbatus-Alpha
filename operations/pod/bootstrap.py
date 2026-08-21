@@ -11,6 +11,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Callable, Protocol
 
+from common.chairs.model_store import MaterializationFetcher, materialize_real_roster
 from common.chairs.models import AbsentChair, ChairIdentity
 from common.chairs.registry import ChairRegistry
 
@@ -27,6 +28,7 @@ class BootstrapStep(StrEnum):
     REPOSITORY = "repository"
     UV_ENVIRONMENT = "uv-environment"
     TRANSFER = "transfer"
+    MODEL_STORE = "model-store"
     CHAIR_CACHE = "chair-cache"
     PREFLIGHT = "preflight"
 
@@ -97,11 +99,32 @@ class BootstrapActions(Protocol):
     def resume_transfer(self) -> dict[str, object]:
         """Resume checksum-aware transfer, or raise a named partial-transfer failure."""
 
+    def materialize_model_store(self) -> dict[str, object]:
+        """Fetch real pinned snapshots and publish their measured store evidence."""
+
     def verify_chair_cache(self) -> dict[str, object]:
         """Verify every configured chair pin, with at most one same-pin re-fetch each."""
 
     def run_preflight(self) -> dict[str, object]:
         """Return one green preflight receipt or raise with its named red reason."""
+
+
+def _missing_bootstrap_actions(actions: object) -> list[str]:
+    """Return Protocol methods the supplied structural implementation lacks.
+
+    Static typing is deliberately not a repository gate, so a structural
+    ``Protocol`` annotation alone cannot protect runtime fixtures.  Deriving the
+    method set from the Protocol means a future action fails at construction for
+    every implementation, including one a test forgot to add to a hand-written
+    implementation roster.
+    """
+
+    required = {
+        name
+        for name, member in vars(BootstrapActions).items()
+        if not name.startswith("_") and callable(member)
+    }
+    return sorted(name for name in required if not callable(getattr(actions, name, None)))
 
 
 class BootstrapJournal:
@@ -250,6 +273,12 @@ class Bootstrapper:
     """Run only unfinished steps.  A crash re-enters the current idempotent step."""
 
     def __init__(self, journal: BootstrapJournal, actions: BootstrapActions) -> None:
+        missing = _missing_bootstrap_actions(actions)
+        if missing:
+            raise TypeError(
+                f"bootstrap actions {type(actions).__name__} lacks callable Protocol methods: "
+                f"{missing}"
+            )
         self.journal = journal
         self.actions = actions
 
@@ -287,6 +316,8 @@ class Bootstrapper:
             return self.actions.sync_uv_environment(self.journal.plan.lockfile)
         if step is BootstrapStep.TRANSFER:
             return self.actions.resume_transfer()
+        if step is BootstrapStep.MODEL_STORE:
+            return self.actions.materialize_model_store()
         if step is BootstrapStep.CHAIR_CACHE:
             return self.actions.verify_chair_cache()
         if step is BootstrapStep.PREFLIGHT:
@@ -344,6 +375,24 @@ class ChairCacheBootstrapAction:
         return {"chairs": receipts}
 
 
+class ModelStoreBootstrapAction:
+    """Launch-time acquisition of the real roster onto the mounted model volume."""
+
+    def __init__(
+        self,
+        store_root: str | Path,
+        fetcher: MaterializationFetcher,
+        *,
+        capacity: dict[str, object],
+    ) -> None:
+        self.store_root = Path(store_root)
+        self.fetcher = fetcher
+        self.capacity = capacity
+
+    def materialize(self) -> dict[str, object]:
+        return materialize_real_roster(self.store_root, self.fetcher, capacity=self.capacity)
+
+
 class SubprocessBootstrapActions:
     """Production-effect adapter; its commands are explicit argv, never shell text.
 
@@ -356,12 +405,14 @@ class SubprocessBootstrapActions:
         *,
         repository: str | Path,
         transfer: Callable[[], dict[str, object]],
+        materialize_model_store: Callable[[], dict[str, object]],
         cache: ChairCacheBootstrapAction,
         preflight: Callable[[], dict[str, object]],
         runner: Callable[[list[str], Path], subprocess.CompletedProcess[str]] | None = None,
     ) -> None:
         self.repository = Path(repository)
         self.transfer = transfer
+        self.materialize = materialize_model_store
         self.cache = cache
         self.preflight = preflight
         self.runner = runner or self._run
@@ -403,6 +454,17 @@ class SubprocessBootstrapActions:
 
     def resume_transfer(self) -> dict[str, object]:
         return self.transfer()
+
+    def materialize_model_store(self) -> dict[str, object]:
+        result = self.materialize()
+        if result.get("real_roster_complete") is not True:
+            raise BootstrapStepFailure(
+                BootstrapStep.MODEL_STORE,
+                "model-store materialization did not verify every real-roster repository",
+                "Resume the same pinned materialization; do not advance to chair-cache "
+                "verification while a real-roster artifact is absent or unverified.",
+            )
+        return result
 
     def verify_chair_cache(self) -> dict[str, object]:
         return self.cache.verify()

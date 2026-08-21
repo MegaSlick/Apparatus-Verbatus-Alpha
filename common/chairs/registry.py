@@ -20,6 +20,7 @@ from .errors import (
     AdapterFetchRefusal,
     CacheRevisionRefusal,
     ChairRefusal,
+    ConfigurationRefusal,
     DigestMismatchRefusal,
     LocalPathRefusal,
     ReceiptRefusal,
@@ -39,6 +40,13 @@ from .models import (
 from .receipts import build_receipt
 
 CACHE_DESCRIPTOR = ".chair-identity.json"
+# A roster row can exist before its bytes do.  `config/models-real.toml` carries
+# the real roster with an all-zero `digest_manifest` on every row, because a
+# manifest can only be built from a verified fetch and no fetch has happened —
+# the pod materializes the pinned repositories at launch, measures their
+# manifests, and those digests reach the config through an ordinary reviewed
+# edit.  Until then the row names a repository and pins nothing.
+PRE_MATERIALIZATION_SENTINEL = "0" * 64
 
 
 class SnapshotFetcher(Protocol):
@@ -101,6 +109,56 @@ class HuggingFaceFetcher:
             target = destination / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(origin, target)
+
+
+class HuggingFaceMaterializationFetcher:
+    """Fetch a whole pinned repository for the pod's evidence materializer."""
+
+    def __init__(self, client: HuggingFaceClient):
+        self.client = client
+
+    @classmethod
+    def from_huggingface_hub(cls) -> "HuggingFaceMaterializationFetcher":
+        return cls(HuggingFaceFetcher.from_huggingface_hub().client)
+
+    def fetch(self, repo: str, revision: str, destination: Path) -> None:
+        """Leave the exact repository revision below `destination`, and nothing else.
+
+        ``snapshot_download(local_dir=...)`` writes client bookkeeping under the
+        directory it fills, including a wall-clock timestamp.  Deleting the whole
+        ``.cache`` afterward is not safe either: a repository may itself track
+        ``.cache/*`` bytes, which would then disappear before the manifest claimed
+        to measure the exact revision. Downloading through a per-call client cache
+        beside staging and copying the returned snapshot separates those namespaces:
+        the returned directory is repository content, while client state stays
+        outside the evidence tree and inside the volume's reserved promotion space.
+        """
+
+        if not destination.is_dir() or any(destination.iterdir()):
+            raise DigestMismatchRefusal(
+                repo, "materialization destination must be an existing empty directory"
+            )
+        client_cache = destination.with_name(f"{destination.name}.huggingface-cache")
+        if client_cache.exists() or client_cache.is_symlink():
+            raise DigestMismatchRefusal(
+                repo, f"per-call Hugging Face cache path already exists: {client_cache}"
+            )
+        try:
+            downloaded = self.client.snapshot_download(
+                repo_id=repo, revision=revision, cache_dir=client_cache
+            )
+            source = Path(str(downloaded))
+            if source.is_symlink() or not source.is_dir():
+                raise DigestMismatchRefusal(
+                    repo, "Hugging Face returned no regular snapshot directory"
+                )
+            shutil.copytree(source, destination, dirs_exist_ok=True)
+        except OSError as error:
+            raise DigestMismatchRefusal(
+                repo, f"cannot copy the pinned Hugging Face snapshot into staging: {error}"
+            ) from error
+        finally:
+            shutil.rmtree(client_cache, ignore_errors=True)
 
 
 class ChairRegistry:
@@ -203,6 +261,31 @@ class ChairRegistry:
             raise UnresolvedChairRefusal(
                 identity.role,
                 "identity differs from the configured pin; ensure and receipt never accept a neighbouring revision",
+            )
+        # After the identity match, not before it: a caller who supplies an
+        # all-zero digest against a row that pins a real one is asking for a
+        # neighbouring revision, and that is the refusal they should get.  This
+        # clause is for the row that really is a sentinel.
+        #
+        # Refused here rather than at parse time, and by name.  The roster has to
+        # stay readable — the materializer is driven from it — so the sentinel is
+        # a legitimate configured value and only becomes wrong at the door where
+        # a pin is relied on.  This is the shared door: `ensure`, `receipt` and
+        # `refuse_recipe_start` all pass through it, so no serving path, and no
+        # receipt written under GOVERNANCE 6, can take an unmeasured digest for a
+        # pin.  Refusing was never the gap; saying why was.  A sentinel row
+        # previously failed as "cannot read manifest ... no such file", which
+        # invites an operator to supply the missing file rather than to
+        # materialize the store, and would have become a bare digest mismatch the
+        # moment any file sat at that path.
+        if identity.digest_manifest == PRE_MATERIALIZATION_SENTINEL:
+            raise ConfigurationRefusal(
+                identity.role,
+                "digest_manifest is the all-zero pre-materialization sentinel, not a "
+                f"pin: {identity.repo or identity.path}@{identity.revision} has not been "
+                "fetched and measured. Materialize the model store, then record the "
+                "measured manifest digest on this row through a reviewed config edit; "
+                "nothing serves from a sentinel",
             )
 
     def _manifest(self, identity: ChairIdentity) -> DigestManifest:
