@@ -125,6 +125,49 @@ def publish(tree: RunTree, out_dir: Path) -> dict:
             # formats. The build checked that; this, the gate the product actually
             # leaves through, did not.
             manifest = verify_delivered_bundle(data, staging / EXTRACTION_NAME)
+            if aggregate != manifest.get("aggregate"):
+                raise ContractError(
+                    "the delivered bundle's aggregate disagrees with the sealed export artifact"
+                )
+            run = tree.read_run()
+            expected_run_binding = {
+                "fixture_id": payload.get("fixture_id"),
+                "scenario": payload.get("scenario"),
+                "config_digest": run.get("config_digest"),
+            }
+            if manifest.get("run") != expected_run_binding:
+                # A clean-machine verifier has no external run to authenticate these
+                # three labels against. The publisher does: its artifact has already
+                # been checked against run.json, so accepting a different package
+                # binding here would discard the one authority available at the gate.
+                raise ContractError(
+                    "the delivered bundle's run binding disagrees with the sealed run it "
+                    "claims to export"
+                )
+            bundle_record = payload.get("bundle")
+            if (
+                not isinstance(bundle_record, dict)
+                or bundle_record.get("manifest_self_hash") != manifest.get("self_hash")
+                or bundle_record.get("claims_status") != manifest.get("claims", {}).get("status")
+            ):
+                raise ContractError(
+                    "the delivered bundle's manifest identity or status disagrees with the "
+                    "sealed export artifact"
+                )
+            verification = manifest.get("verification", {})
+            search_fold_verification = verification.get("search_fold")
+            if (
+                search_fold_verification is not None
+                and search_fold_verification.get("status") != "verified"
+            ):
+                # The clean verifier can honestly report that a version-dependent
+                # recomputation was unavailable. Publication cannot turn that honest
+                # non-measurement into a successful terminal claim: a resealer can
+                # select this branch by changing only export_metadata.unidata_version.
+                raise ContractError(
+                    "the delivered bundle's search-fold recomputation was not run; "
+                    "a declined terminal measurement is a publication refusal, not a pass"
+                )
             (staging / ARMARIUM_ARCHIVE_NAME).write_bytes(data)
             # `mkdtemp` creates at 0o700, so the published directory's permissions
             # would otherwise be whatever the staging call happened to make them —
@@ -167,7 +210,6 @@ def publish(tree: RunTree, out_dir: Path) -> dict:
     # a package built under a different Unicode database keeps its digest and
     # coverage checks and skips the recomputation -- and an operator told only
     # "published: complete" would never learn which of the two happened.
-    verification = manifest.get("verification", {})
     return {
         "archive": ARMARIUM_ARCHIVE_NAME,
         "extraction": EXTRACTION_NAME,
