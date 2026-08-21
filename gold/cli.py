@@ -94,7 +94,10 @@ def main(argv: list[str] | None = None) -> int:
         existing = _records_in(str(output.parent)) if output.parent.is_dir() else []
         # A stratum is a collection fact, not a property R0 can derive from one
         # pick. Reconcile the destination corpus before publishing so a second
-        # spelling of the same page is refused rather than counted twice.
+        # spelling of the same page is refused rather than counted twice -- any
+        # second spelling, not only one that also restratifies the page, since
+        # `sample_digest` binds `selection_basis` and a restated wording alone
+        # mints a second individually valid sample of one hand-picked page.
         validate_corpus([*existing, record], args.run)
         write_append_only(output, record)
     elif args.command == "bind-instrument":
@@ -164,7 +167,7 @@ def main(argv: list[str] | None = None) -> int:
         if not corpus_records:
             raise SchemaRefusal(
                 f"{args.directory} holds no gold records to validate; validate-corpus "
-                "proves a corpus, not an empty directory"
+                "checks a corpus, not an empty directory"
             )
         validate_corpus(corpus_records, args.run)
     else:
