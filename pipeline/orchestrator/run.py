@@ -92,9 +92,79 @@ SEQUENCE = (
 
 STAGE_PROGRAMS = dict(SEQUENCE)
 
+# Named here rather than imported from `operations.submit.gate`, because this
+# module imports only `common/` (see the module docstring) and the Door is the
+# one place the gate itself is loaded. The two spellings are held together by
+# `test_orchestrator_default_data_gate_policy_is_the_gates_own`, so the pair
+# cannot drift apart in silence.
+DEFAULT_DATA_GATE_POLICY_PATH = ROOT / "config" / "data_handling_policy.json"
+
+
+# The paths this process must resolve against the *caller's* cwd before any child
+# sees them, with the flag each one reaches a stage under. `run_root` is not
+# optional; the three real-ingress members are `None` on a fixture run.
+_CALLER_RELATIVE_PATHS = (
+    ("run_root", "--run-root"),
+    ("submission_folder", "--submission-folder"),
+    ("submission_manifest", "--submission-manifest"),
+    ("data_gate_policy", "--data-gate-policy"),
+)
+
+
+def resolve_caller_paths(args: argparse.Namespace) -> argparse.Namespace:
+    """Resolve every caller-relative path once, at the orchestration boundary.
+
+    Children run with `cwd=ROOT` (`invoke`'s `subprocess.run`) while the caller
+    may be anywhere, so a path resolved late — inside a stage, after that `cwd`
+    switch — names something beside the repository instead of beside the person
+    who typed it. Resolving here means the Door, every later stage, and this
+    process's own checkpoints name one run tree and one set of real inputs.
+
+    A named function rather than a run of statements inside `main`: a partial
+    invocation entry point that builds its own `Namespace` and calls `invoke`
+    directly needs this, and `require_resolved_caller_paths` refuses the argv
+    rather than letting one that skipped it resolve against the wrong root.
+    """
+    args.run_root = Path(args.run_root).resolve()
+    for attribute in ("submission_folder", "submission_manifest"):
+        value = getattr(args, attribute)
+        if value is not None:
+            setattr(args, attribute, Path(value).resolve())
+    # `None` here means "the repository's own approved policy", which is what a
+    # relative string default could not mean: it would be resolved against the
+    # caller's cwd like the paths above and name a policy beside them instead.
+    if args.data_gate_policy is None:
+        args.data_gate_policy = DEFAULT_DATA_GATE_POLICY_PATH
+    else:
+        args.data_gate_policy = Path(args.data_gate_policy).resolve()
+    return args
+
+
+def require_resolved_caller_paths(args: argparse.Namespace) -> None:
+    """Refuse to put a caller-relative path on a child's argv.
+
+    Resolution happens in one place and nothing re-reads it from disk afterwards
+    — there is no orchestrator checkpoint file to carry it — so an entry point
+    that reaches `invoke` without calling `resolve_caller_paths` would hand a
+    stage a path that silently means a different directory under `cwd=ROOT`.
+    That is a wrong run tree or, on the real route, a wrong folder of ink. It
+    fails here, by name, at the first stage invocation instead.
+    """
+    for attribute, flag in _CALLER_RELATIVE_PATHS:
+        value = getattr(args, attribute, None)
+        if value is None:
+            continue
+        if not Path(value).is_absolute():
+            raise ContractError(
+                f"{flag} is still the caller-relative path {str(value)!r}. Stages run from "
+                f"{ROOT} while the caller may be anywhere, so this must be resolved at the "
+                "orchestration boundary (`resolve_caller_paths`) before any child sees it"
+            )
+
 
 def invoke(program: str, args: argparse.Namespace, **extra) -> int:
     """Run one stage as a program and return its exit code."""
+    require_resolved_caller_paths(args)
     command = [
         sys.executable,
         str(ROOT / program),
@@ -123,6 +193,15 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
         "--hard-failure-config",
         str(args.hard_failure_config),
     ]
+    # Real ingress belongs to the Door alone.  Every later stage works from the
+    # run tree the Door sealed, so passing these filenames farther downstream
+    # would create a second, unsealed route back to source material.
+    if program == STAGE_PROGRAMS["door"]:
+        if args.submission_folder is not None:
+            command += ["--submission-folder", str(args.submission_folder)]
+        if args.submission_manifest is not None:
+            command += ["--submission-manifest", str(args.submission_manifest)]
+        command += ["--data-gate-policy", str(args.data_gate_policy)]
     if args.pdf_target_dpi is not None:
         command += ["--pdf-target-dpi", str(args.pdf_target_dpi)]
     command += [
@@ -191,6 +270,15 @@ def pending_recoveries(tree: RunTree, recovery_policy: dict) -> list[tuple[str, 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--fixture", required=True)
+    parser.add_argument("--submission-folder")
+    parser.add_argument("--submission-manifest")
+    # No relative-string default: every child subprocess runs with `cwd=ROOT`
+    # (`invoke`'s `subprocess.run`), while the value below is resolved against
+    # the *caller's* cwd like the other real-ingress paths. A relative default
+    # resolved that way would name a path beside the caller instead of the
+    # repository's own approved policy. `None` here means "use the repository's
+    # own default", filled in by `resolve_caller_paths` once parsing is done.
+    parser.add_argument("--data-gate-policy", default=None)
     # The fixture declares which scenarios exist; `scenario_for` refuses an
     # undeclared name once the fixture is loaded, so there is no second list here
     # to drift from the declaration.
@@ -299,18 +387,30 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    resolve_caller_paths(args)
+
     # Prove the algebra total before anything runs. A stage added later without a
     # class or a terminal decision should fail at the first run, not at the first
     # unusual page.
     check_algebra_is_total()
 
-    fixture = load_fixture(args.fixture_root)
-    if fixture["fixture_id"] != args.fixture:
-        raise ContractError(
-            f"asked for fixture {args.fixture!r} but {args.fixture_root} declares "
-            f"{fixture['fixture_id']!r}"
-        )
-    scenario_for(fixture, args.scenario)
+    # Fixture identity and scenario govern only the fixture route.  A real run's
+    # Door ignores both, and the Designator reads the sealed ingress before it
+    # decides whether a fixture context is meaningful.  Loading `proof/` here
+    # unconditionally made a direct real invocation from outside the checkout
+    # fail against the caller's cwd before its absolute submission paths ever
+    # reached the Door: synthetic evidence was accidentally a prerequisite for
+    # admitting real evidence, even though the real run seals neither fixture
+    # nor scenario.  Keep the fixture preflight on the route whose run authority
+    # actually binds those declarations.
+    if args.submission_folder is None:
+        fixture = load_fixture(args.fixture_root)
+        if fixture["fixture_id"] != args.fixture:
+            raise ContractError(
+                f"asked for fixture {args.fixture!r} but {args.fixture_root} declares "
+                f"{fixture['fixture_id']!r}"
+            )
+        scenario_for(fixture, args.scenario)
 
     halted = None
     # A resumed run may already be over the cap. Recompute before re-entering

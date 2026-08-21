@@ -66,6 +66,12 @@ from .volume_s3 import S3VolumeTarget, VolumeSpec, VolumeTransferRefusal
 UTC = timezone.utc
 OPERATOR_CLOSE_PREFIX = "CLOSE"
 DEFAULT_FIXTURE = "synthetic-two-page-v0"
+# The Door's program path, named once. Two spellings of it — the fault drill's
+# call site and the guard that decides the drill forwards real ingress — is how
+# the drill could go on running while quietly stopping injecting: change one and
+# the comparison fails silently, rehearsing a fixture door under a real
+# submission's name.
+DOOR_PROGRAM = "pipeline/1_exemplar/door.py"
 # `FakeProvider.bill()` always stamps its cutoff exactly one hour **ahead** of
 # its own clock -- `fake_provider.py`'s `cutoff_at=self.now() + timedelta(hours=1)`
 # -- so a frozen test clock still opens a valid, non-empty billing window. This
@@ -638,47 +644,64 @@ class OperatorSurface:
     # -- run ------------------------------------------------------------------
 
     def run(
-        self, *, run_id: str, scenario: str = "happy", fixture: str = DEFAULT_FIXTURE
+        self,
+        *,
+        run_id: str,
+        scenario: str = "happy",
+        fixture: str = DEFAULT_FIXTURE,
+        submission_folder: str | Path | None = None,
+        submission_manifest: str | Path | None = None,
+        data_gate_policy: str | Path | None = None,
     ) -> RunOutcome:
-        """Drive the current tree's actual fixture orchestrator, with resumable evidence."""
+        """Drive the actual orchestrator, with resumable evidence."""
 
         run_root = self.state_root / "runs"
-        pages, acts, declared_ok = _declared_work(self.workspace)
-        if not declared_ok:
-            self.present(
-                "The declared fixture could not be read; naming pages and acts generically."
-            )
+        ingress_mode = "real" if submission_folder is not None else "synthetic-fixture"
         prior_state = self._prior_run_state(run_id)
-        if prior_state == "interrupted-recoverable":
-            self.present(f"Resuming run {run_id}. Checking {', '.join(pages)}.")
-        elif prior_state is not None:
+        if submission_folder is None:
+            self._present_declared_fixture_work(run_id, prior_state)
             self.present(
-                f"Run {run_id} already has saved state {prior_state}; checking its recorded pages again."
+                "This rehearsal uses declared synthetic pages, not an uploaded real submission."
             )
         else:
-            self.present(f"Run started. Checking {', '.join(pages)}.")
-        self.present(f"Working next: {', '.join(acts)}.")
-        self.present(
-            "This rehearsal uses declared synthetic pages, not an uploaded real submission."
-        )
+            self._present_real_submission_work(run_id, prior_state, submission_manifest)
+            self.present("This run sends the recorded real submission to the Door's data gate.")
         if self.faults.laptop_crash:
             self.faults.laptop_crash = False
-            self._run_one_stage(run_root, run_id, scenario, "pipeline/1_exemplar/door.py")
+            ingress_label = "real submission" if submission_folder is not None else "fixture"
+            observed_work = (
+                "The real submission's pages reached the Door."
+                if submission_folder is not None
+                else "The fixture pages reached the Door."
+            )
+            self._run_one_stage(
+                run_root,
+                run_id,
+                scenario,
+                DOOR_PROGRAM,
+                submission_folder=submission_folder,
+                submission_manifest=submission_manifest,
+                data_gate_policy=data_gate_policy,
+            )
             receipt = self._write_action(
                 "run",
                 {
-                    "summary": "Run interrupted after the door recorded its page evidence; it can resume.",
+                    "summary": (
+                        f"Run interrupted after the Door recorded the {ingress_label}'s page "
+                        "evidence; it can resume."
+                    ),
                     "state": "interrupted-recoverable",
+                    "ingress": ingress_mode,
                     "run_root": str(run_root),
                     "run_id": run_id,
                     "scenario": scenario,
                     "fixture": fixture,
-                    "last_observed_work": "The fixture pages reached the door.",
+                    "last_observed_work": observed_work,
                 },
                 descriptor_action="run",
             )
             self.present(
-                "The laptop-crash drill interrupted after the fixture pages reached the door."
+                f"The laptop-crash drill interrupted after the {ingress_label} reached the Door."
             )
             raise OperatorError(ErrorCode.RUN_INTERRUPTED, detail=f"Saved run receipt: {receipt}")
         command = [
@@ -693,6 +716,13 @@ class OperatorSurface:
             "--run-root",
             str(run_root),
         ]
+        command.extend(
+            _real_ingress_argv(
+                submission_folder=submission_folder,
+                submission_manifest=submission_manifest,
+                data_gate_policy=data_gate_policy,
+            )
+        )
         completed = self.runner(
             command, cwd=self.workspace, capture_output=True, text=True, check=False
         )
@@ -702,6 +732,7 @@ class OperatorSurface:
                 {
                     "summary": "Run ended before its Armarium record was available.",
                     "state": "failed",
+                    "ingress": ingress_mode,
                     "run_root": str(run_root),
                     "run_id": run_id,
                     "scenario": scenario,
@@ -723,6 +754,7 @@ class OperatorSurface:
             {
                 "summary": f"Run finished with recorded state: {state}.",
                 "state": state,
+                "ingress": ingress_mode,
                 "run_root": str(run_root),
                 "run_id": run_id,
                 "scenario": scenario,
@@ -746,12 +778,23 @@ class OperatorSurface:
         expected_in_notice = (
             f"{expected} act(s) accounted for" if expected is not None else "act total not recorded"
         )
-        self.present(
-            f"Pages accounted for: {', '.join(pages)} ({len(page_records)} total). "
-            f"Acts accounted for: {', '.join(acts)} ({expected_on_screen})."
-        )
+        if submission_folder is None:
+            pages, acts, _declared_ok = _declared_work(self.workspace)
+            self.present(
+                f"Pages accounted for: {', '.join(pages)} ({len(page_records)} total). "
+                f"Acts accounted for: {', '.join(acts)} ({expected_on_screen})."
+            )
+        else:
+            # Counts only, for the same two reasons the opening line gives: the
+            # declared fixture's names describe other material entirely, and the
+            # real ones are the submitted material's, which the data-handling
+            # policy's `logging_rule` keeps off this screen.
+            self.present(
+                f"Pages accounted for: {len(page_records)} total. "
+                f"Acts accounted for: {expected_on_screen}."
+            )
         if state == "complete":
-            self.present("Run complete. The named pages and acts reached the Armarium record.")
+            self.present("Run complete. Its pages and acts reached the Armarium record.")
             self.present(f"Saved run receipt: {receipt}")
             self._notify(
                 "milestone",
@@ -1277,6 +1320,68 @@ class OperatorSurface:
         state = payload.get("state")
         return state if isinstance(state, str) else None
 
+    def _present_declared_fixture_work(self, run_id: str, prior_state: str | None) -> None:
+        """Name the declared fixture's own pages and acts, for a fixture run."""
+
+        pages, acts, declared_ok = _declared_work(self.workspace)
+        if not declared_ok:
+            self.present(
+                "The declared fixture could not be read; naming pages and acts generically."
+            )
+        self.present(self._run_opening(run_id, prior_state, f"Checking {', '.join(pages)}."))
+        self.present(f"Working next: {', '.join(acts)}.")
+
+    def _present_real_submission_work(
+        self, run_id: str, prior_state: str | None, submission_manifest: str | Path | None
+    ) -> None:
+        """Say what a *real* run is about to work on, which the fixture never says.
+
+        The declared fixture's page and act names belong to the synthetic
+        walking skeleton. Printed over a real submission they are a description
+        of something else entirely: an operator sending three photographs was
+        told "Checking page 1, page 2, page 3" because that is what
+        `proof/` declares, and `_declared_work`'s own docstring names exactly
+        this failure — a placeholder shown without comment reads as the real
+        list. GOVERNANCE 10: what is said is what was measured.
+
+        The submitted filename ledger is the only thing here that knows the real
+        extent, so the count comes from it. A **count**, never the names: the
+        data-handling policy's `logging_rule` allows terminal output counts and
+        the private report location and no more, and these names are real
+        material's.
+
+        A ledger that cannot be read is not refused here. The Door is the gate
+        and refuses it by name a moment later with the whole policy in hand;
+        duplicating that judgement on this screen would make the surface a
+        second, weaker gate that could disagree with the real one.
+        """
+
+        extent = "Its extent is named by the submitted filename ledger."
+        if submission_manifest is not None:
+            try:
+                ledger = submission_door.load_manifest(Path(submission_manifest))
+                count = len(ledger["files"])
+            except Exception:
+                extent = (
+                    "The submitted filename ledger could not be read here; the Door checks "
+                    "it against the data-handling policy and refuses by name if it is bad."
+                )
+            else:
+                extent = f"The submitted filename ledger declares {count} file(s)."
+        self.present(self._run_opening(run_id, prior_state, extent))
+
+    def _run_opening(self, run_id: str, prior_state: str | None, extent: str) -> str:
+        """The started/resuming sentence, with whatever names this run's extent."""
+
+        if prior_state == "interrupted-recoverable":
+            return f"Resuming run {run_id}. {extent}"
+        if prior_state is not None:
+            return (
+                f"Run {run_id} already has saved state {prior_state}; "
+                f"checking its recorded work again. {extent}"
+            )
+        return f"Run started. {extent}"
+
     def _write_action(
         self,
         kind: str,
@@ -1317,7 +1422,17 @@ class OperatorSurface:
             for line in record_error.render().splitlines():
                 self.present(line)
 
-    def _run_one_stage(self, run_root: Path, run_id: str, scenario: str, program: str) -> None:
+    def _run_one_stage(
+        self,
+        run_root: Path,
+        run_id: str,
+        scenario: str,
+        program: str,
+        *,
+        submission_folder: str | Path | None = None,
+        submission_manifest: str | Path | None = None,
+        data_gate_policy: str | Path | None = None,
+    ) -> None:
         command = [
             sys.executable,
             str(self.workspace / program),
@@ -1328,6 +1443,14 @@ class OperatorSurface:
             "--scenario",
             scenario,
         ]
+        if program == DOOR_PROGRAM:
+            command.extend(
+                _real_ingress_argv(
+                    submission_folder=submission_folder,
+                    submission_manifest=submission_manifest,
+                    data_gate_policy=data_gate_policy,
+                )
+            )
         completed = self.runner(
             command, cwd=self.workspace, capture_output=True, text=True, check=False
         )
@@ -1902,6 +2025,43 @@ def _armarium_reference(run_root: Path, run_id: str) -> str:
 
 def _run_program(*args, **kwargs) -> subprocess.CompletedProcess[str]:  # type: ignore[no-untyped-def]
     return subprocess.run(*args, **kwargs)
+
+
+def _real_ingress_argv(
+    *,
+    submission_folder: str | Path | None,
+    submission_manifest: str | Path | None,
+    data_gate_policy: str | Path | None,
+) -> list[str]:
+    """The real-ingress argv fragment, in the one place both call sites share.
+
+    `run()`'s orchestrator invocation and `_run_one_stage()`'s single-door
+    fault-drill invocation each forward these three flags; a second, separately
+    written copy is exactly how the two could drift apart.
+
+    **Every path is resolved here, against the operator's own cwd.** Both call
+    sites launch their child with `cwd=self.workspace`, which is the checkout and
+    need not be where the operator is standing — `--workspace` names it
+    explicitly. A relative `--submission-folder` handed on unresolved is
+    therefore read beside the *checkout*: at best a gate refusal naming a path
+    the operator never typed, at worst a same-named folder that does sit inside
+    an approved root, admitted as this run's ink. That is the same
+    caller-relative defect the orchestrator resolves at its own boundary
+    (`pipeline/orchestrator/run.py:resolve_caller_paths`), one layer up, and the
+    operator boundary is where the operator's cwd is still known.
+
+    Resolving also makes every value absolute, so a submitted path beginning
+    with a dash can no longer reach a child's argv looking like an option.
+    """
+    argv: list[str] = []
+    for flag, value in (
+        ("--submission-folder", submission_folder),
+        ("--submission-manifest", submission_manifest),
+        ("--data-gate-policy", data_gate_policy),
+    ):
+        if value is not None:
+            argv.extend((flag, str(Path(value).resolve())))
+    return argv
 
 
 def _display_usd(amount: Decimal) -> str:
