@@ -29,8 +29,9 @@ import pytest
 from common.chairs.registry import ChairRegistry
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.contracts.stages import ATTESTATORES, PERLECTOR
+from common.fixture_identity import act_identity, page_identity
 from common.runtree.store import RECENSOR_PARTITION_RECEIPT_FILE, RunTree
-from common.stage import act_by_key, act_identity, load_fixture, page_identity, run_config_bindings
+from common.stage import act_by_key, load_fixture, run_config_bindings
 
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
@@ -688,14 +689,24 @@ def test_perlector_refuses_a_referenced_page_ordinal_outside_the_fixture(tmp_pat
     _reseal(page_path, page)
     page_digest = digest_bytes(page_path.read_bytes())
 
-    attachment_entry = next(row for row in manifest["artifacts"] if row["kind"] == "act-attachment")
-    attachment_path = tree.resolve(attachment_entry["relative_path"])
-    attachment = tree.read_artifact(ATTESTATORES, "act-attachment", attachment_entry["artifact_id"])
-    for row in attachment["payload"]["attachments"]:
-        reference = row["testimonium_ref"]
-        if reference["relative_path"] == page_entry["relative_path"]:
-            reference["sha256"] = page_digest
-    _reseal(attachment_path, attachment)
+    # Each act attachment that consumes this page Testimonium carries its own
+    # sealed reference.  Update every one so the stage can reach the semantic
+    # page-ordinal check rather than correctly stopping at stale provenance.
+    for attachment_entry in manifest["artifacts"]:
+        if attachment_entry["kind"] != "act-attachment":
+            continue
+        attachment_path = tree.resolve(attachment_entry["relative_path"])
+        attachment = tree.read_artifact(
+            ATTESTATORES, "act-attachment", attachment_entry["artifact_id"]
+        )
+        changed = False
+        for row in attachment["payload"]["attachments"]:
+            reference = row["testimonium_ref"]
+            if reference["relative_path"] == page_entry["relative_path"]:
+                reference["sha256"] = page_digest
+                changed = True
+        if changed:
+            _reseal(attachment_path, attachment)
 
     result = invoke_stage(root, "forged-page", "happy", "pipeline/4_perlector/run.py")
     assert result.returncode != 0

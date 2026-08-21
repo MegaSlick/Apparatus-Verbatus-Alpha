@@ -125,6 +125,11 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
     ]
     if args.pdf_target_dpi is not None:
         command += ["--pdf-target-dpi", str(args.pdf_target_dpi)]
+    # Forwarded to every stage, not only to the door that snapshots it: the
+    # drift refusal exists to catch a register appended *between* two stages of
+    # one run, which is precisely the case an unforwarded flag cannot see.
+    if args.corpus_register is not None:
+        command += ["--corpus-register", str(args.corpus_register)]
     command += [
         "--witness-context",
         args.witness_context,
@@ -198,6 +203,11 @@ def main() -> int:
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--run-root", required=True)
     parser.add_argument("--fixture-root", default="proof")
+    parser.add_argument(
+        "--corpus-register",
+        default=None,
+        help="the append-only corpus register this run is snapshotted against",
+    )
     parser.add_argument(
         "--models-config",
         default="config/models.toml",

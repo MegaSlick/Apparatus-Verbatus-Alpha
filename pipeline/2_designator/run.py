@@ -74,6 +74,7 @@ from common.exemplar_boundary import (  # noqa: E402
     verify_exemplar_corpus_seal,
     verify_sealed_page_pixels,
 )
+from common.fixture_identity import act_bounds, act_identity, page_identity  # noqa: E402
 from common.imaging import crop_png, decode_grayscale_png, dimensions  # noqa: E402
 from common.recovery import FALLBACK_RECROP  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
@@ -81,19 +82,14 @@ from common.stage import (  # noqa: E402
     DESIGNATOR_CHAIR,
     EXIT_COMPLETE,
     EXIT_HELD,
-    FALLBACK_PAGE_ACT_ORDINAL,
     SECONDARY_PROPOSER_CHAIR,
     StageContext,
-    act_bounds,
-    act_identity,
     adapter_recipe_for,
     continuation_for,
     current_recovery_request,
     fallback_page_act_key,
     fixture_serving_details,
     open_context,
-    page_identity,
-    residual_act_ordinal,
     run_stage,
     stage_parser,
     validate_serving_provenance,
@@ -536,7 +532,10 @@ def page_records(context) -> dict[int, dict]:
         }
         entries_by_ordinal[ordinal] = entry
     _verify_exemplar_boundary(context, manifest, source_rows, records, entries_by_ordinal)
-    return records
+    # Artifact inventories are identity-path ordered.  Identity may legitimately
+    # change its lexical order when its derivation improves, but page processing
+    # must retain the submission-row order used by the fixture and diagnostics.
+    return {ordinal: records[ordinal] for ordinal in sorted(records)}
 
 
 def _source_rows(run: dict) -> dict[int, dict]:
@@ -1220,9 +1219,9 @@ def residual_act_key(page_ordinal: int, index: int) -> str:
 
     This string is for a reviewer's eye and this stage's own duplicate-act-key
     refusal in `common.stage.expected_acts`; it is not what keeps a residual's
-    identity from colliding with a real proposal's. `residual_act_ordinal`'s
-    disjoint ordinal space does that, by construction, whatever a fixture
-    author happens to name their own acts.
+    identity from colliding with a real proposal's. The closed ``residual`` act
+    class does that by construction, whatever a fixture author happens to name
+    their own acts, while ``index`` stays presentation order only.
     """
     return f"residual:{page_ordinal}:{index}"
 
@@ -1244,16 +1243,17 @@ def hold_residual_act(
     terminal shape an unsealed page already produces, extended to ink no
     structural pass claimed rather than to a page that never sealed.
 
-    `common.stage.residual_act_ordinal` gives it an identity that cannot
-    collide with any real proposal's, present or future, by construction of
-    the ordinal space rather than by convention. The hold record carries the
-    exact ordinal and bounds a reader needs to recompute that identity, because
-    `common.stage._verify_residual_act_rows` does exactly that recomputation —
-    every act beyond the fixture's own denominator must prove itself against
-    evidence, never merely appear because this stage's own seal says so.
+    The closed ``residual`` act class gives it an identity that cannot collide
+    with any real proposal's, present or future, by construction rather than by
+    convention: a proposal and a residual over the identical rectangle derive
+    different `act_id`s because the class is part of the binding. The hold
+    record carries the exact bounds a reader needs to recompute that identity,
+    because `common.stage._verify_minted_act_rows` does exactly that
+    recomputation — every act beyond the fixture's own denominator must prove
+    itself against evidence, never merely appear because this stage's own seal
+    says so.
     """
-    ordinal = residual_act_ordinal(index)
-    minted_act_id = derive_minted_act_id(page_id, ordinal, bounds)
+    minted_act_id = derive_minted_act_id(page_id, "residual", bounds)
     hold = context.publish(
         kind="hold",
         subject_id=minted_act_id,
@@ -1262,7 +1262,6 @@ def hold_residual_act(
         payload={
             "act_key": residual_act_key(page_ordinal, index),
             "page_ordinal": page_ordinal,
-            "residual_ordinal": ordinal,
             "residual_bounds": bounds,
             "residual_pixel_count": pixel_count,
             "reason": (
@@ -1290,9 +1289,26 @@ def _publish_residual_holds(
     own words, and `conservation.py`'s module docstring says the same of the
     artifact this extends. `residual_components` already arrives in the
     deterministic (top, then left) order `conservation.reconcile` produces, so
-    `index` — and therefore `residual_act_ordinal(index)` — names the same
-    residual on every run over an unchanged page.
+    `index` orders the evidence and names the residual for a reviewer; it is a
+    position in a list, so since Unit 18 it stays out of identity entirely.
+    What separates two residuals on one page is therefore their rectangle
+    alone, and two connected components can in principle share a bounding box —
+    two strokes of one cross, laid down so that neither touches the other. That
+    would mint one act over two pieces of ink, and GOAL 1 puts a lost act above
+    every other cost, so it is refused by name here instead.
     """
+    seen: dict[tuple[int, int, int, int], int] = {}
+    for index, component in enumerate(residual_components):
+        bounds = component["bounds"]
+        key = tuple(bounds[name] for name in ("x", "y", "w", "h"))
+        prior = seen.get(key)
+        if prior is not None:
+            raise ContractError(
+                f"conservation residuals {prior} and {index} on page {page_ordinal} share the "
+                f"bounding box {bounds}; the residual act class has no ordinal namespace, so "
+                "minting both would account for two pieces of unclaimed ink as one act"
+            )
+        seen[key] = index
     rows = []
     for index, component in enumerate(residual_components):
         minted_act_id, hold = hold_residual_act(
@@ -1409,8 +1425,8 @@ def _publish_page_fallback(
     The act is `proposed`, not `held`. A held act is terminal and is never read
     (`recovery_pass`, and `_publish_residual_holds`'s own "never witnessed and
     never read"), and crops nobody reads are exactly what the ruling says not to
-    produce. Its identity uses the one reserved `FALLBACK_PAGE_ACT_ORDINAL`, and
-    the record published here is what
+    produce. Its identity binds the closed ``page-fallback`` class and the full
+    page rectangle, and the record published here is what
     `common/stage.py::_verify_page_fallback_act_row` recomputes that identity
     from — together with the page's own `structure-status`, which independently
     states the premise that the structure pass fell back to tiles here.
@@ -1424,7 +1440,7 @@ def _publish_page_fallback(
     """
     page_id = page_identity(context.fixture, ordinal)
     page_bounds = {"x": 0, "y": 0, "w": analysis["width"], "h": analysis["height"]}
-    act_id = derive_minted_act_id(page_id, FALLBACK_PAGE_ACT_ORDINAL, page_bounds)
+    act_id = derive_minted_act_id(page_id, "page-fallback", page_bounds)
     act_key = fallback_page_act_key(ordinal)
     tiles = _unclaimed_fallback_tiles(analysis["groups"], claimed)
     if not tiles:
@@ -1434,7 +1450,6 @@ def _publish_page_fallback(
         "page_id": page_id,
         "page_ordinal": ordinal,
         "page_bounds": page_bounds,
-        "fallback_ordinal": FALLBACK_PAGE_ACT_ORDINAL,
         "tile_count": len(tiles),
         "tiles": [
             {"bounds": dict(tile["bounds"]), "rationale": tile["rationale"]} for tile in tiles
@@ -1835,6 +1850,7 @@ def initial_pass(context) -> bool:
         context, records, pages, provenance, failures, page_cache
     )
 
+    _refuse_duplicate_proposal_bounds(context)
     expected = []
     seal_inputs = []
     for act in context.fixture["act"]:
@@ -1914,6 +1930,29 @@ def initial_pass(context) -> bool:
         secondary_held=secondary_held,
         unmeasured=unmeasured,
     )
+
+
+def _refuse_duplicate_proposal_bounds(context) -> None:
+    """A proposal class is one rectangle per page, never an ordinal namespace.
+
+    The Designator's fixture path is the current proposal producer.  Once
+    ordinal leaves identity, two fixture proposals with the same page-local
+    bounds would claim the same ``act_id``; refuse before any artifact is cut so
+    the ambiguity is visible instead of being silently merged by a dictionary.
+    Raw-proposal coincidence is preserved by ``geometry_layer`` as an explicit
+    ambiguity and cannot mint a second fixture act here.
+    """
+    seen: dict[tuple[int, tuple[int, int, int, int]], str] = {}
+    for act in context.fixture["act"]:
+        bounds = act_bounds(act)
+        key = (act["page_ordinal"], tuple(bounds[name] for name in ("x", "y", "w", "h")))
+        prior = seen.get(key)
+        if prior is not None:
+            raise ContractError(
+                f"Designator proposals {prior!r} and {act['key']!r} have identical bounds "
+                f"on page {act['page_ordinal']}; proposal identity has no ordinal namespace"
+            )
+        seen[key] = act["key"]
 
 
 def recovery_pass(context, act_id: str, request_id: str) -> None:

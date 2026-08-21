@@ -11,6 +11,7 @@ running the real Exemplar, so what is under test is the handoff rather than a
 hand-written approximation of it.
 """
 
+import importlib.util
 import json
 import subprocess
 import sys
@@ -18,13 +19,12 @@ from pathlib import Path
 
 import pytest
 from door import SourceEntry, process_sources
-from run import SEAL_SUBJECT, _page_payload
 from synthetic_sources import png
 
 from common.contracts.approval import real_ingress_record, synthetic_fixture_ingress_record
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash, verify_self_hash
 from common.contracts.errors import ContractError
-from common.contracts.identities import artifact_id, page_id
+from common.contracts.identities import artifact_id, page_id, physical_page_id
 from common.contracts.stages import DOOR, EXEMPLAR
 from common.runtree.store import RunTree
 from common.stage import EXIT_FATAL, StageContext
@@ -32,6 +32,25 @@ from operations.submit import submit
 
 ROOT = Path(__file__).resolve().parents[2]
 EXEMPLAR_CLI = ROOT / "pipeline" / "1_exemplar" / "run.py"
+
+
+def _load_exemplar_run():
+    """Load this directory's ``run.py`` under an unambiguous module name.
+
+    Every pipeline stage has a top-level module called ``run``.  A bare import
+    therefore returns whichever stage pytest happened to collect first, making
+    this module pass or fail with test ordering instead of the code under test.
+    """
+    spec = importlib.util.spec_from_file_location("exemplar_run_under_test", EXEMPLAR_CLI)
+    module = importlib.util.module_from_spec(spec)
+    sys.path.insert(0, str(EXEMPLAR_CLI.parent))
+    spec.loader.exec_module(module)
+    return module
+
+
+_EXEMPLAR_RUN = _load_exemplar_run()
+SEAL_SUBJECT = _EXEMPLAR_RUN.SEAL_SUBJECT
+_page_payload = _EXEMPLAR_RUN._page_payload
 
 PAGES = {"page-1.png": png(4, 3), "page-2.png": png(5, 2)}
 REFUSED = {"page-3.png": b"not an image"}
@@ -52,7 +71,13 @@ def sealed_bindings() -> dict:
     return run_config_bindings(registry.config, load_fixture(str(ROOT / "proof")), "happy")
 
 
-def build_door_run(run_root: Path, run_id: str = "r1", *, files: dict[str, bytes] | None = None):
+def build_door_run(
+    run_root: Path,
+    run_id: str = "r1",
+    *,
+    files: dict[str, bytes] | None = None,
+    register_bytes: bytes | None = None,
+):
     """A run tree with the real door's admissions already published into it."""
     from admission import load_format_policy
 
@@ -77,6 +102,7 @@ def build_door_run(run_root: Path, run_id: str = "r1", *, files: dict[str, bytes
         adapter_recipes=bindings["adapter_recipes"],
         witness_chairs=bindings["witness_chairs"],
         ingress=synthetic_fixture_ingress_record(),
+        register_bytes=register_bytes,
     )
     context = StageContext(
         tree=tree,
@@ -99,23 +125,23 @@ def build_door_run(run_root: Path, run_id: str = "r1", *, files: dict[str, bytes
     return tree, files
 
 
-def run_exemplar(run_root: Path, run_id: str = "r1") -> subprocess.CompletedProcess:
+def run_exemplar(
+    run_root: Path, run_id: str = "r1", *, corpus_register: str | None = None
+) -> subprocess.CompletedProcess:
     """Drive the real CLI the way the orchestrator does."""
-    return subprocess.run(
-        [
-            sys.executable,
-            str(EXEMPLAR_CLI),
-            "--run-root",
-            str(run_root),
-            "--run-id",
-            run_id,
-            "--fixture-root",
-            str(ROOT / "proof"),
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    )
+    args = [
+        sys.executable,
+        str(EXEMPLAR_CLI),
+        "--run-root",
+        str(run_root),
+        "--run-id",
+        run_id,
+        "--fixture-root",
+        str(ROOT / "proof"),
+    ]
+    if corpus_register is not None:
+        args += ["--corpus-register", corpus_register]
+    return subprocess.run(args, cwd=ROOT, capture_output=True, text=True)
 
 
 def seal_of(tree: RunTree) -> dict:
@@ -160,7 +186,10 @@ def test_a_sealed_page_is_named_by_the_digest_that_was_actually_admitted(tmp_pat
     tree, files = build_door_run(tmp_path / "runs")
     assert run_exemplar(tmp_path / "runs").returncode == 0
 
-    expected = page_id(digest_bytes(files["page-1.png"]), 1)
+    expected = page_id(
+        {"kind": "source", "sha256": digest_bytes(files["page-1.png"])},
+        {"operation": "whole"},
+    )
     record = tree.read_artifact(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", expected))
     assert record["outcome"] == "sealed"
     assert record["payload"]["ordinal"] == 1
@@ -354,10 +383,8 @@ def test_a_run_with_no_submitted_source_manifest_cannot_be_reconciled_at_all():
     `test_a_source_that_lost_its_door_outcome_refuses_before_anything_is_sealed`,
     which actually runs the Exemplar; what is left here is the one thing this test
     really exercised, said plainly."""
-    import run as exemplar
-
     with pytest.raises(ContractError, match="no submitted source manifest"):
-        exemplar._submitted_sources({"source_manifest": []})
+        _EXEMPLAR_RUN._submitted_sources({"source_manifest": []})
 
 
 def test_a_real_run_source_manifest_reconstructs_its_self_hashed_filename_ledger():
@@ -390,12 +417,10 @@ def test_a_real_run_source_manifest_reconstructs_its_self_hashed_filename_ledger
             },
         ],
     }
-    import run as exemplar
-
-    assert exemplar._submitted_sources(run)[3]["relative_path"] == "volume/FS-102.pdf"
+    assert _EXEMPLAR_RUN._submitted_sources(run)[3]["relative_path"] == "volume/FS-102.pdf"
     run["source_manifest"][2]["bytes"] += 1
     with pytest.raises(ContractError, match="incompatible digest or byte-count"):
-        exemplar._submitted_sources(run)
+        _EXEMPLAR_RUN._submitted_sources(run)
 
 
 def test_a_fabricated_render_transform_is_refused_rather_than_sealed_or_crashed(tmp_path):
@@ -426,7 +451,138 @@ def test_a_fanned_source_cannot_seal_raw_container_bytes_without_a_render_transf
         "sha256": admission["payload"]["declared_sha256"],
         "container_page_index": 0,
     }
-    import run as exemplar
-
     with pytest.raises(ContractError, match="fanned source page must carry the render transform"):
-        exemplar._verify_admitted_blob(tree, tree.read_run(), admission, source)
+        _EXEMPLAR_RUN._verify_admitted_blob(tree, tree.read_run(), admission, source)
+
+
+# --- The corpus register's sealed snapshot cannot drift under a run ---------------
+
+
+def test_a_register_that_drifted_since_run_creation_refuses_before_anything_seals(tmp_path):
+    """Unit 18 consult report, failure mode (b): a register append between two
+    stage invocations of one run must refuse by name, naming the register --
+    never be read live and silently change what a run resolves against."""
+    from common.corpus_register import empty_register
+
+    register_path = tmp_path / "register.json"
+    register_path.write_bytes(empty_register())
+    tree, _ = build_door_run(tmp_path / "runs", register_bytes=register_path.read_bytes())
+
+    first = run_exemplar(tmp_path / "runs", corpus_register=str(register_path))
+    assert first.returncode == 0, first.stderr
+    before = snapshot(tmp_path / "runs")
+
+    drifted = canonical_bytes(
+        {
+            "schema": "corpus-register-v1",
+            "records": [
+                {
+                    "kind": "physical-page",
+                    "corpus_id": "corpus",
+                    "volume_id": "volume-1",
+                    "designation": "12r",
+                    "physical_page_id": physical_page_id("corpus", "volume-1", "12r"),
+                }
+            ],
+        }
+    )
+    register_path.write_bytes(drifted)
+
+    second = run_exemplar(tmp_path / "runs", corpus_register=str(register_path))
+    assert second.returncode == EXIT_FATAL
+    assert "the corpus register changed" in second.stderr
+    assert snapshot(tmp_path / "runs") == before, "a refused stage may not write anything"
+
+
+def test_a_register_naming_the_run_creation_snapshot_is_accepted_unchanged(tmp_path):
+    """The sealed snapshot itself, re-read from disk, is never mistaken for drift."""
+    from common.corpus_register import empty_register
+
+    register_path = tmp_path / "register.json"
+    register_path.write_bytes(empty_register())
+    build_door_run(tmp_path / "runs", register_bytes=register_path.read_bytes())
+
+    result = run_exemplar(tmp_path / "runs", corpus_register=str(register_path))
+    assert result.returncode == 0, result.stderr
+
+
+# --- Byte-identical duplicate sources are one page, not a collision ---------------
+
+
+def test_two_byte_identical_submitted_sources_seal_as_one_page_naming_both_rows(tmp_path):
+    """Unit 18 consult report: 'the same photograph submitted twice is one page' one
+    level down. Digest-primary identity means two submission rows over identical
+    bytes derive one page_id; without the merge in `run.py`'s `admitted_by_page`
+    this collides on the second `publish_artifact` call with an immutable-artifact
+    error instead of sealing."""
+    data = png(4, 3)
+    tree, _ = build_door_run(tmp_path / "runs", files={"dup-a.png": data, "dup-b.png": data})
+
+    result = run_exemplar(tmp_path / "runs")
+    assert result.returncode == 0, result.stderr
+
+    pages = [
+        entry for entry in tree.build_manifest(EXEMPLAR)["artifacts"] if entry["kind"] == "page"
+    ]
+    assert len(pages) == 1, "one page identity must seal as one page artifact, not one per row"
+    record = tree.read_artifact(EXEMPLAR, "page", pages[0]["artifact_id"])
+    submission_rows = record["payload"]["submission_rows"]
+    assert sorted(row["ordinal"] for row in submission_rows) == [1, 2]
+    assert sorted(row["relative_path"] for row in submission_rows) == ["dup-a.png", "dup-b.png"]
+    assert {row["sha256"] for row in submission_rows} == {digest_bytes(data)}
+
+    payload = seal_of(tree)["payload"]
+    assert payload["page_count"] == 2, "the census still names one row per submitted ordinal"
+    assert [page["ordinal"] for page in payload["pages"]] == [1, 2]
+    assert [page["outcome"] for page in payload["pages"]] == ["sealed", "sealed"]
+    assert [page["page_id"] for page in payload["pages"]] == [record["subject_id"]] * 2
+
+
+def test_the_merged_page_verifies_at_the_pixel_boundary_for_each_row_it_cites(tmp_path):
+    """The producing stage is not the whole shape.
+
+    `verify_sealed_page_pixels` is what the Designator, Attestatores, Perlector,
+    Recensor and Armarium all call before touching a page's pixels, and it read
+    a page as citing exactly one Door admission. A merged page cites two, so
+    every stage behind the Exemplar refused a page the Exemplar had just sealed
+    correctly -- and no test saw it, because the duplicate-source coverage
+    stopped at the Exemplar CLI.
+    """
+    from common.exemplar_boundary import verify_sealed_page_pixels
+
+    data = png(4, 3)
+    tree, _ = build_door_run(tmp_path / "runs", files={"dup-a.png": data, "dup-b.png": data})
+    assert run_exemplar(tmp_path / "runs").returncode == 0
+
+    run = tree.read_run()
+    page = next(
+        tree.read_artifact(EXEMPLAR, "page", entry["artifact_id"])
+        for entry in tree.build_manifest(EXEMPLAR)["artifacts"]
+        if entry["kind"] == "page"
+    )
+    for source in run["source_manifest"]:
+        verify_sealed_page_pixels(tree, run, source, page)
+
+    invented = dict(run["source_manifest"][0], ordinal=99)
+    with pytest.raises(ContractError, match="not the page this source was sealed into"):
+        verify_sealed_page_pixels(tree, run, invented, page)
+
+
+def test_a_merged_page_is_refused_by_name_at_the_first_stage_that_would_read_it_twice(tmp_path):
+    """Every stage behind the Exemplar keys its work by submitted ordinal and
+    would mint each act on this page twice. Unit 19 owns the merged-page pass;
+    until then the seal boundary says so, rather than reporting the second row
+    as a lost page it plainly is not."""
+    from common.exemplar_boundary import verify_exemplar_corpus_seal
+
+    data = png(4, 3)
+    tree, _ = build_door_run(tmp_path / "runs", files={"dup-a.png": data, "dup-b.png": data})
+    assert run_exemplar(tmp_path / "runs").returncode == 0
+
+    run = tree.read_run()
+    manifest = tree.build_manifest(EXEMPLAR)
+    entry = next(item for item in manifest["artifacts"] if item["kind"] == "page")
+    page = tree.read_artifact(EXEMPLAR, "page", entry["artifact_id"])
+    sources = {row["ordinal"]: row for row in run["source_manifest"]}
+    with pytest.raises(ContractError, match="would mint each act on it twice"):
+        verify_exemplar_corpus_seal(tree, run, manifest, sources, {1: page}, {1: entry})

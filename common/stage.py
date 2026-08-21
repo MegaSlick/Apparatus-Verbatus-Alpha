@@ -21,6 +21,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Callable, Final, Protocol
 
+from common import fixture_identity
 from common.alignment import DEFAULT_ALIGNMENT_CONFIG_PATH, load_alignment_limits
 from common.armarium_formats import (
     DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH,
@@ -46,6 +47,7 @@ from common.contracts.outcomes import WITNESS_READING_OUTCOMES as _WITNESS_READI
 from common.contracts.outcomes import classify
 from common.contracts.serving import SERVING_CONFIG_INPUTS_FIELDS, SERVING_CONFIG_INPUTS_SCHEMA
 from common.contracts.stages import DESIGNATOR, EXEMPLAR, PERLECTOR, RECENSOR
+from common.corpus_register import read_snapshot, verify_snapshot_is_current
 from common.exemplar_boundary import verify_sealed_page_pixels
 from common.hard_failure import DEFAULT_HARD_FAILURE_CONFIG_PATH, load_hard_failure_policy
 from common.imaging import dimensions
@@ -656,6 +658,11 @@ def stage_parser(description: str, *, accepts_chair: bool = False) -> argparse.A
     # refuses an undeclared name after the fixture is loaded.
     parser.add_argument("--scenario", default="happy")
     parser.add_argument("--fixture-root", default="proof")
+    parser.add_argument(
+        "--corpus-register",
+        default=None,
+        help="append-only corpus register to snapshot at ingress and verify at later stages",
+    )
     parser.add_argument("--models-config", default="config/models.toml")
     parser.add_argument("--alignment-config", default=str(DEFAULT_ALIGNMENT_CONFIG_PATH))
     parser.add_argument("--pdf-render-config", default=str(DEFAULT_PDF_RENDER_CONFIG_PATH))
@@ -1503,9 +1510,9 @@ def _verify_synthetic_act_denominator(context, acts: list[dict[str, Any]]) -> No
     """
     fixture_acts = context.fixture.get("act", [])
     expected = {
-        act_identity(context.fixture, row): {
+        fixture_identity.act_identity(context.fixture, row): {
             "act_key": row["key"],
-            "page_id": page_identity(context.fixture, row["page_ordinal"]),
+            "page_id": fixture_identity.page_identity(context.fixture, row["page_ordinal"]),
             "page_ordinal": row["page_ordinal"],
             "has_continuation": continuation_for(context.fixture, row["key"]) is not None,
         }
@@ -1568,10 +1575,8 @@ def _verify_every_conservation_residual_is_accounted(
     that "found ink no crop claimed has not completed". This is that promise
     checked at the first consumer rather than asserted by the producer.
 
-    The derivation is the minter's own (`residual_act_ordinal` over the
-    component's index in the record's deterministically ordered
-    `residual_components`, against the page the record is subject-keyed to), so
-    the two cannot drift on what a residual's identity is.
+    Position within `residual_components` orders evidence only; identity binds
+    the residual class and its bounds, so a new component cannot rename one.
     """
     for page_id, record in _designator_records_by_subject(context, "conservation").items():
         payload = record.get("payload")
@@ -1588,7 +1593,7 @@ def _verify_every_conservation_residual_is_accounted(
                     f"the conservation record for page {page_id} carries a residual at index "
                     f"{index} with no bounds to recompute an act identity from"
                 )
-            minted = derive_act_id(page_id, residual_act_ordinal(index), bounds)
+            minted = derive_act_id(page_id, "residual", bounds)
             row = observed.get(minted)
             if row is None or row["outcome"] != "held":
                 raise FatalAccounting(
@@ -1599,72 +1604,13 @@ def _verify_every_conservation_residual_is_accounted(
                 )
 
 
-# An act identity is `act_bindings(page_id, ordinal, bounds)`, so two acts minted
-# on one page must never share an ordinal. Three classes of ordinal exist on a
-# page and they are kept disjoint here, in one place, rather than by each minter
-# knowing what the others do:
-#
-#   >= 0                          the nth region a structure pass proposed
-#   RESIDUAL_FLOOR .. -1          one conservation residual (`residual_act_ordinal`)
-#   FALLBACK_PAGE_ACT_ORDINAL     the one page-fallback act, below that floor
-#
-# The residual space used to be the *whole* negative range, which left nowhere
-# for a second minted class to live without an argument about which values were
-# "unlikely" to be reached. Bounding it below makes the fallback ordinal
-# unreachable from it by construction, and `residual_act_ordinal` refuses an
-# index that would cross the floor rather than silently minting a colliding
-# identity. The floor is far past any reachable residual count -- this stage's
-# own worst measured page reconciles to about 60,000 residual components
-# (`pipeline/2_designator/HANDOFF.md`, "Cost, and where it is unbounded") --
-# so no existing ordinal moves and none ever will in practice; the point of the
-# bound is that the disjointness is proven rather than assumed.
-RESIDUAL_ACT_ORDINAL_FLOOR: int = -(2**31)
-FALLBACK_PAGE_ACT_ORDINAL: int = RESIDUAL_ACT_ORDINAL_FLOOR - 1
-
-
-def residual_act_ordinal(index: int) -> int:
-    """The disjoint ordinal namespace a conservation-residual act's identity uses.
-
-    `identities.act_id`'s own `proposal_ordinal` is always the non-negative "nth
-    region a structure pass proposed on a page" — a residual was never such a
-    proposal, so it cannot borrow that ordinal space without risking collision
-    with a real one, present or future. `-(index + 1)` is disjoint from every
-    non-negative ordinal by construction rather than by convention, so no
-    structure pass — this fixture's or a real one's — can ever mint a genuine
-    proposal whose identity collides with a residual's. `index` is the
-    residual's position in `conservation.reconcile`'s own `residual_components`
-    list, which is already deterministically ordered (top, then left) by the
-    shared `structure.label_components`, so the same page reconciles to the
-    same ordinal on every run.
-
-    The minting code and this module's verification of what was minted call the
-    same function, so the two cannot drift on what `-(index + 1)` means.
-
-    Bounded below by `RESIDUAL_ACT_ORDINAL_FLOOR` so the page-fallback act's own
-    reserved ordinal cannot be reached from here. An index that would cross the
-    floor is refused rather than allowed to mint an identity that could collide
-    with a fallback act on the same page.
-    """
-    if index < 0:
-        raise ContractError(f"a residual index {index} is negative and names no residual")
-    ordinal = -(index + 1)
-    if ordinal < RESIDUAL_ACT_ORDINAL_FLOOR:
-        raise ContractError(
-            f"residual index {index} is past the residual ordinal floor "
-            f"{RESIDUAL_ACT_ORDINAL_FLOOR}; a page this speckled has to be refused as a page "
-            "rather than accounted for with an ordinal that collides with another minted act"
-        )
-    return ordinal
-
-
 def fallback_page_act_key(page_ordinal: int) -> str:
     """The human-readable label of the one act a page's fallback crops belong to.
 
     For a reviewer's eye and for `expected_acts`'s duplicate-key refusal; what
     keeps this act's *identity* from colliding with anything is
-    `FALLBACK_PAGE_ACT_ORDINAL`, not this string. Named here beside the ordinal
-    rather than in the Designator so the producer and this module's verification
-    of what was produced cannot spell it differently.
+    the closed ``page-fallback`` act class, not this string. Named here so the
+    producer and verifier cannot spell it differently.
     """
     return f"page-fallback:{page_ordinal}"
 
@@ -1724,27 +1670,20 @@ def _verify_minted_act_rows(context, extra_rows: dict[str, dict[str, Any]]) -> N
                 "published no hold record for it"
             )
         payload = hold.get("payload") if isinstance(hold.get("payload"), dict) else {}
-        ordinal, bounds = payload.get("residual_ordinal"), payload.get("residual_bounds")
-        if (
-            not isinstance(ordinal, int)
-            or isinstance(ordinal, bool)
-            or ordinal >= 0
-            or not isinstance(bounds, dict)
-        ):
+        bounds = payload.get("residual_bounds")
+        if not isinstance(bounds, dict):
             raise FatalAccounting(
-                f"act {act_id}'s hold record carries no valid residual ordinal and bounds to "
-                "recompute its identity from"
+                f"act {act_id}'s hold record carries no residual bounds to recompute its "
+                "identity from"
             )
         try:
-            verify_identity(act_id, "act", act_bindings(row["page_id"], ordinal, bounds))
+            verify_identity(act_id, "act", act_bindings(row["page_id"], "residual", bounds))
         except IdentityRefusal as error:
             raise FatalAccounting(
-                f"act {act_id} does not verify against the residual ordinal and bounds its own "
+                f"act {act_id} does not verify against the residual class and bounds its own "
                 f"hold record names: {error}"
             ) from error
-        _verify_residual_traces_to_conservation(
-            context, act_id, row["page_id"], hold, ordinal, bounds
-        )
+        _verify_residual_traces_to_conservation(context, act_id, row["page_id"], hold, bounds)
 
 
 def _verify_page_fallback_act_row(
@@ -1756,8 +1695,8 @@ def _verify_page_fallback_act_row(
     witnesses and the Perlector, so it is the one whose provenance most needs to
     be recomputed rather than believed. Two independent things are checked, and
     the second is what stops a fabricated one: the identity must derive from
-    this page and the one reserved fallback ordinal over the page rectangle its
-    own record declares, and that record's single input must be the page's
+    this page and the one reserved `page-fallback` act class over the page
+    rectangle its own record declares, and that record's single input must be the page's
     `structure-status` — read through the digest-checked hop, not by address —
     saying the structure pass genuinely fell back to tiles on that page. A
     fallback act minted over a page whose structure pass *did* detect something
@@ -1781,11 +1720,10 @@ def _verify_page_fallback_act_row(
         or payload.get("act_key") != expected_key
         or payload.get("page_id") != row["page_id"]
         or payload.get("page_ordinal") != ordinal
-        or payload.get("fallback_ordinal") != FALLBACK_PAGE_ACT_ORDINAL
     ):
         raise FatalAccounting(
-            f"act {act_id}'s page-fallback record does not carry the page id, ordinal, reserved "
-            "fallback ordinal, derived fallback key, and page rectangle it must bind"
+            f"act {act_id}'s page-fallback record does not carry the page id, page ordinal, "
+            "derived fallback key, and page rectangle it must bind"
         )
     sources = [
         source
@@ -1809,12 +1747,10 @@ def _verify_page_fallback_act_row(
             f"rectangle {full_page_bounds}"
         )
     try:
-        verify_identity(
-            act_id, "act", act_bindings(row["page_id"], FALLBACK_PAGE_ACT_ORDINAL, bounds)
-        )
+        verify_identity(act_id, "act", act_bindings(row["page_id"], "page-fallback", bounds))
     except IdentityRefusal as error:
         raise FatalAccounting(
-            f"act {act_id} does not verify against the reserved page-fallback ordinal and the "
+            f"act {act_id} does not verify against the reserved page-fallback class and the "
             f"page rectangle its own record names: {error}"
         ) from error
     inputs = record.get("inputs")
@@ -1840,13 +1776,13 @@ def _verify_page_fallback_act_row(
 
 
 def _verify_residual_traces_to_conservation(
-    context, act_id: str, page_id: str, hold: dict[str, Any], ordinal: int, bounds: dict[str, Any]
+    context, act_id: str, page_id: str, hold: dict[str, Any], bounds: dict[str, Any]
 ) -> None:
     """A residual's declared bounds must exist in the reconciliation that found it.
 
     The check above only proves the hold is *internally* self-consistent — its
-    own `residual_ordinal` and `residual_bounds` recompute the act id they sit
-    beside. That alone would pass a residual invented from nothing, provided
+    own `residual_bounds` recompute the act id they sit beside. That alone
+    would pass a residual invented from nothing, provided
     whoever invented it also recomputed the identity correctly: nothing yet
     opens the `conservation` artifact the hold's own `inputs` already
     reference and confirms a residual component with those bounds is actually
@@ -1867,34 +1803,23 @@ def _verify_residual_traces_to_conservation(
     )
     # Every step of this lookup is checked before it is taken, and all of it lands
     # on the one named refusal below. Read straight through, a conservation record
-    # whose payload was not a mapping or whose indexed row was not a mapping raised
+    # whose payload was not a mapping or whose rows were not mappings raised
     # `AttributeError` out of an accounting check — a traceback where invariant #10
-    # promises a named fatal.
-    #
-    # **The lower bound is for a corrupted ordinal, not a short list**, and the
-    # distinction cost a vacuous test before it was understood. `residual_act_ordinal`
-    # is `-(index + 1)` over a non-negative index, so `index = -ordinal - 1` recovers
-    # a non-negative index for every *well-formed* record and `index >= len(components)`
-    # bounds it correctly. A hold whose sealed `ordinal` has been corrupted to a
-    # positive value is the reachable case: it makes `index` negative, which
-    # `index >= len(...)` never catches, and `components[-3]` on a short list is an
-    # `IndexError`. Reaching it in a test needs the ordinal itself corrupted after
-    # minting — the minting helper cannot produce one, because it calls
-    # `residual_act_ordinal`, which refuses. Left uncovered and named rather than
-    # covered by a test that passes against the unfixed code, which is what a first
-    # attempt at one did. Found by CodeRabbit; the reachability corrected here.
+    # promises a named fatal. (An earlier shape indexed `residual_components` by a
+    # sealed ordinal and needed a lower bound against a corrupted one; Unit 18 took
+    # the ordinal out of the hold, so the match is by the bounds identity itself
+    # binds and there is no index left to corrupt. Two components sharing one
+    # bounding box would make this match ambiguous, which is why
+    # `_publish_residual_holds` refuses them before either is minted.)
     payload = conservation.get("payload")
     components = payload.get("residual_components") if isinstance(payload, Mapping) else None
-    index = -ordinal - 1
-    if (
-        not isinstance(components, list)
-        or not -len(components) <= index < len(components)
-        or not isinstance(components[index], Mapping)
-        or components[index].get("bounds") != bounds
+    if not isinstance(components, list) or not any(
+        isinstance(component, Mapping) and component.get("bounds") == bounds
+        for component in components
     ):
         raise FatalAccounting(
             f"act {act_id}'s hold declares a residual the conservation record it references "
-            "does not carry at that ordinal; an extra row must trace to the reconciliation "
+            "does not carry at those bounds; an extra row must trace to the reconciliation "
             "pass that actually found it, not merely be self-consistent with its own hold"
         )
 
@@ -2014,6 +1939,8 @@ def open_context(
     )
     tree = RunTree(Path(args.run_root), args.run_id)
     run = tree.read_run()
+    verify_snapshot_is_current(run, args.corpus_register)
+    read_snapshot(tree, run)
     # `sealed_config_digests` is compared as a field of its own, not left to be
     # implied by `config_digest`. Every digest in it is inside `config_digest`, so
     # an equal digest already proves the *bytes*; what it does not prove is that
@@ -2417,40 +2344,6 @@ def require_current_witness_basis(
             "witness evidence, and a superseded basis may not be carried past this stage as "
             "though it were current"
         )
-
-
-def page_for(fixture: dict[str, Any], ordinal: int) -> dict[str, Any]:
-    for page in fixture["page"]:
-        if page["ordinal"] == ordinal:
-            return page
-    raise ContractError(f"the fixture declares no page {ordinal}")
-
-
-def page_identity(fixture: dict[str, Any], ordinal: int) -> str:
-    """Every stage derives this the same way rather than looking it up.
-
-    Identity derivation lives in one place so six stage programs cannot drift on
-    how a page is named. The fixture supplies the source digest; the contract
-    supplies the derivation.
-    """
-    from common.contracts.identities import page_id
-
-    return page_id(page_for(fixture, ordinal)["sha256"], ordinal)
-
-
-def act_bounds(act: dict[str, Any]) -> dict[str, int]:
-    """The act's original proposal bounds — what act identity is bound to."""
-    return {"x": act["x"], "y": act["y"], "w": act["w"], "h": act["h"]}
-
-
-def act_identity(fixture: dict[str, Any], act: dict[str, Any]) -> str:
-    from common.contracts.identities import act_id
-
-    return act_id(
-        page_identity(fixture, act["page_ordinal"]),
-        act["proposal_ordinal"],
-        act_bounds(act),
-    )
 
 
 def act_by_key(fixture: dict[str, Any], key: str) -> dict[str, Any]:

@@ -29,6 +29,7 @@ from common.contracts.errors import ApprovalRefusal, IncompatibleReuse, SchemaRe
 from common.contracts.identities import artifact_id
 from common.contracts.outcomes import INTERIM_GRANULARITY_BASIS
 from common.contracts.stages import DESIGNATOR, DOOR, EXEMPLAR, PERLECTOR
+from common.corpus_register import empty_register
 from common.recensor_receipt import build_recensor_partition_receipt
 from common.runtree import store as runtree_store
 from common.runtree.store import INDEX_FILE, RECEIPTS_DIR, RUN_FILE, RunTree
@@ -212,6 +213,12 @@ def test_creating_a_run_writes_a_self_hashed_authority(tmp_path):
     assert record["witness_chairs"] == CHAIRS
     assert record["source_manifest"] == SOURCE
     assert (tmp_path / "r1" / RUN_FILE).exists()
+
+
+def test_run_authority_seals_a_content_addressed_corpus_register_snapshot(tmp_path):
+    tree = make_run(tmp_path)
+    digest = tree.read_run()["register_digest"]
+    assert tree.read_bytes(tree.blob_path(DOOR, digest)) == empty_register()
 
 
 def test_the_run_authority_does_not_predeclare_acts(tmp_path):

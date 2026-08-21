@@ -49,6 +49,7 @@ from common.contracts.envelope import validate_envelope, verify_input_bytes  # n
 from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.identities import artifact_id, page_id  # noqa: E402
 from common.contracts.stages import DOOR, EXEMPLAR  # noqa: E402
+from common.corpus_register import read_snapshot, verify_snapshot_is_current  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
@@ -75,6 +76,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     sealed = 0
     page_refs: list[dict[str, str]] = []
     census: list[dict[str, Any]] = []
+    admitted_by_page: dict[str, list[tuple[int, dict, dict[str, str], dict[str, str]]]] = {}
     for ordinal, admission, admission_ref, blob_ref in admissions:
         if admission["outcome"] == "refused":
             # The refusal is carried forward as this stage's own outcome so the
@@ -100,28 +102,43 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             continue
 
         payload = admission["payload"]
-        # Identity binds the digest of the bytes that were actually admitted, plus
-        # the ordinal — spec 01's scheme, and the answer to audit Q12's truncated
-        # hash of a *path*. Derived from the admission rather than from the fixture
-        # so a real run, which has no fixture, names its pages the same way.
-        identity = page_id(payload["sha256"], ordinal)
+        # Identity binds the immutable origin of the bytes that were actually
+        # admitted and nothing else — the answer to audit Q12's truncated hash of
+        # a *path*, and, since Unit 18, no longer the submission ordinal: a row
+        # inserted ahead of this one must not rename the page. Derived from the
+        # admission rather than from the fixture so a real run, which has no
+        # fixture, names its pages the same way. Two rows carrying identical
+        # bytes therefore derive one identity, and are sealed as one page below.
+        identity = page_id(_page_origin(payload), {"operation": "whole"})
+        admitted_by_page.setdefault(identity, []).append(
+            (ordinal, admission, admission_ref, blob_ref)
+        )
+
+    for identity, members in admitted_by_page.items():
+        ordinal, admission, _admission_ref, blob_ref = members[0]
+        submission_rows = [sources[member_ordinal] for member_ordinal, *_rest in members]
+        inputs = [
+            member_admission_ref for _ordinal, _admission, member_admission_ref, _blob in members
+        ]
+        inputs.append(blob_ref)
         result = context.publish(
             kind="page",
             subject_id=identity,
             outcome="sealed",
-            inputs=[admission_ref, blob_ref],
-            payload=_page_payload(payload, ordinal, sources[ordinal]),
+            inputs=inputs,
+            payload=_page_payload(admission["payload"], ordinal, sources[ordinal], submission_rows),
         )
         page_refs.append(context.input_ref(result.relative_path))
-        census.append(
-            _census_row(
-                sources[ordinal],
-                ordinal=ordinal,
-                page_identity=identity,
-                outcome="sealed",
-                source_sha256=payload["sha256"],
+        for member_ordinal, member_admission, _member_ref, _member_blob in members:
+            census.append(
+                _census_row(
+                    sources[member_ordinal],
+                    ordinal=member_ordinal,
+                    page_identity=identity,
+                    outcome="sealed",
+                    source_sha256=member_admission["payload"]["sha256"],
+                )
             )
-        )
         sealed += 1
 
     if sealed == 0:
@@ -144,7 +161,12 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     return EXIT_COMPLETE
 
 
-def _page_payload(payload: dict[str, Any], ordinal: int, source: dict[str, Any]) -> dict[str, Any]:
+def _page_payload(
+    payload: dict[str, Any],
+    ordinal: int,
+    source: dict[str, Any],
+    submission_rows: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     """What a sealed page records, including a complete container render contract."""
     sealed: dict[str, Any] = {
         "ordinal": ordinal,
@@ -168,7 +190,37 @@ def _page_payload(payload: dict[str, Any], ordinal: int, source: dict[str, Any])
             # DPI is below the run target must not hide that reduction inside a
             # nested renderer recipe: the sealed Exemplar page says so plainly.
             sealed["render_resolution"] = resolution
+    members = submission_rows or [{**source, "ordinal": ordinal}]
+    sealed["submission_rows"] = [
+        _submission_row(item) for item in sorted(members, key=lambda item: item["ordinal"])
+    ]
     return sealed
+
+
+def _submission_row(source: dict[str, Any]) -> dict[str, Any]:
+    """One submitted-row citation; ordinal is row accounting, not page identity."""
+    fields = (
+        "ordinal",
+        "relative_path",
+        "sha256",
+        "bytes",
+        "ledger_sha256",
+        "container_page_index",
+    )
+    return {field: source[field] for field in fields if source.get(field) is not None}
+
+
+def _page_origin(payload: dict[str, Any]) -> dict[str, Any]:
+    """Rendered bytes are derivatives; their sealed container is the origin."""
+    rendered = payload.get("rendered_from")
+    if rendered is None:
+        return {"kind": "source", "sha256": payload["sha256"]}
+    return {
+        "kind": "container-page",
+        "container_sha256": rendered["container_sha256"],
+        "container_page_index": rendered["container_page_index"],
+        "render_contract": rendered["render_contract"],
+    }
 
 
 def _render_resolution_record(rendered_from: Any) -> dict[str, Any] | None:
@@ -256,6 +308,8 @@ def _open(args, registry_factory) -> StageContext:
     """
     tree = RunTree(Path(args.run_root), args.run_id)
     run = tree.read_run()
+    verify_snapshot_is_current(run, args.corpus_register)
+    read_snapshot(tree, run)
     mode = parse_ingress_record(run.get("ingress"))
     if mode != REAL_INGRESS:
         return open_context(args, EXEMPLAR, registry_factory=registry_factory)

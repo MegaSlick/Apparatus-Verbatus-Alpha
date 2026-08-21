@@ -36,6 +36,7 @@ from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusa
 from common.contracts.identities import artifact_id, attempt_id  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, PERLECTOR  # noqa: E402
 from common.exemplar_boundary import verify_exemplar_crop_lineage  # noqa: E402
+from common.fixture_identity import page_identity  # noqa: E402
 from common.stage import (  # noqa: E402
     ATTEMPTED_WITNESS_OUTCOMES,
     EXIT_COMPLETE,
@@ -45,7 +46,6 @@ from common.stage import (  # noqa: E402
     fixture_serving_details,
     latest_attempt,
     open_context,
-    page_identity,
     run_stage,
     stage_parser,
     validate_serving_provenance,

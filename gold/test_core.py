@@ -470,7 +470,7 @@ def test_layout_padding_and_instrument_records_are_closed_and_self_hashed(tmp_pa
     }
     padding["self_hash"] = self_hash(padding)
     assert validate_padding(padding) == padding
-    measurement = bind_instrument(sample, act_id("pg_0123456789abcdef", 0, {"x": 1}), _sha("e"))
+    measurement = bind_instrument(sample, _act(), _sha("e"))
     assert validate_measurement(measurement) == measurement
     layout["regions"][0]["kind"] = "free-text-label"
     layout["self_hash"] = self_hash(layout)
@@ -479,7 +479,11 @@ def test_layout_padding_and_instrument_records_are_closed_and_self_hashed(tmp_pa
 
 
 def _act(index=0):
-    return act_id("pg_0123456789abcdef", index, {"x": 1})
+    return act_id(
+        "pg_0123456789abcdef",
+        "proposal",
+        {"x": index, "y": 2, "w": 3, "h": 4},
+    )
 
 
 def _pair(sample, first_text, second_text, path=None):
@@ -730,7 +734,7 @@ def test_bind_instrument_can_recheck_its_sample_against_run_authority(tmp_path):
     path, frame, pages = run_file(tmp_path)
     sample = sample_stratified(path, catalog(pages), plan_for(frame, catalog(pages)))[0]
     forged = _forge_sample_outside_authority(sample)
-    act = act_id("pg_0123456789abcdef", 0, {"x": 1})
+    act = _act()
     assert bind_instrument(forged, act, _sha("e"))["sample_digest"] == forged["sample_digest"]
     with pytest.raises(SchemaRefusal, match="outside the R0"):
         bind_instrument(forged, act, _sha("e"), path)

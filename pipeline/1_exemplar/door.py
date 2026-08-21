@@ -1129,6 +1129,7 @@ def fixture_submission(args, registry) -> int:
         ingress=synthetic_fixture_ingress_record(),
         render_settings={"pdf": pdf_settings.to_record()},
         sealed_config_digests=bindings["sealed_config_digests"],
+        register_bytes=Path(args.corpus_register).read_bytes() if args.corpus_register else None,
     )
     context = _door_context(
         tree,
@@ -1295,6 +1296,7 @@ def real_submission(args, registry) -> int:
         ingress=real_ingress_record(),
         render_settings={"pdf": pdf_settings.to_record()},
         sealed_config_digests=bindings["sealed_config_digests"],
+        register_bytes=Path(args.corpus_register).read_bytes() if args.corpus_register else None,
     )
 
     context = _door_context(

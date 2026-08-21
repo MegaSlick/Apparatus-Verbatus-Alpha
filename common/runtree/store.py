@@ -65,7 +65,8 @@ from common.contracts.errors import (
     SchemaRefusal,
 )
 from common.contracts.identities import validate_run_id
-from common.contracts.stages import writing_directory
+from common.contracts.stages import DOOR, writing_directory
+from common.corpus_register import empty_register, validate_register_bytes
 
 RUN_FILE: Final = "run.json"
 MANIFEST_FILE: Final = "manifest.json"
@@ -83,6 +84,7 @@ _BOUND_FIELDS: Final = (
     "adapter_recipes",
     "witness_chairs",
     "corpus_frame_membership",
+    "register_digest",
 )
 _INGRESS_FIELD: Final = "ingress"
 
@@ -173,6 +175,7 @@ class RunTree:
         adapter_recipes: dict[str, str],
         witness_chairs: list[str],
         corpus_frame_membership: dict[str, str] | None = None,
+        register_bytes: bytes | None = None,
         ingress: dict[str, Any] | None = None,
         render_settings: dict[str, Any] | None = None,
         sealed_config_digests: dict[str, str] | None = None,
@@ -184,6 +187,14 @@ class RunTree:
         leaves the tree exactly as it found it.
         """
         tree = cls(root, run_id)
+        # Validated and digested here, but not *stored* until the run authority
+        # has accepted it below. Storing it first would put a foreign register's
+        # bytes into an existing run's blob store on the way to refusing that
+        # very register as an incompatible reuse — writing into a tree while
+        # telling the operator nothing was written.
+        snapshot = empty_register() if register_bytes is None else register_bytes
+        validate_register_bytes(snapshot)
+        snapshot_digest = digest_bytes(snapshot)
         # An ordinal names one page. Two rows carrying the same one do not describe
         # a duplicate page — they make the run's page count ambiguous before
         # anything has been read. That matters because the Armarium's page census
@@ -226,6 +237,7 @@ class RunTree:
             "adapter_recipes": dict(sorted(adapter_recipes.items())),
             "witness_chairs": sorted(witness_chairs),
             "corpus_frame_membership": membership,
+            "register_digest": snapshot_digest,
         }
         if ingress is not None:
             authority[_INGRESS_FIELD] = ingress
@@ -289,7 +301,9 @@ class RunTree:
                     "one configuration, so this is a different run wearing an old "
                     "name. Nothing was written"
                 ) from None
-            return tree
+        # Content-addressed, so an accepted reuse rewrites nothing: the bytes
+        # are already there under the digest `run.json` binds.
+        tree.put_blob(DOOR, snapshot)
         return tree
 
     def read_run(self) -> dict[str, Any]:
