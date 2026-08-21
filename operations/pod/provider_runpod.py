@@ -53,6 +53,7 @@ from .models import (
     BILLING_BUCKET_WIDTH,
     BILLING_CUTOFF_MARGIN_ENV,
     AbsenceObservation,
+    AccountBalanceObservation,
     BillingState,
     CostCapture,
     CostLine,
@@ -193,11 +194,13 @@ class RunPodProvider:
         *,
         pod_price: Callable[[str], Decimal],
         volume_price: Callable[[str], Decimal],
+        balance_observer: Callable[[], AccountBalanceObservation] | None = None,
         now: Callable[[], datetime] = utc_now,
     ) -> None:
         self.transport = transport
         self.pod_price = pod_price
         self.volume_price = volume_price
+        self.balance_observer = balance_observer
         self.now = now
 
     # -- the seven verbs ---------------------------------------------------
@@ -209,6 +212,13 @@ class RunPodProvider:
         except Exception as error:
             raise ProviderFailure(f"RunPod current price could not be obtained: {error}") from error
         return PodEstimate(pod_hourly, volume_hourly, "RunPod reviewed price sheet", self.now())
+
+    def observe_account_balance(self) -> AccountBalanceObservation:
+        """Use the separately supplied observed-balance source, never a guessed reserve."""
+
+        if self.balance_observer is None:
+            raise ProviderFailure("RunPod account balance source was not configured")
+        return self.balance_observer()
 
     def create(self, request: PodCreateRequest) -> PodRecord:
         """Correlate an existing launch token first, then POST — never both.

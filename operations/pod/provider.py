@@ -12,12 +12,21 @@ from typing import Protocol, runtime_checkable
 
 from .models import (
     AbsenceObservation,
+    AccountBalanceObservation,
     CostCapture,
     PodCreateRequest,
     PodEstimate,
     PodRecord,
     ProviderStatus,
 )
+
+
+@runtime_checkable
+class AccountBalanceProvider(Protocol):
+    """The separate observed-balance seam used by the spend floor."""
+
+    def observe_account_balance(self) -> AccountBalanceObservation:
+        """Return the currently available account balance from a named source."""
 
 
 @runtime_checkable

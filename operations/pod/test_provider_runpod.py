@@ -18,6 +18,7 @@ import pytest
 
 from .models import (
     BILLING_CUTOFF_MARGIN_ENV,
+    AccountBalanceObservation,
     BillingState,
     PodCreateRequest,
     Presence,
@@ -86,6 +87,30 @@ def provider(transport: ScriptedTransport) -> RunPodProvider:
         volume_price=lambda volume: Decimal("0.05"),
         now=lambda: NOW,
     )
+
+
+def test_runpod_balance_source_is_injected_and_never_an_implicit_http_read() -> None:
+    transport = ScriptedTransport([])
+    observed = AccountBalanceObservation(Decimal("76.50"), NOW, "fake RunPod balance source")
+    adapter = RunPodProvider(
+        transport,
+        pod_price=lambda gpu: Decimal("0.77"),
+        volume_price=lambda volume: Decimal("0.05"),
+        balance_observer=lambda: observed,
+        now=lambda: NOW,
+    )
+
+    assert adapter.observe_account_balance() is observed
+    assert transport.calls == []
+
+
+def test_runpod_without_an_observed_balance_source_refuses_without_http() -> None:
+    transport = ScriptedTransport([])
+
+    with pytest.raises(ProviderFailure, match="balance source"):
+        provider(transport).observe_account_balance()
+
+    assert transport.calls == []
 
 
 def pod_payload(**overrides: object) -> dict[str, object]:

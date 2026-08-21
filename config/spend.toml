@@ -29,11 +29,18 @@
 #   # Independent of max_hourly_usd, so either ceiling alone can refuse a run.
 #   max_estimated_metered_cost_usd = "..."
 #
-#   # A manual reserve that must remain available to preserve the network volume
-#   # while data is secured after a spend incident. "50.00" is a documented,
-#   # unverified default: check it against RunPod before a live run. The runtime
-#   # has no account-balance API, so this is not evidence of the current balance.
+#   # The observed-balance hard stop that protects the network volume while data
+#   # is secured after a spend incident. It is a reserve that must still be there
+#   # *after* the run, so a launch is refused both when the observed balance is at
+#   # or below it and when this run's own estimated cost to its hard deadline would
+#   # take it there. Nothing re-reads the balance once a pod is live. "50.00" is a
+#   # documented, unverified default: check it against RunPod before a live run.
 #   account_balance_floor_usd = "50.00"
+#
+#   # A higher observed-balance warning threshold. Warnings send through the
+#   # notification seam only; they never block a paid action. This must be
+#   # greater than the hard floor and is Tyrel's policy value.
+#   account_balance_alert_usd = "..."
 #
 #   # The hard lifetime both controllers enforce independently — the laptop
 #   # supervisor and the pod-side dead-man timer.  Whichever fires first

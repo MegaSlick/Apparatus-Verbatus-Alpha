@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
+import fcntl
+import hashlib
+import json
+import math
 import re
 import secrets
 import threading
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import datetime, timezone
+from decimal import Decimal
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
-from typing import Callable
+from typing import Callable, Final, Iterator
 
 from .arming import (
     ControllerArmer,
@@ -17,9 +23,11 @@ from .arming import (
     ControllerReadiness,
     FailClosedControllerArmer,
 )
+from .durable import atomic_write, canonical_json
 from .lease import LeaseStore, PodLease
 from .models import (
     BILLING_CUTOFF_MARGIN_ENV,
+    AccountBalanceObservation,
     PendingCreateIntent,
     PodCreateRequest,
     PodEstimate,
@@ -27,7 +35,8 @@ from .models import (
     SpendRefusal,
     utc_now,
 )
-from .provider import PodProvider
+from .notify_bridge import Notifier, NotifyOutcome, silent
+from .provider import AccountBalanceProvider, PodProvider
 from .shutdown import CloseReport, VerifiedShutdown
 from .spend import (
     SpendAssessment,
@@ -58,6 +67,23 @@ def _phraseless(preview: PaidActionPreview | None) -> PaidActionPreview | None:
     return PaidActionPreview(preview.action, preview.subject, preview.assessment)
 
 
+def _spend_refusal_state(assessment: SpendAssessment) -> LaunchState:
+    """Distinguish the three ways a spend assessment refuses.
+
+    An observed balance at or below the floor, a balance that could not be
+    observed at all, and an ordinary price-ceiling breach are three different
+    operational situations -- the first two are money-safety refusals the
+    ruling names explicitly, and collapsing either into ``REFUSED_CEILING``
+    hides which one actually happened from whoever reads the result.
+    """
+
+    if assessment.hard_floor_triggered:
+        return LaunchState.REFUSED_BALANCE_FLOOR
+    if assessment.balance_unobservable_triggered:
+        return LaunchState.REFUSED_BALANCE_UNOBSERVABLE
+    return LaunchState.REFUSED_CEILING
+
+
 def _bind_report_path_to_launch(command: tuple[str, ...], launch_token: str) -> tuple[str, ...]:
     """Fold the launch token into the pod-side report path's file name.
 
@@ -85,6 +111,26 @@ def _bind_report_path_to_launch(command: tuple[str, ...], launch_token: str) -> 
     return command[:index] + (bound_path,) + command[index + 1 :]
 
 
+SPEND_ALERT_DEBOUNCE_SECONDS: Final = 900
+"""Matches notify.sh's own ``start`` suppression window (operations/notify/notify.sh).
+
+notify.sh deliberately never suppresses a ``milestone`` itself -- a rate limit there
+could swallow a real result (operations/notify/README.md). A hovering balance is not
+that: the same alert is reassessed on every preview, on the internal re-preview inside
+``create``/``adopt``, and (for ``create``) again after the pod actually exists, so an
+unthrottled send pages Tyrel two or more times for one decision. The dedup belongs at
+this wiring, before notify.sh is ever called.
+"""
+
+SPEND_ALERT_RECOVERY_OBSERVATIONS: Final = 2
+"""Consecutive safe readings required before another low episode can page.
+
+One sample above the line followed immediately by another low sample is a
+flapping source, not proof of recovery.  Two safe observations re-arm the edge
+without waiting out the delivery debounce, so a genuinely new drop is not lost.
+"""
+
+
 class LaunchState(StrEnum):
     """Create/adopt outcomes.  Only guarded creation/adoption is green."""
 
@@ -94,6 +140,8 @@ class LaunchState(StrEnum):
     REFUSED_RUNTIME_CONTRACT = "refused-runtime-contract"
     REFUSED_REQUEST = "refused-request"
     REFUSED_CEILING = "refused-ceiling"
+    REFUSED_BALANCE_FLOOR = "refused-balance-floor"
+    REFUSED_BALANCE_UNOBSERVABLE = "refused-balance-unobservable"
     REFUSED_CONFIRMATION = "refused-confirmation"
     PROVIDER_FAILURE = "provider-failure"
     LEASE_FAILURE = "lease-failure"
@@ -174,6 +222,8 @@ class PodRuntime:
         token_factory: Callable[[], str] = lambda: secrets.token_hex(16),
         challenge_factory: Callable[[], str] = mint_challenge,
         controller_armer: ControllerArmer | None = None,
+        balance_source: AccountBalanceProvider | None = None,
+        notifier: Notifier = silent,
     ) -> None:
         self.provider = provider
         self.provider_name = provider_name
@@ -199,6 +249,10 @@ class PodRuntime:
         self.token_factory = token_factory
         self.challenge_factory = challenge_factory
         self.controller_armer = controller_armer or FailClosedControllerArmer(now=now)
+        self.balance_source = balance_source or (
+            provider if isinstance(provider, AccountBalanceProvider) else None
+        )
+        self.notifier = notifier
         # Outstanding preview challenges, keyed by (action, subject), each holding the
         # challenge and the hard deadline it was assessed against. In-memory and
         # per-process on purpose: a challenge that outlived the run would be exactly the
@@ -238,6 +292,23 @@ class PodRuntime:
         return self._preview("create", request.name, estimate, request.hard_deadline, mint=mint)
 
     def create(self, request: PodCreateRequest, *, confirmation: str | None) -> LaunchResult:
+        """Serialize the shared lease-root assessment through durable reservation."""
+
+        try:
+            with self._spend_gate_lock():
+                return self._create_locked(request, confirmation=confirmation)
+        except OSError as error:
+            return LaunchResult(
+                LaunchState.REFUSED_BALANCE_UNOBSERVABLE,
+                detail=(
+                    "balance safety could not be established because the spend-reservation "
+                    f"lock failed: {error}; no paid action occurred"
+                ),
+            )
+
+    def _create_locked(
+        self, request: PodCreateRequest, *, confirmation: str | None
+    ) -> LaunchResult:
         """Arm a durable intent before a provider create, then bind its exact pod id."""
 
         preview_result = self.preview_create(request, mint=False)
@@ -250,7 +321,7 @@ class PodRuntime:
             # Same policy as the confirmation refusals: a refusal report never
             # carries a phrase whose challenge is still spendable.
             return LaunchResult(
-                LaunchState.REFUSED_CEILING,
+                _spend_refusal_state(preview_result.preview.assessment),
                 _phraseless(preview_result.preview),
                 detail="; ".join(preview_result.preview.assessment.reasons),
             )
@@ -388,7 +459,7 @@ class PodRuntime:
                 detail=detail,
                 close_report=close,
             )
-        actual = self._reassess_actual_price(
+        actual, actual_preview = self._reassess_actual_price(
             action="create",
             record=record,
             request=sealed,
@@ -405,7 +476,7 @@ class PodRuntime:
             lease=bound,
             store=store,
             owner_token=owner_token,
-            preview=preview_result.preview,
+            preview=actual_preview,
             success_state=LaunchState.CREATED_GUARDED,
         )
 
@@ -456,6 +527,31 @@ class PodRuntime:
         expected: PodCreateRequest,
         confirmation: str | None,
     ) -> LaunchResult:
+        """Serialize adoption with every other liability in the shared lease root."""
+
+        try:
+            with self._spend_gate_lock():
+                return self._adopt_locked(
+                    pod_id,
+                    expected=expected,
+                    confirmation=confirmation,
+                )
+        except OSError as error:
+            return LaunchResult(
+                LaunchState.REFUSED_BALANCE_UNOBSERVABLE,
+                detail=(
+                    "balance safety could not be established because the spend-reservation "
+                    f"lock failed: {error}; no paid action occurred"
+                ),
+            )
+
+    def _adopt_locked(
+        self,
+        pod_id: str,
+        *,
+        expected: PodCreateRequest,
+        confirmation: str | None,
+    ) -> LaunchResult:
         """No pod bills its way around the gate: adoption shares every create check."""
 
         expected = self._policy_bound_request(expected)
@@ -469,7 +565,7 @@ class PodRuntime:
             # Same policy as the confirmation refusals: no live phrase on a
             # refusal report.
             return LaunchResult(
-                LaunchState.REFUSED_CEILING,
+                _spend_refusal_state(preview_result.preview.assessment),
                 _phraseless(preview_result.preview),
                 record=preview_result.record,
                 detail="; ".join(preview_result.preview.assessment.reasons),
@@ -592,6 +688,90 @@ class PodRuntime:
             success_state=LaunchState.ADOPTED_GUARDED,
         )
 
+    @contextmanager
+    def _spend_gate_lock(self) -> Iterator[None]:
+        """Serialize assessment through durable lease reservation across processes.
+
+        The observed provider balance does not promise to reserve future charges.
+        Holding this lease-root lock until the new lease exists ensures the next
+        create/adopt assessment sees this action's maximum remaining liability.
+        A process crash releases the OS lock while leaving the pending lease behind.
+        """
+
+        # The lock is a sibling of the lease directory.  That lets an invalid
+        # lease-root path proceed far enough to retain the existing, precise
+        # LEASE_FAILURE handling (including confirmed-adoption close) while still
+        # serializing every caller that names the same root.
+        self.lease_root.parent.mkdir(parents=True, exist_ok=True)
+        path = self.lease_root.parent / f".{self.lease_root.name}.spend-gate.lock"
+        with path.open("a+b") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+    def _reserved_liability(
+        self, *, now: datetime, exclude: Path | None = None
+    ) -> tuple[Decimal, str | None]:
+        """Conservatively total every locally known action still able to bill."""
+
+        total = Decimal("0")
+        try:
+            paths = sorted(self.lease_root.glob("*.json"))
+        except OSError as error:
+            return total, f"the lease directory could not be listed: {error}"
+        for path in paths:
+            if exclude is not None and path == exclude:
+                continue
+            if path.is_symlink():
+                return total, f"lease {path} is a symlink"
+            try:
+                lease = LeaseStore(path).load()
+            except Exception as error:
+                return total, f"lease {path} could not be read: {error}"
+            if lease is None or lease.phase == "closed-verified":
+                continue
+            if lease.phase == "close-unverified":
+                return (
+                    total,
+                    f"lease {path} has an unverified close and unknown remaining liability",
+                )
+            remaining = (lease.hard_deadline - now).total_seconds()
+            if remaining <= 0:
+                return total, f"lease {path} passed its hard deadline without a verified close"
+            seconds = math.ceil(remaining)
+            total += (
+                (lease.pod_hourly_usd + lease.volume_hourly_usd) * Decimal(seconds) / Decimal(3600)
+            )
+        return total, None
+
+    def _assess(
+        self,
+        estimate: PodEstimate,
+        hard_deadline: datetime,
+        *,
+        exclude_lease: Path | None = None,
+    ) -> SpendAssessment:
+        observation, unavailable = self._observe_balance()
+        # Timestamp after the source returns: an honest source normally stamps
+        # during that call, and comparing it with a clock sampled beforehand can
+        # misclassify ordinary microseconds of execution as future evidence.
+        observed_now = self.now()
+        reserved, reservation_error = self._reserved_liability(
+            now=observed_now, exclude=exclude_lease
+        )
+        return assess_spend(
+            self.spend_policy,
+            estimate,
+            requested_deadline=hard_deadline,
+            now=observed_now,
+            balance_observation=observation,
+            balance_unavailable_detail=unavailable,
+            reserved_liability_usd=reserved,
+            balance_safety_unavailable_detail=reservation_error,
+        )
+
     def _preview(
         self,
         action: str,
@@ -608,8 +788,8 @@ class PodRuntime:
         can only confirm against a challenge some earlier preview actually issued.
         """
 
-        assessment = assess_spend(
-            self.spend_policy, estimate, requested_deadline=hard_deadline, now=self.now()
+        assessment = self._record_spend_notifications(
+            self._assess(estimate, hard_deadline), action, subject
         )
         key = (action, subject)
         if mint:
@@ -630,6 +810,198 @@ class PodRuntime:
         return LaunchResult(
             LaunchState.PREVIEW, PaidActionPreview(action, subject, assessment, challenge)
         )
+
+    def _record_spend_notifications(
+        self, assessment: SpendAssessment, action: str, subject: str
+    ) -> SpendAssessment:
+        """Apply edge-aware warning state and retain every attempted delivery."""
+
+        notifications: list[str] = []
+        try:
+            if assessment.alerts:
+                for alert in assessment.alerts:
+                    outcome = self._notify_spend_alert(alert, action, subject, assessment)
+                    if outcome is not None:
+                        notifications.append(outcome.line())
+            else:
+                self._record_nonalert_balance(action, subject, assessment)
+        except Exception as error:  # notification state can never become a spend gate
+            notifications.append(f"Phone notification: NOT DELIVERED ({error!r}).")
+        if not notifications:
+            return assessment
+        return replace(assessment, alert_notifications=tuple(notifications))
+
+    def _notify_spend_alert(
+        self, alert: str, action: str, subject: str, assessment: SpendAssessment
+    ) -> NotifyOutcome | None:
+        """Send one new/expired alert episode; delivery never changes the gate."""
+
+        observation = assessment.balance_observation
+        if observation is None or not assessment.balance_observation_usable:
+            return None
+        path = self._spend_alert_stamp_path(action, subject)
+        with self._alert_state_lock(path):
+            state = self._load_spend_alert_state(path)
+            if not self._spend_alert_due(state):
+                if state is not None and state["safe_observations"]:
+                    self._write_spend_alert_state(
+                        path,
+                        delivered_at=state["delivered_at"],
+                        active=True,
+                        safe_observations=0,
+                    )
+                return None
+            message = (
+                f"Spend warning: {alert}; {action} {subject}; observed available balance "
+                f"${observation.available_usd}."
+            )
+            try:
+                outcome = self.notifier(message)
+            except Exception as error:  # a broken notifier is not a broken preview
+                return NotifyOutcome(True, False, f"the notifier raised: {type(error).__name__}")
+            # Only a delivered warning starts suppression. A failed send leaves
+            # the episode due so the next gate retries rather than losing it.
+            if getattr(outcome, "delivered", False):
+                self._write_spend_alert_state(
+                    path,
+                    delivered_at=int(self.now().timestamp()),
+                    active=True,
+                    safe_observations=0,
+                )
+            return outcome
+
+    def _spend_alert_stamp_path(self, action: str, subject: str) -> Path:
+        digest = hashlib.sha256(f"{action}:{subject}".encode("utf-8")).hexdigest()[:16]
+        return self.lease_root / f".spend-alert-{digest}.stamp"
+
+    @contextmanager
+    def _alert_state_lock(self, path: Path) -> Iterator[None]:
+        self.lease_root.mkdir(parents=True, exist_ok=True)
+        with path.with_suffix(path.suffix + ".lock").open("a+b") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+    def _load_spend_alert_state(self, path: Path) -> dict[str, object] | None:
+        """Read only a closed state shape; corrupt evidence reverts to sending."""
+
+        try:
+            if path.is_symlink() or (path.exists() and not path.is_file()):
+                return None
+            text = path.read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeDecodeError):
+            return None
+        # Compatibility with the timestamp-only state written by the earlier seat.
+        if re.fullmatch(r"-?\d+", text):
+            raw: object = {
+                "delivered_at": int(text),
+                "active": True,
+                "safe_observations": 0,
+            }
+        else:
+            try:
+                raw = json.loads(text)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                return None
+        if not isinstance(raw, dict) or set(raw) != {
+            "delivered_at",
+            "active",
+            "safe_observations",
+        }:
+            return None
+        delivered_at = raw["delivered_at"]
+        active = raw["active"]
+        safe_observations = raw["safe_observations"]
+        if (
+            not isinstance(delivered_at, int)
+            or isinstance(delivered_at, bool)
+            or not isinstance(active, bool)
+            or not isinstance(safe_observations, int)
+            or isinstance(safe_observations, bool)
+            or not 0 <= safe_observations <= SPEND_ALERT_RECOVERY_OBSERVATIONS
+        ):
+            return None
+        try:
+            datetime.fromtimestamp(delivered_at, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
+        return raw
+
+    def _spend_alert_due(self, state: dict[str, object] | None) -> bool:
+        if state is None or state["active"] is False:
+            return True
+        try:
+            stamped = datetime.fromtimestamp(int(state["delivered_at"]), tz=timezone.utc)
+        except (OverflowError, OSError, TypeError, ValueError):
+            return True
+        age = (self.now() - stamped).total_seconds()
+        return age < 0 or age >= SPEND_ALERT_DEBOUNCE_SECONDS
+
+    def _record_nonalert_balance(
+        self, action: str, subject: str, assessment: SpendAssessment
+    ) -> None:
+        observation = assessment.balance_observation
+        policy = assessment.policy
+        if (
+            observation is None
+            or not assessment.balance_observation_usable
+            or not policy.configured
+            or policy.account_balance_alert_usd is None
+        ):
+            return
+        safe = observation.available_usd > policy.account_balance_alert_usd
+        path = self._spend_alert_stamp_path(action, subject)
+        with self._alert_state_lock(path):
+            state = self._load_spend_alert_state(path)
+            if state is None or state["active"] is False:
+                return
+            safe_observations = int(state["safe_observations"])
+            safe_observations = min(
+                SPEND_ALERT_RECOVERY_OBSERVATIONS,
+                safe_observations + 1 if safe else 0,
+            )
+            self._write_spend_alert_state(
+                path,
+                delivered_at=int(state["delivered_at"]),
+                active=safe_observations < SPEND_ALERT_RECOVERY_OBSERVATIONS,
+                safe_observations=safe_observations,
+            )
+
+    def _write_spend_alert_state(
+        self, path: Path, *, delivered_at: int, active: bool, safe_observations: int
+    ) -> None:
+        try:
+            atomic_write(
+                path,
+                canonical_json(
+                    {
+                        "delivered_at": delivered_at,
+                        "active": active,
+                        "safe_observations": safe_observations,
+                    }
+                ),
+            )
+        except OSError:
+            # Notification state is advisory. Losing it can cause one duplicate,
+            # never a blocked action or a swallowed warning.
+            pass
+
+    def _observe_balance(self) -> tuple[AccountBalanceObservation | None, str | None]:
+        """Observe the balance at every spend gate; unavailable is fail-closed.
+
+        Returns the observation and, when there is none, why -- a swallowed
+        provider error leaves an operator staring at "not observed" with no way
+        to tell a missing configured source from a timeout (GOVERNANCE 2).
+        """
+
+        if self.balance_source is None:
+            return None, "no account-balance source is configured for this provider"
+        try:
+            return self.balance_source.observe_account_balance(), None
+        except Exception as error:
+            return None, f"{type(error).__name__}: {error}"
 
     def _claim_challenge(
         self, action: str, subject: str, hard_deadline: datetime, expected: str, typed: str | None
@@ -864,26 +1236,29 @@ class PodRuntime:
         store: LeaseStore,
         owner_token: str,
         preview: PaidActionPreview,
-    ) -> LaunchResult | None:
-        """`None` when the pod that arrived is still inside every ceiling.
+    ) -> tuple[LaunchResult | None, PaidActionPreview]:
+        """Return the actual-price assessment even when it remains allowed.
 
         Adoption already assesses the observed record, so only `create` needs
         this: it gates on `estimate()` before the pod exists, and the price the
         provider returns afterwards is the one that bills.
         """
 
-        assessment = assess_spend(
-            self.spend_policy,
-            record.estimate,
-            requested_deadline=request.hard_deadline,
-            now=self.now(),
+        assessment = self._record_spend_notifications(
+            self._assess(
+                record.estimate,
+                request.hard_deadline,
+                exclude_lease=store.path,
+            ),
+            action,
+            record.pod_id if action == "adopt" else preview.subject,
         )
+        actual_preview = PaidActionPreview(preview.action, preview.subject, assessment)
         if assessment.allowed:
-            return None
+            return None, actual_preview
         # No challenge: this preview reports why a created pod is being closed, and its
         # challenge was consumed by the create that got here. A refusal report must not
         # carry a phrase that would authorize anything.
-        actual_preview = PaidActionPreview(preview.action, preview.subject, assessment)
         close, detail = self._close_and_record(
             record=record,
             reason=f"{action} price on the created pod exceeded its ceiling",
@@ -895,14 +1270,17 @@ class PodRuntime:
                 + ")"
             ),
         )
-        return LaunchResult(
-            LaunchState.REFUSED_CEILING,
+        return (
+            LaunchResult(
+                _spend_refusal_state(assessment),
+                actual_preview,
+                record=record,
+                lease_path=store.path,
+                owner_token=owner_token,
+                detail=detail,
+                close_report=close,
+            ),
             actual_preview,
-            record=record,
-            lease_path=store.path,
-            owner_token=owner_token,
-            detail=detail,
-            close_report=close,
         )
 
     def _contract_mismatch_close(

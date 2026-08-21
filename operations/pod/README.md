@@ -124,10 +124,27 @@ check.
   `billing_cutoff_margin_seconds` value within the code-owned 0–3600-second envelope;
   the exact value is sealed into both shutdown controllers and the pending-create
   recovery record, while an out-of-bounds value refuses rather than being clamped. It
-  also displays an `account_balance_floor_usd` manual reserve. The runtime does not
-  observe account balance: the commented `$50.00` template value is unverified and must
-  be checked against RunPod before a live run, not treated as evidence that the reserve
-  is actually available.
+  also enforces an observed `account_balance_floor_usd`. Its source is an explicit
+  provider seam; an unavailable source refuses paid actions, and the refusal names why
+  the balance could not be read. Observations more than 60 seconds old or dated in the
+  future are unusable, never cached authority. The floor is a reserve that must survive
+  the run, so it is tested against the observed balance net of this action's estimated
+  cost to its hard deadline and every active or pending liability in the same durable
+  lease root. Create/adopt serialize that assessment until the new lease is recorded, so
+  two concurrent confirmations cannot each spend the same reserve. An unreadable,
+  expired-but-unclosed, or unverified-close lease makes that liability unknowable and
+  refuses through the same floor mechanism. The balance is read only at the create and
+  adopt gates, never again while a pod is live. Above that hard floor,
+  `account_balance_alert_usd` sends notification-only warnings through
+  `operations/notify/`; delivery never alters a launch decision, and whether the phone
+  got it is recorded either way. A delivered warning is suppressed for fifteen minutes
+  while readings remain low; two consecutive safe readings establish recovery, so a new
+  crossing pages immediately, while one-reading flaps do not re-arm it.
+  `operations/pod/cli.py` sends nothing unless `--notify` is passed. The commented
+  `$50.00` template value remains unverified and must be checked against RunPod before a
+  live run. All paid actions for one provider account must use the same lease root; the
+  first live checklist records that operational binding because the provider-neutral seam
+  has no stable account identifier from which to derive it.
 - `transfer.py` carries Spec 03's sealed submission-manifest rows through a generic
   storage seam. It streams and verifies SHA-256/size before and after upload, persists
   verified rows, and refuses conflicting target bytes rather than overwriting them.
@@ -206,10 +223,12 @@ pod. Record the exact pod id, timestamps, provider response, and whether each it
 documented shapes, not observed behavior; no unchecked item may be reported as a pass.
 
 - [ ] Record Tyrel's current-session authorization, the synthetic workload, the
-  configured spend ceilings, and `account_balance_floor_usd`. The floor is a manual
-  reserve policy, not a current-balance observation. Record any actual balance observation
-  separately, including active obligations and the maximum additional liability of this
-  run; the runtime has no account-balance provider verb.
+  configured spend ceilings, and `account_balance_floor_usd`. Record the configured
+  observed-balance source, that it reports US dollars rather than credits or another
+  currency, and its actual observation separately, including active obligations and the
+  maximum additional liability of this run. Record the one durable lease root used by
+  every paid action against this provider account; separate roots cannot see or reserve
+  one another's future liability.
 - [ ] Confirm whether the pod-scoped API key actually holds **delete** and **billing**
   rights. DELETE must be accepted for this exact pod, and the billing query must return
   usable, exact-pod records. Do not infer either right from successful creation or GET.
