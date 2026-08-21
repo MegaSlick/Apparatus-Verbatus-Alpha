@@ -60,7 +60,28 @@ from .errors import MatrixRefusal
 # judgments by naming the declaration that the pipeline is proven. These are prose
 # corrections only: no measure, profile, bound, score, or result moved, and the
 # opening disclaimer still records that no result exists.
-PREDECLARED_PROTOCOL_SHA256 = "78460c767109b39ac0418787418af2953f6b8196141f588d12858a41120c47b9"
+#
+# Re-pinned 2026-08-20, twice. First (commit dc4ab85c, recorded here after the
+# fact — that re-pin landed without its paragraph, against this ledger's own
+# convention): Tyrel ruled the training base starts fresh on 3.8, so Section 2's
+# stock base moved from the 9B model to Qwen/Qwen3.8-27B. Second (this change):
+# the provenance sentence carried the old ruling's 2026-08-05 date forward with
+# the new model — a false attribution in the one sentence that exists to make
+# provenance verifiable — caught by the 2026-08-20 trust audit. It now names the
+# 2026-08-20 ruling and the supersession. The ruling's record:
+# workbench/standing/TYREL_RULINGS_2026-08-20_EVENING.md (untracked). Prose and
+# roster provenance only: no measure, profile, bound, score, or result moved.
+#
+# Re-pinned 2026-08-20, third time, on CodeRabbit's review of pull request 65. The
+# sentence repaired immediately above still ended "so the provenance is verifiable
+# here", and that word was wrong in a way the 2026-08-15 repair had aimed at twice
+# already: the ledger is gitignored, so a reader of a clean checkout can see the
+# substance and the date but cannot establish that Tyrel authorised them. Stating a
+# ruling inline makes it *legible*, not verifiable — the distinction the earlier
+# passes were reaching for and did not name. Section 2 now says so and calls itself
+# the statement of record rather than the evidence. Prose only: no measure, profile,
+# bound, score, roster entry, or result moved.
+PREDECLARED_PROTOCOL_SHA256 = "c1c8f77fa03014bc95220e253609b7279bbd05d6359a3165f2dedb528a3e944a"
 
 
 def protocol_document_sha256() -> str:

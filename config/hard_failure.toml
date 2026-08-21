@@ -16,12 +16,15 @@
 # as an early warning and the third stops.
 threshold = 2
 
-# PROPOSED, NOT YET APPROVED. The closed list below is this build's proposal
-# for what counts as a "hard failure" for this cap, argued in the comment block
-# below. Tyrel's ruling settles the threshold and the existence of the cap; it
-# deliberately does not settle which kinds of stage outcome should trip it --
-# that is left to this build to propose and to him to bless or amend. Treat
-# every entry as a recommendation, not a ruling, until he says so.
+# APPROVED. The closed list below is what counts as a "hard failure" for this
+# cap. It was proposed by this build and put to Tyrel; on 2026-08-20 he confirmed
+# the cap in the same terms he first ruled it -- one is a fluke, two is a pattern,
+# more than two in a thousand pages needs looking at before more resources are
+# spent -- and declined to re-open the taxonomy a further time, having answered it
+# twice already. The list stands as written.
+#
+# What follows is the argument that produced it, kept because a closed list whose
+# reasoning is lost cannot be amended safely later.
 #
 # SHARPENED AGAINST THE OLD PIPELINE'S OWN MEASURED DEFINITION (window pass,
 # 2026-08-05). The old repository's `page_health.py`
@@ -46,14 +49,16 @@ threshold = 2
 # witnesses, a lengthy marginal note) will truncate routinely in real parish
 # registers; folding that into a 2-failure early-warning cap would trip it on
 # ordinary document variance and defeat the cap's purpose. `(perlector, failed)`
-# is KEPT, but the mapping is not yet certain: spec 08 (the Perlector) is being
-# built by another lane in parallel with this pass, and pipeline/4_perlector/
-# run.py is still the walking-skeleton stub -- nothing in the shipped code yet
-# says whether a real `failed` outcome will mean "an exception escaped the read
-# path" (the old pipeline's HARD_GENERATE_EXCEPTION, genuinely hard) or "the
-# model answered badly after every retry" (the old pipeline's SOFT_READ_FAILED,
-# a tough page, genuinely soft). Kept as hard conservatively; revisit once
-# spec 08 gives `failed` a real trigger.
+# is KEPT, but the mapping is not yet certain: pipeline/4_perlector/run.py is a
+# built stage (dossiers, Lectio nuda, dissent recording, the truncation
+# instrument), but its only reader is still the fixture
+# (pipeline/4_perlector/reader.py, FixtureReader) -- so nothing in the shipped
+# code yet says whether a real `failed` outcome will mean "an exception escaped
+# the read path" (the old pipeline's HARD_GENERATE_EXCEPTION, genuinely hard) or
+# "the model answered badly after every retry" (the old pipeline's
+# SOFT_READ_FAILED, a tough page, genuinely soft). Decided 2026-08-20 (hard rule
+# 13, recorded in the session's findings ledger): kept as hard conservatively;
+# revisit when a real reader gives `failed` a real trigger.
 #
 # `(door, refused, reason="corrupt")` and `(door, refused, reason="unreadable")`
 # are ADDED. `pipeline/1_exemplar/admission.py`'s closed `RefusalReason`
