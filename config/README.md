@@ -211,6 +211,6 @@ be known to decide whether a resumed run may re-enter a stage at all — and the
 for the whole run, so it is read once, held, and proved against the run authority at
 the first moment such an authority exists: the resume preflight. On a first run there
 is nothing to prove it against until the Door creates the authority, and the Door seals
-these digests from the same bytes. What the file *says* remains Tyrel's: the threshold
-is his ruling and the proposed `[[kind]]` list is not approved. Sealing the file is
-engineering; changing its content is not.
+these digests from the same bytes. What the file *says* remains Tyrel's: the threshold and
+the `[[kind]]` list are both his rulings. Sealing the file is engineering; changing its
+content is not.
