@@ -60,7 +60,7 @@ from .errors import MatrixRefusal
 # judgments by naming the declaration that the pipeline is proven. These are prose
 # corrections only: no measure, profile, bound, score, or result moved, and the
 # opening disclaimer still records that no result exists.
-PREDECLARED_PROTOCOL_SHA256 = "78460c767109b39ac0418787418af2953f6b8196141f588d12858a41120c47b9"
+PREDECLARED_PROTOCOL_SHA256 = "b0f168f4e2410e2d005b94ec7e8c52a69cb727f0004d64b5554e00c038bac878"
 
 
 def protocol_document_sha256() -> str:

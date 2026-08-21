@@ -6,7 +6,7 @@ The knobs. One question per planned file, each answerable without reading code.
 |---|---|
 | `models.toml` | which model and revision fills each numbered role |
 | `recovery.toml` | how many times rework may be asked for before review |
-| `hard_failure.toml` | how many accounted hard failures one run may carry before it stops; the threshold is Tyrel's ruling, the `[[kind]]` list is proposed and not yet approved (see the file's own header) |
+| `hard_failure.toml` | how many accounted hard failures one run may carry before it stops; the threshold and the outcome taxonomy are both Tyrel's rulings (see the file's own header) |
 | `pdf_render.toml` | what whole-page PDF resolution the next run targets |
 | `designator_padding.toml` | how far a proposal crop is expanded past its structural bounds before it is cut |
 | `data_handling_policy.json` | how real material is stored, logged, retained and disposed of |

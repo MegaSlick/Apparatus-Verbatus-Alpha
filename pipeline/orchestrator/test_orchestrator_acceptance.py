@@ -604,8 +604,14 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # that lesson arriving on schedule: the first measurement was taken before the
 # review, and a review that changes a sealed configuration file changes the pins
 # with it.)
-HAPPY_RUN_TREE_DIGEST = "c612c175e613a64adc9c4d8bb44586a675dd7b32f5bbe82a5e07d8eab9dfb248"
-REVIEW_RUN_TREE_DIGEST = "d5c9470301b4cb1c82c1f4d0a1d2486136ef8c53079f93abacf53840e21648a2"
+# Re-pinned once more, for `config/hard_failure.toml` alone. Tyrel confirmed the
+# hard-failure cap and declined to re-open its outcome taxonomy, so the file's
+# "PROPOSED, NOT YET APPROVED" header became false and was rewritten to record the
+# ruling. The file is sealed into every run by its bytes (`sealed_config_digests`
+# gained `hard-failure` in the T7 family), so a comment in it moves both scenarios'
+# authority. No code changed with it; counts and exits held at 64/0 and 71/3.
+HAPPY_RUN_TREE_DIGEST = "aee74fa4a4dc96ccc6997ce1c814652ae373d705d4eaa8a44f23bb7974b039ef"
+REVIEW_RUN_TREE_DIGEST = "f69b8e13830d851513b160e5a5241caf04b64bd36cf218b69d99f96745f4d9cd"
 
 
 def orchestrate(

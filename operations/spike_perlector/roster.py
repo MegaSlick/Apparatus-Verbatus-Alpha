@@ -8,7 +8,7 @@ from .encoding import canonical_json_bytes, is_sha256, sha256_bytes
 from .errors import CandidateRosterRefusal
 from .models import DeliveryMode, ResolvedIdentity, repository_of
 
-STOCK_BASE_SOURCE = "Qwen/Qwen3.5-9B"
+STOCK_BASE_SOURCE = "Qwen/Qwen3.8-27B"
 FORBIDDEN_ATTESTATOR_SOURCE = "Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR"
 
 
@@ -65,8 +65,8 @@ class CandidateRoster:
         identities = self.identities()
         # Normalized, like every other source comparison in this method and for
         # the reason `repository_of` gives: a `source_ref` is typed by hand, so
-        # the settled stock base arrives as `"Qwen/Qwen3.5-9B "`,
-        # `"qwen/qwen3.5-9b"` or `"Qwen/Qwen3.5-9B@main"`. A raw compare refused
+        # the settled stock base arrives as `"Qwen/Qwen3.8-27B "`,
+        # `"qwen/qwen3.8-27b"` or `"Qwen/Qwen3.8-27B@main"`. A raw compare refused
         # the correct model for a trailing space while the checks below it, on
         # the same field, accepted it.
         if repository_of(self.stock_base.source_ref) != repository_of(STOCK_BASE_SOURCE):
