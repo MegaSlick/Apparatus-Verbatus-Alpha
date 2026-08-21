@@ -6,7 +6,7 @@ The knobs. One question per planned file, each answerable without reading code.
 |---|---|
 | `models.toml` | which model and revision fills each numbered role |
 | `recovery.toml` | how many times rework may be asked for before review |
-| `hard_failure.toml` | how many accounted hard failures one run may carry before it stops; the threshold is Tyrel's ruling, the `[[kind]]` list is proposed and not yet approved (see the file's own header) |
+| `hard_failure.toml` | how many accounted hard failures one run may carry before it stops; the threshold and the outcome taxonomy are both Tyrel's rulings (see the file's own header) |
 | `pdf_render.toml` | what whole-page PDF resolution the next run targets |
 | `designator_padding.toml` | how far a proposal crop is expanded past its structural bounds before it is cut |
 | `data_handling_policy.json` | how real material is stored, logged, retained and disposed of |
@@ -211,6 +211,6 @@ be known to decide whether a resumed run may re-enter a stage at all — and the
 for the whole run, so it is read once, held, and proved against the run authority at
 the first moment such an authority exists: the resume preflight. On a first run there
 is nothing to prove it against until the Door creates the authority, and the Door seals
-these digests from the same bytes. What the file *says* remains Tyrel's: the threshold
-is his ruling and the proposed `[[kind]]` list is not approved. Sealing the file is
-engineering; changing its content is not.
+these digests from the same bytes. What the file *says* remains Tyrel's: the threshold and
+the `[[kind]]` list are both his rulings. Sealing the file is engineering; changing its
+content is not.

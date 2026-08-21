@@ -604,8 +604,21 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # that lesson arriving on schedule: the first measurement was taken before the
 # review, and a review that changes a sealed configuration file changes the pins
 # with it.)
-HAPPY_RUN_TREE_DIGEST = "c612c175e613a64adc9c4d8bb44586a675dd7b32f5bbe82a5e07d8eab9dfb248"
-REVIEW_RUN_TREE_DIGEST = "d5c9470301b4cb1c82c1f4d0a1d2486136ef8c53079f93abacf53840e21648a2"
+# Re-pinned once more, for `config/hard_failure.toml` alone. Tyrel confirmed the
+# hard-failure cap and declined to re-open its outcome taxonomy, so the file's
+# "PROPOSED, NOT YET APPROVED" header became false and was rewritten to record the
+# ruling. The file is sealed into every run by its bytes (`sealed_config_digests`
+# gained `hard-failure` in the T7 family), so a comment in it moves both scenarios'
+# authority. No code changed with it; counts and exits held at 64/0 and 71/3.
+# Re-pinned 2026-08-20 for `config/hard_failure.toml` alone, again: the trust
+# audit found the taxonomy's rationale still calling pipeline/4_perlector/run.py
+# a walking-skeleton stub — a built stage whose only *reader* is the fixture —
+# so the comment was corrected and the recorded rule-13 decision on
+# `(perlector, failed)` written into it. Comment bytes only; both digests
+# re-measured twice through this module's own helpers at the same tree, counts
+# and exits held at 64/0 and 71/3.
+HAPPY_RUN_TREE_DIGEST = "31e572e17b18868e90c933a36b471a3d04ca666382534f111410516a8337db48"
+REVIEW_RUN_TREE_DIGEST = "c6702b96996ee72813e9d4a6fa76ad4dcc5b02df501dabde0ad7b868079f2d4a"
 
 
 def orchestrate(
