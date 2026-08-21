@@ -71,7 +71,17 @@ from .errors import MatrixRefusal
 # 2026-08-20 ruling and the supersession. The ruling's record:
 # workbench/standing/TYREL_RULINGS_2026-08-20_EVENING.md (untracked). Prose and
 # roster provenance only: no measure, profile, bound, score, or result moved.
-PREDECLARED_PROTOCOL_SHA256 = "61dc492686a1db79a9125f4d2779549c43d05393174240800e11fa3bcdb6ee8a"
+#
+# Re-pinned 2026-08-20, third time, on CodeRabbit's review of pull request 65. The
+# sentence repaired immediately above still ended "so the provenance is verifiable
+# here", and that word was wrong in a way the 2026-08-15 repair had aimed at twice
+# already: the ledger is gitignored, so a reader of a clean checkout can see the
+# substance and the date but cannot establish that Tyrel authorised them. Stating a
+# ruling inline makes it *legible*, not verifiable — the distinction the earlier
+# passes were reaching for and did not name. Section 2 now says so and calls itself
+# the statement of record rather than the evidence. Prose only: no measure, profile,
+# bound, score, roster entry, or result moved.
+PREDECLARED_PROTOCOL_SHA256 = "c1c8f77fa03014bc95220e253609b7279bbd05d6359a3165f2dedb528a3e944a"
 
 
 def protocol_document_sha256() -> str:
