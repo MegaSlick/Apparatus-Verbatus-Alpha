@@ -39,6 +39,7 @@ import json
 import os
 import sys
 import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, Final
 
@@ -367,7 +368,17 @@ class RunTree:
         """
         if relative_path.startswith("/") or ".." in relative_path.split("/"):
             raise SchemaRefusal(f"{relative_path!r} escapes the run tree")
-        resolved = (self.root / relative_path).resolve()
+        try:
+            resolved = (self.root / relative_path).resolve()
+        except (OSError, RuntimeError) as error:
+            # `Path.resolve` reports a filesystem-level symlink loop as a
+            # RuntimeError (and some platforms report an OSError) before the
+            # containment comparison below can run.  That is still a path the
+            # run tree cannot safely resolve, not an interpreter failure a stage
+            # should surface as a traceback.
+            raise SchemaRefusal(
+                f"{relative_path!r} could not be resolved inside the run tree: {error}"
+            ) from error
         # is_relative_to, not a string prefix: with a root of `.../r1`, a prefix
         # test would happily accept the sibling directory `.../r1-scratch`.
         if not resolved.is_relative_to(self.root):
@@ -733,14 +744,23 @@ class RunTree:
         # A manifest is a read route too. In particular, an empty directory must
         # not make a missing run authority look like an empty, trustworthy run.
         self._run_authority()
-        stage_root = self.resolve(writing_directory(stage))
         entries: list[dict[str, Any]] = []
-        artifacts_root = stage_root / ARTIFACTS_DIR
-        if artifacts_root.exists():
-            for path in sorted(artifacts_root.rglob("*.json")):
-                record = validate_envelope(_read_json(path))
+        artifacts_root = self._inventory_directory(stage, ARTIFACTS_DIR)
+        if artifacts_root is not None:
+            # Walked whole before any of it is read, so that a refusal about the
+            # shape of the tree -- a cycle, an alias, a directory that cannot be
+            # listed -- is what the caller hears, rather than whichever content
+            # mismatch downstream of it happened to be reached first. Not sorted:
+            # the walk emits in the order `sorted(rglob("*.json"))` did, and says so.
+            members = list(self._walk_artifact_json(artifacts_root))
+            for relative_path, path in members:
+                # One filesystem read supplies both the record that is verified
+                # and the digest published beside its fields.  Reading once to
+                # validate and again to hash allowed a concurrent replacement to
+                # pair metadata from one valid envelope with the digest of another.
+                record, artifact_bytes = _read_json_with_bytes(path)
+                record = validate_envelope(record)
                 self._verify_artifact_run(record)
-                relative_path = str(path.relative_to(self.root))
                 self._verify_artifact_path(relative_path, record)
                 # Door and Exemplar deliberately share one physical directory:
                 # a Door admission is part of what Exemplar must account for.
@@ -756,11 +776,11 @@ class RunTree:
                         "subject_id": record["subject_id"],
                         "outcome": record["outcome"],
                         "relative_path": relative_path,
-                        "sha256": digest_bytes(path.read_bytes()),
+                        "sha256": digest_bytes(artifact_bytes),
                     }
                 )
-        blobs_root = stage_root / BLOBS_DIR
-        blobs = sorted(entry.name for entry in blobs_root.iterdir()) if blobs_root.exists() else []
+        blobs_root = self._inventory_directory(stage, BLOBS_DIR)
+        blobs = [] if blobs_root is None else list(self._walk_blobs(blobs_root))
         return {
             "schema": SCHEMA_LABEL,
             "run_id": self.run_id,
@@ -768,6 +788,224 @@ class RunTree:
             "artifacts": sorted(entries, key=lambda entry: entry["artifact_id"]),
             "blobs": blobs,
         }
+
+    def _inventory_directory(self, stage: str, subdirectory: str) -> Path | None:
+        """The one containment-checked way into a stage's derived inventory directory.
+
+        Both of a manifest's inventories used to be reached by joining a name onto
+        the stage root and asking `exists()`. Neither the join nor `exists()` says
+        anything about *what* is at the end of it, and every wrong answer was the
+        quiet kind. A stage's `artifacts` directory replaced by a symlink to an
+        empty directory outside the run root produced a well-formed, entirely empty
+        manifest -- the same silent loss that was already refused one level down at
+        the `kind` directory, surviving one level up because the containment check
+        was applied to the walk's entries and never to the root it started from. A
+        symlink to an outside directory that *did* hold artifacts refused, but named
+        the child rather than the redirection that was the real fault. Replaced by a
+        regular file, the same path raised `NotADirectoryError` out of the walk with
+        nothing naming the path that caused it.
+
+        A run tree's inventory directories are directories this store made. Asked for
+        one, this returns it only when it is exactly that: inside the tree, not
+        redirected through a link, and a directory. Absent stays absent -- a stage
+        that has published nothing has no directory and an empty inventory is the
+        honest answer -- but absent now means nothing is there, rather than that
+        something unreadable is.
+        """
+        relative = f"{writing_directory(stage)}/{subdirectory}"
+        lexical = self.root / relative
+        # `resolve` first, so a link that leaves the tree is refused as an escape
+        # even when it is an intermediate component of the path.
+        resolved = self.resolve(relative)
+        if resolved != lexical or lexical.is_symlink():
+            raise SchemaRefusal(
+                f"{relative!r} is a link, to {str(resolved)!r}, where this stage's "
+                "inventory directory should be: a manifest is built from the directory "
+                "the store itself wrote, never through a link"
+            )
+        if not resolved.exists():
+            return None
+        if not resolved.is_dir():
+            raise SchemaRefusal(
+                f"{relative!r} is not a directory, so this stage's inventory cannot be "
+                "walked and its manifest cannot be built"
+            )
+        return resolved
+
+    def _walk_artifact_json(self, directory: Path) -> Iterator[tuple[str, Path]]:
+        """Walk `directory` by hand, refusing on every step rather than only at the leaves.
+
+        `rglob` skips descending into a symlinked subdirectory by default: a
+        `kind` directory swapped for a symlink to elsewhere would simply vanish
+        from an `rglob` walk instead of tripping `resolve`'s containment check,
+        and the missing artifacts would read as an honestly empty producer
+        rather than a refusal. Walking with `iterdir` and resolving every entry
+        -- file or directory, real or symlinked -- before deciding whether to
+        trust or descend into it closes that gap: nothing can be skipped into
+        invisibility, only accepted or refused.
+
+        What that costs is that every hostile shape `rglob` absorbed silently now
+        arrives here, and each one has to leave by a named exit:
+
+        `walked` and `ancestors`. Entering symlinked directories makes a symlink
+        cycle reachable, and an in-tree cycle resolves inside the root on every
+        step, so containment alone would walk it forever. `walked` maps every real
+        directory this walk has entered to the path it was entered by, which
+        refuses a cycle *and* refuses aliasing -- two paths in one manifest naming
+        one directory, which enters one artifact twice or, when the aliased
+        directory holds no artifacts, enters nothing and says nothing. `ancestors`
+        is carried beside it only to tell the two apart: a link back into the path
+        currently being walked is a cycle, one into a directory already finished is
+        an alias, and an operator reading the refusal should be told which.
+
+        An explicit stack of directory iterators, not recursion. `rglob` walks a
+        deep tree iteratively; the recursive version of this walk raised
+        `RecursionError` at a depth `rglob` handled, which traded one opaque
+        failure for another on a walk whose whole point is that nothing leaves it
+        unnamed.
+
+        Directory listing and entry type. A directory that cannot be listed
+        (permissions, or a type that changed under the walk) and an entry that is
+        neither a directory nor a regular file are both refused by name. The second
+        is not pedantry: a FIFO named `<something>.json` under a `kind` directory
+        made `_read_json` block on `open` until a writer appeared, which is the one
+        outcome worse than a refusal, because nothing is reported at all.
+
+        `.json` by name, not by `suffix`. `Path(".json").suffix` is empty while
+        `rglob("*.json")` matched that name, so a file called exactly `.json`
+        reached the old walk and was refused for not occupying its derived path,
+        and matching on `suffix` would drop it without a word instead.
+
+        **Artifact-file emission order is the order `sorted(rglob("*.json"))`
+        produced**, so the caller needs no sort of its own. Entries within a
+        directory are taken in name order and a subdirectory is finished before
+        its next sibling begins, which is lexicographic order on the path's
+        components -- and components are what `Path` compares, where a flat string
+        comparison would disagree wherever one directory name is a prefix of
+        another (`kind-b/a.json` sorts before `kind/a.json` as a string, because
+        `-` is below `/`). `rglob` also yielded a directory whose name ended in
+        `.json`, and the old caller then tried to parse the directory as a file.
+        A direct child of `artifacts/` is a kind directory, and this walk descends
+        it because `publish_artifact` permits a kind ending in `.json`. Below that
+        level, however, such a directory occupies the name of artifact bytes and
+        is refused: descending an empty replacement for `<artifact-id>.json`
+        would erase that artifact from the manifest. No digest rests on the
+        traversal order today, since `build_manifest` re-sorts its entries by
+        artifact id; matching the old file order still avoids an incidental
+        change for ordinary trees.
+        """
+        start = directory.resolve()
+        walked: dict[Path, str] = {start: str(directory.relative_to(self.root))}
+        stack: list[tuple[Iterator[Path], frozenset[Path]]] = [
+            (iter(self._listing(directory)), frozenset({start}))
+        ]
+        while stack:
+            entries, ancestors = stack[-1]
+            entry = next(entries, None)
+            if entry is None:
+                stack.pop()
+                continue
+            relative_path = str(entry.relative_to(self.root))
+            resolved = self.resolve(relative_path)
+            if resolved.is_dir():
+                if entry.parent != directory and entry.name.endswith(".json"):
+                    raise SchemaRefusal(
+                        f"{relative_path!r} is named as an artifact but is a directory, "
+                        "so it cannot be read as artifact bytes"
+                    )
+                if resolved in ancestors:
+                    raise SchemaRefusal(
+                        f"{relative_path!r} is a symlink cycle back to a directory "
+                        "already being walked"
+                    )
+                if resolved in walked:
+                    raise SchemaRefusal(
+                        f"{relative_path!r} and {walked[resolved]!r} are the same directory: "
+                        "a manifest may not describe one artifact at two paths"
+                    )
+                if entry.is_symlink():
+                    raise SchemaRefusal(
+                        f"{relative_path!r} is a link to {str(resolved)!r}: a manifest "
+                        "walks the directories the store itself wrote, never an alias"
+                    )
+                walked[resolved] = relative_path
+                stack.append((iter(self._listing(entry)), ancestors | {resolved}))
+            elif entry.is_symlink():
+                # Includes a dangling link whose name is a kind directory rather
+                # than `*.json`: filtering on the name first would make the whole
+                # missing producer directory disappear as an honest empty walk.
+                raise SchemaRefusal(
+                    f"{relative_path!r} is a link to {str(resolved)!r}: a manifest "
+                    "reads the artifact file the store itself wrote, never an alias"
+                )
+            elif entry.name.endswith(".json"):
+                if not resolved.is_file():
+                    raise SchemaRefusal(
+                        f"{relative_path!r} is neither a directory nor a regular file, "
+                        "so it cannot be read as an artifact"
+                    )
+                yield relative_path, resolved
+
+    def _listing(self, directory: Path) -> list[Path]:
+        """One directory's entries in name order, or a refusal naming the directory.
+
+        `rglob` swallows the `PermissionError` from a directory it cannot open and
+        walks on, which would shrink a producer's inventory to whatever happened to
+        be readable and call the manifest complete.
+        """
+        try:
+            return sorted(directory.iterdir())
+        except OSError as error:
+            raise SchemaRefusal(
+                f"{str(directory.relative_to(self.root))!r} could not be listed while "
+                f"this stage's manifest was being built: {error}"
+            ) from error
+
+    def _walk_blobs(self, directory: Path) -> Iterator[str]:
+        """The content-addressed blobs this stage actually holds, in name order.
+
+        The blob inventory was the one leg of a manifest that read a directory and
+        checked nothing it found there. A `<digest>` entry that was really a
+        symlink to a file outside the run root was listed as this stage's blob:
+        the manifest -- itself hashed evidence -- vouched for bytes the tree does
+        not hold, cannot keep from changing, and that no read route can reach,
+        since `read_bytes` resolves the same path and refuses it. The same leg
+        listed a directory or a FIFO left under `blobs/sha256` as though it were
+        stored bytes. Both are refused here, by name, under the containment every
+        other read route in this module already used.
+
+        The shape filter is the blob-side twin of the artifact walk's `*.json`.
+        `put_blob` is the only writer and `blob_path` refuses any name that is not
+        a lowercase sha256 at both ends, so a differently named file cannot be
+        addressed as a blob by any route, and listing it as one puts a claim in
+        hashed evidence that nothing can honour. It also keeps the store's own
+        residue out of the inventory: `_write_temporary` writes `.<name>.tmp-*`
+        beside its target, and a process killed between the write and the link
+        leaves one there -- which used to enter the manifest as a blob and break
+        "delete it and it comes back identical" over a file that was never part of
+        what the run produced.
+
+        Verifying that each blob's bytes still hash to its name is deliberately
+        not done here. A manifest is rebuilt often and blobs are page images and
+        crops; the digest is checked where a blob is actually consumed, against
+        the reference that names it (`common/stage.py`).
+        """
+        for entry in self._listing(directory):
+            relative_path = str(entry.relative_to(self.root))
+            resolved = self.resolve(relative_path)
+            if entry.is_symlink():
+                raise SchemaRefusal(
+                    f"{relative_path!r} is a link to {str(resolved)!r}: a manifest "
+                    "lists the blob file the store itself wrote, never an alias"
+                )
+            if not _is_sha256(entry.name):
+                continue
+            if not resolved.is_file():
+                raise SchemaRefusal(
+                    f"{relative_path!r} is named as a content-addressed blob but is not a "
+                    "regular file"
+                )
+            yield entry.name
 
     def _verify_artifact_path(self, relative_path: str, record: dict[str, Any]) -> None:
         """Require a sealed artifact to live under the path its own fields derive.
@@ -1022,7 +1260,7 @@ def _write_temporary(target: Path, data: bytes) -> Path:
     return temporary
 
 
-def _read_json(path: Path) -> Any:
+def _read_json_with_bytes(path: Path) -> tuple[Any, bytes]:
     # `RecursionError` beside the two obvious ones because it is the same fact —
     # this file could not be read — arriving by a route the tuple did not name.
     # `json`'s scanner recurses per nesting level, so a deeply nested artifact
@@ -1039,9 +1277,14 @@ def _read_json(path: Path) -> Any:
     # already let a shallower-but-still-deep file through; that band is caught
     # where it happens, in `common/contracts/canonical.py`.
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        data = path.read_bytes()
+        return json.loads(data.decode("utf-8")), data
     except (OSError, ValueError, RecursionError) as error:
         raise SchemaRefusal(f"{path} could not be read as an artifact: {error}") from error
+
+
+def _read_json(path: Path) -> Any:
+    return _read_json_with_bytes(path)[0]
 
 
 def _is_sha256(value: Any) -> bool:
