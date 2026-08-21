@@ -24,8 +24,14 @@ material, and a missed act is worse than a poorly read one.
 **crop** — the image region marked out for one act.
 
 **chair** — a numbered place in the pipeline that one model occupies. The chair is the
-role; the model is the occupant, named only in `config/models.toml` and swapped without
-touching code. *Attestator 1* is a chair; whichever model currently sits in it is not.
+role; the model is the occupant, **bound to its chair only in `config/models.toml`** and
+swapped without touching code. *Attestator 1* is a chair; whichever model currently sits
+in it is not.
+
+Binding is the exclusive part, not naming. The materialization inventory in
+`common/chairs/model_store.py` names the same repositories and revisions again, so an
+operator can fetch them before a chair ever resolves; a test reconciles the two lists so
+they cannot drift. Nothing but `models.toml` says which chair a model fills.
 
 **Not "seat".** In `.claude/` and the working notes a *seat* is a model doing an agent's
 job — building, reviewing, auditing. That is harness vocabulary and it stops at the

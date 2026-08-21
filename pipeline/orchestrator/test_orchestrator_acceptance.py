@@ -576,8 +576,36 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # and that string rides in sealed receipt bytes. Neither reread scenario is
 # orchestrated, so no orchestrated tree gains a file: fresh real runs through this
 # module's own helpers held the counts at 64 for happy and 71 for review again.
-HAPPY_RUN_TREE_DIGEST = "063f879d028c9b74873553a35e404d9e38060d9b32fb90e65b51953561ab91ef"
-REVIEW_RUN_TREE_DIGEST = "a0fc210842824032d39fe25624ffda9449f53eb44d5304f18db989ba6418bd59"
+#
+# Re-pinned on the cleanup branch. What moved the digests is CONFIGURATION BYTES:
+# `config/designator_geometry.toml` and `config/serving_recipes.toml` are both
+# digested as raw bytes into `config_digest` (`common/stage.py`), so a comment
+# rewritten in either one moves both scenarios' run authority, and the S8 label was
+# dissolved in both. `config/models.toml` also changed, but only in comments, which
+# its parsed record does not carry.
+#
+# Two things beyond configuration changed on this branch and NEITHER moves these
+# trees, which is a claim rather than an assumption — a stage change that happened
+# not to move a pin is exactly the thing a comment should not round down to "no
+# stage logic moved". The Attestatores page-join failure reason is recorded bytes,
+# but no orchestrated scenario reaches that branch. And
+# `pipeline/5_recensor/run.py::blank_corroboration` had its control flow reordered
+# so the completed-chair evidence validation runs before the witness_uncovered /
+# unresolved-chairs short-circuit: that changes only WHICH path raises
+# `FatalAccounting` over a record this pipeline's own writer could not produce, and
+# these scenarios publish no such record, so their bytes are untouched.
+#
+# Counts and exits held at 64/0 and 71/3.
+# (Values below re-measured twice at the final candidate — after the last byte
+# changed — through this module's own `orchestrate` and `semantic_snapshot_digest`
+# helpers, per the Tier-0 loop lesson that a pin measured mid-branch is a pin
+# measured against a tree nobody pushed. They moved a second time when the
+# CodeRabbit round reworded `config/designator_geometry.toml`'s caveat, which is
+# that lesson arriving on schedule: the first measurement was taken before the
+# review, and a review that changes a sealed configuration file changes the pins
+# with it.)
+HAPPY_RUN_TREE_DIGEST = "c612c175e613a64adc9c4d8bb44586a675dd7b32f5bbe82a5e07d8eab9dfb248"
+REVIEW_RUN_TREE_DIGEST = "d5c9470301b4cb1c82c1f4d0a1d2486136ef8c53079f93abacf53840e21648a2"
 
 
 def orchestrate(

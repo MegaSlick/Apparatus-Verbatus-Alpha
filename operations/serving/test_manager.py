@@ -2309,8 +2309,8 @@ def test_config_catalogue_is_complete_for_the_fixture_roster_and_closed() -> Non
             assert profile.tier == tier
             # The live roster is the offline walking skeleton, so every
             # committed row must be a fixture row. A `vllm` row here would mean
-            # a real chair had been configured to serve without the roster
-            # decision that is Tyrel's at S8.
+            # a real chair had been configured to serve before the real roster
+            # was activated with verified manifests and real serving profiles.
             assert isinstance(profile, FixtureProfile)
 
     raw = profile_row(recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000)

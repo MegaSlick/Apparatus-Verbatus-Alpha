@@ -29,9 +29,10 @@
 #
 # The tier ids below are the ones `config/pod_placement.toml` defines.  The
 # active roster is the offline fixture roster: no real chair is configured to
-# serve, and none is proposed here.  Roster membership is Tyrel's decision at
-# S8, and a real profile needs reviewed, locked vLLM and model-stack versions,
-# a verified manifest, and real-silicon preflight before it can be written.
+# serve, and none is proposed here.  Roster membership is settled — Tyrel ruled
+# it on 2026-08-20 — but a real profile still needs reviewed, locked vLLM and
+# model-stack versions, a verified manifest, and real-silicon preflight before
+# it can be written, and none of those exists yet.
 schema = "serving-recipes.v1"
 
 [[profiles]]

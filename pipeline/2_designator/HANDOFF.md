@@ -142,8 +142,8 @@ independent, page-edge-based check for whether the *geometry itself* looks like
 a page-break continuation; it is recorded, never gating, because a declared
 continuation whose crops do not happen to touch either page's edge (as in this
 stage's own synthetic fixture) is still a genuine continuation. **Continuation
-ownership itself is unresolved between specs 06 and 09** — see "What this
-handoff does not settle" below.
+ownership is settled and is the Recensor's** — see "Continuation ownership"
+below; this record is corroboration, never the relation itself.
 
 ## `kind="page-fallback"`
 
@@ -613,21 +613,53 @@ are disjoint by construction. It is nine orders of magnitude past the ~60,000
 above, so it bounds nothing anyone will reach; it is a proof of disjointness,
 not an operating limit, and the paragraph above is still the real one.
 
+## Continuation ownership
+
+**The relation is the Recensor's, and this stage proposes.** Spec 06's own test 3
+and spec 09 both name the Recensor's link "the authoritative relation" for a
+continuation, and that is what the tree does.
+`pipeline/5_recensor/run.py::recensor_continuation_link` derives the Recensor's
+own continuation fact from the proposal regions' page ordinals alone, and
+`reconcile_continuation` refuses a seal that denies a continuation its own
+evidence already shows — "the Recensor's own reconciliation is the authoritative
+continuation fact and may not be overridden by the seal". The reverse direction,
+a seal claiming a continuation the Recensor's link cannot corroborate, is a
+recorded `continuation_shortfall` that holds the act rather than establishing it.
+
+This stage's proposal-seal `has_continuation` flag is therefore a proposal, and
+`grouping.find_continuation_candidate`'s independent geometric check is recorded
+on `act-group` as `continuation.geometric_corroboration` — evidence for whoever
+reads the act, never a gate here.
+
 ## What this handoff does not settle
 
-**Continuation ownership.** Spec 06's own test 3 and spec 09 both say the
-Recensor's link is "the authoritative relation" for a continuation. In this
-tree, this stage's own proposal-seal `has_continuation` flag — derived from
-which regions were actually cut, per the module docstring above — is the only
-continuation fact that exists anywhere; `pipeline/5_recensor/run.py` only ever
-checks a *shortfall* against it (`continuation_shortfall`), it does not itself
-establish or override the relation. Closing this gap means changing which
-stage's record is authoritative, which is a decision spanning two specs and two
-stages' contracts, not something owned here. It is named, not silently
-resolved: `grouping.find_continuation_candidate`'s independent geometric check
-is recorded on `act-group` as `continuation.geometric_corroboration` precisely
-so the fact is visible for whoever does settle it, without this build changing
-`pipeline/5_recensor/run.py` to act on it.
+**An unproposed cross-page half act — an ACCEPTED EVIDENCE DEFECT, not a benign
+limitation.** The Recensor reconciles only continuations this stage *proposed*, so
+an act split across a page break that was never declared produces no finding in
+any stage: grouping's geometric detector only corroborates declared
+continuations, residual ink misses it whenever the cut covers the visible half,
+and truncation signals are single-act.
+
+**State the consequence plainly, because a consumer of this contract must not
+read it as acceptable.** Such an act is lost with **no hold and no review item**,
+which means a downstream reader cannot distinguish "this act was not there" from
+"this act was missed" — the exact discrimination `GOALS.md`'s "a missed act is
+worse than a poorly read act" exists to preserve, and the one failure mode
+`GOVERNANCE.md` 2 refuses by name. Nothing in this stage's output marks the page
+as suspect, so no recovery loop can be aimed at it either.
+
+**This stage did not create the defect and does not close it here.** It predates
+this contract and was previously hidden behind a claim that continuation
+ownership was unresolved; naming it is what makes it fixable. Closing it needs
+bounded cross-page detection and an explicit hold or review outcome for the
+half act — a change to what this stage *proposes*, with its own tests and its own
+review, not a wording change. It is the same family as the zero-proposal-page
+gap, is tracked as an open evidence defect rather than as a known limitation, and
+belongs to whichever work item settles that one.
+
+**Until it is closed, no run over real material may be described as having
+accounted for every act on a page.** The accounting is honest about what it
+measured; it does not measure this.
 
 **Recovery from a structural hold.** Spec 06's test 4 asks for three things: the
 page held with a named reason, no silent gap downstream, and "the recovery

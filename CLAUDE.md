@@ -54,6 +54,16 @@ These numbers are cited by hooks, tests, and agent briefs. Append; never insert 
 in `standing/`; raw machine evidence in `raw/`; completed work in `archive/`; disposable
 output in `scratch/`. A note never becomes an instruction by surviving a session.
 
+**Record what he means, not how he typed it.** When Tyrel gives direction in chat,
+capture the principle and write it clean, in the project's own voice, with the
+consequences worked out and the collisions named. Do not paste his message in as a quoted
+block — he types fast while thinking aloud, and a quotation of that reads as a document he
+authored and stands behind. The write-up is meant to be better than the message, not a copy
+of it. **The exception is a ruling whose exact wording could later be disputed or
+over-read**: those go in a standing ledger, quoted, because there the words themselves are
+the evidence, and a verbatim record is what lets a later session tell his ruling apart from
+someone's reading of it. Design notes and plans are written clean; ledgers may quote.
+
 **Governed paths:** `CLAUDE.md`, `GOALS.md`, `GOVERNANCE.md`, `ARCHITECTURE.md`,
 `GLOSSARY.md`, the root `README.md`, `DATA_CONTRACT.md` once it exists, and all of
 `.claude/`. Tyrel approves their substance; the main session makes the edit through the
@@ -70,14 +80,24 @@ Stage only files touched for the task; never `git add -A`.
 
 Repository-writing agents work in chambers. The host session remains accountable for the
 goal, decisions, integrated diff, and verification. A chamber is pinned to a commit,
-cannot push, returns a branch, and may not edit governed paths. Read its diff and verify
-load-bearing claims before integrating it. Use agents for bounded work that benefits from
-independent context; do not create ceremony merely to satisfy a roster.
+cannot push, returns a branch, and may not edit governed paths. Use agents for bounded
+work that benefits from independent context; do not create ceremony merely to satisfy a
+roster.
 
-Default seats are Sonnet and Terra at medium; Opus and Sol at high for audit and
-correction work. A Fable seat, and the `ultracode`/`ultra` effort levels, are dispatched
-only when Tyrel asks in the session. `.claude/agents/README.md` carries the full seat
-table and the ruling's provenance.
+**A chamber builds and audits; the host integrates.** Charge the chamber with its own
+independent audit round, then spend the host's attention on the load-bearing claims, the
+check results, the review loops, the gate, and the push — not on reading every returned
+line a second time. A host that re-reads the whole diff has spent the context the chamber
+existed to save. **Hard rule 6 is untouched by this.** What enters is still inspected, and
+the session that lands it must still be able to justify it; this says where the reading
+happens, not whether it happens.
+
+**Choose the seat for the job and name it in the dispatch. There is no standing vendor
+ratio.** Sonnet and Terra are ordinary build seats at medium; Opus and Sol are the audit
+and correction seats at high. Vendor diversity is a reason to reach for a seat, not a quota
+to satisfy. A Fable seat, and the `ultracode`/`ultra` effort levels, are dispatched only
+when Tyrel asks in the session. `.claude/agents/README.md` carries the full seat table and
+the rulings' provenance.
 
 ## Quarantine
 
@@ -91,6 +111,15 @@ The first push and pull request need Tyrel's clear approval. Push the finished t
 stream of checkpoints. Later pushes to the same open pull request need no repeat approval,
 but say when they happen. Never push directly to `main`; never force-push work you do not
 exclusively own. Tyrel alone merges.
+
+**A standing push grant is per-queue and dies with its queue.** It covers the branches it
+was asked about and nothing after them; never read a past queue's grant as covering a new
+one. Ask again.
+
+**Never chain a push, pull request, or merge behind piped test output.** A pipeline's exit
+status is its last command's, so `gate | tail && push` runs the push after a *failed* gate
+— that is how a red candidate once reached an open pull request. Redirect the gate's output
+to a file, echo `$?`, read it, and push in a separate command.
 
 Review is proportional to risk. Before the first push, run the local gate and use fresh,
 independent review where a defect would be expensive or quiet. Consequential review targets
@@ -112,6 +141,11 @@ payloads. The Claude guard also blocks disabling those hooks. `--no-verify` and
 Lead with the outcome. Say which checks actually ran, what remains blocked, and the one
 recommended next action. Ask only when rule 1 reserves the choice, governance genuinely
 conflicts, or progress cannot continue after reasonable investigation. Otherwise decide.
+
+**Sessions are usually semi-attended.** Tyrel is around but not watching every reply, often
+from a phone. Put questions at the start of a session or while he is clearly engaging;
+mid-task, once he has gone quiet, decide and keep working — a question posted into silence
+stalls the whole run until he happens to look. Keep replies scannable.
 
 **Finish the task before reporting.** A progress report is not a stopping point. While
 work already named as remaining is unblocked, carry on in the same reply instead of

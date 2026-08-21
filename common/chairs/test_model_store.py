@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import shutil
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -29,6 +30,7 @@ from common.chairs.model_store import (
     write_derived_inventory,
     write_download_record,
 )
+from common.chairs.models import ChairIdentity
 from common.chairs.registry import CACHE_DESCRIPTOR
 from common.contracts.canonical import canonical_bytes, digest_bytes
 
@@ -608,11 +610,11 @@ def test_required_artifact_refuses_not_yet_fetched_by_name(tmp_path):
 
 def test_required_artifact_refuses_fetched_and_lost_bytes_by_filename(tmp_path):
     record = _store(tmp_path)
-    entry = next(item for item in record["artifacts"] if item["artifact"] == "qwen3.5-9B")
+    entry = next(item for item in record["artifacts"] if item["artifact"] == "qwen3.8-27B")
     (tmp_path / entry["snapshot"] / "model.safetensors").unlink()
 
     with pytest.raises(DigestMismatchRefusal, match="model.safetensors: missing file"):
-        require_store_artifact(tmp_path, "qwen3.5-9B")
+        require_store_artifact(tmp_path, "qwen3.8-27B")
 
 
 def test_required_artifact_names_every_chair_it_serves_not_one_rows_chair(tmp_path):
@@ -703,9 +705,9 @@ def test_write_download_record_can_express_a_partial_store(tmp_path):
 def test_every_store_chair_is_a_models_toml_role_or_one_recorded_exception():
     """A chair name the roster does not know cannot be joined to anything.
 
-    The store exists to be bound to `config/models.toml` at S8. If its chair
-    names drift from the roster's role keys, the divergence surfaces on the
-    rented card during pod assembly instead of here.
+    The store exists to be bound to `config/models.toml` when the real roster is
+    activated. If its chair names drift from the roster's role keys, the
+    divergence surfaces on the rented card during pod assembly instead of here.
     """
 
     config = load_models_toml(ROOT / "config" / "models.toml")
@@ -715,6 +717,94 @@ def test_every_store_chair_is_a_models_toml_role_or_one_recorded_exception():
     assert store_chairs - set(config.chairs) == set(CHAIRS_WITHOUT_ROSTER_ROLE)
     assert set(CHAIRS_WITHOUT_ROSTER_ROLE) <= store_chairs
     assert all(reason.strip() for reason in CHAIRS_WITHOUT_ROSTER_ROLE.values())
+
+
+def _artifact_disagreements(chairs) -> list[str]:
+    """Reconcile a roster's Hugging Face chairs against the store's own pins.
+
+    Extracted so the reconciliation can be run against a roster that is not the
+    live one. The live roster is all `local-repository` fixtures, so running this
+    over it compares nothing — which is the correct answer for the current
+    repository state and is exactly why it cannot be the only test.
+    """
+
+    store = {item.chair: item for item in REQUIRED_ARTIFACTS}
+    problems = []
+    for role, identity in sorted(chairs.items()):
+        if not isinstance(identity, ChairIdentity) or identity.source != "huggingface":
+            continue
+        entry = store.get(role)
+        if entry is None:
+            problems.append(f"{role}: resolves to a fetched repository, store names no artifact")
+            continue
+        if (entry.source, entry.repo, entry.revision) != (
+            "huggingface",
+            identity.repo,
+            identity.revision,
+        ):
+            problems.append(
+                f"{role}: roster says {identity.repo}@{identity.revision}, "
+                f"store says {entry.repo}@{entry.revision}"
+            )
+    return problems
+
+
+def test_the_live_roster_never_disagrees_with_the_store_about_an_artifact():
+    """Role keys reconciling is not the same as the artifacts reconciling.
+
+    The test above proves the two lists agree on *which chairs exist*. It does not
+    look at what each chair points AT, and that is the half that actually drifted:
+    when the Perlector moved from `Qwen3.5-9B` to `Qwen3.8-27B`, `models.toml` and
+    `REQUIRED_ARTIFACTS` could have been changed one without the other and every
+    committed check would still have passed, while a pod materialized the store and
+    fetched the wrong weights.
+
+    Vacuous against the live roster today — every live chair is a fixture snapshot —
+    so the test below it supplies a parseable Hugging Face roster and proves the
+    reconciliation actually fires. Both are kept: this one guards the file that
+    ships, that one guards the logic.
+    """
+
+    config = load_models_toml(ROOT / "config" / "models.toml")
+    assert _artifact_disagreements(config.chairs) == []
+
+
+def test_a_huggingface_roster_must_name_the_store_s_exact_repo_and_revision():
+    """The reconciliation, exercised against a roster that actually has a repo.
+
+    `models.toml` is the sole chair-to-model authority (GLOSSARY, "chair"); this
+    store is a materialization inventory an operator fetches against *before* any
+    chair resolves, which is why it names the same pins a second time rather than
+    deriving them, and why they need reconciling rather than trusting.
+
+    Built from the store's own Perlector entry so the agreeing case cannot rot into
+    a second hard-coded pin that drifts alongside the first — the only literals here
+    are the mutations.
+    """
+
+    perlector = next(item for item in REQUIRED_ARTIFACTS if item.chair == "perlector")
+    assert perlector.source == "huggingface", "the Perlector pin stopped being a fetched repo"
+    live = load_models_toml(ROOT / "config" / "models.toml").chairs["perlector"]
+    agreeing = replace(
+        live,
+        source="huggingface",
+        repo=perlector.repo,
+        revision=perlector.revision,
+    )
+
+    assert _artifact_disagreements({"perlector": agreeing}) == []
+
+    drifted_revision = replace(agreeing, revision="0" * 40)
+    assert _artifact_disagreements({"perlector": drifted_revision}) == [
+        f"perlector: roster says {perlector.repo}@{'0' * 40}, "
+        f"store says {perlector.repo}@{perlector.revision}"
+    ]
+
+    drifted_repo = replace(agreeing, repo="Qwen/Qwen3.5-9B")
+    assert len(_artifact_disagreements({"perlector": drifted_repo})) == 1
+
+    unknown_chair = _artifact_disagreements({"annotator": agreeing})
+    assert unknown_chair == ["annotator: resolves to a fetched repository, store names no artifact"]
 
 
 # --- O3: the pod-sharing contract, encoded rather than described ----------------
@@ -734,7 +824,7 @@ def test_pod_materialization_plan_splits_verified_store_halves(tmp_path):
         "attestator_2": "hf/dai-recordgold-atr",
         "attestator_3": "hf/churro-3B",
         "secondary_proposer": "hf/yolo26-detection",
-        "perlector": "hf/qwen3.5-9B",
+        "perlector": "hf/qwen3.8-27B",
     }
     assert len({row["snapshot"] for row in plan["cache_root_entries"].values()}) == 5
     # model_root is local-repository only; it is not a second cache.
@@ -752,7 +842,7 @@ def test_pod_materialization_plan_refuses_a_chair_not_fetched_yet(tmp_path):
 
 def test_pod_materialization_plan_reverifies_source_bytes(tmp_path):
     record = _store(tmp_path)
-    entry = next(item for item in record["artifacts"] if item["artifact"] == "qwen3.5-9B")
+    entry = next(item for item in record["artifacts"] if item["artifact"] == "qwen3.8-27B")
     (tmp_path / entry["snapshot"] / "config.json").write_text(
         '{"fixture":"swapped"}', encoding="utf-8"
     )
@@ -857,7 +947,7 @@ def test_the_ad_hoc_download_record_refusal_names_what_the_v1_record_needs(tmp_p
 
     ad_hoc = {
         "datalab-to/chandra-ocr-2": {"revision": "af93b47", "path": "chandra"},
-        "Qwen/Qwen3.5-9B": {"revision": "c202236", "path": "qwen"},
+        "Qwen/Qwen3.8-27B": {"revision": "1d4bf0f", "path": "qwen"},
     }
     (tmp_path / "download_record.json").write_bytes(canonical_bytes(ad_hoc))
 
@@ -866,7 +956,7 @@ def test_the_ad_hoc_download_record_refusal_names_what_the_v1_record_needs(tmp_p
 
     message = str(refusal.value)
     assert "missing=['artifacts', 'capacity', 'layout', 'schema']" in message
-    assert "unexpected=['Qwen/Qwen3.5-9B', 'datalab-to/chandra-ocr-2']" in message
+    assert "unexpected=['Qwen/Qwen3.8-27B', 'datalab-to/chandra-ocr-2']" in message
 
 
 def test_a_roster_divergence_names_the_pin_it_expected_and_the_one_it_found(tmp_path):
@@ -906,12 +996,12 @@ def test_a_digest_manifest_must_live_under_the_declared_manifests_root(tmp_path)
 def test_artifact_cannot_claim_another_artifacts_verified_snapshot(tmp_path):
     record = _store(tmp_path)
     chandra = next(item for item in record["artifacts"] if item["artifact"] == "chandra-ocr-2")
-    qwen = next(item for item in record["artifacts"] if item["artifact"] == "qwen3.5-9B")
+    qwen = next(item for item in record["artifacts"] if item["artifact"] == "qwen3.8-27B")
     qwen["snapshot"] = chandra["snapshot"]
     qwen["manifest"] = chandra["manifest"]
     qwen["digest_manifest"] = chandra["digest_manifest"]
 
-    with pytest.raises(DigestMismatchRefusal, match="artifact-keyed path 'hf/qwen3.5-9B'"):
+    with pytest.raises(DigestMismatchRefusal, match="artifact-keyed path 'hf/qwen3.8-27B'"):
         derived_inventory(record)
 
 
@@ -927,7 +1017,7 @@ def test_store_refuses_a_required_weight_absent_from_a_rewritten_manifest(tmp_pa
     """A config-only snapshot cannot define its own smaller meaning of complete."""
 
     record = _store(tmp_path)
-    entry = next(item for item in record["artifacts"] if item["artifact"] == "qwen3.5-9B")
+    entry = next(item for item in record["artifacts"] if item["artifact"] == "qwen3.8-27B")
     snapshot = tmp_path / entry["snapshot"]
     (snapshot / "model.safetensors").unlink()
     entry["digest_manifest"] = write_manifest(

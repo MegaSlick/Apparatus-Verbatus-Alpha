@@ -1,7 +1,12 @@
-# The only place a model is named (spec 02, master plan §2). Nothing in
-# `common/chairs/` may rank, prefer, select, substitute or fall back among chairs,
-# revisions, recipes or caches: resolution is by name, and the only outcomes are
-# the named artifact or a refusal (GOVERNANCE 3, read as ops rather than models).
+# The only place a model is BOUND TO A CHAIR (spec 02, master plan §2). It is not
+# the only place a model is named: `common/chairs/model_store.py` names the same
+# repositories and revisions again, as the materialization inventory an operator
+# fetches against, and `test_model_store.py` reconciles the two lists so they
+# cannot drift. Binding is what lives here — which chair resolves to which
+# artifact — and nothing else may do it. Nothing in `common/chairs/` may rank,
+# prefer, select, substitute or fall back among chairs, revisions, recipes or
+# caches: resolution is by name, and the only outcomes are the named artifact or
+# a refusal (GOVERNANCE 3, read as ops rather than models).
 #
 # Roles are configuration keys, not concepts — `designator_structure`,
 # `attestator_1..n`, `perlector`, `secondary_proposer`, `annotator`. A role added
@@ -14,8 +19,11 @@
 # a scanned register. No model weights are vendored and nothing is downloaded.
 # `proof/build_model_fixtures.py` regenerates them and prints these pins.
 #
-# The real roster is at the bottom, commented out, pending Tyrel's S8 approval.
-# It does not participate in resolution, ranking, fallback, or the fixture run.
+# The real roster is at the bottom, commented out. Its MEMBERSHIP is settled —
+# Tyrel ruled it on 2026-08-20 — but a roster cannot be uncommented until each
+# chair has a verified manifest and a serving-recipe row at every tier, which a
+# build that fetched nothing cannot produce. It does not participate in
+# resolution, ranking, fallback, or the fixture run.
 
 # `path` and `manifest` are relative to this file's directory, and `..`,
 # absolute paths and symlink escapes are all refused. Off-pod the model root is
@@ -96,19 +104,29 @@ license_note = "fixture identity only; no model weights or model license apply"
 state = "absent"
 reason = "no secondary proposer is configured for the offline walking skeleton"
 
-# Real roster, commented pending Tyrel's S8 approval. Resolving a revision is not
-# choosing a roster: roster membership is his decision at S8, and nothing below
-# was added, removed or ranked here. The chair-to-model mapping is WITNESS_BENCH's
-# own "Chair today" column, read across unchanged — three witnesses, of which
-# chandra-ocr-2 also fills the structure chair ("one model may serve more than one
-# role... configuration, not architecture", ARCHITECTURE).
+# The real roster, RULED BY TYREL ON 2026-08-20. His words, quoted here because
+# the ruling ledger lives in the local untracked workbench and does not travel
+# with this file: "For now we will have qwen 3.8 27b as the perlector model and
+# churro,dai and chandra as the first three." Membership is therefore settled and
+# is not a session's to revisit.
+# It stays commented because activating a chair needs more than a name — a
+# verified manifest and a serving-recipe row per tier, neither of which exists
+# yet (see the note above). chandra-ocr-2 also fills the structure chair ("one
+# model may serve more than one role... configuration, not architecture",
+# ARCHITECTURE), so it is pinned twice at the same revision. The roles Tyrel did
+# not speak to — secondary_proposer and the absent annotator — stand as drafted
+# from WITNESS_BENCH's "Chair today" column and are not part of his ruling.
 #
 # The abbreviated revisions the archived research file carries (`af93b47…`,
-# `ca2150e…`) are not pins and are deliberately not copied. These full pins were
-# resolved on 2026-08-03 UTC with the exact command
-# `git ls-remote --exit-code https://huggingface.co/<repo> refs/heads/main`.
-# This is a network read only; no model snapshot was downloaded, and each
-# abbreviated prefix in the archived memo matches the full id resolved here.
+# `ca2150e…`) are not pins and are deliberately not copied. The four
+# witness and proposer pins were resolved on 2026-08-03 UTC with the exact
+# command `git ls-remote --exit-code https://huggingface.co/<repo>
+# refs/heads/main`. This is a network read only; no model snapshot was
+# downloaded, and each abbreviated prefix in the archived memo matches the full
+# id resolved here. The Perlector pin was resolved the same way on 2026-08-20
+# UTC, after Tyrel's roster ruling replaced the drafted Qwen3.5-9B with
+# Qwen3.8-27B; its declared licence was read from the repository's own card
+# metadata at that same moment and is recorded on its row.
 #
 # `digest_manifest` and `manifest` are unfilled below on purpose: a manifest can
 # only be built from a verified fetch, and this build fetched nothing. They are
@@ -126,9 +144,9 @@ reason = "no secondary proposer is configured for the offline walking skeleton"
 # Teklia/YOLOv26-DAI-CReTDHI-Record-Detection:
 # git ls-remote --exit-code https://huggingface.co/Teklia/YOLOv26-DAI-CReTDHI-Record-Detection refs/heads/main
 # 0c57f057391113579e7af170b864542f049e67aa	refs/heads/main
-# Qwen/Qwen3.5-9B:
-# git ls-remote --exit-code https://huggingface.co/Qwen/Qwen3.5-9B refs/heads/main
-# c202236235762e1c871ad0ccb60c8ee5ba337b9a	refs/heads/main
+# Qwen/Qwen3.8-27B:
+# git ls-remote --exit-code https://huggingface.co/Qwen/Qwen3.8-27B refs/heads/main
+# 1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0	refs/heads/main
 #
 # [chairs.designator_structure]
 # state = "configured"
@@ -138,7 +156,7 @@ reason = "no secondary proposer is configured for the offline walking skeleton"
 # digest_manifest = "<sha256-of-canonical-manifest>"
 # manifest = "manifests/designator_structure-af93b47dba1b47b6640c86ccf487ed2260ab9a09.json"
 # serving_recipe = "<serving-recipe>"
-# license_note = "Revenue-capped; competitive use barred"
+# license_note = "Revenue-capped; competitive use barred. Accepted under the research track (Tyrel, 2026-08-20)"
 #
 # WITNESS_BENCH lists chandra-ocr-2 as "Designator structure + witness", so it
 # fills two roles and is pinned twice, at the same revision.
@@ -151,7 +169,7 @@ reason = "no secondary proposer is configured for the offline walking skeleton"
 # digest_manifest = "<sha256-of-canonical-manifest>"
 # manifest = "manifests/attestator_1-af93b47dba1b47b6640c86ccf487ed2260ab9a09.json"
 # serving_recipe = "<serving-recipe>"
-# license_note = "Revenue-capped (>$2M revenue/funding barred; competitive use barred)"
+# license_note = "Revenue-capped (>$2M revenue/funding barred; competitive use barred). Accepted under the research track (Tyrel, 2026-08-20)"
 #
 # [chairs.attestator_2]
 # state = "configured"
@@ -161,7 +179,7 @@ reason = "no secondary proposer is configured for the offline walking skeleton"
 # digest_manifest = "<sha256-of-canonical-manifest>"
 # manifest = "manifests/attestator_2-e371095d4ffe585f31f4974462931ddbac61ff64.json"
 # serving_recipe = "<serving-recipe>"
-# license_note = "No license declared at all; using it is Tyrel's explicit licensing decision, recorded when he approves the roster"
+# license_note = "No licence declared at all; accepted under the research track (Tyrel, 2026-08-20) — weights are pulled from the repository at the pinned revision, never vendored, and a downstream operator fetches them and accepts whatever terms apply at the source"
 #
 # [chairs.attestator_3]
 # state = "configured"
@@ -171,7 +189,7 @@ reason = "no secondary proposer is configured for the offline walking skeleton"
 # digest_manifest = "<sha256-of-canonical-manifest>"
 # manifest = "manifests/attestator_3-ca2150ea465d5a3d67818c50e234b9422619c75d.json"
 # serving_recipe = "<serving-recipe>"
-# license_note = "Weights: Qwen research license (research only); code incl. prompts: Apache-2.0"
+# license_note = "Weights: Qwen research licence (research only); code incl. prompts: Apache-2.0. Accepted under the research track (Tyrel, 2026-08-20)"
 #
 # [chairs.secondary_proposer]
 # state = "configured"
@@ -181,17 +199,17 @@ reason = "no secondary proposer is configured for the offline walking skeleton"
 # digest_manifest = "<sha256-of-canonical-manifest>"
 # manifest = "manifests/secondary_proposer-0c57f057391113579e7af170b864542f049e67aa.json"
 # serving_recipe = "<serving-recipe>"
-# license_note = "AGPL-3.0"
+# license_note = "AGPL-3.0. Accepted under the research track (Tyrel, 2026-08-20)"
 #
 # [chairs.perlector]
 # state = "configured"
 # source = "huggingface"
-# repo = "Qwen/Qwen3.5-9B"
-# revision = "c202236235762e1c871ad0ccb60c8ee5ba337b9a"
+# repo = "Qwen/Qwen3.8-27B"
+# revision = "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0"
 # digest_manifest = "<sha256-of-canonical-manifest>"
-# manifest = "manifests/perlector-c202236235762e1c871ad0ccb60c8ee5ba337b9a.json"
+# manifest = "manifests/perlector-1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0.json"
 # serving_recipe = "<serving-recipe>"
-# license_note = "Apache-2.0"
+# license_note = "Apache-2.0, read from the repository card 2026-08-20; accepted under the research track (Tyrel, 2026-08-20)"
 #
 # The ledger item spec 02 carries: the ARCHITECTURE annotation-layer wording is
 # owed before Spec 11 builds, so the annotator role is listed and stays commented

@@ -52,7 +52,7 @@ its field set is **closed and checked** (`validate_record_fields`), and it conta
 act_id, act_key, page_id
 text, text_hash
 status = "established", text_status
-regions, provenance, annotations, evidence_ref
+regions, provenance, annotations, uncertainty, evidence_ref
 dissent_ref, perlectio_ref, recensor_ref, self_hash
 ```
 

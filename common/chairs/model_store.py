@@ -115,25 +115,27 @@ REQUIRED_ARTIFACTS = (
     RequiredArtifact("proposer_surya2", "surya2-detection", "local-repository", None, None),
     RequiredArtifact(
         "perlector",
-        "qwen3.5-9B",
+        "qwen3.8-27B",
         "huggingface",
-        "Qwen/Qwen3.5-9B",
-        "c202236235762e1c871ad0ccb60c8ee5ba337b9a",
+        "Qwen/Qwen3.8-27B",
+        "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
     ),
 )
 # The `chair` column above is a `config/models.toml` role key, not a label: an
 # inventory whose chair names cannot be joined to the roster tells the operator
 # who materializes the store nothing about which chair each snapshot serves.
 # `test_model_store.py` reconciles the two lists, with exactly one recorded
-# exception — Surya 2 has no roster role yet, and roster membership is Tyrel's
-# decision at S8 (CLAUDE.md hard rule 1), so this store entry names the artifact
-# R2's Designator geometry adapter is built against and waits for that word.
+# exception — Surya 2 has no roster role. Tyrel's roster ruling of 2026-08-20
+# named a Perlector and three witnesses and no Surya chair, so the absence is a
+# settled fact rather than a pending word; this store entry names the artifact
+# R2's Designator geometry adapter is built against, and the open question is
+# whether that adapter is ever chaired or removed, which is engineering.
 CHAIRS_WITHOUT_ROSTER_ROLE = MappingProxyType(
     {
         "proposer_surya2": (
             "config/models.toml configures no Surya detection chair, in its live "
-            "fixture roster or its commented real roster; roster membership is "
-            "Tyrel's decision at S8"
+            "fixture roster or its commented real roster, and Tyrel's roster "
+            "ruling of 2026-08-20 named none"
         )
     }
 )
@@ -361,7 +363,7 @@ def require_complete_store(store_root: str | Path) -> dict[str, Any]:
     ``verify_store`` proves the bytes that exist; it never invents the ones that
     do not, so it returns a partial inventory rather than refusing outright.
     This is the door for a consumer that genuinely needs every roster artifact
-    on disk — S8 roster activation or a pod materialization plan. It accepts the
+    on disk — activating the real roster, or a pod materialization plan. It accepts the
     store root rather than an inventory-shaped mapping so a caller cannot flip a
     derived ``complete`` flag while bytes are pending or missing.
     """
