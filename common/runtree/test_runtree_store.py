@@ -16,6 +16,7 @@ import inspect
 import json
 import os
 import re
+import sys
 from pathlib import Path
 
 import pytest
@@ -28,11 +29,18 @@ from common.contracts.envelope import build_envelope
 from common.contracts.errors import ApprovalRefusal, IncompatibleReuse, SchemaRefusal
 from common.contracts.identities import artifact_id
 from common.contracts.outcomes import INTERIM_GRANULARITY_BASIS
-from common.contracts.stages import DESIGNATOR, DOOR, EXEMPLAR, PERLECTOR
+from common.contracts.stages import DESIGNATOR, DOOR, EXEMPLAR, PERLECTOR, writing_directory
 from common.corpus_register import empty_register
 from common.recensor_receipt import build_recensor_partition_receipt
 from common.runtree import store as runtree_store
-from common.runtree.store import INDEX_FILE, RECEIPTS_DIR, RUN_FILE, RunTree
+from common.runtree.store import (
+    ARTIFACTS_DIR,
+    BLOBS_DIR,
+    INDEX_FILE,
+    RECEIPTS_DIR,
+    RUN_FILE,
+    RunTree,
+)
 
 PAGE_BYTES = b"synthetic page one"
 SOURCE = [{"relative_path": "proof/page-1.png", "sha256": digest_bytes(PAGE_BYTES), "ordinal": 1}]
@@ -886,6 +894,528 @@ def test_an_empty_stage_manifest_is_honest_rather_than_absent(tmp_path):
     manifest = tree.build_manifest(DESIGNATOR)
     assert manifest["artifacts"] == []
     assert manifest["blobs"] == []
+
+
+def test_a_manifest_refuses_a_derived_artifact_symlink_outside_the_run_tree(tmp_path):
+    tree = make_run(tmp_path)
+    envelope = make_envelope()
+    outside = tmp_path / "outside-artifact.json"
+    outside.write_bytes(canonical_bytes(envelope))
+    artifact = tree.resolve(tree.artifact_path(DESIGNATOR, "proposal", envelope["artifact_id"]))
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.symlink_to(outside)
+
+    with pytest.raises(SchemaRefusal, match="resolves outside the run tree"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_a_manifest_refuses_a_derived_artifact_symlink_inside_the_run_tree(tmp_path):
+    """A contained target does not make a file alias an artifact the store wrote."""
+    tree = make_run(tmp_path)
+    envelope = make_envelope()
+    inside = tree.root / "aliased-artifact.json"
+    inside.write_bytes(canonical_bytes(envelope))
+    artifact = tree.resolve(tree.artifact_path(DESIGNATOR, "proposal", envelope["artifact_id"]))
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.symlink_to(inside)
+
+    with pytest.raises(SchemaRefusal, match="is a link"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_a_manifest_refuses_a_kind_directory_symlinked_outside_the_run_tree(tmp_path):
+    """A symlink one level above the artifact -- the `kind` directory itself.
+
+    `rglob`, which the walk used before this fix, does not descend into a
+    symlinked subdirectory by default: swapping the whole `kind` directory for
+    a symlink made every artifact under it vanish from the walk rather than
+    trip the containment refusal, and the manifest read as honestly empty
+    instead of refusing. Refusal, not silent loss, is required here.
+    """
+    tree = make_run(tmp_path)
+    envelope = make_envelope()
+    outside = tmp_path / "outside-kind-directory"
+    outside.mkdir()
+    (outside / f"{envelope['artifact_id']}.json").write_bytes(canonical_bytes(envelope))
+    kind_directory = tree.resolve(
+        tree.artifact_path(DESIGNATOR, "proposal", envelope["artifact_id"])
+    ).parent
+    kind_directory.parent.mkdir(parents=True, exist_ok=True)
+    kind_directory.symlink_to(outside)
+
+    with pytest.raises(SchemaRefusal, match="resolves outside the run tree"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_a_manifest_refuses_a_symlink_cycle_inside_the_run_tree(tmp_path):
+    """A directory symlink back to one of its own ancestors, entirely in-root.
+
+    Every step of a cycle like this resolves inside the run tree, so
+    containment alone never trips -- the walk would recurse until Python's
+    interpreter raises an opaque `RecursionError`. Refused by name instead.
+    """
+    tree = make_run(tmp_path)
+    kind_directory = tree.resolve(tree.artifact_path(DESIGNATOR, "proposal", "placeholder")).parent
+    kind_directory.mkdir(parents=True, exist_ok=True)
+    (kind_directory / "loop").symlink_to(kind_directory)
+
+    with pytest.raises(SchemaRefusal, match="symlink cycle"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_a_manifest_refuses_a_filesystem_symlink_loop_instead_of_skipping_it(tmp_path):
+    """A self-referential link has no directory target the walk can safely enter."""
+    tree = make_run(tmp_path)
+    artifacts_root = tree.resolve(f"{writing_directory(DESIGNATOR)}/{ARTIFACTS_DIR}")
+    artifacts_root.mkdir(parents=True)
+    (artifacts_root / "loop").symlink_to("loop", target_is_directory=True)
+
+    with pytest.raises(SchemaRefusal, match="is a link"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_a_manifest_names_a_path_resolution_failure(tmp_path, monkeypatch):
+    """Platforms disagree on whether an unresolvable link raises OSError or RuntimeError."""
+    tree = make_run(tmp_path)
+    envelope = make_envelope()
+    tree.publish_artifact(envelope)
+    artifact = tree.resolve(tree.artifact_path(DESIGNATOR, "proposal", envelope["artifact_id"]))
+    real_resolve = Path.resolve
+
+    def fail_for_artifact(path, *args, **kwargs):
+        if path == artifact:
+            raise RuntimeError("symlink loop")
+        return real_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", fail_for_artifact)
+
+    with pytest.raises(SchemaRefusal, match="could not be resolved inside the run tree"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_a_manifest_refuses_a_kind_directory_linked_to_nothing(tmp_path):
+    """A dangling non-JSON link must not erase a producer directory from the walk."""
+    tree = make_run(tmp_path)
+    artifacts_root = tree.resolve(f"{writing_directory(DESIGNATOR)}/{ARTIFACTS_DIR}")
+    artifacts_root.mkdir(parents=True)
+    (artifacts_root / "proposal").symlink_to("gone", target_is_directory=True)
+
+    with pytest.raises(SchemaRefusal, match="is a link"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_a_manifest_refuses_a_unique_directory_link_inside_the_run_tree(tmp_path):
+    """A link is not safe merely because its target has no second walked name."""
+    tree = make_run(tmp_path)
+    envelope = make_envelope()
+    elsewhere = tree.root / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / f"{envelope['artifact_id']}.json").write_bytes(canonical_bytes(envelope))
+    artifacts_root = tree.resolve(f"{writing_directory(DESIGNATOR)}/{ARTIFACTS_DIR}")
+    artifacts_root.mkdir(parents=True)
+    (artifacts_root / "proposal").symlink_to(elsewhere, target_is_directory=True)
+
+    with pytest.raises(SchemaRefusal, match="is a link"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_a_manifest_refuses_one_artifact_directory_reachable_at_two_paths(tmp_path):
+    """Aliasing: a link inside the tree to another directory inside the tree.
+
+    Every step of it is contained, but a contained link still puts one artifact
+    into one manifest at two paths.  The refusal must not depend on whether name
+    ordering happens to walk the real directory or its alias first.
+    """
+    tree = make_run(tmp_path)
+    envelope = make_envelope()
+    tree.publish_artifact(envelope)
+    kind_directory = tree.resolve(
+        tree.artifact_path(DESIGNATOR, "proposal", envelope["artifact_id"])
+    ).parent
+    (kind_directory.parent / "also-proposal").symlink_to(kind_directory)
+
+    with pytest.raises(SchemaRefusal, match="is a link|are the same directory"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_a_manifest_refuses_a_pipe_named_as_an_artifact(tmp_path):
+    """The one outcome worse than a refusal is no outcome at all.
+
+    A FIFO named `<something>.json` under a `kind` directory is not a directory,
+    so the walk handed it to `_read_json`, whose `open` blocks until a writer
+    appears -- forever, in a batch run nobody is watching. The walk decides what
+    it is willing to read before it reads it.
+    """
+    tree = make_run(tmp_path)
+    envelope = make_envelope()
+    tree.publish_artifact(envelope)
+    kind_directory = tree.resolve(
+        tree.artifact_path(DESIGNATOR, "proposal", envelope["artifact_id"])
+    ).parent
+    os.mkfifo(kind_directory / "waiting.json")
+
+    with pytest.raises(SchemaRefusal, match="neither a directory nor a regular file"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_a_manifest_refuses_a_directory_it_cannot_list(tmp_path):
+    """`rglob` swallows the `PermissionError` from a directory it cannot open and
+    walks on, which would shrink a producer's inventory to whatever happened to be
+    readable and call it complete. The walk cannot see what is in there, so it says
+    so and refuses the manifest."""
+    tree = make_run(tmp_path)
+    envelope = make_envelope()
+    tree.publish_artifact(envelope)
+    kind_directory = tree.resolve(
+        tree.artifact_path(DESIGNATOR, "proposal", envelope["artifact_id"])
+    ).parent
+    blocked = kind_directory / "unreadable"
+    blocked.mkdir()
+    blocked.chmod(0o000)
+    try:
+        if os.access(blocked, os.R_OK):  # pragma: no cover - running as root
+            pytest.skip("this process can list a mode-000 directory; the case cannot be built")
+        with pytest.raises(SchemaRefusal, match="could not be listed"):
+            tree.build_manifest(DESIGNATOR)
+    finally:
+        blocked.chmod(0o700)
+
+
+def test_the_artifact_walk_matches_the_glob_when_the_glob_matches_only_files(tmp_path):
+    """File equivalence in members and order on an ordinary artifact tree.
+
+    The walk replaced `sorted(artifacts_root.rglob("*.json"))`, and a manifest is
+    hashed evidence: a walk that quietly gained or lost a member would change what
+    a run claims to hold, and one that emitted the same members in another order
+    would move digests with nothing on disk having changed. The private walk is
+    called directly, and with no sort of its own, because the order it emits in is
+    half of what is under test here: the manifest re-sorts its entries by artifact
+    id before anyone downstream can see them.
+    """
+    tree = make_run(tmp_path)
+    published = []
+    # "Zeal" (not "Proposal") for the uppercase-ordering case: a kind differing from
+    # a sibling only by case collapses into one directory on a case-insensitive
+    # filesystem, and the walked path then contradicts the derived path.
+    for kind in ("proposal", "Zeal", "proposal-b", "seal"):
+        for index in range(3):
+            subject = f"pg_{index:016x}"
+            envelope = build_envelope(
+                run_id="r1",
+                artifact_id=artifact_id(DESIGNATOR, kind, subject),
+                subject_id=subject,
+                stage=DESIGNATOR,
+                kind=kind,
+                outcome="proposed",
+                config_digest=CONFIG_DIGEST,
+                adapter_revision="fake-designator-v0",
+                inputs=[],
+                payload={"proposals": index},
+            )
+            tree.publish_artifact(envelope)
+            published.append(envelope["artifact_id"])
+
+    artifacts_root = tree.resolve(f"{writing_directory(DESIGNATOR)}/{ARTIFACTS_DIR}")
+    globbed = [str(path.relative_to(tree.root)) for path in sorted(artifacts_root.rglob("*.json"))]
+    walked = [relative for relative, _ in tree._walk_artifact_json(artifacts_root)]
+
+    assert walked == globbed
+    assert len(walked) == 12
+    manifest = tree.build_manifest(DESIGNATOR)
+    assert sorted(entry["artifact_id"] for entry in manifest["artifacts"]) == sorted(published)
+
+
+def test_a_manifest_descends_a_store_written_kind_directory_ending_in_json(tmp_path):
+    """A glob-matching directory is a legal kind path, not an artifact file.
+
+    `rglob("*.json")` yielded both this directory and its child, and the old caller
+    tried to parse the directory before it could inventory the valid artifact the
+    store had written below it.  The hand-written walk distinguishes the two types.
+    """
+    tree = make_run(tmp_path)
+    kind = "proposal.json"
+    envelope = build_envelope(
+        run_id="r1",
+        artifact_id=artifact_id(DESIGNATOR, kind, "pg_0123456789abcdef"),
+        subject_id="pg_0123456789abcdef",
+        stage=DESIGNATOR,
+        kind=kind,
+        outcome="proposed",
+        config_digest=CONFIG_DIGEST,
+        adapter_revision="fake-designator-v0",
+        inputs=[],
+        payload={"proposals": []},
+    )
+    tree.publish_artifact(envelope)
+
+    manifest = tree.build_manifest(DESIGNATOR)
+
+    assert [entry["artifact_id"] for entry in manifest["artifacts"]] == [envelope["artifact_id"]]
+
+
+def test_a_manifest_refuses_an_artifact_file_replaced_by_an_empty_directory(tmp_path):
+    """A glob-matching directory below the kind level is missing artifact bytes."""
+    tree = make_run(tmp_path)
+    envelope = make_envelope()
+    tree.publish_artifact(envelope)
+    artifact = tree.resolve(tree.artifact_path(DESIGNATOR, "proposal", envelope["artifact_id"]))
+    artifact.unlink()
+    artifact.mkdir()
+
+    with pytest.raises(SchemaRefusal, match="named as an artifact but is a directory"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_the_artifact_walk_matches_the_glob_on_a_name_that_is_only_a_suffix(tmp_path):
+    """`Path(".json").suffix` is empty; `rglob("*.json")` matched that name.
+
+    A file called exactly `.json` therefore used to reach the walk and be refused
+    for not occupying its derived path, and a walk filtering on `suffix` would
+    drop it without a word instead. Anything ending in `.json` under a stage's
+    artifacts is either evidence at its derived path or a refusal.
+    """
+    tree = make_run(tmp_path)
+    envelope = make_envelope()
+    tree.publish_artifact(envelope)
+    kind_directory = tree.resolve(
+        tree.artifact_path(DESIGNATOR, "proposal", envelope["artifact_id"])
+    ).parent
+    (kind_directory / ".json").write_bytes(canonical_bytes(envelope))
+
+    with pytest.raises(SchemaRefusal, match="does not occupy its derived path"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_the_artifact_walk_does_not_recurse_once_per_directory(tmp_path):
+    """`rglob` walks a deep tree iteratively, and so must the walk that replaced it.
+
+    The recursive first version of this walk raised `RecursionError` at a depth
+    `rglob` handled -- one opaque failure traded for another, on a walk whose whole
+    point is that nothing leaves it unnamed. Asserting that against the real
+    recursion limit means building a tree a thousand directories deep, which costs
+    a minute of containment checks; lowering the limit to just above the stack this
+    test already occupies asserts the same property -- the walk's own stack depth
+    does not grow with the tree's -- in a fraction of a second.
+    """
+    tree = make_run(tmp_path)
+    envelope = make_envelope()
+    tree.publish_artifact(envelope)
+    artifacts_root = tree.resolve(f"{writing_directory(DESIGNATOR)}/{ARTIFACTS_DIR}")
+    deepest = artifacts_root / "deep"
+    deepest.mkdir()
+    for _ in range(200):
+        deepest = deepest / "x"
+        deepest.mkdir()
+
+    limit = sys.getrecursionlimit()
+    sys.setrecursionlimit(len(inspect.stack(0)) + 64)
+    try:
+        manifest = tree.build_manifest(DESIGNATOR)
+    finally:
+        sys.setrecursionlimit(limit)
+        # Unwound here rather than left for the temporary directory's own cleanup,
+        # which is itself a recursive walk of exactly the shape this test builds.
+        while deepest != artifacts_root:
+            deepest.rmdir()
+            deepest = deepest.parent
+
+    assert [entry["artifact_id"] for entry in manifest["artifacts"]] == [envelope["artifact_id"]]
+
+
+def test_a_manifest_refuses_an_artifacts_directory_symlinked_out_of_the_run_tree(tmp_path):
+    """The same swap as the `kind` directory, one level up, and quieter.
+
+    Nothing under a symlinked-away `artifacts` directory is ever reached, so when
+    the target holds no artifacts there is no entry left to trip the walk's
+    per-entry containment check: the stage reported a well-formed, entirely empty
+    manifest for a producer whose evidence had been redirected out of the tree.
+    Refusal belongs at the root the walk starts from, not only at what it finds.
+    """
+    tree = make_run(tmp_path)
+    outside = tmp_path / "outside-artifacts-directory"
+    outside.mkdir()
+    stage_root = tree.resolve(writing_directory(DESIGNATOR))
+    stage_root.mkdir(parents=True, exist_ok=True)
+    (stage_root / ARTIFACTS_DIR).symlink_to(outside)
+
+    with pytest.raises(SchemaRefusal, match="resolves outside the run tree"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_a_manifest_refuses_an_artifacts_directory_redirected_inside_the_run_tree(tmp_path):
+    """An in-tree redirection resolves within the root, so containment alone allows it.
+
+    It still means the manifest describes a directory the store never wrote at the
+    path it claims, and the artifacts it lists are not where it says they are.
+    """
+    tree = make_run(tmp_path)
+    elsewhere = tree.root / "elsewhere-in-tree"
+    elsewhere.mkdir()
+    stage_root = tree.resolve(writing_directory(DESIGNATOR))
+    stage_root.mkdir(parents=True, exist_ok=True)
+    (stage_root / ARTIFACTS_DIR).symlink_to(elsewhere)
+
+    with pytest.raises(SchemaRefusal, match="is a link"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_a_manifest_refuses_an_artifacts_directory_linked_to_nothing(tmp_path):
+    """A link whose target does not exist is the quietest shape of all.
+
+    `exists()` follows the link, finds nothing, and reports the same False an
+    unpublished stage reports -- so the manifest came back empty and well-formed
+    for a producer whose evidence directory had been pointed at nowhere. A dangling
+    link is not an absent directory, and the two may not read alike.
+    """
+    tree = make_run(tmp_path)
+    stage_root = tree.resolve(writing_directory(DESIGNATOR))
+    stage_root.mkdir(parents=True, exist_ok=True)
+    (stage_root / ARTIFACTS_DIR).symlink_to("gone")
+
+    with pytest.raises(SchemaRefusal, match="is a link"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_a_manifest_refuses_an_artifacts_directory_replaced_by_a_regular_file(tmp_path):
+    """`exists()` is true of a regular file too.
+
+    The walk then raised `NotADirectoryError` from inside `iterdir`, naming the
+    interpreter's complaint rather than the run-tree path an operator can act on.
+    """
+    tree = make_run(tmp_path)
+    stage_root = tree.resolve(writing_directory(DESIGNATOR))
+    stage_root.mkdir(parents=True, exist_ok=True)
+    (stage_root / ARTIFACTS_DIR).write_bytes(b"not a directory")
+
+    with pytest.raises(SchemaRefusal, match="is not a directory"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_a_manifest_refuses_a_blobs_directory_symlinked_out_of_the_run_tree(tmp_path):
+    """The blob inventory is walked under the same containment as the artifacts.
+
+    It was not: `blobs/sha256` swapped for a link to an outside directory listed
+    that directory's names as this stage's blobs, and the manifest -- itself hashed
+    evidence -- then vouched for bytes the run tree does not hold and cannot keep
+    from changing.
+    """
+    tree = make_run(tmp_path)
+    outside = tmp_path / "outside-blobs-directory"
+    outside.mkdir()
+    (outside / ("a" * 64)).write_bytes(b"bytes this run never stored")
+    stage_root = tree.resolve(writing_directory(DESIGNATOR))
+    (stage_root / BLOBS_DIR).parent.mkdir(parents=True, exist_ok=True)
+    (stage_root / BLOBS_DIR).symlink_to(outside)
+
+    with pytest.raises(SchemaRefusal, match="resolves outside the run tree"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_a_manifest_refuses_a_blob_that_points_out_of_the_run_tree(tmp_path):
+    """The blob leg listed names and checked nothing behind them.
+
+    A `<digest>` entry that is really a link to a file outside the run root put a
+    blob into hashed evidence that the tree does not hold, cannot keep from
+    changing, and that `read_bytes` refuses at the same path -- an inventory
+    claiming bytes no reader of this run can ever get.
+    """
+    tree = make_run(tmp_path)
+    tree.put_blob(DESIGNATOR, b"a crop")
+    outside = tmp_path / "outside-blob-bytes"
+    outside.write_bytes(b"bytes this run never stored")
+    blobs_root = tree.resolve(f"{writing_directory(DESIGNATOR)}/{BLOBS_DIR}")
+    (blobs_root / ("b" * 64)).symlink_to(outside)
+
+    with pytest.raises(SchemaRefusal, match="resolves outside the run tree"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_a_manifest_refuses_a_blob_linked_to_bytes_inside_the_run_tree(tmp_path):
+    tree = make_run(tmp_path)
+    data = b"a crop"
+    digest = digest_bytes(data)
+    elsewhere = tree.root / "elsewhere.bin"
+    elsewhere.write_bytes(data)
+    blobs_root = tree.resolve(f"{writing_directory(DESIGNATOR)}/{BLOBS_DIR}")
+    blobs_root.mkdir(parents=True)
+    (blobs_root / digest).symlink_to(elsewhere)
+
+    with pytest.raises(SchemaRefusal, match="is a link"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_a_manifest_refuses_a_blob_name_that_is_not_stored_bytes(tmp_path):
+    tree = make_run(tmp_path)
+    tree.put_blob(DESIGNATOR, b"a crop")
+    blobs_root = tree.resolve(f"{writing_directory(DESIGNATOR)}/{BLOBS_DIR}")
+    os.mkfifo(blobs_root / ("c" * 64))
+
+    with pytest.raises(SchemaRefusal, match="is not a regular file"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_the_blob_inventory_lists_stored_bytes_and_not_a_publication_that_was_killed(tmp_path):
+    """`put_blob` writes `.<digest>.tmp-*` beside its target and links it into place.
+
+    A process killed between those two leaves the temporary behind, and the blob
+    leg used to list it as one of this stage's blobs -- a name `blob_path` refuses
+    at both ends, in an inventory whose whole promise is that deleting it and
+    rebuilding it gives the same bytes back. The artifact walk has always ignored
+    names that are not shaped like its own evidence; this is the same rule.
+    """
+    tree = make_run(tmp_path)
+    digest, _ = tree.put_blob(DESIGNATOR, b"a crop")
+    blobs_root = tree.resolve(f"{writing_directory(DESIGNATOR)}/{BLOBS_DIR}")
+    (blobs_root / f".{digest}.tmp-abcdef").write_bytes(b"a partly published crop")
+
+    assert tree.build_manifest(DESIGNATOR)["blobs"] == [digest]
+
+
+def test_a_manifest_still_builds_over_the_directories_the_store_itself_wrote(tmp_path):
+    """The other direction: the refusals above must not cost an honest manifest.
+
+    Harvest invariant #14 -- a seal that stops refusing bad things in order to stop
+    refusing good things is not a fix.
+    """
+    tree = make_run(tmp_path)
+    envelope = make_envelope()
+    tree.publish_artifact(envelope)
+    tree.put_blob(DESIGNATOR, b"a crop")
+
+    manifest = tree.build_manifest(DESIGNATOR)
+
+    assert [entry["artifact_id"] for entry in manifest["artifacts"]] == [envelope["artifact_id"]]
+    assert manifest["blobs"] == [digest_bytes(b"a crop")]
+
+
+def test_a_manifest_hashes_the_same_artifact_read_it_verified(tmp_path, monkeypatch):
+    """Manifest metadata and its digest are one snapshot, not two filesystem reads.
+
+    Several production consumers filter directly on the verified `kind`, `outcome`,
+    and `subject_id` in a manifest entry.  If hashing opened the path a second time,
+    a replacement between those reads could attach another file's digest to the
+    metadata those consumers trust.
+    """
+    tree = make_run(tmp_path)
+    envelope = make_envelope()
+    tree.publish_artifact(envelope)
+    artifact = tree.resolve(tree.artifact_path(DESIGNATOR, "proposal", envelope["artifact_id"]))
+    expected_bytes = canonical_bytes(envelope)
+    real_read_bytes = Path.read_bytes
+    reads = 0
+
+    def counted_read_bytes(path):
+        nonlocal reads
+        if path == artifact:
+            reads += 1
+        return real_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", counted_read_bytes)
+
+    entry = tree.build_manifest(DESIGNATOR)["artifacts"][0]
+
+    assert reads == 1
+    assert entry["sha256"] == digest_bytes(expected_bytes)
 
 
 # --- Inventory scope: harvest invariant #13 ------------------------------------
