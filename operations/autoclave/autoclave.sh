@@ -100,9 +100,20 @@ acquire_lifecycle_lock() {
     lifecycle_dir="${lifecycle_root}/workbench/autoclave/.locks"
     mkdir -p "$lifecycle_dir" ||
         die "could not create the task lock directory ${lifecycle_dir}"
-    LIFECYCLE_LOCK="${lifecycle_dir}/${lifecycle_task}.lock"
-    mkdir "$LIFECYCLE_LOCK" 2>/dev/null ||
-        die "task '${lifecycle_task}' is already active: ${LIFECYCLE_LOCK}. If no launcher is running, remove the stale lock with: rmdir ${LIFECYCLE_LOCK}"
+    # **`LIFECYCLE_LOCK` names only a lock this process created.** Assigned before
+    # the `mkdir`, it named the *other* launcher's lock for the whole of the
+    # refusal path — and `lifecycle_cleanup` removes whatever that variable holds.
+    # Nothing fires it there today, because the trap below is the only thing that
+    # arms it and a refused acquire never reaches it. That is one edit away from
+    # being false, and the failure it would produce is the worst kind this lock
+    # exists to prevent: a refused command silently releasing the lock a running
+    # dispatch is working under, leaving two launchers inside the same chamber
+    # believing they hold it. The candidate is a separate variable so the refusal
+    # can still name the path without ever making it ours to remove.
+    lifecycle_candidate="${lifecycle_dir}/${lifecycle_task}.lock"
+    mkdir "$lifecycle_candidate" 2>/dev/null ||
+        die "task '${lifecycle_task}' is already active: ${lifecycle_candidate}. If no launcher is running, remove the stale lock with: rmdir ${lifecycle_candidate}"
+    LIFECYCLE_LOCK="$lifecycle_candidate"
     trap 'lifecycle_cleanup' 0
     trap 'lifecycle_cleanup; exit 1' 1 2 15
 }
@@ -1120,7 +1131,6 @@ cmd_dispatch() {
         claude|codex) : ;;
         *) die "dispatch takes 'claude' or 'codex'" ;;
     esac
-    acquire_lifecycle_lock "$task"
     [ -f "$brief" ] || die "no brief at '$brief'"
     [ -n "$model" ] || die "dispatch needs a model — see .claude/agents/README.md for which"
     # It reaches the container as an environment variable and never as interpolated
@@ -1180,6 +1190,11 @@ cmd_dispatch() {
         *" ${effort} "*) : ;;
         *) die "'$effort' is not an allowed effort for ${vendor} '${model}' — it takes: ${reachable}" ;;
     esac
+
+    # The shared lifecycle lock protects chamber state, not argument validation.
+    # In particular, a bad model or effort must name that bad argument even when
+    # another dispatch is active for this task.
+    acquire_lifecycle_lock "$task"
 
     need_docker
     running "$task" || die "chamber '$task' is not running — start it with: $0 new $task"

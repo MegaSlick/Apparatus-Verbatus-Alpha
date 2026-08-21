@@ -14,6 +14,8 @@ temporary directory and compares, byte for byte, against what is committed.
 
 from pathlib import Path
 
+import pytest
+
 from common.chairs.config import load_models_toml
 from common.chairs.models import ChairIdentity
 from proof.build_model_fixtures import FIXTURE_CHAIRS, build, fixture_files
@@ -36,6 +38,14 @@ def test_the_checked_in_snapshots_manifests_and_pins_all_agree(tmp_path):
     config = load_models_toml(MODELS_CONFIG)
 
     assert set(rebuilt_pins) == set(FIXTURE_CHAIRS)
+    assert {
+        path.relative_to(CONFIG_ROOT / "model-fixtures").as_posix()
+        for path in (CONFIG_ROOT / "model-fixtures").rglob("*")
+        if path.is_file()
+    } == {f"{chair}/{name}" for chair in FIXTURE_CHAIRS for name in fixture_files(chair)}
+    assert {path.name for path in (CONFIG_ROOT / "manifests").iterdir() if path.is_file()} == {
+        f"{chair}.json" for chair in FIXTURE_CHAIRS
+    }
     for chair in FIXTURE_CHAIRS:
         for name, data in fixture_files(chair).items():
             committed = (CONFIG_ROOT / "model-fixtures" / chair / name).read_bytes()
@@ -59,3 +69,49 @@ def test_no_two_fixture_chairs_share_a_snapshot():
         if isinstance(chair, ChairIdentity)
     }
     assert len(set(pins.values())) == len(pins) == len(FIXTURE_CHAIRS)
+
+
+def test_builder_removes_stale_snapshot_and_manifest_files(tmp_path):
+    model_root = tmp_path / "model-fixtures"
+    manifest_root = tmp_path / "manifests"
+    (model_root / "attestator_1").mkdir(parents=True)
+    (model_root / "attestator_1" / "stale.bin").write_bytes(b"stale")
+    (model_root / "retired").mkdir()
+    (manifest_root / "retired.json").parent.mkdir(parents=True)
+    (manifest_root / "retired.json").write_text("stale")
+
+    build(model_root, manifest_root)
+
+    assert not (model_root / "attestator_1" / "stale.bin").exists()
+    assert not (model_root / "retired").exists()
+    assert not (manifest_root / "retired.json").exists()
+
+
+def test_builder_does_not_suppress_a_failed_cleanup(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    model_root = tmp_path / "model-fixtures"
+    model_root.mkdir()
+
+    def refused_cleanup(_path: Path) -> None:
+        raise PermissionError("injected cleanup refusal")
+
+    monkeypatch.setattr("proof.build_model_fixtures.shutil.rmtree", refused_cleanup)
+
+    with pytest.raises(PermissionError, match="injected cleanup refusal"):
+        build(model_root, tmp_path / "manifests")
+
+
+def test_builder_does_not_read_a_nested_deletion_race_as_an_absent_root(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    model_root = tmp_path / "model-fixtures"
+    model_root.mkdir()
+
+    def raced_cleanup(_path: Path) -> None:
+        raise FileNotFoundError("injected disappearing child")
+
+    monkeypatch.setattr("proof.build_model_fixtures.shutil.rmtree", raced_cleanup)
+
+    with pytest.raises(FileNotFoundError, match="injected disappearing child"):
+        build(model_root, tmp_path / "manifests")

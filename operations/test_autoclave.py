@@ -1348,9 +1348,89 @@ def test_a_second_dispatch_for_the_same_task_is_refused_while_the_first_runs(tmp
         )
         assert second.returncode != 0
         assert "task-x.lock" in second.stderr
+        # **The refusal must leave the running dispatch's lock exactly as it
+        # found it.** The refused launcher names that lock in its own message,
+        # and its cleanup removes whatever path it has recorded as its lock —
+        # so "it was refused" is only half the property. The other half is that
+        # the first dispatch still holds the chamber afterwards and still
+        # finishes normally.
+        held = tmp_path / "workbench" / "autoclave" / ".locks" / "task-x.lock"
+        assert held.is_dir()
     finally:
         release.touch()
         first.wait(timeout=30)
+    assert first.returncode == 0, first.stderr.read()
+    assert not held.exists(), "the finished dispatch did not release its own lock"
+
+
+@pytest.mark.parametrize(
+    ("model", "effort", "expected"),
+    (("not/a-model", "low", "not a plain model name"), ("gpt-5.6-luna", "banana", "'banana'")),
+)
+def test_an_invalid_dispatch_names_its_argument_even_while_the_task_is_locked(
+    tmp_path, model, effort, expected
+):
+    """Validation precedes the shared lock, so contention cannot hide a bad argument."""
+
+    script = elsewhere(tmp_path)
+    brief = tmp_path / "brief.md"
+    brief.write_text("bounded task\n")
+    (tmp_path / "workbench" / "autoclave" / "task-x").mkdir(parents=True)
+    env, _log = fake_docker(tmp_path)
+    ready = tmp_path / "dispatch-is-holding"
+    release = tmp_path / "release-dispatch"
+    env.update(
+        {
+            "FAKE_CONTAINER_EXISTS": "1",
+            "FAKE_CHAMBER_VENDOR": "codex",
+            "FAKE_AUTH_VALID": "1",
+            "FAKE_EXEC_STATUS": "0",
+            "FAKE_HOLD_ON": "codex exec",
+            "FAKE_HOLD_READY": str(ready),
+            "FAKE_HOLD_RELEASE": str(release),
+        }
+    )
+    first = subprocess.Popen(
+        ["sh", str(script), "dispatch", "task-x", "codex", str(brief), "gpt-5.6-luna", "low"],
+        cwd=tmp_path,
+        env={**os.environ, **env},
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not ready.exists():
+            assert time.monotonic() < deadline, "the first dispatch never reached the CLI"
+            assert first.poll() is None
+            time.sleep(0.01)
+        second = run(
+            "dispatch",
+            "task-x",
+            "codex",
+            str(brief),
+            model,
+            effort,
+            env=env,
+            script=script,
+            cwd=tmp_path,
+        )
+        assert second.returncode != 0
+        assert expected in second.stderr
+        assert "already active" not in second.stderr
+        # Validation now runs *before* the shared lock, so the refusal happens
+        # while another dispatch holds it. Nothing on that path may read or
+        # write chamber state: the argument checks stat the brief the caller
+        # named and touch nothing else, and the lock the running dispatch holds
+        # is still there when the bad argument has been reported.
+        held = tmp_path / "workbench" / "autoclave" / ".locks" / "task-x.lock"
+        assert held.is_dir()
+        assert (tmp_path / "workbench" / "autoclave" / "task-x").is_dir()
+    finally:
+        release.touch()
+        first.wait(timeout=30)
+    assert first.returncode == 0, first.stderr.read()
+    assert not held.exists(), "the finished dispatch did not release its own lock"
 
 
 @pytest.mark.parametrize(
@@ -2298,6 +2378,35 @@ class TestTheUntrustedDrawer:
         assert (tmp_path / "workbench" / "autoclave" / "task-x" / "brief.md").read_text() == (
             "bounded task\n"
         )
+
+    def test_an_agent_writable_brief_source_cannot_be_a_symlink(self, tmp_path):
+        """Validation can precede a long lock wait, so the helper must rejudge
+        a source inside the drawer when it actually opens it.
+
+        Standing-brief links outside the drawer remain supported by the sibling
+        above. This source is different: the running chamber can replace it
+        while another dispatch waits, so following it would turn a pre-lock
+        regular-file check into authority to read a different host file.
+        """
+
+        drawer = tmp_path / "drawer"
+        drawer.mkdir()
+        victim = tmp_path / "host-only.txt"
+        victim.write_text("SENTINEL-CONTENTS\n")
+        source = drawer / "next-brief.md"
+        source.symlink_to(victim)
+        destination = drawer / "brief.md"
+
+        result = subprocess.run(
+            ["python3", str(SAFE_FILE), "write", str(source), str(destination)],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+
+        assert result.returncode != 0
+        assert not destination.exists()
+        assert "SENTINEL-CONTENTS" not in result.stdout + result.stderr
 
     @pytest.mark.parametrize("shape", ["directory", "fifo"])
     def test_the_helper_refuses_anything_that_is_not_a_regular_file(self, tmp_path, shape):

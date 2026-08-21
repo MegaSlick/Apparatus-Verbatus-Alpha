@@ -2,7 +2,9 @@
 
 import os
 import re
+import shutil
 import subprocess
+import sys
 import textwrap
 from pathlib import Path
 
@@ -10,6 +12,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
+FROZEN_AUDIT_REQUIREMENTS = ROOT / ".githooks" / "frozen_audit_requirements.py"
 BASH = ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c"]
 
 
@@ -88,48 +91,209 @@ def test_workflow_has_one_history_scan_and_immutable_dependencies():
     assert all(re.search(r"@[0-9a-f]{40}$", value) for value in uses)
 
 
-def test_ci_installs_the_project_before_running_a_gate_that_imports_it():
-    """The first runtime dependency turns the gate red unless CI installs the
-    project — or worse, leaves it green over tests that mocked the import away."""
+def test_ci_installs_the_frozen_project_environment_before_running_the_gate():
+    """The gate must execute the lockfile environment, not PATH's Python."""
     text = workflow_text()
-    assert "python -m pip install ." in text
-    assert "python -m pip install -r requirements-dev.txt" in text
     # The lock is checked for currency, not merely installed from.
     assert "uv lock --check" in text
-    assert "uv sync --frozen" in text
+    assert "uv sync --frozen --group test --group audit" in text
+    assert "python -m pip install ." not in text
 
 
-def test_every_runtime_dependency_is_inside_what_the_audit_reads():
-    """The audit reads requirements-dev.txt. A runtime dependency declared only
-    in pyproject.toml would therefore never be audited, and nothing else would
-    notice — the gate would stay green over an unexamined package.
+def test_every_runtime_dependency_is_inside_the_image_and_everyday_environment():
+    """The chamber image and everyday gate install requirements-dev.txt. A
+    runtime dependency declared only in pyproject.toml would leave those two
+    environments unable to run the project they are supposed to exercise.
 
-    Names only, deliberately: the version each file pins is checked by the lock,
-    and duplicating that comparison here would make one legitimate bump fail in
-    two places with two different messages.
+    This focused check names a missing runtime dependency directly. The sibling
+    below reconciles the complete direct name/version inventory in both directions.
     """
     import tomllib
 
     declared = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["dependencies"]
-    audited = (ROOT / "requirements-dev.txt").read_text().splitlines()
+    requirements = (ROOT / "requirements-dev.txt").read_text().splitlines()
 
     def name(requirement):
         return re.split(r"[=<>!~\[]", requirement.strip(), maxsplit=1)[0].strip().lower()
 
-    missing = sorted({name(item) for item in declared} - {name(item) for item in audited if item})
+    missing = sorted(
+        {name(item) for item in declared} - {name(item) for item in requirements if item}
+    )
     assert not missing, (
         f"runtime dependencies {missing} are not in requirements-dev.txt, so "
-        "`pip_audit --requirement requirements-dev.txt` never looks at them"
+        "the chamber image and everyday gate do not install them"
+    )
+
+
+def _pinned(requirements):
+    """Map every `name==version` line to its normalized distribution name."""
+
+    pins = {}
+    for line in requirements:
+        entry = line.strip()
+        if not entry or entry.startswith("#"):
+            continue
+        distribution, separator, version = entry.partition("==")
+        assert separator and version, f"{entry!r} is not an exact pin"
+        # PEP 503 normalization: `huggingface_hub` and `huggingface-hub` are the
+        # same distribution, and the two files spell several of them differently.
+        pins[re.sub(r"[-_.]+", "-", distribution.strip()).lower()] = version.strip()
+    return pins
+
+
+def test_the_image_requirements_match_the_projects_declared_direct_environment():
+    """requirements-dev.txt builds the image and the everyday environment,
+    while CI builds the full gate from pyproject.toml through uv.lock.
+
+    uv never reads requirements-dev.txt, so `uv lock --check` cannot notice a
+    version bumped in one declaration and not the other. The sibling above
+    deliberately compares names only to give a focused missing-runtime message;
+    this one closes the version and extra-package cases in both directions.
+
+    Both directions, and the dependency groups too: the static tooling the gate
+    puts on PATH from `.venv` is as much part of the executed environment as the
+    runtime dependencies are.
+    """
+    import tomllib
+
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    installed = _pinned(
+        [
+            *project["project"]["dependencies"],
+            *(entry for group in project["dependency-groups"].values() for entry in group),
+        ]
+    )
+    image_requirements = _pinned((ROOT / "requirements-dev.txt").read_text().splitlines())
+
+    assert image_requirements == installed, (
+        "requirements-dev.txt and pyproject.toml no longer describe the same "
+        "direct environment: "
+        f"image_requirements={image_requirements} declared={installed}"
     )
 
 
 def test_the_audit_runs_in_the_gate_and_fails_closed():
     gate = (ROOT / ".githooks" / "check-all.sh").read_text()
-    assert "python3 -m pip_audit --strict --requirement requirements-dev.txt" in gate
+    assert 'frozen_python="$root/.venv/bin/python"' in gate
+    assert '"$frozen_python" -m pytest' in gate
+    assert '"$frozen_python" .githooks/frozen_audit_requirements.py' in gate
+    assert '"$frozen_python" -m pip_audit --strict --no-deps --disable-pip' in gate
+    assert '--requirement "$audit_inventory"' in gate
+    assert "import os, sys; print(os.path.realpath(sys.prefix))" in gate
     # Not swallowed: `set -eu` is in force, and nothing rescues a non-zero exit.
     assert "set -eu" in gate
     for rescue in ("|| true", "|| :", "continue-on-error", "set +e"):
         assert rescue not in gate, f"the audit's failure is swallowed by {rescue!r}"
+
+
+def test_the_frozen_audit_inventory_is_the_running_interpreters_exact_third_party_set():
+    """The helper projects installed versions and excludes only this local project."""
+
+    result = subprocess.run(
+        [sys.executable, str(FROZEN_AUDIT_REQUIREMENTS)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=True,
+    )
+    audited = _pinned(result.stdout.splitlines())
+
+    from importlib.metadata import distributions
+
+    installed = {
+        re.sub(r"[-_.]+", "-", distribution.metadata["Name"]).lower(): distribution.version
+        for distribution in distributions()
+        if re.sub(r"[-_.]+", "-", distribution.metadata["Name"]).lower() != "verbatus"
+    }
+    assert audited == installed
+
+
+def test_a_missing_frozen_interpreter_points_chambers_at_the_image_launcher_fix():
+    gate = (ROOT / ".githooks" / "check-all.sh").read_text()
+
+    assert "install pinned uv==0.12.1 in operations/autoclave/Dockerfile" in gate
+    assert "in cmd_new, after checkout" in gate
+    assert "operations/autoclave/autoclave.sh to operations/autoclave/fingerprint.py" in gate
+    assert "do not link .venv to /opt/venv" in gate
+
+
+def gate_repo(tmp_path):
+    """A throwaway repository holding only the gate script under test.
+
+    `check-all.sh` resolves everything from `git rev-parse --show-toplevel`, so
+    a bare `git init` plus the one script is enough to reach the frozen-
+    interpreter checks — and nothing after them, which is what keeps these two
+    tests off the real suite.
+    """
+
+    repo = new_repo(tmp_path / "gate")
+    (repo / ".githooks").mkdir()
+    shutil.copy(ROOT / ".githooks" / "check-all.sh", repo / ".githooks" / "check-all.sh")
+    return repo
+
+
+def run_gate(repo):
+    return subprocess.run(
+        ["sh", ".githooks/check-all.sh"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+
+def test_the_gate_refuses_to_run_without_the_frozen_interpreter(tmp_path):
+    """No `.venv` is a stop with an instruction, never a fall back to PATH."""
+
+    result = run_gate(gate_repo(tmp_path))
+
+    assert result.returncode == 1
+    assert "frozen interpreter is missing" in result.stderr
+    assert "uv sync --frozen --group test --group audit" in result.stderr
+
+
+def test_the_gate_refuses_a_venv_python_that_is_really_paths_python(tmp_path):
+    """The assertion has to fail on the shadow it was written to catch.
+
+    `.venv/bin/python` symlinked straight onto the interpreter already on PATH
+    is the whole failure mode: pytest would run, collect and pass, out of an
+    environment that uv.lock does not describe. Python reports the path it was
+    invoked through, so this arrangement answers `sys.executable =
+    <root>/.venv/bin/python` — the first assertion written here believed it and
+    let it through. `sys.prefix` is the environment the imports come from, and
+    it does not.
+    """
+
+    repo = gate_repo(tmp_path)
+    venv = repo / ".venv"
+    (venv / "bin").mkdir(parents=True)
+    shim = venv / "bin" / "python"
+    shim.symlink_to(sys.executable)
+
+    reported = subprocess.run(
+        [
+            str(shim),
+            "-c",
+            "import os, sys; print(sys.executable); print(os.path.realpath(sys.prefix))",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=True,
+    ).stdout.splitlines()
+    # The premise of the test, stated rather than assumed: the weaker check
+    # passes here, and the stronger one has something to see. Some interpreter
+    # builds (Homebrew's macOS python re-execs its real binary) resolve the shim
+    # in sys.executable themselves — there the weaker check was never foolable
+    # and this scenario has nothing to prove.
+    if reported[0] != str(shim):
+        pytest.skip("this interpreter resolves the shim itself; the attack does not exist here")
+    assert reported[1] != os.path.realpath(venv)
+
+    result = run_gate(repo)
+
+    assert result.returncode == 1
+    assert "does not import from the frozen environment" in result.stderr
 
 
 @pytest.fixture
@@ -223,7 +387,7 @@ def test_cleanroom_gate_fails_when_git_cannot_list(tmp_path):
     assert "git ls-files failed" in result.stderr
 
 
-def test_every_third_party_import_in_the_gate_suite_is_inside_what_the_audit_reads():
+def test_every_third_party_import_in_the_gate_suite_is_declared_for_the_image():
     """The sibling above covers the project's runtime dependencies. This covers
     the gate's own: a package these hook tests import, but nothing declares,
     reaches the gate only as some other dependency's transitive -- unpinned,
@@ -246,7 +410,7 @@ def test_every_third_party_import_in_the_gate_suite_is_inside_what_the_audit_rea
             elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
                 roots.add(node.module.split(".")[0])
 
-    audited = {
+    declared = {
         re.split(r"[=<>!~\[]", line.strip(), maxsplit=1)[0].strip().lower()
         for line in (ROOT / "requirements-dev.txt").read_text().splitlines()
         if line.strip() and not line.lstrip().startswith("#")
@@ -257,10 +421,10 @@ def test_every_third_party_import_in_the_gate_suite_is_inside_what_the_audit_rea
         root
         for root in roots
         if root not in sys.stdlib_module_names
-        and distribution.get(root, root).lower() not in audited
+        and distribution.get(root, root).lower() not in declared
     )
     assert not undeclared, (
         f"the gate's own suite imports {undeclared}, which requirements-dev.txt does not "
-        "declare, so `pip_audit --requirement requirements-dev.txt` never looks at them "
-        "and nothing pins the version the gate actually runs"
+        "declare, so the chamber image and everyday gate reach them only as an "
+        "unpinned transitive dependency"
     )

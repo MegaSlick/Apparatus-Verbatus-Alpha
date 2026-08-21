@@ -938,7 +938,8 @@ def test_six_words_end_to_end_and_status_is_strictly_read_only(tmp_path: Path) -
     assert any("Saved boot report: GREEN." in line for line in status_lines)
     assert any("Saved charges captured through" in line for line in status_lines)
     assert any("Reconciliation from the recorded Armarium export:" in line for line in status_lines)
-    assert any("Saved sealed submission record names 2 file(s)." in line for line in status_lines)
+    upload_payload = surface.receipts.read(surface._descriptor_receipt("upload"))["payload"]
+    assert any(upload_payload["submission_manifest_sha256"] in line for line in status_lines)
     assert not any("active-launch" in line for line in status_lines)
 
 
@@ -2166,6 +2167,80 @@ def test_mac_wrapper_refuses_an_empty_project_root(
     assert "Traceback" not in completed.stderr
 
 
+def _checkout_entries() -> set[str]:
+    """Every direct child of the checkout, by name.
+
+    Deliberately one level deep and names only. Reading the whole tree would
+    make this test a slow hash of the repository and would go red on any
+    unrelated editor scratch file; every placement this pins — `.verbatus/`,
+    a bare `verbatus/`, a `.verbatus-dry-run-*` scratch folder — appears at the
+    top level, because that is where the workspace root is.
+    """
+
+    return {entry.name for entry in ROOT.iterdir()}
+
+
+def test_the_operator_writes_nothing_into_the_checkout(tmp_path: Path) -> None:
+    """The whole flow, and the rehearsal, leave the project folder alone.
+
+    The state root and the dry-run scratch directory were both moved out of the
+    checkout so records survive a `git clean` and so a rehearsal cannot leave
+    litter in `git status`. Nothing asserted it: the end-to-end test compares
+    only the state root against itself, which stays green no matter what else
+    the surface writes. This runs the six words against a workspace that *is*
+    the checkout — the ordinary case, and the one where a stray relative path
+    lands here rather than in a temporary folder.
+    """
+
+    before = _checkout_entries()
+    surface = _surface(tmp_path)
+    spend = _spend_policy(tmp_path)
+    source, manifest = _manifest(tmp_path)
+
+    _launch(surface, spend)
+    surface.boot()
+    surface.upload(source, sealed_manifest=manifest)
+    surface.run(run_id="no-litter-run")
+    surface.export(run_id="no-litter-run")
+    prepared_close = surface.prepare_close()
+    surface.close(prepared_close, prepared_close.phrase)
+    surface.status()
+    make_transcript(tmp_path / "rehearsal.txt")
+
+    assert surface.workspace == ROOT
+    assert _checkout_entries() == before
+    assert not (ROOT / ".verbatus").exists()
+
+
+def test_the_rehearsal_scratch_folder_is_never_created_inside_the_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pinned while the rehearsal runs, not merely after it.
+
+    The scratch directory used to be created with `dir=ROOT`, and it is removed
+    on the way out — so comparing the checkout before and afterwards cannot see
+    it. What it left behind mid-run was a folder in `git status` and, on a
+    failed rehearsal, one that outlived the process. Recording the request is
+    the only way to assert about a directory that is meant to be gone by the
+    time anyone looks.
+    """
+
+    real = dry_run.tempfile.TemporaryDirectory
+    created: list[Path] = []
+
+    def recording(*args, **kwargs):
+        handle = real(*args, **kwargs)
+        created.append(Path(handle.name))
+        return handle
+
+    monkeypatch.setattr(dry_run.tempfile, "TemporaryDirectory", recording)
+    dry_run.make_transcript(tmp_path / "rehearsal.txt")
+
+    assert created
+    for scratch in created:
+        assert ROOT not in scratch.resolve().parents
+
+
 def test_scripted_dry_run_is_a_readable_six_word_acceptance_artifact(tmp_path: Path) -> None:
     transcript = make_transcript(tmp_path / "operator-dry-run.txt").read_text(encoding="utf-8")
 
@@ -2378,74 +2453,128 @@ def test_status_repeats_the_recorded_values_exactly_and_never_recomputes_them(
         assert payload["summary"] in joined
 
 
-def test_status_names_a_manifest_that_no_longer_matches_the_upload_receipt(
-    tmp_path: Path,
-) -> None:
-    """A path is not identity: status must not treat different bytes at the
-    recorded path as the manifest that was actually uploaded.
-
-    But the sealed manifest lives outside `.verbatus/`, at a path this tool
-    does not own — re-sealing a later batch to the same filename is ordinary
-    drift, not a corrupted *operator* record, so it must not swallow the
-    intact, still-correct upload receipt behind `STATUS_UNREADABLE`. Before
-    this fix it did: this exact scenario raised `STATUS_UNREADABLE`
-    permanently and printed the upload record twice, once correctly and once
-    as "UNREADABLE".
-    """
+def test_upload_receipt_retains_manifest_identity_but_no_local_paths(tmp_path: Path) -> None:
+    """A receipt names the sealed record by digest, never by local source path."""
 
     surface = _surface(tmp_path)
     source, manifest = _manifest(tmp_path)
     surface.upload(source, sealed_manifest=manifest)
     receipt = surface.receipts.read(surface._descriptor_receipt("upload"))["payload"]
 
-    (source / "later-page.bin").write_bytes(b"not in the uploaded manifest\n")
-    replacement = build_manifest(walk_folder(source))
-    manifest.write_bytes(canonical_bytes(replacement))
-
     lines = surface.status()
 
     assert (
-        receipt["submission_manifest_sha256"] != hashlib.sha256(manifest.read_bytes()).hexdigest()
+        receipt["submission_manifest_sha256"] == hashlib.sha256(manifest.read_bytes()).hexdigest()
     )
+    assert "source" not in receipt
+    assert "submission_manifest" not in receipt
     joined = "\n".join(lines)
-    assert "no longer matches what the upload receipt recorded" in joined
-    assert "upload receipt itself still stands" in joined
-    upload_lines = [line for line in lines if line.startswith("- upload record 1:")]
-    assert len(upload_lines) == 1
-    assert "UNREADABLE" not in upload_lines[0]
+    assert receipt["submission_manifest_sha256"] in joined
+    serialized = json.dumps(receipt)
+    assert str(source.resolve()) not in serialized
+    assert str(manifest.resolve()) not in serialized
 
 
-def test_deleting_the_sealed_manifest_after_upload_does_not_permanently_break_status(
-    tmp_path: Path,
+def test_default_operator_state_root_is_outside_the_workspace(tmp_path: Path) -> None:
+    parser = cli.build_parser()
+    state = parser.parse_args(["status"]).state_dir
+
+    assert state.is_absolute()
+    assert state != tmp_path / ".verbatus"
+    assert ".verbatus" not in str(state)
+
+
+@pytest.mark.parametrize("value", ("", ".", "relative/state"))
+def test_a_non_absolute_xdg_state_home_does_not_put_records_back_in_the_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str
 ) -> None:
-    """Deleting a temporary sealed manifest, or re-sealing over it, is ordinary
-    housekeeping outside `.verbatus/` — a routine act, not record corruption.
+    """`XDG_STATE_HOME=` is an ordinary way to spell "unset", and the Base
+    Directory specification says a non-absolute value is to be ignored.
 
-    Before this fix, `status` — the verb the README sells as "the one you can
-    run any time" — raised `STATUS_UNREADABLE` permanently the moment this
-    happened, blamed the intact upload receipt by name, and had no recorded
-    way to clear it.
+    Read literally it yielded a *relative* default, and `main` resolves a
+    relative `--state-dir` against the workspace — so the operator's records
+    landed in the checkout again, which is the one placement this default exists
+    to prevent. Asserting `is_absolute()` on the parser default alone missed it:
+    that assertion passes on any developer machine, because the environment
+    variable is normally unset there.
     """
 
-    surface = _surface(tmp_path)
-    source, manifest = _manifest(tmp_path)
-    surface.upload(source, sealed_manifest=manifest)
+    workspace = tmp_path / "checkout"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    monkeypatch.setenv("XDG_STATE_HOME", value)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
 
-    manifest.unlink()
+    default = cli.build_parser().parse_args(["status"]).state_dir
+    resolved = default if default.is_absolute() else workspace / default
 
-    lines = surface.status()
+    assert default.is_absolute()
+    assert workspace not in resolved.parents
+    assert resolved == tmp_path / "home" / ".local" / "state" / "verbatus"
 
-    joined = "\n".join(lines)
-    assert "is no longer present" in joined
-    assert "upload receipt itself still stands" in joined
-    upload_lines = [line for line in lines if line.startswith("- upload record 1:")]
-    assert len(upload_lines) == 1
-    assert "UNREADABLE" not in upload_lines[0]
 
-    # Running status again afterward must behave exactly the same way, not
-    # escalate or leave a lingering failure state anywhere.
-    again = surface.status()
-    assert again == lines
+def test_a_relative_home_cannot_make_the_default_state_root_relative(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "checkout"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    monkeypatch.setenv("XDG_STATE_HOME", "")
+    monkeypatch.setenv("HOME", "relative-home")
+
+    default = cli.build_parser().parse_args(["status"]).state_dir
+
+    assert default.is_absolute()
+    assert workspace not in default.parents
+
+
+def test_an_old_in_checkout_verbatus_directory_is_named_not_silently_abandoned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A `.verbatus/` left by a version that defaulted state inside the checkout
+    still holds real receipts. This version must say so rather than quietly
+    reading nothing from the new default and letting `status` look empty."""
+
+    workspace = tmp_path / "checkout"
+    old_state = workspace / ".verbatus"
+    old_state.mkdir(parents=True)
+    monkeypatch.chdir(workspace)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg-state"))
+
+    cli.main(["status"])
+
+    out = capsys.readouterr().out
+    assert str(old_state) in out
+    assert "not read here" in out
+
+
+def test_no_stale_verbatus_notice_when_state_dir_is_named_explicitly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    workspace = tmp_path / "checkout"
+    old_state = workspace / ".verbatus"
+    old_state.mkdir(parents=True)
+    monkeypatch.chdir(workspace)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg-state"))
+
+    cli.main(["--state-dir", str(old_state), "status"])
+
+    out = capsys.readouterr().out
+    assert "not read here" not in out
+
+
+def test_no_stale_verbatus_notice_when_no_old_directory_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    workspace = tmp_path / "checkout"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg-state"))
+
+    cli.main(["status"])
+
+    out = capsys.readouterr().out
+    assert "not read here" not in out
 
 
 def test_one_unreadable_status_record_does_not_hide_the_intact_ledgers(tmp_path: Path) -> None:
