@@ -21,6 +21,16 @@ CLAUDE.md's Quarantine section names this file as the procedure. The standard is
 **read it, reason past it, and cite what you take.** The offence is the silence, not the
 borrowing.
 
+**That standard is an amendment, and its provenance lives here now.** It was once absolute
+— "no line, no function, no file crosses". Tyrel amended it on 2026-08-05: reason the
+problem through first, then read the window, then build the better version, and a line
+carried across is named as carried, in the commit and in the report. His words were **"cite
+but don't plagiarize."** A chamber that pastes an old function *without saying so* has
+failed the task; one that names what it took, and why it was the best option, has done the
+job. This paragraph is quoted rather than paraphrased because the record of it previously
+lived only in `operations/autoclave/window.conf`, which the window's removal deleted — and a
+reviewer has already read the older, absolute standard back onto this file.
+
 **The window is closed by default, and the rule below is what governs it if it reopens
 (Tyrel, 2026-08-20).** Chambers no longer mount the old pipeline: the rebuild is planned
 from the design notes now, and a session that wants the old code must set

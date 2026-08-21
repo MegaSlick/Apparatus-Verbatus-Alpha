@@ -652,7 +652,7 @@ class TestLogin:
         copied = runnable.index('cp -R "${REPO_ROOT}/workbench/design/."')
         assert copied < runnable.index("${specs_stage}:/specs"), "staged after the bind"
 
-    def test_no_window_onto_the_old_code_is_mounted_by_default(self):
+    def test_the_deleted_window_machinery_stays_deleted_by_name(self):
         """**Tyrel ruled 2026-08-20 that the window is no longer needed** — the rebuild
         is planned from documents now rather than from reading the old tree — reversing
         his 2026-08-04 ruling that had made it default-on.
@@ -663,10 +663,16 @@ class TestLogin:
         along. That finding is in the design notes now, and the notes reach a chamber
         at `/specs`.
 
-        So this asserts an absence, and absence is exactly the thing that rots quietly.
-        `window.conf` and the `/stage` mount must be gone from the launcher entirely —
-        not merely unreferenced — because a leftover reader would put the old pipeline
-        back into every chamber the moment somebody restored the file.
+        **This test is about spelling, not behaviour, and the name now says so.** It
+        asserts that three deleted names — `window.conf`, `WINDOW_OCR_ROOT`,
+        `WINDOW_STAGE` — stay deleted, because a leftover reader would put the old
+        pipeline back into every chamber the moment somebody restored the file.
+
+        It would not catch the same mount rebuilt under a new name. The test that would
+        is `test_a_chamber_comes_up_with_no_window_and_the_override_is_what_adds_one`,
+        which reads the recorded `docker run`. That one is the guard; this one is a
+        tripwire on the old spellings, and deleting the argv test as duplication of it
+        would leave the default unprotected.
         """
         runnable = "\n".join(code_lines())
         assert "window.conf" not in runnable, "the launcher still reads window.conf"
@@ -743,8 +749,14 @@ class TestLogin:
         result = run("new", "task-x", "HEAD", "none", env=env, script=linked_script, cwd=worktree)
 
         assert result.returncode != 0, "a chamber was created from a linked worktree"
-        assert "linked git worktree" in result.stderr, (
+        assert "linked worktree" in result.stderr, (
             f"the refusal does not name the cause: {result.stderr}"
+        )
+        # The path is the actionable half, and it used to be printable as an empty string
+        # when git could not answer. Asserted here so the refusal cannot regress to
+        # "look for  inside the container".
+        assert str(tmp_path) in result.stderr, (
+            f"the refusal does not name the git directory to look for: {result.stderr}"
         )
         created = [call for call in docker_calls(log) if call[:1] == ["run"]]
         assert created == [], f"a container was created despite the refusal: {created}"

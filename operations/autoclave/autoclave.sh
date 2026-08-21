@@ -514,9 +514,23 @@ cmd_new() {
     # restriction; it is not done because a chamber pinned to a commit gets everything it
     # needs from the main checkout, and a second writable-looking git path is a boundary
     # question that should be decided deliberately rather than added in passing.
+    # **A submodule root carries a `.git` file too**, so the wording covers both rather
+    # than asserting "worktree" about something that is not one. The mechanism is
+    # identical either way — the real git directory is elsewhere on the host and is not
+    # mounted — so one refusal serves both and neither gets told a wrong story.
+    #
+    # The path is printed only when git actually answered. A worktree whose main checkout
+    # has been deleted is a common way to arrive here, and `--git-common-dir` then fails;
+    # unchecked, the refusal read "the clone would look for  inside the container", with
+    # nothing between the words and no directory for the operator to go and find.
     if [ -f "${REPO_ROOT}/.git" ]; then
-        main_checkout=$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
-        die "this is a linked git worktree, and a chamber cannot be cloned from one — the clone would look for ${main_checkout} inside the container, which is not mounted. Run ${0} from the main checkout${main_checkout:+ (${main_checkout%/.git})}."
+        main_checkout=$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) ||
+            main_checkout=""
+        [ -n "$main_checkout" ] || main_checkout=$(sed -n 's/^gitdir: //p' "${REPO_ROOT}/.git" 2>/dev/null)
+        if [ -n "$main_checkout" ]; then
+            die "${REPO_ROOT}/.git is a file, not a directory — this is a linked worktree or a submodule, and a chamber cannot be cloned from one. The clone would look for ${main_checkout} inside the container, which is not mounted. Run ${0} from the checkout that owns that git directory."
+        fi
+        die "${REPO_ROOT}/.git is a file, not a directory — this is a linked worktree or a submodule, and a chamber cannot be cloned from one. Git could not say where its real git directory is, which usually means the checkout that owns it has been deleted. Run ${0} from a full checkout."
     fi
 
     # Resolve the base to a commit on the host, so the chamber is pinned to an exact
