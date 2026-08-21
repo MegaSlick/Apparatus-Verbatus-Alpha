@@ -1,5 +1,11 @@
 # Rebuilder
 
+**This brief needs a window, and a chamber has none by default (Tyrel, 2026-08-20).**
+Prepend it only for a chamber whose **`new`** was run with `AUTOCLAVE_WINDOW` set —
+mounts are fixed at container creation, so setting it on `dispatch` is accepted and does
+nothing. Otherwise use `builder.md` and build from the design notes at `/specs`. A
+rebuilder brief handed to a chamber with no `/window` describes a mount that is not there.
+
 Understand the smallest coherent old system, then write its replacement new. Read
 `GOALS.md`, `GOVERNANCE.md`, `ARCHITECTURE.md`, `GLOSSARY.md`, and `CLAUDE.md` in `/work`
 first. Reason from this project's needs before inspecting the read-only window.

@@ -495,6 +495,47 @@ cmd_new() {
         claude|codex|none) : ;;
         *) die "new takes 'claude', 'codex' or nothing as its vendor" ;;
     esac
+    # **Above the lock, because the lock resolves the common git directory too.** With
+    # this below `acquire_lifecycle_lock`, the case this guard exists for -- a worktree
+    # whose main checkout is gone -- died inside the lock with "could not locate this
+    # repository's common git directory" and never reached the explanation or the path.
+    # The same ordering mistake this guard was written to fix, one level up.
+    # **A linked worktree cannot be the source of a chamber, and it has to be refused
+    # here rather than discovered later.** In a worktree, `.git` is a *file* holding
+    # `gitdir: /the/main/checkout/.git/worktrees/<name>` — an absolute host path that is
+    # outside the `/src` bind. The clone inside the container therefore fails with
+    # "fatal: not a git repository" naming a directory the container cannot see.
+    #
+    # That failure lands *after* `docker run`, which is the real damage: the chamber is
+    # already up, `rm` refuses it as uncollected, and the operator is left forcing away a
+    # container that never held a clone. Checked before anything is created, the same
+    # mistake costs one sentence.
+    #
+    # `.claude/worktrees/` is this project's own convention for isolated checkouts
+    # (`.gitignore` says so), so sessions land here by following the rules, not by
+    # misusing them. Mounting the main `.git` as a second volume would lift the
+    # restriction; it is not done because a chamber pinned to a commit gets everything it
+    # needs from the main checkout, and a second writable-looking git path is a boundary
+    # question that should be decided deliberately rather than added in passing.
+    # **A submodule root carries a `.git` file too**, so the wording covers both rather
+    # than asserting "worktree" about something that is not one. The mechanism is
+    # identical either way — the real git directory is elsewhere on the host and is not
+    # mounted — so one refusal serves both and neither gets told a wrong story.
+    #
+    # The path is printed only when git actually answered. A worktree whose main checkout
+    # has been deleted is a common way to arrive here, and `--git-common-dir` then fails;
+    # unchecked, the refusal read "the clone would look for  inside the container", with
+    # nothing between the words and no directory for the operator to go and find.
+    if [ -f "${REPO_ROOT}/.git" ]; then
+        main_checkout=$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) ||
+            main_checkout=""
+        [ -n "$main_checkout" ] || main_checkout=$(sed -n 's/^gitdir: //p' "${REPO_ROOT}/.git" 2>/dev/null)
+        if [ -n "$main_checkout" ]; then
+            die "${REPO_ROOT}/.git is a file, not a directory — this is a linked worktree or a submodule, and a chamber cannot be cloned from one. The clone would look for ${main_checkout} inside the container, which is not mounted. Run ${0} from the checkout that owns that git directory."
+        fi
+        die "${REPO_ROOT}/.git is a file, not a directory — this is a linked worktree or a submodule, and a chamber cannot be cloned from one. Git could not say where its real git directory is, which usually means the checkout that owns it has been deleted. Run ${0} from a full checkout."
+    fi
+
     acquire_lifecycle_lock "$task"
 
     # Resolve the base to a commit on the host, so the chamber is pinned to an exact
@@ -717,10 +758,10 @@ cmd_new() {
     #
     # **Writable, and that is a correction.** It was read-only for one sitting, on the
     # reasoning that an agent "has no business editing the specs" — which is tidiness,
-    # not containment, and the two are not the same rule. `/src` and `/window` are
-    # read-only because they are really this machine's tree and really the old
-    # repository; writing them would change the host with no diff to review. This is a
-    # per-chamber copy that `rm` deletes, so nothing it holds is anybody's original.
+    # not containment, and the two are not the same rule. `/src` is read-only because it
+    # is really this machine's tree; writing it would change the host with no diff to
+    # review. This is a per-chamber copy that `rm` deletes, so nothing it holds is
+    # anybody's original.
     # Locking it cost a real dispatch (Tyrel, 2026-08-03): a builder told by its spec to
     # record resolved model revisions in the bench memo could not, because this mount
     # refused a write nothing needed refused. A chamber has free rein over what is its
@@ -744,58 +785,22 @@ cmd_new() {
             stage_failed "could not stage workbench/design for the chamber"
     fi
 
-    # **The windows onto the old work, and they are on by default now.** CLAUDE.md's
-    # Quarantine section says the old repository is "read where it lies, through the
-    # window" — mounting it read-only is that window, and nothing else here provides
-    # one.
+    # **The window onto the old pipeline is off, and reaching for it is now deliberate.**
+    # It was mounted by default from `operations/autoclave/window.conf` between
+    # 2026-08-04 and 2026-08-20, because a chamber that could not see the old code had
+    # once decided to refuse PDFs outright while the old pipeline had accepted them at
+    # stage one all along.
     #
-    # This used to be opt-in, on the reasoning that a chamber which can read old code
-    # can copy old bytes into its branch. **Tyrel overruled that on 2026-08-04** and the
-    # evidence was concrete: four seats built System 03 with no window, and one of them
-    # decided to refuse PDFs entirely, when the old pipeline had accepted PDFs at stage
-    # one all along. An opt-in window is a window every session must remember, and the
-    # session that forgot cost a night. The copying risk is unchanged and is still
-    # controlled the same way — the operator reads every line of the diff, and no old
-    # byte enters.
+    # **Tyrel ruled on 2026-08-20 that the reference is no longer needed** — the rebuild
+    # is planned from documents now, not from reading the old tree — so `window.conf`,
+    # the per-directory `/window` mounts and the `/stage` audit-notes mount are gone. A
+    # chamber gets `/work`, `/src`, `/out` and `/specs`, and nothing of the old system.
     #
-    # `operations/autoclave/window.conf` holds the paths and the mask list.
-    # `AUTOCLAVE_WINDOW` still overrides `/window` for a one-off.
+    # `AUTOCLAVE_WINDOW` survives as the single opt-in below, and it is the only way in.
+    # CLAUDE.md's Quarantine section and `cleanroom/README.md` still govern what may
+    # cross if a session ever sets it; what changed is that no session gets the window
+    # by accident, and reinstating it is an environment variable rather than an edit.
     window_mount=""
-    window_masks=""
-    if [ -z "${AUTOCLAVE_WINDOW:-}" ] && [ -f "${REPO_ROOT}/operations/autoclave/window.conf" ]; then
-        # shellcheck disable=SC1091
-        . "${REPO_ROOT}/operations/autoclave/window.conf"
-        # The old pipeline's code, mounted directory by directory rather than whole.
-        # Naming each one is what keeps the corpus, the datasets and the months of
-        # dated notes out — a mount of the repository root with exclusions would admit
-        # every new drawer that appears, which is the failure `.dockerignore` at the
-        # repository root was already shaped to avoid.
-        if [ -n "${WINDOW_OCR_ROOT:-}" ] && [ -d "${WINDOW_OCR_ROOT}" ]; then
-            for wdir in ${WINDOW_OCR_DIRS:-}; do
-                if [ -d "${WINDOW_OCR_ROOT}/${wdir}" ]; then
-                    window_mount="${window_mount} --volume ${WINDOW_OCR_ROOT}/${wdir}:/window/${wdir}:ro"
-                else
-                    note "window.conf names ${wdir}, absent from ${WINDOW_OCR_ROOT} — not mounted"
-                fi
-            done
-            [ -n "$window_mount" ] &&
-                note "airlock open: the old pipeline's code is readable at /window. Reference, not a source tree — reason past it, and a line carried across is named as carried in the commit and the report."
-        elif [ -n "${WINDOW_OCR_ROOT:-}" ]; then
-            note "window.conf names ${WINDOW_OCR_ROOT}, which is not on this machine — /window not mounted"
-        fi
-        if [ -n "${WINDOW_STAGE:-}" ] && [ -d "${WINDOW_STAGE}" ]; then
-            # Appended, never assigned: `=` here silently discarded every /window flag
-            # built above it, and the chamber came up with /stage present and /window
-            # absent while the log still said the airlock was open.
-            window_mount="${window_mount} --volume ${WINDOW_STAGE}:/stage:ro"
-            for masked in ${WINDOW_STAGE_MASKS:-}; do
-                window_masks="${window_masks} --tmpfs /stage/${masked}:ro,size=4k"
-            done
-            note "stage open: ${WINDOW_STAGE} is readable at /stage. Reference — what you take from it is cited, never carried across silently."
-        elif [ -n "${WINDOW_STAGE:-}" ]; then
-            note "window.conf names ${WINDOW_STAGE}, which is not on this machine — /stage not mounted"
-        fi
-    fi
     if [ -n "${AUTOCLAVE_WINDOW:-}" ]; then
         case "$AUTOCLAVE_WINDOW" in
             /*) : ;;
@@ -832,7 +837,7 @@ cmd_new() {
         --tmpfs /src/scriptorium:ro,size=4k \
         --volume "${outdir}:/out" \
         --volume "${specs_stage}:/specs" \
-        $auth_mounts $window_mount $window_masks \
+        $auth_mounts $window_mount \
         --env "CLAUDE_CONFIG_DIR=${AUTH_DIR_CLAUDE}" \
         --workdir /work \
         "$image_id" \
@@ -1075,6 +1080,21 @@ stamp_author() {
 
 cmd_dispatch() {
     task="${1:-}"; check_task "$task"
+    # **`AUTOCLAVE_WINDOW` is a `new`-time variable, and setting it here is refused rather
+    # than ignored.** Mounts are fixed when the container is created, so the variable does
+    # nothing at this point — and a no-op is the wrong answer to an operator who has just
+    # said, in the only way the launcher offers, that this agent needs the old pipeline.
+    #
+    # The failure it prevents is quiet and expensive: `rebuilder.md` tells an agent to read
+    # `/window`, the agent finds no such path, and an agent that has been told the reference
+    # exists reasons around its absence far more often than it stops and reports it. The
+    # chamber then returns work that reads as informed by the old system and is not.
+    #
+    # Named for the phase rather than the variable, because the operator's intent was right
+    # and only the timing was wrong: the chamber has to be made again, not patched.
+    if [ -n "${AUTOCLAVE_WINDOW:-}" ]; then
+        die "AUTOCLAVE_WINDOW is set, but a window can only be opened when the chamber is created — this chamber's mounts are already fixed. Destroy it and run 'new' with AUTOCLAVE_WINDOW set, or unset it to dispatch without a window."
+    fi
     vendor="${2:-}"
     brief="${3:-}"
     # **The model is required, and that is the point.** An omitted model runs whatever

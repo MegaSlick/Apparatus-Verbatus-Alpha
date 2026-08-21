@@ -104,9 +104,11 @@ attribution discipline in CLAUDE.md depends on it and a ruling's date never goes
 ## Versions
 
 **alpha** — a rebuild laboratory. Build the harness first; prove the workflow,
-branches, rules and contracts. Old code is reference, read through the window; its
-systems are written new here, one piece at a time. Alpha does not need to be a finished
-pipeline.
+branches, rules and contracts. Old code was the reference, read through a window that
+Tyrel closed once the rebuild could be planned from its own design notes — closed by
+default, not sealed: one chamber can still be given it deliberately, and
+`cleanroom/README.md` governs what may cross. Its systems are written new here, one piece
+at a time. Alpha does not need to be a finished pipeline.
 
 **Nothing enters this repository uninspected.** Code is written new, read line by line
 and justified, or it does not arrive. An old byte crosses only where it is the best

@@ -11,7 +11,9 @@ This is a disposable container, not Tyrel's checkout. Read `/work/GOALS.md`,
   are masked.
 - `/out` is writable host scratch used for briefs, reports, and bundles.
 - `/specs` is a writable copy of design notes, not the host originals.
-- `/window`, when present, is read-only reference to the old pipeline.
+- There is no reference to the old pipeline. `/window` exists only if an operator set
+  `AUTOCLAVE_WINDOW` when this chamber was created, and normally nobody has. Check the
+  path before relying on it; do not assume it from a brief that mentions it.
 - Your vendor credential volume is writable, shared with later chambers, and outside the
   returned branch. Change nothing in it except through the vendor CLI.
 - Network egress is open. Use it for current documentation and maintained dependencies;
@@ -43,8 +45,11 @@ rules remain at `/work/CLAUDE.md`.
   exact wording in the report.
 - Never route around a blocked external action, missing credential, or concrete governance
   conflict. Report it and stop that part of the task.
-- Never copy old code silently. Reason first, then inspect `/window`; carry bytes only when
-  they are the best option, understood line by line, and named in both commit and report.
+- Never copy code silently. A maintained library under a permitting licence is usually the
+  right answer and enters with its source and licence recorded; a borrowed snippet enters
+  on the same terms. Carry bytes only when they are the best option, understood line by
+  line, and named as carried in both commit and report. The offence is the silence, not
+  the borrowing. If `/window` is mounted, the same rule governs what crosses it.
 
 ## Decisions
 
