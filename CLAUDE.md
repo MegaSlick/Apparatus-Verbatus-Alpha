@@ -112,8 +112,9 @@ understood line by line, and named as carried in the commit and report. Third-pa
 must have a permitting licence and a citation. `cleanroom/README.md` owns the procedure.
 
 **The chamber window onto the old pipeline is closed.** The rebuild is planned from the
-design notes now, so a chamber sees no old code at all unless the dispatch deliberately
-sets `AUTOCLAVE_WINDOW`. This narrows where the rule above applies; it does not soften it.
+design notes now, so a chamber sees no old code at all unless `new` was run with
+`AUTOCLAVE_WINDOW` deliberately set. This narrows where the rule above applies; it does
+not soften it.
 Nothing here licenses reading the old tree on the host and carrying a line in silently —
 an unnamed carry is a finding at review wherever the reading happened.
 `operations/autoclave/README.md` carries the ruling and its date.

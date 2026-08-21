@@ -24,7 +24,9 @@ borrowing.
 **The window is closed by default, and the rule below is what governs it if it reopens
 (Tyrel, 2026-08-20).** Chambers no longer mount the old pipeline: the rebuild is planned
 from the design notes now, and a session that wants the old code must set
-`AUTOCLAVE_WINDOW` for that one chamber. This section is therefore mostly dormant rather
+`AUTOCLAVE_WINDOW` **while running `new`** for that one chamber — mounts are fixed when
+the container is created, and the launcher refuses the variable at `dispatch` rather than
+letting it read as a window that is not there. This section is therefore mostly dormant rather
 than retired — it still binds the session reading the reference on the host, where both
 locations remain readable, and it binds any chamber that is deliberately given a window.
 

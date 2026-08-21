@@ -1061,6 +1061,21 @@ stamp_author() {
 
 cmd_dispatch() {
     task="${1:-}"; check_task "$task"
+    # **`AUTOCLAVE_WINDOW` is a `new`-time variable, and setting it here is refused rather
+    # than ignored.** Mounts are fixed when the container is created, so the variable does
+    # nothing at this point — and a no-op is the wrong answer to an operator who has just
+    # said, in the only way the launcher offers, that this agent needs the old pipeline.
+    #
+    # The failure it prevents is quiet and expensive: `rebuilder.md` tells an agent to read
+    # `/window`, the agent finds no such path, and an agent that has been told the reference
+    # exists reasons around its absence far more often than it stops and reports it. The
+    # chamber then returns work that reads as informed by the old system and is not.
+    #
+    # Named for the phase rather than the variable, because the operator's intent was right
+    # and only the timing was wrong: the chamber has to be made again, not patched.
+    if [ -n "${AUTOCLAVE_WINDOW:-}" ]; then
+        die "AUTOCLAVE_WINDOW is set, but a window can only be opened when the chamber is created — this chamber's mounts are already fixed. Destroy it and run 'new' with AUTOCLAVE_WINDOW set, or unset it to dispatch without a window."
+    fi
     vendor="${2:-}"
     brief="${3:-}"
     # **The model is required, and that is the point.** An omitted model runs whatever

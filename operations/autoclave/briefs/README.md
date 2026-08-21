@@ -9,7 +9,13 @@ more**: since 2026-08-20 a chamber gets no window onto the old code unless
 
 `new` is the command that matters, not `dispatch`: mounts are fixed when the container is
 created and cannot be added to a running one. `AUTOCLAVE_WINDOW=/path sh ... dispatch ...`
-is accepted and does nothing, which is the silent kind of wrong.
+is **refused**, naming the phase — it used to be accepted and do nothing, which is the
+silent kind of wrong and is exactly how a rebuilder brief ends up describing a mount that
+is not there.
+
+Before trusting a rebuilder result, confirm the chamber actually had the window:
+`sh operations/autoclave/autoclave.sh exec <task> 'ls -d /window'`. A brief that names
+`/window` is not evidence the mount existed.
 
 This block is one lifecycle and is meant to be copied whole, so it fails closed: without
 `set -eu` a failed `new` or an unreadable task file does not stop it, `dispatch` receives a

@@ -12,9 +12,10 @@ verification.
 - **A chamber sees this repository and the design notes, not the old pipeline.** The
   window closed on 2026-08-20; `/specs` carries the notes, and the old code arrives only
   when `AUTOCLAVE_WINDOW` is set on `new` — mounts are fixed at container creation, so
-  setting it on `dispatch` is accepted and silently does nothing. Write briefs against
-  what is actually mounted: an agent told to consult a mount that is absent fills the gap
-  with invention more often than it reports it, and
+  `dispatch` **refuses** the variable rather than accepting it as a no-op. Write briefs
+  against what is actually mounted: an agent told to consult a mount that is absent fills
+  the gap with invention more often than it reports it, so a rebuilder result is trusted
+  only after the mount is confirmed in the chamber, never because the brief named it.
   `operations/autoclave/briefs/rebuilder.md` is the one brief that assumes the window and
   says so at the top.
 - **Host agents are read-only.** The custom `scout`, `auditor`, and `consult` roles have no

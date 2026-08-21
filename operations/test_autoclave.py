@@ -1016,6 +1016,43 @@ class TestDispatch:
         assert result.returncode != 0
         assert expected in result.stderr
 
+    def test_a_window_asked_for_at_dispatch_is_refused_not_ignored(self, tmp_path):
+        """`AUTOCLAVE_WINDOW` does nothing at `dispatch` — mounts are fixed when the
+        container is created — and a no-op is the wrong answer to an operator who has
+        just said, in the only way the launcher offers, that this agent needs the old
+        pipeline.
+
+        The failure it prevents is quiet: `rebuilder.md` sends the agent to `/window`,
+        the agent finds nothing there, and an agent told the reference exists reasons
+        around its absence far more often than it stops and reports it. The chamber then
+        returns work that reads as informed by the old system and is not.
+
+        Raised by CodeRabbit on the pull request for the change that closed the window.
+        Documenting the right command was the fix that had been made; refusing the wrong
+        one is the fix that holds when nobody reads the document.
+        """
+        script = elsewhere(tmp_path)
+        env, log = fake_docker(tmp_path)
+        env["AUTOCLAVE_WINDOW"] = str(tmp_path)
+
+        result = run(
+            "dispatch",
+            "task-x",
+            "claude",
+            str(ROOT / "README.md"),
+            "opus",
+            env=env,
+            script=script,
+            cwd=tmp_path,
+        )
+
+        assert result.returncode != 0, "a wrong-phase window request was accepted"
+        assert "AUTOCLAVE_WINDOW" in result.stderr, result.stderr
+        assert "created" in result.stderr, (
+            f"the refusal does not say the window belongs to chamber creation: {result.stderr}"
+        )
+        assert docker_calls(log) == [], "the engine was touched before the refusal"
+
     def test_validation_precedes_any_docker_call(self, tmp_path):
         """A typo in a model name should cost a line of output, not a container's
         startup and a confusing failure from a vendor CLI two layers down."""
