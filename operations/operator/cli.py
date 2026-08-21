@@ -105,10 +105,17 @@ def build_parser() -> PlainParser:
         ),
     )
 
-    run = verbs.add_parser("run", help="run or resume the fixture run tree, naming pages and acts")
+    run = verbs.add_parser("run", help="run or resume a recorded fixture or real submission")
     run.add_argument("--run-id", required=True, help="a short name for this run")
     run.add_argument("--scenario", default="happy", help="declared fixture scenario")
     run.add_argument("--fixture", default=DEFAULT_FIXTURE, help="declared fixture name")
+    run.add_argument(
+        "--submission-folder", type=Path, help="approved folder of real submitted files"
+    )
+    run.add_argument(
+        "--submission-manifest", type=Path, help="self-hashed ledger for the real folder"
+    )
+    run.add_argument("--data-gate-policy", type=Path, help="approved-storage policy for real input")
 
     export = verbs.add_parser(
         "export", help="copy the recorded base Armarium evidence locally and print reconciliation"
@@ -183,7 +190,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                     volume=volume,
                 )
         elif args.verb == "run":
-            surface.run(run_id=args.run_id, scenario=args.scenario, fixture=args.fixture)
+            surface.run(
+                run_id=args.run_id,
+                scenario=args.scenario,
+                fixture=args.fixture,
+                submission_folder=args.submission_folder,
+                submission_manifest=args.submission_manifest,
+                data_gate_policy=args.data_gate_policy,
+            )
         elif args.verb == "export":
             surface.export(run_id=args.run_id)
         elif args.verb == "close":

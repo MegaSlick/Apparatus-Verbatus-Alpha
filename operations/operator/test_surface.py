@@ -38,10 +38,12 @@ from .errors import ErrorCode, OperatorError
 from .fakes import LocalFixtureObjectStore, OperatorFakeProvider
 from .records import MAX_RECORD_BYTES, DescriptorStore, ReceiptStore, RecordError, sha256_file
 from .surface import (
+    DOOR_PROGRAM,
     FIXTURE_BILLING_CUTOFF_MARGIN_SECONDS,
     OPERATOR_CLOSE_PREFIX,
     Faults,
     OperatorSurface,
+    _declared_work,
     _pod_from_record,
     _pod_record,
     _repository_commit,
@@ -1287,6 +1289,249 @@ def test_sealed_manifest_upload_refuses_a_new_policy_instead_of_ignoring_it(
     assert result == 2
     assert uploads == []
     assert "existing sealed record already carries the policy" in capsys.readouterr().out
+
+
+def test_cli_run_carries_real_ingress_options_to_the_operator_surface(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    observed: dict[str, object] = {}
+
+    class ObservedSurface:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def run(self, **kwargs) -> None:  # type: ignore[no-untyped-def]
+            observed.update(kwargs)
+
+    monkeypatch.setattr(cli, "OperatorSurface", ObservedSurface)
+    source = tmp_path / "approved" / "source"
+    ledger = tmp_path / "approved" / "ledger.json"
+    policy = tmp_path / "policy.json"
+
+    assert (
+        cli.main(
+            [
+                "--workspace",
+                str(tmp_path),
+                "run",
+                "--run-id",
+                "real-run",
+                "--submission-folder",
+                str(source),
+                "--submission-manifest",
+                str(ledger),
+                "--data-gate-policy",
+                str(policy),
+            ]
+        )
+        == 0
+    )
+    assert observed["submission_folder"] == source
+    assert observed["submission_manifest"] == ledger
+    assert observed["data_gate_policy"] == policy
+
+
+def _recording_surface(
+    tmp_path: Path, *, faults: Faults | None = None, output: list[str] | None = None
+) -> tuple[OperatorSurface, list[tuple[list[str], Path | None]]]:
+    """A surface whose child launches are recorded instead of run.
+
+    The recorded child "succeeds", so the drill below reaches its own interruption
+    rather than a launch failure; the run still ends in `RUN_FAILED` afterwards,
+    because no Armarium record exists for a pipeline that never ran.
+    """
+
+    observed: list[tuple[list[str], Path | None]] = []
+
+    def runner(command, **kwargs):  # type: ignore[no-untyped-def]
+        observed.append((command, kwargs.get("cwd")))
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    surface = OperatorSurface(
+        ROOT,
+        tmp_path / "operator-state",
+        provider=OperatorFakeProvider(now=lambda: START),
+        now=lambda: START,
+        present=(output if output is not None else []).append,
+        faults=faults,
+        runner=runner,
+    )
+    return surface, observed
+
+
+def _argv_value(command: list[str], flag: str) -> str:
+    assert flag in command, f"{flag} never reached the child's argv"
+    return command[command.index(flag) + 1]
+
+
+def test_real_ingress_paths_are_resolved_against_the_operators_own_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The operator's shell decides what a relative submitted path means.
+
+    Both child launches use `cwd=self.workspace`, and `--workspace` names a
+    checkout that need not be where the operator is standing. An unresolved
+    relative `--submission-folder` is therefore read beside the *checkout*: a
+    refusal naming a path nobody typed, or — where a same-named folder does sit
+    inside an approved storage root — the wrong material admitted as this run's
+    ink with nothing said. The orchestrator resolves its own caller-relative
+    paths for exactly this reason; by the time it does, the operator's cwd is
+    gone, so this boundary has to resolve them first.
+    """
+
+    elsewhere = tmp_path / "operator-home"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    surface, observed = _recording_surface(tmp_path)
+
+    with pytest.raises(OperatorError):
+        surface.run(
+            run_id="relative-real",
+            submission_folder=Path("approved/submitted-pages"),
+            submission_manifest=Path("approved/submission-ledger.json"),
+            data_gate_policy=Path("data-gate-policy.json"),
+        )
+
+    command, cwd = observed[0]
+    assert cwd == ROOT, "the child no longer runs from the workspace; re-read this test's premise"
+    assert _argv_value(command, "--submission-folder") == str(
+        elsewhere / "approved" / "submitted-pages"
+    )
+    assert _argv_value(command, "--submission-manifest") == str(
+        elsewhere / "approved" / "submission-ledger.json"
+    )
+    assert _argv_value(command, "--data-gate-policy") == str(elsewhere / "data-gate-policy.json")
+
+
+def test_the_laptop_crash_drill_still_carries_real_ingress_to_the_door(tmp_path: Path) -> None:
+    """Fault injection is a drill of the real route, not of a fixture stand-in.
+
+    The drill runs the Door alone, through `_run_one_stage`, and that argv used
+    to be a second hand-written copy of `run()`'s. Both now share one helper —
+    which is only worth anything if something proves the drill still reaches the
+    Door carrying what a real run sends, rather than quietly rehearsing a
+    fixture run under a real submission's name.
+    """
+
+    source = tmp_path / "approved" / "submitted-pages"
+    manifest = tmp_path / "approved" / "submission-ledger.json"
+    policy = tmp_path / "data-gate-policy.json"
+    messages: list[str] = []
+    surface, observed = _recording_surface(
+        tmp_path, faults=Faults(laptop_crash=True), output=messages
+    )
+
+    with pytest.raises(OperatorError) as interruption:
+        surface.run(
+            run_id="crash-real",
+            submission_folder=source,
+            submission_manifest=manifest,
+            data_gate_policy=policy,
+        )
+
+    assert interruption.value.code is ErrorCode.RUN_INTERRUPTED
+    command, _cwd = observed[0]
+    assert command[1] == str(ROOT / DOOR_PROGRAM), "the drill no longer runs the Door"
+    assert _argv_value(command, "--submission-folder") == str(source)
+    assert _argv_value(command, "--submission-manifest") == str(manifest)
+    assert _argv_value(command, "--data-gate-policy") == str(policy)
+    interrupted = surface.receipts.read(surface._descriptor_receipt("run"))["payload"]
+    assert interrupted["ingress"] == "real"
+    assert interrupted["last_observed_work"] == "The real submission's pages reached the Door."
+    assert any("real submission reached the Door" in line for line in messages)
+    assert not any("fixture pages" in line for line in messages)
+
+
+def test_a_failed_real_run_receipt_names_real_ingress(tmp_path: Path) -> None:
+    """A receipt may retain fixture configuration without calling it the input."""
+
+    observed: list[list[str]] = []
+
+    def fail_after_recording(command, **_kwargs):  # type: ignore[no-untyped-def]
+        observed.append(command)
+        return subprocess.CompletedProcess(command, 2, "", "the real Designator refused")
+
+    surface = OperatorSurface(
+        ROOT,
+        tmp_path / "operator-state",
+        present=lambda _line="": None,
+        runner=fail_after_recording,
+    )
+    with pytest.raises(OperatorError) as failure:
+        surface.run(
+            run_id="failed-real",
+            submission_folder=tmp_path / "approved" / "submitted-pages",
+            submission_manifest=tmp_path / "approved" / "submission-ledger.json",
+        )
+
+    assert failure.value.code is ErrorCode.RUN_FAILED
+    assert observed
+    receipt = surface.receipts.read(surface._descriptor_receipt("run"))["payload"]
+    assert receipt["ingress"] == "real"
+
+
+def test_a_real_run_is_never_narrated_with_the_declared_fixtures_pages(tmp_path: Path) -> None:
+    """What the operator is told a run is working on has to be that run's work.
+
+    `proof/`'s declared pages and acts belong to the synthetic walking skeleton.
+    Printed over a real submission they describe other material entirely, and
+    the operator has no way to tell — which is the whole failure this unit's
+    fixture/real seam can produce. The extent comes from the submitted filename
+    ledger instead, as a count: the data-handling policy's `logging_rule` keeps
+    real names off the terminal.
+    """
+
+    folder = tmp_path / "approved" / "submitted-pages"
+    folder.mkdir(parents=True)
+    for name in ("page-1.png", "page-2.png"):
+        (folder / name).write_bytes(b"not really a page, and never opened here")
+    manifest = tmp_path / "approved" / "submission-ledger.json"
+    manifest.write_bytes(canonical_bytes(build_manifest(walk_folder(folder))))
+    messages: list[str] = []
+    surface, _observed = _recording_surface(tmp_path, output=messages)
+
+    with pytest.raises(OperatorError):
+        surface.run(
+            run_id="narration",
+            submission_folder=folder,
+            submission_manifest=manifest,
+            data_gate_policy=tmp_path / "data-gate-policy.json",
+        )
+
+    declared_pages, declared_acts, declared_ok = _declared_work(ROOT)
+    assert declared_ok, "the declared fixture is unreadable; this test proves nothing"
+    for name in declared_pages + declared_acts:
+        assert not any(name in line for line in messages), (
+            f"a real run was narrated with the declared fixture's {name!r}"
+        )
+    assert any("declares 2 file(s)" in line for line in messages)
+    for name in ("page-1.png", "page-2.png"):
+        assert not any(name in line for line in messages), (
+            "a submitted filename reached the terminal; the policy's logging rule allows "
+            "counts and the private report location there, not real names"
+        )
+
+
+def test_an_unreadable_ledger_leaves_the_refusal_to_the_door(tmp_path: Path) -> None:
+    """The surface narrates; the Door is the gate, and only one of them refuses.
+
+    Refusing here on a ledger this screen could not parse would make the surface
+    a second gate — one holding no policy, able to disagree with the real one.
+    It says so plainly and lets the run reach the Door, which refuses by name.
+    """
+
+    folder = tmp_path / "approved" / "submitted-pages"
+    folder.mkdir(parents=True)
+    manifest = tmp_path / "approved" / "submission-ledger.json"
+    manifest.write_text("{not canonical json", encoding="utf-8")
+    messages: list[str] = []
+    surface, observed = _recording_surface(tmp_path, output=messages)
+
+    with pytest.raises(OperatorError):
+        surface.run(run_id="bad-ledger", submission_folder=folder, submission_manifest=manifest)
+
+    assert any("could not be read here" in line for line in messages)
+    assert observed, "the run never reached the Door, which is the only thing that can refuse it"
 
 
 def test_console_interrupt_never_prints_a_raw_traceback(

@@ -17,6 +17,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+from argparse import Namespace
 from copy import deepcopy
 from io import BytesIO
 from itertools import combinations, product
@@ -57,9 +58,11 @@ from common.stage import (
     load_fixture,
     open_context,
     run_config_bindings,
+    run_sealed_config_digests,
     stage_parser,
     verify_final_seal,
 )
+from operations.submit import gate, submit
 
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
@@ -693,6 +696,9 @@ def orchestrate(
     hard_failure_config: Path | None = None,
     nuda_per_mille: int | None = None,
     nuda_approval_ref: str | None = None,
+    submission_folder: Path | None = None,
+    submission_manifest: Path | None = None,
+    data_gate_policy: Path | None = None,
 ) -> subprocess.CompletedProcess:
     """Run the pipeline the way a person would, and return the whole result."""
     command = [
@@ -717,12 +723,359 @@ def orchestrate(
         command.extend(("--nuda-per-mille", str(nuda_per_mille)))
     if nuda_approval_ref is not None:
         command.extend(("--nuda-approval-ref", nuda_approval_ref))
+    if submission_folder is not None:
+        command.extend(("--submission-folder", str(submission_folder)))
+    if submission_manifest is not None:
+        command.extend(("--submission-manifest", str(submission_manifest)))
+    if data_gate_policy is not None:
+        command.extend(("--data-gate-policy", str(data_gate_policy)))
     return subprocess.run(
         command,
         cwd=ROOT,
         capture_output=True,
         text=True,
     )
+
+
+def _real_submission(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
+    """Build a real-shaped, self-hashed local submission under an approved root."""
+
+    approved = tmp_path / "approved-storage"
+    source = approved / "submitted-pages"
+    source.mkdir(parents=True)
+    for name in ("page-1.png", "page-2.png"):
+        shutil.copyfile(ROOT / "proof" / "fixtures" / FIXTURE / name, source / name)
+    policy = json.loads(gate.DEFAULT_POLICY_PATH.read_text(encoding="utf-8"))
+    policy["storage_roots"] = [str(approved)]
+    policy_path = tmp_path / "data-gate-policy.json"
+    policy_path.write_text(json.dumps(policy), encoding="utf-8")
+    manifest = approved / "submission-ledger.json"
+    submit.submit(source, manifest, policy_path=policy_path)
+    return approved, source, manifest, policy_path
+
+
+def test_orchestrator_carries_a_real_submission_to_the_door_end_to_end(tmp_path):
+    approved, source, manifest, policy = _real_submission(tmp_path)
+    result = orchestrate(
+        approved / "runs",
+        "real-ingress",
+        "happy",
+        submission_folder=source,
+        submission_manifest=manifest,
+        data_gate_policy=policy,
+    )
+
+    # Unit 3 carries the material through the Door.  The Designator correctly
+    # refuses next: real structural proposal/model work is outside this unit,
+    # so the orchestrator must not fabricate a continuation merely to make a
+    # real ingress test green.
+    assert result.returncode != 0
+    assert "real structural proposal/model work is outside System 03" in result.stderr
+    run_record = RunTree(approved / "runs", "real-ingress").read_run()
+    assert run_record["ingress"] == {"mode": "real"}
+
+    # `ingress: real` alone says the Door took the real route. It does not say
+    # the data gate ever opened the policy this caller named, and "the argv
+    # arrived" is a claim about a command line rather than about a check that
+    # ran. The Door seals the digest of the exact policy bytes its gate parsed
+    # (`pipeline/1_exemplar/door.py:1315` proves it at the point of use), so
+    # comparing that against the caller's file on disk is the assertion that the
+    # gate evaluated *this* policy and not the repository's default.
+    assert run_sealed_config_digests(run_record)["data-handling"] == digest_bytes(
+        policy.read_bytes()
+    )
+    assert digest_bytes(policy.read_bytes()) != digest_bytes(
+        gate.DEFAULT_POLICY_PATH.read_bytes()
+    ), "the caller's policy must differ from the default, or the check above proves nothing"
+
+
+def test_orchestrator_keeps_the_doors_manifest_without_folder_refusal(tmp_path):
+    approved, _source, manifest, policy = _real_submission(tmp_path)
+    result = orchestrate(
+        approved / "runs",
+        "manifest-without-folder",
+        "happy",
+        submission_manifest=manifest,
+        data_gate_policy=policy,
+    )
+
+    assert result.returncode != 0
+    assert (
+        "submission filename ledger is meaningful only with a real submission folder"
+        in result.stderr
+    )
+
+
+# Every flag by which a path to submitted material can reach a stage's argv.
+REAL_INGRESS_FLAGS = frozenset(
+    {"--submission-folder", "--submission-manifest", "--data-gate-policy"}
+)
+
+
+def _orchestrator_module(name: str):
+    """The orchestrator loaded as a module, for the parts reachable below `main`."""
+
+    path = ROOT / "pipeline" / "orchestrator" / "run.py"
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _orchestrator_namespace_fields(tmp_path: Path) -> dict:
+    """The fields `invoke` reads, as `main` would have them after resolution."""
+
+    return dict(
+        run_root=tmp_path / "runs",
+        run_id="r",
+        scenario="happy",
+        fixture_root=ROOT / "proof",
+        models_config=ROOT / "config" / "models.toml",
+        pdf_render_config=ROOT / "config" / "pdf_render.toml",
+        designator_padding_config=ROOT / "config" / "designator_padding.toml",
+        designator_geometry_config=ROOT / "config" / "designator_geometry.toml",
+        alignment_config=ROOT / "config" / "alignment.toml",
+        formats_config=ROOT / "config" / "armarium_formats.toml",
+        recovery_config=ROOT / "config" / "recovery.toml",
+        hard_failure_config=ROOT / "config" / "hard_failure.toml",
+        pdf_target_dpi=None,
+        witness_context="named",
+        witness_context_config=ROOT / "config" / "witness_context.toml",
+        nuda_per_mille=0,
+        nuda_approval_ref="",
+        perlector_instrument_per_mille=0,
+        perlector_instrument_approval_ref="",
+        perlector_protocol_config=ROOT / "config" / "perlector_protocol.toml",
+        perlector_audit_config=ROOT / "config" / "perlector_audit.toml",
+        draft_fed=True,
+        submission_folder=None,
+        submission_manifest=None,
+        data_gate_policy=gate.DEFAULT_POLICY_PATH,
+    )
+
+
+def test_real_ingress_changes_only_the_doors_argv(monkeypatch, tmp_path):
+    """No stage after the Door receives a second path to source material."""
+
+    orchestrator = _orchestrator_module("orchestrator_real_ingress_argv")
+    observed: list[list[str]] = []
+
+    def record(command, **_kwargs):  # type: ignore[no-untyped-def]
+        observed.append(command)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(orchestrator.subprocess, "run", record)
+    base = _orchestrator_namespace_fields(tmp_path)
+    fixture_args = Namespace(**base)
+    real_args = Namespace(
+        **{
+            **base,
+            "submission_folder": tmp_path / "approved" / "source",
+            "submission_manifest": tmp_path / "approved" / "ledger.json",
+        }
+    )
+
+    for _name, program in orchestrator.SEQUENCE:
+        orchestrator.invoke(program, fixture_args)
+    fixture_commands = observed[:]
+    observed.clear()
+    for _name, program in orchestrator.SEQUENCE:
+        orchestrator.invoke(program, real_args)
+
+    assert observed[1:] == fixture_commands[1:]
+    assert "--submission-folder" in observed[0]
+    assert "--submission-manifest" in observed[0]
+    assert "--data-gate-policy" in observed[0]
+
+    # The equality above is a *relative* claim: the real run's later stages match
+    # the fixture run's. It stays true if a change gives every stage a real-ingress
+    # flag, because then both sides carry it — the leak this test is named for
+    # would land green. Asserted absolutely as well, on both runs.
+    for commands in (observed, fixture_commands):
+        for command in commands[1:]:
+            leaked = REAL_INGRESS_FLAGS.intersection(command)
+            assert not leaked, (
+                f"{Path(command[1]).name} received {sorted(leaked)}; every stage after the "
+                "Door works from the run tree the Door sealed, and a source path on its argv "
+                "is a second, unsealed route back to the submitted material"
+            )
+
+
+def test_invoke_refuses_a_caller_relative_path_instead_of_resolving_it_late(monkeypatch, tmp_path):
+    """A caller-relative path may not reach a child that runs from somewhere else.
+
+    Resolution happens once, in `resolve_caller_paths`, and nothing re-reads it
+    afterwards — the orchestrator keeps no checkpoint file of its own, so the
+    resolved values live only in this process's `Namespace`. A partial-invocation
+    entry point that builds its own `Namespace` and calls `invoke` directly would
+    hand a stage a relative path, which the stage resolves against `ROOT` because
+    that is its `cwd`: a different run tree, or on the real route a different
+    folder of ink, with nothing said. `invoke` refuses by name instead.
+    """
+
+    orchestrator = _orchestrator_module("orchestrator_relative_argv_guard")
+    invoked: list[list[str]] = []
+    monkeypatch.setattr(
+        orchestrator.subprocess,
+        "run",
+        lambda command, **_kwargs: (
+            invoked.append(command) or subprocess.CompletedProcess(command, 0, "", "")
+        ),
+    )
+    base = _orchestrator_namespace_fields(tmp_path)
+
+    for attribute, flag, value in (
+        ("run_root", "--run-root", Path("runs")),
+        ("submission_folder", "--submission-folder", Path("approved/source")),
+        ("submission_manifest", "--submission-manifest", Path("approved/ledger.json")),
+        ("data_gate_policy", "--data-gate-policy", Path("policy.json")),
+    ):
+        args = Namespace(**{**base, attribute: value})
+        with pytest.raises(ContractError) as refusal:
+            orchestrator.invoke(orchestrator.STAGE_PROGRAMS["door"], args)
+        assert flag in str(refusal.value)
+    assert not invoked, "a stage was launched with a caller-relative path on its argv"
+
+    # And the resolved form the real entry point produces passes.
+    orchestrator.invoke(
+        orchestrator.STAGE_PROGRAMS["door"],
+        orchestrator.resolve_caller_paths(Namespace(**{**base, "run_root": Path("runs")})),
+    )
+    assert invoked
+
+
+def test_orchestrator_default_data_gate_policy_is_the_gates_own(tmp_path):
+    """The orchestrator names the default policy path; the gate owns it.
+
+    `pipeline/orchestrator/run.py` imports only `common/`, so it spells this path
+    out rather than importing `operations.submit.gate`. Two spellings of one file
+    drift apart in silence unless something compares them, which is here.
+    """
+
+    orchestrator = _orchestrator_module("orchestrator_default_policy")
+    assert orchestrator.DEFAULT_DATA_GATE_POLICY_PATH == gate.DEFAULT_POLICY_PATH
+    resolved = orchestrator.resolve_caller_paths(
+        Namespace(**{**_orchestrator_namespace_fields(tmp_path), "data_gate_policy": None})
+    )
+    assert resolved.data_gate_policy == gate.DEFAULT_POLICY_PATH
+    assert resolved.data_gate_policy.is_file()
+
+
+def test_resuming_a_real_run_without_its_ingress_flags_refuses(tmp_path):
+    """The fixture route may not quietly take over a run the real route created.
+
+    This is the seam the whole unit is about. The same `--run-id` and
+    `--run-root`, minus the three real-ingress flags, is what an operator types
+    when resuming from shell history that predates the real run — and it sends
+    the Door down its fixture route, over a run tree holding real ink. The run
+    authority refuses it as a different run wearing an old name; nothing is
+    rewritten and the recorded ingress still says what created the tree.
+    """
+
+    approved, source, manifest, policy = _real_submission(tmp_path)
+    first = orchestrate(
+        approved / "runs",
+        "seam",
+        "happy",
+        submission_folder=source,
+        submission_manifest=manifest,
+        data_gate_policy=policy,
+    )
+    assert "real structural proposal/model work is outside System 03" in first.stderr
+    sealed = RunTree(approved / "runs", "seam").read_run()
+
+    resumed = orchestrate(approved / "runs", "seam", "happy")
+
+    assert resumed.returncode != 0
+    assert "already exists and is bound to different" in resumed.stderr
+    assert "ingress" in resumed.stderr
+    assert RunTree(approved / "runs", "seam").read_run() == sealed
+
+
+def test_relative_run_root_from_outside_the_repository_is_one_tree(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    command = [
+        sys.executable,
+        str(ORCHESTRATOR),
+        "--fixture",
+        FIXTURE,
+        "--scenario",
+        "happy",
+        "--run-id",
+        "outside",
+        "--run-root",
+        "runs",
+        "--fixture-root",
+        str(ROOT / "proof"),
+    ]
+
+    result = subprocess.run(command, cwd=outside, capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stderr
+    assert (outside / "runs" / "outside" / "run.json").is_file()
+    assert not (ROOT / "runs" / "outside").exists()
+
+
+def test_relative_submission_folder_from_outside_the_repository_finds_the_real_files(
+    tmp_path: Path,
+) -> None:
+    """The same one-tree property, for real-ingress paths rather than the run root.
+
+    Every child stage runs with `cwd=ROOT` (`invoke`'s `subprocess.run`), so a
+    submission folder resolved late — at the Door, after that `cwd` switch —
+    would resolve against the repository root instead of the operator's own
+    shell. Passing it relative from a caller directory that is neither ROOT
+    nor the target proves the orchestrator resolved it once, up front, against
+    the caller's actual cwd.
+    """
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    source = outside / "approved-storage" / "submitted-pages"
+    source.mkdir(parents=True)
+    for name in ("page-1.png", "page-2.png"):
+        shutil.copyfile(ROOT / "proof" / "fixtures" / FIXTURE / name, source / name)
+    policy = json.loads(gate.DEFAULT_POLICY_PATH.read_text(encoding="utf-8"))
+    policy["storage_roots"] = [str(outside / "approved-storage")]
+    policy_path = outside / "data-gate-policy.json"
+    policy_path.write_text(json.dumps(policy), encoding="utf-8")
+    manifest = outside / "approved-storage" / "submission-ledger.json"
+    submit.submit(source, manifest, policy_path=policy_path)
+
+    command = [
+        sys.executable,
+        str(ORCHESTRATOR),
+        "--fixture",
+        FIXTURE,
+        "--scenario",
+        "happy",
+        "--run-id",
+        "relative-real-ingress",
+        "--run-root",
+        "approved-storage/runs",
+        "--submission-folder",
+        "approved-storage/submitted-pages",
+        "--submission-manifest",
+        "approved-storage/submission-ledger.json",
+        "--data-gate-policy",
+        "data-gate-policy.json",
+    ]
+
+    result = subprocess.run(command, cwd=outside, capture_output=True, text=True)
+
+    # Unit 3 stops at the Door; the Designator's real refusal is expected and is
+    # covered by test_orchestrator_carries_a_real_submission_to_the_door_end_to_end.
+    # What this test proves is narrower and upstream of that: the relative
+    # submission folder and manifest resolved to the real files it just wrote,
+    # rather than to a same-named, nonexistent path under ROOT. It deliberately
+    # leaves `--fixture-root` at its relative default too: synthetic fixture
+    # evidence is not a prerequisite for a run whose authority seals real ingress.
+    assert "could not be resolved" not in result.stderr
+    assert "outside every approved storage root" not in result.stderr
+    run_tree_root = outside / "approved-storage" / "runs"
+    assert RunTree(run_tree_root, "relative-real-ingress").read_run()["ingress"] == {"mode": "real"}
+    assert not (ROOT / "runs" / "relative-real-ingress").exists()
 
 
 def invoke_stage(
