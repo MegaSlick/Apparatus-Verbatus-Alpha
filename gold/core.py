@@ -218,7 +218,8 @@ def _catalog(rows: Any, source: list[dict[str, Any]]) -> list[dict[str, Any]]:
     result = []
     for row in rows:
         _refuse(
-            not isinstance(row, dict) or set(row) != {"ordinal", "sha256", "stratum"},
+            not isinstance(row, dict)
+            or set(row) != {"ordinal", "sha256", "stratum", "width", "height"},
             "catalog row has the wrong closed schema",
         )
         ordinal, page_sha, stratum = row["ordinal"], row["sha256"], row["stratum"]
@@ -228,6 +229,13 @@ def _catalog(rows: Any, source: list[dict[str, Any]]) -> list[dict[str, Any]]:
         )
         _sha(page_sha, "catalog sha256")
         _refuse(not isinstance(stratum, str) or not stratum.strip(), "catalog stratum is empty")
+        for dimension in ("width", "height"):
+            _refuse(
+                not isinstance(row[dimension], int)
+                or isinstance(row[dimension], bool)
+                or row[dimension] <= 0,
+                f"catalog page {dimension} is not a positive integer",
+            )
         found.add((ordinal, page_sha))
         result.append(dict(row))
     _refuse(
@@ -248,9 +256,12 @@ def _method_facts(method: Any, claimed_set: Any, sampling: Any) -> None:
     seed" would be an unfalsifiable label rather than a replayable fact
     (GOVERNANCE 10; U18's *provably*).
     """
-    _refuse(method not in {"stratified-seed", "manual"}, "sample method is not recognized")
     _refuse(
-        claimed_set is not None and claimed_set not in SETS,
+        not isinstance(method, str) or method not in {"stratified-seed", "manual"},
+        "sample method is not recognized",
+    )
+    _refuse(
+        claimed_set is not None and (not isinstance(claimed_set, str) or claimed_set not in SETS),
         "claimed_set is not a recognized gold set",
     )
     if method == "stratified-seed":
@@ -304,7 +315,13 @@ def build_sample(
         "method": method,
         "selection_basis": selection_basis,
         "frame": dict(frame),
-        "page": {"ordinal": page["ordinal"], "sha256": page_sha, "stratum": page["stratum"]},
+        "page": {
+            "ordinal": page["ordinal"],
+            "sha256": page_sha,
+            "stratum": page["stratum"],
+            "width": page["width"],
+            "height": page["height"],
+        },
         "set": gold_set,
         "claimed_set": claimed_set,
         "sampling": dict(sampling) if sampling is not None else None,
@@ -516,9 +533,11 @@ def verify_stratified_selection(
     A valid sample record proves its page belongs to the sealed corpus and lands
     in the set the seed puts it in. It does not, by itself, prove the *sampler*
     chose it: `build_sample` will mint any page in the frame. This replays the
-    seeded draw from the same three inputs and compares the whole selection, so a
-    hand-picked page wearing `method: stratified-seed`, a dropped page, and a
-    catalog re-described after the fact are all refused by name.
+    seeded draw from the same three inputs and compares the whole seeded
+    selection. Manual records are validated but excluded because they never claim
+    draw membership; a hand-picked page wearing `method: stratified-seed`, a
+    dropped page, and a catalog re-described after the fact are all refused by
+    name.
     """
     expected = {
         record["sample_digest"]: record
@@ -528,6 +547,8 @@ def verify_stratified_selection(
     present = {}
     for record in records:
         validate_sample(record, run_path)
+        if record["method"] != "stratified-seed":
+            continue
         _refuse(
             record["sample_digest"] in present,
             f"sample {record['sample_digest']} appears twice in the selection",
@@ -566,7 +587,8 @@ def ingest_manual_pick(run_path: str | Path, pick: Any) -> dict[str, Any]:
     _refuse(pick["schema"] != MANUAL_PICK_SCHEMA, "manual pick schema is not recognized")
     page = pick["page"]
     _refuse(
-        not isinstance(page, dict) or set(page) != {"ordinal", "sha256", "stratum"},
+        not isinstance(page, dict)
+        or set(page) != {"ordinal", "sha256", "stratum", "width", "height"},
         "manual pick page has the wrong closed schema",
     )
     _refuse(
@@ -578,6 +600,13 @@ def ingest_manual_pick(run_path: str | Path, pick: Any) -> dict[str, Any]:
         not isinstance(page["stratum"], str) or not page["stratum"].strip(),
         "manual pick stratum is empty",
     )
+    for dimension in ("width", "height"):
+        _refuse(
+            not isinstance(page[dimension], int)
+            or isinstance(page[dimension], bool)
+            or page[dimension] <= 0,
+            f"manual pick page {dimension} is not a positive integer",
+        )
     _refuse(
         not isinstance(pick["selection_basis"], str) or not pick["selection_basis"].strip(),
         "manual pick selection_basis is empty",
@@ -587,7 +616,10 @@ def ingest_manual_pick(run_path: str | Path, pick: Any) -> dict[str, Any]:
         not in {(p["ordinal"], p["sha256"]) for p in source},
         "manual pick page is outside the sealed corpus frame",
     )
-    _refuse(pick["set"] not in SETS, "manual pick set is not recognized")
+    _refuse(
+        not isinstance(pick["set"], str) or pick["set"] not in SETS,
+        "manual pick set is not recognized",
+    )
     sample = build_sample(
         frame,
         page,
@@ -658,14 +690,80 @@ def _person(value: Any, label: str) -> str:
     return value
 
 
+def _folded_occurrences(value: str, word: str) -> list[int]:
+    """Every case-insensitive occurrence of `word`, as indexes into `value` itself.
+
+    `str.casefold` is not length-preserving — `ß` folds to `ss`, `ﬁ` to `fi`, and
+    both survive NFC — so folding the whole reading and then indexing back into
+    the unfolded one desynchronizes from the first such character onward. That
+    is not theoretical for a border-parish register: `Straßburg, Straßberg
+    [ILLEGIBLE]` was refused as a badly spelled illegibility, and `ß \\illegible`
+    with a correct escape was refused too, both for a reason that was not true.
+    Refusing a transcriber's real hours by name, wrongly, is the failure this
+    module exists to avoid, so the window folded here is a fixed-width slice of
+    the original and every index returned is an index into it.
+    """
+    width = len(word)
+    return [
+        position
+        for position in range(len(value) - width + 1)
+        if value[position : position + width].casefold() == word
+    ]
+
+
+def _escaped_illegibilities(value: str, label: str) -> set[int]:
+    """Parse the escapes once, left to right, and say where each escaped word starts.
+
+    `\\` is the only escape character and it has exactly two uses: `\\illegible`
+    is the literal source word, and `\\\\` is a literal backslash. A backslash
+    before anything else escapes nothing and is refused.
+
+    One parse decides both questions, because asking them separately is what made
+    the convention ambiguous: reading `\\\\illegible` as a literal backslash, then
+    separately asking whether the word behind it is escaped by looking at the
+    character in front of it, answers yes to both — the text is at once a literal
+    backslash followed by an unescaped illegibility *and* an escaped literal word.
+    Nothing in the record decided between them. Left to right, `\\\\` consumes both
+    marks and the `illegible` after it is unescaped, so it is refused and the
+    transcriber writes `\\\\\\illegible` for a backslash before the literal word.
+    These records are immutable and append-only, so an ambiguity admitted now is
+    one Tyrel's hours could never be re-recorded out of.
+    """
+    starts: set[int] = set()
+    position = 0
+    while position < len(value):
+        if value[position] != "\\":
+            position += 1
+            continue
+        rest = value[position + 1 :]
+        if rest.startswith("\\"):
+            position += 2
+            continue
+        if rest[: len("illegible")].casefold() == "illegible":
+            starts.add(position + 1)
+            position += 1 + len("illegible")
+            continue
+        _refuse(
+            True,
+            f"{label} carries a backslash that escapes nothing; the only escapes gold "
+            f"text defines are \\illegible for the literal source word and \\\\ for a "
+            "literal backslash",
+        )
+    return starts
+
+
 def _gold_text(value: Any, label: str) -> str:
     """One human reading of the ink, stored so two of them can be compared exactly.
 
     `[ILLEGIBLE]` is reserved: it is the one spelling of "I cannot read this", so a
     later measure can count unreadable spans instead of guessing which of
-    `illegible`, `[illeg.]` or `(ILLEGIBLE?)` meant it. Reserving it also keeps a
-    transcriber from silently dropping what they could not read — an empty
-    transcription is refused, and an unreadable act is transcribed as the token.
+    `illegible`, `[illeg.]` or `(ILLEGIBLE?)` meant it. A literal source word is
+    written as `\\illegible`, keeping its source meaning visibly separate from
+    the reserved token, and a literal backslash is written `\\\\`; those are the
+    only two escapes, so the stored reading maps back to the ink one way only.
+    Reserving the token also keeps a transcriber from silently dropping what they
+    could not read — an empty transcription is refused, and an unreadable act is
+    transcribed as the token.
 
     The exactness rules exist because agreement between two transcribers is
     decided by equality: surrounding whitespace, a CRLF line ending, or a page
@@ -690,10 +788,30 @@ def _gold_text(value: Any, label: str) -> str:
         value != unicodedata.normalize("NFC", value),
         f"{label} is not in Unicode NFC; two readings of the same ink must compare equal",
     )
-    _refuse(
-        "illegible" in value.replace(ILLEGIBLE, "").casefold(),
-        f"{label} spells an illegibility some way other than the reserved {ILLEGIBLE}",
-    )
+    escaped = _escaped_illegibilities(value, label)
+    # Reserved-token spans are carved out by position, not deleted, so a legitimate
+    # `[ILLEGIBLE]` sitting between two ordinary word fragments cannot be mistaken
+    # for a bad spelling by splicing those fragments back together (e.g. deleting
+    # the token from "peril[ILLEGIBLE]legible" used to leave "perillegible", which
+    # contains "illegible" and was refused even though the token was used correctly).
+    reserved_spans = []
+    start = 0
+    while True:
+        found = value.find(ILLEGIBLE, start)
+        if found == -1:
+            break
+        reserved_spans.append((found, found + len(ILLEGIBLE)))
+        start = found + len(ILLEGIBLE)
+    for position in _folded_occurrences(value, "illegible"):
+        end = position + len("illegible")
+        within_reserved_token = any(
+            span_start <= position and end <= span_end for span_start, span_end in reserved_spans
+        )
+        _refuse(
+            not within_reserved_token and position not in escaped,
+            f"{label} spells an illegibility some way other than the reserved {ILLEGIBLE}; "
+            "write a literal source word as \\illegible",
+        )
     return value
 
 
@@ -879,7 +997,7 @@ def validate_adjudication(record: Any) -> dict[str, Any]:
     return record
 
 
-def _rectangle(value: Any, label: str) -> None:
+def _rectangle(value: Any, label: str, width: int, height: int) -> None:
     _refuse(
         not isinstance(value, dict) or set(value) != {"x", "y", "w", "h"},
         f"{label} is not a closed rectangle",
@@ -891,6 +1009,10 @@ def _rectangle(value: Any, label: str) -> None:
             f"{label}.{field} is not a non-negative integer",
         )
     _refuse(value["w"] == 0 or value["h"] == 0, f"{label} has zero area")
+    _refuse(
+        value["x"] + value["w"] > width or value["y"] + value["h"] > height,
+        f"{label} lies outside its {width}x{height} sample page",
+    )
 
 
 def _validate_page_bound_record(
@@ -947,7 +1069,8 @@ def validate_sample(record: Any, run_path: str | Path | None = None) -> dict[str
     )
     page = record["page"]
     _refuse(
-        not isinstance(page, dict) or set(page) != {"ordinal", "sha256", "stratum"},
+        not isinstance(page, dict)
+        or set(page) != {"ordinal", "sha256", "stratum", "width", "height"},
         "sample page has the wrong closed schema",
     )
     _refuse(
@@ -959,8 +1082,17 @@ def validate_sample(record: Any, run_path: str | Path | None = None) -> dict[str
         not isinstance(page["stratum"], str) or not page["stratum"].strip(),
         "sample stratum is empty",
     )
+    for dimension in ("width", "height"):
+        _refuse(
+            not isinstance(page[dimension], int)
+            or isinstance(page[dimension], bool)
+            or page[dimension] <= 0,
+            f"sample page {dimension} is not a positive integer",
+        )
     _refuse(
-        record["set"] not in SETS or record["set"] != set_for_page(frame, page["sha256"]),
+        not isinstance(record["set"], str)
+        or record["set"] not in SETS
+        or record["set"] != set_for_page(frame, page["sha256"]),
         "sample set conflicts with the page-derived partition",
     )
     without = {
@@ -1003,8 +1135,16 @@ def validate_layout(record: Any, run_path: str | Path | None = None) -> dict[str
             not isinstance(region, dict) or set(region) != {"kind", "rect"},
             "layout region has the wrong closed schema",
         )
-        _refuse(region["kind"] not in REGION_KINDS, "layout region kind is not recognized")
-        _rectangle(region["rect"], "layout region rect")
+        _refuse(
+            not isinstance(region["kind"], str) or region["kind"] not in REGION_KINDS,
+            "layout region kind is not recognized",
+        )
+        _rectangle(
+            region["rect"],
+            "layout region rect",
+            result["sample"]["page"]["width"],
+            result["sample"]["page"]["height"],
+        )
     return result
 
 
@@ -1025,7 +1165,12 @@ def validate_padding(record: Any, run_path: str | Path | None = None) -> dict[st
         "a calibration verdict about this corpus",
     )
     for rectangle in result["rectangles"]:
-        _rectangle(rectangle, "padding rectangle")
+        _rectangle(
+            rectangle,
+            "padding rectangle",
+            result["sample"]["page"]["width"],
+            result["sample"]["page"]["height"],
+        )
     return result
 
 
@@ -1079,7 +1224,30 @@ def validate_corpus(records: Any, run_path: str | Path | None = None) -> list[di
     The strata are the same kind of fact: the catalog is human-supplied and bound
     to no authority, so one page described as `adverse` in a sample and `ordinary`
     in the layout record that embeds a differently-drawn sample would pass every
-    per-record check while making the stratification unmeasurable.
+    per-record check while making the stratification unmeasurable. A page's pixel
+    size is the third of them — R0's `source_manifest` carries neither a stratum
+    nor a geometry, so `--run` cannot reach either — and where the corpus retains
+    a draw, the draw's whole retained catalog is the authority both are held to.
+
+    Custody of an act is counted per *act*, not per act per sample record. One
+    page can legitimately be carried by both a manual and a seeded sample, and
+    keying custody on the sample record that reached the act let that page give
+    one act two custody chains and two established readings. Every stored
+    transcription must terminate in an adjudication, and every record using one
+    shaped act identity must resolve to the same ordinal/digest page. The latter
+    is only an internal contradiction check: without a Designator authority R7a
+    cannot prove that the first page named is the act's true page.
+
+    Page-level facts have the same collection boundary. One page has one sample
+    record per selection method and one layout/padding fact set; manual and seeded
+    provenance may coexist, and may carry the same annotation, but neither file
+    order nor a missing legacy draw may turn two conflicting records into one fact.
+
+    This proves consistency and closure among records present, not act coverage
+    over a sampled page. R7a has no authority enumerating the acts that ought to
+    exist, so deletion of an entire act chain leaves no local fact to contradict.
+    The retained draw is the narrower exception: it enumerates seeded pages, so
+    their disappearance is detectable below.
 
     Draw membership is checked here too, and here is the only place it can be.
     `verify-sampling` reads the sample records in a directory; a layout or padding
@@ -1089,6 +1257,11 @@ def validate_corpus(records: Any, run_path: str | Path | None = None) -> list[di
     those pages" claims to close. Every seeded sample reached from any record,
     embedded or standing alone, must be one the retained draw produced.
     """
+    _refuse(not isinstance(records, list), "gold corpus records is not a list")
+    _refuse(
+        not records,
+        "gold corpus has no records; an empty collection proves no custody facts",
+    )
     validated = [validate_record(record, run_path) for record in records]
     samples = [
         record if record["schema"] == SAMPLE_SCHEMA else record["sample"]
@@ -1102,9 +1275,23 @@ def validate_corpus(records: Any, run_path: str | Path | None = None) -> list[di
         "is drawn once per corpus frame, so two draws are two designs and neither can "
         "speak for the records beside it",
     )
-    frames = {sample["frame"]["frame_digest"]: sample["frame"] for sample in samples}
+    frames: dict[str, dict[str, str]] = {}
+    for sample in samples:
+        frame = sample["frame"]
+        prior = frames.setdefault(frame["frame_digest"], frame)
+        _refuse(
+            prior != frame,
+            f"corpus frame digest {frame['frame_digest']} carries contradictory page_digest "
+            "or seed facts across gold records",
+        )
     for draw in draws.values():
-        frames.setdefault(draw["frame"]["frame_digest"], draw["frame"])
+        frame = draw["frame"]
+        prior = frames.setdefault(frame["frame_digest"], frame)
+        _refuse(
+            prior != frame,
+            f"corpus frame digest {frame['frame_digest']} carries contradictory page_digest "
+            "or seed facts across gold records",
+        )
     _refuse(
         len(frames) > 1,
         f"these gold records were built under {len(frames)} different corpus frames "
@@ -1113,6 +1300,7 @@ def validate_corpus(records: Any, run_path: str | Path | None = None) -> list[di
     )
     for draw in draws.values():
         members = set(draw["members"])
+        seeded_present = set()
         for sample in samples:
             _refuse(
                 sample["method"] == "stratified-seed" and sample["sample_digest"] not in members,
@@ -1120,19 +1308,64 @@ def validate_corpus(records: Any, run_path: str | Path | None = None) -> list[di
                 "retained sampling draw did not produce it; a page the sampler never chose "
                 "may not enter gold inside an annotation record",
             )
-    pages: dict[str, dict[str, Any]] = {}
+            if sample["method"] == "stratified-seed":
+                seeded_present.add(sample["sample_digest"])
+        missing = sorted(members - seeded_present)
+        _refuse(
+            bool(missing),
+            f"the retained sampling draw selected {len(missing)} page(s) that this gold "
+            "corpus does not carry as a stratified-seed sample; a drawn page cannot vanish "
+            f"or be re-minted under another method (first missing {missing[:1]})",
+        )
+        # The draw retains the whole normalized catalog -- every page in the frame,
+        # not only the selected ones -- so where a corpus keeps a draw it also keeps
+        # the predeclared stratum and pixel size of every page a manual pick could
+        # name. A seeded sample is already reconciled against that catalog by its
+        # membership digest; a manual one was reconciled against nothing, and could
+        # carry a stratum and page size that flatly contradicted the catalog beside
+        # it. That is the same defect the cross-record checks below exist for, minus
+        # the second record needed to expose it: one hand-picked page declaring a
+        # stratum nobody planned makes the stratification unmeasurable (GOVERNANCE
+        # 10), and one declaring an invented width makes "the rectangles are proven
+        # on-page" vacuous, since every rectangle fits a page said to be enormous.
+        catalog_rows = {(row["ordinal"], row["sha256"]): row for row in draw["catalog"]}
+        for sample in samples:
+            page = sample["page"]
+            row = catalog_rows.get((page["ordinal"], page["sha256"]))
+            _refuse(
+                row is None,
+                f"sample {sample['sample_digest']} names page {page['ordinal']}/"
+                f"{page['sha256']}, which is not in the catalog the retained draw was "
+                "drawn from",
+            )
+            _refuse(
+                row["stratum"] != page["stratum"],
+                f"page {page['ordinal']} is stratified {page['stratum']!r} by sample "
+                f"{sample['sample_digest']} and {row['stratum']!r} by the catalog the "
+                "retained draw was drawn from; a pick may not restratify the corpus "
+                "the draw was designed over",
+            )
+            _refuse(
+                (row["width"], row["height"]) != (page["width"], page["height"]),
+                f"page {page['ordinal']} is {page['width']}x{page['height']} in sample "
+                f"{sample['sample_digest']} and {row['width']}x{row['height']} in the "
+                "catalog the retained draw was drawn from",
+            )
+    pages: dict[tuple[int, str], dict[str, Any]] = {}
     for sample in samples:
         page = sample["page"]
-        first = pages.setdefault(page["sha256"], page)
+        identity = (page["ordinal"], page["sha256"])
+        first = pages.setdefault(identity, page)
         _refuse(
             first["stratum"] != page["stratum"],
             f"page {page['sha256']} is stratified as {first['stratum']!r} in one record "
             f"and {page['stratum']!r} in another; the catalog was re-described between them",
         )
         _refuse(
-            first["ordinal"] != page["ordinal"],
-            f"page {page['sha256']} is page {first['ordinal']} in one record and "
-            f"{page['ordinal']} in another",
+            (first["width"], first["height"]) != (page["width"], page["height"]),
+            f"page {page['ordinal']}/{page['sha256']} has dimensions "
+            f"{first['width']}x{first['height']} in one record and "
+            f"{page['width']}x{page['height']} in another",
         )
 
     samples_by_digest: dict[str, dict[str, Any]] = {}
@@ -1143,9 +1376,81 @@ def validate_corpus(records: Any, run_path: str | Path | None = None) -> list[di
             f"sample digest {sample['sample_digest']} describes two different samples",
         )
 
+    # One page has one record under each selection method. The same sample is
+    # legitimately embedded in several annotations, and a manual record may sit
+    # beside a seeded record for the same page, but two distinct records claiming
+    # the same method would count one corpus page twice. A retained draw exposes
+    # this for seeded records through exact membership; legacy corpora without a
+    # draw need the collection rule here.
+    samples_by_origin: dict[tuple[str, int, str], str] = {}
+    for sample in samples:
+        page = sample["page"]
+        key = (sample["method"], page["ordinal"], page["sha256"])
+        prior_digest = samples_by_origin.setdefault(key, sample["sample_digest"])
+        _refuse(
+            prior_digest != sample["sample_digest"],
+            f"page {page['ordinal']}/{page['sha256']} is carried by two different "
+            f"{sample['method']} sample records; one corpus page has one sample record "
+            "per selection method",
+        )
+
+    # Layout and padding are page facts, not facts about whichever sample record
+    # happened to reach the page. Manual/seeded coexistence must therefore not mint
+    # two competing annotations for one page and leave file order to choose one.
+    page_annotations: dict[tuple[str, int, str], dict[str, Any]] = {}
+    for record in validated:
+        if record["schema"] not in {LAYOUT_SCHEMA, PADDING_SCHEMA}:
+            continue
+        page = record["sample"]["page"]
+        key = (record["schema"], page["ordinal"], page["sha256"])
+        facts = (
+            {"regions": record["regions"]}
+            if record["schema"] == LAYOUT_SCHEMA
+            else {
+                "rectangles": record["rectangles"],
+                "calibrated_for_this_corpus": record["calibrated_for_this_corpus"],
+            }
+        )
+        prior = page_annotations.setdefault(key, facts)
+        _refuse(
+            prior != facts,
+            f"page {page['ordinal']}/{page['sha256']} has two conflicting "
+            f"{record['schema']} records; a page has one gold annotation of each kind",
+        )
+
+    # Act custody is keyed on the act, not on (sample, act). An act identity binds
+    # the page it was marked out on, so it names one act once; keying custody on the
+    # sample record that reached it made every rule below say "per act *per sample
+    # record*" instead, and a page carried by two sample records therefore got two
+    # independent custody chains. One act then held two established readings, each
+    # internally impeccable, with nothing but file order to choose between them —
+    # a picker by omission (hard rule 8) in the corpus the pipeline is measured
+    # against, and two texts where GOVERNANCE 5 allows one.
     transcriptions_by_digest: dict[str, dict[str, Any]] = {}
-    transcription_keys: dict[tuple[str, str, str], str] = {}
-    transcriptions_by_act: dict[tuple[str, str], set[str]] = {}
+    transcription_keys: dict[tuple[str, str], str] = {}
+    transcriptions_by_act: dict[str, set[str]] = {}
+    act_pages: dict[str, tuple[int, str]] = {}
+
+    def reconcile_act_page(record: dict[str, Any], label: str) -> None:
+        """Hold one shaped act id to one page everywhere this corpus uses it.
+
+        R7a has no Designator authority from which to rederive an act identity, so
+        this cannot prove that the first page named is the true one. It can and must
+        refuse a corpus that contradicts itself by placing that same identity on a
+        second page. Page identity includes ordinal as well as bytes: duplicate scans
+        at two ordinals are distinct pages under the sampler and under act derivation.
+        """
+        sample = samples_by_digest[record["sample_digest"]]
+        page = sample["page"]
+        identity = (page["ordinal"], page["sha256"])
+        prior = act_pages.setdefault(record["act_identity"], identity)
+        _refuse(
+            prior != identity,
+            f"act {record['act_identity']} is bound to page {prior[0]}/{prior[1]} in one "
+            f"gold record and page {identity[0]}/{identity[1]} in {label}; one act identity "
+            "may not cross pages",
+        )
+
     for record in validated:
         if record["schema"] != TRANSCRIPTION_SCHEMA:
             continue
@@ -1155,19 +1460,18 @@ def validate_corpus(records: Any, run_path: str | Path | None = None) -> list[di
             f"transcription {record['self_hash']} names sample {sample_digest}, but that "
             "sample is absent from the gold corpus",
         )
-        key = (sample_digest, record["act_identity"], record["transcriber"])
+        reconcile_act_page(record, f"transcription {record['self_hash']}")
+        key = (record["act_identity"], record["transcriber"])
         prior_digest = transcription_keys.setdefault(key, record["self_hash"])
         _refuse(
             prior_digest != record["self_hash"],
-            f"transcriber {record['transcriber']!r} supplied two different readings for "
-            f"act {record['act_identity']} in sample {sample_digest}",
+            f"transcriber {record['transcriber']!r} supplied two transcription records for "
+            f"act {record['act_identity']}",
         )
         transcriptions_by_digest[record["self_hash"]] = record
-        transcriptions_by_act.setdefault((sample_digest, record["act_identity"]), set()).add(
-            record["self_hash"]
-        )
+        transcriptions_by_act.setdefault(record["act_identity"], set()).add(record["self_hash"])
 
-    adjudications: dict[tuple[str, str], str] = {}
+    adjudications: dict[str, str] = {}
     for record in validated:
         schema = record["schema"]
         if schema == MEASUREMENT_SCHEMA:
@@ -1176,15 +1480,17 @@ def validate_corpus(records: Any, run_path: str | Path | None = None) -> list[di
                 f"instrument membership {record['self_hash']} names sample "
                 f"{record['sample_digest']}, but that sample is absent from the gold corpus",
             )
+            reconcile_act_page(record, f"instrument membership {record['self_hash']}")
             continue
         if schema != ADJUDICATION_SCHEMA:
             continue
-        key = (record["sample_digest"], record["act_identity"])
+        key = record["act_identity"]
         _refuse(
             record["sample_digest"] not in samples_by_digest,
             f"adjudication {record['self_hash']} names sample {record['sample_digest']}, but "
             "that sample is absent from the gold corpus",
         )
+        reconcile_act_page(record, f"adjudication {record['self_hash']}")
         embedded = {item["self_hash"] for item in record["transcriptions"]}
         absent = sorted(embedded - set(transcriptions_by_digest))
         _refuse(
@@ -1194,15 +1500,22 @@ def validate_corpus(records: Any, run_path: str | Path | None = None) -> list[di
         )
         _refuse(
             transcriptions_by_act.get(key, set()) != embedded,
-            f"act {record['act_identity']} in sample {record['sample_digest']} does not have "
-            "exactly the two independent transcriptions embedded by its adjudication",
+            f"act {record['act_identity']} does not have exactly the two independent "
+            "transcriptions embedded by its adjudication",
         )
         prior_digest = adjudications.setdefault(key, record["self_hash"])
         _refuse(
             prior_digest != record["self_hash"],
-            f"act {record['act_identity']} in sample {record['sample_digest']} has two "
-            "conflicting adjudications; gold has one established reading per act",
+            f"act {record['act_identity']} has two conflicting adjudications; gold has "
+            "one established reading per act",
         )
+    unadjudicated = sorted(set(transcriptions_by_act) - set(adjudications))
+    _refuse(
+        bool(unadjudicated),
+        f"{len(unadjudicated)} act(s) have independently stored transcriptions but no "
+        f"adjudication; a started gold-reading custody chain may not end silently "
+        f"(first unadjudicated {unadjudicated[:1]})",
+    )
     return validated
 
 

@@ -2,8 +2,8 @@
 
 `python -m gold.cli sample --run RUN.json --catalog catalog.json --plan plan.json
 --output-dir records/` creates a stratified, page-only human-gold sample.  The
-catalog has one `{ordinal, sha256, stratum}` row for every R0 source page; the
-plan carries a quota for both `calibration` and `locked-acceptance` for **every**
+catalog has one `{ordinal, sha256, stratum, width, height}` row for every R0 source
+page; the plan carries a quota for both `calibration` and `locked-acceptance` for **every**
 stratum the catalog declares.  A stratum the plan does not name would drop out of
 gold without saying so, so an unnamed one is refused; quota `0` is how a stratum
 is deliberately left unsampled, and it stays visible in the plan file.  Each
@@ -29,9 +29,10 @@ real corpus page in the set the seed assigns it, but only replaying the whole dr
 shows that the *sampler* chose those pages.  A hand-picked page minted as
 `stratified-seed`, a record quietly removed from the directory, and a catalog
 re-described after the fact all fail the replay by name.  A `manual` record filed
-in the same directory is validated but is not reconciled against the draw: it
-never claimed to be draw membership, and drawn samples and manual picks share one
-directory by design.
+in the same directory is validated but is not reconciled against the draw's
+*membership*: it never claimed to be draw membership, and drawn samples and manual
+picks share one directory by design.  It is still reconciled against the draw's
+retained *catalog*, but by `validate-corpus` rather than here — see Custody.
 
 `ingest-manual` accepts Tyrel's `gold-manual-pick.v1` record, which has
 `selection_basis`, the bound page/stratum, and his stated set.  It records that
@@ -44,15 +45,27 @@ either way: it is carried unchanged as `claimed_set` alongside the true `set`, s
 predates-the-seed pick is ingested, not refused and sent back for a re-pick.
 Automatically sampled records carry `claimed_set: null` (no human claim was made).
 Before publishing a manual pick, the CLI reconciles it with the gold records
-already beside its output path. A second pick that gives the same page another
-stratum is refused before it can be double-counted.
+already beside its output path. One hand-picked page is picked once: a second pick
+of the same page is refused before it can be counted twice, whether it restates the
+stratum or only the wording of `selection_basis`.  A pick of a page the seed also
+drew is *not* refused — the seed can honestly land on a page he chose in week one,
+and refusing that would strand a real corpus with no remedy short of discarding his
+recorded provenance — but that page is still one act's worth of custody, not two.
+The collection rule is symmetric: one page has at most one distinct sample record
+under each method, including a legacy seeded corpus whose draw record is absent;
+the manual and seeded records may coexist because they preserve different true
+selection provenance.
 
 `bind-instrument` creates an append-only `gold-instrument-membership.v1` record
 carrying a sample digest, an R0 act identity, and a protocol digest.
 
-The act identity `bind-instrument` carries is checked for shape only (well-formed
-and `act_`-prefixed); R7a has no act-producing stage before it in the build order,
-so it cannot check that the act actually exists anywhere.
+Every act identity in this module — instrument membership, transcription, and
+adjudication — is checked for shape only (well-formed and `act_`-prefixed); R7a has
+no act-producing stage before it in the build order, so it cannot check that the
+act actually exists or rederive its page binding. Collection validation can prove
+the narrower fact available here: every use of one act identity resolves through
+its sample to the same `{ordinal, sha256}` page. It cannot prove that the first such
+page is the page a later Designator authority would bind.
 
 ## The adjudication flow
 
@@ -69,6 +82,15 @@ guessed at and never quietly dropped.  Surrounding whitespace, a CR, and any
 composition other than Unicode NFC are refused by name: agreement between two
 transcribers is decided by equality, and an invisible difference would summon an
 adjudicator for two identical readings and inflate the disagreement rate.
+When the source itself literally says `illegible`, write `\illegible`; the backslash
+marks source text rather than the reserved unreadability token.  A literal backslash
+is written `\\`, and those two are the only escapes gold text defines — a backslash
+before anything else is refused by name.  The escapes are read left to right, so
+`\\illegible` is a literal backslash followed by an *unescaped* illegibility and is
+refused; a backslash before the literal word is `\\\illegible`.  The point of
+closing that off is that the stored reading maps back to the ink exactly one way,
+and these records are immutable: an ambiguity admitted now could never be
+re-recorded out of the hours that produced it.
 
 `adjudicate --first T1.json --second T2.json --output A.json [--adjudicator NAME
 --text-file F.txt]` reconciles them.  If the two readings are identical there is
@@ -87,7 +109,8 @@ make the measurement circular.
 
 ## Custody
 
-The layout schema embeds its source `gold-page-sample.v1` and has closed
+The layout schema embeds its source `gold-page-sample.v1`, whose page carries
+positive pixel `width` and `height`, and has closed
 `act`, `non-act-text`, `occlusion`, and `true-blank` rectangle kinds.  The padding
 schema also embeds its source sample and carries only rectangles plus the required
 `calibrated_for_this_corpus` flag.  `validate` checks all schemas and self-hashes;
@@ -95,6 +118,13 @@ for a sample, layout, or padding record, pass `--run` to prove the derived page 
 frame facts against the R0 authority again (an embedded sample is otherwise only
 checked for internal self-consistency, not that it names a real run).
 `bind-instrument` accepts the same optional `--run`.
+
+`--run` proves the page facts R0 actually carries, which are its ordinal and
+sha256.  A page's `stratum`, `width`, and `height` are not among them: R0's
+`source_manifest` records neither, so those three are catalog-declared, and what
+holds them honest is the catalog, not the run.  A rectangle is therefore proven
+on the page **the catalog says this is**, and `validate-corpus` is where that
+declaration is held to the catalog the draw was designed over.
 The run authority's schema and self-hash are checked before its frame or seed is
 used; an edited seed cannot silently define a different draw.
 
@@ -102,18 +132,57 @@ used; an edited seed cannot silently define a different draw.
 page's set is stable across frames by construction, but every frame has its own
 seeded ranking and quota universe. Records under two different corpus frames are
 therefore refused by name rather than combined into a draw nobody predeclared, as
-is a page stratified or numbered two ways across records, and so are two recorded
+is a page stratified or measured two ways across records, and so are two recorded
 draws — two draws are two predeclared designs, and neither can speak for the
-records beside it. Where the corpus retains a draw, every seeded sample the
+records beside it. Two records also cannot give one `frame_digest` different
+`page_digest` or seed facts: the digest is one frame identity, not a file-order
+choice between contradictory restatements. A page is identified by its ordinal
+*and* its sha256, because
+the corpus admits the same bytes at two ordinals (one page scanned twice); those
+are two pages, and the same digest carrying two ordinals is not a contradiction.
+Where the corpus retains a draw, every seeded sample the
 records reach must be one that draw produced, *including* the copy a layout or
 padding record embeds: `verify-sampling` reconciles the sample records in a
 directory, so without this a page the sampler never chose could enter gold inside
-an annotation and be replayed by nothing. Collection validation
-also resolves every transcription, adjudication,
-and instrument membership back to a sample in that same corpus. An adjudication
+an annotation and be replayed by nothing. The reverse is checked too: every page
+the draw did produce must still be present as a `stratified-seed` sample, so a
+page the seed genuinely chose cannot be quietly re-minted `manual` and vanish
+from the seeded count while the corpus still reports itself consistent.
+
+A retained draw keeps the whole normalized catalog, not only the selected rows, so
+it also carries the predeclared stratum and pixel size of every page a manual pick
+could name.  A seeded sample is reconciled against that catalog by its membership
+digest; a manual one is reconciled against it here.  A hand-picked page that
+restratifies the corpus the draw was designed over, or that declares a page size
+the catalog does not, is refused — the first would make the stratification
+unmeasurable, and the second would make "the rectangles are proven on-page"
+vacuous, since every rectangle fits a page said to be enormous.
+
+Collection validation also resolves every transcription, adjudication, and
+instrument membership back to a sample in that same corpus. An adjudication
 must embed exactly the two independently stored transcription records for its act;
-two readings by one transcriber or two adjudications establishing different text
-for one act are refused instead of leaving a consumer to choose by file order.
+two transcription records by one transcriber or two adjudications establishing different text
+for one act are refused instead of leaving a consumer to choose by file order. An
+act with any stored transcription must have its adjudication too, so deleting the
+established record leaves a named partial chain rather than a corpus that still
+passes. Conflicting page-layout or padding annotations for one ordinal/digest pair
+are likewise refused; the same annotation facts may be carried through both a
+manual and a seeded sample because both provenance records are true.
+Custody is counted **per act**, not per act per sample record: an act identity binds
+the page it was marked out on, so it names one act once, and a page carried by both
+a manual and a seeded sample record must not thereby acquire two custody chains and
+two established readings with nothing but file order between them. Conversely,
+duplicate bytes at two ordinals derive different page identities and therefore
+different act identities; they remain two pages and may each carry one established
+reading.
+
+`validate-corpus` proves consistency and closure among the records it can see; it
+does **not** prove act coverage over each sampled page. R7a has no Designator
+authority or other inventory enumerating which acts ought to exist, so removing an
+entire act chain leaves no local record to contradict. The retained draw is the
+narrow exception because it enumerates seeded pages, and a surviving transcription
+is another because it requires its adjudication. A successful collection check must
+not be cited as proof that every page act was ever recorded.
 
 Gold is therefore drawn **per corpus frame**: one run's sealed manifest is the
 frame, and R0 shards a corpus at its sealed shard limit, so a corpus split across

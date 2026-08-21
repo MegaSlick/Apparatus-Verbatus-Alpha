@@ -13,7 +13,7 @@ import pytest
 
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.contracts.errors import IncompatibleReuse, SchemaRefusal
-from common.contracts.identities import act_id
+from common.contracts.identities import act_id, page_id
 from gold import cli
 from gold.core import (
     ILLEGIBLE,
@@ -47,7 +47,7 @@ def _sha(character: str) -> str:
 
 def run_file(tmp_path):
     pages = [
-        {"ordinal": ordinal, "sha256": _sha(character)}
+        {"ordinal": ordinal, "sha256": _sha(character), "width": 100, "height": 200}
         for ordinal, character in enumerate("12345678", 1)
     ]
     source = [{"ordinal": page["ordinal"], "sha256": page["sha256"]} for page in pages]
@@ -110,6 +110,82 @@ def test_seeded_stratification_is_reproducible_and_sets_are_disjoint_by_construc
     forged["self_hash"] = self_hash(forged)
     with pytest.raises(SchemaRefusal, match="page-derived partition"):
         validate_sample(forged, path)
+
+
+def test_same_page_bytes_at_two_ordinals_are_ranked_as_distinct_pages(tmp_path):
+    """A repeated byte digest is two scanned pages when its ordinals differ.
+
+    The sampler's rank includes that ordinal, and corpus validation must preserve
+    the same identity instead of collapsing it back to byte content alone.
+    """
+    pages = [
+        {"ordinal": 1, "sha256": _sha("a"), "width": 100, "height": 200},
+        {"ordinal": 2, "sha256": _sha("a"), "width": 100, "height": 200},
+    ]
+    source = [{"ordinal": page["ordinal"], "sha256": page["sha256"]} for page in pages]
+    page_digest = digest_bytes(canonical_bytes(source))
+    frame = {
+        "page_digest": page_digest,
+        "frame_digest": digest_bytes(canonical_bytes({"pages": source})),
+        "seed": digest_bytes(canonical_bytes({"page_digest": page_digest, "purpose": "frame"})),
+    }
+    path = tmp_path / "duplicate-bytes-run.json"
+    authority = {
+        "schema": "skeleton.v1",
+        "run_id": "gold-duplicate-bytes",
+        "source_manifest": pages,
+        "corpus_frame_membership": frame,
+    }
+    authority["self_hash"] = self_hash(authority)
+    path.write_text(json.dumps(authority), encoding="utf-8")
+    rows = [{**page, "stratum": "duplicate-scan"} for page in pages]
+    gold_set = set_for_page(frame, pages[0]["sha256"])
+    plan = {
+        name: {"duplicate-scan": 2 if name == gold_set else 0}
+        for name in ("calibration", "locked-acceptance")
+    }
+
+    selected = sample_stratified(path, rows, plan)
+
+    assert {sample["page"]["ordinal"] for sample in selected} == {1, 2}
+    ranks = [
+        digest_bytes(
+            canonical_bytes(
+                {
+                    "seed": frame["seed"],
+                    "ordinal": page["ordinal"],
+                    "page_sha256": page["sha256"],
+                    "stratum": "duplicate-scan",
+                    "purpose": "gold-sample",
+                }
+            )
+        )
+        for page in pages
+    ]
+    assert ranks[0] != ranks[1]
+    assert validate_corpus(selected, path) == selected
+
+    # Page identity binds the source ordinal as well as the source itself, so the
+    # visually identical pages also derive distinct acts. Act-level custody must
+    # admit one established reading for each rather than collapsing by page bytes.
+    source_sha = _sha("f")
+    by_ordinal = {sample["page"]["ordinal"]: sample for sample in selected}
+    custody = []
+    acts = []
+    for ordinal in (1, 2):
+        act = act_id(page_id(source_sha, ordinal), 0, {"x": 1})
+        acts.append(act)
+        first = transcribe(by_ordinal[ordinal], act, "hand-a", f"reading {ordinal}", path)
+        second = transcribe(by_ordinal[ordinal], act, "hand-b", f"reading {ordinal}", path)
+        custody.extend([first, second, adjudicate(first, second)])
+    assert acts[0] != acts[1]
+    assert validate_corpus([*selected, *custody], path)
+
+    # Reusing the first page's act identity on the other ordinal contradicts the
+    # identity's page binding even though the two page digests are equal.
+    misplaced = bind_instrument(by_ordinal[2], acts[0], _sha("e"), path)
+    with pytest.raises(SchemaRefusal, match="one act identity may not cross pages"):
+        validate_corpus([*selected, *custody, misplaced], path)
 
 
 def test_sample_refuses_a_page_or_frame_restated_differently_than_r0_authority(tmp_path):
@@ -476,6 +552,10 @@ def test_layout_padding_and_instrument_records_are_closed_and_self_hashed(tmp_pa
     layout["self_hash"] = self_hash(layout)
     with pytest.raises(SchemaRefusal, match="recognized"):
         validate_layout(layout)
+    layout["regions"][0] = {"kind": "act", "rect": {"x": 99, "y": 1, "w": 2, "h": 1}}
+    layout["self_hash"] = self_hash(layout)
+    with pytest.raises(SchemaRefusal, match="outside its 100x200 sample page"):
+        validate_layout(layout)
 
 
 def _act(index=0):
@@ -562,6 +642,8 @@ def test_illegible_is_the_one_spelling_and_a_transcription_is_never_blank(tmp_pa
         "parrain " + ILLEGIBLE
         in transcribe(sample, _act(), "hand-a", "parrain " + ILLEGIBLE, path)["text"]
     )
+    literal = r"le mot \illegible est écrit dans la marge"
+    assert transcribe(sample, _act(), "hand-a", literal, path)["text"] == literal
     for rejected, reason in (
         ("", "empty"),
         ("   ", "empty"),
@@ -571,6 +653,73 @@ def test_illegible_is_the_one_spelling_and_a_transcription_is_never_blank(tmp_pa
     ):
         with pytest.raises(SchemaRefusal, match=reason):
             transcribe(sample, _act(), "hand-a", rejected, path)
+
+
+def test_a_reserved_token_between_two_words_is_not_mistaken_for_a_bad_spelling(tmp_path):
+    """The reserved token is carved out by position, not deleted before rescanning:
+    deleting it used to let unrelated fragments on either side splice back together
+    into "illegible" by accident, refusing a perfectly correct use of the token
+    (`peril` + `[ILLEGIBLE]` + `legible` used to read as `perillegible`)."""
+    path, frame, pages = run_file(tmp_path)
+    sample = sample_stratified(path, catalog(pages), plan_for(frame, catalog(pages)))[0]
+    spliced = "peril" + ILLEGIBLE + "legible"
+    assert transcribe(sample, _act(), "hand-a", spliced, path)["text"] == spliced
+    doubled = ILLEGIBLE + ILLEGIBLE
+    assert transcribe(sample, _act(), "hand-a", doubled, path)["text"] == doubled
+    escaped_and_reserved = r"un mot \illegible et un autre " + ILLEGIBLE + " ici"
+    assert (
+        transcribe(sample, _act(), "hand-a", escaped_and_reserved, path)["text"]
+        == escaped_and_reserved
+    )
+    # A near-miss that only coincidentally borders a real token is still refused:
+    # the token here is not the exact reserved spelling, so nothing protects it.
+    with pytest.raises(SchemaRefusal, match="reserved"):
+        transcribe(sample, _act(), "hand-a", "peril[illegible]legible", path)
+
+
+def test_a_casefold_expanding_character_does_not_fake_a_bad_illegibility_spelling(tmp_path):
+    """`str.casefold` is not length-preserving. Folding the whole reading and then
+    indexing back into the unfolded one desynchronizes from the first `ß` or `ﬁ`
+    onward — and both survive NFC, so a border-parish register reaches this. A
+    correct `[ILLEGIBLE]` after two of them, and a correct `\\illegible` escape after
+    one, were refused by name for a reason that was not true. Refusing a
+    transcriber's real hours wrongly is the failure this module exists to avoid."""
+    path, frame, pages = run_file(tmp_path)
+    sample = sample_stratified(path, catalog(pages), plan_for(frame, catalog(pages)))[0]
+    for accepted in (
+        "Straßburg, Straßberg " + ILLEGIBLE,
+        "ﬁ ﬁ " + ILLEGIBLE,
+        "ß " + r"\illegible",
+        "ß ß ß " + r"\illegible et " + ILLEGIBLE,
+    ):
+        assert unicodedata.normalize("NFC", accepted) == accepted
+        assert transcribe(sample, _act(), "hand-a", accepted, path)["text"] == accepted
+    # The expansion must not hide a real bad spelling either, in either direction.
+    for refused in ("Straße illegible", "ß ß [illegible]"):
+        with pytest.raises(SchemaRefusal, match="reserved"):
+            transcribe(sample, _act(), "hand-a", refused, path)
+
+
+def test_the_only_two_escapes_are_the_literal_word_and_a_literal_backslash(tmp_path):
+    """`\\illegible` is the literal source word and `\\\\` is a literal backslash;
+    a backslash before anything else escapes nothing and is refused.
+
+    Asking the two questions separately is what left the convention without an
+    inverse: read `\\\\illegible` as a literal backslash, then ask whether the word
+    behind it is escaped by looking at the character in front of it, and it is at
+    once a backslash followed by an unescaped illegibility *and* an escaped literal
+    word. Nothing in the record decided between them, and these records are
+    immutable, so the ambiguity could never be re-recorded out of Tyrel's hours."""
+    path, frame, pages = run_file(tmp_path)
+    sample = sample_stratified(path, catalog(pages), plan_for(frame, catalog(pages)))[0]
+    for accepted in (r"le mot \illegible", r"le mot \ILLEGIBLE", r"un \\ trait", r"\\\illegible"):
+        assert transcribe(sample, _act(), "hand-a", accepted, path)["text"] == accepted
+    # `\\` consumes both marks left to right, so the word after it is unescaped.
+    with pytest.raises(SchemaRefusal, match="reserved"):
+        transcribe(sample, _act(), "hand-a", r"\\illegible", path)
+    for orphan in (r"le mot \marge", r"\ illegible", "fin \\"):
+        with pytest.raises(SchemaRefusal, match="escapes nothing"):
+            transcribe(sample, _act(), "hand-a", orphan, path)
 
 
 def test_gold_text_is_stored_so_two_identical_readings_compare_equal(tmp_path):
@@ -794,6 +943,31 @@ def test_a_shared_manual_pick_has_one_set_across_three_frames(tmp_path):
         validate_corpus(records)
 
 
+def test_one_frame_digest_cannot_carry_contradictory_frame_facts(tmp_path):
+    """A self-hashed sample cannot rederive a frame from pages it does not carry.
+
+    Offline validation therefore accepts one internally consistent restatement, but
+    corpus validation must not accept two different page-digest/seed pairs wearing
+    the same frame identity. That would make file order decide which frame the gold
+    records claim to inhabit.
+    """
+    path, frame, pages = run_file(tmp_path)
+    samples = sample_stratified(path, catalog(pages), plan_for(frame, catalog(pages)))
+    forged = json.loads(json.dumps(samples[0]))
+    forged["frame"]["page_digest"] = _sha("e")
+    forged["frame"]["seed"] = digest_bytes(
+        canonical_bytes({"page_digest": _sha("e"), "purpose": "frame"})
+    )
+    without = {
+        key: value for key, value in forged.items() if key not in {"sample_digest", "self_hash"}
+    }
+    forged["sample_digest"] = digest_bytes(canonical_bytes(without))
+    forged["self_hash"] = self_hash(forged)
+    assert validate_sample(forged) == forged
+    with pytest.raises(SchemaRefusal, match="contradictory page_digest or seed"):
+        validate_corpus([samples[1], forged])
+
+
 def test_a_page_restratified_between_records_is_refused(tmp_path):
     """The catalog is human-supplied and bound to no authority, so a page can be
     described one way in the sample and another in a record embedding a
@@ -923,8 +1097,30 @@ def test_corpus_refuses_orphaned_or_conflicting_adjudication_custody(tmp_path):
         validate_corpus([sample, first, second, established, conflict], path)
 
     revised = transcribe(sample, _act(), "hand-a", "Marie Annette", path)
-    with pytest.raises(SchemaRefusal, match="supplied two different readings"):
+    with pytest.raises(SchemaRefusal, match="supplied two transcription records"):
         validate_corpus([sample, first, revised], path)
+
+
+def test_the_corpus_api_refuses_an_empty_collection():
+    """The CLI already names an empty directory, but the public collection gate
+    must not return success when called directly with nothing to establish."""
+    with pytest.raises(SchemaRefusal, match="empty collection proves no custody"):
+        validate_corpus([])
+
+
+def test_corpus_refuses_a_started_reading_chain_without_its_adjudication(tmp_path):
+    """Deleting the established record used to leave one or both independent
+    transcriptions in a corpus that still validated. A partial chain is legitimate
+    while people work, but collection validation must name it as partial rather than
+    let absence wear the same success as completed custody (GOVERNANCE 2)."""
+    path, frame, pages = run_file(tmp_path)
+    sample = sample_stratified(path, catalog(pages), plan_for(frame, catalog(pages)))[0]
+    first, second = _pair(sample, "Marie Anne", "Marie Jeanne", path)
+    for partial in ([sample, first], [sample, first, second]):
+        with pytest.raises(SchemaRefusal, match="transcriptions but no adjudication"):
+            validate_corpus(partial, path)
+    established = adjudicate(first, second, adjudicator="hand-c", text="Marie Anne")
+    assert validate_corpus([sample, first, second, established], path)
 
 
 def test_corpus_refuses_a_never_drawn_page_smuggled_inside_an_annotation(tmp_path):
@@ -974,6 +1170,213 @@ def test_corpus_refuses_a_never_drawn_page_smuggled_inside_an_annotation(tmp_pat
     assert validate_corpus([draw, *selected, picked], path)
 
 
+def _pick(path, frame, page, basis):
+    return ingest_manual_pick(
+        path,
+        {
+            "schema": MANUAL_PICK_SCHEMA,
+            "selection_basis": basis,
+            "page": page,
+            "set": set_for_page(frame, page["sha256"]),
+        },
+    )
+
+
+def test_corpus_refuses_a_manual_pick_that_contradicts_the_retained_catalog(tmp_path):
+    """A seeded sample is reconciled against the catalog by its membership digest; a
+    manual one was reconciled against nothing. The draw retains the *whole*
+    normalized catalog, so the predeclared stratum and pixel size of every page a
+    pick could name are sitting right beside it — and a pick that contradicted them
+    passed every reader. A stratum nobody planned makes the stratification
+    unmeasurable (GOVERNANCE 10), and an invented width makes "the rectangles are
+    proven on-page" vacuous, because every rectangle fits a page said to be huge."""
+    path, frame, pages = run_file(tmp_path)
+    rows = catalog(pages)
+    draw, selected = build_sampling_draw(path, rows, plan_for(frame, rows))
+    drawn = {(record["page"]["ordinal"], record["page"]["sha256"]) for record in selected}
+    never_drawn = next(row for row in rows if (row["ordinal"], row["sha256"]) not in drawn)
+
+    honest = _pick(path, frame, never_drawn, "Tyrel B1 pick")
+    assert validate_corpus([draw, *selected, honest], path)
+
+    restratified = _pick(path, frame, {**never_drawn, "stratum": "invented"}, "Tyrel B1 pick")
+    assert validate_sample(restratified, path) == restratified  # well-formed alone
+    with pytest.raises(SchemaRefusal, match="may not restratify the corpus"):
+        validate_corpus([draw, *selected, restratified], path)
+
+    enlarged = _pick(path, frame, {**never_drawn, "width": 999_999}, "Tyrel B1 pick")
+    with pytest.raises(SchemaRefusal, match="in the catalog the retained draw was drawn from"):
+        validate_corpus([draw, *selected, enlarged], path)
+    # And the enlargement is what would otherwise have let a rectangle off the page.
+    layout = {
+        "schema": LAYOUT_SCHEMA,
+        "sample": enlarged,
+        "regions": [{"kind": "act", "rect": {"x": 0, "y": 0, "w": 999_999, "h": 1}}],
+    }
+    layout["self_hash"] = self_hash(layout)
+    assert validate_layout(layout, path) == layout
+    with pytest.raises(SchemaRefusal, match="in the catalog the retained draw was drawn from"):
+        validate_corpus([draw, *selected, layout], path)
+
+
+def test_corpus_refuses_one_page_carried_by_two_manual_records(tmp_path):
+    """`sample_digest` binds `selection_basis`, so the same page picked twice under
+    two wordings mints two distinct, individually valid samples. That is the "second
+    spelling of the same page ... counted twice" `ingest-manual` reconciles the
+    destination corpus to prevent, and the cross-record stratum check only caught it
+    when the second pick also restratified the page.
+
+    A manual record beside the *seeded* record for the same page stays admissible:
+    the seed can land on a page Tyrel already picked in week one, and refusing that
+    would strand a real corpus with no remedy short of discarding his recorded
+    provenance (GOVERNANCE 2, 4)."""
+    path, frame, pages = run_file(tmp_path)
+    rows = catalog(pages)
+    draw, selected = build_sampling_draw(path, rows, plan_for(frame, rows))
+    drawn = {(record["page"]["ordinal"], record["page"]["sha256"]) for record in selected}
+    never_drawn = next(row for row in rows if (row["ordinal"], row["sha256"]) not in drawn)
+
+    first = _pick(path, frame, never_drawn, "Tyrel B1 pick")
+    again = _pick(path, frame, never_drawn, "Tyrel B1 pick, restated")
+    assert first["sample_digest"] != again["sample_digest"]
+    assert first["page"] == again["page"]
+    with pytest.raises(SchemaRefusal, match="two different manual sample records"):
+        validate_corpus([draw, *selected, first, again], path)
+
+    already_drawn = next(row for row in rows if (row["ordinal"], row["sha256"]) in drawn)
+    assert validate_corpus([draw, *selected, _pick(path, frame, already_drawn, "week one")], path)
+
+
+def test_corpus_refuses_duplicate_seeded_samples_and_page_annotations(tmp_path):
+    """A retained draw already prevents two seeded records for one page, but a
+    legacy corpus without its draw did not. Layout and padding had the same quiet
+    multiplicity through either sample method: two self-consistent annotations of
+    one page left a later reader to select by file order."""
+    path, frame, pages = run_file(tmp_path)
+    rows = catalog(pages)
+    seeded = sample_stratified(path, rows, plan_for(frame, rows))[0]
+    duplicate = build_sample(
+        frame,
+        seeded["page"],
+        selection_basis="a second seeded record for the same page",
+        method="stratified-seed",
+        sampling=seeded["sampling"],
+    )
+    assert duplicate["sample_digest"] != seeded["sample_digest"]
+    with pytest.raises(SchemaRefusal, match="two different stratified-seed sample records"):
+        validate_corpus([seeded, duplicate], path)
+
+    for schema, field, first_value, second_value in (
+        (
+            LAYOUT_SCHEMA,
+            "regions",
+            [{"kind": "act", "rect": {"x": 1, "y": 1, "w": 2, "h": 2}}],
+            [{"kind": "non-act-text", "rect": {"x": 1, "y": 1, "w": 2, "h": 2}}],
+        ),
+        (
+            PADDING_SCHEMA,
+            "rectangles",
+            [{"x": 1, "y": 1, "w": 2, "h": 2}],
+            [{"x": 2, "y": 2, "w": 3, "h": 3}],
+        ),
+    ):
+        records = []
+        for value in (first_value, second_value):
+            record = {"schema": schema, "sample": seeded, field: value}
+            if schema == PADDING_SCHEMA:
+                record["calibrated_for_this_corpus"] = True
+            record["self_hash"] = self_hash(record)
+            records.append(record)
+        with pytest.raises(SchemaRefusal, match="two conflicting"):
+            validate_corpus([seeded, *records], path)
+
+        manual = _pick(path, frame, seeded["page"], "the same page selected manually")
+        same_facts = {"schema": schema, "sample": manual, field: first_value}
+        if schema == PADDING_SCHEMA:
+            same_facts["calibrated_for_this_corpus"] = True
+        same_facts["self_hash"] = self_hash(same_facts)
+        assert validate_corpus([seeded, manual, records[0], same_facts], path)
+
+
+def test_corpus_refuses_two_established_readings_for_one_act(tmp_path):
+    """Act custody was keyed on `(sample_digest, act_identity)`, which reads as "one
+    established reading per act *per sample record*". An act identity binds the page
+    it was marked out on, so it names one act once — but a page legitimately carried
+    by both a manual and a seeded sample record gave that one act two independent
+    custody chains, each internally impeccable, with nothing but file order to choose
+    between the two texts they established. That is a picker by omission (hard rule
+    8) inside the corpus the pipeline is measured against, and two texts where
+    GOVERNANCE 5 allows one."""
+    path, frame, pages = run_file(tmp_path)
+    rows = catalog(pages)
+    draw, selected = build_sampling_draw(path, rows, plan_for(frame, rows))
+    seeded = selected[0]
+    picked = _pick(path, frame, {**seeded["page"]}, "Tyrel B1 pick of a page the seed also drew")
+    assert picked["sample_digest"] != seeded["sample_digest"]
+
+    act = _act()
+    records = [draw, *selected, picked]
+    for sample, readings, established in (
+        (picked, ("Jean Dupont", "Jean Dupond"), "Jean Dupont"),
+        (seeded, ("Marie Cure", "Marie Curee"), "an entirely different reading"),
+    ):
+        first = transcribe(sample, act, "hand-a", readings[0], path)
+        second = transcribe(sample, act, "hand-b", readings[1], path)
+        records += [
+            first,
+            second,
+            adjudicate(first, second, adjudicator="hand-c", text=established),
+        ]
+    with pytest.raises(SchemaRefusal, match="two transcription records for act"):
+        validate_corpus(records, path)
+
+    # Four distinct transcribers, so no one of them reads the act twice and the
+    # refusal has to come from the act's own custody rather than from a repeated
+    # name: the act still cannot hold two independently established readings.
+    records = [draw, *selected, picked]
+    for sample, hands, readings, established in (
+        (picked, ("hand-a", "hand-b"), ("Jean Dupont", "Jean Dupond"), "Jean Dupont"),
+        (seeded, ("hand-d", "hand-e"), ("Marie Cure", "Marie Curee"), "another reading"),
+    ):
+        first = transcribe(sample, act, hands[0], readings[0], path)
+        second = transcribe(sample, act, hands[1], readings[1], path)
+        records += [
+            first,
+            second,
+            adjudicate(first, second, adjudicator="hand-c", text=established),
+        ]
+    with pytest.raises(SchemaRefusal, match="exactly the two independent transcriptions"):
+        validate_corpus(records, path)
+
+
+def test_corpus_refuses_a_drawn_page_re_minted_under_another_method(tmp_path):
+    """The membership check used to run one way only: every `stratified-seed`
+    sample had to be a draw member, but nothing required every draw member to
+    still be present as one. A page the seed genuinely chose could be re-minted
+    as `manual` (with the matching page-derived `set` as its `claimed_set`, so it
+    is individually well-formed) and disappear from the seeded accounting while
+    `validate_corpus` kept reporting success -- a silent loss GOVERNANCE 2
+    forbids."""
+    path, frame, pages = run_file(tmp_path)
+    rows = catalog(pages)
+    plan = plan_for(frame, rows)
+    draw, selected = build_sampling_draw(path, rows, plan)
+    real = selected[0]
+    relabeled = dict(real)
+    relabeled["method"] = "manual"
+    relabeled["claimed_set"] = relabeled["set"]
+    relabeled["sampling"] = None
+    without = {
+        key: value for key, value in relabeled.items() if key not in {"sample_digest", "self_hash"}
+    }
+    relabeled["sample_digest"] = digest_bytes(canonical_bytes(without))
+    relabeled["self_hash"] = self_hash(relabeled)
+    assert validate_sample(relabeled, path) == relabeled  # well-formed alone
+    others = [record for record in selected if record is not real]
+    with pytest.raises(SchemaRefusal, match="does not carry as a stratified-seed sample"):
+        validate_corpus([draw, relabeled, *others], path)
+
+
 def test_corpus_refuses_two_recorded_draws_in_one_gold_corpus(tmp_path):
     """Two draws are two predeclared designs. Neither can speak for the records
     beside it, and combining them is the same defect the frame-mixing refusal
@@ -1021,7 +1424,21 @@ def test_cli_verify_sampling_replays_what_the_sampler_wrote(tmp_path):
     assert cli.main(["sample", *common, "--output-dir", str(output)]) == 0
     written = sorted(output.glob("*.json"))
     assert len(written) == sum(sum(quotas.values()) for quotas in plan.values()) + 1
-    assert cli.main(["verify-sampling", str(output), "--run", str(path)]) == 0
+    assert (
+        cli.main(
+            [
+                "verify-sampling",
+                str(output),
+                "--run",
+                str(path),
+                "--catalog",
+                str(tmp_path / "catalog.json"),
+                "--plan",
+                str(tmp_path / "plan.json"),
+            ]
+        )
+        == 0
+    )
     sample_file = next(
         item for item in written if json.loads(item.read_text())["schema"] == "gold-page-sample.v1"
     )
@@ -1089,7 +1506,21 @@ def test_verify_sampling_survives_a_manual_pick_beside_the_drawn_records(tmp_pat
         == 0
     )
     assert cli.main(["validate-corpus", str(output), "--run", str(path)]) == 0
-    assert cli.main(["verify-sampling", str(output), "--run", str(path)]) == 0
+    assert (
+        cli.main(
+            [
+                "verify-sampling",
+                str(output),
+                "--run",
+                str(path),
+                "--catalog",
+                str(tmp_path / "catalog.json"),
+                "--plan",
+                str(tmp_path / "plan.json"),
+            ]
+        )
+        == 0
+    )
     # The seeded half is still reconciled exactly: a page the draw did not choose,
     # minted as a seeded sample, is refused even with the pick sitting beside it.
     smuggled = build_sample(
@@ -1210,3 +1641,44 @@ def test_cli_malformed_json_input_is_a_named_refusal_not_a_traceback(tmp_path):
         )
     with pytest.raises(SchemaRefusal, match="not readable JSON"):
         cli.main(["validate", str(bad)])
+
+
+def test_unhashable_enum_spellings_are_named_refusals_not_type_errors(tmp_path):
+    """JSON arrays and objects are legal input but unhashable in Python. Testing
+    one directly for membership in an enum set used to raise raw `TypeError` before
+    the CLI could state a `SchemaRefusal`. Every externally supplied enum checks its
+    string shape first."""
+    path, frame, pages = run_file(tmp_path)
+    sample = sample_stratified(path, catalog(pages), plan_for(frame, catalog(pages)))[0]
+    for field, expected in (
+        ("method", "method is not recognized"),
+        ("claimed_set", "claimed_set is not a recognized"),
+        ("set", "set conflicts"),
+    ):
+        forged = json.loads(json.dumps(sample))
+        forged[field] = []
+        without = {
+            key: value for key, value in forged.items() if key not in {"sample_digest", "self_hash"}
+        }
+        forged["sample_digest"] = digest_bytes(canonical_bytes(without))
+        forged["self_hash"] = self_hash(forged)
+        with pytest.raises(SchemaRefusal, match=expected):
+            validate_sample(forged)
+
+    pick = {
+        "schema": MANUAL_PICK_SCHEMA,
+        "selection_basis": "basis",
+        "page": catalog(pages)[0],
+        "set": [],
+    }
+    with pytest.raises(SchemaRefusal, match="manual pick set is not recognized"):
+        ingest_manual_pick(path, pick)
+
+    layout = {
+        "schema": LAYOUT_SCHEMA,
+        "sample": sample,
+        "regions": [{"kind": [], "rect": {"x": 1, "y": 1, "w": 2, "h": 2}}],
+    }
+    layout["self_hash"] = self_hash(layout)
+    with pytest.raises(SchemaRefusal, match="region kind is not recognized"):
+        validate_layout(layout)
