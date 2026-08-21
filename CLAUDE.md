@@ -80,9 +80,15 @@ Stage only files touched for the task; never `git add -A`.
 
 Repository-writing agents work in chambers. The host session remains accountable for the
 goal, decisions, integrated diff, and verification. A chamber is pinned to a commit,
-cannot push, returns a branch, and may not edit governed paths. Use agents for bounded
-work that benefits from independent context; do not create ceremony merely to satisfy a
-roster.
+cannot push, returns a branch, may not edit governed paths, and carries no window onto the
+old pipeline. Use agents for bounded work that benefits from independent context; do not
+create ceremony merely to satisfy a roster.
+
+**A chamber builds from this repository and its design notes, not from the old system.**
+The notes reach it at `/specs`; the old code reaches it only if `AUTOCLAVE_WINDOW` is set
+on `new`, which is a deliberate act and needs a reason in the brief. A brief that tells a
+chamber to read the old pipeline without that is describing a mount that is not there, and
+the chamber will invent rather than report the gap.
 
 **A chamber builds and audits; the host integrates.** Charge the chamber with its own
 independent audit round, then spend the host's attention on the load-bearing claims, the
@@ -104,6 +110,13 @@ the rulings' provenance.
 Understanding crosses from the old system; bytes cross only when they are the best option,
 understood line by line, and named as carried in the commit and report. Third-party code
 must have a permitting licence and a citation. `cleanroom/README.md` owns the procedure.
+
+**The chamber window onto the old pipeline is closed.** The rebuild is planned from the
+design notes now, so a chamber sees no old code at all unless the dispatch deliberately
+sets `AUTOCLAVE_WINDOW`. This narrows where the rule above applies; it does not soften it.
+Nothing here licenses reading the old tree on the host and carrying a line in silently —
+an unnamed carry is a finding at review wherever the reading happened.
+`operations/autoclave/README.md` carries the ruling and its date.
 
 ## Pushing and merging
 

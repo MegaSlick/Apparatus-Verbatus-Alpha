@@ -21,6 +21,13 @@ CLAUDE.md's Quarantine section names this file as the procedure. The standard is
 **read it, reason past it, and cite what you take.** The offence is the silence, not the
 borrowing.
 
+**The window is closed by default, and the rule below is what governs it if it reopens
+(Tyrel, 2026-08-20).** Chambers no longer mount the old pipeline: the rebuild is planned
+from the design notes now, and a session that wants the old code must set
+`AUTOCLAVE_WINDOW` for that one chamber. This section is therefore mostly dormant rather
+than retired — it still binds the session reading the reference on the host, where both
+locations remain readable, and it binds any chamber that is deliberately given a window.
+
 **Reason first, then look.** Work out what the stage needs on its own terms, then read the
 old code to see how it was solved before, then build the better version. Reading first and
 reasoning backwards is how a workaround gets carried forward as though it were a design —

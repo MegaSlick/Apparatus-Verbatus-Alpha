@@ -9,6 +9,14 @@ verification.
 - **Repository-writing work runs in a chamber.** The agent gets its own clone and branch,
   a full shell, and tests. It cannot push. `operations/autoclave/README.md` owns the
   mechanism.
+- **A chamber sees this repository and the design notes, not the old pipeline.** The
+  window closed on 2026-08-20; `/specs` carries the notes, and the old code arrives only
+  when `AUTOCLAVE_WINDOW` is set on `new` — mounts are fixed at container creation, so
+  setting it on `dispatch` is accepted and silently does nothing. Write briefs against
+  what is actually mounted: an agent told to consult a mount that is absent fills the gap
+  with invention more often than it reports it, and
+  `operations/autoclave/briefs/rebuilder.md` is the one brief that assumes the window and
+  says so at the top.
 - **Host agents are read-only.** The custom `scout`, `auditor`, and `consult` roles have no
   shell or write tools. Use them for lookup or advice when a chamber adds no value.
 - **No agent edits a governed path, pushes, merges, opens a pull request, sends a

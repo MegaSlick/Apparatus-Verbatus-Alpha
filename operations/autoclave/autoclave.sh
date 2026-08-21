@@ -497,6 +497,28 @@ cmd_new() {
     esac
     acquire_lifecycle_lock "$task"
 
+    # **A linked worktree cannot be the source of a chamber, and it has to be refused
+    # here rather than discovered later.** In a worktree, `.git` is a *file* holding
+    # `gitdir: /the/main/checkout/.git/worktrees/<name>` — an absolute host path that is
+    # outside the `/src` bind. The clone inside the container therefore fails with
+    # "fatal: not a git repository" naming a directory the container cannot see.
+    #
+    # That failure lands *after* `docker run`, which is the real damage: the chamber is
+    # already up, `rm` refuses it as uncollected, and the operator is left forcing away a
+    # container that never held a clone. Checked before anything is created, the same
+    # mistake costs one sentence.
+    #
+    # `.claude/worktrees/` is this project's own convention for isolated checkouts
+    # (`.gitignore` says so), so sessions land here by following the rules, not by
+    # misusing them. Mounting the main `.git` as a second volume would lift the
+    # restriction; it is not done because a chamber pinned to a commit gets everything it
+    # needs from the main checkout, and a second writable-looking git path is a boundary
+    # question that should be decided deliberately rather than added in passing.
+    if [ -f "${REPO_ROOT}/.git" ]; then
+        main_checkout=$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+        die "this is a linked git worktree, and a chamber cannot be cloned from one — the clone would look for ${main_checkout} inside the container, which is not mounted. Run ${0} from the main checkout${main_checkout:+ (${main_checkout%/.git})}."
+    fi
+
     # Resolve the base to a commit on the host, so the chamber is pinned to an exact
     # tree rather than to whatever a name meant at clone time. It is git-only, so it
     # belongs above the Docker check for the same reason `login`'s vendor check does:
@@ -717,10 +739,10 @@ cmd_new() {
     #
     # **Writable, and that is a correction.** It was read-only for one sitting, on the
     # reasoning that an agent "has no business editing the specs" — which is tidiness,
-    # not containment, and the two are not the same rule. `/src` and `/window` are
-    # read-only because they are really this machine's tree and really the old
-    # repository; writing them would change the host with no diff to review. This is a
-    # per-chamber copy that `rm` deletes, so nothing it holds is anybody's original.
+    # not containment, and the two are not the same rule. `/src` is read-only because it
+    # is really this machine's tree; writing it would change the host with no diff to
+    # review. This is a per-chamber copy that `rm` deletes, so nothing it holds is
+    # anybody's original.
     # Locking it cost a real dispatch (Tyrel, 2026-08-03): a builder told by its spec to
     # record resolved model revisions in the bench memo could not, because this mount
     # refused a write nothing needed refused. A chamber has free rein over what is its
@@ -744,58 +766,22 @@ cmd_new() {
             stage_failed "could not stage workbench/design for the chamber"
     fi
 
-    # **The windows onto the old work, and they are on by default now.** CLAUDE.md's
-    # Quarantine section says the old repository is "read where it lies, through the
-    # window" — mounting it read-only is that window, and nothing else here provides
-    # one.
+    # **The window onto the old pipeline is off, and reaching for it is now deliberate.**
+    # It was mounted by default from `operations/autoclave/window.conf` between
+    # 2026-08-04 and 2026-08-20, because a chamber that could not see the old code had
+    # once decided to refuse PDFs outright while the old pipeline had accepted them at
+    # stage one all along.
     #
-    # This used to be opt-in, on the reasoning that a chamber which can read old code
-    # can copy old bytes into its branch. **Tyrel overruled that on 2026-08-04** and the
-    # evidence was concrete: four seats built System 03 with no window, and one of them
-    # decided to refuse PDFs entirely, when the old pipeline had accepted PDFs at stage
-    # one all along. An opt-in window is a window every session must remember, and the
-    # session that forgot cost a night. The copying risk is unchanged and is still
-    # controlled the same way — the operator reads every line of the diff, and no old
-    # byte enters.
+    # **Tyrel ruled on 2026-08-20 that the reference is no longer needed** — the rebuild
+    # is planned from documents now, not from reading the old tree — so `window.conf`,
+    # the per-directory `/window` mounts and the `/stage` audit-notes mount are gone. A
+    # chamber gets `/work`, `/src`, `/out` and `/specs`, and nothing of the old system.
     #
-    # `operations/autoclave/window.conf` holds the paths and the mask list.
-    # `AUTOCLAVE_WINDOW` still overrides `/window` for a one-off.
+    # `AUTOCLAVE_WINDOW` survives as the single opt-in below, and it is the only way in.
+    # CLAUDE.md's Quarantine section and `cleanroom/README.md` still govern what may
+    # cross if a session ever sets it; what changed is that no session gets the window
+    # by accident, and reinstating it is an environment variable rather than an edit.
     window_mount=""
-    window_masks=""
-    if [ -z "${AUTOCLAVE_WINDOW:-}" ] && [ -f "${REPO_ROOT}/operations/autoclave/window.conf" ]; then
-        # shellcheck disable=SC1091
-        . "${REPO_ROOT}/operations/autoclave/window.conf"
-        # The old pipeline's code, mounted directory by directory rather than whole.
-        # Naming each one is what keeps the corpus, the datasets and the months of
-        # dated notes out — a mount of the repository root with exclusions would admit
-        # every new drawer that appears, which is the failure `.dockerignore` at the
-        # repository root was already shaped to avoid.
-        if [ -n "${WINDOW_OCR_ROOT:-}" ] && [ -d "${WINDOW_OCR_ROOT}" ]; then
-            for wdir in ${WINDOW_OCR_DIRS:-}; do
-                if [ -d "${WINDOW_OCR_ROOT}/${wdir}" ]; then
-                    window_mount="${window_mount} --volume ${WINDOW_OCR_ROOT}/${wdir}:/window/${wdir}:ro"
-                else
-                    note "window.conf names ${wdir}, absent from ${WINDOW_OCR_ROOT} — not mounted"
-                fi
-            done
-            [ -n "$window_mount" ] &&
-                note "airlock open: the old pipeline's code is readable at /window. Reference, not a source tree — reason past it, and a line carried across is named as carried in the commit and the report."
-        elif [ -n "${WINDOW_OCR_ROOT:-}" ]; then
-            note "window.conf names ${WINDOW_OCR_ROOT}, which is not on this machine — /window not mounted"
-        fi
-        if [ -n "${WINDOW_STAGE:-}" ] && [ -d "${WINDOW_STAGE}" ]; then
-            # Appended, never assigned: `=` here silently discarded every /window flag
-            # built above it, and the chamber came up with /stage present and /window
-            # absent while the log still said the airlock was open.
-            window_mount="${window_mount} --volume ${WINDOW_STAGE}:/stage:ro"
-            for masked in ${WINDOW_STAGE_MASKS:-}; do
-                window_masks="${window_masks} --tmpfs /stage/${masked}:ro,size=4k"
-            done
-            note "stage open: ${WINDOW_STAGE} is readable at /stage. Reference — what you take from it is cited, never carried across silently."
-        elif [ -n "${WINDOW_STAGE:-}" ]; then
-            note "window.conf names ${WINDOW_STAGE}, which is not on this machine — /stage not mounted"
-        fi
-    fi
     if [ -n "${AUTOCLAVE_WINDOW:-}" ]; then
         case "$AUTOCLAVE_WINDOW" in
             /*) : ;;
@@ -832,7 +818,7 @@ cmd_new() {
         --tmpfs /src/scriptorium:ro,size=4k \
         --volume "${outdir}:/out" \
         --volume "${specs_stage}:/specs" \
-        $auth_mounts $window_mount $window_masks \
+        $auth_mounts $window_mount \
         --env "CLAUDE_CONFIG_DIR=${AUTH_DIR_CLAUDE}" \
         --workdir /work \
         "$image_id" \

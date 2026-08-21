@@ -632,9 +632,9 @@ class TestLogin:
         specs were absent from a chamber twice over and a brief had to carry a whole
         spec as prose. They arrive as their own mount.
 
-        Writable, and the asymmetry with `/src` and `/window` is the point: those two
-        are really this machine's tree and really the old repository, so writing them
-        would change the host with no diff. This is a per-chamber copy `rm` deletes.
+        Writable, and the asymmetry with `/src` is the point: that one is really this
+        machine's tree, so writing it would change the host with no diff. This is a
+        per-chamber copy `rm` deletes.
         It was read-only for one sitting and that cost a dispatch — a builder told by
         its spec to record resolved revisions in the bench memo could not.
         """
@@ -652,80 +652,112 @@ class TestLogin:
         copied = runnable.index('cp -R "${REPO_ROOT}/workbench/design/."')
         assert copied < runnable.index("${specs_stage}:/specs"), "staged after the bind"
 
-    def test_the_window_onto_the_old_code_is_open_by_default_and_read_only(self):
-        """**Tyrel ruled 2026-08-04 that the window is on by default**, reversing the
-        opt-in rule this test used to assert. His evidence: four seats built System 03
-        with no window and one decided to refuse PDFs outright, while the old pipeline
-        had taken PDFs at stage one all along. An opt-in window is one every session
-        must remember, and the session that forgot cost a night.
+    def test_no_window_onto_the_old_code_is_mounted_by_default(self):
+        """**Tyrel ruled 2026-08-20 that the window is no longer needed** — the rebuild
+        is planned from documents now rather than from reading the old tree — reversing
+        his 2026-08-04 ruling that had made it default-on.
 
-        The copying risk the old rule guarded against is unchanged and is still
-        controlled the same way — the operator reads every line of the diff. What is
-        mechanical here is that neither mount can ever be writable.
+        What that ruling bought is not lost, it is spent: the reason the window went
+        default-on was that a chamber which could not see the old code had decided to
+        refuse PDFs outright, while the old pipeline had accepted them at stage one all
+        along. That finding is in the design notes now, and the notes reach a chamber
+        at `/specs`.
+
+        So this asserts an absence, and absence is exactly the thing that rots quietly.
+        `window.conf` and the `/stage` mount must be gone from the launcher entirely —
+        not merely unreferenced — because a leftover reader would put the old pipeline
+        back into every chamber the moment somebody restored the file.
         """
         runnable = "\n".join(code_lines())
-        assert "window.conf" in runnable, "the window is not configured from window.conf"
-        assert ":/window:ro" in runnable, "the old-code window is not mounted read-only"
-        assert ":/stage:ro" in runnable, "the audit-notes window is not mounted read-only"
-        assert ":/window:rw" not in runnable, "the window is writable"
-        assert ":/stage:rw" not in runnable, "the stage window is writable"
-
-    def test_the_old_repository_is_admitted_by_named_directory_never_whole(self):
-        """The old repository is 5.5 GB and holds roughly 31,500 real register images
-        plus months of dated notes, and a chamber has open network egress — a readable
-        image is a sendable one.
-
-        **The control is that the root is never mounted.** `window.conf` names the
-        directories that may cross and the launcher mounts each one individually, so a
-        drawer that appears in the old repository tomorrow is absent from the airlock
-        until somebody names it. An exclusion list would have the opposite default and
-        would admit it silently — the same reasoning that makes the repository's own
-        `.dockerignore` deny everything and re-admit two files by name.
-
-        A control that is merely configured is not a control that holds; what proves it
-        is scanning the mounts from inside a chamber, which no static test can do. The
-        chamber-side scan is recorded in the commit that added this.
-        """
-        runnable = "\n".join(code_lines())
-        assert "${WINDOW_OCR_ROOT}/${wdir}:/window/${wdir}:ro" in runnable, (
-            "the old repository is not mounted directory by directory"
+        assert "window.conf" not in runnable, "the launcher still reads window.conf"
+        assert "WINDOW_OCR_ROOT" not in runnable, "the old-pipeline paths still reach the launcher"
+        assert "WINDOW_STAGE" not in runnable, (
+            "the audit-notes stage path still reaches the launcher"
         )
-        # Parsed, not string-matched. The negative assertion used to be one exact
-        # substring, so `-v ${WINDOW_OCR_ROOT}:/window`, a quoted operand, or one
-        # written without `:ro` all passed it while mounting the whole 5.5 GB root.
-        # Every mount operand naming WINDOW_OCR_ROOT or WINDOW_STAGE is read out and
-        # judged on its source, destination and options instead.
-        for source, destination, options in _mount_operands(runnable):
-            if source not in {"${WINDOW_OCR_ROOT}", "${WINDOW_STAGE}"}:
-                continue
-            assert destination != "/window", (
-                f"the old repository root is mounted whole at /window ({source})"
-            )
-            assert "ro" in options, (
-                f"the window mount {source}:{destination} is not read-only ({options})"
-            )
-        # The override remains supported and is the one place a whole root may be
-        # named, because it is an operator's deliberate one-off rather than a default.
+        assert ":/stage:" not in runnable, "the audit-notes mount survived"
+        for _source, destination, _options in _mount_operands(runnable):
+            assert destination != "/stage", "a /stage mount is still built"
+
+    def test_the_window_override_is_the_only_way_in_and_is_read_only(self):
+        """`AUTOCLAVE_WINDOW` survives the removal above as a deliberate one-off, so
+        `cleanroom/README.md` and CLAUDE.md's Quarantine section keep a mechanism if a
+        session ever does need to read the old code. It is opt-in, it is the only
+        remaining door, and it can never be writable.
+
+        A whole root may be named here — unlike the per-directory mounts it replaces —
+        precisely because an operator typed it for one chamber rather than a checked-in
+        file supplying it to every chamber forever.
+        """
+        runnable = "\n".join(code_lines())
         assert "${AUTOCLAVE_WINDOW}:/window:ro" in runnable, (
             "the AUTOCLAVE_WINDOW override no longer mounts read-only"
         )
-        assert "--tmpfs /stage/${masked}:ro" in runnable, "the stage probes are not masked"
-        assert "$window_masks" in runnable, "the mask flags never reach docker run"
+        assert ":/window:rw" not in runnable, "the window is writable"
+        for source, destination, options in _mount_operands(runnable):
+            if destination != "/window":
+                continue
+            assert source == "${AUTOCLAVE_WINDOW}", (
+                f"something other than the operator's override mounts /window ({source})"
+            )
+            assert "ro" in options, f"the window mount is not read-only ({options})"
 
-    def test_the_stage_mount_does_not_clobber_the_window_mount(self):
-        """Both flag sets share one variable, and `/stage` was assigned into it rather
-        than appended — so every `/window` flag built above was silently discarded and
-        the chamber came up with `/stage` present, `/window` absent, and a log line
-        still saying the airlock was open.
+    def test_a_linked_worktree_is_refused_before_a_container_is_created(self, tmp_path):
+        """In a linked worktree `.git` is a file holding an absolute `gitdir:` path into
+        the main checkout, and that path is not inside the `/src` bind — so the clone
+        fails with "fatal: not a git repository" naming a directory the container cannot
+        see.
 
-        Caught by inspecting a real container's mounts rather than by reading the
-        script, which is the only way this class of bug shows itself.
+        The order is the whole point. Discovered after `docker run`, the chamber is
+        already up with no clone in it, `rm` refuses it as uncollected, and the operator
+        forces away a container that never did anything.
+
+        Driven from a **real** linked worktree rather than by reading the script's line
+        order, because a guard that printed and carried on would satisfy the reading and
+        still create the chamber. The recorded docker argv is what settles it: the stub
+        records every call, so "no container was created" is an observation here, not an
+        inference.
+
+        Found by running `new` from `.claude/worktrees/`, which is this project's own
+        documented place for an isolated checkout — so this is reached by following the
+        rules rather than by misusing them. That first run is also why the snapshot
+        assertion is here and not decorative: it left a real snapshot ref standing, and
+        `rm ... force` reported removing it on the way past.
         """
-        runnable = "\n".join(code_lines())
-        assert 'window_mount="--volume ${WINDOW_STAGE}:/stage:ro"' not in runnable, (
-            "the stage mount overwrites the window mount instead of appending"
+        # Called for the repository it builds, not for the path it returns: the launcher
+        # this test runs is the copy inside the worktree, below.
+        elsewhere(tmp_path)
+        env, log = fake_docker(tmp_path)
+        worktree = tmp_path / "linked"
+        git(tmp_path, "worktree", "add", "--quiet", "-b", "work/linked", str(worktree))
+        # The launcher resolves its repository from `$0`, so the copy *inside* the
+        # worktree is what makes the worktree the repository root. It is there because
+        # `elsewhere` committed `operations/`, so the checkout carries it.
+        linked_script = worktree / "operations" / "autoclave" / "autoclave.sh"
+        assert linked_script.is_file(), "the worktree checkout has no launcher to run"
+        assert (worktree / ".git").is_file(), "the fixture did not produce a linked worktree"
+        # Dirty on purpose: a clean tree needs no snapshot, so a clean one would assert
+        # the absence of a ref that was never going to be written either way. This is what
+        # makes the snapshot assertion below mean something.
+        (worktree / "pending.txt").write_text("pending\n")
+
+        result = run("new", "task-x", "HEAD", "none", env=env, script=linked_script, cwd=worktree)
+
+        assert result.returncode != 0, "a chamber was created from a linked worktree"
+        assert "linked git worktree" in result.stderr, (
+            f"the refusal does not name the cause: {result.stderr}"
         )
-        assert 'window_mount="${window_mount} --volume ${WINDOW_STAGE}:/stage:ro"' in runnable
+        created = [call for call in docker_calls(log) if call[:1] == ["run"]]
+        assert created == [], f"a container was created despite the refusal: {created}"
+        staged = worktree / "workbench" / "autoclave" / ".specs" / "task-x"
+        assert not staged.exists(), "the specs were staged before the worktree was refused"
+        # The snapshot is the first thing `new` writes into the host repository, and a
+        # stray one makes the *next* `new` for this task fail at `update-ref` with a
+        # message about a ref the operator never created.
+        snapshot = git(
+            worktree, "for-each-ref", "--format=%(refname)", "refs/heads/autoclave/snapshot-task-x"
+        )
+        assert snapshot == "", f"the refusal left a snapshot ref behind: {snapshot}"
+        assert_no_incoming_ref(worktree)
 
     def test_the_window_path_cannot_forge_a_volume_spec(self):
         """`window_mount` is word-split into the flag list, and Docker's short volume
@@ -739,22 +771,21 @@ class TestLogin:
         assert "*:*) die " in runnable, "a colon is not refused"
 
     def test_an_absent_window_mounts_nothing(self):
-        """The flags are empty when the configured paths are not on this machine, and
-        they word-split into the `docker run` line beside the auth mounts. An empty
-        string must contribute no argument at all — a stray quote here would pass Docker
-        an empty operand.
+        """The flag is empty unless an operator sets `AUTOCLAVE_WINDOW`, and it
+        word-splits into the `docker run` line beside the auth mounts. An empty string
+        must contribute no argument at all — a stray quote here would pass Docker an
+        empty operand and the chamber would fail to start rather than start without a
+        window.
 
-        This is what keeps `window.conf`'s machine-specific absolute paths harmless in a
-        clone somewhere else: the directory is missing, the flag stays empty, and the
-        chamber starts without a window rather than failing to start at all.
+        This is the default path now, so it is the one that must be right: no window,
+        no `/stage`, and no flag.
         """
         runnable = " ".join(code_lines())
-        assert "$auth_mounts $window_mount $window_masks \\" in runnable, (
-            "a window flag is quoted or absent"
-        )
+        assert "$auth_mounts $window_mount \\" in runnable, "the window flag is quoted or absent"
         assert 'window_mount=""' in runnable, "the window flag has no empty default"
-        assert 'window_masks=""' in runnable, "the mask flag list has no empty default"
-        assert "is not on this machine" in runnable, "a missing window path is not reported"
+        assert "$window_masks" not in runnable, (
+            "the mask flag list outlived the /stage mount it existed for"
+        )
 
 
 class TestDispatch:
@@ -2442,6 +2473,65 @@ class TestMakingAChamber:
         creation = next(call for call in docker_calls(log) if "--detach" in call)
         assert "sha256:" + "1" * 64 in creation
         assert "verbatus-autoclave:dev" not in creation
+
+    def test_a_chamber_comes_up_with_no_window_and_the_override_is_what_adds_one(self, tmp_path):
+        """The load-bearing claim of the window's removal, asserted against real argv.
+
+        Everything else about the window is checked by reading the launcher, and a
+        reading cannot tell "no mount is built" apart from "a mount is built from
+        something the reader did not think to grep for". Here the stub records the
+        actual `docker run`, so the default chamber's *absence* of `/window` and
+        `/stage` is an observation.
+
+        Both branches, in one test and in this order, because they are one claim: the
+        window is off, and `AUTOCLAVE_WINDOW` is what turns it on. Run apart, a broken
+        override would leave the first half passing and read as success.
+
+        `new` is also the point the variable has to be set at — the mount is fixed when
+        the container is created — which is why the second half sets it on this call and
+        not on a later one.
+        """
+        script = self.dirty_repo(tmp_path)
+        env, log = fake_docker(tmp_path)
+        env.update({"FAKE_SETUP_STATUS": "0", "FAKE_EXEC_STATUS": "0"})
+
+        shut = run("new", "shut-window", "HEAD", "none", env=env, script=script, cwd=tmp_path)
+        assert shut.returncode == 0, shut.stderr
+        creation = self.creation_for(log, "shut-window")
+        assert "/window" not in creation, f"a window was mounted with no override: {creation}"
+        assert "/stage" not in creation, f"the old audit-notes mount survives: {creation}"
+        assert "--tmpfs /stage" not in creation, "the /stage probe masks survive"
+
+        old_pipeline = tmp_path / "old-pipeline"
+        old_pipeline.mkdir()
+        opened = run(
+            "new",
+            "open-window",
+            "HEAD",
+            "none",
+            env={**env, "AUTOCLAVE_WINDOW": str(old_pipeline)},
+            script=script,
+            cwd=tmp_path,
+        )
+        assert opened.returncode == 0, opened.stderr
+        creation = self.creation_for(log, "open-window")
+        assert f"{old_pipeline}:/window:ro" in creation, (
+            f"the override did not mount the window read-only: {creation}"
+        )
+
+    def creation_for(self, log, task):
+        """The `docker run` argv for one task, as a single string.
+
+        Two chambers are created in the test above and the log accumulates across
+        both, so the calls are told apart by the label the launcher stamps on each.
+        """
+        created = [
+            call
+            for call in docker_calls(log)
+            if "--detach" in call and f"verbatus.task={task}" in call
+        ]
+        assert len(created) == 1, f"expected one chamber for {task}, got {len(created)}"
+        return " ".join(created[0])
 
     def test_new_skips_the_claude_trust_initializer_for_codex(self, tmp_path):
         script = self.dirty_repo(tmp_path)

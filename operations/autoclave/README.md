@@ -12,13 +12,21 @@ the main session reads it.
 | `/src` | host repository reference | read-only |
 | `/out` | task output drawer | yes |
 | `/specs` | frozen copy of `workbench/design/` | no original writes |
-| `/window` | old pipeline reference, when configured | read-only |
+| `/window` | old pipeline reference — **off**; `AUTOCLAVE_WINDOW` only | read-only |
 
 `private/`, `workbench/`, and `scriptorium/` are masked from `/src`. Network egress is
 open because agent CLIs and documentation need it. One vendor credential volume is mounted
 read-write per chamber; it is shared with later chambers of that vendor. No Git credential
 enters, so a chamber cannot push or open a pull request. `/out` has no quota and must be
 treated as untrusted input on return.
+
+**The window onto the old pipeline is off (Tyrel, 2026-08-20).** It was mounted by default
+from a checked-in `window.conf` between 2026-08-04 and that ruling; the rebuild is planned
+from documents now, and those reach a chamber at `/specs`. `window.conf`, the
+per-directory `/window` mounts and the `/stage` audit-notes mount are deleted. Setting
+`AUTOCLAVE_WINDOW=/absolute/path` before `new` mounts that one directory read-only at
+`/window` for that chamber alone — the deliberate opt-in that keeps `cleanroom/README.md`
+a live procedure. Nothing else opens it.
 
 The boundary protects the host checkout, not vendor quota, readable mounted data, network
 egress, or the shared credential volume. Keep briefs bounded.
