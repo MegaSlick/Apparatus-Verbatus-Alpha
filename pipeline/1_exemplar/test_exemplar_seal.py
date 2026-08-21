@@ -121,6 +121,7 @@ def build_door_run(
         lambda path: files[path],
         policy=load_format_policy(),
     )
+    context.seal_boundary()
     context.finish(DOOR)
     return tree, files
 
@@ -296,11 +297,14 @@ def test_an_edited_seal_refuses_a_rerun_rather_than_building_on_it(tmp_path):
 # --- The reconciliation the seal rests on ----------------------------------------
 
 
-def test_a_source_that_lost_its_door_outcome_refuses_before_anything_is_sealed(tmp_path):
+def test_a_source_that_lost_its_door_outcome_refuses_before_anything_is_sealed(
+    tmp_path, rebind_stage_seal
+):
     tree, _ = build_door_run(tmp_path / "runs")
     identity = artifact_id(DOOR, "admission", "source-2")
     tree.resolve(tree.artifact_path(DOOR, "admission", identity)).unlink()
     tree.write_manifest(DOOR)
+    rebind_stage_seal(tree, DOOR)
 
     result = run_exemplar(tmp_path / "runs")
     assert result.returncode != 0
@@ -314,17 +318,20 @@ def test_a_source_that_lost_its_door_outcome_refuses_before_anything_is_sealed(t
     assert not (tree.root / "1_exemplar" / "artifacts" / "seal").exists()
 
 
-def test_an_admitted_blob_whose_bytes_changed_refuses(tmp_path):
+def test_an_admitted_blob_whose_bytes_changed_refuses(tmp_path, rebind_stage_seal):
     tree, _ = build_door_run(tmp_path / "runs")
     admission = tree.read_artifact(DOOR, "admission", artifact_id(DOOR, "admission", "source-1"))
     tree.resolve(admission["payload"]["stored_at"]).write_bytes(b"different bytes entirely")
+    rebind_stage_seal(tree, DOOR, rewrite_manifest=False)
 
     result = run_exemplar(tmp_path / "runs")
     assert result.returncode != 0
     assert "changed under a sealed reference" in result.stderr
 
 
-def test_an_admitted_blob_that_is_gone_refuses_by_name_rather_than_crashing(tmp_path):
+def test_an_admitted_blob_that_is_gone_refuses_by_name_rather_than_crashing(
+    tmp_path, rebind_stage_seal
+):
     """The *deleted* blob, beside the *changed* one above. It escaped as a
     FileNotFoundError traceback and CPython's exit 1, where `common/stage.py` says
     an exit code carries cause and reserves 2 for a named contract failure. A
@@ -333,6 +340,7 @@ def test_an_admitted_blob_that_is_gone_refuses_by_name_rather_than_crashing(tmp_
     tree, _ = build_door_run(tmp_path / "runs")
     admission = tree.read_artifact(DOOR, "admission", artifact_id(DOOR, "admission", "source-1"))
     tree.resolve(admission["payload"]["stored_at"]).unlink()
+    rebind_stage_seal(tree, DOOR, rewrite_manifest=False)
 
     result = run_exemplar(tmp_path / "runs")
     assert result.returncode == EXIT_FATAL
@@ -342,7 +350,7 @@ def test_an_admitted_blob_that_is_gone_refuses_by_name_rather_than_crashing(tmp_
     assert not (tree.root / "1_exemplar" / "artifacts" / "seal").exists()
 
 
-def test_a_door_refusal_carrying_a_free_text_reason_is_refused(tmp_path):
+def test_a_door_refusal_carrying_a_free_text_reason_is_refused(tmp_path, rebind_stage_seal):
     """The closed reason set is the actual work of this spec. A consumer that took a
     free-text reason because it happened to be a string would have replaced nothing."""
     tree, _ = build_door_run(tmp_path / "runs")
@@ -353,6 +361,7 @@ def test_a_door_refusal_carrying_a_free_text_reason_is_refused(tmp_path):
     record["self_hash"] = self_hash(record)
     path.write_bytes(canonical_bytes(record))
     tree.write_manifest(DOOR)
+    rebind_stage_seal(tree, DOOR)
 
     result = run_exemplar(tmp_path / "runs")
     assert result.returncode != 0
@@ -372,7 +381,38 @@ def test_the_exemplar_refuses_a_run_the_door_never_wrote(tmp_path):
     )
     result = run_exemplar(tmp_path / "runs")
     assert result.returncode != 0
+    # A door that never ran left no boundary to prove, and that is now the first
+    # thing the Exemplar checks. Its own "no admissions to seal" refusal moved
+    # out of reach from here, so the test below reaches it the only way still
+    # open: a door that did seal, over nothing.
+    assert "predecessor door has no stage-seal" in result.stderr
+
+
+def test_the_exemplar_refuses_a_sealed_door_boundary_that_admitted_nothing(
+    tmp_path, rebind_stage_seal
+):
+    """`run.py`'s "no admissions to seal" branch, which lost its only test.
+
+    A door that never ran is now stopped one check earlier, at its absent
+    completion seal, so this reaches the branch by leaving the boundary coherent
+    and emptying what it witnesses. Sealing nothing quietly is the failure the
+    branch exists for, and it must not become untested because a stronger check
+    grew in front of the older one. Found in audit (Opus, Unit 1A).
+    """
+    tree, _ = build_door_run(tmp_path / "runs")
+    admissions = [
+        entry for entry in tree.build_manifest(DOOR)["artifacts"] if entry["kind"] == "admission"
+    ]
+    assert admissions, "the door fixture published no admission to remove"
+    for entry in admissions:
+        tree.resolve(entry["relative_path"]).unlink()
+    tree.write_manifest(DOOR)
+    rebind_stage_seal(tree, DOOR)
+
+    result = run_exemplar(tmp_path / "runs")
+    assert result.returncode != 0
     assert "no admissions to seal" in result.stderr
+    assert not (tree.root / "1_exemplar" / "artifacts" / "seal").exists()
 
 
 def test_a_run_with_no_submitted_source_manifest_cannot_be_reconciled_at_all():
@@ -423,7 +463,9 @@ def test_a_real_run_source_manifest_reconstructs_its_self_hashed_filename_ledger
         _EXEMPLAR_RUN._submitted_sources(run)
 
 
-def test_a_fabricated_render_transform_is_refused_rather_than_sealed_or_crashed(tmp_path):
+def test_a_fabricated_render_transform_is_refused_rather_than_sealed_or_crashed(
+    tmp_path, rebind_stage_seal
+):
     """A standalone raster cannot claim a partial container render explanation."""
     tree, _ = build_door_run(tmp_path / "runs")
     identity = artifact_id(DOOR, "admission", "source-1")
@@ -433,6 +475,7 @@ def test_a_fabricated_render_transform_is_refused_rather_than_sealed_or_crashed(
     record["self_hash"] = self_hash(record)
     path.write_bytes(canonical_bytes(record))
     tree.write_manifest(DOOR)
+    rebind_stage_seal(tree, DOOR)
 
     result = run_exemplar(tmp_path / "runs")
     assert result.returncode == EXIT_FATAL

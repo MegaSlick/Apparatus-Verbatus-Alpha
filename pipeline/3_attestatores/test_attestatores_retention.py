@@ -193,11 +193,11 @@ def test_a_whole_pass_resolves_designator_inputs_once_per_act_not_once_per_chair
         attempt_calls += 1
         return real_resolve_attempt(*args, **kwargs)
 
-    def counted_manifest(self, stage):
+    def counted_manifest(self, stage, **kwargs):
         nonlocal attestatores_manifest_calls
         if self.root == tree.root and stage == ATTESTATORES:
             attestatores_manifest_calls += 1
-        return real_build_manifest(self, stage)
+        return real_build_manifest(self, stage, **kwargs)
 
     monkeypatch.setattr(attestatores, "proposed_regions", counted_regions)
     monkeypatch.setattr(attestatores, "resolve_attempt", counted_attempt)
@@ -219,7 +219,10 @@ def test_a_whole_pass_resolves_designator_inputs_once_per_act_not_once_per_chair
     )
 
     assert attestatores.main() == 0
-    assert attestatores_manifest_calls == 3  # history index, manifest write, independent tally
+    # History index, the seal's prior/inventory checks, final manifest, and
+    # independent tally.  Completion evidence adds fixed stage-level walks; it
+    # must not reintroduce a walk per act or chair.
+    assert attestatores_manifest_calls == 6
     assert attempt_calls == 6  # one per act/chair, never re-resolved for publication
 
     act_ids = {record["subject_id"] for record in _testimonia(tree)}
@@ -1178,7 +1181,42 @@ def test_configured_never_attempted_seat_is_not_run_not_dead(tmp_path):
     assert record["payload"]["provenance"]["receipt_ref"] is None
 
 
-def test_one_refused_crop_records_its_chairs_and_leaves_the_other_act_intact(tmp_path):
+def test_a_crop_broken_after_the_designator_sealed_it_stops_at_that_boundary(tmp_path):
+    """Crop bytes that moved after the boundary are tree damage, not a bad crop.
+
+    The Designator's completion seal reads every blob's content back off disk,
+    so this is refused before the Attestatores reads an act. The retention
+    property the test below proves is a different claim about a different tree
+    state, and both are worth holding: this one says the pipeline notices, that
+    one says it degrades per act when the crop was bad all along.
+    """
+    run_root, tree = run_to_designator(tmp_path, "happy")
+    entry = next(
+        entry for entry in tree.build_manifest(DESIGNATOR)["artifacts"] if entry["kind"] == "region"
+    )
+    region = tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
+    tree.resolve(region["payload"]["image_path"]).write_bytes(b"broken crop bytes")
+
+    result = invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py")
+
+    assert result.returncode == 2, result.stderr
+    assert "designator stage-seal" in result.stderr
+    assert "named inventory no longer matches disk" in result.stderr
+    assert _testimonia(tree) == []
+
+
+def test_one_refused_crop_records_its_chairs_and_leaves_the_other_act_intact(
+    tmp_path, rebind_stage_seal
+):
+    """Spec 07's isolation rule: one unreadable crop never kills the folder.
+
+    The Designator seals the crop it actually wrote, so a crop a real detector
+    cut badly reaches the Attestatores *inside* a coherent boundary. That is the
+    state this rule is about, and it is the state the rebind models — without
+    it the test proves the seal refusal above instead, which is how this
+    property came to be unproven anywhere when the seal landed. Found in audit
+    (Opus, Unit 1A).
+    """
     run_root, tree = run_to_designator(tmp_path, "happy")
     entry = next(
         entry for entry in tree.build_manifest(DESIGNATOR)["artifacts"] if entry["kind"] == "region"
@@ -1187,6 +1225,7 @@ def test_one_refused_crop_records_its_chairs_and_leaves_the_other_act_intact(tmp
     refused_key = region["payload"]["act_key"]
     intact_key = "a2" if refused_key == "a1" else "a1"
     tree.resolve(region["payload"]["image_path"]).write_bytes(b"broken crop bytes")
+    rebind_stage_seal(tree, DESIGNATOR)
 
     result = invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py")
 

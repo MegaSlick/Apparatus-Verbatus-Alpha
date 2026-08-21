@@ -204,6 +204,22 @@ def test_no_stage_imports_pipeline_by_its_dotted_path():
     )
 
 
+def test_production_stage_code_never_imports_the_reseal_forgery_helper():
+    """`reseal_chain` exists only to make test forgeries internally coherent."""
+    violations = [
+        f"{path} imports {full!r}"
+        for path in repository_python_files()
+        if _stage_of(path) is not None
+        and not Path(path).name.startswith("test_")
+        and Path(path).name != "reseal_chain.py"
+        for root, full in _imports_in(ROOT / path)
+        if root == "reseal_chain"
+    ]
+    assert not violations, "production stage code imported a test forgery helper:\n" + "\n".join(
+        violations
+    )
+
+
 def test_literal_dynamic_pipeline_imports_are_visible_to_the_guard(tmp_path):
     source = tmp_path / "dynamic_import.py"
     source.write_text(

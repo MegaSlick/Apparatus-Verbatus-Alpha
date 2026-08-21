@@ -26,6 +26,7 @@ from common.perlector_audit import (
 )
 from common.recovery import FALLBACK_RECROP
 from common.runtree.store import RunTree
+from common.stage import _stage_seal_payload, latest_attempt
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -68,6 +69,29 @@ def records(tree: RunTree, stage: str, kind: str, act_id: str | None = None) -> 
     ]
 
 
+def rebind_stage_seal(tree: RunTree, stage: str) -> None:
+    """Keep semantic-forgery tests behind the new producer boundary."""
+    seals = [
+        tree.read_artifact(stage, "stage-seal", entry["artifact_id"])
+        for entry in tree.build_manifest(stage, verify_inputs=False)["artifacts"]
+        if entry["kind"] == "stage-seal"
+    ]
+    seal = latest_attempt(seals, f"{stage} stage seal", operation="seal")
+    payload = seal["payload"]
+    seal["payload"] = _stage_seal_payload(
+        tree,
+        stage,
+        payload["attempt_ordinal"],
+        seal["attempt_id"],
+        payload["decode_environment_artifact_id"],
+    )
+    seal["self_hash"] = self_hash(seal)
+    tree.resolve(tree.artifact_path(stage, "stage-seal", seal["artifact_id"])).write_bytes(
+        canonical_bytes(seal)
+    )
+    tree.write_manifest(stage)
+
+
 def test_an_unrequested_second_perlectio_is_refused_before_recensor_publishes(tmp_path):
     root = tmp_path / "runs"
     through_perlector(root, "unrequested", "happy")
@@ -84,7 +108,7 @@ def test_an_unrequested_second_perlectio_is_refused_before_recensor_publishes(tm
     path = tree.resolve(tree.artifact_path(PERLECTOR, "perlectio", forged["artifact_id"]))
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(canonical_bytes(forged))
-    tree.write_manifest(PERLECTOR)
+    rebind_stage_seal(tree, PERLECTOR)
 
     result = invoke(root, "unrequested", "happy", "pipeline/5_recensor/run.py")
     assert result.returncode == 2
@@ -293,7 +317,7 @@ def test_an_empty_completed_reading_is_held_not_accepted(tmp_path):
     changed["self_hash"] = self_hash(changed)
     validate_envelope(changed)
     path.write_bytes(canonical_bytes(changed))
-    tree.write_manifest(PERLECTOR)
+    rebind_stage_seal(tree, PERLECTOR)
     validate_chain(
         tree,
         tree.read_artifact(PERLECTOR, "perlectio", reading["artifact_id"]),

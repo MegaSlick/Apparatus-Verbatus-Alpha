@@ -2650,6 +2650,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     if recorded == 0:
         raise ContractError("no chair produced an outcome for any act")
 
+    context.seal_boundary()
     context.finish()
     tally = attempt_tally(context.tree, context=context, acts=acts, chairs=context.witness_chairs)
     if tally["hold"]:

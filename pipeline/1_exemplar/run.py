@@ -157,6 +157,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         payload=seal_payload,
     )
 
+    context.seal_boundary()
     context.finish()
     return EXIT_COMPLETE
 

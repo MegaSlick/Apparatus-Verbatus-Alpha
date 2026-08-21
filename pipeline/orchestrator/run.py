@@ -73,6 +73,7 @@ from common.stage import (  # noqa: E402
     require_sealed_config,
     run_sealed_config_digests,
     scenario_for,
+    verify_predecessor_seal,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -391,6 +392,9 @@ def main() -> int:
         "export",
         artifact_id("armarium", "export", "export", None),
     )
+    # Armarium has no successor to open a context and prove its seal, so the
+    # orchestrator is its named consumer at the run's final boundary.
+    verify_predecessor_seal(tree, "armarium")
     status, lines = terminal_report(export)
     print(f"run {args.run_id}: {status}")
     for line in lines:

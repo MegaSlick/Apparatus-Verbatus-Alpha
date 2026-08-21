@@ -34,13 +34,13 @@ from common.contracts.stages import ARMARIUM, ATTESTATORES, DESIGNATOR, PERLECTO
 # loudly, naming what changed — rather than passing because the new state happened
 # to be consistent with itself.
 EXPECTED_VOCABULARY_SIZES = {
-    "door": 2,
-    "exemplar": 2,
-    "designator": 4,
-    "attestatores": 6,
-    "perlector": 5,
-    "recensor": 5,
-    "archetypus": 2,
+    "door": 4,
+    "exemplar": 3,
+    "designator": 6,
+    "attestatores": 8,
+    "perlector": 7,
+    "recensor": 7,
+    "archetypus": 4,
     "armarium": 5,
 }
 
@@ -84,7 +84,7 @@ def test_witness_failed_is_a_member_of_the_closed_vocabulary():
     assert terminal_category(ATTESTATORES, "failed") is None
 
 
-def test_witness_vocabulary_is_exactly_the_repaired_six():
+def test_witness_vocabulary_includes_the_two_boundary_record_outcomes():
     assert set(outcomes.VOCABULARIES[ATTESTATORES]) == {
         "read",
         "genuinely-empty",
@@ -92,6 +92,8 @@ def test_witness_vocabulary_is_exactly_the_repaired_six():
         "dead",
         "not-run",
         "excluded",
+        "sealed",
+        "recorded",
     }
 
 
@@ -105,6 +107,8 @@ def test_witness_outcome_classes_are_pinned():
         "dead": "failed",
         "not-run": "unresolved",
         "excluded": "completed",
+        "sealed": "completed",
+        "recorded": "completed",
     }
 
 

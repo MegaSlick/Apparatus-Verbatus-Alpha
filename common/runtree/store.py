@@ -70,6 +70,7 @@ from common.corpus_register import empty_register, validate_register_bytes
 
 RUN_FILE: Final = "run.json"
 MANIFEST_FILE: Final = "manifest.json"
+DOOR_MANIFEST_FILE: Final = "manifest-door.json"
 INDEX_FILE: Final = "index.json"
 ARTIFACTS_DIR: Final = "artifacts"
 BLOBS_DIR: Final = "blobs/sha256"
@@ -343,7 +344,14 @@ class RunTree:
         return f"{writing_directory(stage)}/{BLOBS_DIR}/{digest}"
 
     def manifest_path(self, stage: str) -> str:
-        return f"{writing_directory(stage)}/{MANIFEST_FILE}"
+        # Door and Exemplar share their evidence directory, but their manifests
+        # are producer inventories. Giving Door a stage-qualified filename
+        # preserves both inventories, which matters when either one names a
+        # completion seal that later disappears. One shared manifest let the
+        # Exemplar erase the Door's deletion trigger before a resumed Door or
+        # Exemplar could consult it.
+        filename = DOOR_MANIFEST_FILE if stage == DOOR else MANIFEST_FILE
+        return f"{writing_directory(stage)}/{filename}"
 
     def index_path(self, stage: str) -> str:
         """The stage-local, rebuildable derived index path.
@@ -354,12 +362,12 @@ class RunTree:
         an untracked side file beside the evidence it summarizes.
 
         Door and Exemplar share one physical directory (`writing_directory`), so
-        `index_path(DOOR)` and `index_path(EXEMPLAR)` collide, exactly as
-        `manifest_path` already does for the two. Unlike `build_manifest`, which
-        filters entries by `record["stage"]`, an index holds whatever its caller
-        builds with no such filter — so `write_index` refuses any stage whose
-        directory has more than one producer, rather than letting the second
-        stage's index silently erase the first stage's rows.
+        `index_path(DOOR)` and `index_path(EXEMPLAR)` collide. Their producer
+        manifests have stage-qualified paths, but an index holds whatever its
+        caller builds with no `build_manifest`-style stage filter — so
+        `write_index` refuses any stage whose directory has more than one
+        producer, rather than letting the second stage's index silently erase
+        the first stage's rows.
         """
         return f"{writing_directory(stage)}/{INDEX_FILE}"
 
@@ -736,7 +744,7 @@ class RunTree:
 
     # --- Manifests: derived, never the only evidence ---------------------------
 
-    def build_manifest(self, stage: str) -> dict[str, Any]:
+    def build_manifest(self, stage: str, *, verify_inputs: bool = True) -> dict[str, Any]:
         """Walk the stage's artifacts and describe what is actually there.
 
         Derived from the tree every time it is called, so it cannot drift from
@@ -762,7 +770,8 @@ class RunTree:
                 # neighboring JSON file under that directory.
                 if record["stage"] != stage:
                     continue
-                self._verify_artifact_inputs(record)
+                if verify_inputs:
+                    self._verify_artifact_inputs(record)
                 entries.append(
                     {
                         "artifact_id": record["artifact_id"],
@@ -960,6 +969,7 @@ class RunTree:
             prefixes.append(f"{directory}/{BLOBS_DIR}/")
             prefixes.append(f"{directory}/{MANIFEST_FILE}")
             prefixes.append(f"{directory}/{INDEX_FILE}")
+        prefixes.append(f"{writing_directory(DOOR)}/{DOOR_MANIFEST_FILE}")
         return tuple(prefixes)
 
 

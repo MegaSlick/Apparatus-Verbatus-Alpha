@@ -844,6 +844,22 @@ def test_a_deleted_manifest_rebuilds_identically(tmp_path):
     assert tree.read_bytes(tree.manifest_path(DESIGNATOR)) == stored
 
 
+def test_shared_door_and_exemplar_evidence_keeps_one_manifest_per_producer(tmp_path):
+    """One physical evidence directory must not imply one producer inventory.
+
+    Completion-seal deletion is exposed by the last stored manifest that named
+    the seal. If Door and Exemplar overwrite one file, the second producer can
+    erase that trigger before a resume checks it.
+    """
+    tree = make_run(tmp_path)
+    tree.write_manifest(DOOR)
+    tree.write_manifest(EXEMPLAR)
+
+    assert tree.manifest_path(DOOR) != tree.manifest_path(EXEMPLAR)
+    assert json.loads(tree.read_bytes(tree.manifest_path(DOOR)))["stage"] == DOOR
+    assert json.loads(tree.read_bytes(tree.manifest_path(EXEMPLAR)))["stage"] == EXEMPLAR
+
+
 def test_a_stale_manifest_is_detectable(tmp_path):
     """If the manifest disagrees with the artifacts, the artifacts are right. The
     point of the check is that the disagreement is visible rather than silent."""

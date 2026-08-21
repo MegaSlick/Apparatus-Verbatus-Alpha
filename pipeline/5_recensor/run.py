@@ -2008,6 +2008,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             },
         )
 
+    context.seal_boundary()
     context.finish()
     # After `finish()`, so the manifest the receipt checks against disk is the
     # one this pass just wrote rather than the previous pass's.

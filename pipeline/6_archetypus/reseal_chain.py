@@ -14,7 +14,40 @@ directory import it by name (pytest puts the directory on `sys.path` for them).
 import json
 
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
-from common.contracts.stages import RECENSOR
+from common.contracts.stages import PERLECTOR, RECENSOR
+from common.stage import _stage_seal_payload, latest_attempt
+
+
+def _rebind_stage_seal(tree, stage: str) -> None:
+    """Make a deliberate test forgery internally coherent through its boundary.
+
+    The tests in this directory are not boundary-corruption tests.  They forge a
+    plausible upstream record so the real Archetypus program reaches its own
+    schema checks.  Stage completion seals now correctly stop an unrebound
+    forgery first, so this support has to carry the same hypothetical producer
+    compromise through its manifest and seal as well.
+
+    Production code never imports this module.  Boundary-corruption tests leave
+    the seal untouched and therefore prove the earlier refusal instead.
+    """
+    seals = [
+        tree.read_artifact(stage, "stage-seal", entry["artifact_id"])
+        for entry in tree.build_manifest(stage, verify_inputs=False)["artifacts"]
+        if entry["kind"] == "stage-seal"
+    ]
+    seal = latest_attempt(seals, f"{stage} stage seal", operation="seal")
+    payload = seal["payload"]
+    seal["payload"] = _stage_seal_payload(
+        tree,
+        stage,
+        payload["attempt_ordinal"],
+        seal["attempt_id"],
+        payload["decode_environment_artifact_id"],
+    )
+    seal["self_hash"] = self_hash(seal)
+    path = tree.resolve(tree.artifact_path(stage, "stage-seal", seal["artifact_id"]))
+    path.write_bytes(canonical_bytes(seal))
+    tree.write_manifest(stage)
 
 
 def repoint_review(tree, review: dict, forged_ref: dict) -> None:
@@ -33,6 +66,12 @@ def repoint_review(tree, review: dict, forged_ref: dict) -> None:
     review["payload"]["perlectio_ref"] = forged_ref
     review["self_hash"] = self_hash(review)
     review_path.write_bytes(canonical_bytes(review))
+    # Callers often rewrote the referenced Perlectio immediately before
+    # repointing the review.  Rebinding an unchanged Perlector seal is a
+    # byte-identical no-op, so doing it here also keeps the simpler reference
+    # substitutions above deliberately coherent.
+    _rebind_stage_seal(tree, PERLECTOR)
+    _rebind_stage_seal(tree, RECENSOR)
 
 
 def reseal_reviewed_reading(tree, review: dict, mutate) -> str:

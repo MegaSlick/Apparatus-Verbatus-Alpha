@@ -145,6 +145,15 @@ VOCABULARIES: Final[dict[str, dict[str, OutcomeClass]]] = {
     },
 }
 
+# These two record kinds are stage-boundary evidence, not a second outcome
+# algebra.  They nevertheless use the ordinary envelope, whose outcome is
+# intentionally total by producer stage.
+for _stage in VOCABULARIES:
+    if _stage == ARMARIUM:
+        continue
+    VOCABULARIES[_stage]["sealed"] = _C.COMPLETED
+    VOCABULARIES[_stage]["recorded"] = _C.COMPLETED
+
 # --- The transition table: (stage, outcome) -> terminal category, or None -------
 #
 # None means "this unit flows onward and some later stage decides its category".
@@ -186,6 +195,12 @@ TERMINAL_CATEGORY: Final[dict[tuple[str, str], ArmariumCategory | None]] = {
     (ARMARIUM, _A.CONFIRMED_BLANK.value): _A.CONFIRMED_BLANK,
     (ARMARIUM, _A.REFUSED_WITH_REASON.value): _A.REFUSED_WITH_REASON,
 }
+
+for _stage in VOCABULARIES:
+    if _stage == ARMARIUM:
+        continue
+    TERMINAL_CATEGORY[(_stage, "sealed")] = None
+    TERMINAL_CATEGORY[(_stage, "recorded")] = None
 
 # The Perlector's failures are transitive on purpose: a truncated or failed reading
 # is the Recensor's to act on — it may request bounded recovery — and only the

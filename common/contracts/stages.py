@@ -62,6 +62,19 @@ HANDOFFS: Final = (
     (ARCHETYPUS, ARMARIUM),
 )
 
+# Completion seals are witnessed statements at the end of each producer pass.
+# Unlike HANDOFFS this includes Armarium: no later stage consumes its seal, so
+# the orchestrator proves that final statement before it reports the run.
+SEAL_PREDECESSORS: Final = {
+    EXEMPLAR: DOOR,
+    DESIGNATOR: EXEMPLAR,
+    ATTESTATORES: DESIGNATOR,
+    PERLECTOR: ATTESTATORES,
+    RECENSOR: PERLECTOR,
+    ARCHETYPUS: RECENSOR,
+    ARMARIUM: ARCHETYPUS,
+}
+
 
 # Where each producer *writes*, which is not the same question as which directory
 # a stage owns. The door owns nothing and writes into the Exemplar's directory, so

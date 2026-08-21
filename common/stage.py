@@ -14,6 +14,7 @@ declared fixture rather than by hard-coded strings scattered through seven files
 
 import argparse
 import json
+import platform
 import sys
 import tomllib
 from collections.abc import Mapping
@@ -46,7 +47,14 @@ from common.contracts.identities import verify as verify_identity
 from common.contracts.outcomes import WITNESS_READING_OUTCOMES as _WITNESS_READING_OUTCOMES
 from common.contracts.outcomes import classify
 from common.contracts.serving import SERVING_CONFIG_INPUTS_FIELDS, SERVING_CONFIG_INPUTS_SCHEMA
-from common.contracts.stages import DESIGNATOR, EXEMPLAR, PERLECTOR, RECENSOR
+from common.contracts.stages import (
+    ARMARIUM,
+    DESIGNATOR,
+    EXEMPLAR,
+    PERLECTOR,
+    RECENSOR,
+    SEAL_PREDECESSORS,
+)
 from common.corpus_register import read_snapshot, verify_snapshot_is_current
 from common.exemplar_boundary import verify_sealed_page_pixels
 from common.hard_failure import DEFAULT_HARD_FAILURE_CONFIG_PATH, load_hard_failure_policy
@@ -256,6 +264,7 @@ class StageContext:
         "armarium_formats",
         "serving_config_inputs",
         "_recovery_policy",
+        "sealed",
     )
 
     def __init__(
@@ -310,6 +319,7 @@ class StageContext:
         # policy, and `require_sealed_config("recovery", ...)` at each point of
         # use so a reintroduced second read cannot pass silently.
         self._recovery_policy = dict(recovery_policy) if recovery_policy is not None else None
+        self.sealed = False
 
     @property
     def config_digest(self) -> str:
@@ -407,6 +417,11 @@ class StageContext:
         approval_ref: str | None = None,
     ) -> PublishResult:
         """Publish one artifact of this stage, with the envelope filled in."""
+        if self.sealed:
+            raise SchemaRefusal(
+                f"{self.stage} has sealed its completion boundary; publishing {kind!r} afterwards "
+                "would make its witnessed inventory false"
+            )
         if kind == "serving-receipt":
             raise SchemaRefusal(
                 "serving receipts are run receipts, never stage artifacts; "
@@ -427,6 +442,65 @@ class StageContext:
             approval_ref=approval_ref,
         )
         return self.tree.publish_artifact(envelope)
+
+    def seal_boundary(self) -> PublishResult:
+        """Witness this stage's complete on-disk boundary exactly once per change.
+
+        The manifest is deliberately only an input to the calculation: the
+        stored seal is the evidence, and a missing stored seal named by a prior
+        manifest is a refusal rather than an invitation to recreate history.
+        """
+        if self.sealed:
+            raise SchemaRefusal(f"{self.stage} completion boundary is already sealed")
+        records = _stage_records(self.tree, self.stage, "stage-seal")
+        _refuse_deleted_seal(self.tree, self.stage, {record["artifact_id"] for record in records})
+        ordinal = (
+            1
+            if not records
+            else latest_attempt(records, f"{self.stage} stage seal", operation="seal")["payload"][
+                "attempt_ordinal"
+            ]
+            + 1
+        )
+        attempt = attempt_id(self.stage, "seal", ordinal)
+        decode_id = artifact_id(self.stage, "decode-environment", self.stage, attempt)
+        payload = _stage_seal_payload(self.tree, self.stage, ordinal, attempt, decode_id)
+        # A restart that did not change any stage-owned evidence reuses the
+        # previous witnessed statement instead of manufacturing a new attempt.
+        if records:
+            prior = latest_attempt(records, f"{self.stage} stage seal", operation="seal")
+            if prior["payload"] == _stage_seal_payload(
+                self.tree,
+                self.stage,
+                prior["payload"]["attempt_ordinal"],
+                prior["attempt_id"],
+                prior["payload"]["decode_environment_artifact_id"],
+            ):
+                self.sealed = True
+                return PublishResult(
+                    self.tree.artifact_path(self.stage, "stage-seal", prior["artifact_id"]),
+                    reused=True,
+                )
+        environment = _decode_environment(self.stage)
+        self.publish(
+            kind="decode-environment",
+            subject_id=self.stage,
+            outcome=_boundary_outcome(self.stage, "decode-environment"),
+            attempt=attempt,
+            payload=environment,
+        )
+        # Decode environment is excluded from the deterministic inventory, so
+        # it is safe to publish before the seal and does not create a fixpoint.
+        payload = _stage_seal_payload(self.tree, self.stage, ordinal, attempt, decode_id)
+        result = self.publish(
+            kind="stage-seal",
+            subject_id=self.stage,
+            outcome=_boundary_outcome(self.stage, "stage-seal"),
+            attempt=attempt,
+            payload=payload,
+        )
+        self.sealed = True
+        return result
 
     def write_serving_receipt(
         self, identity: ChairIdentity, serving: ServingDetails
@@ -572,6 +646,272 @@ class StageContext:
     def finish(self, stage: str | None = None) -> None:
         """Write the stage's derived manifest inventory."""
         self.tree.write_manifest(stage or self.stage)
+
+
+_SEAL_EXCLUDED_KINDS: Final = frozenset({"stage-seal", "decode-environment"})
+_DECODE_PATHS: Final = frozenset({"project-png", "pillow", "pdfium", "none"})
+_PIXEL_STAGES: Final = frozenset({"door", "exemplar", "designator", "perlector", "recensor"})
+_DECODER_NAMES: Final = frozenset({"pillow", "jpeg-codec", "pillow-heif", "libheif", "pdfium"})
+_DECODE_ENVIRONMENT_FIELDS: Final = frozenset(
+    {"decoders", "platform", "machine", "decode_paths_used", "produced_pixels"}
+)
+
+
+def _boundary_outcome(stage: str, kind: str) -> str:
+    """Armarium's closed terminal vocabulary has no non-terminal record state."""
+    if stage == ARMARIUM:
+        return "delivered"
+    return "sealed" if kind == "stage-seal" else "recorded"
+
+
+def _stage_records(tree: RunTree, stage: str, kind: str) -> list[dict[str, Any]]:
+    return [
+        tree.read_artifact(stage, kind, entry["artifact_id"])
+        for entry in tree.build_manifest(stage, verify_inputs=False)["artifacts"]
+        if entry["kind"] == kind
+    ]
+
+
+def _refuse_deleted_seal(tree: RunTree, stage: str, present: set[str]) -> None:
+    """A manifest can expose deletion; it must never repair a witnessed seal.
+
+    Compared as the SET of seals the stored inventory names against the set on
+    disk, never as "some seal is still there". Attempts are the contiguous run
+    1..N, so removing the *latest* of several leaves a prefix `latest_attempt`
+    reads as whole: the earlier statement then answers for a boundary it never
+    witnessed, and the ordinal the deletion vacated is minted a second time over
+    a different inventory — the ordinal-reuse defect the Attestatores already
+    closed once with a second trigger. Refusing only total deletion caught the
+    single case where nothing is left to answer in the deleted seal's place and
+    missed every case where something is.
+
+    `present` is passed in rather than walked here: both callers have already
+    built the seal records they are about to reason about, and a second walk of
+    the same directory is the per-boundary cost this check does not need to add.
+    """
+    path = tree.resolve(tree.manifest_path(stage))
+    if not path.exists():
+        return
+    try:
+        stored = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise SchemaRefusal(
+            f"stored {stage} manifest cannot establish its prior seal: {error}"
+        ) from error
+    if not isinstance(stored, dict) or not isinstance(stored.get("artifacts"), list):
+        raise SchemaRefusal(f"stored {stage} manifest cannot establish its prior seal")
+    if stored.get("stage") != stage:
+        # Door and Exemplar share a directory but own separate inventories.
+        return
+    named: set[str] = set()
+    for entry in stored["artifacts"]:
+        if not isinstance(entry, dict) or entry.get("kind") != "stage-seal":
+            continue
+        name = entry.get("artifact_id")
+        if not isinstance(name, str):
+            raise SchemaRefusal(
+                f"stored {stage} manifest names a stage-seal without a string artifact_id"
+            )
+        named.add(name)
+    missing = sorted(named - present)
+    if missing:
+        raise SchemaRefusal(
+            f"{stage} stage-seal(s) {missing} are missing although its stored inventory "
+            "names them; a completion seal is witnessed evidence and is never re-derived"
+        )
+
+
+def _decode_environment(stage: str) -> dict[str, Any]:
+    """The local decoders that can turn identical source bytes into pixels."""
+    import pillow_heif
+    import pypdfium2 as pdfium
+    from PIL import Image, features
+
+    jpg = features.version_codec("jpg") or "unavailable"
+    turbo = features.version_feature("libjpeg_turbo")
+    heif = pillow_heif.libheif_info().get("libheif", "unavailable")
+    # Stages that only pass evidence through record `none`; readers/croppers
+    # record the closed route family they use. The Door can take both library
+    # routes, which is deliberately visible rather than guessed from suffixes.
+    paths = {
+        "door": {"pillow", "pdfium"},
+        "exemplar": {"project-png"},
+        "designator": {"project-png"},
+        "perlector": {"project-png"},
+        "recensor": {"project-png"},
+    }.get(stage, {"none"})
+    if not paths <= _DECODE_PATHS:
+        raise SchemaRefusal(f"{stage} records an unknown decode path")
+    return {
+        "decoders": [
+            {"name": "pillow", "version": Image.__version__},
+            {"name": "jpeg-codec", "version": f"{jpg};libjpeg-turbo={turbo}"},
+            {"name": "pillow-heif", "version": pillow_heif.__version__},
+            {"name": "libheif", "version": str(heif)},
+            {"name": "pdfium", "version": str(pdfium.PDFIUM_INFO)},
+        ],
+        "platform": platform.system(),
+        "machine": platform.machine(),
+        "decode_paths_used": sorted(paths),
+        "produced_pixels": stage in _PIXEL_STAGES,
+    }
+
+
+def _validate_decode_environment(value: Any, owner: str) -> dict[str, Any]:
+    """Require the consult's closed decode-environment record before comparing it."""
+    if not isinstance(value, dict) or set(value) != _DECODE_ENVIRONMENT_FIELDS:
+        raise SchemaRefusal(f"{owner} decode-environment does not have the closed field set")
+    decoders = value["decoders"]
+    if not isinstance(decoders, list) or any(
+        not isinstance(row, dict)
+        or set(row) != {"name", "version"}
+        or not isinstance(row["name"], str)
+        or not isinstance(row["version"], str)
+        or not row["version"]
+        for row in decoders
+    ):
+        raise SchemaRefusal(f"{owner} decode-environment has a malformed decoder list")
+    names = [row["name"] for row in decoders]
+    if len(names) != len(set(names)) or set(names) != _DECODER_NAMES:
+        raise SchemaRefusal(f"{owner} decode-environment does not name each decoder exactly once")
+    for field in ("platform", "machine"):
+        if not isinstance(value[field], str):
+            raise SchemaRefusal(f"{owner} decode-environment has a malformed {field}")
+    paths = value["decode_paths_used"]
+    if (
+        not isinstance(paths, list)
+        or any(not isinstance(path, str) for path in paths)
+        or paths != sorted(set(paths))
+        or not set(paths) <= _DECODE_PATHS
+    ):
+        raise SchemaRefusal(f"{owner} decode-environment has malformed decode_paths_used")
+    if not isinstance(value["produced_pixels"], bool):
+        raise SchemaRefusal(f"{owner} decode-environment has malformed produced_pixels")
+    return value
+
+
+def _inventory_digest(value: Any) -> str:
+    return digest_of(value)
+
+
+def _stage_seal_payload(
+    tree: RunTree, stage: str, ordinal: int, attempt: str, decode_environment_artifact_id: str
+) -> dict[str, Any]:
+    manifest = tree.build_manifest(stage, verify_inputs=False)
+    artifacts = [
+        entry for entry in manifest["artifacts"] if entry["kind"] not in _SEAL_EXCLUDED_KINDS
+    ]
+    blobs_root = tree.resolve(f"{tree.blob_path(stage, '0' * 64)}").parent
+    blobs = []
+    if blobs_root.exists():
+        for path in sorted(blobs_root.iterdir()):
+            if path.is_file():
+                blobs.append(
+                    {"name": path.name, "sha256_of_content": digest_bytes(path.read_bytes())}
+                )
+    census: dict[tuple[str, str], int] = {}
+    for entry in artifacts:
+        key = (entry["kind"], entry["outcome"])
+        census[key] = census.get(key, 0) + 1
+    return {
+        "stage": stage,
+        "attempt_ordinal": ordinal,
+        "attempt_id": attempt,
+        "config_digest": tree.read_run()["config_digest"],
+        "register_digest": tree.read_run()["register_digest"],
+        "artifact_inventory": _inventory_digest(artifacts),
+        "blob_inventory": _inventory_digest(blobs),
+        "census": [
+            {"kind": kind, "outcome": outcome, "count": count}
+            for (kind, outcome), count in sorted(census.items())
+        ],
+        "decode_environment_artifact_id": decode_environment_artifact_id,
+    }
+
+
+def verify_predecessor_seal(tree: RunTree, stage: str) -> None:
+    """Refuse a missing, forged, or changed predecessor boundary by name."""
+    predecessor = SEAL_PREDECESSORS.get(stage)
+    if predecessor is None:
+        return
+    seals = _stage_records(tree, predecessor, "stage-seal")
+    if not seals:
+        raise SchemaRefusal(
+            f"{stage} refuses: predecessor {predecessor} has no stage-seal; "
+            "a missing witnessed statement is never re-derived"
+        )
+    # The producer refuses a seal its own stored inventory names and disk no
+    # longer holds; so must the consumer, which is the side an attacker with the
+    # tree reaches without ever invoking the producer again. Without this,
+    # deleting the latest of several seals and reverting the change it witnessed
+    # leaves the earlier seal answering for a boundary it never saw.
+    _refuse_deleted_seal(tree, predecessor, {record["artifact_id"] for record in seals})
+    seal = latest_attempt(seals, f"{predecessor} stage seal", operation="seal")
+    payload = seal["payload"]
+    expected_id = artifact_id(predecessor, "decode-environment", predecessor, seal["attempt_id"])
+    if payload.get("decode_environment_artifact_id") != expected_id:
+        raise SchemaRefusal(
+            f"{stage} refuses {predecessor} stage-seal: wrong decode environment name"
+        )
+    if payload.get("config_digest") != tree.read_run().get("config_digest"):
+        raise SchemaRefusal(
+            f"{stage} refuses {predecessor} stage-seal: config_digest differs from run authority"
+        )
+    if payload.get("register_digest") != tree.read_run().get("register_digest"):
+        raise SchemaRefusal(
+            f"{stage} refuses {predecessor} stage-seal: register_digest differs from run authority"
+        )
+    expected = _stage_seal_payload(
+        tree,
+        predecessor,
+        payload.get("attempt_ordinal"),
+        seal["attempt_id"],
+        expected_id,
+    )
+    if payload != expected:
+        raise SchemaRefusal(
+            f"{stage} refuses {predecessor} stage-seal: its named inventory no longer matches disk"
+        )
+    try:
+        environment = tree.read_artifact(predecessor, "decode-environment", expected_id)
+    except (ContractError, OSError) as error:
+        raise SchemaRefusal(
+            f"{stage} refuses {predecessor} stage-seal: its decode-environment is missing or damaged"
+        ) from error
+    previous_environment = _validate_decode_environment(
+        environment.get("payload"), f"{predecessor} stored"
+    )
+    current_environment = _validate_decode_environment(
+        _decode_environment(stage), f"{stage} current"
+    )
+    differences = _decode_difference(previous_environment, current_environment)
+    if differences:
+        # This is intentionally an observation only. Unit 17 decides when a
+        # decoder difference becomes fatal; silently omitting it is not allowed.
+        print(
+            f"decode environment differs by name from {predecessor}: {differences}",
+            file=sys.stderr,
+        )
+
+
+def _decode_difference(previous: dict[str, Any], current: dict[str, Any]) -> list[str]:
+    """Every field difference the binding consult requires reported by name.
+
+    The two role fields predictably differ at some boundaries, but omitting them
+    made a self-consistent forged record observationally invisible and departed
+    from the consult's field-by-field contract. Reporting is not refusal:
+    Unit 17 alone decides whether any valid difference becomes fatal.
+    """
+    changes = []
+    previous_decoders = {row["name"]: row["version"] for row in previous["decoders"]}
+    current_decoders = {row["name"]: row["version"] for row in current["decoders"]}
+    for name in sorted(set(previous_decoders) | set(current_decoders)):
+        if previous_decoders.get(name) != current_decoders.get(name):
+            changes.append(name)
+    for field in ("platform", "machine", "decode_paths_used", "produced_pixels"):
+        if previous.get(field) != current.get(field):
+            changes.append(field)
+    return changes
 
 
 def _serving_evidence_reference(value: Mapping[str, str], label: str) -> dict[str, str]:
@@ -1968,6 +2308,7 @@ def open_context(
             "the currently loaded models config and fixture scenario; direct stages "
             "may not run against an unsealed configuration"
         )
+    verify_predecessor_seal(tree, stage)
     return StageContext(
         tree=tree,
         run=run,

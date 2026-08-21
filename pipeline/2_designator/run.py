@@ -2181,6 +2181,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         # being refused, doing the wrong operation rather than none at all.
         raise ContractError(f"--operation {args.operation!r} is not one of 'initial' or 'recover'")
 
+    context.seal_boundary()
     context.finish()
     return EXIT_HELD if held else EXIT_COMPLETE
 
