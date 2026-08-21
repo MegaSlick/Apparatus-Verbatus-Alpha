@@ -610,8 +610,15 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # ruling. The file is sealed into every run by its bytes (`sealed_config_digests`
 # gained `hard-failure` in the T7 family), so a comment in it moves both scenarios'
 # authority. No code changed with it; counts and exits held at 64/0 and 71/3.
-HAPPY_RUN_TREE_DIGEST = "aee74fa4a4dc96ccc6997ce1c814652ae373d705d4eaa8a44f23bb7974b039ef"
-REVIEW_RUN_TREE_DIGEST = "f69b8e13830d851513b160e5a5241caf04b64bd36cf218b69d99f96745f4d9cd"
+# Re-pinned 2026-08-20 for `config/hard_failure.toml` alone, again: the trust
+# audit found the taxonomy's rationale still calling pipeline/4_perlector/run.py
+# a walking-skeleton stub — a built stage whose only *reader* is the fixture —
+# so the comment was corrected and the recorded rule-13 decision on
+# `(perlector, failed)` written into it. Comment bytes only; both digests
+# re-measured twice through this module's own helpers at the same tree, counts
+# and exits held at 64/0 and 71/3.
+HAPPY_RUN_TREE_DIGEST = "31e572e17b18868e90c933a36b471a3d04ca666382534f111410516a8337db48"
+REVIEW_RUN_TREE_DIGEST = "c6702b96996ee72813e9d4a6fa76ad4dcc5b02df501dabde0ad7b868079f2d4a"
 
 
 def orchestrate(

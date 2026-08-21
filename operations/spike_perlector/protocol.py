@@ -60,7 +60,18 @@ from .errors import MatrixRefusal
 # judgments by naming the declaration that the pipeline is proven. These are prose
 # corrections only: no measure, profile, bound, score, or result moved, and the
 # opening disclaimer still records that no result exists.
-PREDECLARED_PROTOCOL_SHA256 = "b0f168f4e2410e2d005b94ec7e8c52a69cb727f0004d64b5554e00c038bac878"
+#
+# Re-pinned 2026-08-20, twice. First (commit dc4ab85c, recorded here after the
+# fact — that re-pin landed without its paragraph, against this ledger's own
+# convention): Tyrel ruled the training base starts fresh on 3.8, so Section 2's
+# stock base moved from the 9B model to Qwen/Qwen3.8-27B. Second (this change):
+# the provenance sentence carried the old ruling's 2026-08-05 date forward with
+# the new model — a false attribution in the one sentence that exists to make
+# provenance verifiable — caught by the 2026-08-20 trust audit. It now names the
+# 2026-08-20 ruling and the supersession. The ruling's record:
+# workbench/standing/TYREL_RULINGS_2026-08-20_EVENING.md (untracked). Prose and
+# roster provenance only: no measure, profile, bound, score, or result moved.
+PREDECLARED_PROTOCOL_SHA256 = "61dc492686a1db79a9125f4d2779549c43d05393174240800e11fa3bcdb6ee8a"
 
 
 def protocol_document_sha256() -> str:

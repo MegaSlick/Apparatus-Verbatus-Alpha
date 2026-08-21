@@ -49,14 +49,16 @@ threshold = 2
 # witnesses, a lengthy marginal note) will truncate routinely in real parish
 # registers; folding that into a 2-failure early-warning cap would trip it on
 # ordinary document variance and defeat the cap's purpose. `(perlector, failed)`
-# is KEPT, but the mapping is not yet certain: spec 08 (the Perlector) is being
-# built by another lane in parallel with this pass, and pipeline/4_perlector/
-# run.py is still the walking-skeleton stub -- nothing in the shipped code yet
-# says whether a real `failed` outcome will mean "an exception escaped the read
-# path" (the old pipeline's HARD_GENERATE_EXCEPTION, genuinely hard) or "the
-# model answered badly after every retry" (the old pipeline's SOFT_READ_FAILED,
-# a tough page, genuinely soft). Kept as hard conservatively; revisit once
-# spec 08 gives `failed` a real trigger.
+# is KEPT, but the mapping is not yet certain: pipeline/4_perlector/run.py is a
+# built stage (dossiers, Lectio nuda, dissent recording, the truncation
+# instrument), but its only reader is still the fixture
+# (pipeline/4_perlector/reader.py, FixtureReader) -- so nothing in the shipped
+# code yet says whether a real `failed` outcome will mean "an exception escaped
+# the read path" (the old pipeline's HARD_GENERATE_EXCEPTION, genuinely hard) or
+# "the model answered badly after every retry" (the old pipeline's
+# SOFT_READ_FAILED, a tough page, genuinely soft). Decided 2026-08-20 (hard rule
+# 13, recorded in the session's findings ledger): kept as hard conservatively;
+# revisit when a real reader gives `failed` a real trigger.
 #
 # `(door, refused, reason="corrupt")` and `(door, refused, reason="unreadable")`
 # are ADDED. `pipeline/1_exemplar/admission.py`'s closed `RefusalReason`
