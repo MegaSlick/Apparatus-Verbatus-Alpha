@@ -43,8 +43,12 @@ from common.stage import (
     DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH,
     DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH,
     StageContext,
+    require_triage_modes,
+    run_sealed_config_digests,
 )
 from operations.submit import gate, submit
+from operations.triage.instrument import load_config as instrument_config
+from operations.triage.instrument import producer_recipe
 
 POLICY = load_format_policy()
 
@@ -802,6 +806,88 @@ def test_expansion_ordinals_are_stable_by_filename_and_page_index():
     ]
 
 
+def test_triage_producer_recipe_is_the_third_bound_document_path(tmp_path):
+    """The pre-door recipe is parsed once and its document digest reaches the run."""
+    from operations.triage.instrument import load_config, producer_recipe
+
+    data = png(4, 3)
+    source_digest = digest_bytes(data)
+    row = door.triage_manifest.make_row(
+        corpus_id="parish-a",
+        source_frame_sha256=source_digest,
+        frame={"width": 4, "height": 3},
+        split=door.triage_manifest.make_split(
+            [
+                door.triage_manifest.make_part(
+                    {"x": 0, "y": 0, "w": 4, "h": 3},
+                    {"x": 0, "y": 0, "w": 4, "h": 3},
+                    0,
+                    colour_mode="keep",
+                )
+            ]
+        ),
+        re_shoot_cluster_id=None,
+        confidence=0,
+        mode="manual",
+        actor={"kind": "producer", "identity": "triage-instrument", "revision": "v1"},
+        human_override=False,
+    )
+    manifest_path = tmp_path / "manifest.json"
+    recipe_path = tmp_path / "recipe.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema": door.triage_manifest.MANIFEST_SCHEMA,
+                "corpus_id": "parish-a",
+                "records": [row],
+            }
+        ),
+        encoding="utf-8",
+    )
+    recipe_path.write_text(json.dumps(producer_recipe(load_config())), encoding="utf-8")
+
+    rows, clusters, digests = door.load_triage_decisions(
+        manifest_path, producer_recipe_path=recipe_path
+    )
+    assert rows == {source_digest: row}
+    assert clusters == {}
+    assert digests == {
+        "triage-decision-manifest": digest_bytes(manifest_path.read_bytes()),
+        "triage-producer-recipe": digest_bytes(recipe_path.read_bytes()),
+    }
+
+
+def test_a_missing_triage_producer_recipe_path_is_a_named_read_refusal(tmp_path):
+    """Angle 4 (Unit 6A audit): the third document path must refuse by name,
+    not silently proceed as though no recipe had been asked for."""
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {"schema": door.triage_manifest.MANIFEST_SCHEMA, "corpus_id": "parish-a", "records": []}
+        ),
+        encoding="utf-8",
+    )
+    missing = tmp_path / "nonexistent-recipe.json"
+    with pytest.raises(ContractError, match="producer recipe could not be read"):
+        door.load_triage_decisions(manifest_path, producer_recipe_path=missing)
+
+
+def test_a_malformed_triage_producer_recipe_is_refused_by_name(tmp_path):
+    """A recipe document that fails Unit 6A's own closed-schema check must refuse
+    with that specific reason, not merely fail to parse."""
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {"schema": door.triage_manifest.MANIFEST_SCHEMA, "corpus_id": "parish-a", "records": []}
+        ),
+        encoding="utf-8",
+    )
+    bad_recipe = tmp_path / "recipe.json"
+    bad_recipe.write_text(json.dumps({"schema": "not-the-real-schema"}), encoding="utf-8")
+    with pytest.raises(ContractError, match="the triage producer recipe is invalid"):
+        door.load_triage_decisions(manifest_path, producer_recipe_path=bad_recipe)
+
+
 def test_triage_digest_mismatch_is_a_named_door_refusal(tmp_path):
     """A manifest row is evidence about submitted master bytes, never a hint."""
     data = png(4, 3)
@@ -1130,7 +1216,7 @@ def _approved_submission(tmp_path, files: dict[str, bytes]):
     return approved, source, policy, policy_path, ledger_path, ledger
 
 
-def _run_real_door(monkeypatch, *, run_root, source, policy_path, ledger_path, run_id):
+def _run_real_door(monkeypatch, *, run_root, source, policy_path, ledger_path, run_id, extra=()):
     monkeypatch.setattr(
         sys,
         "argv",
@@ -1146,6 +1232,7 @@ def _run_real_door(monkeypatch, *, run_root, source, policy_path, ledger_path, r
             str(ledger_path),
             "--data-gate-policy",
             str(policy_path),
+            *extra,
         ],
     )
     return door.main()
@@ -2266,6 +2353,20 @@ def test_real_bindings_seal_designator_padding_alongside_the_shard_knob(monkeypa
         "'data-handling' entry naming the caller-selected policy that gated admission "
         "(CodeRabbit CF01)"
     )
+    triage_modes = ROOT / "config" / "triage_modes.toml"
+    assert sealed.get("triage-modes") == digest_bytes(triage_modes.read_bytes()), (
+        f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing a "
+        "'triage-modes' entry for the mode vocabulary a real triage manifest uses"
+    )
+    require_triage_modes(sealed, triage_modes)
+
+
+def test_real_submission_rechecks_triage_modes_before_expanding_triage_geometry():
+    """The named real-path seal is used before a manifest can shape source pages."""
+    implementation = inspect.getsource(door.real_submission)
+    assert implementation.index("require_triage_modes") < implementation.index(
+        "sources = expand_sources"
+    )
 
 
 def test_real_bindings_refuse_an_unapproved_prior_control_before_run_creation():
@@ -2583,6 +2684,9 @@ def test_a_re_run_triage_manifest_is_a_different_run_wearing_an_old_id(tmp_path)
     gained_clusters = bindings(
         {"triage-decision-manifest": "c" * 64, "triage-re-shoot-clusters": "e" * 64}
     )
+    gained_producer_recipe = bindings(
+        {"triage-decision-manifest": "c" * 64, "triage-producer-recipe": "f" * 64}
+    )
     none_at_all = bindings({})
 
     assert first["config_digest"] == again["config_digest"]
@@ -2592,10 +2696,11 @@ def test_a_re_run_triage_manifest_is_a_different_run_wearing_an_old_id(tmp_path)
                 first["config_digest"],
                 moved_gutter["config_digest"],
                 gained_clusters["config_digest"],
+                gained_producer_recipe["config_digest"],
                 none_at_all["config_digest"],
             }
         )
-        == 4
+        == 5
     )
 
     source_manifest = [
@@ -2970,3 +3075,253 @@ def test_an_undecodable_split_frame_keeps_every_declared_page_ordinal(tmp_path):
     records = admissions(tree)
     assert set(records) == {1, 2}
     assert all(record["outcome"] == "refused" for record in records.values())
+
+
+# --- Unit 6A audit (Opus, seat 3), angle 3: the door-side repairs under replay --------
+
+
+def test_the_door_seals_the_same_triage_modes_file_its_point_of_use_check_reads(tmp_path):
+    """One file, two independent spellings — pinned by behaviour, not by inspection.
+
+    `_real_bindings` seals `ROOT / "config" / "triage_modes.toml"` and
+    `require_triage_modes` defaults to a path spelled from `common/stage.py`. They are
+    the same file today and nothing but this test says they must stay so; if they ever
+    parted, the door would seal one file and prove the other, and the check would pass
+    or fail for a reason unrelated to the bytes that governed the run. The drift half
+    then shows the sealed digest is genuinely the one compared: an edited copy is
+    refused, and the refusal names both digests so an operator can tell a changed file
+    from a run that sealed the wrong one.
+    """
+
+    class Models:
+        witness_chairs = ("attestator_1", "attestator_2", "attestator_3")
+        adapter_recipes = {"door": "fake-door-v0"}
+
+        @staticmethod
+        def to_record():
+            return {"models": "synthetic"}
+
+    ledger = {
+        "files": [{"relative_path": "spread.jpg", "sha256": "a" * 64, "bytes": 12}],
+        "self_hash": "b" * 64,
+    }
+    bindings = door._real_bindings(
+        Models(),
+        ledger,
+        POLICY,
+        door.render_config.load_pdf_render_settings(minimum_dpi=door.pdf_render.MIN_RENDER_DPI),
+        door.load_recovery_policy(),
+        door.load_hard_failure_policy(),
+        triage_document_digests={"triage-decision-manifest": "c" * 64},
+        **_sealed_binding_digests(),
+    )
+    # The door's own sealed map satisfies the check at its default path.
+    require_triage_modes(bindings["sealed_config_digests"])
+    edited = tmp_path / "triage_modes.toml"
+    edited.write_text(
+        "[manual]\nreview_at_or_below_confidence = 3\n"
+        "[semi]\nreview_at_or_below_confidence = 4\n"
+        "[auto]\nreview_at_or_below_confidence = 4\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ContractError, match="changed between run binding") as refusal:
+        require_triage_modes(bindings["sealed_config_digests"], edited)
+    assert bindings["sealed_config_digests"]["triage-modes"] in str(refusal.value)
+    assert digest_bytes(edited.read_bytes()) in str(refusal.value)
+
+
+def test_a_run_sealed_before_the_repair_is_refused_by_name_not_by_key_error():
+    """Adversarial replay: the run authority a pre-repair door wrote.
+
+    Until this unit, `_real_bindings` sealed no `triage-modes` digest, so a run created
+    by that door records a `sealed_config_digests` map without the name. Reaching the
+    new point-of-use check with such a map must produce the refusal that points at the
+    binding step — the fault is that the run never sealed the policy, not that the file
+    moved — and must not raise a bare `KeyError` that no operator can act on.
+    """
+    pre_repair_authority = {
+        "sealed_config_digests": {
+            "designator-padding": "a" * 64,
+            "designator-geometry": "b" * 64,
+            "alignment": "c" * 64,
+            "corpus-frame-shard": "d" * 64,
+            "pdf-render": "e" * 64,
+            "recovery": "f" * 64,
+            "hard-failure": "0" * 64,
+            "data-handling": "1" * 64,
+        }
+    }
+    sealed = run_sealed_config_digests(pre_repair_authority)
+    assert "triage-modes" not in sealed
+    with pytest.raises(ContractError, match="sealed no digest for the triage modes") as refusal:
+        require_triage_modes(sealed)
+    # Named as a binding-step fault, not as a changed file: the two are different
+    # repairs and the message is the only thing that tells an operator which.
+    assert "changed between run binding" not in str(refusal.value)
+
+
+def test_a_triage_producer_recipe_without_its_manifest_is_refused_at_the_real_door(
+    tmp_path, monkeypatch
+):
+    """The recipe records how a decision manifest was produced; alone it decides nothing.
+
+    Accepting it alone would seal a document into `config_digest` that governed no input
+    to this run — a reproducibility claim about a step that never touched these bytes.
+    Driven through the real door rather than a stub so the refusal is proven to arrive
+    before anything is read, not merely to exist in the source.
+    """
+    approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
+        tmp_path, {"FS-1234.png": png(4, 3)}
+    )
+    recipe_path = approved / "recipe.json"
+    recipe_path.write_text(
+        json.dumps(producer_recipe(instrument_config())),
+        encoding="utf-8",
+    )
+    with pytest.raises(ContractError, match="producer recipe requires a triage decision manifest"):
+        _run_real_door(
+            monkeypatch,
+            run_root=approved / "runs",
+            source=source,
+            policy_path=policy_path,
+            ledger_path=ledger_path,
+            run_id="recipe-without-manifest",
+            extra=["--triage-producer-recipe", str(recipe_path)],
+        )
+
+
+def _triage_documents(folder, ledger, corpus_id="parish-a"):
+    """A one-row Unit 5 manifest for a submitted 4x3 PNG, plus Unit 6A's recipe."""
+    source_digest = ledger["files"][0]["sha256"]
+    row = door.triage_manifest.make_row(
+        corpus_id=corpus_id,
+        source_frame_sha256=source_digest,
+        frame={"width": 4, "height": 3},
+        split=door.triage_manifest.make_split(
+            [
+                door.triage_manifest.make_part(
+                    {"x": 0, "y": 0, "w": 4, "h": 3},
+                    {"x": 0, "y": 0, "w": 4, "h": 3},
+                    0,
+                    colour_mode="keep",
+                )
+            ]
+        ),
+        re_shoot_cluster_id=None,
+        confidence=0,
+        mode="manual",
+        actor={"kind": "producer", "identity": "triage-instrument", "revision": "v1"},
+        human_override=False,
+    )
+    manifest_path = folder / "triage-manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema": door.triage_manifest.MANIFEST_SCHEMA,
+                "corpus_id": corpus_id,
+                "records": [row],
+            }
+        ),
+        encoding="utf-8",
+    )
+    recipe_path = folder / "triage-recipe.json"
+    recipe_path.write_text(json.dumps(producer_recipe(instrument_config())), encoding="utf-8")
+    return manifest_path, recipe_path
+
+
+def test_the_real_door_seals_and_proves_triage_modes_on_a_run_that_carries_geometry(
+    tmp_path, monkeypatch
+):
+    """The §4.7(a) repair at a real point of use, end to end.
+
+    Triage manifests arrive only on the real path, so before this unit the sealing
+    family's `require_triage_modes` could never succeed anywhere: the fixture path bound
+    the name and never used it, and the real path used the vocabulary and never bound it.
+    Proving the repair needs a real submission that actually carries triage geometry —
+    an ordering assertion over the source text cannot show that the check runs, only
+    that it is written above the line it guards.
+    """
+    approved, source, _policy, policy_path, ledger_path, ledger = _approved_submission(
+        tmp_path, {"FS-1234.png": png(4, 3)}
+    )
+    manifest_path, recipe_path = _triage_documents(approved, ledger)
+    run_root = approved / "runs"
+    assert (
+        _run_real_door(
+            monkeypatch,
+            run_root=run_root,
+            source=source,
+            policy_path=policy_path,
+            ledger_path=ledger_path,
+            run_id="triage-geometry",
+            extra=[
+                "--triage-decision-manifest",
+                str(manifest_path),
+                "--triage-producer-recipe",
+                str(recipe_path),
+            ],
+        )
+        == 0
+    )
+    run = RunTree(run_root, "triage-geometry").read_run()
+    sealed = run_sealed_config_digests(run)
+    assert sealed["triage-modes"] == digest_bytes(
+        (Path(door.ROOT) / "config" / "triage_modes.toml").read_bytes()
+    )
+    require_triage_modes(sealed)
+    # The recipe reached this run's identity through `config_digest` and nothing else:
+    # `triage_document_digests` is hashed into it (door.py:2002) but never recorded by
+    # name the way `sealed_config_digests` is. A later reader can therefore verify a
+    # claimed recipe and cannot learn which one governed the run. Recorded as a finding
+    # for the unit that owns the run authority's shape; see /out/report.md.
+    assert "triage_document_digests" not in run
+
+
+def test_a_door_with_the_pre_repair_missing_binding_refuses_before_it_expands_geometry(
+    tmp_path, monkeypatch
+):
+    """Inject the pre-repair missing seal at the real point of use.
+
+    This is a counterfactual execution through today's Door, not an execution of the old
+    function body: today's binding map is stripped of the named seal that historical
+    inspection shows was absent. Handed triage geometry, it must refuse by name — the
+    fault is that nothing sealed the policy, not that the file changed — and it must
+    refuse *before* the rows shape any source.
+    """
+    approved, source, _policy, policy_path, ledger_path, ledger = _approved_submission(
+        tmp_path, {"FS-1234.png": png(4, 3)}
+    )
+    manifest_path, recipe_path = _triage_documents(approved, ledger)
+    real_bindings = door._real_bindings
+    real_expand_sources = door.expand_sources
+    expanded: list[int] = []
+
+    def unsealed(*args, **kwargs):
+        bindings = real_bindings(*args, **kwargs)
+        bindings["sealed_config_digests"].pop("triage-modes")
+        return bindings
+
+    def watched_expand(*args, **kwargs):
+        expanded.append(1)
+        return real_expand_sources(*args, **kwargs)
+
+    monkeypatch.setattr(door, "_real_bindings", unsealed)
+    monkeypatch.setattr(door, "expand_sources", watched_expand)
+    run_root = approved / "runs"
+    with pytest.raises(ContractError, match="sealed no digest for the triage modes"):
+        _run_real_door(
+            monkeypatch,
+            run_root=run_root,
+            source=source,
+            policy_path=policy_path,
+            ledger_path=ledger_path,
+            run_id="pre-repair",
+            extra=[
+                "--triage-decision-manifest",
+                str(manifest_path),
+                "--triage-producer-recipe",
+                str(recipe_path),
+            ],
+        )
+    assert expanded == []
+    assert not (run_root / "pre-repair").exists()

@@ -104,6 +104,7 @@ from common.stage import (  # noqa: E402
     load_corpus_frame_policy,
     load_fixture,
     require_corpus_frame_shard,
+    require_triage_modes,
     run_config_bindings,
     run_stage,
     scenario_for,
@@ -231,7 +232,9 @@ def declared_digests(fixture: dict, scenario: str) -> dict[int, str]:
 
 
 def load_triage_decisions(
-    manifest_path: str | Path, clusters_path: str | Path | None = None
+    manifest_path: str | Path,
+    clusters_path: str | Path | None = None,
+    producer_recipe_path: str | Path | None = None,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]], dict[str, str]]:
     """Read Unit 5's closed decision manifest without inventing another shape.
 
@@ -250,13 +253,27 @@ def load_triage_decisions(
         clusters_document = (
             json.loads(clusters_bytes.decode("utf-8")) if clusters_bytes is not None else None
         )
+        recipe_bytes = (
+            Path(producer_recipe_path).read_bytes() if producer_recipe_path is not None else None
+        )
+        recipe_document = (
+            json.loads(recipe_bytes.decode("utf-8")) if recipe_bytes is not None else None
+        )
     except (OSError, UnicodeDecodeError, ValueError) as error:
         raise ContractError(
-            "the triage decision manifest or cluster records could not be read"
+            "the triage decision manifest, cluster records, or producer recipe could not be read"
         ) from error
     digests = {"triage-decision-manifest": digest_bytes(manifest_bytes)}
     if clusters_bytes is not None:
         digests["triage-re-shoot-clusters"] = digest_bytes(clusters_bytes)
+    if recipe_bytes is not None:
+        from operations.triage.instrument import validate_producer_recipe
+
+        try:
+            validate_producer_recipe(recipe_document)
+        except ContractError as error:
+            raise ContractError(f"the triage producer recipe is invalid: {error}") from error
+        digests["triage-producer-recipe"] = digest_bytes(recipe_bytes)
     if clusters_document is not None:
         if not isinstance(clusters_document, dict):
             raise ContractError("the triage cluster records must be an object keyed by cluster id")
@@ -1436,6 +1453,10 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         "--triage-clusters",
         help="corpus-scoped Unit 5 re-shoot cluster records keyed by cluster id",
     )
+    parser.add_argument(
+        "--triage-producer-recipe",
+        help="sealed triage-producer-recipe.v1 for the pre-door producer run",
+    )
     args = parser.parse_args()
     registry = registry_factory(args.models_config)
 
@@ -1446,7 +1467,11 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             "a submission filename ledger is meaningful only with a real submission folder; "
             "the walking skeleton's declared synthetic pages are not gated input"
         )
-    if args.triage_decision_manifest is not None or args.triage_clusters is not None:
+    if (
+        args.triage_decision_manifest is not None
+        or args.triage_clusters is not None
+        or args.triage_producer_recipe is not None
+    ):
         raise ContractError("triage geometry is meaningful only with a real submission folder")
     return fixture_submission(args, registry)
 
@@ -1606,6 +1631,8 @@ def real_submission(args, registry) -> int:
     ledger = submission_ledger.load_manifest(manifest_path)
     if args.triage_clusters is not None and args.triage_decision_manifest is None:
         raise ContractError("triage cluster records require a triage decision manifest")
+    if args.triage_producer_recipe is not None and args.triage_decision_manifest is None:
+        raise ContractError("triage producer recipe requires a triage decision manifest")
     # Gated exactly as the submission filename ledger above is, and for the same
     # two reasons: a real-path input read from disk is inside the data-handling
     # policy's approved roots or it was never read, and a decision record sitting
@@ -1613,6 +1640,7 @@ def real_submission(args, registry) -> int:
     triage_paths = [
         (args.triage_decision_manifest, "triage decision manifest"),
         (args.triage_clusters, "triage re-shoot cluster records"),
+        (args.triage_producer_recipe, "triage producer recipe"),
     ]
     gated_triage: dict[str, Path] = {}
     for location, label in triage_paths:
@@ -1629,6 +1657,7 @@ def real_submission(args, registry) -> int:
         load_triage_decisions(
             gated_triage["triage decision manifest"],
             gated_triage.get("triage re-shoot cluster records"),
+            gated_triage.get("triage producer recipe"),
         )
         if args.triage_decision_manifest is not None
         else (None, None, {})
@@ -1675,22 +1704,6 @@ def real_submission(args, registry) -> int:
     def open_source(relative_path: str):
         return inventory.open_submission_source(submission_folder, relative_path)
 
-    sources = expand_sources(
-        [
-            {
-                "relative_path": source["relative_path"],
-                "sha256": source["sha256"],
-                "bytes": source["bytes"],
-                "ledger_sha256": ledger["self_hash"],
-            }
-            for source in ledger["files"]
-        ],
-        read_bytes,
-        format_policy,
-        open_source=open_source,
-        triage_rows=triage_rows,
-        triage_clusters=triage_clusters,
-    )
     bindings = _real_bindings(
         registry.config,
         ledger,
@@ -1714,6 +1727,26 @@ def real_submission(args, registry) -> int:
         perlector_protocol_config_path=args.perlector_protocol_config,
         perlector_audit_config_path=args.perlector_audit_config,
         draft_fed=args.draft_fed,
+    )
+    # Triage rows carry the shared mode vocabulary. This is the real Door's
+    # first use of it, before those rows expand master-frame geometry.
+    if triage_rows is not None:
+        require_triage_modes(bindings["sealed_config_digests"])
+    sources = expand_sources(
+        [
+            {
+                "relative_path": source["relative_path"],
+                "sha256": source["sha256"],
+                "bytes": source["bytes"],
+                "ledger_sha256": ledger["self_hash"],
+            }
+            for source in ledger["files"]
+        ],
+        read_bytes,
+        format_policy,
+        open_source=open_source,
+        triage_rows=triage_rows,
+        triage_clusters=triage_clusters,
     )
     # Real ingress binds the same bounded shard policy before its RunTree exists.
     require_corpus_frame_shard(len(sources), bindings["sealed_config_digests"])
@@ -1921,6 +1954,13 @@ def _real_bindings(
             "the Perlector audit configuration binding at "
             f"{perlector_audit_config_path} could not be read"
         ) from error
+    triage_modes_config_path = ROOT / "config" / "triage_modes.toml"
+    try:
+        triage_modes_config_sha256 = digest_bytes(triage_modes_config_path.read_bytes())
+    except OSError as error:
+        raise ContractError(
+            f"the triage modes configuration binding at {triage_modes_config_path} could not be read"
+        ) from error
     return {
         "witness_chairs": list(models.witness_chairs),
         "config_digest": digest_of(
@@ -1951,6 +1991,7 @@ def _real_bindings(
                 "designator_padding_config_sha256": designator_padding_config_sha256,
                 "designator_geometry_config_sha256": designator_geometry_config_sha256,
                 "alignment_config_sha256": alignment_config_sha256,
+                "triage_modes_config_sha256": triage_modes_config_sha256,
                 # Unit 5's decisions are geometry that shaped these pixels, so
                 # they are bound like any other fact that did. A triage pass re-run
                 # between two attempts at one run id changes these digests, and
@@ -2003,6 +2044,7 @@ def _real_bindings(
             "pdf-render": pdf_render_config_sha256,
             "recovery": recovery_policy["config_sha256"],
             "hard-failure": hard_failure_policy["config_sha256"],
+            "triage-modes": triage_modes_config_sha256,
             # Real ingress only: the fixture route is not gated, so a fixture run
             # seals no data-handling name and a point of use that asked for one
             # there would be asking about a check that never happened.
