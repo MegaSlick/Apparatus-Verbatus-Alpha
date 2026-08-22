@@ -13,6 +13,15 @@ editing the first — which is what "append-only" has to mean if `physical_page_
 is not to be re-derived under everything beneath it, and what GOVERNANCE 4 means
 one level above the run tree.
 
+A wrong link is corrected the same way — by appending, never by editing. A
+``retraction`` may name the *current head* of a page's chain, which restores the
+predecessor it grew from and leaves the withdrawn link in place as evidence of
+what was once declared. Only the head, because every link contains its
+predecessor's members: withdrawing one from the middle would leave every
+successor asserting the captures it withdrew. This is the answer to a human
+confirming two frames as one physical page and being wrong, which no
+deterministic instrument can catch — two blank forms agree everywhere.
+
 The chain is verified on read, not merely written: a reader replays it, so a
 membership record removed or reordered from the middle of the register breaks
 every successor's predecessor digest. What replay cannot see is truncation of
@@ -204,6 +213,10 @@ class _Reading:
         self.physical_act_pages: dict[str, str] = {}
         self.correspondences: set[str] = set()
         self.membership_head: dict[str, tuple[str, frozenset[str]]] = {}
+        # Every link of every page's chain, oldest first, so a retraction of the
+        # head can restore the predecessor it grew from without the register
+        # carrying a second, editable copy of "what the members are now".
+        self.membership_chain: dict[str, list[tuple[str, frozenset[str]]]] = {}
 
 
 def validate_register_bytes(data: bytes) -> dict[str, Any]:
@@ -236,9 +249,26 @@ def members_of(data: bytes, physical_page: str) -> list[str]:
     the declaration itself — the declaration has none. An undeclared page and a
     declared page with no capture yet are both the empty list on purpose: this
     reads membership, it does not assert that a page exists.
+
+    A retracted head is not the head. The surviving link is the answer, and a
+    page whose every link has been retracted reads as the same empty list as one
+    that never had a capture — both mean "nothing currently shows this page",
+    and the register still carries every retracted link and its reason.
     """
     head = _read(data)[1].membership_head.get(physical_page)
     return sorted(head[1]) if head is not None else []
+
+
+def membership_heads(data: bytes) -> dict[str, tuple[str, frozenset[str]]]:
+    """Return the replayed current head of every membership chain.
+
+    A historical scan of ``membership`` records is not equivalent to replay: a
+    retraction leaves its withdrawn link in the register as evidence. Writers that
+    extend a chain need both the surviving members and that surviving link's digest,
+    so this deliberately exposes the same replayed state that :func:`members_of`
+    reads rather than inviting each writer to reconstruct it differently.
+    """
+    return dict(_read(data)[1].membership_head)
 
 
 def resolve_proposal(data: bytes, act_id: str) -> dict[str, str]:
@@ -421,10 +451,13 @@ def _validate_record(record: Any, reading: _Reading) -> None:
             raise SchemaRefusal("retraction record is malformed")
         # A retraction naming nothing retracts nothing while reading as a
         # correction that happened. It is refused rather than filed.
-        if row["retracts"] not in reading.correspondences:
+        if row["retracts"].startswith("membership:"):
+            _retract_membership(row, reading)
+        elif row["retracts"] not in reading.correspondences:
             raise SchemaRefusal(
-                f"retraction names {row['retracts']!r}, which no earlier correspondence in "
-                "this register declares; a retraction that corrects nothing is not a correction"
+                f"retraction names {row['retracts']!r}, which no earlier correspondence or "
+                "membership link in this register declares; a retraction that corrects "
+                "nothing is not a correction"
             )
         identity = f"retract:{row['retracts']}"
     else:
@@ -432,6 +465,64 @@ def _validate_record(record: Any, reading: _Reading) -> None:
     if identity in reading.seen:
         raise SchemaRefusal(f"corpus register repeats immutable record {identity!r}")
     reading.seen.add(identity)
+
+
+def _retract_membership(row: dict[str, Any], reading: _Reading) -> None:
+    """Withdraw the newest link of one physical page's membership chain.
+
+    This is the correction path for the case the instrument is blind to: two
+    frames a human confirmed as one physical page when they are not — two blank
+    forms that agree everywhere because neither carries ink. Memberships grow and
+    are never edited, so without this a wrong confirmation is a corpus-lifetime
+    fact nobody can answer, and GOVERNANCE 2 does not allow a result that can
+    only be wrong in silence.
+
+    Only the current head may be retracted, and that restriction is the whole
+    design rather than a convenience. Each link's members contain its
+    predecessor's, so retracting a link from the middle would leave every
+    successor still asserting the captures it withdrew — a correction the reader
+    would have to ignore, which GOVERNANCE 4 says is not a correction. Unwinding
+    from the head is the only order in which the surviving head is the honest
+    answer; a page corrected two links deep is corrected by two retractions.
+
+    Nothing is deleted. The retracted link stays in the register as evidence of
+    what was once declared and of the appending run that declared it; it simply
+    stops being the answer to "what shows this page".
+    """
+    target = row["retracts"].removeprefix("membership:")
+    page = next(
+        (
+            name
+            for name, head in reading.membership_head.items()
+            if head[0] == target and reading.membership_chain.get(name)
+        ),
+        None,
+    )
+    if page is None:
+        retracted_deeper = any(
+            digest == target
+            for chain in reading.membership_chain.values()
+            for digest, _members in chain
+        )
+        if retracted_deeper:
+            raise SchemaRefusal(
+                f"retraction names membership link {target!r}, which is not the current head "
+                "of its page's chain; every successor contains the captures it declared, so "
+                "withdrawing it would leave them asserted anyway. Retract from the head."
+            )
+        raise SchemaRefusal(
+            f"retraction names {row['retracts']!r}, which no earlier correspondence or "
+            "membership link in this register declares; a retraction that corrects "
+            "nothing is not a correction"
+        )
+    chain = reading.membership_chain[page]
+    chain.pop()
+    if chain:
+        reading.membership_head[page] = chain[-1]
+    else:
+        # The page keeps its declaration and returns to having no capture yet,
+        # which `members_of` already spells as the empty list.
+        del reading.membership_head[page]
 
 
 def _require_declared(identity: str, declared: set[str], what: str) -> None:
@@ -471,3 +562,4 @@ def _validate_membership(row: dict[str, Any], reading: _Reading) -> None:
                 "membership grows, and a capture already declared is never withdrawn"
             )
     reading.membership_head[page] = (digest_of(row), members)
+    reading.membership_chain.setdefault(page, []).append((digest_of(row), members))
