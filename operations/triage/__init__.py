@@ -1,5 +1,6 @@
 """Offline, deterministic triage evidence tools.
 
-This package deliberately has no model client or manifest writer.  Unit 6B consumes
-its recorded candidate evidence and performs the separately-authorized confirmation.
+This package deliberately has no model client.  Its producer verifies a confirmation
+against the candidate evidence it names, then turns it into the pre-door manifest and
+append-only register membership.
 """

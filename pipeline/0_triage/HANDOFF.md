@@ -189,3 +189,147 @@ cells on the reduced proxy and measures no master geometry, so it may never seed
 or rotation. All three shipped triage modes continue to route every row to review until the
 real measured pass establishes thresholds; synthetic fixtures are regression cases, never
 calibration data.
+
+### Closed confirmation-file and reconciliation contracts (Unit 6B)
+
+The producer consumes canonical JSON `triage-re-shoot-confirmation.v1`, with exactly
+`schema`, `corpus_id`, `appending_run`, `authority`, `instrument_config_sha256`,
+`evidence_manifest_sha256`, and `clusters`. `appending_run` is the non-empty producer
+pass identifier selected before a Door run exists. `authority` is a closed
+`{kind, identity, revision}` record: `human` has null revision; the only non-human
+authorities are the checked-in fixture or a measured pass and both name their revision.
+The two digest fields retain the exact instrument configuration and candidate-evidence
+manifest the confirmation reviewed.
+
+Each confirmation cluster is exactly `{pages, evidence_pairs}`. A page is exactly
+`{volume_id, designation, member_frame_sha256}` and names every submitted frame that
+shows that physical page. `evidence_pairs` is a non-empty list of sorted, distinct
+two-digest pairs drawn from the cluster's members. The producer derives each page's
+`physical_page_id`, then derives `cluster_id` as `"rsc_" + digest_of(sorted(
+physical_page_ids))`; membership growth cannot rename that id. A frame may be a member
+of every physical page it shows. Missing designation, an unsubmitted member, overlapping
+clusters, incompatible split counts, or a cluster span above the shard cap refuses the
+whole producer pass. The register receives one ordered append — declarations before
+membership links — and only then may the caller write the already-validated manifest
+cluster records and their row ids. No confirmation means no cluster record and all
+`re_shoot_cluster_id` fields remain null.
+
+Every `evidence_pairs` entry must be a pair the instrument actually evidenced: the
+caller supplies the exact producer recipe, evidence manifest, and per-pair
+candidate-evidence records the confirming authority reviewed. The producer validates the
+recipe, binds its instrument-configuration digest, checks every evidence record's threshold
+snapshot against it, and consumes the manifest's candidate-selection conservation record:
+the frame count and all-pairs prefilter denominator, the exact submission-window pairs, the
+selected/refused reach, and every named unequal-dimension refusal must reconcile. This is
+independent of `emitted_pairs_sha256`: a selector that silently drops a required window pair
+cannot make its shortened evidence list verifiable merely by hashing that shorter list. The
+producer also refuses when either confirmation digest field disagrees with the supplied
+records or when a named pair is absent from them. A
+confirmation's own `instrument_config_sha256`/`evidence_manifest_sha256` are otherwise
+just well-formed strings; nothing else binds a confirmed link to real instrument
+output. `commit_confirmed_production`'s retry is idempotent across the register/Door-
+document boundary: a caller that re-reads the register's true current digest after a
+crash between the register append and the Door-document writes converges on
+republishing the same documents rather than being refused forever by a commit that can
+never again find "new" membership to add; a caller that never re-reads still gets the
+ordinary concurrent-write refusal.
+
+`operations.triage.reconcile` consumes only closed
+`triage-structural-verdict.v1` files. It asserts categorical facts only when every
+independent seat agrees. Numeric observations are retained as `[min, max]` intervals
+only if their spread is within the smallest declared tolerance; it never computes a
+mean. For every disagreement — including a fact only some seats reported at all — the act
+coverage denominator is the sorted union of every seat's act enumeration, and a
+missing-fact record names which seats reported. Consensus gates what the fixture asserts,
+never what counts as present. Act geometry travels as `boxes`: per-mille integer
+`{x0, y0, x1, y1}` rectangles keyed by an act the same seat enumerated, refused outside
+0..1000 and refused as floats, reconciled per coordinate within the separately declared
+`box_tolerance_permille`. An act nobody localized stays in the denominator without an
+interval. It writes the two canonical, replayable documents
+`triage-structural-expected.v1` and `triage-structural-disagreements.v1`; a host runs
+the actual image-reading seats separately, never this producer.
+
+### What a confirmation is authority for, and what binds it (Unit 6B audit)
+
+A confirmation authorizes a corpus-lifetime write. Unit 0D's boundary — the pipeline
+cannot approve itself — applies here in spirit, so it is worth saying exactly where the
+line currently falls rather than implying a stronger one.
+
+**The producer cannot manufacture one.** `operations.triage` has no model client and no
+path from instrument output to a confirmation: `candidate_evidence` emits a recorded
+verdict per pair and never a link, and `produce` mints a cluster only from a confirmation
+handed to it. There is no code path in which running the instrument produces a
+confirmation.
+
+**What binds a confirmation to an operator act, pre-Unit 21, is that a person put the
+file there.** That is the whole of it, and it is worth being blunt: `load_confirmation`
+reads canonical JSON from a path, and `produce` accepts an already-parsed mapping, so an
+in-process caller can synthesize one without any file existing. The `authority` record
+(`{kind, identity, revision}`) is a *claim* the confirmation makes about itself, not a
+credential anything verifies. Cryptographic trust roots for approval records are settled
+permanently against (integrity-only records are the design), so this is not a gap waiting
+on a signature scheme; it is the honest shape of a pre-console act.
+
+Three things make that shape safe enough to ship, and each is enforced rather than
+documented:
+
+1. A confirmation cannot invent its evidence. It names an instrument configuration and an
+   evidence manifest by digest, and the producer reconciles the supplied candidate-evidence
+   records against that manifest's own accounting (`emitted_evidence_records`,
+   `emitted_pairs_sha256`) — not merely against the configuration digest, which is public
+   in the manifest and so can be quoted by an invented record. A pair the instrument
+   refused to compare, or never selected, cannot be confirmed.
+2. A confirmation cannot reach past its submission. Members must be submitted frames and
+   must appear among the frames the instrument pass actually saw.
+3. The confirmation itself is retained. `commit_confirmed_production` republishes it
+   verbatim to `authority_path` *before* either Door document, so a published cluster can
+   never be found without the authority that made it. Republishing it is a record, not a
+   second act: replayed against the same submission it asserts exactly what it already
+   asserted, and against any other submission the two bindings above refuse it.
+
+**Unit 21 replaces the placement, not the schema.** A console act should supply the same
+closed `triage-re-shoot-confirmation.v1` object with `authority.kind = "human"` and a
+resolved operator identity, and should bind that identity into the register record rather
+than only beside it. The record shapes in `common/corpus_register.py` are closed, so that
+is a deliberate contract change for Unit 21 to make, not something to add quietly here.
+
+### Correcting a confirmation that was wrong
+
+The instrument is blind to exactly one thing that matters: two frames that agree
+everywhere because neither carries ink. Two blank forms are a near-duplicate by every
+proxy the signature grid computes, so a human can confirm them as one physical page and
+be wrong. Memberships are append-only and grow-only, so this needs a recorded correction
+rather than an edit, and both homes have one:
+
+- **Register.** A `retraction` record may name the *current head* of a page's membership
+  chain (`membership:<digest_of(link)>`), which restores the predecessor it grew from.
+  Only the head, because every link contains its predecessor's members; withdrawing one
+  from the middle would leave every successor asserting the captures it withdrew. A page
+  corrected two links deep takes two retractions, and a page back to no link reads as the
+  empty list. The retracted link and its reason stay in the register as evidence
+  (GOVERNANCE 4), and `members_of` stops returning it (GOVERNANCE 2).
+- **Door documents.** `manifest.json` and `clusters.json` are republished wholesale, not
+  appended to, so the correction there is a producer pass without the wrong confirmation.
+  The retained `authority_path` document is what tells a later reader which confirmation
+  the withdrawn membership came from.
+
+Every later confirmation append reads the register's *replayed* membership heads, never the
+last historical membership record: a retracted link remains in history but is not current.
+The optimistic register digest refuses a confirmation writer that raced a retraction before
+it can republish Door documents. Replaying the exact withdrawn confirmation act is also
+refused because it would repeat the same immutable membership identity; placing a fresh
+confirmation with a new `appending_run` may reassert the same members and republishes both
+homes together. Thus a retraction remains visible even while the wholesale Door-document
+correction is pending, and no confirmation retry can silently make the manifest assert a
+membership that replay of the register does not.
+
+### Cluster span is measured in Door ordinals
+
+A confirmed cluster's span is checked at produce time against `max_pages_per_shard` in
+the units the Door actually shards: sources ordered by relative path, one ordinal per
+split part (`expand_sources`), with every seam between a cluster's first and last ordinal
+blocked (`content_aware_shards`). Two taped-insert frames of five parts each are ten
+ordinals, not two pages. Counting members in submission order would let this producer pass
+a cluster no shard can legally hold, and a submission with no legal seam left is refused
+whole at the Door — where nothing can any longer explain why. Two frames submitted at one
+relative path are refused for the same reason: the Door has no distinct place for them.

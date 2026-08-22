@@ -455,7 +455,7 @@ def test_resolution_records_must_name_evidence_and_well_formed_local_identities(
         validate_register_bytes(canonical_bytes(register))
 
 
-def test_a_retraction_may_only_name_an_earlier_correspondence():
+def test_a_retraction_may_only_name_a_correspondence_or_a_membership_head():
     value = canonical_bytes(
         {
             "schema": SCHEMA,
@@ -614,3 +614,137 @@ def test_a_refused_register_reuse_leaves_no_bytes_in_the_existing_run(tmp_path):
         RunTree.create(tmp_path, "r1", register_bytes=foreign, **shared)
     assert sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*")) == before
     assert not (tree.root / tree.blob_path("door", register_digest(foreign))).exists()
+
+
+def _retraction(target, *, reason="a human confirmed two blank forms as one page", run="triage-2"):
+    return {"kind": "retraction", "retracts": target, "reason": reason, "appending_run": run}
+
+
+def test_a_wrong_membership_is_corrected_by_retracting_the_head_not_by_editing_it():
+    """The instrument's blindness case, made answerable.
+
+    Two blank forms agree everywhere because neither carries ink, so a human can
+    confirm them as one physical page and be wrong. Membership grows and is never
+    edited, so the correction is a retraction of the newest link: the record stays
+    in the register as evidence of what was declared, and stops being the answer
+    to what shows this page.
+    """
+    first = _membership(["a" * 64, "b" * 64])
+    second = _membership(["a" * 64, "b" * 64, "c" * 64], predecessor=digest_of(first))
+    retraction = _retraction(f"membership:{digest_of(second)}")
+    records = [_declaration(), first, second, retraction]
+    register = canonical_bytes({"schema": SCHEMA, "records": records})
+    validated = validate_register_bytes(register)
+    assert retraction in validated["records"]
+    assert second in validated["records"], "the retracted link is still present as evidence"
+    assert members_of(register, PAGE) == sorted(["a" * 64, "b" * 64])
+
+    # Unwinding continues link by link; a page back to no link at all is the empty
+    # list its declaration always meant, not a deleted page.
+    both = records + [_retraction(f"membership:{digest_of(first)}", run="triage-3")]
+    assert members_of(canonical_bytes({"schema": SCHEMA, "records": both}), PAGE) == []
+
+
+def test_a_membership_retraction_must_name_the_head_of_its_chain():
+    """Every successor contains its predecessor's captures, so only the head can go."""
+    first = _membership(["a" * 64, "b" * 64])
+    second = _membership(["a" * 64, "b" * 64, "c" * 64], predecessor=digest_of(first))
+    with pytest.raises(SchemaRefusal, match="not the current head"):
+        validate_register_bytes(
+            canonical_bytes(
+                {
+                    "schema": SCHEMA,
+                    "records": [
+                        _declaration(),
+                        first,
+                        second,
+                        _retraction(f"membership:{digest_of(first)}"),
+                    ],
+                }
+            )
+        )
+
+
+def test_a_membership_retraction_naming_no_link_in_this_register_is_refused():
+    with pytest.raises(SchemaRefusal, match="a retraction that corrects nothing"):
+        validate_register_bytes(
+            canonical_bytes(
+                {
+                    "schema": SCHEMA,
+                    "records": [_declaration(), _retraction(f"membership:{'0' * 64}")],
+                }
+            )
+        )
+
+
+def test_membership_grows_again_from_the_link_that_survived_a_retraction():
+    """A corrected page is not a frozen page: the chain continues from the survivor."""
+    first = _membership(["a" * 64, "b" * 64])
+    wrong = _membership(["a" * 64, "b" * 64, "c" * 64], predecessor=digest_of(first))
+    corrected = _membership(
+        ["a" * 64, "b" * 64, "d" * 64], predecessor=digest_of(first), run="triage-3"
+    )
+    register = canonical_bytes(
+        {
+            "schema": SCHEMA,
+            "records": [
+                _declaration(),
+                first,
+                wrong,
+                _retraction(f"membership:{digest_of(wrong)}"),
+                corrected,
+            ],
+        }
+    )
+    assert members_of(register, PAGE) == sorted(["a" * 64, "b" * 64, "d" * 64])
+    # A successor that still names the retracted link as its predecessor is refused:
+    # the chain is what makes the correction visible rather than an edit.
+    with pytest.raises(SchemaRefusal, match="does not name the digest"):
+        validate_register_bytes(
+            canonical_bytes(
+                {
+                    "schema": SCHEMA,
+                    "records": [
+                        _declaration(),
+                        first,
+                        wrong,
+                        _retraction(f"membership:{digest_of(wrong)}"),
+                        _membership(
+                            ["a" * 64, "b" * 64, "c" * 64, "e" * 64],
+                            predecessor=digest_of(wrong),
+                            run="triage-3",
+                        ),
+                    ],
+                }
+            )
+        )
+
+
+def test_retracting_one_link_twice_is_refused_and_a_fresh_act_may_reappend_its_members():
+    """The withdrawn record stays evidence but is neither a head nor reusable identity."""
+    first = _membership(["a" * 64, "b" * 64])
+    withdrawal = _retraction(f"membership:{digest_of(first)}")
+    twice = canonical_bytes(
+        {
+            "schema": SCHEMA,
+            "records": [
+                _declaration(),
+                first,
+                withdrawal,
+                _retraction(f"membership:{digest_of(first)}", run="triage-3"),
+            ],
+        }
+    )
+    with pytest.raises(SchemaRefusal, match="a retraction that corrects nothing"):
+        validate_register_bytes(twice)
+
+    # Reasserting the same members is a new operator act, not resurrection of the
+    # withdrawn immutable link, so its appending-run identity makes a new record.
+    reasserted = _membership(["a" * 64, "b" * 64], run="triage-3")
+    register = canonical_bytes(
+        {
+            "schema": SCHEMA,
+            "records": [_declaration(), first, withdrawal, reasserted],
+        }
+    )
+    assert members_of(register, PAGE) == sorted(["a" * 64, "b" * 64])
