@@ -207,6 +207,47 @@ Sealed names today: `designator-padding`, `designator-geometry`, `alignment`,
 not gated — `data-handling`. `triage-modes` is likewise sealed into every run; Unit 6's
 pre-door producer/door seam must call `require_triage_modes` before using its vocabulary.
 
+## Pre-door triage instrument
+
+`operations/triage/instrument.toml` is the deterministic producer's own declaration,
+not a run configuration. Its proxy edges, grids, offsets, candidate window, prefilter,
+and every comparison threshold are each marked `UNMEASURED`; no value authorizes an
+automatic link. The producer writes the complete `triage-producer-recipe.v1` record,
+including this file's digest and imaging library versions, beside its decision manifest.
+The real Door binds that recipe document under `triage_document_digests`; it must not be
+added to `run_config_bindings`, because there is no run when the producer executes.
+
+A `near-duplicate` verdict is agreement between two 64×48 mean+ink signatures, never a
+claim that two frames show one physical page — and on this corpus the difference is
+load-bearing. A parish register is a printed ruled form, so two frames of *different*
+openings of one book share their rules, their columns, and their blank space, and can
+agree in every cell; two blank frames of one form are indistinguishable from one frame
+shot twice. The sealed recipe therefore carries `known_blindness`, naming the cases the
+signature provably cannot separate, and every evidence record carries both ink totals and
+their integer distance — the magnitude that cell agreement, being a thresholded boolean,
+throws away. The record-local `near_duplicate_reason` says signature agreement is not page
+identity, and `measurement_status: UNMEASURED` travels with its threshold snapshot; neither
+fact requires the reader to find the separate recipe first. An ink count is within-cell
+contrast, not an amount of ink: a cell of uniform tone counts zero whether it holds blank
+paper or a solid dark insert. A confirmation reads those numbers, the blindness statement,
+and the frames; it may not read the verdict as identity.
+
+Two units the reader has to keep straight. A recorded `offset` is in signature cells on the
+reduced proxy, not pixels on the master: it says which alignment the comparison chose and
+is not a measurement of anything, so it may never seed a crop, a split, or a rotation. And
+the recipe identifies the *instrument*, not the pass — two passes over different frames
+share one recipe — so a pass is named by its evidence manifest, which carries the frame
+digests it saw.
+
+Each pass also closes its own books. `cluster-candidate-evidence-manifest.v1` counts the
+pairs the candidate rule reached, the records emitted, and the pairs the equal-dimension
+precondition refused — the last named by frame digest rather than tallied, because on a
+multi-reel corpus "which frames could not be compared" is the operator's question. A
+reader holding the frame digests and the recipe can recompute the selection and find a
+pair the pass failed to emit, instead of taking a shorter list at face value. Frame source
+digests are unique within one pass and each pair is canonical by sorted digest; duplicate
+frame identity is refused before index pairs can masquerade as distinct evidence pairs.
+
 `hard-failure` is the family's fourth member and the last to be sealed. It is the one
 policy the orchestrator must read *before* the run exists — the tally threshold has to
 be known to decide whether a resumed run may re-enter a stage at all — and then holds

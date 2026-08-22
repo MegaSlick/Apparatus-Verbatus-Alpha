@@ -32,7 +32,10 @@ MANIFEST_SCHEMA: Final = "triage-decision-manifest-v1"
 CLUSTER_SCHEMA: Final = "triage-re-shoot-cluster-v1"
 CONFIDENCE_ORDINALS: Final = range(0, 5)
 COLOUR_MODES: Final = ("keep", "grayscale", "rgb", "bitonal")
-ACTOR_KINDS: Final = ("human", "model", "scantailor")
+# Unit 6A repair to the Unit 5 landed contract: a deterministic offline producer
+# is neither a person, a model, nor ScanTailor. Like a model/ScanTailor actor it
+# must carry a non-blank resolved identity and revision; only a human has no revision.
+ACTOR_KINDS: Final = ("human", "model", "scantailor", "producer")
 SCANTAILOR_IDENTITY: Final = "ScanTailor Advanced"
 SPLIT_OPERATION_ORDER: Final = "region-crop-rotate"
 
@@ -189,7 +192,8 @@ def _validate_actor(actor: Any) -> None:
             raise SchemaRefusal("a human triage actor carries no revision; it must be null")
     elif not isinstance(actor["revision"], str) or not actor["revision"].strip():
         raise SchemaRefusal(
-            "triage actor revision must be the resolved model revision or the ScanTailor version"
+            "triage actor revision must be the resolved model revision, ScanTailor version, "
+            "or producer revision"
         )
 
 
