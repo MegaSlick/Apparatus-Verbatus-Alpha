@@ -6,8 +6,10 @@ import tomllib
 from pathlib import Path
 from typing import Final
 
+from common.contracts.approval import ApprovalRecordBinding
 from common.contracts.canonical import digest_bytes, digest_of
 from common.contracts.errors import ContractError
+from common.stage import PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT
 
 SELECTION_RULE: Final = "digest-threshold-over-frame-page-seed-act.v1"
 PAGE_SHARED_PREFIX_POLICY: Final = "page-shared-prefix-first.v1"
@@ -67,6 +69,15 @@ def load(path: str | Path) -> tuple[dict[str, str], str]:
     return record, digest_bytes(raw)
 
 
+def validate_control_per_mille(value: int) -> int:
+    """The one place the control rate's range is stated, as `nuda` states its own."""
+    if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= 1000:
+        raise ValueError(
+            f"perlector_instrument_per_mille must be an integer in [0, 1000], got {value!r}"
+        )
+    return value
+
+
 def is_control_sampled(
     act_id: str, *, frame_digest: str, page_digest: str, seed: str, per_mille: int
 ) -> bool:
@@ -80,10 +91,7 @@ def is_control_sampled(
     than corrected with a rejection-sampling threshold because a threshold adds
     a retry path for a bias no real run could detect.
     """
-    if not isinstance(per_mille, int) or isinstance(per_mille, bool) or not 0 <= per_mille <= 1000:
-        raise ValueError(
-            f"perlector_instrument_per_mille must be an integer in [0, 1000], got {per_mille!r}"
-        )
+    validate_control_per_mille(per_mille)
     if per_mille == 0:
         return False
     digest = digest_of(
@@ -96,3 +104,38 @@ def is_control_sampled(
         }
     )
     return int(digest[:8], 16) % 1000 < per_mille
+
+
+def control_sampling_design(
+    *, per_mille: int, selection_rule: str, approval_ref: ApprovalRecordBinding
+) -> dict[str, object]:
+    """The design record every sampled prior-draft control carries.
+
+    The mirror of `nuda.sampling_design`, and here for the same reason: the two
+    sampled arms publish the same three facts, and the arm that builds its block
+    inline is the arm where an untyped approval reference can re-enter without a
+    named refusal. GOVERNANCE 10 -- a sample of unknown design measures nothing,
+    so the rate, the rule and the approval travel on every record drawn.
+    """
+    validate_control_per_mille(per_mille)
+    if selection_rule != SELECTION_RULE:
+        raise ValueError(
+            f"design {PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT!r} does not execute selection "
+            f"rule {selection_rule!r}"
+        )
+    if not isinstance(approval_ref, ApprovalRecordBinding):
+        raise ValueError(
+            "a prior-draft control was drawn with an untyped approval reference; "
+            "an arbitrary string is not an approval record"
+        )
+    if approval_ref.subject != PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT:
+        raise ValueError(
+            "a prior-draft control executes design "
+            f"{PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT!r}, but its approval record names "
+            f"{approval_ref.subject!r}"
+        )
+    return {
+        "perlector_instrument_per_mille": per_mille,
+        "selection_rule": selection_rule,
+        "approval_ref": approval_ref.reference.to_record(),
+    }

@@ -104,6 +104,23 @@ DEFAULT_PERLECTOR_AUDIT_CONFIG_PATH = (
 WITNESS_CONTEXT_REGIMES: Final = ("named", "blinded")
 MAX_NUDA_PER_MILLE: Final = 1000
 MAX_PERLECTOR_INSTRUMENT_PER_MILLE: Final = 1000
+# The approval-ref flags are sealed experiment selectors, not free-form notes.
+# `.v1` versions the experiment identity and executable sampling design, while
+# an approval record's `target_version_hash` versions the exact run configuration
+# used for one execution of it (D:B6: subject = experiment, version = config
+# digest). `lectio-nuda-sampling-design.v1` denotes an act-level, unprimed
+# Lectio with no testimony or prior draft, selected by nuda.py's
+# `digest-threshold-over-run-id-and-act-id.v1`. The prior-draft instrument
+# subject denotes an act-level `primed-without-prior` control that sees testimony
+# but no Pass-A draft, selected by protocol.py's
+# `digest-threshold-over-frame-page-seed-act.v1`. A change to either condition or
+# algorithm therefore requires a new subject; a rate or sealed configuration
+# change requires a new approval record for the new `config_digest`.
+#
+# Perlector resolves each selector to exactly one checked approval record after
+# the run authority exists and can therefore assert its target config digest.
+NUDA_APPROVAL_SUBJECT: Final = "lectio-nuda-sampling-design.v1"
+PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT: Final = "perlector-prior-draft-instrument-design.v1"
 
 # The Designator's capture padding decides how many pixels a witness is actually
 # shown around each act, so two runs under different padding produce different
@@ -1141,11 +1158,11 @@ def validate_witness_context_bindings(
     # draws an unapproved sample has decided something nobody asked it to. The
     # reference is sealed beside the rate, so a run cannot later claim an
     # approval it was not started under.
-    if nuda_per_mille and not nuda_approval_ref.strip():
+    if nuda_per_mille and nuda_approval_ref != NUDA_APPROVAL_SUBJECT:
         raise ContractError(
             f"a Lectio nuda rate of {nuda_per_mille}/1000 needs Tyrel's predeclared sampling "
-            "design reference in --nuda-approval-ref; an unapproved instrument sample is a "
-            "decision this pipeline does not get to make for him"
+            f"design selector {NUDA_APPROVAL_SUBJECT!r} in --nuda-approval-ref; an arbitrary "
+            "string is not an approval record"
         )
     if (
         not isinstance(perlector_instrument_per_mille, int)
@@ -1158,12 +1175,15 @@ def validate_witness_context_bindings(
         )
     if not isinstance(perlector_instrument_approval_ref, str):
         raise ContractError("perlector_instrument_approval_ref must be a string")
-    if perlector_instrument_per_mille and not perlector_instrument_approval_ref.strip():
+    if (
+        perlector_instrument_per_mille
+        and perlector_instrument_approval_ref != PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT
+    ):
         raise ContractError(
             f"a Perlector prior-draft control rate of {perlector_instrument_per_mille}/1000 "
-            "needs Tyrel's predeclared sampling design reference in "
-            "--perlector-instrument-approval-ref; an unapproved instrument sample is a "
-            "decision this pipeline does not get to make for him"
+            "needs Tyrel's predeclared sampling design selector "
+            f"{PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT!r} in "
+            "--perlector-instrument-approval-ref; an arbitrary string is not an approval record"
         )
     try:
         witness_context_config_bytes = Path(witness_context_config_path).read_bytes()

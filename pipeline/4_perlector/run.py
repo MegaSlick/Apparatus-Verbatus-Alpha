@@ -27,6 +27,7 @@ and zero dissent there is the correct output.
 """
 
 import copy
+import json
 import sys
 from pathlib import Path
 from typing import Any, Final
@@ -48,16 +49,28 @@ from reader import FixtureReader, validate_audit_delivery  # noqa: E402
 from common.alignment import markup_text_view  # noqa: E402
 from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
+from common.contracts.approval import (  # noqa: E402
+    ApprovalRecordBinding,
+    ApprovalRecordReference,
+)
 from common.contracts.canonical import digest_of  # noqa: E402
 from common.contracts.envelope import validate_input_refs  # noqa: E402
-from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal  # noqa: E402
+from common.contracts.errors import (  # noqa: E402
+    ApprovalRefusal,
+    ContractError,
+    FatalAccounting,
+    SchemaRefusal,
+)
 from common.contracts.identities import artifact_id, perlector_attempt_id  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, PERLECTOR  # noqa: E402
 from common.exemplar_boundary import verify_exemplar_crop_lineage  # noqa: E402
+from common.runtree.store import RECEIPTS_DIR  # noqa: E402
 from common.stage import (  # noqa: E402
     ATTEMPTED_WITNESS_OUTCOMES,
     EXIT_COMPLETE,
+    NUDA_APPROVAL_SUBJECT,
     PERLECTOR_CHAIR,
+    PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT,
     WITNESS_CONTEXT_REGIMES,
     WITNESS_READING_OUTCOMES,
     expected_acts,
@@ -71,6 +84,98 @@ from common.stage import (  # noqa: E402
     stage_parser,
     validate_serving_provenance,
 )
+
+
+def resolve_sampling_approval(context, *, approval_ref: str, subject: str) -> ApprovalRecordBinding:
+    """Resolve one sealed experiment selector to its checked approval record.
+
+    A record cannot name a configuration digest that itself contains that
+    record's content address: that would be a hash fixed point.  The sealed
+    selector therefore names the experiment, while the stored record is found
+    by its subject and exact sealed version.  Every candidate is re-read through
+    ``RunTree.read_approval_record``; no decoded JSON is trusted as approval
+    evidence until its path, digest, schema, self-hash, and approver pass there.
+    The selector denotations live beside the two constants in ``common.stage``.
+    The returned binding carries the verified subject into the arm-specific
+    design builder, where an approval for the other executable design is refused
+    again instead of relying only on these call sites being wired correctly.
+
+    **What this gate establishes, exactly.**  That a well-formed, unedited record
+    exists in this run tree, filed under this experiment, this governed action,
+    and this run's own sealed ``config_digest``, and that it names Tyrel as its
+    approver.  ``approver`` is a string compare against a constant
+    ``common/contracts/approval.py`` stamps itself, so what the gate does *not*
+    establish is that Tyrel wrote it: nothing in the bytes distinguishes his
+    record from a well-formed one produced by anyone with write access to the run
+    tree.  The authority rests on who may write there, not on the check.  That is
+    a named alpha position, not an oversight -- the contract module says so at its
+    own docstring, `common/contracts/test_contracts_approval.py` holds pipeline
+    code away from the builder and the writer, and closing the residual would take
+    an out-of-band signature this project has not adopted.  A reader who needs the
+    stronger claim should reach for that, not for this function.
+    """
+    if approval_ref != subject:
+        raise ContractError(
+            f"approval reference {approval_ref!r} does not name experiment {subject!r}; "
+            "an arbitrary string is not an approval record"
+        )
+
+    receipts = context.tree.resolve(RECEIPTS_DIR)
+    candidates: list[ApprovalRecordReference] = []
+    if receipts.is_dir():
+        for path in sorted(receipts.glob("*.json")):
+            try:
+                decoded = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, ValueError):
+                continue
+            if decoded.get("subject_ids") != [subject]:
+                continue
+            digest = path.stem
+            candidates.append(ApprovalRecordReference(f"{RECEIPTS_DIR}/{digest}.json", digest))
+
+    if not candidates:
+        # The refusal names the two things an operator needs and cannot derive
+        # from the message otherwise: where the record goes, and which version it
+        # has to approve. Without them this is a dead end reached three stages
+        # into a run that has already spent on chairs.
+        raise ContractError(
+            f"no approval record names experiment {subject!r}; a nonzero sampling arm "
+            "cannot draw without Tyrel's typed approval record. Expected one record "
+            f"under {RECEIPTS_DIR}/ in this run tree with subject_ids "
+            f"[{subject!r}], action 'other', and target_version_hash "
+            f"{context.config_digest}"
+        )
+    if len(candidates) != 1:
+        raise ContractError(
+            f"{len(candidates)} approval records name experiment {subject!r}; the sampling "
+            "gate requires exactly one unambiguous typed approval record"
+        )
+
+    try:
+        record = context.tree.read_approval_record(candidates[0])
+    except ApprovalRefusal as error:
+        raise ContractError(f"approval for experiment {subject!r} is refused: {error}") from error
+    # "exclusion" and "salvage-promotion" approve a different governed action entirely
+    # (GOVERNANCE 1); a sampling design is filed under "other" so a record meant to
+    # authorize an exclusion can never double as a sampling approval by coincidence
+    # of subject text.
+    if record["action"] != "other":
+        raise ContractError(
+            f"approval for experiment {subject!r} has action {record['action']!r}, not "
+            "'other'; a sampling design approval is not an exclusion or salvage-promotion "
+            "record"
+        )
+    if record["target_version_hash"] != context.config_digest:
+        raise ContractError(
+            f"approval for experiment {subject!r} names version "
+            f"{record['target_version_hash']}, not this run's sealed config_digest "
+            f"{context.config_digest}"
+        )
+    return ApprovalRecordBinding(
+        candidates[0],
+        record["subject_ids"][0],
+        record["target_version_hash"],
+    )
 
 
 def regions_of(context, act_id: str) -> list[dict]:
@@ -1468,6 +1573,7 @@ def _publish_lectio_nuda(
     witness_context_table: dict,
     protocol_config: dict[str, str],
     protocol_sha256: str,
+    approval_ref: ApprovalRecordBinding,
 ) -> None:
     """Publish the unprimed instrument reading.
 
@@ -1508,7 +1614,7 @@ def _publish_lectio_nuda(
         "prompt": prompt,
         "sampling": nuda.sampling_design(
             nuda_per_mille=context.nuda_per_mille,
-            approval_ref=context.nuda_approval_ref,
+            approval_ref=approval_ref,
         ),
         "dissent": [],
         "truncation": truncation_record,
@@ -1625,6 +1731,7 @@ def _publish_primed_without_prior(
     witness_context_table,
     protocol_config,
     protocol_sha256,
+    approval_ref: ApprovalRecordBinding,
 ) -> None:
     """The sampled control sees witnesses but never the Pass-A draft."""
     control_dossier, delivered_pixels = dossier_module.build_reader_dossier(
@@ -1678,11 +1785,11 @@ def _publish_primed_without_prior(
         },
         "dossier": control_dossier,
         "prompt": prompt,
-        "sampling": {
-            "perlector_instrument_per_mille": context.perlector_instrument_per_mille,
-            "selection_rule": protocol_config["selection_rule"],
-            "approval_ref": context.perlector_instrument_approval_ref,
-        },
+        "sampling": protocol.control_sampling_design(
+            per_mille=context.perlector_instrument_per_mille,
+            selection_rule=protocol_config["selection_rule"],
+            approval_ref=approval_ref,
+        ),
         "membership": {**membership, "act_id": act_id, "protocol_sha256": protocol_sha256},
         "dissent": dissent_against(text, dissent_testimonia(testimonia, attachment_view)),
         "truncation": truncation_record,
@@ -1733,6 +1840,24 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     )
     protocol_config, protocol_sha256 = protocol.load(context.perlector_protocol_config_path)
     context.require_sealed_config("perlector-protocol", protocol_sha256)
+    nuda_approval = (
+        resolve_sampling_approval(
+            context,
+            approval_ref=context.nuda_approval_ref,
+            subject=NUDA_APPROVAL_SUBJECT,
+        )
+        if context.nuda_per_mille
+        else None
+    )
+    instrument_approval = (
+        resolve_sampling_approval(
+            context,
+            approval_ref=context.perlector_instrument_approval_ref,
+            subject=PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT,
+        )
+        if context.perlector_instrument_per_mille
+        else None
+    )
     audit_policy, audit_sha256 = audit.load(context.perlector_audit_config_path)
     context.require_sealed_config("perlector-audit", audit_sha256)
 
@@ -1849,6 +1974,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 witness_context_table=witness_context_table,
                 protocol_config=protocol_config,
                 protocol_sha256=protocol_sha256,
+                approval_ref=nuda_approval,
             )
 
         prior = _publish_lectio_prior(
@@ -1889,6 +2015,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 witness_context_table=witness_context_table,
                 protocol_config=protocol_config,
                 protocol_sha256=protocol_sha256,
+                approval_ref=instrument_approval,
             )
 
         # The establishing read: every testimonium in the dossier, verbatim.
