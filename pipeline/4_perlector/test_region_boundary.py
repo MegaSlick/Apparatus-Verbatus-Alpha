@@ -13,11 +13,12 @@ from PIL import Image
 from common.chairs import ChairRegistry
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.contracts.errors import ContractError, SchemaRefusal
-from common.contracts.identities import region_id
+from common.contracts.identities import artifact_id, region_id
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR
 from common.exemplar_boundary import verify_exemplar_crop_lineage
 from common.imaging import crop_png, dimensions
 from common.runtree.store import RunTree
+from common.stage import load_fixture
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -38,6 +39,8 @@ class _Context:
         self.tree = tree
         self.run = tree.read_run()
         self.registry = ChairRegistry.from_toml(ROOT / "config/models.toml")
+        self.fixture = load_fixture(ROOT / "proof")
+        self.witness_chairs = list(self.run["witness_chairs"])
 
     def input_ref(self, relative_path):
         return {
@@ -345,15 +348,89 @@ def test_a_resealed_testimonium_cannot_retroactively_claim_a_recovery_crop(tmp_p
         if entry["kind"] == "testimonium" and entry["subject_id"] == act_id
     )
     forged = copy.deepcopy(testimony)
-    forged["payload"]["regions"].append(perlector._region_reference(recovery))
-    forged["inputs"] = sorted(
-        forged["inputs"] + [context.input_ref(recovery["payload"]["image_path"])],
-        key=lambda reference: (reference["relative_path"], reference["sha256"]),
-    )
+    transform = recovery["payload"]["transform"]
+    forged["payload"]["presented"] = {
+        "kind": "region",
+        "source_page_id": transform["source_page_id"],
+        "source_page_ordinal": transform["source_page_ordinal"],
+        "image_path": recovery["payload"]["image_path"],
+        "image_sha256": recovery["payload"]["image_sha256"],
+        "transform": transform,
+        "region_ref": {"region_id": recovery["payload"]["region_id"]},
+    }
+    forged["payload"]["observed"] = [
+        {
+            "ordinal": 0,
+            "bounds": transform["bounds"],
+            "bounds_source": "presented",
+            "span": None,
+        }
+    ]
+    forged["inputs"] = [context.input_ref(recovery["payload"]["image_path"])]
     forged["self_hash"] = self_hash(forged)
 
-    with pytest.raises(SchemaRefusal, match="does not bind exactly the original proposal"):
+    with pytest.raises(SchemaRefusal, match="recovery region cannot be presented"):
         perlector.validate_testimonium_regions(context, forged, proposals)
+
+
+def test_a_testimonium_may_not_understate_which_of_its_crops_it_speaks_for(tmp_path):
+    """The reader re-derives `unpresented_regions` rather than trusting it, the
+    same way it re-derives the presented region itself. A continuation act binds
+    two proposal crops and presents one; a record that dropped the name would
+    present a derived layer that looks like it speaks for the whole act, which is
+    the partial result invariant 6 refuses to let look whole."""
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "pipeline/orchestrator/run.py"),
+            "--fixture",
+            "synthetic-two-page-v0",
+            "--scenario",
+            "happy",
+            "--run-root",
+            str(tmp_path / "runs"),
+            "--run-id",
+            "continuation-scope",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    tree = RunTree(tmp_path / "runs", "continuation-scope")
+    context = _Context(tree)
+    by_act: dict[str, list] = {}
+    for entry in tree.build_manifest(DESIGNATOR)["artifacts"]:
+        if entry["kind"] != "region":
+            continue
+        record = tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
+        by_act.setdefault(record["subject_id"], []).append(record)
+    act_id, proposals = next(
+        (subject, sorted(rows, key=lambda region: region["payload"]["attempt_ordinal"]))
+        for subject, rows in by_act.items()
+        if len(rows) == 2
+    )
+    testimony = next(
+        tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
+        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
+        if entry["kind"] == "testimonium" and entry["subject_id"] == act_id
+    )
+    assert testimony["payload"]["unpresented_regions"] == [proposals[1]["payload"]["region_id"]]
+    perlector.validate_testimonium_regions(context, testimony, proposals)
+
+    forged = copy.deepcopy(testimony)
+    forged["payload"]["unpresented_regions"] = []
+    forged["self_hash"] = self_hash(forged)
+    with pytest.raises(SchemaRefusal, match="does not name exactly the bound proposal regions"):
+        perlector.validate_testimonium_regions(context, forged, proposals)
+
+    adapter_crop = copy.deepcopy(testimony)
+    adapter_crop["payload"]["presented"]["kind"] = "adapter-crop"
+    del adapter_crop["payload"]["presented"]["region_ref"]
+    adapter_crop["payload"]["unpresented_regions"] = []
+    adapter_crop["self_hash"] = self_hash(adapter_crop)
+    with pytest.raises(SchemaRefusal, match="does not name exactly the bound proposal regions"):
+        perlector.validate_testimonium_regions(context, adapter_crop, proposals)
 
 
 def test_a_genuinely_empty_testimonium_marks_its_actual_regions_witness_covered():
@@ -432,3 +509,45 @@ def test_a_crop_written_by_another_encoder_is_not_refused_as_untraceable(real_re
     verified = perlector.verify_region(context, reframed)
 
     assert verified["region_id"] == region["payload"]["region_id"]
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (lambda payload: payload.update({"untrusted": True}), "closed schema"),
+        (
+            lambda payload: payload["provenance"].update({"receipt_ref": None}),
+            "serving receipt",
+        ),
+    ],
+)
+def test_page_testimonium_consumer_closes_payload_and_provenance(
+    real_region, monkeypatch, mutate, message
+):
+    """The writer's page closure is also enforced where the Perlector reads it."""
+    context, region = real_region
+    proposal_seal = context.tree.read_artifact(
+        DESIGNATOR,
+        "proposal-seal",
+        artifact_id(DESIGNATOR, "proposal-seal", "proposal-seal", None),
+    )
+    act = next(
+        row
+        for row in proposal_seal["payload"]["expected_acts"]
+        if row["act_id"] == region["subject_id"]
+    )
+    regions, proposals = perlector.act_regions(context, act["act_id"])
+    testimonia = perlector.testimonia_of(context, act["act_id"], proposals)
+    bases = [perlector.verify_region(context, row) for row in regions]
+    original = context.tree.read_artifact_reference
+
+    def forged_reference(reference, *, stage, kind, subject_id):
+        record = original(reference, stage=stage, kind=kind, subject_id=subject_id)
+        if kind == "page-testimonium":
+            record = copy.deepcopy(record)
+            mutate(record["payload"])
+        return record
+
+    monkeypatch.setattr(context.tree, "read_artifact_reference", forged_reference)
+    with pytest.raises(SchemaRefusal, match=message):
+        perlector.act_attachment_view(context, act, testimonia, bases)

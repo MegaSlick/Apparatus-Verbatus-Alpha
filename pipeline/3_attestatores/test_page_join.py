@@ -455,6 +455,21 @@ def test_nothing_joined_is_failed_rather_than_an_empty_reading():
     ]
 
 
+def test_a_page_never_presented_to_the_configured_chair_is_not_run_not_failed():
+    """`failed` is an attempted outcome and therefore receipt-bearing. A page
+    assembled entirely from never-run act rows must keep that absence in the
+    outcome vocabulary rather than force a downstream consumer to guess from
+    `presented` whether the same word means attempted this time."""
+    join = _join(
+        ("a1", _attempt("not-run", None, reason="not asked")),
+        ("a2", _attempt("not-run", None, reason="not asked")),
+    )
+
+    assert join.native_payload == ""
+    assert join.outcome == "not-run"
+    assert [row["outcome"] for row in join.unjoined_act_attempts] == ["not-run", "not-run"]
+
+
 def test_a_failed_attempt_carrying_text_is_disclosed_rather_than_folded_in():
     """F-S1, held down here now that the partition is its own function: an
     attempt whose outcome is `failed` can still carry parsed text."""

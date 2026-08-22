@@ -709,8 +709,55 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # `semantic_snapshot_digest` helpers and reproduced at the audit seat's tip by
 # the two pinning tests below, which are the same measurement asserted; the host
 # re-measures at integration.
-HAPPY_RUN_TREE_DIGEST = "c6dc5dc8e7946f61d8746224446a1ccde4fc346ba822c9dc139199eb00e9db3a"
-REVIEW_RUN_TREE_DIGEST = "733a49a2365cbcaed8bdfb3b07a7a34aa9217046cf13cf0e71b526e442c574a7"
+# Re-pinned for Unit 10B: every Testimonium now binds its closed `presented`
+# image recipe and `observed` page-pixel geometry. The native marginal fixture
+# observation also moves the sealed fixture/config authority. The final absence
+# repair records held, refused-page, and absent-chair paths as `presented: {}` /
+# `observed: []`, rather than inventing an image no chair saw; that moves the
+# review tree but no artifact kind. Counts remain 84/0 and 97/3.
+# Sonnet audit seat (10B, seat 2 of 4): the absence repair's page-scope gate
+# (`reading`, i.e. WITNESS_READING_OUTCOMES) was narrower than its act-scope
+# twin (`attempted`, i.e. ATTEMPTED_WITNESS_OUTCOMES) and collapsed a page
+# witness that was genuinely shown pixels and returned an unusable response
+# into the same `presented: {}` fact as a chair never shown an image at all
+# (GOVERNANCE 2). Confirmed live in this exact fixture: attestator_3's page-2
+# Testimonium in the "review" scenario, whose sole contributing act (a2's
+# continuation) fails for that chair. Fixed by `page_witness_attempted`
+# (`pipeline/3_attestatores/run.py`), gating page-scope `presented` on
+# ATTEMPTED_WITNESS_OUTCOMES like the act-scope writer already does. Moves only
+# the review tree, back to its pre-absence-repair bytes because that was the
+# only record the narrower gate touched; happy is unaffected (no page in it
+# has every contributing act fail for a page-scoped chair). Counts unchanged at
+# 84/0 and 97/3. Re-measured through this module's own `orchestrate` and
+# `semantic_snapshot_digest` helpers at canonical run id "r".
+# Opus audit seat (10B, seat 3 of 4): the fixture's disagreeing native
+# observation moves, so the sealed fixture/config authority moves with it. The
+# box was x 0..20 by y 230..250, which overlapped act a2's own page-1 crop by
+# eight pixels each way — genuinely proposed ink, reported as unaccounted only
+# because the routing rule asked each act about its own regions alone. With the
+# denominator corrected to the page's whole proposal set, that box would have
+# produced no finding at all and the disagreeing chair would have stopped
+# exercising the rule it exists for; it is now x 0..10 by y 200..240, clear of
+# both crops in x. Fixture bytes only: no stage behaviour, artifact kind, count,
+# or exit code changes (84/0 and 97/3 hold). Re-measured through this module's
+# own `orchestrate` and `semantic_snapshot_digest` helpers at canonical run
+# id "r".
+# And again, in the same seat, for the continuation-scope statement: every act
+# Testimonium gains `unpresented_regions`, naming the bound proposal crops its
+# one presented image does not speak for. Empty everywhere except the
+# continuation act, where it names the far-side crop that `presented`/`observed`
+# structurally cannot describe (their boxes are in the presented page's pixel
+# space). A schema field on an existing kind: counts and exits hold at 84/0 and
+# 97/3, no artifact kind added. Re-measured through this module's own
+# `orchestrate` and `semantic_snapshot_digest` helpers at canonical run id "r".
+HAPPY_RUN_TREE_DIGEST = "1d9309b6a95f27ab7f189d9b8cdde4429125a74749c5370a5723d09a2272b2b4"
+# Review only, once more in the same seat: a page witness invoked on every act
+# and unusable on all of them now records the serving moment that produced it
+# (`provenance_for(..., attempted=attempted_page)`), where the `reading` gate
+# left `receipt_ref: None` beside a `presented` block claiming pixels were shown.
+# One `receipt_ref` field on attestator_3's page-2 record; no new file, no count
+# or exit change (97/3), and happy is untouched at the digest above.
+REVIEW_RUN_TREE_DIGEST = "311fa757d74ccfae882709a32057e449e4743c5aa6aa82f11d316db0f454d30c"
 
 
 def orchestrate(
@@ -2548,7 +2595,12 @@ def test_an_undeclared_fallback_witness_holds_the_act_instead_of_reporting_it_bl
     ]
     page_three = [row for row in page_records if row["payload"]["page_ordinal"] == 3]
     assert len(page_three) == 2, "both declared page witnesses must still be accounted for"
-    assert all(row["outcome"] == "failed" for row in page_three)
+    # No underlying request reached either configured page chair. `failed` is
+    # receipt-bearing attempted failure; preserving the same word here would
+    # force consumers to guess from another field whether it means attempted.
+    assert all(row["outcome"] == "not-run" for row in page_three)
+    assert all(row["payload"]["presented"] == {} for row in page_three)
+    assert all(row["payload"]["provenance"]["receipt_ref"] is None for row in page_three)
     assert all(row["payload"]["provenance"]["receipt_ref"] is None for row in page_three)
 
     reading = next(

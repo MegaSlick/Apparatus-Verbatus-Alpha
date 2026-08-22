@@ -37,9 +37,20 @@ from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal  # noqa: E402
 from common.contracts.identities import artifact_id, attempt_id  # noqa: E402
-from common.contracts.stages import ATTESTATORES, DESIGNATOR, PERLECTOR  # noqa: E402
+from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR, PERLECTOR  # noqa: E402
 from common.exemplar_boundary import verify_exemplar_crop_lineage  # noqa: E402
 from common.fixture_identity import page_identity  # noqa: E402
+from common.imaging import dimensions  # noqa: E402
+from common.native_witness import (  # noqa: E402
+    PAGE_TESTIMONIUM_REQUIRED_FIELDS,
+    unpresented_region_ids,
+    validate_native_witness_geometry,
+    validate_presented_page_binding,
+    validate_unpresented_regions,
+)
+from common.native_witness import (
+    validate_page_testimonium_payload as validate_shared_page_testimonium_payload,
+)
 from common.stage import (  # noqa: E402
     ATTEMPTED_WITNESS_OUTCOMES,
     EXIT_COMPLETE,
@@ -157,6 +168,153 @@ def region_inputs(context, regions: list[dict]) -> list[dict[str, str]]:
         reference = context.input_ref(record["payload"]["image_path"])
         inputs[reference["relative_path"]] = reference
     return sorted(inputs.values(), key=lambda item: (item["relative_path"], item["sha256"]))
+
+
+def presentation_for_region(region: dict[str, Any]) -> dict[str, Any]:
+    """Derive one region presentation from a verified proposal record."""
+    payload = region["payload"]
+    transform = payload["transform"]
+    return {
+        "kind": "region",
+        "source_page_id": transform["source_page_id"],
+        "source_page_ordinal": transform["source_page_ordinal"],
+        "image_path": payload["image_path"],
+        "image_sha256": payload["image_sha256"],
+        "transform": transform,
+        "region_ref": {"region_id": payload["region_id"]},
+    }
+
+
+def page_witness_attempted(
+    page_acts: list[dict[str, Any]],
+    chair: str,
+    attempts_by_pair: dict[tuple[str, str], "Attempt"],
+) -> bool:
+    """Whether this page-scoped chair was shown pixels for at least one of its acts.
+
+    Distinct from `page_join`'s `reading` (whether text was actually produced):
+    a chair attempted and shown a crop that came back `failed` is still a chair
+    that was shown an image, so `presented` must not collapse that case into the
+    same empty block held acts, refused pages, and absent chairs record. Using
+    `reading` here would misreport "shown pixels, bad response" as "never shown
+    an image" (GOVERNANCE 2).
+    """
+    return any(
+        attempts_by_pair[(act["act_id"], chair)].outcome in ATTEMPTED_WITNESS_OUTCOMES
+        for act in page_acts
+    )
+
+
+def presentation_for_page(context, page_ordinal: int) -> dict[str, Any]:
+    """Bind a page witness to the sealed whole-page pixels it was shown."""
+    page_id = page_identity(context.fixture, page_ordinal)
+    page = context.tree.read_artifact(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", page_id))
+    image_path = page["payload"]["image_path"]
+    width, height = dimensions(context.tree.read_bytes(image_path))
+    return {
+        "kind": "page",
+        "source_page_id": page_id,
+        "source_page_ordinal": page_ordinal,
+        "image_path": image_path,
+        "image_sha256": page["payload"]["source_sha256"],
+        "transform": {
+            "operation": "whole",
+            "source_page_id": page_id,
+            "source_page_ordinal": page_ordinal,
+            "bounds": {"x": 0, "y": 0, "w": width, "h": height},
+        },
+    }
+
+
+def observed_from_presentation(presented: dict[str, Any]) -> list[dict[str, Any]]:
+    """The fixture's default is one observation of exactly its presentation."""
+    return [
+        {
+            "ordinal": 0,
+            "bounds": dict(presented["transform"]["bounds"]),
+            "bounds_source": "presented",
+            "span": None,
+        }
+    ]
+
+
+def native_observed_for(
+    context, *, chair: str, page_ordinal: int, presented: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Read a declared fixture native box; absence means the exact presentation.
+
+    The declared disagreement is deliberately not calibrated.  It is only a
+    deterministic fixture stimulus for the routing rule, while the overlap
+    threshold stays recorded as unmeasured in that rule.
+    """
+    rows = [
+        row
+        for row in context.fixture.get("native_observation", [])
+        if row.get("chair") == chair and row.get("page_ordinal") == page_ordinal
+    ]
+    if not rows:
+        return observed_from_presentation(presented)
+    if len(rows) != 1:
+        raise SchemaRefusal(
+            f"fixture names {len(rows)} native observations for {(chair, page_ordinal)!r}"
+        )
+    bounds = {key: rows[0].get(key) for key in ("x", "y", "w", "h")}
+    return [{"ordinal": 0, "bounds": bounds, "bounds_source": "native", "span": None}]
+
+
+def _sealed_source_page(
+    context, presented: dict[str, Any]
+) -> tuple[dict[str, Any], tuple[int, int]]:
+    """The sealed Exemplar page a presentation names, and its decoded size."""
+    page_id = presented["source_page_id"]
+    page = context.tree.read_artifact(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", page_id))
+    return page, dimensions(context.tree.read_bytes(page["payload"]["image_path"]))
+
+
+def validate_testimonium_presentation(context, record: dict[str, Any]) -> None:
+    """Re-derive the presentation's sealed page, blob binding, and region wall."""
+    payload = record["payload"]
+    presented = payload["presented"]
+    validate_native_witness_geometry(payload)
+    if presented == {}:
+        if record.get("inputs") != []:
+            raise SchemaRefusal("an unpresented Testimonium carries image inputs")
+        return
+    page, page_size = _sealed_source_page(context, presented)
+    page_bytes = context.tree.read_bytes(page["payload"]["image_path"])
+    validate_native_witness_geometry(payload, page_size=page_size)
+    validate_presented_page_binding(
+        presented,
+        page_ordinal=page["payload"]["ordinal"],
+        page_image_path=page["payload"]["image_path"],
+        page_sha256=page["payload"]["source_sha256"],
+        page_size=page_size,
+        page_bytes=page_bytes,
+    )
+    if not any(
+        item == {"relative_path": presented["image_path"], "sha256": presented["image_sha256"]}
+        for item in record.get("inputs", [])
+    ):
+        raise SchemaRefusal("a Testimonium presented image is not digest-bound in record.inputs")
+    if presented["kind"] == "region":
+        matches = []
+        for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]:
+            if entry["kind"] != "region":
+                continue
+            region = context.tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
+            if region.get("payload", {}).get("region_id") == presented["region_ref"]["region_id"]:
+                matches.append(region)
+        if len(matches) != 1:
+            raise SchemaRefusal("a region presentation names no unique sealed Designator region")
+        region = matches[0]
+        if region["payload"].get("origin") != "proposal":
+            raise SchemaRefusal(
+                "a recovery region cannot be presented as a witness basis; origin is not proposal"
+            )
+        if presentation_for_region(region) != presented:
+            raise SchemaRefusal(
+                "a region presentation disagrees with its sealed proposal geometry or blob"
+            )
 
 
 def _declared_for_ordinal(row: dict[str, Any], ordinal: int) -> bool:
@@ -611,6 +769,9 @@ TESTIMONIUM_FIELDS = frozenset(
         "payload",
         "witness_reported",
         "content_health",
+        "presented",
+        "observed",
+        "unpresented_regions",
     }
 )
 # `page_witness` marks a page chair's act-scoped compatibility record and is
@@ -624,11 +785,7 @@ OPTIONAL_TESTIMONIUM_FIELDS = frozenset({"reason", "reported", "page_witness"})
 # the page is the act's primary page, only carries continuations, or contains
 # both.  Keeping that fact in the producer's contract prevents page two from
 # being an anonymous duplicate of page one.
-PAGE_TESTIMONIUM_FIELDS = TESTIMONIUM_FIELDS | frozenset(
-    {"scope", "page_ordinal", "page_role", "unjoined_act_attempts"}
-)
-PAGE_TESTIMONIUM_OPTIONAL_FIELDS = frozenset({"reason", "reported"})
-PAGE_ROLES = frozenset({"primary", "continuation", "mixed"})
+PAGE_TESTIMONIUM_FIELDS = PAGE_TESTIMONIUM_REQUIRED_FIELDS
 
 
 def testimonium_payload(
@@ -642,6 +799,9 @@ def testimonium_payload(
     native_payload: Any,
     witness_reported: Any,
     health: dict[str, Any],
+    presented: dict[str, Any] | None = None,
+    observed: list[dict[str, Any]] | None = None,
+    unpresented_regions: list[str] | None = None,
     outcome: str,
     reason: str | None = None,
 ) -> dict[str, Any]:
@@ -656,6 +816,9 @@ def testimonium_payload(
         "payload": native_payload,
         "witness_reported": witness_reported,
         "content_health": health,
+        "presented": {} if presented is None else presented,
+        "observed": [] if observed is None else observed,
+        "unpresented_regions": [] if unpresented_regions is None else unpresented_regions,
     }
     if reason is not None:
         record["reason"] = reason
@@ -667,7 +830,23 @@ def testimonium_payload(
     # Perlector owner when its consumer reads `payload` natively.
     if outcome in WITNESS_READING_OUTCOMES and isinstance(native_payload, str):
         record["reported"] = native_payload
-    return record
+    return validate_testimonium_payload(record)
+
+
+def validate_testimonium_payload(payload: Any) -> dict[str, Any]:
+    """Close the act Testimonium at both its writer and its tally read-back."""
+    if not isinstance(payload, dict):
+        raise SchemaRefusal("a Testimonium is not its closed payload schema")
+    if missing := sorted(TESTIMONIUM_FIELDS - set(payload)):
+        raise SchemaRefusal(f"a Testimonium carries no required field(s) {missing}")
+    allowed = TESTIMONIUM_FIELDS | OPTIONAL_TESTIMONIUM_FIELDS
+    if unexpected := sorted(set(payload) - allowed):
+        raise SchemaRefusal(
+            f"a Testimonium carries unknown field(s) {unexpected}; this stage writes a closed "
+            "payload, and a field nothing validates is a field nothing downstream can trust"
+        )
+    validate_unpresented_regions(payload)
+    return validate_native_witness_geometry(payload)
 
 
 def page_testimonium_payload(
@@ -688,6 +867,9 @@ def page_testimonium_payload(
         "native_payload",
         "witness_reported",
         "health",
+        "presented",
+        "observed",
+        "unpresented_regions",
         "outcome",
         "reason",
     }
@@ -708,21 +890,7 @@ def page_testimonium_payload(
 
 def validate_page_testimonium_payload(payload: Any) -> dict[str, Any]:
     """The page-record seam is closed before publication and on later reads."""
-    if not isinstance(payload, dict) or not (
-        set(payload) <= PAGE_TESTIMONIUM_FIELDS | PAGE_TESTIMONIUM_OPTIONAL_FIELDS
-    ):
-        raise SchemaRefusal("a page Testimonium is not its closed schema")
-    if missing := sorted(PAGE_TESTIMONIUM_FIELDS - set(payload)):
-        raise SchemaRefusal(f"a page Testimonium lacks required field(s) {missing}")
-    if (
-        payload["scope"] != "page"
-        or not isinstance(payload["page_ordinal"], int)
-        or isinstance(payload["page_ordinal"], bool)
-        or payload["page_role"] not in PAGE_ROLES
-        or not isinstance(payload["unjoined_act_attempts"], list)
-    ):
-        raise SchemaRefusal("a page Testimonium has invalid page scope facts")
-    return payload
+    return validate_shared_page_testimonium_payload(payload)
 
 
 AttemptHistory = dict[tuple[str, str], list[dict[str, Any]]]
@@ -1037,15 +1205,8 @@ def validate_tallied_testimonium(
     payload = record.get("payload")
     if not isinstance(payload, dict):
         raise SchemaRefusal("a Testimonium tally record has no object payload")
-    if missing := sorted(TESTIMONIUM_FIELDS - set(payload)):
-        raise SchemaRefusal(f"a Testimonium tally record lacks required field(s) {missing}")
-    allowed = TESTIMONIUM_FIELDS | OPTIONAL_TESTIMONIUM_FIELDS
-    if unexpected := sorted(set(payload) - allowed):
-        raise SchemaRefusal(
-            f"a Testimonium tally record carries unknown field(s) {unexpected}; this stage "
-            "writes a closed payload, and a field nothing validates is a field nothing "
-            "downstream can trust"
-        )
+    validate_testimonium_payload(payload)
+    validate_testimonium_presentation(context, record)
     chair = payload["chair"]
     if not isinstance(chair, str) or chair not in context.witness_chairs:
         raise SchemaRefusal("a Testimonium tally record names no configured chair")
@@ -1098,8 +1259,19 @@ def validate_tallied_testimonium(
             raise SchemaRefusal(
                 "a Testimonium tally record does not bind exactly the proposal regions and inputs"
             )
-    elif payload["regions"] != [] or record["inputs"] != []:
-        raise SchemaRefusal("a non-attempted Testimonium tally record carries regions or inputs")
+        # Every bound crop the one presented image does not speak for, named
+        # rather than left to be inferred from the difference between two other
+        # fields. Re-derived here from the sealed regions, so a record cannot
+        # understate its own limit any more than it can overstate its coverage.
+        if payload["unpresented_regions"] != unpresented_region_ids(payload["presented"], regions):
+            raise SchemaRefusal(
+                "a Testimonium tally record does not name exactly the bound regions its "
+                "presentation does not speak for"
+            )
+    elif payload["regions"] != []:
+        raise SchemaRefusal("a non-attempted Testimonium tally record carries regions")
+    elif payload["presented"] != {} or payload["observed"] != [] or record["inputs"] != []:
+        raise SchemaRefusal("a non-attempted Testimonium carries image evidence or observations")
     if record["outcome"] == "dead" and payload["provenance"].get("chair_state") != "absent":
         raise SchemaRefusal("a dead Testimonium tally record does not retain an absent chair")
     if record["outcome"] == "not-run" and payload["provenance"].get("chair_state") != "configured":
@@ -1209,15 +1381,7 @@ def attempt_tally(
             payload = record.get("payload")
             if not isinstance(payload, dict):
                 raise SchemaRefusal("a Testimonium carries no object payload")
-            if missing := sorted(TESTIMONIUM_FIELDS - set(payload)):
-                raise SchemaRefusal(f"a Testimonium carries no required field(s) {missing}")
-            allowed = TESTIMONIUM_FIELDS | OPTIONAL_TESTIMONIUM_FIELDS
-            if unexpected := sorted(set(payload) - allowed):
-                raise SchemaRefusal(
-                    f"a Testimonium carries unknown field(s) {unexpected}; this stage writes a "
-                    "closed payload, and a field nothing validates is a field nothing downstream "
-                    "can trust"
-                )
+            validate_testimonium_payload(payload)
             chair = payload.get("chair")
             if not isinstance(chair, str) or not chair:
                 raise SchemaRefusal("a Testimonium carries no named chair")
@@ -1496,7 +1660,52 @@ def publish_attempt(
     attempt: Attempt,
 ) -> None:
     """Seal one immutable Testimonium. The only write path for an attempt."""
+    # This shared accessor must run before building any artifact facts: a bad
+    # roster cannot be allowed to seal an otherwise plausible record first.
+    page_witness_chairs = declared_page_witness_chairs(context)
     attempted = attempt.outcome in ATTEMPTED_WITNESS_OUTCOMES
+    # `regions` may carry a continuation's second-page crop after `regions[0]`
+    # (`proposed_regions` returns every origin=="proposal" region for this act,
+    # sorted by attempt_ordinal, so index 0 is always the primary crop). The
+    # narrow-waist `presented` block binds ONE image recipe by this unit's own
+    # design (consult §4.1), and `observed` boxes are in the pixel space of that
+    # one page -- so a continuation's far-side ink cannot be expressed in this
+    # record's derived layer at all, whatever it contains.
+    #
+    # `payload["regions"]`/`record.inputs` still bind both crops by digest, so no
+    # blob or provenance is lost (invariant 3 holds). What would be lost is the
+    # LIMIT: a reader of `presented`/`observed` alone sees a complete-looking
+    # derived layer and no statement that it speaks for one of two crops. 0C
+    # ruled a continuation's second page is evidence; a record that quietly means
+    # "first page only" is the partial result invariant 6 refuses to let look
+    # whole. `unpresented_regions` states the delta, and both the tally and the
+    # Perlector re-derive it, so 10C's geometric `witness_covered` has a
+    # mechanical fact to consult instead of a comment to remember. Combining two
+    # frames' readings of one act stays Unit 19's job.
+    presented = presentation_for_region(regions[0]) if attempted else {}
+    if attempted and isinstance(resolved, ChairIdentity):
+        presented = witness_adapters.resolve_runnable_adapter(resolved.witness_adapter).present(
+            context, presented
+        )
+    unpresented_regions = unpresented_region_ids(presented, regions) if attempted else []
+    if not presented:
+        observed: list[dict[str, Any]] = []
+    elif any(
+        row.get("chair") == chair and row.get("page_ordinal") == presented["source_page_ordinal"]
+        for row in context.fixture.get("native_observation", [])
+    ):
+        observed = native_observed_for(
+            context,
+            chair=chair,
+            page_ordinal=presented["source_page_ordinal"],
+            presented=presented,
+        )
+    elif isinstance(resolved, ChairIdentity):
+        observed = witness_adapters.resolve_runnable_adapter(resolved.witness_adapter).observe(
+            presented, attempt.native_payload
+        )
+    else:
+        observed = observed_from_presentation(presented)
     payload = testimonium_payload(
         chair=chair,
         act_key=act["act_key"],
@@ -1507,10 +1716,13 @@ def publish_attempt(
         native_payload=attempt.native_payload,
         witness_reported=attempt.witness_reported,
         health=attempt.health,
+        presented=presented,
+        observed=observed,
+        unpresented_regions=unpresented_regions,
         outcome=attempt.outcome,
         reason=attempt.reason,
     )
-    if chair in declared_page_witness_chairs(context):
+    if chair in page_witness_chairs:
         # This is the interim act view of an immutable page witness.
         # Its attachment points at the retained page Testimonium; R4 replaces
         # this declared view with alignment, not with another witness kind.
@@ -1646,8 +1858,11 @@ def page_join(pairs: list[tuple[dict[str, Any], Attempt]]) -> PageJoin:
     *between* delivered characters, and the outcome is derived from the joined
     text rather than from the length of the list that produced it:
 
-    - `failed`: no act attempt joined at all. Nothing on this page was read by
-      this chair, so there is no page reading and no receipt to carry.
+    - `failed`: no act reading joined and at least one underlying attempt reached
+      the chair. The page has no reading, but the attempted serving receipt still
+      travels with the failed record.
+    - `not-run`: no act reading joined because none of the underlying requests was
+      attempted. It carries neither a presentation nor a receipt.
     - `genuinely-empty`: acts joined and every one of them delivered an empty
       body. The chair read the page's acts and reported nothing on each, which
       is the same fact at page scope that the act-scoped outcome records, and
@@ -1672,7 +1887,11 @@ def page_join(pairs: list[tuple[dict[str, Any], Attempt]]) -> PageJoin:
         attempt.native_payload for _, attempt in joined if attempt.native_payload
     )
     if not joined:
-        outcome = "failed"
+        outcome = (
+            "failed"
+            if any(attempt.outcome in ATTEMPTED_WITNESS_OUTCOMES for _, attempt in unjoined)
+            else "not-run"
+        )
     elif native_payload == "":
         # A completed absence is claimed only over a page this chair's join
         # fully carried: `genuinely-empty` says "read the page's acts and
@@ -1838,16 +2057,42 @@ def publish_page_testimonia_and_attachments(
             native_payload, outcome = join.native_payload, join.outcome
             unjoined_act_attempts = join.unjoined_act_attempts
             reading = outcome in WITNESS_READING_OUTCOMES
+            attempted_page = page_witness_attempted(page_acts, chair, attempts_by_pair)
             failure_reason = page_failure_reason(unjoined_act_attempts, join.joined_act_attempts)
             page_texts[(page_ordinal, chair)] = native_payload
             health = content_health(native_payload, completed=reading)
             resolved = context.registry.resolve(chair)
+            presented = presentation_for_page(context, page_ordinal) if attempted_page else {}
+            if attempted_page and isinstance(resolved, ChairIdentity):
+                presented = witness_adapters.resolve_runnable_adapter(
+                    resolved.witness_adapter
+                ).present(context, presented)
             page_attempt = attempt_id(page_subject, f"read:{chair}", ordinal)
             roles = {
                 "primary" if act["page_ordinal"] == page_ordinal else "continuation"
                 for act in page_acts
             }
             page_role = roles.pop() if len(roles) == 1 else "mixed"
+            if not presented:
+                observed: list[dict[str, Any]] = []
+            elif any(
+                row.get("chair") == chair and row.get("page_ordinal") == page_ordinal
+                for row in context.fixture.get("native_observation", [])
+            ):
+                observed = native_observed_for(
+                    context, chair=chair, page_ordinal=page_ordinal, presented=presented
+                )
+            elif isinstance(resolved, ChairIdentity):
+                observed = witness_adapters.resolve_runnable_adapter(
+                    resolved.witness_adapter
+                ).observe(presented, native_payload)
+            else:
+                # Mirrors the act arm exactly. An absent chair always resolves
+                # to `dead_attempt`, so `attempted_page` cannot be true for one
+                # today; reaching an absent chair's non-existent adapter through
+                # an AttributeError rather than this stage's own vocabulary is
+                # not the way that invariant should be discovered if it breaks.
+                observed = observed_from_presentation(presented)
             payload = page_testimonium_payload(
                 page_ordinal=page_ordinal,
                 page_role=page_role,
@@ -1856,11 +2101,23 @@ def publish_page_testimonia_and_attachments(
                 act_key=f"page-{page_ordinal}",
                 ordinal=ordinal,
                 regions=[],
-                provenance=provenance_for(context, resolved, attempted=reading),
+                # `attempted_page`, not `reading`, for the same reason `presented`
+                # uses it: a page chair invoked on every act that returned nothing
+                # usable was served, and GOVERNANCE 6 binds the serving moment to
+                # the record produced from it. Gated on `reading`, this record
+                # said in one breath that it was shown an image and that no
+                # serving happened -- and the act arm (`publish_attempt`) and the
+                # Armarium's own read-back (`require_receipt=outcome in
+                # ATTEMPTED_WITNESS_OUTCOMES`) had already settled which of the
+                # two is right. Nothing validates page-scope provenance today,
+                # which is why the contradiction was silent rather than refused.
+                provenance=provenance_for(context, resolved, attempted=attempted_page),
                 format_capabilities=DEFAULT_FORMAT_CAPABILITIES,
                 native_payload=native_payload if reading else None,
                 witness_reported=None,
                 health=health if reading else no_response_health(reason=failure_reason),
+                presented=presented,
+                observed=observed,
                 outcome=outcome,
                 reason=None if reading else failure_reason,
             )
@@ -1869,6 +2126,7 @@ def publish_page_testimonia_and_attachments(
                 subject_id=page_subject,
                 outcome=outcome,
                 attempt=page_attempt,
+                inputs=[context.input_ref(presented["image_path"])] if presented else [],
                 payload=payload,
             )
             page_records[(page_ordinal, chair)] = context.artifact_ref(
@@ -2293,13 +2551,12 @@ def witness_bound_reading_acts(context) -> frozenset[str]:
     sealed. There is no forward path, because the Perlectio that would have to
     change is itself immutable (GOVERNANCE 4).
 
-    That is the model rather than an oversight. A Testimonium is a clue that
-    primes a reading, never the ink the reading is established from
-    (ARCHITECTURE; GOVERNANCE 3), so a second look by a witness does not make a
-    second reading exist — and re-reading an act because a witness spoke again is
-    the re-roll GOVERNANCE 11 refuses ("never re-rolled until it looks better").
-    The witness layer of an act is open until the act is read and closed
-    afterwards.
+    A witness pass may add coverage. A reading is still made only by a crop.
+    A second look's coverage has nowhere to go except a recovery request, and a
+    recovery request mints a region, and a region moves the reading ordinal.
+    New testimony after a reading is refused; new INK after a reading is a
+    recovery request. This distinguishes coverage recovery (GOVERNANCE 11) from
+    re-rolling a witness until it says something preferable.
 
     **Closed by a reading that cites testimony, not by any Perlectio at all.** A
     held act and an absent Perlector chair both publish `not-run` records with no
@@ -2339,11 +2596,11 @@ def require_open_witness_layer(closed: frozenset[str], act: dict[str, Any], what
         raise ContractError(
             f"act {act['act_id']} ({act['act_key']}) already carries a Perlectio, so its "
             f"witness layer is closed: {what} would append testimony no reading can be "
-            "established from. A witness is only ever shown the act's original proposal "
-            "crop, so a second look adds priming, never coverage — and re-reading an act "
-            "because a witness spoke again is the re-roll GOVERNANCE 11 refuses. "
-            "Re-witness before the Perlector reads the act, or let this reading stand; "
-            "the doubt has no dedicated review channel today beyond the run's own records"
+            "established from. A witness pass may add coverage, but a reading is made only "
+            "by a crop: new ink must route through a Recensor recovery request, which mints "
+            "a region and moves the reading ordinal. New testimony after a reading is "
+            "refused; new INK after a reading is a recovery request. Re-asking a witness "
+            "because it spoke again is the re-roll GOVERNANCE 11 refuses"
         )
 
 
