@@ -48,6 +48,9 @@ class _Context:
             "sha256": digest_bytes(self.tree.read_bytes(relative_path)),
         }
 
+    def artifact_ref(self, stage, kind, artifact_id_):
+        return self.input_ref(self.tree.artifact_path(stage, kind, artifact_id_))
+
 
 @pytest.fixture
 def real_region(tmp_path):
@@ -433,19 +436,83 @@ def test_a_testimonium_may_not_understate_which_of_its_crops_it_speaks_for(tmp_p
         perlector.validate_testimonium_regions(context, adapter_crop, proposals)
 
 
-def test_a_genuinely_empty_testimonium_marks_its_actual_regions_witness_covered():
-    """Completed empty is evidence of inspection, unlike failed or not-run."""
+def test_witness_coverage_requires_reported_geometry_to_contain_the_region():
+    """Completed empty counts only when native/derived geometry contains the crop."""
     testimonia = [
         {
             "outcome": "genuinely-empty",
-            "payload": {"regions": [{"region_id": "rgn_empty"}]},
+            "payload": {
+                "presented": {"source_page_id": "page-1"},
+                "observed": [
+                    {
+                        "bounds": {"x": 10, "y": 10, "w": 20, "h": 20},
+                        "bounds_source": "native",
+                    }
+                ],
+                "unpresented_regions": [],
+            },
         },
         {
             "outcome": "failed",
-            "payload": {"regions": [{"region_id": "rgn_failed"}]},
+            "payload": {"presented": {"source_page_id": "page-1"}, "observed": []},
         },
     ]
-    assert perlector.witnessed_region_ids(testimonia) == {"rgn_empty"}
+    regions = [
+        {
+            "region_id": "rgn_empty",
+            "transform": {
+                "source_page_id": "page-1",
+                "bounds": {"x": 12, "y": 12, "w": 10, "h": 10},
+            },
+        },
+        {
+            "region_id": "rgn_recovery",
+            "transform": {
+                "source_page_id": "page-1",
+                "bounds": {"x": 0, "y": 0, "w": 10, "h": 10},
+            },
+        },
+    ]
+    assert perlector.witnessed_region_ids(testimonia, regions) == {"rgn_empty"}
+
+
+def test_unpresented_geometry_is_not_misreported_as_uncovered_when_another_witness_saw_it():
+    region = {
+        "region_id": "rgn_far_side",
+        "transform": {
+            "source_page_id": "page-2",
+            "bounds": {"x": 20, "y": 20, "w": 10, "h": 10},
+        },
+    }
+    testimonia = [
+        {
+            "outcome": "read",
+            "payload": {
+                "presented": {"source_page_id": "page-2"},
+                "unpresented_regions": ["rgn_far_side"],
+                "observed": [
+                    {
+                        "bounds": {"x": 0, "y": 0, "w": 100, "h": 100},
+                        "bounds_source": "native",
+                    }
+                ],
+            },
+        },
+        {
+            "outcome": "read",
+            "payload": {
+                "presented": {"source_page_id": "page-2"},
+                "unpresented_regions": [],
+                "observed": [
+                    {
+                        "bounds": {"x": 20, "y": 20, "w": 10, "h": 10},
+                        "bounds_source": "derived",
+                    }
+                ],
+            },
+        },
+    ]
+    assert perlector.witnessed_region_ids(testimonia, [region]) == {"rgn_far_side"}
 
 
 def test_the_refusal_names_the_cause_it_used_to_swallow(real_region):
@@ -549,5 +616,107 @@ def test_page_testimonium_consumer_closes_payload_and_provenance(
         return record
 
     monkeypatch.setattr(context.tree, "read_artifact_reference", forged_reference)
+    proposal_ids = {region["payload"]["region_id"] for region in proposals}
     with pytest.raises(SchemaRefusal, match=message):
-        perlector.act_attachment_view(context, act, testimonia, bases)
+        perlector.act_attachment_view(context, act, testimonia, bases, proposal_ids)
+
+
+def test_a_recovery_crop_cannot_retroactively_attach_a_page_witness(real_region, monkeypatch):
+    """The attachment denominator is the SEALED PROPOSAL, never the current basis.
+
+    The Attestatores writer derives a page witness's attachment from
+    `proposed_regions` and cannot do otherwise: a recovery region does not exist
+    when a witness runs, and the reread rule forbids new testimony afterwards.
+    If the Perlector re-derives the same fact over every current basis region,
+    the two can only ever disagree once a recrop exists -- and they disagree in
+    exactly the case Unit 10C exists for, where a page witness reported ink no
+    proposal covered and the expanded crop went and got it. Live reproduction
+    before the fix: the coverage-recovery scenario with the containing
+    observations removed died at the Perlector's reread with "act ... page
+    attachment for chair 'attestator_1' does not derive from that witness's
+    reported geometry against the sealed proposal", turning a recoverable
+    coverage finding into a hard stage failure (GOVERNANCE 2; consult 4.1
+    wall 1, a recovery crop may not become coverage after the fact).
+
+    Here the page-2 witness is given native geometry that misses the sealed
+    continuation crop, so its recorded attachment is honestly false, and a
+    recovery basis is added over the ink it did report. Passing that recovery
+    region's id in the proposal set is the same test with the defect put back:
+    it must refuse, or this proves nothing.
+    """
+    context, _ = real_region
+    proposal_seal = context.tree.read_artifact(
+        DESIGNATOR,
+        "proposal-seal",
+        artifact_id(DESIGNATOR, "proposal-seal", "proposal-seal", None),
+    )
+    act = next(
+        row
+        for row in proposal_seal["payload"]["expected_acts"]
+        if len(
+            {
+                entry["artifact_id"]
+                for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]
+                if entry["kind"] == "region" and entry["subject_id"] == row["act_id"]
+            }
+        )
+        > 1
+    )
+    regions, proposals = perlector.act_regions(context, act["act_id"])
+    bases = [perlector.verify_region(context, row) for row in regions]
+    testimonia = perlector.testimonia_of(context, act["act_id"], proposals)
+    far_side = next(basis for basis in bases if basis["source_page_ordinal"] == 2)
+    # Reported ink on the continuation page that the sealed crop does not cover.
+    reported = {"x": 0, "y": 200, "w": 10, "h": 40}
+    original = context.tree.read_artifact_reference
+
+    def marginal_page_geometry(reference, *, stage, kind, subject_id):
+        record = original(reference, stage=stage, kind=kind, subject_id=subject_id)
+        if kind == "page-testimonium" and record["payload"]["page_ordinal"] == 2:
+            record = copy.deepcopy(record)
+            record["payload"]["observed"] = [
+                {"ordinal": 0, "bounds": dict(reported), "bounds_source": "native", "span": None}
+            ]
+        return record
+
+    monkeypatch.setattr(context.tree, "read_artifact_reference", marginal_page_geometry)
+
+    recovery = copy.deepcopy(far_side)
+    recovery["region_id"] = "rgn_recovery_probe"
+    recovery["transform"] = copy.deepcopy(far_side["transform"])
+    recovery["transform"]["bounds"] = {"x": 0, "y": 0, "w": 200, "h": 260}
+    proposal_ids = {region["payload"]["region_id"] for region in proposals}
+    assert recovery["transform"]["bounds"] != far_side["transform"]["bounds"]
+    # The observation sits inside the later crop but does not contain that crop,
+    # so it supplies neither an act attachment nor complete region coverage.
+    assert (
+        perlector.witnessed_region_ids(
+            [
+                {
+                    "outcome": "read",
+                    "payload": {
+                        "presented": {"source_page_id": far_side["source_page_id"]},
+                        "observed": [
+                            {
+                                "ordinal": 0,
+                                "bounds": dict(reported),
+                                "bounds_source": "native",
+                                "span": None,
+                            }
+                        ],
+                        "unpresented_regions": [],
+                    },
+                }
+            ],
+            [recovery],
+        )
+        == set()
+    )
+
+    view = perlector.act_attachment_view(context, act, testimonia, [*bases, recovery], proposal_ids)
+    assert view["page_witness_count"] >= 1
+
+    with pytest.raises(SchemaRefusal, match="does not derive from that witness's reported"):
+        perlector.act_attachment_view(
+            context, act, testimonia, [*bases, recovery], proposal_ids | {recovery["region_id"]}
+        )
