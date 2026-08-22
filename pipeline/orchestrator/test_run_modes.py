@@ -99,7 +99,11 @@ def test_recovery_is_a_manual_sequence_member_with_its_own_contiguous_seal_attem
         for entry in tree.build_manifest("designator")["artifacts"]
         if entry["kind"] == "stage-seal"
     ]
-    assert sorted(seal["payload"]["attempt_ordinal"] for seal in seals) == [1, 2]
+    # `review` spends its declared a1 recovery and a second bounded recovery
+    # for the retained page observation outside every proposal.  The latter is
+    # deliberately not assigned to either act, but it is still a recovery
+    # request the driver must sequence and seal explicitly.
+    assert sorted(seal["payload"]["attempt_ordinal"] for seal in seals) == [1, 2, 3]
 
 
 def test_from_refuses_an_unsealed_predecessor_by_name(tmp_path):

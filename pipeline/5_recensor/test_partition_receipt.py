@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import importlib.util
 import json
 import subprocess
@@ -11,8 +12,8 @@ from pathlib import Path
 import pytest
 
 from common.contracts.errors import FatalAccounting, SchemaRefusal
-from common.contracts.outcomes import INTERIM_GRANULARITY_BASIS
-from common.contracts.stages import RECENSOR
+from common.contracts.outcomes import INTERIM_GRANULARITY_BASIS, NATIVE_GRANULARITY_BASIS
+from common.contracts.stages import ATTESTATORES, RECENSOR
 from common.runtree.store import RunTree
 from common.stage import stage_parser
 
@@ -86,8 +87,77 @@ def test_happy_recensor_pass_writes_a_complete_scoped_partition_receipt(tmp_path
     assert len({item["act_id"] for item in receipt["items"]}) == 2
     assert all(item["review_outcome"] == "accepted" for item in receipt["items"])
     assert {item["coverage"]["granularity_basis"] for item in receipt["items"]} == {
-        INTERIM_GRANULARITY_BASIS
+        NATIVE_GRANULARITY_BASIS
     }
+
+
+@pytest.mark.parametrize("drift", ["stored-false", "geometry-false"])
+def test_recensor_rederives_page_attachment_over_the_sealed_proposal_both_ways(
+    tmp_path, monkeypatch, drift
+):
+    """Neither polarity of a forged page attachment can move the witness floor.
+
+    The writer and Perlector derive this fact from a reading outcome plus native
+    geometry against the original proposal regions.  The Recensor is the second
+    consumer of the mirror pair: accepting the stored boolean on its basis label
+    alone would let a resealed false remove a real witness, or a resealed true
+    add one, while still producing a self-consistent receipt.
+    """
+    root = tmp_path / "runs"
+    through_perlector(root, "attachment-drift", "happy")
+    recensor = _load_recensor()
+    context = recensor.open_context(_recensor_args(root, "attachment-drift"), RECENSOR)
+    act = next(act for act in recensor.expected_acts(context) if act["act_key"] == "a1")
+    assert (
+        recensor.validate_chair_coverage(context, act["act_id"], context.witness_floor)[
+            "under_witnessed"
+        ]
+        is False
+    )
+
+    if drift == "stored-false":
+        original = context.tree.read_artifact
+
+        def forged_attachment(stage, kind, artifact_id):
+            record = original(stage, kind, artifact_id)
+            if (
+                stage == ATTESTATORES
+                and kind == "act-attachment"
+                and record["subject_id"] == act["act_id"]
+            ):
+                record = copy.deepcopy(record)
+                row = next(row for row in record["payload"]["attachments"] if row["page_witness"])
+                assert row["attached"] is True
+                row["attached"] = False
+                row["attachment_basis"] = "unattached"
+                row["span"] = None
+            return record
+
+        monkeypatch.setattr(context.tree, "read_artifact", forged_attachment)
+    else:
+        original = context.tree.read_artifact_reference
+
+        def forged_geometry(reference, *, stage, kind, subject_id):
+            record = original(reference, stage=stage, kind=kind, subject_id=subject_id)
+            if kind == "page-testimonium" and record["payload"]["chair"] == "attestator_1":
+                record = copy.deepcopy(record)
+                # The sealed proposal begins at x=12. This reported box has no
+                # positive-area overlap with it, while the stored attachment
+                # still claims geometric-overlap.
+                record["payload"]["observed"] = [
+                    {
+                        "ordinal": 0,
+                        "bounds": {"x": 0, "y": 200, "w": 10, "h": 40},
+                        "bounds_source": "native",
+                        "span": None,
+                    }
+                ]
+            return record
+
+        monkeypatch.setattr(context.tree, "read_artifact_reference", forged_geometry)
+
+    with pytest.raises(FatalAccounting, match="reported geometry against the sealed proposal"):
+        recensor.validate_chair_coverage(context, act["act_id"], context.witness_floor)
 
 
 def test_recovery_replaces_the_current_partition_snapshot_without_erasing_history(tmp_path):
@@ -124,9 +194,13 @@ def test_recovery_replaces_the_current_partition_snapshot_without_erasing_histor
     assert second.returncode == 3, second.stderr
 
     after = tree.read_recensor_partition_receipt()
-    accepted = next(item for item in after["items"] if item["act_key"] == "a1")
-    assert accepted["review_outcome"] == "accepted"
-    assert accepted["review_ref"] != requested["review_ref"]
+    current = next(item for item in after["items"] if item["act_key"] == "a1")
+    # The recrop is append-only evidence, and the Recensor now accepts a1 once
+    # its expanded crop resolves its own coverage.  The marginal observation is
+    # still retained separately in a2's policy-gated recovery request; it is
+    # not silently assigned to a1 merely because that act recovered first.
+    assert current["review_outcome"] == "accepted"
+    assert current["review_ref"] != requested["review_ref"]
     assert before["self_hash"] != after["self_hash"]
 
     # The receipt is the one record replaced in place. The evidence it was

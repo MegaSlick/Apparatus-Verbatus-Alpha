@@ -50,7 +50,9 @@ PAGE_TESTIMONIUM_REQUIRED_FIELDS: Final = frozenset(
         "unjoined_act_attempts",
     }
 )
-PAGE_TESTIMONIUM_OPTIONAL_FIELDS: Final = frozenset({"reason", "reported"})
+PAGE_TESTIMONIUM_OPTIONAL_FIELDS: Final = frozenset(
+    {"reason", "reported", "partition_disagreement"}
+)
 PAGE_ROLES: Final = frozenset({"primary", "continuation", "mixed"})
 
 
@@ -397,6 +399,8 @@ def validate_page_testimonium_payload(payload: Any) -> dict[str, Any]:
     ):
         raise SchemaRefusal("a page Testimonium has invalid page scope facts")
     validate_unpresented_regions(payload)
+    if "partition_disagreement" in payload:
+        validate_partition_disagreement(payload["partition_disagreement"])
     return validate_native_witness_geometry(payload)
 
 
@@ -405,6 +409,22 @@ def validate_page_testimonium_payload(payload: Any) -> dict[str, Any]:
 # measurement claim GOVERNANCE 10 does not permit until something has actually
 # been measured.
 UNROUTED_OBSERVATION_OVERLAP: Final = {"rule": "positive-area", "status": "unmeasured"}
+
+
+def _overlaps(left: dict[str, int], right: dict[str, int]) -> bool:
+    """Whether two page-pixel boxes share positive area, never containment."""
+    return min(left["x"] + left["w"], right["x"] + right["w"]) > max(left["x"], right["x"]) and min(
+        left["y"] + left["h"], right["y"] + right["h"]
+    ) > max(left["y"], right["y"])
+
+
+def reported_geometry_overlaps(payload: dict[str, Any], bounds: dict[str, int]) -> bool:
+    """Whether one Testimonium reports positive-area geometry over ``bounds``."""
+    return any(
+        observation.get("bounds_source") in REPORTED_BOUNDS_SOURCES
+        and _overlaps(observation["bounds"], bounds)
+        for observation in payload.get("observed", [])
+    )
 
 
 def unrouted_observations(
@@ -454,14 +474,7 @@ def unrouted_observations(
             bounds = observation["bounds"]
             overlaps = any(
                 transform["source_page_id"] == presented["source_page_id"]
-                and min(
-                    bounds["x"] + bounds["w"], transform["bounds"]["x"] + transform["bounds"]["w"]
-                )
-                > max(bounds["x"], transform["bounds"]["x"])
-                and min(
-                    bounds["y"] + bounds["h"], transform["bounds"]["y"] + transform["bounds"]["h"]
-                )
-                > max(bounds["y"], transform["bounds"]["y"])
+                and _overlaps(bounds, transform["bounds"])
                 for transform in proposal_boxes
             )
             if not overlaps:
@@ -476,3 +489,152 @@ def unrouted_observations(
                     }
                 )
     return findings
+
+
+def partition_disagreement(
+    testimonium: dict[str, Any], proposal_regions: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Record page/chair partition facts without selecting any pairing.
+
+    All positive-area pairings are retained.  Where one observation intersects
+    multiple proposals, every competing pairing remains in the record; neither
+    witness nor proposal wins a correspondence decision here.
+    """
+    payload = testimonium["payload"]
+    presented = payload["presented"]
+    page_id = presented.get("source_page_id") if isinstance(presented, dict) else None
+    proposals = sorted(
+        [
+            dict(region["payload"]["transform"]["bounds"])
+            for region in proposal_regions
+            if region.get("payload", {}).get("origin") == "proposal"
+            and region["payload"]["transform"].get("source_page_id") == page_id
+        ],
+        key=lambda box: (box["y"], box["x"], box["h"], box["w"]),
+    )
+    observations = [
+        {
+            "ordinal": observation["ordinal"],
+            "bounds": dict(observation["bounds"]),
+            "bounds_source": observation["bounds_source"],
+        }
+        for observation in payload.get("observed", [])
+        if observation.get("bounds_source") in REPORTED_BOUNDS_SOURCES
+    ]
+    deltas: list[dict[str, Any]] = []
+    pairing_keys: list[tuple[int, int, int, int]] = []
+    observed_proposals: set[tuple[int, int, int, int]] = set()
+    # A tie is a tie from either side: one observation spanning several
+    # proposals, or several observations each claiming the same proposal.
+    # Counting matches per proposal as well as per observation is what makes
+    # `ambiguous` answer "two observations tie" the way the geometry actually
+    # ties, not only the direction the loop happens to walk first.
+    observation_match_counts: dict[int, int] = {}
+    proposal_match_counts: dict[tuple[int, int, int, int], int] = {}
+    for observation in observations:
+        matches = [proposal for proposal in proposals if _overlaps(observation["bounds"], proposal)]
+        observation_match_counts[observation["ordinal"]] = len(matches)
+        for proposal in matches:
+            key = (proposal["x"], proposal["y"], proposal["w"], proposal["h"])
+            proposal_match_counts[key] = proposal_match_counts.get(key, 0) + 1
+            pairing = {
+                "proposal_box": dict(proposal),
+                "observed_ordinal": observation["ordinal"],
+                "observed_box": dict(observation["bounds"]),
+                "edge_offsets": {
+                    "left": observation["bounds"]["x"] - proposal["x"],
+                    "top": observation["bounds"]["y"] - proposal["y"],
+                    "right": observation["bounds"]["x"]
+                    + observation["bounds"]["w"]
+                    - proposal["x"]
+                    - proposal["w"],
+                    "bottom": observation["bounds"]["y"]
+                    + observation["bounds"]["h"]
+                    - proposal["y"]
+                    - proposal["h"],
+                },
+            }
+            deltas.append(pairing)
+            pairing_keys.append(key)
+            observed_proposals.add(key)
+    ambiguous_pairings = [
+        pairing
+        for pairing, key in zip(deltas, pairing_keys, strict=True)
+        if observation_match_counts[pairing["observed_ordinal"]] > 1
+        or proposal_match_counts[key] > 1
+    ]
+    return {
+        "proposal_boxes": proposals,
+        "observed_boxes": observations,
+        "unclaimed_observations": unrouted_observations([testimonium], proposal_regions),
+        "unobserved_proposals": [
+            proposal
+            for proposal in proposals
+            if (proposal["x"], proposal["y"], proposal["w"], proposal["h"])
+            not in observed_proposals
+        ],
+        "boundary_deltas": deltas,
+        "ambiguous": bool(ambiguous_pairings),
+        "ambiguous_pairings": ambiguous_pairings,
+        "overlap_rule": dict(UNROUTED_OBSERVATION_OVERLAP),
+    }
+
+
+def validate_partition_disagreement(value: Any) -> dict[str, Any]:
+    """Close the retained facts without converting them into a verdict."""
+    required = {
+        "proposal_boxes",
+        "observed_boxes",
+        "unclaimed_observations",
+        "unobserved_proposals",
+        "boundary_deltas",
+        "ambiguous",
+        "ambiguous_pairings",
+        "overlap_rule",
+    }
+    if not isinstance(value, dict) or set(value) != required:
+        raise SchemaRefusal("a page Testimonium partition_disagreement is not its closed schema")
+    for field in ("proposal_boxes", "unobserved_proposals"):
+        if not isinstance(value[field], list):
+            raise SchemaRefusal(
+                "a page Testimonium partition disagreement has malformed proposal boxes"
+            )
+        for box in value[field]:
+            _bounds(box, "a page Testimonium partition proposal box", page_size=None)
+    if not isinstance(value["observed_boxes"], list):
+        raise SchemaRefusal(
+            "a page Testimonium partition disagreement has malformed observed boxes"
+        )
+    for observation in value["observed_boxes"]:
+        if not isinstance(observation, dict) or set(observation) != {
+            "ordinal",
+            "bounds",
+            "bounds_source",
+        }:
+            raise SchemaRefusal("a page Testimonium partition observed box is malformed")
+        if (
+            not _integer(observation["ordinal"])
+            or observation["bounds_source"] not in REPORTED_BOUNDS_SOURCES
+        ):
+            raise SchemaRefusal(
+                "a page Testimonium partition observed box is not reported geometry"
+            )
+        _bounds(observation["bounds"], "a page Testimonium partition observed box", page_size=None)
+    if value["overlap_rule"] != UNROUTED_OBSERVATION_OVERLAP:
+        raise SchemaRefusal(
+            "a page Testimonium partition disagreement changes its declared overlap rule"
+        )
+    if not isinstance(value["ambiguous"], bool):
+        raise SchemaRefusal(
+            "a page Testimonium partition disagreement ambiguous flag is not boolean"
+        )
+    for field in ("unclaimed_observations", "boundary_deltas", "ambiguous_pairings"):
+        if not isinstance(value[field], list):
+            raise SchemaRefusal(
+                "a page Testimonium partition disagreement has malformed retained facts"
+            )
+    if value["ambiguous"] != bool(value["ambiguous_pairings"]):
+        raise SchemaRefusal(
+            "a page Testimonium partition disagreement omits its ambiguous pairings"
+        )
+    return value

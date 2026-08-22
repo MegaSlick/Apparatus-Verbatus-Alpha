@@ -10,6 +10,7 @@ from common.contracts.canonical import digest_bytes
 from common.contracts.errors import SchemaRefusal
 from common.imaging import crop_png
 from common.native_witness import (
+    partition_disagreement,
     unpresented_region_ids,
     validate_native_witness_geometry,
     validate_page_testimonium_payload,
@@ -369,3 +370,87 @@ def test_page_payload_closure_is_shared_with_the_consumer_and_refuses_unhashable
     )
     with pytest.raises(SchemaRefusal, match="invalid page scope facts"):
         validate_page_testimonium_payload(value)
+
+
+def test_partition_disagreement_retains_all_ambiguous_geometry_without_a_winner():
+    testimony = {
+        "artifact_id": "page-testimony",
+        "payload": {
+            "presented": {"source_page_id": "page-1"},
+            "observed": [
+                {
+                    "ordinal": 0,
+                    "bounds": {"x": 8, "y": 0, "w": 12, "h": 10},
+                    "bounds_source": "native",
+                }
+            ],
+        },
+    }
+    proposals = [
+        {
+            "payload": {
+                "origin": "proposal",
+                "transform": {
+                    "source_page_id": "page-1",
+                    "bounds": {"x": 0, "y": 0, "w": 10, "h": 10},
+                },
+            }
+        },
+        {
+            "payload": {
+                "origin": "proposal",
+                "transform": {
+                    "source_page_id": "page-1",
+                    "bounds": {"x": 10, "y": 0, "w": 10, "h": 10},
+                },
+            }
+        },
+    ]
+    disagreement = partition_disagreement(testimony, proposals)
+    assert disagreement["ambiguous"] is True
+    assert len(disagreement["boundary_deltas"]) == 2
+    assert disagreement["ambiguous_pairings"] == disagreement["boundary_deltas"]
+    assert disagreement["unclaimed_observations"] == []
+    assert disagreement["overlap_rule"] == {"rule": "positive-area", "status": "unmeasured"}
+
+
+def test_partition_disagreement_ties_from_the_proposal_side_too():
+    """Two observations claiming the same proposal is a tie, symmetric to one
+    observation claiming two proposals — the consult names both as "two
+    observations tie", and each observation here matches only one proposal on
+    its own side of the count, so a one-sided (observation-only) tie check
+    would silently miss this."""
+    testimony = {
+        "artifact_id": "page-testimony",
+        "payload": {
+            "presented": {"source_page_id": "page-1"},
+            "observed": [
+                {
+                    "ordinal": 0,
+                    "bounds": {"x": 0, "y": 0, "w": 6, "h": 10},
+                    "bounds_source": "native",
+                },
+                {
+                    "ordinal": 1,
+                    "bounds": {"x": 4, "y": 0, "w": 6, "h": 10},
+                    "bounds_source": "native",
+                },
+            ],
+        },
+    }
+    proposals = [
+        {
+            "payload": {
+                "origin": "proposal",
+                "transform": {
+                    "source_page_id": "page-1",
+                    "bounds": {"x": 0, "y": 0, "w": 10, "h": 10},
+                },
+            }
+        }
+    ]
+    disagreement = partition_disagreement(testimony, proposals)
+    assert disagreement["ambiguous"] is True
+    assert len(disagreement["boundary_deltas"]) == 2
+    assert disagreement["ambiguous_pairings"] == disagreement["boundary_deltas"]
+    assert {pairing["observed_ordinal"] for pairing in disagreement["ambiguous_pairings"]} == {0, 1}

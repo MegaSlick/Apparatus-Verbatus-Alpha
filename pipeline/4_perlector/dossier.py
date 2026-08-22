@@ -28,6 +28,7 @@ from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.identities import artifact_id
 from common.contracts.stages import EXEMPLAR, PERLECTOR
 from common.imaging import crop_png, dimensions, encode_grayscale_png_deterministic
+from common.native_witness import REPORTED_BOUNDS_SOURCES
 from common.stage import WITNESS_READING_OUTCOMES
 
 # A fixed bound, not configuration: the dossier's job is to hand the reader a
@@ -250,14 +251,44 @@ def _testimonium_entry(
     }
 
 
-def witnessed_region_ids(testimonia: list[dict]) -> set[str]:
-    """The original regions actually read by at least one completed witness."""
-    return {
-        reference["region_id"]
-        for record in testimonia
-        if record["outcome"] in WITNESS_READING_OUTCOMES
-        for reference in record["payload"]["regions"]
-    }
+def witnessed_region_ids(testimonia: list[dict], regions: list[dict[str, Any]]) -> set[str]:
+    """Basis regions wholly contained in a reading chair's reported page geometry.
+
+    A presentation echo is not witness geometry, and one presentation's stated
+    `unpresented_regions` cannot answer for a crop outside that image.  Another
+    real Testimonium may still cover that crop; otherwise the result remains
+    false because nobody reported the complete region, not because an unrelated
+    coordinate frame was treated as an uncovered verdict.
+    """
+    witnessed: set[str] = set()
+    for region in regions:
+        transform = region["transform"]
+        bounds = transform["bounds"]
+        region_id = region["region_id"]
+        for record in testimonia:
+            if record["outcome"] not in WITNESS_READING_OUTCOMES:
+                continue
+            payload = record["payload"]
+            presented = payload.get("presented")
+            if (
+                not isinstance(presented, dict)
+                or presented.get("source_page_id") != transform["source_page_id"]
+                or region_id in payload.get("unpresented_regions", [])
+            ):
+                continue
+            if any(
+                observation.get("bounds_source") in REPORTED_BOUNDS_SOURCES
+                and observation["bounds"]["x"] <= bounds["x"]
+                and observation["bounds"]["y"] <= bounds["y"]
+                and observation["bounds"]["x"] + observation["bounds"]["w"]
+                >= bounds["x"] + bounds["w"]
+                and observation["bounds"]["y"] + observation["bounds"]["h"]
+                >= bounds["y"] + bounds["h"]
+                for observation in payload.get("observed", [])
+            ):
+                witnessed.add(region_id)
+                break
+    return witnessed
 
 
 def build_dossier(
@@ -289,7 +320,7 @@ def build_dossier(
     # therefore has no `witness_covered` fact at all. A baseline that knew which
     # regions witnesses saw would carry witness-derived metadata into the one
     # reading whose point is to have seen none.
-    witnessed = witnessed_region_ids(testimonia)
+    witnessed = witnessed_region_ids(testimonia, regions)
     region_rows = sorted(
         (
             {

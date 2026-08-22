@@ -750,14 +750,34 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # space). A schema field on an existing kind: counts and exits hold at 84/0 and
 # 97/3, no artifact kind added. Re-measured through this module's own
 # `orchestrate` and `semantic_snapshot_digest` helpers at canonical run id "r".
-HAPPY_RUN_TREE_DIGEST = "1d9309b6a95f27ab7f189d9b8cdde4429125a74749c5370a5723d09a2272b2b4"
+# Unit 10C re-pin: native/derived containment replaces identity coverage and
+# page Testimonia retain the non-verdict partition record. The review-only
+# marginal observation routes both page acts through bounded recovery without
+# assigning it to either.  The final corrective pass separates its retained
+# recovery route from textual shortfall, so fresh canonical-id "r"
+# measurements are 84/0 (happy) and 109/3 (review).
+# Opus audit seat (10C, seat 3 of 4): the declared fixture gains one scenario,
+# `coverage-recovery`, and the single native observation that scenario needs.
+# Sonnet's recorded gap was that the coverage-triggered recovery origin had no
+# isolated test: in `review` that stimulus sits beside a scenario-declared
+# recrop on a1 and a scenario hold on a2, so no assertion there can tell the
+# two origins apart. The new scenario declares neither, which makes the
+# witness's own unclaimed observation the only thing in it that can ask for a
+# recovery or hold an act (`pipeline/5_recensor/test_coverage_recovery_origin.py`).
+# `config_digest` binds the WHOLE fixture declaration (`common/stage.py`'s
+# `run_config_bindings`), so adding a scenario nobody runs still moves every
+# run's digest. Fixture bytes only: no stage behaviour, artifact kind, count or
+# exit code changes — 84/0 and 109/3 hold, and each digest below reproduced
+# twice in independent temporary roots through this module's own `orchestrate`
+# and `semantic_snapshot_digest` helpers at canonical run id "r".
+HAPPY_RUN_TREE_DIGEST = "a7285a4743e365f78f3ad2dde1dc8a56756d20237e71bc9a250cce7fc330f687"
 # Review only, once more in the same seat: a page witness invoked on every act
 # and unusable on all of them now records the serving moment that produced it
 # (`provenance_for(..., attempted=attempted_page)`), where the `reading` gate
 # left `receipt_ref: None` beside a `presented` block claiming pixels were shown.
 # One `receipt_ref` field on attestator_3's page-2 record; no new file, no count
 # or exit change (97/3), and happy is untouched at the digest above.
-REVIEW_RUN_TREE_DIGEST = "311fa757d74ccfae882709a32057e449e4743c5aa6aa82f11d316db0f454d30c"
+REVIEW_RUN_TREE_DIGEST = "95f68ea20d140eca53a723d70cfece0632fbfe2ceff4d8558da803dfdb69938a"
 
 
 def orchestrate(
@@ -2516,11 +2536,11 @@ def _fallback_testimonia(tree: RunTree) -> list[dict]:
     return records
 
 
-def test_an_ink_free_page_fallback_is_witnessed_and_read_end_to_end(tmp_path):
-    """A Designator-minted act reaches both reader stages without fixture-key lookup failure."""
+def test_an_ink_free_page_fallback_is_read_but_not_retroactively_witness_covered(tmp_path):
+    """A recovery crop outside every observed box remains visibly under-witnessed."""
     root = tmp_path / "runs"
     result = orchestrate(root, "r", "ink-free-page")
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 3, result.stderr
     tree = RunTree(root, "r")
 
     testimonia = _fallback_testimonia(tree)
@@ -2544,13 +2564,7 @@ def test_an_ink_free_page_fallback_is_witnessed_and_read_end_to_end(tmp_path):
     )
     assert reading["outcome"] == "no-readable-text"
     assert reading["payload"]["text"] == ""
-    assert all(region["witness_covered"] for region in reading["payload"]["basis"]["regions"])
-
-    entry = next(
-        row for row in export_of(tree)["non_delivered"] if row["act_key"] == "page-fallback:3"
-    )
-    assert entry["act_id"] == reading["subject_id"]
-    assert entry["category"] == "confirmed-blank"
+    assert all(not region["witness_covered"] for region in reading["payload"]["basis"]["regions"])
 
 
 def test_an_undeclared_fallback_witness_holds_the_act_instead_of_reporting_it_blank(tmp_path):
@@ -3159,7 +3173,12 @@ def test_designator_refuses_a_current_recovery_review_with_a_different_policy(tm
     review_entry = next(
         entry
         for entry in tree.build_manifest(RECENSOR)["artifacts"]
-        if entry["kind"] == "review" and entry["outcome"] == "recovery-requested"
+        if entry["kind"] == "review"
+        and entry["outcome"] == "recovery-requested"
+        # Unit 10C retains a second request for the page witness's unclaimed
+        # native observation. Mutate the exact review the selected request
+        # binds rather than relying on manifest order to choose one.
+        and entry["subject_id"] == request["subject_id"]
     )
     review_path = tree.resolve(review_entry["relative_path"])
     review = json.loads(review_path.read_text(encoding="utf-8"))
@@ -4419,7 +4438,7 @@ def test_repeating_the_review_scenario_also_changes_nothing(tmp_path):
 
     # R0 adds the same four retained page/attachment artifacts before review's
     # recovery loop; its append-only invariant is unchanged.
-    assert len(before) == 97
+    assert len(before) == 109
     assert semantic_snapshot_digest(root) == REVIEW_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "review").returncode == 3
     assert snapshot(root) == before
@@ -4616,8 +4635,12 @@ def test_the_witness_uncovered_caveat_names_the_region_carrying_the_new_pixels(r
 def test_the_recovery_request_and_both_reading_attempts_survive(review_run):
     _, tree = review_run
     requests = artifacts(tree, RECENSOR, "recovery-request")
-    assert len(requests) == 1
-    assert requests[0]["payload"]["act_key"] == "a1"
+    # a1's scenario-declared crop request and a2's request for the page witness's
+    # unclaimed native observation are distinct, retained coverage decisions.
+    # The latter is not a retry for its disagreeing text: it is the Recensor's
+    # sealed fallback-recrop decision for ink outside every proposal.
+    assert len(requests) == 2
+    assert {request["payload"]["act_key"] for request in requests} == {"a1", "a2"}
 
     readings = [
         record
@@ -4673,25 +4696,50 @@ def test_recovery_ink_is_recorded_as_witness_uncovered(review_run):
 
 
 def test_the_cross_page_act_is_witnessed_on_both_sides_of_the_break(review_run):
-    """A continuation is part of the original proposal, not a later attempt. A
-    witness shown only the near side would have read half an act while the record
-    said it read the act."""
+    """A continuation is part of the original proposal, not a later attempt.
+
+    The geometric coverage bit says whether a witness observation contains a
+    particular region; it is not permission to omit a continuation region from
+    the Perlector's image basis.  Both sides must remain there even when an
+    observation did not cover one of them.
+    """
     _, tree = review_run
-    reading = next(
+    readings = [
         record
         for record in artifacts(tree, PERLECTOR, "perlectio")
         if record["payload"]["act_key"] == "a2"
-    )
+    ]
+    # The second a2 reading is the normal execution of the second request: the
+    # disagreeing page witness observed ink outside every proposal, so the
+    # Recensor spent its threshold-gated fallback-recrop allowance for coverage.
+    assert sorted(record["payload"]["attempt_ordinal"] for record in readings) == [1, 2]
+    reading = max(readings, key=lambda record: record["payload"]["attempt_ordinal"])
     regions = reading["payload"]["basis"]["regions"]
-    assert len(regions) == 2
-    assert all(basis["witness_covered"] for basis in regions)
+    assert len(regions) == 3
+    proposal_regions = {
+        record["payload"]["region_id"]
+        for record in artifacts(tree, DESIGNATOR, "region")
+        if record["payload"]["act_key"] == "a2" and record["payload"]["origin"] == "proposal"
+    }
+    assert len(proposal_regions) == 2
+    assert proposal_regions <= {region["region_id"] for region in regions}
+    assert {
+        region["source_page_ordinal"]
+        for region in regions
+        if region["region_id"] in proposal_regions
+    } == {1, 2}
 
 
 def test_recovery_stayed_inside_its_budget(review_run):
     _, tree = review_run
     requests = artifacts(tree, RECENSOR, "recovery-request")
-    assert len(requests) == 1
-    assert requests[0]["payload"]["budget_allowed"] <= 3, "the absolute cap is a ruling"
+    # The second request comes from attestator_3's retained native observation
+    # outside every sealed proposal. It is coverage recovery, not a text-quality
+    # reroll, and each request retains the exact sealed policy that capped it.
+    assert len(requests) == 2
+    assert all(request["payload"]["budget_allowed"] <= 3 for request in requests), (
+        "the absolute cap is a ruling"
+    )
 
 
 # --- 6. The held act cannot look complete --------------------------------------

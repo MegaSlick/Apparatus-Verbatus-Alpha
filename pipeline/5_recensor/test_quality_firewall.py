@@ -210,7 +210,8 @@ def test_what_the_gate_is_computed_from_is_coverage_only():
     ]
     assert len(assignments) == 1
     sources = _names(assignments[0].value)
-    assert sources <= {"act_key", "scenario", "used_total"}, (
+    assert "content_coverage" in sources, "the Unit 10C coverage finding must reach the gate"
+    assert sources <= {"act_key", "bool", "content_coverage", "scenario", "used_total"}, (
         f"wants_recovery is derived from {sorted(sources)}; recovery is requested on coverage "
         "evidence, never on what a reading said"
     )

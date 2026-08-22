@@ -1086,6 +1086,11 @@ def test_act_scoped_attachment_must_match_the_current_outcome_when_health_is_cur
     assert attachment["attached"] is False
     assert attachment["content_health"] == current["payload"]["content_health"]
     attachment["attached"] = True
+    # A positive act-scoped attachment must also name the presentation basis
+    # that the native-witness contract now closes over.  Keep the forgery
+    # coherent on that independent axis so this test reaches the outcome
+    # reconciliation it is meant to prove.
+    attachment["attachment_basis"] = "presented-region"
     # The span must stay consistent with the current health, or the Perlector
     # refuses on the span before it reaches the outcome guard this test is named
     # for: a non-integer character count skips that span check entirely, and 0

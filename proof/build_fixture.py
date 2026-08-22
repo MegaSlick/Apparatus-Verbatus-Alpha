@@ -97,6 +97,10 @@ _PRIOR_READING_SCENARIOS = (
     "malformed-witness",
     "structured-witness",
     "malformed-capabilities",
+    # The coverage-triggered recovery origin, isolated: an ordinary run in
+    # every other respect, so nothing but the witness's unclaimed observation
+    # can request a recrop or hold an act.
+    "coverage-recovery",
 )
 PRIOR_READINGS = tuple(
     {"scenario": scenario, "act_key": act_key, "text": text}
@@ -145,21 +149,45 @@ CHANDRA_ANCHORS = (
     },
 )
 
-# Native witness geometry is deliberately not the Designator's proposal.  This
-# is a marginal observation, outside EVERY proposal box on its page, so the
-# intake path can prove it routes a coverage finding instead of silently forcing
-# it into an act.  The overlap threshold is intentionally unmeasured; this
-# fixture only exercises the declared no-overlap case.
-#
-# Page 1 is 200x260 and both of its proposal crops span x 12..200 (y 15..114 and
-# y 114..238).  The box below sits in the left margin, clear of both in x.  Its
-# first shape, x 0..20 by y 230..250, overlapped act a2's crop by eight pixels
-# of x and eight of y: unaccounted ink for a1's own regions, ALREADY PROPOSED as
-# far as the page is concerned.  A per-act denominator called that a finding; a
-# page-scoped one does not, and the stimulus has to be genuinely unproposed for
-# the fixture to exercise the rule at all.
+# Native witness geometry exercises both ordinary containment and the recorded
+# disagreement path.  Page 1's two proposal crops span x 12..200 (y 15..114
+# and y 114..238); the reference rows contain both, while the review-only
+# marginal box at x 0..10 is outside each.  The latter is a deterministic
+# stimulus for the declared-but-unmeasured positive-area routing rule, never a
+# calibrated threshold or an instruction to attach it to either act.
 NATIVE_OBSERVATIONS = (
-    {"chair": "attestator_1", "page_ordinal": 1, "x": 0, "y": 200, "w": 10, "h": 40},
+    # The reference path has two independently reported page geometries large
+    # enough to contain both proposal regions.  They exercise geometric
+    # attachment and containment without using an anchor as authority.
+    {"chair": "attestator_1", "page_ordinal": 1, "x": 12, "y": 15, "w": 188, "h": 223},
+    {"chair": "attestator_3", "page_ordinal": 1, "x": 12, "y": 15, "w": 188, "h": 223},
+    # The disagreement fixture stays deliberately uncalibrated and belongs to
+    # the recovery scenario: it is reported ink outside every proposal, which
+    # the page Testimonium retains for the Recensor's bounded route.
+    {
+        "scenario": "review",
+        "chair": "attestator_1",
+        "page_ordinal": 1,
+        "x": 0,
+        "y": 200,
+        "w": 10,
+        "h": 40,
+    },
+    # The same marginal box under `coverage-recovery`, whose scenario declares
+    # no recovery and no hold at all.  In `review` this stimulus arrives beside
+    # a scenario-declared recrop on a1 and a scenario hold on a2, so a coverage
+    # route and a declared one cannot be told apart from the outcome; here the
+    # witness's own unclaimed geometry is the ONLY thing that can ask for a
+    # recovery, which is what makes the origin measurable rather than inferred.
+    {
+        "scenario": "coverage-recovery",
+        "chair": "attestator_1",
+        "page_ordinal": 1,
+        "x": 0,
+        "y": 200,
+        "w": 10,
+        "h": 40,
+    },
 )
 
 # The first two rows are the pair spec 07's `format_capabilities` exists for: "a
@@ -523,7 +551,9 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
 
     for observation in NATIVE_OBSERVATIONS:
         lines += ["", "[[native_observation]]"]
-        for key in ("chair", "page_ordinal", "x", "y", "w", "h"):
+        for key in ("scenario", "chair", "page_ordinal", "x", "y", "w", "h"):
+            if key not in observation:
+                continue
             value = observation[key]
             lines.append(f"{key} = {toml_string(value) if isinstance(value, str) else value}")
 
@@ -626,6 +656,15 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
         "[[scenario]]",
         'name = "continuation-recovery"',
         'recover_acts = ["a2"]',
+        "hold_acts = []",
+        "",
+        "# coverage-recovery declares neither a recovery nor a hold. Its only",
+        "# departure from `happy` is one page witness's native observation of ink",
+        "# outside every sealed proposal, so any recovery request or hold this",
+        "# scenario produces has exactly one possible origin.",
+        "[[scenario]]",
+        'name = "coverage-recovery"',
+        "recover_acts = []",
         "hold_acts = []",
         "",
         "[[scenario]]",
