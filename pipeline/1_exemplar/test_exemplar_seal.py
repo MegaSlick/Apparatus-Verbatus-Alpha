@@ -15,10 +15,13 @@ import importlib.util
 import json
 import subprocess
 import sys
+from io import BytesIO
 from pathlib import Path
 
+import door
 import pytest
 from door import SourceEntry, process_sources
+from PIL import Image
 from synthetic_sources import png
 
 from common.contracts.approval import real_ingress_record, synthetic_fixture_ingress_record
@@ -76,6 +79,7 @@ def build_door_run(
     run_id: str = "r1",
     *,
     files: dict[str, bytes] | None = None,
+    sources: list[SourceEntry] | None = None,
     register_bytes: bytes | None = None,
 ):
     """A run tree with the real door's admissions already published into it."""
@@ -83,7 +87,7 @@ def build_door_run(
 
     files = dict(PAGES | REFUSED) if files is None else files
     bindings = sealed_bindings()
-    sources = [
+    sources = sources or [
         SourceEntry(ordinal, name, digest_bytes(data))
         for ordinal, (name, data) in enumerate(sorted(files.items()), start=1)
     ]
@@ -95,6 +99,11 @@ def build_door_run(
                 "relative_path": entry.declared_path,
                 "sha256": entry.declared_sha256,
                 "ordinal": entry.ordinal,
+                **(
+                    {"container_page_index": entry.container_page_index}
+                    if entry.container_page_index is not None
+                    else {}
+                ),
             }
             for entry in sources
         ],
@@ -123,6 +132,84 @@ def build_door_run(
     )
     context.finish(DOOR)
     return tree, files
+
+
+def test_triage_spread_fans_out_to_sealed_derivative_pages_with_rederived_lineage(tmp_path):
+    """Unit 7: one JPEG master yields two adjacent, independently reproducible pages."""
+    from common.exemplar_boundary import verify_sealed_page_pixels
+
+    output = BytesIO()
+    image = Image.new("RGB", (10, 4), (255, 0, 0))
+    for x in range(5, 10):
+        for y in range(4):
+            image.putpixel((x, y), (0, 0, 255))
+    image.save(output, format="JPEG", quality=100, subsampling=0)
+    master = output.getvalue()
+    digest = digest_bytes(master)
+    parts = [
+        door.triage_manifest.make_part(
+            {"x": 0, "y": 0, "w": 5, "h": 4},
+            {"x": 0, "y": 0, "w": 5, "h": 4},
+            0,
+            colour_mode="rgb",
+        ),
+        door.triage_manifest.make_part(
+            {"x": 5, "y": 0, "w": 5, "h": 4},
+            {"x": 0, "y": 0, "w": 5, "h": 4},
+            0,
+            colour_mode="rgb",
+        ),
+    ]
+    row = door.triage_manifest.make_row(
+        corpus_id="parish-a",
+        source_frame_sha256=digest,
+        frame={"width": 10, "height": 4},
+        split=door.triage_manifest.make_split(parts),
+        re_shoot_cluster_id=None,
+        confidence=4,
+        mode="manual",
+        actor={"kind": "human", "identity": "operator-1", "revision": None},
+        human_override=True,
+    )
+    sources = door.expand_sources(
+        [{"relative_path": "spread.jpg", "sha256": digest}],
+        lambda _path: master,
+        door.admission.load_format_policy(),
+        triage_rows={digest: row},
+    )
+    assert [(source.ordinal, source.container_page_index) for source in sources] == [(1, 0), (2, 1)]
+
+    tree, _ = build_door_run(tmp_path / "runs", files={"spread.jpg": master}, sources=sources)
+    result = run_exemplar(tmp_path / "runs")
+    assert result.returncode == 0, result.stderr
+    run = tree.read_run()
+    assert [source["sha256"] for source in run["source_manifest"]] == [digest, digest]
+    pages = [
+        tree.read_artifact(EXEMPLAR, "page", entry["artifact_id"])
+        for entry in tree.build_manifest(EXEMPLAR)["artifacts"]
+        if entry["kind"] == "page"
+    ]
+    assert len(pages) == 2
+    for source, page in zip(
+        run["source_manifest"],
+        sorted(pages, key=lambda page: page["payload"]["ordinal"]),
+        strict=True,
+    ):
+        verify_sealed_page_pixels(tree, run, source, page)
+        rendered = page["payload"]["rendered_from"]["render_contract"]
+        derivative = rendered["derivative_page"]
+        assert derivative["parent_frame_sha256"] == digest
+        assert derivative["triage_manifest_row"]["mode"] == "manual"
+        assert derivative["triage_manifest_row"]["actor"]["kind"] == "human"
+    admissions = [
+        tree.read_artifact(DOOR, "admission", entry["artifact_id"])
+        for entry in tree.build_manifest(DOOR)["artifacts"]
+        if entry["kind"] == "admission"
+    ]
+    assert all(
+        tree.read_bytes(admission["payload"]["parent_frame"]["stored_at"]) == master
+        for admission in admissions
+    )
 
 
 def run_exemplar(

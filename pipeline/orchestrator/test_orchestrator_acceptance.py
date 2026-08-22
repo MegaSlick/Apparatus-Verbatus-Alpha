@@ -618,12 +618,13 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # re-measured twice through this module's own helpers at the same tree, counts
 # and exits held at 64/0 and 71/3.
 # Re-pinned for Unit 5's sealed `triage_modes.toml`: the new raw-byte binding
-# changes both authorities without adding an artifact. At this final candidate,
-# this module's own `orchestrate` and `semantic_snapshot_digest` helpers measured
-# happy at 65 files / exit 0 and review at 72 files / exit 3. The integration host
-# re-measures these pins on its merged candidate.
-HAPPY_RUN_TREE_DIGEST = "63ca5d24c33d90b386f36109dad5e23f7a6577fc651ee23c25f92dc4a077f622"
-REVIEW_RUN_TREE_DIGEST = "e719140a68bc6edbb4ee81170406908b91888e3aadc9a1ae7e174d64da1f43ab"
+# changes both authorities without adding an artifact. Unit 7 then changed the
+# Door implementation revision and its run binding; this module's own
+# `orchestrate` and `semantic_snapshot_digest` helpers re-measured the final
+# candidate at happy 65 files / exit 0 and review 72 files / exit 3. The
+# integration host re-measures these pins on its merged candidate.
+HAPPY_RUN_TREE_DIGEST = "3e8d13a5e44095df4ca84769cc78402d385fe23b2f84115079f18902cf49dd72"
+REVIEW_RUN_TREE_DIGEST = "ddade108f2af1cb7166ec7324adc6d97139238cd03bf1179a5ce800db64960fb"
 
 
 def orchestrate(
