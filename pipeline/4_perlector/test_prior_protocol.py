@@ -9,10 +9,18 @@ from pathlib import Path
 import protocol
 import pytest
 
+from common.chairs import load_models_toml
+from common.contracts.approval import (
+    ApprovalRecordBinding,
+    ApprovalRecordReference,
+    build_approval_record,
+)
+from common.contracts.canonical import canonical_bytes, digest_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.identities import perlector_attempt_id
 from common.contracts.stages import PERLECTOR
 from common.runtree.store import RunTree
+from common.stage import load_fixture, run_config_bindings
 
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
@@ -29,7 +37,67 @@ def _load_perlector():
 perlector = _load_perlector()
 
 
+def sampling_approval_records(scenario, *extra) -> dict:
+    """The typed records a run started with these flags would need, by subject.
+
+    Deterministic in the flags, so a test can rebuild the exact record it
+    pre-placed and name the reference the Perlector was obliged to resolve,
+    rather than reading the reference back out of the payload under test.
+    """
+
+    def value(flag):
+        return extra[extra.index(flag) + 1] if flag in extra else ""
+
+    nuda_rate = int(value("--nuda-per-mille") or "0")
+    control_rate = int(value("--perlector-instrument-per-mille") or "0")
+    nuda_ref = value("--nuda-approval-ref")
+    control_ref = value("--perlector-instrument-approval-ref")
+    subjects = []
+    if nuda_rate and nuda_ref == perlector.NUDA_APPROVAL_SUBJECT:
+        subjects.append(nuda_ref)
+    if control_rate and control_ref == perlector.PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT:
+        subjects.append(control_ref)
+    if not subjects:
+        return {}
+    bindings = run_config_bindings(
+        load_models_toml(ROOT / "config" / "models.toml"),
+        load_fixture(str(ROOT / "proof")),
+        scenario,
+        nuda_per_mille=nuda_rate,
+        nuda_approval_ref=nuda_ref,
+        perlector_instrument_per_mille=control_rate,
+        perlector_instrument_approval_ref=control_ref,
+    )
+    return {
+        subject: build_approval_record(
+            subject_ids=[subject],
+            action="other",
+            reason="test-only sampled instrument design",
+            target_version_hash=bindings["config_digest"],
+            timestamp="2026-08-21T00:00:00Z",
+        )
+        for subject in subjects
+    }
+
+
+def approval_reference(record) -> dict:
+    """Where a built record lands, computed without reading the run tree."""
+    digest = digest_bytes(canonical_bytes(record))
+    return {"relative_path": f"receipts/sha256/{digest}.json", "sha256": digest}
+
+
+def _write_sampling_approvals(root, run_id, scenario, extra) -> None:
+    """Supply typed records only for tests that intentionally enable an arm."""
+    records = sampling_approval_records(scenario, *extra)
+    if not records:
+        return
+    tree = RunTree(root, run_id)
+    for record in records.values():
+        tree.write_approval_record(record)
+
+
 def _run(root, run_id="r", scenario="happy", *extra):
+    _write_sampling_approvals(root, run_id, scenario, extra)
     return subprocess.run(
         [
             sys.executable,
@@ -67,11 +135,11 @@ def test_sampled_triple_has_all_three_records_and_nuda_stays_unfed(tmp_path):
         "--nuda-per-mille",
         "1000",
         "--nuda-approval-ref",
-        "fixture/nuda",
+        perlector.NUDA_APPROVAL_SUBJECT,
         "--perlector-instrument-per-mille",
         "1000",
         "--perlector-instrument-approval-ref",
-        "fixture/prior",
+        perlector.PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT,
     )
     assert result.returncode == 0, result.stderr
     tree = RunTree(root, "r")
@@ -107,7 +175,13 @@ def test_nuda_and_the_pass_a_prior_are_fed_the_identical_condition(tmp_path):
     """
     root = tmp_path / "runs"
     result = _run(
-        root, "r", "happy", "--nuda-per-mille", "1000", "--nuda-approval-ref", "fixture/nuda"
+        root,
+        "r",
+        "happy",
+        "--nuda-per-mille",
+        "1000",
+        "--nuda-approval-ref",
+        perlector.NUDA_APPROVAL_SUBJECT,
     )
     assert result.returncode == 0, result.stderr
     tree = RunTree(root, "r")
@@ -138,7 +212,7 @@ def test_control_refuses_without_tyrels_approval_on_fixture_path(tmp_path):
     root = tmp_path / "runs"
     result = _run(root, "r", "happy", "--perlector-instrument-per-mille", "1")
     assert result.returncode != 0
-    assert "unapproved instrument sample" in result.stderr
+    assert "sampling design selector" in result.stderr
     assert not (root / "r").exists()
 
 
@@ -195,7 +269,7 @@ def test_two_different_run_ids_over_the_same_corpus_facts_sample_the_control_ide
         "--perlector-instrument-per-mille",
         "500",
         "--perlector-instrument-approval-ref",
-        "fixture/prior",
+        perlector.PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT,
     )
     first = _run(root, "run-one", "happy", *extra)
     second = _run(root, "run-two", "happy", *extra)
@@ -296,7 +370,7 @@ def test_a_control_reference_forged_as_a_perlectio_is_refused(tmp_path):
         "--perlector-instrument-per-mille",
         "1000",
         "--perlector-instrument-approval-ref",
-        "fixture/prior",
+        perlector.PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT,
     )
     assert result.returncode == 0, result.stderr
     tree = RunTree(root, "r")
@@ -368,7 +442,7 @@ def published_primed_without_prior_payload(tmp_path_factory):
         "--perlector-instrument-per-mille",
         "1000",
         "--perlector-instrument-approval-ref",
-        "fixture/prior",
+        perlector.PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT,
     )
     assert result.returncode == 0, result.stderr
     return _records(RunTree(root, "r"), "primed-without-prior")[0]["payload"]
@@ -475,6 +549,103 @@ def test_a_real_published_control_satisfies_its_closed_schema(
         protocol_config=protocol_config,
         protocol_sha256=protocol_sha256,
     )
+
+
+def test_control_sampling_design_refuses_an_arbitrary_string_instead_of_a_record():
+    """The control arm's half of 0D: the nuda arm already refuses an untyped
+    reference by name at the point the design record is built, and the arm that
+    assembled its block inline had no such refusal at all."""
+    with pytest.raises(ValueError, match="arbitrary string is not an approval record"):
+        protocol.control_sampling_design(
+            per_mille=1000,
+            selection_rule=protocol.SELECTION_RULE,
+            approval_ref="not-a-record-or-digest",
+        )
+
+
+def test_control_sampling_design_refuses_a_rate_outside_its_range():
+    reference = ApprovalRecordReference("receipts/sha256/" + "a" * 64 + ".json", "a" * 64)
+    with pytest.raises(ValueError, match=r"integer in \[0, 1000\]"):
+        protocol.control_sampling_design(
+            per_mille=1001,
+            selection_rule=protocol.SELECTION_RULE,
+            approval_ref=ApprovalRecordBinding(
+                reference,
+                perlector.PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT,
+                "b" * 64,
+            ),
+        )
+
+
+def test_control_sampling_design_publishes_the_typed_reference_it_was_given():
+    reference = ApprovalRecordReference("receipts/sha256/" + "a" * 64 + ".json", "a" * 64)
+    approval = ApprovalRecordBinding(
+        reference,
+        perlector.PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT,
+        "b" * 64,
+    )
+    assert protocol.control_sampling_design(
+        per_mille=500,
+        selection_rule=protocol.SELECTION_RULE,
+        approval_ref=approval,
+    ) == {
+        "perlector_instrument_per_mille": 500,
+        "selection_rule": protocol.SELECTION_RULE,
+        "approval_ref": reference.to_record(),
+    }
+
+
+def test_control_sampling_design_refuses_a_rule_its_named_design_does_not_execute():
+    reference = ApprovalRecordReference("receipts/sha256/" + "a" * 64 + ".json", "a" * 64)
+    approval = ApprovalRecordBinding(
+        reference,
+        perlector.PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT,
+        "b" * 64,
+    )
+    with pytest.raises(ValueError, match="does not execute selection rule"):
+        protocol.control_sampling_design(
+            per_mille=500,
+            selection_rule="some-other-selection-rule.v1",
+            approval_ref=approval,
+        )
+
+
+def test_control_sampling_design_refuses_an_approval_for_the_other_experiment():
+    reference = ApprovalRecordReference("receipts/sha256/" + "a" * 64 + ".json", "a" * 64)
+    approval = ApprovalRecordBinding(
+        reference,
+        perlector.NUDA_APPROVAL_SUBJECT,
+        "b" * 64,
+    )
+    with pytest.raises(ValueError, match="but its approval record names"):
+        protocol.control_sampling_design(
+            per_mille=500,
+            selection_rule=protocol.SELECTION_RULE,
+            approval_ref=approval,
+        )
+
+
+def test_a_published_control_names_the_approval_record_it_was_drawn_under(
+    published_primed_without_prior_payload, _sealed_protocol
+):
+    """GOVERNANCE 10: a sample of unknown design measures nothing. The control
+    arm's design record must carry the *typed* reference to the one approval that
+    authorized it -- the same binding the nuda arm carries, asserted against the
+    record this fixture pre-placed rather than against whatever the payload says
+    about itself."""
+    protocol_config, _ = _sealed_protocol
+    record = sampling_approval_records(
+        "happy",
+        "--perlector-instrument-per-mille",
+        "1000",
+        "--perlector-instrument-approval-ref",
+        perlector.PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT,
+    )[perlector.PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT]
+    assert published_primed_without_prior_payload["sampling"] == {
+        "perlector_instrument_per_mille": 1000,
+        "selection_rule": protocol_config["selection_rule"],
+        "approval_ref": approval_reference(record),
+    }
 
 
 @pytest.mark.parametrize("field", sorted(perlector._PRIMED_WITHOUT_PRIOR_FIELDS))

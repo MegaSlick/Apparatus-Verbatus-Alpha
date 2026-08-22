@@ -15,6 +15,7 @@ from .approval import (
     APPROVER,
     REAL_INGRESS,
     SYNTHETIC_FIXTURE_INGRESS,
+    ApprovalRecordBinding,
     ApprovalRecordReference,
     build_approval_record,
     parse_ingress_record,
@@ -72,6 +73,7 @@ from .stages import HANDOFFS, STAGES, stage_directory
 __all__ = [
     "APPROVER",
     "ArmariumCategory",
+    "ApprovalRecordBinding",
     "ApprovalRecordReference",
     "ApprovalRefusal",
     "ContractError",

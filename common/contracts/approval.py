@@ -75,6 +75,35 @@ class ApprovalRecordReference:
         return f"ApprovalRecordReference({self.relative_path!r}, sha256={self.sha256!r})"
 
 
+class ApprovalRecordBinding:
+    """The subject/version facts verified with one approval-record reference.
+
+    A bare content address cannot tell a sampling arm which experiment the
+    record approved.  The sampling gate returns this binding only after reading
+    the referenced record and checking its exact subject and target version;
+    the arm can then refuse a valid approval for the other experiment instead
+    of trusting that its caller threaded the right reference.
+    """
+
+    __slots__ = ("reference", "subject", "target_version_hash")
+
+    def __init__(
+        self,
+        reference: ApprovalRecordReference,
+        subject: str,
+        target_version_hash: str,
+    ):
+        if not isinstance(reference, ApprovalRecordReference):
+            raise ApprovalRefusal("an approval-record binding has no typed reference")
+        if not isinstance(subject, str) or not subject.strip():
+            raise ApprovalRefusal("an approval-record binding names no subject")
+        if not _is_sha256(target_version_hash):
+            raise ApprovalRefusal("an approval-record binding names no target version")
+        self.reference = reference
+        self.subject = subject
+        self.target_version_hash = target_version_hash
+
+
 def synthetic_fixture_ingress_record() -> dict[str, str]:
     """Return the ingress record for the walking skeleton's declared synthetic pages."""
     return {"mode": SYNTHETIC_FIXTURE_INGRESS}

@@ -28,6 +28,7 @@ from zipfile import ZIP_STORED, BadZipFile, ZipFile
 import pytest
 
 from common.chairs import ChairIdentity, load_models_toml
+from common.contracts.approval import build_approval_record
 from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of, self_hash
 from common.contracts.envelope import build_envelope, validate_envelope, verify_input_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
@@ -67,6 +68,12 @@ from operations.submit import gate, submit
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
 FIXTURE = "synthetic-two-page-v0"
+# Spelled out rather than imported from `common.stage`, deliberately. This is the
+# value an operator types into `--nuda-approval-ref`, and the acceptance harness
+# pins the command a person would run. An import would follow a renamed or
+# versioned selector silently; the literal makes that rename a loud failure here,
+# which is where a change to operator-facing vocabulary should surface.
+NUDA_APPROVAL_SUBJECT = "lectio-nuda-sampling-design.v1"
 
 
 def rebind_stage_seal(tree: RunTree, stage: str) -> None:
@@ -707,6 +714,23 @@ def orchestrate(
     data_gate_policy: Path | None = None,
 ) -> subprocess.CompletedProcess:
     """Run the pipeline the way a person would, and return the whole result."""
+    if nuda_per_mille and nuda_approval_ref == NUDA_APPROVAL_SUBJECT:
+        bindings = run_config_bindings(
+            load_models_toml(ROOT / "config" / "models.toml"),
+            load_fixture(str(ROOT / "proof")),
+            scenario,
+            nuda_per_mille=nuda_per_mille,
+            nuda_approval_ref=nuda_approval_ref,
+        )
+        RunTree(run_root, run_id).write_approval_record(
+            build_approval_record(
+                subject_ids=[NUDA_APPROVAL_SUBJECT],
+                action="other",
+                reason="test-only Lectio nuda sampling design",
+                target_version_hash=bindings["config_digest"],
+                timestamp="2026-08-21T00:00:00Z",
+            )
+        )
     command = [
         sys.executable,
         str(ORCHESTRATOR),
@@ -4296,7 +4320,7 @@ def test_repeating_the_identical_command_with_nuda_enabled_leaves_every_byte_unc
     root = tmp_path / "runs"
     assert (
         orchestrate(
-            root, "r", "happy", nuda_per_mille=1000, nuda_approval_ref="test/nuda"
+            root, "r", "happy", nuda_per_mille=1000, nuda_approval_ref=NUDA_APPROVAL_SUBJECT
         ).returncode
         == 0
     )
@@ -4305,7 +4329,7 @@ def test_repeating_the_identical_command_with_nuda_enabled_leaves_every_byte_unc
 
     assert (
         orchestrate(
-            root, "r", "happy", nuda_per_mille=1000, nuda_approval_ref="test/nuda"
+            root, "r", "happy", nuda_per_mille=1000, nuda_approval_ref=NUDA_APPROVAL_SUBJECT
         ).returncode
         == 0
     )

@@ -10,6 +10,8 @@ file now covers — is the approval-record contract itself (`exclusion` and
 fixture-or-real ingress record every run authority carries.
 """
 
+from pathlib import Path
+
 import pytest
 
 from common.contracts.approval import (
@@ -157,3 +159,62 @@ def test_an_ingress_record_with_extra_fields_is_refused():
 def test_a_non_dict_ingress_record_is_refused():
     with pytest.raises(ApprovalRefusal, match="closed fixture-or-real record"):
         parse_ingress_record("real")
+
+
+# --- Who may mint an approval: GOVERNANCE's "no agent stands in for him" ---------
+
+
+# The three places the approval builder and writer may legitimately appear: the
+# module that defines the builder, the store that defines the writer, and the
+# package that re-exports the builder for tests and operator tooling. Anything
+# else under `pipeline/` or `common/` would be pipeline code minting its own
+# approval. Listed exactly, so a fourth entry is a deliberate, reviewable act.
+APPROVAL_MINTING_MODULES = frozenset(
+    {
+        "common/contracts/approval.py",
+        "common/contracts/__init__.py",
+        "common/runtree/store.py",
+    }
+)
+
+
+def test_no_pipeline_module_mints_its_own_approval_record():
+    """GOVERNANCE: "No automated agent may act as the human in any rule here."
+
+    `approver` is a string compare against a constant this module stamps itself,
+    so a record's authority rests entirely on *who wrote the file* -- nothing in
+    the bytes distinguishes Tyrel's record from one a stage wrote for itself. The
+    gates that consume approval records (spec 08's two sampled Perlector arms)
+    therefore depend on production code never reaching the builder or the writer.
+    An unused writer leaves no runtime trace, so this reads the source: a stage
+    that grows an approval of its own fails here even though no test calls it.
+
+    Deliberately not a runtime check. This is a statement about the repository,
+    and the honest enforcement of it is that the fact is checked and named rather
+    than assumed. What it cannot do is stop a human, an operator script, or an
+    agent with write access from placing a well-formed record in a run tree by
+    hand; that residual is real, recorded here, and not closable without an
+    out-of-band signature this project has not adopted.
+    """
+    root = Path(__file__).resolve().parents[2]
+    offenders = []
+    for area in ("pipeline", "common"):
+        for path in sorted((root / area).rglob("*.py")):
+            relative = path.relative_to(root).as_posix()
+            if path.name.startswith("test_") or path.name == "conftest.py":
+                continue
+            if relative in APPROVAL_MINTING_MODULES:
+                continue
+            source = path.read_text(encoding="utf-8")
+            if "build_approval_record" in source or "write_approval_record" in source:
+                offenders.append(relative)
+    assert not offenders, (
+        f"{offenders} mint or store an approval record from pipeline code; only Tyrel "
+        "approves, and a stage that writes its own approval has approved itself"
+    )
+
+
+def test_the_minting_exemption_list_names_only_files_that_exist():
+    """An exemption for a moved or deleted module would silently widen the rule."""
+    root = Path(__file__).resolve().parents[2]
+    assert all((root / relative).is_file() for relative in APPROVAL_MINTING_MODULES)
