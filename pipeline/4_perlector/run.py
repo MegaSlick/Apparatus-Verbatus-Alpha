@@ -314,7 +314,6 @@ def testimonia_of(context, act_id: str, proposal_regions: list[dict]) -> list[di
     return current
 
 
-
 def declared_page_witness_chairs(context) -> set[str]:
     """The fixture's page-witness declaration, as this *reader* holds it.
 

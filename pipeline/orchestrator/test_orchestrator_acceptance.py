@@ -695,8 +695,8 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # Measured on the union of every pushed unit branch through this module's own
 # helpers; the values below are the union-base measurement (counts asserted in
 # the tests themselves).
-HAPPY_RUN_TREE_DIGEST = "UNION-REMEASURE-PENDING"
-REVIEW_RUN_TREE_DIGEST = "UNION-REMEASURE-PENDING"
+HAPPY_RUN_TREE_DIGEST = "a46778a9a77fe611842f9cb755e62b2de6f3b76048a2732ee591875e45d952c2"
+REVIEW_RUN_TREE_DIGEST = "a2030918f4f957a9ac0eab22f206ca0e6d61282865fd8de2f69e48d11b8255a7"
 
 
 def orchestrate(
