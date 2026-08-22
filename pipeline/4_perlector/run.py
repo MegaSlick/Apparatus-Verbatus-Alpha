@@ -315,46 +315,32 @@ def testimonia_of(context, act_id: str, proposal_regions: list[dict]) -> list[di
 
 
 def declared_page_witness_chairs(context) -> set[str]:
-    """The fixture's page-witness declaration, as this *reader* holds it.
+    """The sealed occupants whose configured scope is ``page``.
 
-    The producer validates the same declaration in
-    `pipeline/3_attestatores/run.py::declared_page_witness_chairs`, and this is
-    deliberately a second implementation rather than a shared one: the stage
-    directories are not importable packages, and more to the point a consumer
-    that trusts a producer's validation has no boundary of its own. The rule
-    must be the same rule, though, and it was not — the reader checked only
-    that the declaration was a list of strings, so two of the producer's three
-    refusals had no counterpart here.
-
-    Uniqueness, because `set(declared)` silently absorbs a duplicate that the
-    producer refuses outright, and a run whose fixture the producer would not
-    have accepted must not read as sound one stage later.
-
-    The roster, because a declaration naming only chairs this run was never
-    sealed with makes `expected_page_witness` false for every real chair — and
-    every attachment and Testimonium in the tree agrees with it, since none of
-    them is a page witness either. The reader then validates a run in which the
-    page-witness mechanism silently did not exist, reports nothing, and the
-    coverage GOALS 3 requires to be accounted for has shrunk without a word.
-    That is the same silent drop the producer's own roster refusal exists to
-    stop, arriving from the other side of the handoff.
+    This independent consumer check keeps the page-attachment boundary from
+    trusting the Attestatores, while taking production scope only from the
+    sealed model configuration.
     """
-    declared = context.fixture.get("page_witness_chairs", [])
+    roster = context.witness_chairs
     if (
-        not isinstance(declared, list)
-        or any(not isinstance(item, str) for item in declared)
-        or len(declared) != len(set(declared))
+        not isinstance(roster, list)
+        or any(not isinstance(chair, str) for chair in roster)
+        or len(roster) != len(set(roster))
     ):
-        raise SchemaRefusal(
-            "the fixture's page_witness_chairs declaration is not a unique list of chair names"
-        )
-    unknown = set(declared) - set(context.witness_chairs)
+        raise SchemaRefusal("the sealed witness roster is not a unique list of chair names")
+    configured = context.registry.config.chairs
+    unknown = set(roster) - set(configured)
     if unknown:
         raise SchemaRefusal(
-            "the fixture's page_witness_chairs declaration names chair(s) outside this run's "
-            f"configured witness roster: {sorted(unknown)} not in {sorted(context.witness_chairs)}"
+            "the sealed witness roster names chair(s) absent from models.toml: "
+            f"{sorted(unknown)} not in {sorted(configured)}"
         )
-    return set(declared)
+    return {
+        chair
+        for chair in roster
+        if isinstance(configured[chair], ChairIdentity)
+        and configured[chair].witness_scope == "page"
+    }
 
 
 def act_attachment_view(
@@ -502,11 +488,9 @@ def act_attachment_view(
                 f"act {act_id} attachment for chair {chair!r} describes an attempt that is no "
                 "longer this chair's current Testimonium"
             )
-        # `declared_page_witness_chairs` above holds the producer's whole key:
-        # a unique list of strings, every one of them a chair this run was
-        # actually sealed with. A string-valued declaration would otherwise
-        # degrade into per-character membership and blame the attachment for
-        # the fixture's own malformation.
+        # `declared_page_witness_chairs` above independently verifies the sealed
+        # roster is a unique list of strings and every member has a configured
+        # occupant. Scope itself comes from that occupant, never fixture data.
         expected_page_witness = chair in page_chairs
         if attachment["page_witness"] != expected_page_witness:
             raise SchemaRefusal(

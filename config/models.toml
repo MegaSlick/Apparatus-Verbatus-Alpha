@@ -72,6 +72,8 @@ digest_manifest = "e9f85cfd5ebd7f7d8e0c54f0cc01c5341e578f6688a6be94a0a4c653f8e42
 manifest = "manifests/attestator_1.json"
 serving_recipe = "fake-attestatores-v0"
 license_note = "fixture identity only; no model weights or model license apply"
+witness_adapter = "churro.v1"
+witness_scope = "page"
 
 [chairs.attestator_2]
 state = "configured"
@@ -81,6 +83,8 @@ digest_manifest = "f2c2238c06ea7a7646363d5f8cf1ba3daa39dd9b5eb9d94a753705959d396
 manifest = "manifests/attestator_2.json"
 serving_recipe = "fake-attestatores-v0"
 license_note = "fixture identity only; no model weights or model license apply"
+witness_adapter = "churro.v1"
+witness_scope = "act"
 
 [chairs.attestator_3]
 state = "configured"
@@ -90,6 +94,8 @@ digest_manifest = "b9d6f5b6400e8aa36ecc35bad33cb4c54bb69b207e1ffdea39e1999cfa7e5
 manifest = "manifests/attestator_3.json"
 serving_recipe = "fake-attestatores-v0"
 license_note = "fixture identity only; no model weights or model license apply"
+witness_adapter = "churro.v1"
+witness_scope = "page"
 
 [chairs.perlector]
 state = "configured"

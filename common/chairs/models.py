@@ -30,6 +30,19 @@ def is_hf_revision(value: object) -> bool:
     )
 
 
+# Which roles are Attestator chairs, in one place. Three call sites used to spell
+# this prefix themselves, and the witness-adapter rows made a fourth reading
+# necessary at parse time: a chair that is not a witness has no native witness
+# boundary, so declaring one on it is a configuration error rather than a fact.
+_WITNESS_ROLE_PREFIX = "attestator_"
+
+
+def is_witness_role(role: object) -> bool:
+    """True for the roles that bear witness, by the one naming rule that says so."""
+
+    return isinstance(role, str) and role.startswith(_WITNESS_ROLE_PREFIX)
+
+
 @dataclass(frozen=True, slots=True)
 class ChairIdentity:
     """The exact configured artifact for one role, never an inferred replacement."""
@@ -44,6 +57,8 @@ class ChairIdentity:
     adapter_of: str | None
     serving_recipe: str
     license_note: str
+    witness_adapter: str | None = None
+    witness_scope: str | None = None
 
     @property
     def source_reference(self) -> str:
@@ -87,6 +102,8 @@ class ChairIdentity:
             **self.cache_descriptor(),
             "serving_recipe": self.serving_recipe,
             "license_note": self.license_note,
+            "witness_adapter": self.witness_adapter,
+            "witness_scope": self.witness_scope,
         }
 
 
@@ -249,7 +266,7 @@ class ModelsConfig:
     def witness_chairs(self) -> tuple[str, ...]:
         """All Attestator roles, including explicit absences that stay in the roster."""
 
-        return tuple(sorted(role for role in self.chairs if role.startswith("attestator_")))
+        return tuple(sorted(role for role in self.chairs if is_witness_role(role)))
 
     def witness_floor_status(self) -> WitnessFloorStatus:
         """Count configured Attestator chairs; explicit absences create a deficit."""
@@ -257,7 +274,7 @@ class ModelsConfig:
         configured: list[str] = []
         absent: list[str] = []
         for role, value in self.chairs.items():
-            if not role.startswith("attestator_"):
+            if not is_witness_role(role):
                 continue
             if isinstance(value, AbsentChair):
                 absent.append(role)

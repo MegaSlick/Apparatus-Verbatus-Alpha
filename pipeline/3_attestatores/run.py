@@ -28,6 +28,9 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import witness_adapters  # noqa: E402
 
 from common.alignment import align_to_anchor, load_alignment_limits, markup_text_view  # noqa: E402
 from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
@@ -1455,47 +1458,31 @@ def resolve_attempt(
 
 
 def declared_page_witness_chairs(context) -> set[str]:
-    """The fixture's page-witness declaration, validated before any use.
+    """The sealed occupants whose configured scope is ``page``.
 
-    One accessor for both write paths (the act-scoped compatibility flag in
-    `publish_attempt`, the reread refusal in `reread_pass`, and the page join in
-    `publish_page_testimonia_and_attachments`), so a malformed declaration is a
-    named refusal before the first attempt publishes rather than a TypeError
-    mid-pass after some artifacts already sealed (CodeRabbit chain-end review;
-    host disposition: fixed).
-
-    The roster check lives here rather than only in the page-join caller for the
-    same reason: `publish_attempt` reads this accessor once per act per chair
-    inside `attempt_pass`, which runs and seals Testimonium records *before*
-    `publish_page_testimonia_and_attachments` ever runs on the whole-pass path,
-    and `reread_pass` never calls the page-join function at all. A typo'd chair
-    name checked only downstream would let every attempt in between seal with a
-    silently wrong (or silently absent) `page_witness` flag — an unnamed, sealed
-    misreading of the fixture's own declaration, exactly the coverage GOALS 3
-    requires never shrink without saying so.
+    This is intentionally a local reader of the same configuration facts as the
+    Perlector.  Neither stage trusts a fixture declaration for production scope.
     """
-    declared = context.fixture.get("page_witness_chairs", [])
+    roster = context.witness_chairs
     if (
-        not isinstance(declared, list)
-        or any(not isinstance(chair, str) for chair in declared)
-        or len(declared) != len(set(declared))
+        not isinstance(roster, list)
+        or any(not isinstance(chair, str) for chair in roster)
+        or len(roster) != len(set(roster))
     ):
-        raise SchemaRefusal("fixture page_witness_chairs is not a unique string list")
-    declared_chairs = set(declared)
-    unknown_chairs = declared_chairs - set(context.witness_chairs)
-    if unknown_chairs:
-        # Both halves, because a name alone does not tell an operator which of
-        # the two mistakes they made. `attestator_33` is either a typo for a
-        # chair that exists or a chair this run was never sealed with, and the
-        # roster is the only thing that says which. Naming just the offender
-        # leaves them opening `config/models.toml` to find out what the run
-        # actually holds — which is the fixture's own declaration read back at
-        # them, one step short of useful.
+        raise SchemaRefusal("the sealed witness roster is not a unique list of chair names")
+    configured = context.registry.config.chairs
+    unknown = set(roster) - set(configured)
+    if unknown:
         raise SchemaRefusal(
-            "fixture page_witness_chairs names chair(s) outside the configured witness roster: "
-            f"{sorted(unknown_chairs)} not in {sorted(context.witness_chairs)}"
+            "the sealed witness roster names chair(s) absent from models.toml: "
+            f"{sorted(unknown)} not in {sorted(configured)}"
         )
-    return declared_chairs
+    return {
+        chair
+        for chair in roster
+        if isinstance(configured[chair], ChairIdentity)
+        and configured[chair].witness_scope == "page"
+    }
 
 
 def publish_attempt(
@@ -1524,7 +1511,7 @@ def publish_attempt(
         reason=attempt.reason,
     )
     if chair in declared_page_witness_chairs(context):
-        # This is the fixture's interim act view of an immutable page witness.
+        # This is the interim act view of an immutable page witness.
         # Its attachment points at the retained page Testimonium; R4 replaces
         # this declared view with alignment, not with another witness kind.
         payload["page_witness"] = True
@@ -1787,8 +1774,8 @@ def publish_page_testimonia_and_attachments(
     compatibility view for the current Perlector; each is explicitly linked below
     to the immutable page Testimonium that supplied it.
     """
-    # `declared_page_witness_chairs` already refuses a chair outside the
-    # configured roster, so a validated declaration needs no further narrowing.
+    # `declared_page_witness_chairs` already validates the sealed roster against
+    # the configured occupants, so scope needs no further narrowing here.
     page_chairs = declared_page_witness_chairs(context)
     limits, limits_digest = load_alignment_limits(context.args.alignment_config)
     context.require_sealed_config("alignment", limits_digest)
@@ -2429,7 +2416,7 @@ def reread_pass(
         # operation — a different concept whose name must not be borrowed for
         # this one; one word per concept.)
         raise ContractError(
-            f"chair {chair!r} is a page witness on this fixture: it reports one reading per "
+            f"chair {chair!r} is page-scoped in this run: it reports one reading per "
             "page and its act-level view is derived from that page reading, so there is no "
             f"act-scoped attempt for act {act_id} to repeat. No operation exists to re-ask "
             "a page witness; building one would be new page-scoped Attestatores work, and "
@@ -2592,6 +2579,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             "ignore the act and chair it was given, and report success"
         )
     context = open_context(args, ATTESTATORES, registry_factory=registry_factory)
+    witness_adapters.validate_runnable_adapter_bindings(context.registry.config)
     acts = expected_acts(context)
     try:
         index = _attempt_history(context)

@@ -12,7 +12,14 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
 from .errors import ConfigurationRefusal
-from .models import AbsentChair, ChairIdentity, ModelsConfig, is_hf_revision, is_sha256
+from .models import (
+    AbsentChair,
+    ChairIdentity,
+    ModelsConfig,
+    is_hf_revision,
+    is_sha256,
+    is_witness_role,
+)
 
 _TOP_LEVEL = {"witness_floor", "chairs", "adapter_recipes", "model_root"}
 _CONFIGURED_COMMON = {
@@ -23,6 +30,8 @@ _CONFIGURED_COMMON = {
     "adapter_of",
     "serving_recipe",
     "license_note",
+    "witness_adapter",
+    "witness_scope",
 }
 
 
@@ -135,7 +144,7 @@ def _parse_chair(role: str, values: Any) -> ChairIdentity | AbsentChair:
         )
     allowed = _CONFIGURED_COMMON | ({"repo", "revision"} if source == "huggingface" else {"path"})
     _only_keys(role, values, allowed)
-    required = _CONFIGURED_COMMON - {"adapter_of"}
+    required = _CONFIGURED_COMMON - {"adapter_of", "witness_adapter", "witness_scope"}
     required |= {"repo", "revision"} if source == "huggingface" else {"path"}
     missing = sorted(field for field in required if field not in values)
     if missing:
@@ -166,6 +175,29 @@ def _parse_chair(role: str, values: Any) -> ChairIdentity | AbsentChair:
         path = _relative_posix(role, "path", values["path"])
         revision = None
 
+    witness_adapter = values.get("witness_adapter")
+    witness_scope = values.get("witness_scope")
+    # Only a witness has a native witness boundary. On any other role these two
+    # rows are read by nothing, yet `to_record()` carries them into that chair's
+    # provenance record and into `config_digest`, so the record would assert a
+    # boundary the occupant never crosses (GOVERNANCE 6) and a typo'd role would
+    # be absorbed rather than named (GOVERNANCE 2). Refused here rather than at
+    # binding time so the mistake is named against the file that made it.
+    if not is_witness_role(role) and (witness_adapter is not None or witness_scope is not None):
+        raise ConfigurationRefusal(
+            role,
+            "witness_adapter/witness_scope belong to an Attestator chair only; "
+            "no other role is shown a witness's native boundary",
+        )
+    if witness_adapter is None and witness_scope is not None:
+        raise ConfigurationRefusal(role, "witness_scope is forbidden without witness_adapter")
+    if witness_adapter is not None:
+        witness_adapter = _text(role, "witness_adapter", witness_adapter)
+        if witness_scope not in ("page", "act"):
+            raise ConfigurationRefusal(
+                role, "witness_scope must be exactly 'page' or 'act' when witness_adapter is set"
+            )
+
     return ChairIdentity(
         role=role,
         source=source,
@@ -177,6 +209,8 @@ def _parse_chair(role: str, values: Any) -> ChairIdentity | AbsentChair:
         adapter_of=adapter_of,
         serving_recipe=_text(role, "serving_recipe", values["serving_recipe"]),
         license_note=_text(role, "license_note", values["license_note"]),
+        witness_adapter=witness_adapter,
+        witness_scope=witness_scope,
     )
 
 

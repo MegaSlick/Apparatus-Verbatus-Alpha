@@ -2133,7 +2133,7 @@ def _open(args, registry_factory) -> tuple[object, bool]:
     run = tree.read_run()
     mode = parse_ingress_record(run.get("ingress"))
     if mode != REAL_INGRESS:
-        return open_context(args, DESIGNATOR, registry_factory=registry_factory), False
+        return (open_context(args, DESIGNATOR, registry_factory=registry_factory), False)
     return (
         StageContext(
             tree=tree,

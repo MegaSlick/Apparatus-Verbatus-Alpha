@@ -696,8 +696,21 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # helpers; the values below are the union-base measurement (counts asserted in
 # the tests themselves; both pinned scenarios drive run id "r" — the digest
 # binds the run id, so the pin is only meaningful at the canonical id).
-HAPPY_RUN_TREE_DIGEST = "a4c999b8cb3103953563311f41d74458e0320e3d1421f6e863cae8ce11f8cc67"
-REVIEW_RUN_TREE_DIGEST = "a2030918f4f957a9ac0eab22f206ca0e6d61282865fd8de2f69e48d11b8255a7"
+#
+# Re-pinned for Unit 10A, the witness-adapter registry. Two facts moved these
+# authorities in the same commit and neither is stage behaviour: every
+# `[chairs.attestator_*]` table gained `witness_adapter` and `witness_scope`,
+# which enter `ChairIdentity.to_record()` and therefore `models_digest`, and
+# `proof/skeleton_fixture.toml` lost the retired `page_witness_chairs`
+# declaration, which is bound into `config_digest` as the fixture. The recorded
+# provenance in every run also gains the two rows. Counts and exits held at 84/0
+# and 97/3 — no artifact kind, outcome, or file was added or removed by the
+# slice. Measured by the build seat through this module's own `orchestrate` and
+# `semantic_snapshot_digest` helpers and reproduced at the audit seat's tip by
+# the two pinning tests below, which are the same measurement asserted; the host
+# re-measures at integration.
+HAPPY_RUN_TREE_DIGEST = "c6dc5dc8e7946f61d8746224446a1ccde4fc346ba822c9dc139199eb00e9db3a"
+REVIEW_RUN_TREE_DIGEST = "733a49a2365cbcaed8bdfb3b07a7a34aa9217046cf13cf0e71b526e442c574a7"
 
 
 def orchestrate(

@@ -239,6 +239,8 @@ def _validate_identity_record(value: Any, chair: str) -> None:
         "adapter_of",
         "serving_recipe",
         "license_note",
+        "witness_adapter",
+        "witness_scope",
     }
     if set(value) != required:
         raise ReceiptRefusal(chair, "adapter_identity does not carry a complete resolved identity")

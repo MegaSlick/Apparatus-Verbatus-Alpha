@@ -1,20 +1,4 @@
-"""The consumer side of the page-witness declaration.
-
-`pipeline/3_attestatores/run.py::declared_page_witness_chairs` is the producer's
-key to this fixture field: a unique list of strings, every one of them a chair the
-run was sealed with. The Perlector holds its own copy of that key rather than
-trusting the producer's, because a consumer that trusts its producer has no
-boundary — and R0's handoff test drives all seven boundaries for exactly that
-reason.
-
-It held a weaker one. The reader checked only that the declaration was a list of
-strings, so two of the producer's three refusals had no counterpart here, and a
-declaration naming nobody real read as sound: `expected_page_witness` is false for
-every configured chair, every attachment and Testimonium in the tree agrees with
-it because none of them is a page witness either, and the stage validates a run in
-which the page-witness mechanism silently did not exist. That is a boundary
-dropping coverage without saying so.
-"""
+"""The Perlector's independent read of sealed page-witness scope."""
 
 import importlib.util
 from pathlib import Path
@@ -22,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from common.chairs.models import ChairIdentity
 from common.contracts.errors import SchemaRefusal
 
 
@@ -36,23 +21,44 @@ def _load_perlector():
 perlector = _load_perlector()
 
 
-def _context(declared, chairs=("attestator_1", "attestator_3")):
-    return SimpleNamespace(fixture={"page_witness_chairs": declared}, witness_chairs=chairs)
+def _identity(role: str, scope: str) -> ChairIdentity:
+    return ChairIdentity(
+        role=role,
+        source="local-repository",
+        repo=None,
+        path=role,
+        revision=None,
+        digest_manifest="a" * 64,
+        manifest=f"manifests/{role}.json",
+        adapter_of=None,
+        serving_recipe="fixture",
+        license_note="fixture",
+        witness_adapter="churro.v1",
+        witness_scope=scope,
+    )
 
 
-def test_the_declared_page_witnesses_are_read_back_when_the_fixture_is_sound():
-    assert perlector.declared_page_witness_chairs(_context(["attestator_1"])) == {"attestator_1"}
+def _context(chairs=None, *, fixture=None, scopes=None):
+    scopes = scopes or {"attestator_1": "page", "attestator_3": "act"}
+    configured = {role: _identity(role, scope) for role, scope in scopes.items()}
+    return SimpleNamespace(
+        fixture={} if fixture is None else fixture,
+        witness_chairs=list(scopes) if chairs is None else chairs,
+        registry=SimpleNamespace(config=SimpleNamespace(chairs=configured)),
+    )
 
 
-def test_an_absent_declaration_is_no_page_witnesses_rather_than_a_refusal():
-    """Harvest #14: a seal that stops refusing bad things in order to stop refusing
-    good things is not a fix. The fixture is allowed to declare none."""
-    context = SimpleNamespace(fixture={}, witness_chairs=("attestator_1",))
-    assert perlector.declared_page_witness_chairs(context) == set()
+def test_scope_is_read_from_the_configured_occupants_not_the_fixture():
+    context = _context(fixture={"page_witness_chairs": ["attestator_3"]})
+    assert perlector.declared_page_witness_chairs(context) == {"attestator_1"}
+
+
+def test_no_page_scoped_occupant_is_a_valid_empty_declaration():
+    assert perlector.declared_page_witness_chairs(_context(scopes={"attestator_1": "act"})) == set()
 
 
 @pytest.mark.parametrize(
-    "declared",
+    "roster",
     (
         "attestator_1",
         {"attestator_1": True},
@@ -66,25 +72,17 @@ def test_an_absent_declaration_is_no_page_witnesses_rather_than_a_refusal():
         pytest.param([10**5000], id="huge-int"),
     ),
 )
-def test_a_declaration_that_is_not_a_list_of_chair_names_is_refused(declared):
-    """A string-valued declaration would otherwise degrade into per-character
-    membership and blame the attachment for the fixture's own malformation."""
+def test_a_scope_roster_that_is_not_a_list_of_chair_names_is_refused(roster):
     with pytest.raises(SchemaRefusal, match="unique list of chair names"):
-        perlector.declared_page_witness_chairs(_context(declared))
+        perlector.declared_page_witness_chairs(_context(roster))
 
 
-def test_a_duplicated_chair_is_refused_here_exactly_as_the_producer_refuses_it():
-    """`set(declared)` absorbs a duplicate in silence, so the reader used to accept
-    a fixture the producer would have refused outright — a run reading as sound one
-    stage after it could not have been produced."""
+def test_a_duplicate_scope_chair_is_refused():
     with pytest.raises(SchemaRefusal, match="unique list of chair names"):
         perlector.declared_page_witness_chairs(_context(["attestator_1", "attestator_1"]))
 
 
-def test_a_chair_outside_the_configured_roster_is_refused_and_both_halves_named():
-    """The silent case, and the reason this check is worth having on the reader's
-    side at all: nothing in the run tree contradicts a declaration that names
-    nobody, so without this the stage reports a sound run over vanished coverage."""
+def test_an_unknown_scope_chair_is_refused_and_both_halves_are_named():
     with pytest.raises(SchemaRefusal) as caught:
         perlector.declared_page_witness_chairs(_context(["attestator_33"]))
     message = str(caught.value)
@@ -92,17 +90,14 @@ def test_a_chair_outside_the_configured_roster_is_refused_and_both_halves_named(
     assert "attestator_1" in message and "attestator_3" in message
 
 
-def test_a_chair_name_carrying_a_surrogate_is_refused_printably():
-    """It is a string, so it clears the shape check and reaches a message that an
-    operator's stderr has to encode. `repr` escapes it; a raw interpolation would
-    raise `UnicodeEncodeError` out of the report of the refusal itself."""
+def test_an_unknown_scope_chair_with_a_surrogate_is_refused_printably():
     with pytest.raises(SchemaRefusal) as caught:
         perlector.declared_page_witness_chairs(_context(["attestator_\ud800"]))
     str(caught.value).encode("utf-8")
 
 
 @pytest.mark.parametrize("chair", ("NaN", "attestator_\0"))
-def test_hostile_but_encodable_chair_strings_are_refused_printably(chair):
+def test_hostile_but_encodable_scope_chair_strings_are_refused_printably(chair):
     with pytest.raises(SchemaRefusal) as caught:
         perlector.declared_page_witness_chairs(_context([chair]))
     str(caught.value).encode("utf-8")

@@ -19,7 +19,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from common.chairs.models import AbsentChair
+from common.chairs.models import AbsentChair, ChairIdentity
 from common.contracts.errors import SchemaRefusal
 
 
@@ -35,26 +35,51 @@ attestatores = _load_attestatores()
 Attempt = attestatores.Attempt
 
 
+def _identity(role: str, scope: str) -> ChairIdentity:
+    return ChairIdentity(
+        role=role,
+        source="local-repository",
+        repo=None,
+        path=role,
+        revision=None,
+        digest_manifest="a" * 64,
+        manifest=f"manifests/{role}.json",
+        adapter_of=None,
+        serving_recipe="fixture",
+        license_note="fixture",
+        witness_adapter="churro.v1",
+        witness_scope=scope,
+    )
+
+
+def _scope_context(chairs=None, *, fixture=None, scopes=None, **fields):
+    scopes = scopes or {"attestator_1": "page", "attestator_3": "act"}
+    configured = {role: _identity(role, scope) for role, scope in scopes.items()}
+    return SimpleNamespace(
+        fixture={} if fixture is None else fixture,
+        witness_chairs=list(scopes) if chairs is None else chairs,
+        registry=SimpleNamespace(config=SimpleNamespace(chairs=configured)),
+        **fields,
+    )
+
+
 @pytest.mark.parametrize(
     "bad_chair",
     ([], {}, [[]], {"nested": []}, {"a": {"b": [1, 2]}}, [[[]]], [{"a": [{}]}]),
 )
 def test_declared_page_witness_chairs_refuses_unhashable_json_values(bad_chair):
     """Fixture data crosses this boundary before set-based roster handling."""
-    context = SimpleNamespace(fixture={"page_witness_chairs": [bad_chair]})
+    context = _scope_context([bad_chair])
 
-    with pytest.raises(SchemaRefusal, match="unique string list"):
+    with pytest.raises(SchemaRefusal, match="unique list of chair names"):
         attestatores.declared_page_witness_chairs(context)
 
 
 def test_an_unknown_page_witness_chair_is_refused_not_dropped_from_the_join():
     """A declared typo is evidence of a missing witness, not an empty intersection."""
-    context = SimpleNamespace(
-        fixture={"page_witness_chairs": ["attestator_33"]},
-        witness_chairs=("attestator_1",),
-    )
+    context = _scope_context(["attestator_33"])
 
-    with pytest.raises(SchemaRefusal, match="outside the configured witness roster"):
+    with pytest.raises(SchemaRefusal, match="absent from models.toml"):
         attestatores.publish_page_testimonia_and_attachments(
             context, acts=[], ordinal=1, attempts_by_pair={}, regions_by_act={}
         )
@@ -67,12 +92,9 @@ def test_an_unknown_page_witness_chair_is_refused_by_the_shared_accessor_itself(
     after `attempt_pass` has already sealed every attempt). The roster check
     must live in the accessor itself or a typo'd chair silently reaches those
     write paths unrefused before the join ever runs."""
-    context = SimpleNamespace(
-        fixture={"page_witness_chairs": ["attestator_33"]},
-        witness_chairs=("attestator_1",),
-    )
+    context = _scope_context(["attestator_33"])
 
-    with pytest.raises(SchemaRefusal, match="outside the configured witness roster"):
+    with pytest.raises(SchemaRefusal, match="absent from models.toml"):
         attestatores.declared_page_witness_chairs(context)
 
 
@@ -81,10 +103,7 @@ def test_the_roster_refusal_names_the_roster_and_not_only_the_offender():
     run was never sealed with, and only the roster says which. A refusal that
     names the offender alone hands the operator their own fixture back and makes
     them open `config/models.toml` to learn what the run actually holds."""
-    context = SimpleNamespace(
-        fixture={"page_witness_chairs": ["attestator_33"]},
-        witness_chairs=("attestator_1", "attestator_3"),
-    )
+    context = _scope_context(["attestator_33"])
 
     with pytest.raises(SchemaRefusal) as caught:
         attestatores.declared_page_witness_chairs(context)
@@ -116,9 +135,9 @@ def test_declared_page_witness_chairs_refuses_values_no_chair_name_could_be(bad_
         recursive: list = []
         recursive.append(recursive)
         bad_chair = recursive
-    context = SimpleNamespace(fixture={"page_witness_chairs": [bad_chair]})
+    context = _scope_context([bad_chair])
 
-    with pytest.raises(SchemaRefusal, match="unique string list"):
+    with pytest.raises(SchemaRefusal, match="unique list of chair names"):
         attestatores.declared_page_witness_chairs(context)
 
 
@@ -127,10 +146,7 @@ def test_a_chair_name_carrying_a_surrogate_is_refused_printably():
     roster refusal — which then puts it in a message an operator's stderr has to
     encode. `repr` escapes the surrogate; an f-string interpolating it raw would
     raise `UnicodeEncodeError` out of the report of the refusal."""
-    context = SimpleNamespace(
-        fixture={"page_witness_chairs": ["attestator_\ud800"]},
-        witness_chairs=("attestator_1",),
-    )
+    context = _scope_context(["attestator_\ud800"])
 
     with pytest.raises(SchemaRefusal) as caught:
         attestatores.declared_page_witness_chairs(context)
@@ -139,10 +155,7 @@ def test_a_chair_name_carrying_a_surrogate_is_refused_printably():
 
 @pytest.mark.parametrize("chair", ("NaN", "attestator_\0"))
 def test_hostile_but_encodable_chair_strings_are_refused_printably(chair):
-    context = SimpleNamespace(
-        fixture={"page_witness_chairs": [chair]},
-        witness_chairs=("attestator_1",),
-    )
+    context = _scope_context([chair])
 
     with pytest.raises(SchemaRefusal) as caught:
         attestatores.declared_page_witness_chairs(context)
@@ -161,14 +174,13 @@ def test_no_testimonium_is_sealed_before_the_declaration_is_validated():
     """
     published: list = []
     resolved = AbsentChair(role="attestator_1", reason="fixture test needs no live chair")
-    context = SimpleNamespace(
-        fixture={"page_witness_chairs": ["attestator_33"]},
-        witness_chairs=("attestator_1",),
+    context = _scope_context(
+        ["attestator_33"],
         adapter_revision="fake-attestatores-v0",
         publish=lambda **kwargs: published.append(kwargs),
     )
 
-    with pytest.raises(SchemaRefusal, match="outside the configured witness roster"):
+    with pytest.raises(SchemaRefusal, match="absent from models.toml"):
         attestatores.publish_attempt(
             context,
             act={"act_id": "act_0123456789abcdef", "act_key": "1-1"},
