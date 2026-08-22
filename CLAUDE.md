@@ -48,6 +48,11 @@ These numbers are cited by hooks, tests, and agent briefs. Append; never insert 
     become Tyrel's by being hard. Do not park an engineering choice in a TODO, deferred
     list, handoff, or pull request. Rule 7 requires a visible decision, not a deferral.
 
+**Settled permanently (Tyrel, 2026-08-22):** vendor-licence analysis (non-commercial
+research; vendor repos fetched at boot, never stored — only new carries into our tree
+are findings) and cryptographic trust roots for approval records (integrity-only
+records are the design). Neither is ever raised again.
+
 ## Where notes go
 
 `workbench/` is local and gitignored. Current notes live in `active/`; durable task state
