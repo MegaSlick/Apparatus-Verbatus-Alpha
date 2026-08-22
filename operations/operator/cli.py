@@ -204,6 +204,17 @@ def build_parser() -> PlainParser:
     advance.add_argument("--run-id", required=True, help="the sealed run to advance")
     advance.add_argument("--stage", required=True, help="the sealed stage boundary to pass")
     advance.add_argument("--reason", required=True, help="why Tyrel chose to advance this boundary")
+    backup = verbs.add_parser(
+        "backup",
+        help="copy one run tree to a local Mac directory by digest, without a provider credential",
+    )
+    backup.add_argument(
+        "--run-root", type=Path, required=True, help="folder containing the volume-hosted run"
+    )
+    backup.add_argument("--run-id", required=True, help="the sealed run to copy")
+    backup.add_argument(
+        "--mac-directory", type=Path, required=True, help="local synced backup directory"
+    )
     return parser
 
 
@@ -289,6 +300,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 reason=args.reason,
                 workspace=workspace,
             )
+        elif args.verb == "backup":
+            _backup_in_custody(args.run_root, args.run_id, args.mac_directory, workspace)
         else:  # argparse owns this list, but an explicit branch prevents a silent no-op.
             raise OperatorError(
                 ErrorCode.INVALID_COMMAND, detail="the requested word has no action"
@@ -332,6 +345,53 @@ def _review_in_custody(run_root: Path, run_id: str, workspace: Path) -> None:
             ErrorCode.CONSOLE_TREE_UNREADABLE, detail=completed.stdout or completed.stderr
         )
     _print(completed.stdout.rstrip())
+
+
+def _backup_in_custody(run_root: Path, run_id: str, mac_directory: Path, workspace: Path) -> None:
+    """Copy evidence only in the no-network, credential-free custody child."""
+
+    from .backup import BackupRefusal, resolve_backup_paths
+
+    # The same rules the worker applies, applied before the parent creates
+    # anything.  The parent prepares the destination layout, so a destination
+    # that overlaps the run tree would have had `objects/` and `snapshots/`
+    # created *inside* the sealed run tree on the way to the child refusing it.
+    try:
+        _, destination = resolve_backup_paths(run_root, run_id, mac_directory)
+    except BackupRefusal as refusal:
+        raise OperatorError(ErrorCode.BACKUP_FAILED, detail=str(refusal)) from refusal
+    # Landlock's custody allowance deliberately grants only publication rights,
+    # not directory creation.  Prepare the empty layout before the credential-
+    # free child starts; the child can then only add content-addressed files
+    # beneath it, never replace an existing one or make an unrelated subtree.
+    for directory in (destination / "objects" / "sha256", destination / "snapshots" / "sha256"):
+        directory.mkdir(parents=True, exist_ok=True)
+    command = python_module_command("operations.operator.backup_worker", workspace)
+    request = json.dumps(
+        {"run_root": str(run_root.resolve()), "run_id": run_id, "mac_directory": str(destination)}
+    )
+    backend, completed = run_confined(
+        command, writable=destination, cwd=workspace, input_text=request
+    )
+    if completed.returncode != 0:
+        launcher = backend.launcher_failure(completed)
+        detail = launcher if launcher is not None else (completed.stderr or completed.stdout)
+        raise OperatorError(ErrorCode.BACKUP_FAILED, detail=detail)
+    try:
+        report = json.loads(completed.stdout)
+        if not isinstance(report, dict) or set(report) != {
+            "copied",
+            "reused",
+            "schema",
+            "snapshot_sha256",
+        }:
+            raise ValueError("backup worker returned an invalid report")
+    except (json.JSONDecodeError, ValueError) as error:
+        raise OperatorError(ErrorCode.BACKUP_FAILED, detail=str(error)) from error
+    _print(
+        "Mac backup complete: "
+        f"{report['copied']} copied, {report['reused']} reused; snapshot {report['snapshot_sha256']}."
+    )
 
 
 def _advance_with_confirmation(
@@ -461,7 +521,9 @@ def _interactive_arguments() -> list[str]:
     """The double-click route asks for a word and the smallest needed facts."""
 
     _print("Verbatus")
-    _print("Choose one word: launch, boot, upload, run, export, close, status, review, or advance.")
+    _print(
+        "Choose one word: launch, boot, upload, run, export, close, status, review, advance, or backup."
+    )
     try:
         verb = input("What would you like to do? ").strip().lower()
     except EOFError:
@@ -514,7 +576,7 @@ def _interactive_arguments() -> list[str]:
         return ["export"]
     if verb == "close":
         return ["close"]
-    if verb in {"review", "advance"}:
+    if verb in {"review", "advance", "backup"}:
         run_root = _ask("Folder containing the run tree")
         run_id = _ask("The sealed run ID")
         if not run_root or not run_id:
@@ -528,6 +590,12 @@ def _interactive_arguments() -> list[str]:
                 _print("Advance needs both a stage and a reason. Nothing changed.")
                 return []
             arguments.extend(("--stage", stage, "--reason", reason))
+        if verb == "backup":
+            mac_directory = _ask("Local synced Mac backup directory")
+            if not mac_directory:
+                _print("Backup needs a local synced destination directory. Nothing changed.")
+                return []
+            arguments.extend(("--mac-directory", mac_directory))
         return arguments
     return [verb]
 

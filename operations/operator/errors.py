@@ -52,6 +52,7 @@ class ErrorCode(StrEnum):
     CONSOLE_CUSTODY_REFUSED = "console-custody-refused"
     CONSOLE_TREE_UNREADABLE = "console-tree-unreadable"
     ADVANCE_REFUSED = "advance-refused"
+    BACKUP_FAILED = "backup-failed"
     INTERRUPTED = "interrupted"
     UNEXPECTED = "unexpected"
 
@@ -246,6 +247,11 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
         "The requested stage boundary could not be advanced.",
         "No later stage was started. A worker failure after append may have left an immutable advance record even though no checked result returned.",
         "Open review and inspect advance_records before retrying, then address the named seal or worker problem; never assume a retry is record-free.",
+    ),
+    ErrorCode.BACKUP_FAILED: ErrorCopy(
+        "The Mac backup did not finish with a verified snapshot.",
+        "Existing content-addressed backup objects remain intact, but this run is not called backed up.",
+        "Keep the saved detail, repair the named source or backup-directory problem, then run `verbatus backup` again; it safely reuses verified files.",
     ),
     ErrorCode.INTERRUPTED: ErrorCopy(
         "The Verbatus command was interrupted before it reported an end state.",
