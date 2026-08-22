@@ -694,8 +694,9 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # raw-byte binding joins the seal machinery, so both authorities move together.
 # Measured on the union of every pushed unit branch through this module's own
 # helpers; the values below are the union-base measurement (counts asserted in
-# the tests themselves).
-HAPPY_RUN_TREE_DIGEST = "a46778a9a77fe611842f9cb755e62b2de6f3b76048a2732ee591875e45d952c2"
+# the tests themselves; both pinned scenarios drive run id "r" — the digest
+# binds the run id, so the pin is only meaningful at the canonical id).
+HAPPY_RUN_TREE_DIGEST = "a4c999b8cb3103953563311f41d74458e0320e3d1421f6e863cae8ce11f8cc67"
 REVIEW_RUN_TREE_DIGEST = "a2030918f4f957a9ac0eab22f206ca0e6d61282865fd8de2f69e48d11b8255a7"
 
 
@@ -879,6 +880,7 @@ def _orchestrator_namespace_fields(tmp_path: Path) -> dict:
         perlector_protocol_config=ROOT / "config" / "perlector_protocol.toml",
         perlector_audit_config=ROOT / "config" / "perlector_audit.toml",
         draft_fed=True,
+        corpus_register=None,
         submission_folder=None,
         submission_manifest=None,
         data_gate_policy=gate.DEFAULT_POLICY_PATH,
@@ -907,10 +909,14 @@ def test_real_ingress_changes_only_the_doors_argv(monkeypatch, tmp_path):
     )
 
     for _name, program in orchestrator.SEQUENCE:
+        if program is None:  # the recovery member has no program of its own
+            continue
         orchestrator.invoke(program, fixture_args)
     fixture_commands = observed[:]
     observed.clear()
     for _name, program in orchestrator.SEQUENCE:
+        if program is None:
+            continue
         orchestrator.invoke(program, real_args)
 
     assert observed[1:] == fixture_commands[1:]

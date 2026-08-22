@@ -173,7 +173,19 @@ def test_same_page_bytes_at_two_ordinals_are_ranked_as_distinct_pages(tmp_path):
     custody = []
     acts = []
     for ordinal in (1, 2):
-        act = act_id(page_id(source_sha, ordinal), 0, {"x": 1})
+        act = act_id(
+            page_id(
+                {
+                    "kind": "container-page",
+                    "container_sha256": source_sha,
+                    "container_page_index": ordinal,
+                    "render_contract": {"renderer": "gold-test"},
+                },
+                {"operation": "whole"},
+            ),
+            "proposal",
+            {"x": 1, "y": 0, "w": 10, "h": 10},
+        )
         acts.append(act)
         first = transcribe(by_ordinal[ordinal], act, "hand-a", f"reading {ordinal}", path)
         second = transcribe(by_ordinal[ordinal], act, "hand-b", f"reading {ordinal}", path)
