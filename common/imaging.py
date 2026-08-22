@@ -669,3 +669,167 @@ def _to_display_mode(crop: Image.Image) -> Image.Image:
     # profile that described the source space describes nothing about the result.
     has_alpha = any(band.upper() == "A" for band in crop.getbands())
     return _without_colour_profile(crop.convert("RGBA" if has_alpha else "RGB"))
+
+
+# The modes this module's PNG encoder carries without losing a sample: the
+# layouts it writes directly, plus `P`, which `_encode_crop_deterministic`
+# expands to true colour pixel-for-pixel. Anything outside this set reaches
+# `_to_display_mode`, and that is a *conversion* — for `I;16` it is an 8-bit
+# crush of 16-bit samples. Named here so a caller can ask before it converts.
+ENCODER_LOSSLESS_MODES: Final = frozenset(_PNG_LAYOUT) | {"P"}
+
+
+def encode_image_deterministic(image: Image.Image) -> bytes:
+    """Encode one rendered derivative with the project-owned PNG encoder.
+
+    Door page derivatives are evidence just as Designator crops are.  Pillow is
+    used to decode and transform their pixels, but it must not choose the PNG
+    framing: wheel-bundled zlib differences would otherwise rename identical
+    derivative pages on another host.  This is deliberately the same encoder
+    used by :func:`crop_png`.
+    """
+    rendered = image.copy()
+    if rendered.mode not in ENCODER_LOSSLESS_MODES:
+        rendered = _to_display_mode(rendered)
+    return _encode_crop_deterministic(rendered)
+
+
+def imaging_library_versions() -> dict[str, str]:
+    """The decoder versions that can change a derivative page's pixels.
+
+    One place, so the recipe a Door render records and the drift a boundary
+    reports can never name different numbers. `pillow_heif` is imported inside
+    the call rather than at module scope: every stage in the tree imports this
+    module, and only the two callers here need the HEIF decoder resolved.
+    """
+    import pillow_heif
+
+    return {
+        "renderer": "Pillow",
+        "renderer_version": Image.__version__,
+        "pillow_heif_version": pillow_heif.__version__,
+        "libheif_version": pillow_heif.libheif_info()["libheif"],
+    }
+
+
+def _png_colour_mode(png_bytes: bytes) -> str:
+    """The Pillow mode of a PNG this module wrote, read out of its own IHDR.
+
+    Eight bytes rather than a second full decode, and exact: the layout table
+    below is the same one `_encode_crop_deterministic` wrote the header from, so
+    a record built on this cannot drift from the pixels it describes.
+    """
+    if png_bytes[:8] != PNG_SIGNATURE or len(png_bytes) < 26:
+        raise ValueError("a derivative page was not written as a PNG this module owns")
+    layout = (png_bytes[24], png_bytes[25])
+    for mode, (bit_depth, colour_type, _samples) in _PNG_LAYOUT.items():
+        if (bit_depth, colour_type) == layout:
+            return mode
+    raise ValueError(
+        f"a derivative page declares PNG layout {layout}, which this module never writes"
+    )
+
+
+def render_triage_derivative(
+    source_bytes: bytes,
+    *,
+    page_index: int,
+    part: dict,
+) -> tuple[bytes, dict[str, int | str]]:
+    """Apply Unit 5's closed part-local geometry and encode a sealed PNG.
+
+    The caller has already validated the Unit 5 row.  Keeping the operation
+    here nevertheless makes the exact order executable at both the Door and
+    the Exemplar boundary: frame-region split, part-local crop, clockwise
+    expanded rotation, then the part's colour conversion.
+
+    The returned record describes the master and the bytes that were actually
+    written — the master's own mode and bands, its full frame size, and the mode
+    the encoded PNG is in.  Reporting the *pre-encode* mode was how a 16-bit
+    master could be sealed as an 8-bit page under a record that still said
+    ``I;16``; a colour mode this encoder cannot carry is now either an explicitly
+    declared conversion or a refusal, never a silent one.
+    """
+    try:
+        region, crop_box, rotation = part["region"], part["crop_box"], part["rotation"]
+        colour_mode = part["colour_mode"]
+        with Image.open(BytesIO(source_bytes)) as image:
+            image.seek(page_index)
+            image.load()
+            source_mode = image.mode
+            source_bands = list(image.getbands())
+            source_width, source_height = image.width, image.height
+            if colour_mode == "keep" and source_mode not in ENCODER_LOSSLESS_MODES:
+                # `keep` is Unit 5 declaring that no colour conversion happens.
+                # This encoder cannot honour that for a high-precision or
+                # non-RGB-class master: `_to_display_mode` would crush `I;16`
+                # samples to 8 bits under a record claiming nothing converted.
+                # Refused by name, with the remedy in the message, rather than
+                # degrading evidence quietly (GOVERNANCE 2, GOVERNANCE 4).
+                raise ValueError(
+                    f"a master in mode {source_mode!r} cannot be sealed under colour_mode "
+                    "'keep': the deterministic PNG encoder would convert it. Declare the "
+                    "conversion this page needs ('grayscale', 'rgb' or 'bitonal') so it is "
+                    "recorded, or submit the frame without a split decision"
+                )
+            split = image.crop(
+                (
+                    region["x"],
+                    region["y"],
+                    region["x"] + region["w"],
+                    region["y"] + region["h"],
+                )
+            )
+            cropped = split.crop(
+                (
+                    crop_box["x"],
+                    crop_box["y"],
+                    crop_box["x"] + crop_box["w"],
+                    crop_box["y"] + crop_box["h"],
+                )
+            )
+            # Pillow's positive degrees are counter-clockwise.  Unit 5 records
+            # clockwise millidegrees, so the sign inversion is part of the
+            # sealed implementation rather than an implicit convention.
+            rotated = cropped.rotate(
+                -rotation["rotation_millidegrees"] / 1000,
+                resample=Image.Resampling.BICUBIC,
+                expand=True,
+            )
+            if colour_mode == "keep":
+                rendered = rotated
+            elif colour_mode == "grayscale":
+                try:
+                    rendered = rotated.convert("L")
+                except ValueError:
+                    # Pillow exposes a direct LAB -> RGB conversion but refuses
+                    # LAB -> L.  An explicitly declared grayscale conversion is
+                    # still executable through that owned conversion path; the
+                    # two-hop fallback is part of the sealed apply recipe below,
+                    # not an implicit decoder choice.
+                    rendered = rotated.convert("RGB").convert("L")
+                rendered = _without_colour_profile(rendered)
+            elif colour_mode == "rgb":
+                rendered = _without_colour_profile(rotated.convert("RGB"))
+            elif colour_mode == "bitonal":
+                try:
+                    grayscale = rotated.convert("L")
+                except ValueError:
+                    grayscale = rotated.convert("RGB").convert("L")
+                rendered = _without_colour_profile(grayscale.convert("1", dither=Image.Dither.NONE))
+            else:  # The Unit 5 schema normally makes this unreachable.
+                raise ValueError(f"undeclared triage colour mode {colour_mode!r}")
+            encoded = encode_image_deterministic(rendered)
+            return encoded, {
+                "width": rendered.width,
+                "height": rendered.height,
+                # What the sealed bytes are actually in, read back from them, not
+                # what the image was in on the way into the encoder.
+                "color_mode": _png_colour_mode(encoded),
+                "source_mode": source_mode,
+                "source_bands": source_bands,
+                "source_width": source_width,
+                "source_height": source_height,
+            }
+    except (*_DECODE_FAILURES, KeyError, TypeError) as error:
+        raise ValueError(f"source frame bytes are not a decodable image ({error})") from error

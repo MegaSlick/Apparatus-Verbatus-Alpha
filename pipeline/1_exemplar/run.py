@@ -529,6 +529,7 @@ def _verify_admitted_blob(
     if stored_at != tree.blob_path(DOOR, sealed_digest):
         raise ContractError("an admission's stored_at is not the content-addressed blob path")
     claims_transform = "rendered_from" in payload
+    is_derivative = False
     if source.get("container_page_index") is not None and not claims_transform:
         raise ContractError(
             "a fanned source page must carry the render transform that produced its sealed pixels"
@@ -570,18 +571,47 @@ def _verify_admitted_blob(
             raise ContractError(
                 "a rendered page's transform page index disagrees with run.json's submitted row"
             )
-        _verify_render_contract(
-            rendered_from["render_contract"],
-            index,
-            payload,
-            run,
-            container_format=container_format,
+        is_derivative = _is_triage_derivative(rendered_from["render_contract"])
+        if is_derivative:
+            parent_ref = _verify_derivative_admission(
+                payload, source, rendered_from["render_contract"], tree
+            )
+        else:
+            _verify_render_contract(
+                rendered_from["render_contract"],
+                index,
+                payload,
+                run,
+                container_format=container_format,
+            )
+    expected_inputs = 2 if is_derivative else 1
+    if len(admission["inputs"]) != expected_inputs:
+        raise ContractError(
+            "a sealed derivative page must carry its pixels and untouched master"
+            if is_derivative
+            else "an admitted source must carry exactly one admitted-blob input"
         )
-    if len(admission["inputs"]) != 1:
-        raise ContractError("an admitted source must carry exactly one admitted-blob input")
-    input_ref = admission["inputs"][0]
-    if input_ref.get("relative_path") != stored_at or input_ref.get("sha256") != sealed_digest:
+    input_ref = next(
+        (
+            reference
+            for reference in admission["inputs"]
+            if reference.get("relative_path") == stored_at
+            and reference.get("sha256") == sealed_digest
+        ),
+        None,
+    )
+    if input_ref is None:
         raise ContractError("an admission's input does not name its content-addressed blob")
+    if is_derivative and {
+        (reference.get("relative_path"), reference.get("sha256"))
+        for reference in admission["inputs"]
+    } != {
+        (input_ref["relative_path"], input_ref["sha256"]),
+        (parent_ref["relative_path"], parent_ref["sha256"]),
+    }:
+        raise ContractError(
+            "a derivative page does not input exactly its pixels and untouched master"
+        )
     try:
         blob = tree.read_bytes(stored_at)
     except OSError as error:
@@ -598,6 +628,39 @@ def _verify_admitted_blob(
         raise ContractError("an admitted blob's bytes no longer match their sealed digest")
     verify_input_bytes(input_ref, blob)
     return {"relative_path": stored_at, "sha256": sealed_digest}
+
+
+def _is_triage_derivative(contract: Any) -> bool:
+    return (
+        isinstance(contract, dict)
+        and isinstance(contract.get("derivative_page"), dict)
+        and contract["derivative_page"].get("kind") == "sealed-derivative-page-v1"
+    )
+
+
+def _verify_derivative_admission(
+    payload: dict[str, Any], source: dict[str, Any], contract: dict[str, Any], tree: RunTree
+) -> dict[str, str]:
+    """Check the parent-link shape before a derivative page can become sealed."""
+    parent = payload.get("parent_frame")
+    derivative = contract.get("derivative_page")
+    if (
+        not isinstance(parent, dict)
+        or set(parent) != {"sha256", "stored_at", "source_frame_index"}
+        or parent.get("sha256") != source.get("sha256")
+        or parent.get("stored_at") != tree.blob_path(DOOR, parent.get("sha256"))
+        or not isinstance(parent.get("source_frame_index"), int)
+        or isinstance(parent.get("source_frame_index"), bool)
+        or parent["source_frame_index"] < 0
+        or not isinstance(derivative, dict)
+        or derivative.get("parent_frame_sha256") != parent["sha256"]
+        or derivative.get("parent_frame_page_index") != parent["source_frame_index"]
+    ):
+        raise ContractError("a derivative page does not carry a valid immutable parent frame")
+    parent_ref = {"relative_path": parent["stored_at"], "sha256": parent["sha256"]}
+    if payload.get("stored_at") == parent_ref["relative_path"]:
+        raise ContractError("a derivative page overwrites its submitted master bytes")
+    return parent_ref
 
 
 def _verify_render_contract(
