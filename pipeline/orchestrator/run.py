@@ -11,7 +11,7 @@ It establishes nothing and reads nothing except the outcome bookkeeping it needs
 sequence and to checkpoint. Its four jobs:
 
   Sequence.   Door, Exemplar, Designator, Attestatores, Perlector, Recensor,
-              Archetypus, Armarium, in that order.
+              recovery, Archetypus, Armarium, in that order.
   Recover.    The Recensor appends a request; the orchestrator invokes the owning
               stage — the Designator — for a replacement region, then re-reads and
               re-reviews. The Recensor never cuts a crop, so recovery does not grow
@@ -73,6 +73,7 @@ from common.stage import (  # noqa: E402
     require_sealed_config,
     run_sealed_config_digests,
     scenario_for,
+    verify_final_seal,
     verify_predecessor_seal,
 )
 
@@ -87,11 +88,14 @@ SEQUENCE = (
     (ATTESTATORES, "pipeline/3_attestatores/run.py"),
     ("perlector", "pipeline/4_perlector/run.py"),
     ("recensor", "pipeline/5_recensor/run.py"),
+    ("recovery", None),
     ("archetypus", "pipeline/6_archetypus/run.py"),
     ("armarium", "pipeline/7_armarium/run.py"),
 )
 
-STAGE_PROGRAMS = dict(SEQUENCE)
+STAGE_PROGRAMS = {name: program for name, program in SEQUENCE if program is not None}
+SEQUENCE_NAMES = tuple(name for name, _program in SEQUENCE)
+RUN_MODES = ("manual", "semi", "auto")
 
 
 def invoke(program: str, args: argparse.Namespace, **extra) -> int:
@@ -160,9 +164,12 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
     # Forward it on the normal orchestration path so the human who ran the pipeline
     # is told that the retained record exists.  Unexpected exits remain reported by
     # the ContractError below, without printing their diagnostics twice.
-    if completed.returncode in (EXIT_COMPLETE, EXIT_HELD) and completed.stderr.strip():
+    if (
+        completed.returncode in (EXIT_COMPLETE, EXIT_HELD, EXIT_RUN_HALTED)
+        and completed.stderr.strip()
+    ):
         print(completed.stderr.rstrip(), file=sys.stderr)
-    if completed.returncode not in (EXIT_COMPLETE, EXIT_HELD):
+    if completed.returncode not in (EXIT_COMPLETE, EXIT_HELD, EXIT_RUN_HALTED):
         raise ContractError(f"{program} exited {completed.returncode}\n{completed.stderr.rstrip()}")
     return completed.returncode
 
@@ -308,6 +315,35 @@ def main() -> int:
         default="",
         help="Tyrel's reference for the predeclared Lectio nuda sampling design",
     )
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument(
+        "--all",
+        action="store_true",
+        help="run the complete automatic sequence (the default)",
+    )
+    selection.add_argument(
+        "--stage",
+        choices=SEQUENCE_NAMES,
+        help="run exactly one boundary operation (manual mode)",
+    )
+    selection.add_argument(
+        "--from",
+        dest="from_stage",
+        choices=SEQUENCE_NAMES,
+        help="first boundary operation in an inclusive semi-mode range",
+    )
+    parser.add_argument(
+        "--to",
+        dest="to_stage",
+        choices=SEQUENCE_NAMES,
+        help="last boundary operation in an inclusive semi-mode range",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=RUN_MODES,
+        default=None,
+        help="driver vocabulary: manual (one stage), semi (a range), or auto (all)",
+    )
     args = parser.parse_args()
 
     # Prove the algebra total before anything runs. A stage added later without a
@@ -323,7 +359,8 @@ def main() -> int:
         )
     scenario_for(fixture, args.scenario)
 
-    halted = None
+    names, mode = selected_sequence(args)
+
     # A resumed run may already be over the cap. Recompute before re-entering
     # any stage, not only after the first idempotent replay: "stop" bounds work,
     # and replaying a model stage before rediscovering durable failure evidence
@@ -349,57 +386,148 @@ def main() -> int:
             hard_failure_policy["config_sha256"],
         )
         halted = checkpoint(args, "resume-preflight", hard_failure_policy)
-    for name, program in SEQUENCE:
         if halted is not None:
-            break
-        if name == "archetypus":
+            report_halt(args, halted)
+            return EXIT_RUN_HALTED
+    return run_sequence(args, names, mode, hard_failure_policy)
+
+
+def selected_sequence(args: argparse.Namespace) -> tuple[tuple[str, ...], str]:
+    """Resolve one contiguous selection into the ruled driver vocabulary.
+
+    A range is deliberately inclusive and contiguous.  A non-contiguous set would
+    look exactly like an unrecorded skipped boundary, which a staged run must never
+    turn into an operator convenience.
+    """
+    if args.to_stage is not None and args.from_stage is None:
+        raise ContractError("--to requires --from; a semi run is an inclusive stage range")
+    if args.from_stage is not None:
+        if args.to_stage is None:
+            raise ContractError("--from requires --to; a semi run must name both boundaries")
+        first = SEQUENCE_NAMES.index(args.from_stage)
+        last = SEQUENCE_NAMES.index(args.to_stage)
+        if first > last:
+            raise ContractError(
+                f"--from {args.from_stage!r} comes after --to {args.to_stage!r}; "
+                "a semi run cannot run a boundary backwards"
+            )
+        names, inferred_mode = SEQUENCE_NAMES[first : last + 1], "semi"
+    elif args.stage is not None:
+        names, inferred_mode = (args.stage,), "manual"
+    else:
+        names, inferred_mode = SEQUENCE_NAMES, "auto"
+    if args.mode is not None and args.mode != inferred_mode:
+        raise ContractError(
+            f"--mode {args.mode!r} conflicts with this selection's {inferred_mode!r} mode"
+        )
+    return names, inferred_mode
+
+
+def _prove_door_policy(args: argparse.Namespace, hard_failure_policy: dict) -> None:
+    """Prove the first-run policy read against the authority the Door just wrote."""
+    require_sealed_config(
+        run_sealed_config_digests(RunTree(Path(args.run_root), args.run_id).read_run()),
+        "hard-failure",
+        hard_failure_policy["config_sha256"],
+    )
+
+
+def run_sequence(
+    args: argparse.Namespace,
+    names: tuple[str, ...],
+    mode: str,
+    hard_failure_policy: dict,
+) -> int:
+    """Run one selected sequence inside the existing run identity.
+
+    All driver spellings reach this one loop.  Stage programs themselves prove
+    their predecessor's stored seal at entry; the recovery member explicitly
+    proves the Recensor boundary before dispatching its re-entry attempts.
+    """
+    for name in names:
+        if name == "recovery":
+            # Recovery's immediate predecessor is Recensor.  It has no stage
+            # program of its own, so borrow Archetypus's named predecessor proof
+            # rather than permit an unsealed request to dispatch a recrop.
+            recovery_tree = RunTree(Path(args.run_root), args.run_id)
+            # The guard is unconditional for real invocations.  Keeping the
+            # no-tree branch inert preserves the isolated sequencing tests,
+            # whose mocked programs intentionally do not manufacture a run.
+            if recovery_tree.resolve("run.json").exists():
+                verify_predecessor_seal(recovery_tree, "archetypus")
             halted = drive_recovery(args, hard_failure_policy)
             if halted is not None:
-                break
-        result = invoke(program, args)
+                report_halt(args, halted)
+                return EXIT_RUN_HALTED
+            halted = checkpoint(args, name, hard_failure_policy)
+            if halted is not None:
+                report_halt(args, halted)
+                return EXIT_RUN_HALTED
+            continue
+
+        result = invoke(STAGE_PROGRAMS[name], args)
+        if result == EXIT_RUN_HALTED:
+            halted = checkpoint(args, f"{name}-entry", hard_failure_policy)
+            if halted is None:
+                raise ContractError(
+                    f"{name} returned EXIT_RUN_HALTED but its hard-failure tally is not breached"
+                )
+            report_halt(args, halted)
+            return EXIT_RUN_HALTED
         if name == "door" and result in (EXIT_COMPLETE, EXIT_HELD):
-            # On a FIRST run there was no authority to prove the policy against
-            # before this moment; the Door has just created one from its own
-            # read of the same path. Proving the two reads against each other
-            # here closes the first-run window in which the file could change
-            # between the orchestrator's read above and the Door's — the exact
-            # straddle the sealing family exists to catch. On a resume this is
-            # a harmless re-proof of the check already made at preflight. A
-            # completed-but-partial Door (EXIT_HELD) has created the authority
-            # just as surely as a complete one, so both named exits prove it;
-            # `invoke` returns no other code.
-            require_sealed_config(
-                run_sealed_config_digests(tree.read_run()),
-                "hard-failure",
-                hard_failure_policy["config_sha256"],
-            )
-        # A held Attestatores exit is not an ordinary partial act result. Its own
-        # forwarded stderr names whether the attempt tally was UNKNOWN or a whole
-        # pass was refused during preflight; either cause stops orchestration.
+            # On a first run the Door creates the authority.  This is the first
+            # moment the policy bytes read by the driver can be proven against it.
+            _prove_door_policy(args, hard_failure_policy)
+        # The checkpoint comes before every stop below, in every mode, because
+        # the cap is the more serious of two simultaneous stop reasons: a run that
+        # is both held and over Tyrel's cap needs fixing, not re-entry. Returning
+        # any hold ahead of the recompute reports exit 3 where the same durable
+        # tally requires exit 4, and suppresses the early-warning line at exactly
+        # two failures. This includes the Attestatores' special held exit: its
+        # outcomes do not themselves enter the cap, but a member boundary is still
+        # required to recompute the run's whole retained tally.
+        halted = checkpoint(args, name, hard_failure_policy)
+        if halted is not None:
+            report_halt(args, halted)
+            return EXIT_RUN_HALTED
+        # A held Attestatores exit is not an ordinary partial act result. It has
+        # two shapes -- a no-write preflight hold (3_attestatores/run.py:2576,
+        # :2595, :2634) and an attempt tally that came back UNKNOWN after the pass
+        # had already sealed and written its inventory (:2658) -- and its own
+        # forwarded stderr names which. Both stop orchestration, because an
+        # unestablished witness tally is not an accounting a later member may
+        # advance past.
         if name == ATTESTATORES and result == EXIT_HELD:
             print(f"run {args.run_id}: held; its reason is on stderr above")
             return EXIT_HELD
-        halted = checkpoint(args, name, hard_failure_policy)
-        if halted is not None:
-            break
+        # Armarium is excluded from the stop below: it is always the last member of
+        # any selection that contains it, so there is no remaining work for an early
+        # return to protect, and skipping ahead of the tail block instead threw away
+        # the run's terminal report and its held reasons — the exact GOVERNANCE 2
+        # information a held run must not lose.
+        if mode in ("semi", "manual") and result == EXIT_HELD and name != "armarium":
+            print(f"run {args.run_id}: {mode} mode stopped at held {name}")
+            return EXIT_HELD
 
-    if halted is not None:
-        report_halt(args, halted)
-        return EXIT_RUN_HALTED
-
+    if names[-1] != "armarium":
+        return EXIT_COMPLETE
+    tree = RunTree(Path(args.run_root), args.run_id)
+    # Armarium has no successor to open a context and prove its seal, so the
+    # orchestrator is its named consumer at the run's final boundary -- of the
+    # ARMARIUM's own statement. `verify_predecessor_seal` is keyed by consumer and
+    # would answer here with the Archetypus, which the Armarium's own entry has
+    # already proved; that left the final boundary unread by anyone. Prove it
+    # before consuming the export, in the same order as every stage consumer.
+    verify_final_seal(tree)
     export = tree.read_artifact(
         "armarium",
         "export",
         artifact_id("armarium", "export", "export", None),
     )
-    # Armarium has no successor to open a context and prove its seal, so the
-    # orchestrator is its named consumer at the run's final boundary.
-    verify_predecessor_seal(tree, "armarium")
     status, lines = terminal_report(export)
     print(f"run {args.run_id}: {status}")
     for line in lines:
         print(f"  - {line}")
-
     return EXIT_COMPLETE if status == "complete" else EXIT_HELD
 
 
@@ -520,26 +648,42 @@ def drive_recovery(args, hard_failure_policy: dict) -> dict | None:
                     "the page-level reread belongs to the Perlector, which has not built it"
                 )
         for act_id, request_id, _recovery_kind in outstanding:
-            invoke(
+            result = invoke(
                 STAGE_PROGRAMS[DESIGNATOR],
                 args,
                 operation="recover",
                 act=act_id,
                 recovery_request=request_id,
             )
+            if result == EXIT_RUN_HALTED:
+                return _entry_halt(args, DESIGNATOR, hard_failure_policy)
         tally = checkpoint(args, DESIGNATOR, hard_failure_policy)
         if tally is not None:
             return tally
         for act_id, _request_id, _recovery_kind in outstanding:
-            invoke(STAGE_PROGRAMS["perlector"], args, act=act_id)
+            result = invoke(STAGE_PROGRAMS["perlector"], args, act=act_id)
+            if result == EXIT_RUN_HALTED:
+                return _entry_halt(args, "perlector", hard_failure_policy)
         tally = checkpoint(args, "perlector", hard_failure_policy)
         if tally is not None:
             return tally
-        invoke(STAGE_PROGRAMS[RECENSOR], args)
+        result = invoke(STAGE_PROGRAMS[RECENSOR], args)
+        if result == EXIT_RUN_HALTED:
+            return _entry_halt(args, RECENSOR, hard_failure_policy)
         tally = checkpoint(args, RECENSOR, hard_failure_policy)
         if tally is not None:
             return tally
     return None
+
+
+def _entry_halt(args, stage: str, hard_failure_policy: dict) -> dict:
+    """Return the named tally that a direct stage-entry refusal already proved."""
+    tally = checkpoint(args, f"{stage}-entry", hard_failure_policy)
+    if tally is None:
+        raise ContractError(
+            f"{stage} returned EXIT_RUN_HALTED but its hard-failure tally is not breached"
+        )
+    return tally
 
 
 if __name__ == "__main__":

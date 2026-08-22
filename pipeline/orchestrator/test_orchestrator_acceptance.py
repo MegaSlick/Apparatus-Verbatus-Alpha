@@ -58,6 +58,7 @@ from common.stage import (
     open_context,
     run_config_bindings,
     stage_parser,
+    verify_final_seal,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -4498,6 +4499,7 @@ def test_each_handoff_corruption_stops_its_named_real_consumer(
 def test_each_stage_seal_corruption_stops_its_named_consumer(
     happy_run, tmp_path, producer, consumer
 ):
+    """Invoke the seven stage readers and the orchestrator's final reader itself."""
     source_root, _ = happy_run
     root = tmp_path / "runs"
     shutil.copytree(source_root, root)
@@ -4509,9 +4511,12 @@ def test_each_stage_seal_corruption_stops_its_named_consumer(
     before = snapshot(root)
 
     if consumer == "orchestrator":
-        result = orchestrate(root, "r", "happy")
-    else:
-        result = invoke_stage(root, "r", "happy", CONSUMER_PROGRAMS[consumer])
+        with pytest.raises(SchemaRefusal):
+            verify_final_seal(tree)
+        assert snapshot(root) == before
+        return
+
+    result = invoke_stage(root, "r", "happy", CONSUMER_PROGRAMS[consumer])
 
     assert result.returncode != 0
     assert "skeleton.v99" in result.stderr or "SchemaRefusal" in result.stderr

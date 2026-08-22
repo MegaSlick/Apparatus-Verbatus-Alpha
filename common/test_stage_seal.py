@@ -10,6 +10,9 @@ comparison's separation of the machine from the stage's own role.
 from __future__ import annotations
 
 import json
+import signal
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -17,7 +20,7 @@ import pytest
 from common.chairs import ChairRegistry
 from common.contracts.canonical import canonical_bytes, self_hash
 from common.contracts.errors import FatalAccounting, SchemaRefusal
-from common.contracts.stages import ATTESTATORES, DOOR, EXEMPLAR, PERLECTOR
+from common.contracts.stages import ARMARIUM, ATTESTATORES, DOOR, EXEMPLAR, PERLECTOR
 from common.runtree.store import RunTree
 from common.stage import (
     StageContext,
@@ -25,6 +28,7 @@ from common.stage import (
     _stage_records,
     adapter_recipe_for,
     run_config_bindings,
+    verify_final_seal,
     verify_predecessor_seal,
 )
 
@@ -142,6 +146,89 @@ def test_the_consumer_refuses_a_deleted_seal_the_producer_is_never_asked_about(t
 
     with pytest.raises(SchemaRefusal, match="never re-derived"):
         verify_predecessor_seal(tree, PERLECTOR)
+
+
+def test_the_final_reader_uses_the_same_named_seal_set_deletion_check(tmp_path):
+    """Armarium has no next stage, but its orchestrator reader is not weaker."""
+    tree, run, registry, bindings = _tree(tmp_path)
+    first = _context(tree, run, registry, bindings, stage=ARMARIUM)
+    first.seal_boundary()
+    first.finish()
+    first_paths = {
+        entry["relative_path"]
+        for entry in tree.build_manifest(ARMARIUM, verify_inputs=False)["artifacts"]
+    }
+
+    second = _context(tree, run, registry, bindings, stage=ARMARIUM)
+    second.publish(kind="test-output", subject_id="changed", outcome="delivered", payload={})
+    second.seal_boundary()
+    second.finish()
+    second_paths = {
+        entry["relative_path"]
+        for entry in tree.build_manifest(ARMARIUM, verify_inputs=False)["artifacts"]
+    }
+    for relative_path in second_paths - first_paths:
+        tree.resolve(relative_path).unlink()
+
+    # Disk now agrees with the first boundary again, while the stored manifest
+    # still names the removed second seal. Only the witnessed named-set deletion
+    # check can distinguish this from an honestly single-pass Armarium.
+    with pytest.raises(SchemaRefusal, match="never re-derived"):
+        verify_final_seal(tree)
+
+
+def test_a_sigkill_blob_orphan_is_not_witnessed_as_published_evidence(tmp_path):
+    """Kill a real blob publication after its temp write and before its link."""
+    tree, run, registry, bindings = _tree(tmp_path)
+    first = _context(tree, run, registry, bindings)
+    first.seal_boundary()
+    first.finish()
+    original = _stage_records(tree, ATTESTATORES, "stage-seal")[0]
+
+    killed_writer = """
+import os
+import signal
+import sys
+from pathlib import Path
+
+import common.runtree.store as store
+from common.runtree.store import RunTree
+
+def die_before_publication(_source, _target):
+    os.kill(os.getpid(), signal.SIGKILL)
+
+store.os.link = die_before_publication
+RunTree(Path(sys.argv[1]), "seal-unit").put_blob("attestatores", b"interrupted blob")
+"""
+    killed = subprocess.run(
+        [sys.executable, "-c", killed_writer, str(tmp_path)],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert killed.returncode == -signal.SIGKILL
+    blobs_root = tree.resolve(tree.blob_path(ATTESTATORES, "0" * 64)).parent
+    orphans = [path for path in blobs_root.iterdir() if path.name.startswith(".")]
+    assert len(orphans) == 1
+    assert ".tmp-" in orphans[0].name
+
+    repeated = _context(tree, run, registry, bindings).seal_boundary()
+
+    assert repeated.reused
+    seals = _stage_records(tree, ATTESTATORES, "stage-seal")
+    assert len(seals) == 1
+    assert seals[0]["payload"]["blob_inventory"] == original["payload"]["blob_inventory"]
+
+    # The exception is the publisher's exact private convention, not "dotfiles".
+    # An unrelated regular file remains part of the witnessed blob directory.
+    (blobs_root / ".unexpected-published-name").write_bytes(b"must stay visible")
+    changed = _context(tree, run, registry, bindings).seal_boundary()
+    assert not changed.reused
+    seals = _stage_records(tree, ATTESTATORES, "stage-seal")
+    assert len(seals) == 2
+    assert any(
+        seal["payload"]["blob_inventory"] != original["payload"]["blob_inventory"] for seal in seals
+    )
 
 
 def test_a_seal_the_stored_inventory_never_named_is_not_a_deletion(tmp_path):

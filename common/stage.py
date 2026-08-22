@@ -57,7 +57,11 @@ from common.contracts.stages import (
 )
 from common.corpus_register import read_snapshot, verify_snapshot_is_current
 from common.exemplar_boundary import verify_sealed_page_pixels
-from common.hard_failure import DEFAULT_HARD_FAILURE_CONFIG_PATH, load_hard_failure_policy
+from common.hard_failure import (
+    DEFAULT_HARD_FAILURE_CONFIG_PATH,
+    load_hard_failure_policy,
+    tally_hard_failures,
+)
 from common.imaging import dimensions
 from common.recovery import (
     DEFAULT_RECOVERY_CONFIG_PATH,
@@ -76,12 +80,17 @@ EXIT_COMPLETE = 0
 EXIT_FATAL = 2
 EXIT_HELD = 3
 
-# Never a stage's own exit code, only the orchestrator's: only that process
-# decides whether to invoke another stage, so only it can halt a run for the
-# run-level hard-failure cap. Defined beside the three above, not in the
-# orchestrator module, so nothing can silently pick a fourth value that
-# collides with one of these.
+# A stage returns this only when it refuses to start a run whose durable failure
+# evidence already breaches the cap.  The orchestrator also returns it when a
+# checkpoint after a completed member breaches the cap.  Defined beside the three
+# ordinary stage exits so direct invocation cannot silently choose a colliding
+# fourth value.
 EXIT_RUN_HALTED = 4
+
+
+class RunHalted(ContractError):
+    """The run-level hard-failure cap refuses another stage entry."""
+
 
 DEFAULT_PDF_RENDER_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "pdf_render.toml"
 DEFAULT_WITNESS_CONTEXT_CONFIG_PATH = (
@@ -794,6 +803,22 @@ def _inventory_digest(value: Any) -> str:
     return digest_of(value)
 
 
+def _is_unpublished_blob_temporary(name: str) -> bool:
+    """True only for the store's private, same-directory blob-write name.
+
+    ``RunTree.put_blob`` publishes a sha256-named file through
+    ``.<digest>.tmp-<unique>`` and an atomic hard link.  SIGKILL can leave the
+    private name behind before the link gives those bytes their evidence name.
+    That orphan is interrupted writer state, not a published blob for a
+    completion seal to witness.  Keep every other regular file in the inventory
+    so an unexpected name can never disappear behind this exception.
+    """
+    if not name.startswith("."):
+        return False
+    target, separator, unique = name[1:].partition(".tmp-")
+    return bool(separator and unique and is_sha256(target))
+
+
 def _stage_seal_payload(
     tree: RunTree, stage: str, ordinal: int, attempt: str, decode_environment_artifact_id: str
 ) -> dict[str, Any]:
@@ -805,7 +830,7 @@ def _stage_seal_payload(
     blobs = []
     if blobs_root.exists():
         for path in sorted(blobs_root.iterdir()):
-            if path.is_file():
+            if path.is_file() and not _is_unpublished_blob_temporary(path.name):
                 blobs.append(
                     {"name": path.name, "sha256_of_content": digest_bytes(path.read_bytes())}
                 )
@@ -834,10 +859,37 @@ def verify_predecessor_seal(tree: RunTree, stage: str) -> None:
     predecessor = SEAL_PREDECESSORS.get(stage)
     if predecessor is None:
         return
-    seals = _stage_records(tree, predecessor, "stage-seal")
+    _verify_stage_seal(tree, predecessor, stage, "predecessor")
+
+
+def verify_final_seal(tree: RunTree) -> None:
+    """Prove the Armarium's own completion boundary, which no stage consumes.
+
+    `SEAL_PREDECESSORS` is keyed by CONSUMER, so asking it about the Armarium
+    answers with the Archetypus -- the statement the Armarium's own `open_context`
+    already proved at its entry. Reading that a second time left the run's LAST
+    boundary with no reader at all, which is the one thing the table's own comment,
+    `pipeline/7_armarium/HANDOFF.md`, and the seal battery's eighth row all say the
+    orchestrator is here to do. Measured before this existed: deleting the
+    Armarium's `decode-environment` -- a record its own stage-seal names -- left a
+    re-run reporting `complete` and exiting 0, while the identical deletion under
+    the Archetypus was refused by name at the Armarium's entry.
+    """
+    _verify_stage_seal(tree, ARMARIUM, "the orchestrator", "final boundary")
+
+
+def _verify_stage_seal(tree: RunTree, producer: str, reader: str, role: str) -> None:
+    """One reading of a stored completion seal, for a consumer or the orchestrator.
+
+    Stated once because the two readers ask the identical question. A second
+    implementation for the run's final boundary would be a second definition of
+    what a seal means, and the boundary with no downstream stage is exactly the
+    one where a weaker copy would never be noticed.
+    """
+    seals = _stage_records(tree, producer, "stage-seal")
     if not seals:
         raise SchemaRefusal(
-            f"{stage} refuses: predecessor {predecessor} has no stage-seal; "
+            f"{reader} refuses: {role} {producer} has no stage-seal; "
             "a missing witnessed statement is never re-derived"
         )
     # The producer refuses a seal its own stored inventory names and disk no
@@ -845,51 +897,51 @@ def verify_predecessor_seal(tree: RunTree, stage: str) -> None:
     # tree reaches without ever invoking the producer again. Without this,
     # deleting the latest of several seals and reverting the change it witnessed
     # leaves the earlier seal answering for a boundary it never saw.
-    _refuse_deleted_seal(tree, predecessor, {record["artifact_id"] for record in seals})
-    seal = latest_attempt(seals, f"{predecessor} stage seal", operation="seal")
+    _refuse_deleted_seal(tree, producer, {record["artifact_id"] for record in seals})
+    seal = latest_attempt(seals, f"{producer} stage seal", operation="seal")
     payload = seal["payload"]
-    expected_id = artifact_id(predecessor, "decode-environment", predecessor, seal["attempt_id"])
+    expected_id = artifact_id(producer, "decode-environment", producer, seal["attempt_id"])
     if payload.get("decode_environment_artifact_id") != expected_id:
         raise SchemaRefusal(
-            f"{stage} refuses {predecessor} stage-seal: wrong decode environment name"
+            f"{reader} refuses {producer} stage-seal: wrong decode environment name"
         )
     if payload.get("config_digest") != tree.read_run().get("config_digest"):
         raise SchemaRefusal(
-            f"{stage} refuses {predecessor} stage-seal: config_digest differs from run authority"
+            f"{reader} refuses {producer} stage-seal: config_digest differs from run authority"
         )
     if payload.get("register_digest") != tree.read_run().get("register_digest"):
         raise SchemaRefusal(
-            f"{stage} refuses {predecessor} stage-seal: register_digest differs from run authority"
+            f"{reader} refuses {producer} stage-seal: register_digest differs from run authority"
         )
     expected = _stage_seal_payload(
         tree,
-        predecessor,
+        producer,
         payload.get("attempt_ordinal"),
         seal["attempt_id"],
         expected_id,
     )
     if payload != expected:
         raise SchemaRefusal(
-            f"{stage} refuses {predecessor} stage-seal: its named inventory no longer matches disk"
+            f"{reader} refuses {producer} stage-seal: its named inventory no longer matches disk"
         )
     try:
-        environment = tree.read_artifact(predecessor, "decode-environment", expected_id)
+        environment = tree.read_artifact(producer, "decode-environment", expected_id)
     except (ContractError, OSError) as error:
         raise SchemaRefusal(
-            f"{stage} refuses {predecessor} stage-seal: its decode-environment is missing or damaged"
+            f"{reader} refuses {producer} stage-seal: its decode-environment is missing or damaged"
         ) from error
     previous_environment = _validate_decode_environment(
-        environment.get("payload"), f"{predecessor} stored"
+        environment.get("payload"), f"{producer} stored"
     )
     current_environment = _validate_decode_environment(
-        _decode_environment(stage), f"{stage} current"
+        _decode_environment(reader), f"{reader} current"
     )
     differences = _decode_difference(previous_environment, current_environment)
     if differences:
         # This is intentionally an observation only. Unit 17 decides when a
         # decoder difference becomes fatal; silently omitting it is not allowed.
         print(
-            f"decode environment differs by name from {predecessor}: {differences}",
+            f"decode environment differs by name from {producer}: {differences}",
             file=sys.stderr,
         )
 
@@ -2309,6 +2361,7 @@ def open_context(
             "may not run against an unsealed configuration"
         )
     verify_predecessor_seal(tree, stage)
+    _refuse_halted_run(tree, stage, args.hard_failure_config)
     return StageContext(
         tree=tree,
         run=run,
@@ -2328,6 +2381,41 @@ def open_context(
     )
 
 
+def _refuse_halted_run(tree: RunTree, stage: str, hard_failure_config_path: str | Path) -> None:
+    """Apply the run-level cap before a directly invoked stage can write.
+
+    The orchestrator checkpoints after completed members.  A stage program is
+    also an operator-facing entry point, though, so its own entry must refuse a
+    run already over the same sealed cap instead of relying on a driver that may
+    not be present in this invocation.
+    """
+    sealed_digests = tree.read_run().get(SEALED_CONFIG_DIGESTS_FIELD)
+    # The stage-seal migration intentionally keeps older, hand-built contract
+    # fixtures readable so their own boundary can be tested.  A real run created
+    # by the current Door always names this policy; without that sealed name there
+    # is no honest policy instance for an entry check to apply.
+    if not isinstance(sealed_digests, Mapping) or "hard-failure" not in sealed_digests:
+        return
+    policy = load_hard_failure_policy(hard_failure_config_path)
+    require_sealed_config(
+        run_sealed_config_digests(tree.read_run()), "hard-failure", policy["config_sha256"]
+    )
+    try:
+        tally = tally_hard_failures(tree, policy)
+    except ContractError:
+        # The tally intentionally walks every producer.  A deliberately damaged
+        # upstream record must still reach the stage-specific boundary that owns
+        # its named refusal; treating that unrelated structural refusal as a cap
+        # result would both mask it and make direct entry depend on walk order.
+        # No stage has written yet, and its normal preflight remains fail-closed.
+        return
+    if tally["breached"]:
+        raise RunHalted(
+            f"{stage} refuses to start: {tally['count']} hard failure(s) exceed the run-level "
+            f"cap of {tally['threshold']}; no stage writes after a halted run"
+        )
+
+
 def run_stage(main) -> int:
     """Run a stage's main and turn a contract refusal into an honest exit code.
 
@@ -2337,6 +2425,9 @@ def run_stage(main) -> int:
     """
     try:
         return int(main() or EXIT_COMPLETE)
+    except RunHalted as error:
+        print(f"{type(error).__name__}: {error}", file=sys.stderr)
+        return EXIT_RUN_HALTED
     except ContractError as error:
         print(f"{type(error).__name__}: {error}", file=sys.stderr)
         return EXIT_FATAL

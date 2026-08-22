@@ -26,11 +26,12 @@ from pathlib import Path
 
 import pytest
 
-from common.contracts.canonical import canonical_bytes
+from common.contracts.canonical import canonical_bytes, self_hash
 from common.contracts.envelope import build_envelope
 from common.contracts.identities import artifact_id
 from common.contracts.stages import ARCHETYPUS, ARMARIUM, PERLECTOR, RECENSOR
 from common.runtree.store import RunTree
+from common.stage import _stage_seal_payload, latest_attempt
 
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
@@ -99,6 +100,29 @@ def forge_perlector_failure(tree: RunTree, fake_subject: str) -> None:
     path = tree.resolve(tree.artifact_path(PERLECTOR, "perlectio", envelope["artifact_id"]))
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(canonical_bytes(envelope))
+    tree.write_manifest(PERLECTOR)
+
+
+def rebind_perlector_seal(tree: RunTree) -> None:
+    """Model a coherent sealed predecessor after the cap evidence was retained."""
+    seals = [
+        tree.read_artifact(PERLECTOR, "stage-seal", entry["artifact_id"])
+        for entry in tree.build_manifest(PERLECTOR, verify_inputs=False)["artifacts"]
+        if entry["kind"] == "stage-seal"
+    ]
+    seal = latest_attempt(seals, "perlector stage seal", operation="seal")
+    payload = seal["payload"]
+    seal["payload"] = _stage_seal_payload(
+        tree,
+        PERLECTOR,
+        payload["attempt_ordinal"],
+        seal["attempt_id"],
+        payload["decode_environment_artifact_id"],
+    )
+    seal["self_hash"] = self_hash(seal)
+    tree.resolve(tree.artifact_path(PERLECTOR, "stage-seal", seal["artifact_id"])).write_bytes(
+        canonical_bytes(seal)
+    )
     tree.write_manifest(PERLECTOR)
 
 
@@ -196,6 +220,45 @@ def test_zero_hard_failures_never_mentions_the_cap(tmp_path):
     assert result.returncode == 0, result.stderr
     assert "hard failure" not in result.stdout
     assert "halted" not in result.stdout
+
+
+def test_a_direct_stage_refuses_a_halted_run_before_it_writes(tmp_path):
+    """The cap is not an orchestrator-only courtesy for direct stage programs."""
+    root = tmp_path / "runs"
+    for program in (
+        "pipeline/1_exemplar/door.py",
+        "pipeline/1_exemplar/run.py",
+        "pipeline/2_designator/run.py",
+        "pipeline/3_attestatores/run.py",
+        "pipeline/4_perlector/run.py",
+    ):
+        invoke_stage(root, "r", "truncated-reading", program)
+    tree = RunTree(root, "r")
+    forge_perlector_failure(tree, "fake-hard-failure-subject-1")
+    forge_perlector_failure(tree, "fake-hard-failure-subject-2")
+    forge_perlector_failure(tree, "fake-hard-failure-subject-3")
+    rebind_perlector_seal(tree)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "pipeline/5_recensor/run.py"),
+            "--run-root",
+            str(root),
+            "--run-id",
+            "r",
+            "--scenario",
+            "truncated-reading",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 4
+    assert "RunHalted" in result.stderr
+    assert "recensor refuses to start" in result.stderr
+    assert not has_any_artifact(tree, RECENSOR)
 
 
 def test_a_real_truncated_reading_alone_never_mentions_the_cap(tmp_path):
