@@ -204,7 +204,28 @@ def test_volume_hosted_tree_is_movable_and_crash_resume_appends_without_rewritin
             # must retain its bytes, which is the assertion below.
             continue
         assert finished[path] == digest, f"resume rewrote surviving evidence at {path}"
-    assert finished == uninterrupted
+
+    # An interruption is EVIDENCE: the killed stage's re-entry appends its own
+    # attempt records (a stage-seal and decode-environment pair per re-entry,
+    # by the seal design), so its attempt-scoped artifacts and the manifests
+    # that inventory them legitimately differ from an uninterrupted run.
+    # Everything else must still land byte-identical, and the attempt-scoped
+    # set may only be a superset — appended, never rewritten or dropped.
+    def _attempt_scoped(path: str) -> bool:
+        return (
+            "/artifacts/stage-seal/" in path
+            or "/artifacts/decode-environment/" in path
+            or path.endswith(("/manifest.json", "/manifest-door.json", "/index.json"))
+            or path.endswith("run-health/recensor-partition-receipt.json")
+        )
+
+    assert {k: v for k, v in finished.items() if not _attempt_scoped(k)} == {
+        k: v for k, v in uninterrupted.items() if not _attempt_scoped(k)
+    }
+    assert set(uninterrupted) - set(finished) == set(), "resume dropped artifacts"
+    assert len([k for k in finished if _attempt_scoped(k)]) >= len(
+        [k for k in uninterrupted if _attempt_scoped(k)]
+    ), "the interrupted run must carry at least the uninterrupted attempt records"
     matched = _assert_every_reference_resolves(volume, "r")
 
     # A volume reached through a symlink is the ordinary Mac and Linux mount
