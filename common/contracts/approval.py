@@ -35,7 +35,10 @@ from .errors import ApprovalRefusal
 # artifact naming anyone else is refused by the schema rather than by convention.
 APPROVER: Final = "Tyrel"
 
-ACTIONS: Final = ("exclusion", "salvage-promotion", "other")
+# ``advance`` is deliberately distinct from ``other``.  It is the one operator
+# decision that can move a staged run forward, and readers must be able to find
+# it without treating a free-text label as authority.
+ACTIONS: Final = ("advance", "exclusion", "salvage-promotion", "other")
 
 # Ingress status must be part of self-hashed run authority. An absent field in a
 # mutable door artifact is never proof that the run began as a fixture.

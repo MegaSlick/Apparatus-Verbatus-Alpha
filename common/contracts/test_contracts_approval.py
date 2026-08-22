@@ -45,7 +45,7 @@ def test_data_gate_is_not_an_approvable_action():
     exists to claim one against. `exclusion` and `salvage-promotion` remain —
     GOVERNANCE 1 still requires Tyrel's approval for an exclusion."""
     assert "data-gate" not in ACTIONS
-    assert set(ACTIONS) == {"exclusion", "salvage-promotion", "other"}
+    assert set(ACTIONS) == {"advance", "exclusion", "salvage-promotion", "other"}
     with pytest.raises(ApprovalRefusal, match="not one of"):
         approval(action="data-gate")
 
