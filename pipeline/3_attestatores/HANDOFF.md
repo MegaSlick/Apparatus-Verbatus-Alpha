@@ -43,6 +43,7 @@ chair, act_key, attempt_ordinal
 regions = [{region_id, image_path, image_sha256}, ...]
 provenance, format_capabilities
 payload, witness_reported, content_health
+presented, observed, unpresented_regions
 reason                         only when a named non-reading/failure needs one
 ```
 
@@ -79,6 +80,41 @@ JSON-native values: its shared canonical writer refuses floating-point numbers,
 and this stage records that refusal as `failed` rather than coercing the number.
 That is an unresolved gap against Spec 07's unexpected-but-parseable payload
 requirement, not a claim that the float was retained verbatim.
+
+### Native image/geometry waist
+
+`presented` is either `{}` (this record has no image presentation) or the closed
+description of exactly one `page`, `region`, or `adapter-crop` image: sealed page
+identity and ordinal, blob path/digest, and an executable sealed-page transform.
+A region presentation is re-derived from its unique Designator proposal. A page
+presentation must name the whole sealed page and `operation="whole"`. The current
+adapter-crop recipe is exactly `operation="crop"`; both read seams regenerate its
+PNG bytes from the sealed page and refuse a digest that differs. A resize or any
+other adapter-owned recipe must extend this closed transform rather than ride as
+an opaque operation string.
+
+`observed` is the witness-order list of integer sealed-page boxes, each with a
+dense zero-based ordinal, `bounds_source` in `native | derived | presented`, and
+an optional non-overlapping span into this Testimonium's own retained text. It
+carries no act identity, preference, authority, or confidence field. `presented`
+is an explicit no-geometry fallback: it restates the image sent and is excluded
+from both unrouted-ink detection and Unit 10C coverage. Only `native` and
+`derived` boxes report witness geometry.
+
+`unpresented_regions` is computed after the adapter's final presentation and
+re-derived at both later act read seams by page-space containment. With a real
+presentation, `[]` means every bound proposal crop lies inside that one image;
+with `presented={}`, the list is inapplicable and must be `[]`. Those states are
+not ambiguous because `presented` distinguishes them, and a non-attempted record
+is independently forbidden from binding any regions or image inputs.
+
+The runnable adapter registry resolves exact configured names with no default.
+`present(context, presentation)` may retain an adapter-owned crop through the run
+tree; `observe(presentation, native_payload)` must derive geometry from the exact
+presentation and retained response together. Churro's fixture response has no
+layout, so its adapter returns only the excluded `bounds_source="presented"`
+fallback. A future layout adapter cannot be wired to an observation callable
+that never receives its own response.
 
 ### Temporary textual bridge
 
@@ -333,9 +369,11 @@ regions, so the two groupings cannot drift apart.
 R0 has no live page-scoped witness. A page Testimonium is `page_join`'s
 concatenation of one chair's own act attempts on that page, so its outcome comes
 from the joined text and not from the shape of the list that produced it:
-`failed` when no attempt joined at all — or when the join could not carry
-every attempt and the carried ones were all empty, because a completed absence
-may only be claimed over a page this chair's join fully read (invariant 6);
+`failed` when no reading joined and at least one underlying attempt reached the
+chair — or when the join could not carry every attempt and the carried ones were
+all empty, because a completed absence may only be claimed over a page this
+chair's join fully read (invariant 6); `not-run` when no underlying attempt
+reached the configured chair;
 `genuinely-empty` when every attempt joined and every one delivered an empty
 body; `read` when the text carries a delivered character (delivered characters
 beside disclosed omissions claim less, not more). Separators are placed only *between* delivered characters.
@@ -345,6 +383,16 @@ whenever the list was non-empty gave a page of genuinely-empty acts
 as testimony to them (CodeRabbit W44). An act whose reading the join could not
 carry is disclosed in `unjoined_act_attempts`; an act it carried as empty is not,
 because it was carried.
+
+The synthetic page presentation and receipt are fixture declarations of the
+page-scoped invocation the skeleton is exercising, just as the act arm's
+`fixture://` receipt is a declaration rather than a live serve. `page_join`
+supplies that declared invocation's response fragments; it is not evidence that
+a provider ran. A failed page record carries a presentation and receipt exactly
+when at least one underlying act attempt reached the configured chair. If none
+did, the page outcome is `not-run`, with `presented={}` and no receipt. Thus
+`failed` never also means “never attempted,” and an absent or never-shown chair
+is never forced to invent a serving moment.
 
 ## Act-attachment schema (R4)
 

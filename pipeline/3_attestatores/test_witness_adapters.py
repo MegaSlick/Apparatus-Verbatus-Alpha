@@ -42,14 +42,33 @@ def test_churro_is_the_only_currently_runnable_fixture_adapter_shape():
     assert spec.retain is adapters.feeding.retain_model_view
 
 
-def test_the_registry_does_not_pre_empt_the_intake_contract_seam_names():
-    """`presented`/`observed` are the intake contract's words for seams this
-    slice does not build. A slot wearing either name here would be a placeholder
-    that a later unit reads as already bound, and retention is not observation:
-    raw bytes are the native layer, an observation is derived."""
+def test_the_registry_binds_the_native_intake_contract_seams():
+    """10B fills 10A's reserved derived-layer seams with real callables."""
     adapters = _load_local_adapters()
     fields = {field.name for field in dataclasses.fields(adapters.RunnableAdapter)}
-    assert fields == {"prompt", "parse", "retain"}
+    assert fields == {"prompt", "parse", "retain", "present", "observe"}
+    presented = {
+        "kind": "page",
+        "source_page_id": "page-1",
+        "source_page_ordinal": 1,
+        "image_path": "1_exemplar/blobs/sha256/" + "0" * 64,
+        "image_sha256": "0" * 64,
+        "transform": {
+            "operation": "whole",
+            "source_page_id": "page-1",
+            "source_page_ordinal": 1,
+            "bounds": {"x": 0, "y": 0, "w": 20, "h": 10},
+        },
+    }
+    assert adapters.resolve_runnable_adapter("churro.v1").present(object(), presented) is presented
+    assert adapters.resolve_runnable_adapter("churro.v1").observe(presented, "retained text") == [
+        {
+            "ordinal": 0,
+            "bounds": {"x": 0, "y": 0, "w": 20, "h": 10},
+            "bounds_source": "presented",
+            "span": None,
+        }
+    ]
 
 
 def test_a_callable_binding_that_raises_at_import_fails_loudly_without_fallback(monkeypatch):
