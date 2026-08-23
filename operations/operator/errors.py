@@ -56,6 +56,7 @@ class ErrorCode(StrEnum):
     INGEST_REFUSED = "ingest-refused"
     INGEST_PREVIEW_UNRESOLVED = "ingest-preview-unresolved"
     INGEST_UNRESOLVED = "ingest-unresolved"
+    TRIAGE_REFUSED = "triage-refused"
     INTERRUPTED = "interrupted"
     UNEXPECTED = "unexpected"
 
@@ -270,6 +271,11 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
         "Ingest did not return a checked ready-folder record.",
         "No pod was started or billed, but immutable ingest records may have been written before the interruption.",
         "Do not reuse or remove the output folder. Preserve it and the saved detail, inspect its records, then use a new empty approved folder when retrying.",
+    ),
+    ErrorCode.TRIAGE_REFUSED: ErrorCopy(
+        "Triage could not safely record or show that review step.",
+        "No cluster was selected, no evidence was changed, and any earlier queue decisions remain visible.",
+        "Read the saved detail, repair the named triage document or path, then resume the queue; this is safe.",
     ),
     ErrorCode.INTERRUPTED: ErrorCopy(
         "The Verbatus command was interrupted before it reported an end state.",
