@@ -27,6 +27,7 @@ from common.contracts.stages import PERLECTOR
 from common.imaging import decode_grayscale_png
 from proof.build_fixture import (
     ACTS,
+    CHURRO_PAGE_RESPONSES,
     RECOVERY_BOUNDS,
     SCENARIO_TESTIMONY,
     TESTIMONY,
@@ -296,6 +297,100 @@ def test_the_review_scenario_exercises_the_repaired_failed_state(skeleton, model
     assert failures[1]["attempt_ordinal"] == 2
 
 
+def test_the_declared_churro_page_responses_reach_a_page_scoped_chair(skeleton, models_config):
+    """Every declared full-page response names a chair configured to be asked one.
+
+    `pipeline/3_attestatores/run.py::churro_page_capture` looks a response up by
+    `(page_ordinal, chair)`. A row naming an act-scoped chair, a chair that does
+    not exist, or a page that does not exist is not an error there -- it is never
+    found, and the whole capture path silently reverts to the synthetic act join
+    while every test stays green. The stage refuses such a row by name at run
+    time; this refuses it at the generator, where the declaration is written.
+    """
+    page_chairs = {
+        role
+        for role, chair in models_config.chairs.items()
+        if isinstance(chair, ChairIdentity) and chair.witness_scope == "page"
+    }
+    assert page_chairs, "the configuration seals no page witness at all"
+    declared_pages = {page["ordinal"] for page in skeleton["page"]}
+    rows = skeleton["churro_page_response"]
+    assert rows == [dict(row) for row in CHURRO_PAGE_RESPONSES]
+    assert rows, "no scenario exercises the Churro page capture path"
+    for row in rows:
+        assert set(row) == {
+            "scenario",
+            "page_ordinal",
+            "chair",
+            "raw_xml",
+            "transport_stop_reason",
+        }
+        assert row["chair"] in page_chairs
+        assert row["page_ordinal"] in declared_pages
+        assert row["transport_stop_reason"]
+    keys = [(row["scenario"], row["page_ordinal"], row["chair"]) for row in rows]
+    assert len(set(keys)) == len(keys), "two responses declared for one (scenario, page, chair)"
+
+
+def test_the_pinned_reference_run_exercises_the_churro_capture_path(skeleton):
+    """`happy` is pinned, so a capture path it does not run can rot unnoticed.
+
+    Its four rows also reproduce the previous synthetic join text exactly: the
+    boundary becomes real without moving a single act's reading, which is what
+    keeps this a change of path rather than a change of evidence.
+    """
+    happy = [row for row in skeleton["churro_page_response"] if row["scenario"] == "happy"]
+    assert {(row["page_ordinal"], row["chair"]) for row in happy} == {
+        (1, "attestator_1"),
+        (1, "attestator_3"),
+        (2, "attestator_1"),
+        (2, "attestator_3"),
+    }
+    page_acts = {1: ("a1", "a2"), 2: ("a2",)}
+    for row in happy:
+        joined = "\n".join(
+            TESTIMONY[act_key][row["chair"]] for act_key in page_acts[row["page_ordinal"]]
+        )
+        assert row["raw_xml"] == f"<output>{joined}</output>"
+        assert row["transport_stop_reason"] == "eos"
+
+
+def test_the_churro_native_scenario_reaches_all_three_parse_states(skeleton):
+    """Parse-success, visible truncation, and a retained unparseable response.
+
+    Reading them off the declaration is what makes the end-to-end assertions in
+    `pipeline/3_attestatores/test_churro_native_capture.py` assertions about a
+    scenario that genuinely contains all three, rather than about whichever
+    states happen to survive an edit here.
+    """
+    rows = {
+        (row["page_ordinal"], row["chair"]): row
+        for row in skeleton["churro_page_response"]
+        if row["scenario"] == "churro-native"
+    }
+    assert set(rows) == {
+        (1, "attestator_1"),
+        (1, "attestator_3"),
+        (2, "attestator_1"),
+        (2, "attestator_3"),
+    }
+    # Parse-success, complete, and carrying page furniture no act accounts for.
+    header = "[FOLIO RUBRIC 7 -- page furniture, belongs to no entry]"
+    complete = rows[(1, "attestator_1")]
+    assert complete["raw_xml"].startswith(f"<output>{header}")
+    assert complete["raw_xml"].endswith("</output>")
+    assert complete["transport_stop_reason"] == "eos"
+    assert header not in "".join(act["text"] for act in ACTS)
+    # Parse-success cut off at the transport's own bound: kept, marked truncated.
+    truncated = rows[(2, "attestator_1")]
+    assert truncated["raw_xml"].endswith("</output>")
+    assert truncated["transport_stop_reason"] == "length"
+    # Never closed: retained raw, refused by the XML validator.
+    malformed = rows[(2, "attestator_3")]
+    assert not malformed["raw_xml"].endswith("</output>")
+    assert malformed["transport_stop_reason"] == "length"
+
+
 def test_fixture_declares_the_explicit_non_reading_and_malformed_attempts(skeleton):
     assert skeleton["witness_not_run"] == list(WITNESS_NOT_RUN)
     assert skeleton["witness_malformed"] == list(WITNESS_MALFORMED)
@@ -309,6 +404,7 @@ def test_the_scenarios_are_exactly_the_declared_ones(skeleton):
         "review",
         "continuation-recovery",
         "coverage-recovery",
+        "churro-native",
         "audit-change",
         "refused-page",
         "refused-first-page",
@@ -348,6 +444,11 @@ def test_the_scenarios_are_exactly_the_declared_ones(skeleton):
     # (`pipeline/5_recensor/test_coverage_recovery_origin.py`).
     assert by_name["coverage-recovery"]["recover_acts"] == []
     assert by_name["coverage-recovery"]["hold_acts"] == []
+    # churro-native declares neither either: what it declares is the Churro page
+    # responses themselves, so nothing but the native capture boundary separates
+    # it from `happy` (`pipeline/3_attestatores/test_churro_native_capture.py`).
+    assert by_name["churro-native"]["recover_acts"] == []
+    assert by_name["churro-native"]["hold_acts"] == []
     assert [
         row for row in skeleton["native_observation"] if row.get("scenario") == "coverage-recovery"
     ] == [

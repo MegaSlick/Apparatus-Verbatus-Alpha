@@ -300,6 +300,16 @@ scenario = "coverage-recovery"
 act_key = "a2"
 text = "SYNTHETIC ACT TWO delta epsilon zeta eta"
 
+[[prior_reading]]
+scenario = "churro-native"
+act_key = "a1"
+text = "SYNTHETIC ACT ONE alpha beta ganna"
+
+[[prior_reading]]
+scenario = "churro-native"
+act_key = "a2"
+text = "SYNTHETIC ACT TWO delta epsilon zeta eta"
+
 [[audit_reproof]]
 scenario = "audit-change"
 act_key = "a1"
@@ -394,6 +404,62 @@ chair = "attestator_2"
 payload = "SYNTHETIC ACT TWO delta epsilon zeta eta, reread"
 attempt_ordinal = 2
 
+[[churro_page_response]]
+scenario = "happy"
+page_ordinal = 1
+chair = "attestator_1"
+raw_xml = "<output>SYNTHETIC ACT ONE alpha beta gamma\nSYNTHETIC ACT TWO delta epsilon zeta eta</output>"
+transport_stop_reason = "eos"
+
+[[churro_page_response]]
+scenario = "happy"
+page_ordinal = 1
+chair = "attestator_3"
+raw_xml = "<output>SYNTHETIC ACT ONE alpha beta\nSYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
+transport_stop_reason = "eos"
+
+[[churro_page_response]]
+scenario = "happy"
+page_ordinal = 2
+chair = "attestator_1"
+raw_xml = "<output>SYNTHETIC ACT TWO delta epsilon zeta eta</output>"
+transport_stop_reason = "eos"
+
+[[churro_page_response]]
+scenario = "happy"
+page_ordinal = 2
+chair = "attestator_3"
+raw_xml = "<output>SYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
+transport_stop_reason = "eos"
+
+[[churro_page_response]]
+scenario = "churro-native"
+page_ordinal = 1
+chair = "attestator_1"
+raw_xml = "<output>[FOLIO RUBRIC 7 -- page furniture, belongs to no entry]\nSYNTHETIC ACT ONE alpha beta gamma\nSYNTHETIC ACT TWO delta epsilon zeta eta</output>"
+transport_stop_reason = "eos"
+
+[[churro_page_response]]
+scenario = "churro-native"
+page_ordinal = 1
+chair = "attestator_3"
+raw_xml = "<output>[FOLIO RUBRIC 7 -- page furniture, belongs to no entry]\nSYNTHETIC ACT ONE alpha beta\nSYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
+transport_stop_reason = "eos"
+
+[[churro_page_response]]
+scenario = "churro-native"
+page_ordinal = 2
+chair = "attestator_1"
+raw_xml = "<output>[FOLIO RUBRIC 7 -- page furniture, belongs to no entry]\nSYNTHETIC ACT TWO delta epsilon zeta eta</output>"
+transport_stop_reason = "length"
+
+[[churro_page_response]]
+scenario = "churro-native"
+page_ordinal = 2
+chair = "attestator_3"
+raw_xml = "<output>[FOLIO RUBRIC 7 -- page furniture, belongs to no entry]\nSYNTHETIC ACT TWO delta epsiIon zeta eta"
+transport_stop_reason = "length"
+
 # The happy scenario establishes both acts. The review scenario recovers act
 # a1 once -- act identity stable, region and attempt identities changing -- and
 # holds act a2, which therefore reaches no Archetypus at all.
@@ -430,6 +496,16 @@ hold_acts = []
 # scenario produces has exactly one possible origin.
 [[scenario]]
 name = "coverage-recovery"
+recover_acts = []
+hold_acts = []
+
+# churro-native declares neither a recovery nor a hold either. What it
+# declares is four real-format Churro page responses, so the full-page
+# capture boundary -- parse, visible truncation, and a retained
+# unparseable response -- runs through the stage program rather than
+# through unit tests alone.
+[[scenario]]
+name = "churro-native"
 recover_acts = []
 hold_acts = []
 

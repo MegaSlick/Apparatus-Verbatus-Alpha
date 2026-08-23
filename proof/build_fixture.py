@@ -101,6 +101,9 @@ _PRIOR_READING_SCENARIOS = (
     # every other respect, so nothing but the witness's unclaimed observation
     # can request a recrop or hold an act.
     "coverage-recovery",
+    # Churro's own full-page capture path, end to end. Its acts reach the
+    # Perlector like any other scenario's, so it declares its own priors.
+    "churro-native",
 )
 PRIOR_READINGS = tuple(
     {"scenario": scenario, "act_key": act_key, "text": text}
@@ -379,6 +382,133 @@ READING_FAILURES = (
 STOP_REASONS = ({"scenario": "engine-truncated-reading", "act_key": "a1", "stop_reason": "length"},)
 
 
+# Which acts each page carries a reading of, for the declared Churro page
+# responses below. Page 1 holds both acts; page 2 holds act a2's continuation
+# alone. Derived here rather than spelled out so a page response cannot drift
+# away from the acts the rest of this file puts on its page.
+_PAGE_ACTS = {1: ("a1", "a2"), 2: ("a2",)}
+# The two page-scoped occupants. `config/models.toml` is the authority for
+# scope; this tuple only says which chairs these declarations are written for,
+# and `test_proof_fixture_build.py` reconciles it against the configuration so
+# a scope change cannot leave a response no chair can be asked for.
+_PAGE_CHAIRS = ("attestator_1", "attestator_3")
+
+
+def churro_xml(text: str) -> str:
+    """One declared Churro response in the trained framing, complete.
+
+    Churro's trained output is a single plain `<output>` element and nothing
+    else (`pipeline/3_attestatores/feeding.py::churro_prompt`), so this is the
+    whole of a well-formed response.  These are FIXTURE DECLARATIONS in Churro's
+    real format -- what the stage would receive -- and not a captured reading
+    from the model: no Churro weights have run in this repository, and nothing
+    here may be read as a measurement of one (GOVERNANCE 10).
+    """
+    if "<" in text or ">" in text or "&" in text:
+        raise ValueError("a declared Churro response text must not need XML escaping")
+    return f"<output>{text}</output>"
+
+
+def _joined_page_text(page_ordinal: int, chair: str) -> str:
+    """Exactly what the synthetic act join produced for this (page, chair).
+
+    `happy` is a pinned reference run and this keeps its page reading byte-
+    identical across the change of path: the capture seam becomes real, the
+    alignment, the dissent record and every act span do not move because the
+    text does not.  Computed from `TESTIMONY` rather than transcribed, so the
+    two cannot drift apart.
+    """
+    return "\n".join(TESTIMONY[act_key][chair] for act_key in _PAGE_ACTS[page_ordinal])
+
+
+# The `churro-native` page reading is deliberately NOT the act join. It opens
+# with a rubric line that belongs to no act at all -- the page furniture a real
+# full-page reading picks up and an act-ordered concatenation structurally
+# cannot contain. That is what makes the unit's first definition-of-done bullet
+# measurable: if the act attachment were assumed from proposal order rather than
+# derived from the text, this header would silently shift every act's span, and
+# `test_churro_native_capture.py` asserts each act still lands on its own words.
+_CHURRO_NATIVE_HEADER = "[FOLIO RUBRIC 7 -- page furniture, belongs to no entry]"
+
+
+def _churro_native_page_text(page_ordinal: int, chair: str) -> str:
+    body = "\n".join(TESTIMONY[act_key][chair] for act_key in _PAGE_ACTS[page_ordinal])
+    return f"{_CHURRO_NATIVE_HEADER}\n{body}"
+
+
+# One declared full-page Churro response per (scenario, page, chair). The stage
+# captures the raw bytes first and parses afterwards, so a row is free to be
+# unparseable: that is the point of the malformed one below.
+#
+# `happy` is here because a capture path no pinned scenario runs is a page
+# witness mechanism that can be disabled without a single test going red -- the
+# failure this project has already met once (the Sol-S1 fallback branch). Its
+# four rows reproduce the previous synthetic join text exactly, so the pinned
+# reference run gains the real boundary and no reading moves.
+#
+# `churro-native` is where the three parse states are exercised end to end:
+#
+#   page 1  attestator_1  parses, complete, and carries page furniture no act
+#                         accounts for -- derived attachment.
+#   page 1  attestator_3  parses, complete. Act a1 and act a2 keep three
+#                         witnesses on their primary page, so the scenario
+#                         measures the capture path rather than the witness
+#                         floor.
+#   page 2  attestator_1  parses, and the transport stopped it at `length`:
+#                         `content_health.truncated` is true, the text is kept,
+#                         and nothing completes or re-asks it (GOVERNANCE 7).
+#   page 2  attestator_3  never closes its `<output>` element and was cut at
+#                         `length`: the raw bytes are retained, the record is
+#                         `failed` with `recordable=false`, and the reason names
+#                         the cut as well as the parse refusal. Page 2 carries
+#                         only act a2's continuation, whose primary-page
+#                         witnessing is untouched, so the failure is visible
+#                         without standing in for a witness-floor test.
+CHURRO_PAGE_RESPONSES = tuple(
+    {
+        "scenario": "happy",
+        "page_ordinal": page_ordinal,
+        "chair": chair,
+        "raw_xml": churro_xml(_joined_page_text(page_ordinal, chair)),
+        "transport_stop_reason": "eos",
+    }
+    for page_ordinal in sorted(_PAGE_ACTS)
+    for chair in _PAGE_CHAIRS
+) + (
+    {
+        "scenario": "churro-native",
+        "page_ordinal": 1,
+        "chair": "attestator_1",
+        "raw_xml": churro_xml(_churro_native_page_text(1, "attestator_1")),
+        "transport_stop_reason": "eos",
+    },
+    {
+        "scenario": "churro-native",
+        "page_ordinal": 1,
+        "chair": "attestator_3",
+        "raw_xml": churro_xml(_churro_native_page_text(1, "attestator_3")),
+        "transport_stop_reason": "eos",
+    },
+    {
+        "scenario": "churro-native",
+        "page_ordinal": 2,
+        "chair": "attestator_1",
+        "raw_xml": churro_xml(_churro_native_page_text(2, "attestator_1")),
+        "transport_stop_reason": "length",
+    },
+    {
+        "scenario": "churro-native",
+        "page_ordinal": 2,
+        "chair": "attestator_3",
+        # Cut mid-element: no closing tag, so `validate_churro_xml` refuses it
+        # and the bytes are kept anyway. Written open on purpose -- do not
+        # "repair" it.
+        "raw_xml": f"<output>{_churro_native_page_text(2, 'attestator_3')}",
+        "transport_stop_reason": "length",
+    },
+)
+
+
 def page_descriptor(ordinal):
     for page in ALL_PAGES:
         if page["ordinal"] == ordinal:
@@ -398,7 +528,22 @@ def render_all() -> dict[int, bytes]:
 
 
 def toml_string(value: str) -> str:
-    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    """One TOML basic string, with the control characters TOML forbids escaped.
+
+    A basic string may not carry a literal newline, carriage return or tab, and
+    a declared full-page witness response is the first fixture value that
+    contains one -- a page reading is several lines by definition. Emitting the
+    raw byte produced a file `tomllib` refuses, which is loud; emitting it
+    without the escape into a multi-line form would have been worse, because the
+    string the stage read back would no longer be the string declared here.
+    """
+    escaped = (
+        value.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("\t", "\\t")
+    )
     return f'"{escaped}"'
 
 
@@ -626,6 +771,17 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
         if "attempt_ordinal" in row:
             lines.append(f"attempt_ordinal = {row['attempt_ordinal']}")
 
+    for row in CHURRO_PAGE_RESPONSES:
+        lines += [
+            "",
+            "[[churro_page_response]]",
+            f"scenario = {toml_string(row['scenario'])}",
+            f"page_ordinal = {row['page_ordinal']}",
+            f"chair = {toml_string(row['chair'])}",
+            f"raw_xml = {toml_string(row['raw_xml'])}",
+            f"transport_stop_reason = {toml_string(row['transport_stop_reason'])}",
+        ]
+
     lines += [
         "",
         "# The happy scenario establishes both acts. The review scenario recovers act",
@@ -664,6 +820,16 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
         "# scenario produces has exactly one possible origin.",
         "[[scenario]]",
         'name = "coverage-recovery"',
+        "recover_acts = []",
+        "hold_acts = []",
+        "",
+        "# churro-native declares neither a recovery nor a hold either. What it",
+        "# declares is four real-format Churro page responses, so the full-page",
+        "# capture boundary -- parse, visible truncation, and a retained",
+        "# unparseable response -- runs through the stage program rather than",
+        "# through unit tests alone.",
+        "[[scenario]]",
+        'name = "churro-native"',
         "recover_acts = []",
         "hold_acts = []",
         "",

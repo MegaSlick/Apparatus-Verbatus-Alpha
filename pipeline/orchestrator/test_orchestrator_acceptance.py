@@ -756,6 +756,40 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # assigning it to either.  The final corrective pass separates its retained
 # recovery route from textual shortfall, so fresh canonical-id "r"
 # measurements are 84/0 (happy) and 109/3 (review).
+# Re-pinned for Unit 12 (Churro as its own stage), at the audit seat. THREE
+# things move here and they are different in kind, so they are separated.
+#
+# 1. `proof/skeleton_fixture.toml` gains eight `[[churro_page_response]]` rows
+#    and the `churro-native` scenario. `run_config_bindings` folds the whole
+#    fixture declaration into `config_digest`, so this alone moves BOTH pinned
+#    authorities even though only `happy` reads any of the new rows.
+# 2. `happy` now runs the real Churro page-capture boundary. Its four declared
+#    responses reproduce the previous synthetic join text EXACTLY, so no act's
+#    reading, span, alignment or dissent row moves; what moves is that each of
+#    the four page Testimonia gains a `native_capture` block, and each captured
+#    response is written content-addressed as its own retained blob. That is
+#    the file-count change: 84 -> 88, four raw responses, one per (page, chair).
+#    A capture path no pinned scenario runs is a page-witness mechanism a
+#    refactor can disable with every test still green, which is the Sol-S1
+#    failure; `happy` runs it now.
+# 3. `review` declares no Churro response, keeps the synthetic join, and writes
+#    no new file -- its count holds at 109. Its digest still moves, for reason 1
+#    alone.
+#
+# Also in the same seat and moving neither count: the page Testimonium writer now
+# validates its own `content_health` (the tally's read-back filters to
+# `kind == "testimonium"` and has never seen a page record), post-hoc repetition
+# detection inspects the parsed transcription rather than the raw bytes whose
+# closing `</output>` tag made every tail window differ, and a page-witness act
+# attachment resolves its outcome from the page attempt that produced the record
+# it names. None of the three alters a byte in either pinned scenario: happy and
+# review carry no repetition, no unparseable capture, and no failed page capture.
+#
+# Both values below were measured twice, in independent temporary roots, through
+# this module's own `orchestrate` and `semantic_snapshot_digest` helpers at
+# canonical run id "r", after the last byte of the candidate was in place.
+# Counts and exits: 88/0 (happy) and 109/3 (review).
+#
 # Opus audit seat (10C, seat 3 of 4): the declared fixture gains one scenario,
 # `coverage-recovery`, and the single native observation that scenario needs.
 # Sonnet's recorded gap was that the coverage-triggered recovery origin had no
@@ -770,14 +804,14 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # exit code changes — 84/0 and 109/3 hold, and each digest below reproduced
 # twice in independent temporary roots through this module's own `orchestrate`
 # and `semantic_snapshot_digest` helpers at canonical run id "r".
-HAPPY_RUN_TREE_DIGEST = "a7285a4743e365f78f3ad2dde1dc8a56756d20237e71bc9a250cce7fc330f687"
+HAPPY_RUN_TREE_DIGEST = "4c1843676ca00be3d1aef2f39f8805a32c5314be13ee7edd01c81b6fa6f97126"
 # Review only, once more in the same seat: a page witness invoked on every act
 # and unusable on all of them now records the serving moment that produced it
 # (`provenance_for(..., attempted=attempted_page)`), where the `reading` gate
 # left `receipt_ref: None` beside a `presented` block claiming pixels were shown.
 # One `receipt_ref` field on attestator_3's page-2 record; no new file, no count
 # or exit change (97/3), and happy is untouched at the digest above.
-REVIEW_RUN_TREE_DIGEST = "95f68ea20d140eca53a723d70cfece0632fbfe2ceff4d8558da803dfdb69938a"
+REVIEW_RUN_TREE_DIGEST = "a6cf1c8368fcc02c9fe99084976118122c70b7495357ad4c175b14432a923252"
 
 
 def orchestrate(
@@ -4391,7 +4425,9 @@ def test_repeating_the_identical_command_leaves_every_byte_unchanged(tmp_path):
 
     # R0 adds two retained page Testimonia and two derived act attachments to
     # the happy walking skeleton; repeatability still compares every byte.
-    assert len(before) == 84
+    # Unit 12 adds four more files: one content-addressed raw Churro response
+    # per (page, chair), retained before the XML is parsed at all.
+    assert len(before) == 88
     assert semantic_snapshot_digest(root) == HAPPY_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "happy").returncode == 0
     after = snapshot(root)

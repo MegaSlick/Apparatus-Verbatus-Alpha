@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import re
 import time
+from pathlib import Path
+from types import SimpleNamespace
 
 import feeding
 import pytest
@@ -26,6 +29,7 @@ from feeding import (
     validate_churro_xml,
 )
 
+from common.chairs.models import AbsentChair
 from common.chandra_custody import retain_chandra_response
 from common.contracts.canonical import digest_bytes, digest_of
 from common.contracts.errors import SchemaRefusal
@@ -34,6 +38,14 @@ from common.runtree.store import BLOBS_DIR
 
 PAGE_ID = "pg_fixture"
 PAGE_ORDINAL = 0
+
+
+def _load_attestatores():
+    path = Path(__file__).resolve().parent / "run.py"
+    spec = importlib.util.spec_from_file_location("attestatores_churro_capture", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _ref(path: str, digest: str = "a" * 64) -> dict[str, str]:
@@ -146,9 +158,15 @@ def test_an_undecodable_churro_capture_records_uninspected_without_claiming_repe
         raw_response=b"\xff\xfe not utf-8 at all",
         transport_stop_reason="eos",
     )
-    assert {"kind": "post-hoc-repetition-uninspected", "reason": "response is not UTF-8 text"} in (
-        record["findings"]
-    )
+    assert record["findings"] == [
+        {
+            "kind": "post-hoc-repetition-uninspected",
+            "reason": "response is not UTF-8 text",
+            # No parse was asked for, so the raw bytes are all there was to look
+            # at, and the finding says which view it failed to read.
+            "inspected": "raw-response",
+        }
+    ]
     assert record["stop_reason"] == "eos"
 
 
@@ -215,6 +233,351 @@ def test_repetition_detection_observes_only_bytes_already_captured(monkeypatch):
     )
     assert observations == [raw]
     assert tree.blobs[record["raw_response_ref"]["relative_path"]] == raw
+
+
+def test_repetition_is_detected_in_a_COMPLETE_churro_response_envelope_and_all():
+    """The detector must fire on the shape it exists for: a whole, well-formed reply.
+
+    It did not. `detect_repetition` compares windows at the tail of what it is
+    given, and a complete Churro response ends `</output>` -- nine bytes that sit
+    inside every tail window and make each one differ from the window before it.
+    Shown the raw bytes, the detector returned None for a page consisting of one
+    clause repeated six times, and returned `repeats=5` for the same page cut off
+    before its closing tag. An instrument that reports a runaway only when the
+    runaway was ALSO truncated is reporting the truncation (GOVERNANCE 10).
+
+    Every test of this before mocked the detector or fed it bare bytes with no
+    envelope, which is why it stayed green. This one goes through
+    `retain_model_view` with the real detector and a real response.
+    """
+    tree = _Tree()
+    clause = "the same clause repeated over and over. "
+    raw = f"<output>{clause * 6}</output>".encode()
+
+    record = retain_model_view(
+        tree,
+        adapter="churro.v1",
+        view={"prompt": churro_prompt(), "generation": churro_generation()},
+        raw_response=raw,
+        transport_stop_reason="eos",
+        parser="xml",
+    )
+
+    assert record["parse"]["state"] == "parsed"
+    assert record["findings"] == [
+        {
+            "kind": "post-hoc-repetition",
+            "unit_characters": len(clause),
+            # Five, not six: the detector normalises whitespace and strips, so
+            # the sixth clause's trailing space is gone and the tail carries
+            # five whole windows. Counting is the R3 suite's business; what is
+            # pinned here is that it counts at all.
+            "repeats": 5,
+            "inspected": "parsed-text",
+        }
+    ]
+    assert record["stop_reason"] == "partial-post-hoc-repetition-detected"
+    # Post-capture and powerless over the capture, exactly as before: the blob
+    # is the untouched response, closing tag and all.
+    assert tree.blobs[record["raw_response_ref"]["relative_path"]] == raw
+    # And the raw bytes on their own really are undetectable -- the fact that
+    # made this a defect rather than a preference.
+    assert detect_repetition(raw) is None
+
+
+def test_an_unparseable_capture_is_still_inspected_for_repetition_on_its_raw_bytes():
+    """No transcription to read, so the raw capture is what gets inspected.
+
+    A response that ran away and was cut before it could close is the likeliest
+    real instance of both faults at once. Both are recorded: the parse refusal
+    keeps the stop reason (it is the more actionable fact) and the repetition
+    survives in `findings`, where a finding belongs.
+    """
+    tree = _Tree()
+    clause = "the same clause repeated over and over. "
+    raw = f"<output>{clause * 6}".encode()
+
+    record = retain_model_view(
+        tree,
+        adapter="churro.v1",
+        view={"prompt": churro_prompt(), "generation": churro_generation()},
+        raw_response=raw,
+        transport_stop_reason="length",
+        parser="xml",
+    )
+
+    assert record["parse"]["state"] == "failed"
+    assert record["stop_reason"] == "partial-parse-failed"
+    assert [finding["kind"] for finding in record["findings"]] == ["post-hoc-repetition"]
+    assert record["findings"][0]["inspected"] == "raw-response"
+    assert tree.blobs[record["raw_response_ref"]["relative_path"]] == raw
+
+
+def test_churro_page_capture_is_full_page_xml_and_surfaces_transport_truncation():
+    """The stage consumes one page response, never an act join or a retry."""
+    attestatores = _load_attestatores()
+    tree = _Tree()
+    context = SimpleNamespace(
+        tree=tree,
+        scenario="churro-native",
+        fixture={
+            "churro_page_response": [
+                {
+                    "scenario": "churro-native",
+                    "page_ordinal": 1,
+                    "chair": "attestator_1",
+                    "raw_xml": "<output>first act\nsecond act</output>",
+                    "transport_stop_reason": "length",
+                }
+            ]
+        },
+    )
+
+    result = attestatores.captured_churro_page_attempt(context, 1, "attestator_1")
+
+    assert result is not None
+    attempt, capture = result
+    assert attempt.native_payload == "first act\nsecond act"
+    assert attempt.health["truncated"] is True
+    assert attempt.health["truncation_basis"] == "trusted-response-boundary"
+    assert capture["parse"] == {
+        "state": "parsed",
+        "parser": "xml",
+        "text": "first act\nsecond act",
+    }
+    assert tree.blobs[capture["raw_response_ref"]["relative_path"]] == (
+        b"<output>first act\nsecond act</output>"
+    )
+
+
+def test_churro_page_capture_keeps_repetition_finding_after_raw_capture(monkeypatch):
+    attestatores = _load_attestatores()
+    tree = _Tree()
+    raw = "<output>complete captured text</output>"
+    context = SimpleNamespace(
+        tree=tree,
+        scenario="churro-native",
+        fixture={
+            "churro_page_response": [
+                {
+                    "page_ordinal": 1,
+                    "chair": "attestator_1",
+                    "raw_xml": raw,
+                    "transport_stop_reason": "eos",
+                }
+            ]
+        },
+    )
+
+    def detector(observed):
+        assert tree.blobs, "the response must be retained before detection"
+        # The transcription, not the envelope: `</output>` inside every tail
+        # window makes the real detector blind to a wholly repeated response.
+        assert observed == b"complete captured text"
+        return {"kind": "post-hoc-repetition", "unit_characters": 24, "repeats": 3}
+
+    monkeypatch.setattr(feeding, "detect_repetition", detector)
+    _, capture = attestatores.captured_churro_page_attempt(context, 1, "attestator_1")
+
+    assert capture["findings"] == [
+        {
+            "kind": "post-hoc-repetition",
+            "unit_characters": 24,
+            "repeats": 3,
+            "inspected": "parsed-text",
+        }
+    ]
+    assert tree.blobs[capture["raw_response_ref"]["relative_path"]] == raw.encode()
+
+
+def test_churro_page_capture_of_malformed_xml_keeps_raw_bytes_and_is_unrecordable():
+    """A response that reached this boundary but does not parse is a captured,
+    unrecordable channel -- not the no-channel-at-all shape `dead`/`not-run`
+    carry. It must stay distinguishable from those on `content_health.recordable`
+    alone, because that is the field a later reader checks to learn whether a
+    chair was ever actually heard from."""
+    attestatores = _load_attestatores()
+    tree = _Tree()
+    raw = "<output>unterminated"
+    context = SimpleNamespace(
+        tree=tree,
+        scenario="churro-native",
+        fixture={
+            "churro_page_response": [
+                {
+                    "page_ordinal": 1,
+                    "chair": "attestator_1",
+                    "raw_xml": raw,
+                    "transport_stop_reason": "length",
+                }
+            ]
+        },
+    )
+
+    result = attestatores.captured_churro_page_attempt(context, 1, "attestator_1")
+
+    assert result is not None
+    attempt, capture = result
+    assert attempt.outcome == "failed"
+    assert attempt.native_payload is None
+    assert attempt.health["recordable"] is False
+    assert attempt.health["encoding"] == "invalid-or-unrecordable"
+    for field in ("empty", "blank", "truncated", "characters"):
+        assert attempt.health[field] is None
+    assert attempt.health["truncation_basis"]
+    assert tree.blobs[capture["raw_response_ref"]["relative_path"]] == raw.encode("utf-8")
+
+
+def test_a_cut_off_empty_response_is_not_a_confirmed_blank_page():
+    """`genuinely-empty` is a positive claim of absence and must be earned.
+
+    A response the provider stopped at its token bound before emitting a single
+    character reported nothing because it was interrupted. Recording that as
+    "this chair read the page and found nothing on it" puts an unconfirmed blank
+    into the record on the strength of an interruption -- and at page scope that
+    outcome trivially attaches every act on the page at a zero-length span and
+    feeds the Recensor's blank corroboration. GOVERNANCE 2 refuses "complete"
+    unless everything reconciles; GOALS 1 says a missed act is worse than a
+    poorly read one, and this is how one would go missing.
+
+    A cut-off response WITH text stays `read`, truncated: partial characters are
+    evidence, and the truncation flag says how far to trust them.
+    """
+    attestatores = _load_attestatores()
+
+    def _capture(raw: str, stop: str):
+        context = SimpleNamespace(
+            tree=_Tree(),
+            scenario="churro-native",
+            fixture={
+                "churro_page_response": [
+                    {
+                        "page_ordinal": 1,
+                        "chair": "attestator_1",
+                        "raw_xml": raw,
+                        "transport_stop_reason": stop,
+                    }
+                ]
+            },
+        )
+        return attestatores.captured_churro_page_attempt(context, 1, "attestator_1")
+
+    cut, _ = _capture("<output></output>", "length")
+    assert cut.outcome == "failed"
+    assert cut.native_payload is None
+    assert cut.health["recordable"] is False
+    assert "not a reported absence" in cut.health["truncation_basis"]
+    assert "not a confirmed blank page" in cut.reason
+
+    # The same empty response the provider finished normally IS a reported
+    # absence, and stays one. The distinction is the whole point.
+    finished, _ = _capture("<output></output>", "eos")
+    assert finished.outcome == "genuinely-empty"
+    assert finished.native_payload == ""
+    assert finished.health["recordable"] is True
+    assert finished.health["truncated"] is False
+
+    # And a cut-off response that did carry text keeps it, visibly partial.
+    partial, _ = _capture("<output>half an act and then</output>", "length")
+    assert partial.outcome == "read"
+    assert partial.native_payload == "half an act and then"
+    assert partial.health["truncated"] is True
+
+
+def test_a_declared_response_no_page_chair_could_be_asked_for_is_refused():
+    """A row nothing can look up is refused by name, not skipped.
+
+    `churro_page_capture` is keyed on `(page_ordinal, chair)`. A misspelled chair
+    or an act-scoped one simply never matches, and the stage reverts to the
+    synthetic join with nothing recorded -- the capture path off, every test
+    green. An absent chair is deliberately NOT this mistake: the roster, not the
+    fixture, decides whether a chair can answer.
+    """
+    attestatores = _load_attestatores()
+
+    def _context(chair: str, page_ordinal: int, chairs: dict):
+        return SimpleNamespace(
+            scenario="churro-native",
+            witness_chairs=sorted(chairs),
+            registry=SimpleNamespace(config=SimpleNamespace(chairs=chairs)),
+            fixture={
+                "page": [{"ordinal": 1}, {"ordinal": 2}],
+                "churro_page_response": [
+                    {
+                        "scenario": "churro-native",
+                        "page_ordinal": page_ordinal,
+                        "chair": chair,
+                        "raw_xml": "<output>x</output>",
+                        "transport_stop_reason": "eos",
+                    }
+                ],
+            },
+        )
+
+    page_chairs = {"attestator_1"}
+    absent = AbsentChair(role="attestator_3", reason="declared absent for this run")
+
+    with pytest.raises(attestatores.SchemaRefusal, match="does not seal"):
+        attestatores.validate_declared_churro_page_responses(
+            _context("attestator_2", 1, {"attestator_1": object()}), page_chairs
+        )
+    with pytest.raises(attestatores.SchemaRefusal, match="does not declare"):
+        attestatores.validate_declared_churro_page_responses(
+            _context("attestator_1", 9, {"attestator_1": object()}), page_chairs
+        )
+    # The absent chair passes over quietly: well-formed declaration, no chair.
+    attestatores.validate_declared_churro_page_responses(
+        _context("attestator_3", 1, {"attestator_1": object(), "attestator_3": absent}),
+        page_chairs,
+    )
+
+
+def test_one_scenarios_declared_response_is_not_another_scenarios_default():
+    """A row belonging to a different scenario is not a fallback for this one.
+
+    The lookup used to sort every non-matching row into the scenario-agnostic
+    bucket, so a `churro-native` response was served to `happy`, `review` and
+    every other scenario that declared none of its own -- and a second
+    scenario-scoped row for the same pair refused those unrelated runs rather
+    than its own. `testimony_for` has always had the right rule; this is it.
+    """
+    attestatores = _load_attestatores()
+    rows = [
+        {
+            "scenario": "churro-native",
+            "page_ordinal": 1,
+            "chair": "attestator_1",
+            "raw_xml": "<output>other scenario</output>",
+            "transport_stop_reason": "eos",
+        },
+        {
+            "scenario": "churro-native-two",
+            "page_ordinal": 1,
+            "chair": "attestator_1",
+            "raw_xml": "<output>a third scenario</output>",
+            "transport_stop_reason": "eos",
+        },
+    ]
+    context = SimpleNamespace(scenario="happy", fixture={"churro_page_response": rows})
+    assert attestatores.churro_page_capture(context, 1, "attestator_1") is None
+
+    context.scenario = "churro-native"
+    assert attestatores.churro_page_capture(context, 1, "attestator_1") is rows[0]
+
+    # A scenario-agnostic row IS this scenario's default, and a scenario-scoped
+    # row still overrides it -- the precedence `testimony_for` documents.
+    rows.append(
+        {
+            "page_ordinal": 1,
+            "chair": "attestator_1",
+            "raw_xml": "<output>the default</output>",
+            "transport_stop_reason": "eos",
+        }
+    )
+    context.scenario = "happy"
+    assert attestatores.churro_page_capture(context, 1, "attestator_1") is rows[2]
+    context.scenario = "churro-native"
+    assert attestatores.churro_page_capture(context, 1, "attestator_1") is rows[0]
 
 
 def _repetition_by_construction(raw: bytes) -> dict | None:

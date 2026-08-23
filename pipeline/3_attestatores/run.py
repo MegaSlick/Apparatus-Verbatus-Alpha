@@ -25,11 +25,12 @@ the other chairs to reach it would re-read ink nobody doubted.
 import json
 import sys
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any, Final, NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import feeding  # noqa: E402
 import witness_adapters  # noqa: E402
 
 from common.alignment import align_to_anchor, load_alignment_limits, markup_text_view  # noqa: E402
@@ -862,6 +863,7 @@ def page_testimonium_payload(
     page_role: str,
     unjoined_act_attempts: list[dict[str, Any]],
     partition_disagreement: dict[str, Any] | None = None,
+    native_capture: dict[str, Any] | None = None,
     **kwargs: Any,
 ) -> dict[str, Any]:
     """Build and refuse the closed page-scoped Testimonium shape at its writer."""
@@ -894,7 +896,24 @@ def page_testimonium_payload(
     }
     if partition_disagreement is not None:
         record["partition_disagreement"] = partition_disagreement
+    if native_capture is not None:
+        # This is the narrow native/derived join: raw bytes remain in the
+        # content-addressed blob named here; payload is only validated XML text.
+        record["native_capture"] = native_capture
     validate_page_testimonium_payload(record)
+    # The act-scoped kind gets both of these on the tally's read-back walk, which
+    # filters to `kind == "testimonium"` and therefore has never seen a page
+    # record at all -- so until Unit 12 no page Testimonium's health was closed
+    # anywhere, and the first record that could carry `recordable=False` is the
+    # captured-but-unparseable Churro page above. Checked here, at the one writer
+    # of the kind, rather than left to a read-back that structurally excludes it:
+    # a page record claiming a reading it could not retain is #23's UNKNOWN
+    # wearing an outcome, and hard rule 6 does not have a scope exemption.
+    validate_content_health(record["payload"], record["content_health"])
+    if record["content_health"]["recordable"] is False:
+        require_accounted_unrecordable_channel(
+            {"outcome": kwargs["outcome"]}, {"reason": record.get("reason")}
+        )
     return record
 
 
@@ -1472,6 +1491,251 @@ class Attempt(NamedTuple):
     reason: str | None
 
 
+def churro_page_capture(context, page_ordinal: int, chair: str) -> dict[str, Any] | None:
+    """Return one declared Churro page response, preferring its scenario row.
+
+    This fixture seam stands in for a completed provider response.  It is page
+    keyed on purpose: deriving it by joining act responses would make the old
+    synthetic implementation look like Churro's own full-page reading.
+
+    Scenario precedence is `testimony_for`'s, spelled the same way and for the
+    same reason: a scenario-specific row overrides a scenario-agnostic one, and
+    a row belonging to a DIFFERENT scenario is not a default -- it is another
+    scenario's declaration and this run may not read it.  Sorting every
+    non-matching row into the fallback bucket served one scenario's Churro
+    response to every scenario that declared none of its own, and made a second
+    scenario-scoped row for the same pair refuse the unrelated runs rather than
+    its own.
+    """
+    base: list[dict[str, Any]] = []
+    scoped: list[dict[str, Any]] = []
+    for row in context.fixture.get("churro_page_response", []):
+        if row.get("page_ordinal") != page_ordinal or row.get("chair") != chair:
+            continue
+        declared_scenario = row.get("scenario")
+        if declared_scenario is None:
+            base.append(row)
+        elif declared_scenario == context.scenario:
+            scoped.append(row)
+    matches = scoped or base
+    if len(matches) > 1:
+        raise SchemaRefusal(
+            f"fixture declares more than one Churro page response for {(page_ordinal, chair)!r}"
+        )
+    return matches[0] if matches else None
+
+
+_CHURRO_PAGE_RESPONSE_FIELDS: Final = frozenset(
+    {"scenario", "page_ordinal", "chair", "raw_xml", "transport_stop_reason"}
+)
+
+
+def validate_declared_churro_page_responses(context, page_chairs: set[str]) -> None:
+    """Refuse a declared Churro page response this pass could never look up.
+
+    `churro_page_capture` is keyed on `(page_ordinal, chair)`, so a row whose
+    chair is misspelled, whose chair is act-scoped, or whose ordinal names no
+    declared page is not an error at the lookup -- it is simply never found, and
+    the native capture path quietly reverts to the synthetic join for that pair.
+    That is the page-witness-mechanism-silently-disabled failure this stage has
+    already met once (the Sol-S1 fallback branch), and the fixture would still be
+    green while asserting nothing.  A declaration nothing can consume is refused
+    by name here instead, before the pass writes anything.
+
+    **A chair the roster declares absent is not that mistake**, and is passed
+    over rather than refused.  An `AbsentChair` is a fact about this run's
+    configuration, recorded loudly in its own right; the declaration is perfectly
+    well formed and simply has no chair to answer it.  Refusing here would make
+    every variant configuration that empties a page chair unable to run a
+    scenario that declares one -- a fixture declaration outranking the roster,
+    which is backwards.
+
+    Only rows this run would read are checked.  Another scenario's row is that
+    scenario's business, and this pass has no standing to judge whether a chair
+    it does not seal is a page witness over there.
+    """
+    declared_pages = {
+        page.get("ordinal") for page in context.fixture.get("page", []) if isinstance(page, dict)
+    }
+    configured = context.registry.config.chairs
+    absent_chairs = {
+        chair for chair in context.witness_chairs if isinstance(configured.get(chair), AbsentChair)
+    }
+    seen: set[tuple[int, str]] = set()
+    for row in context.fixture.get("churro_page_response", []):
+        if not isinstance(row, dict):
+            raise SchemaRefusal("a fixture [[churro_page_response]] row is not a table")
+        scenario = row.get("scenario")
+        if scenario is not None and scenario != context.scenario:
+            continue
+        if unknown := sorted(set(row) - _CHURRO_PAGE_RESPONSE_FIELDS):
+            raise SchemaRefusal(
+                f"a Churro page response declares unknown field(s) {unknown}; a field this "
+                "seam does not read is a declaration nothing carries"
+            )
+        page_ordinal, chair = row.get("page_ordinal"), row.get("chair")
+        if not isinstance(page_ordinal, int) or isinstance(page_ordinal, bool):
+            raise SchemaRefusal(
+                f"a Churro page response declares a non-integer page ordinal {page_ordinal!r}"
+            )
+        if not isinstance(chair, str) or not chair:
+            raise SchemaRefusal("a Churro page response declares no chair")
+        if page_ordinal not in declared_pages:
+            raise SchemaRefusal(
+                f"a Churro page response names page {page_ordinal}, which the sealed fixture "
+                f"does not declare (declared: {sorted(o for o in declared_pages if o is not None)})"
+            )
+        if chair in absent_chairs:
+            continue
+        if chair not in page_chairs:
+            raise SchemaRefusal(
+                f"a Churro page response names chair {chair!r}, which this run does not seal "
+                f"as a page witness (page witnesses: {sorted(page_chairs)}, absent: "
+                f"{sorted(absent_chairs)}); a response no page-scoped chair can be asked for "
+                "would never be captured at all"
+            )
+        if (page_ordinal, chair) in seen:
+            raise SchemaRefusal(
+                "the fixture declares more than one Churro page response for "
+                f"{(page_ordinal, chair)!r} in scenario {context.scenario!r}"
+            )
+        seen.add((page_ordinal, chair))
+
+
+def captured_churro_page_attempt(
+    context, page_ordinal: int, chair: str
+) -> tuple[Attempt, dict[str, Any]] | None:
+    """Capture, then parse, one real-format Churro response without retrying it."""
+    row = churro_page_capture(context, page_ordinal, chair)
+    if row is None:
+        return None
+    raw = row.get("raw_xml")
+    stop = row.get("transport_stop_reason")
+    if not isinstance(raw, str) or not isinstance(stop, str) or not stop:
+        raise SchemaRefusal("a Churro page response needs raw_xml and transport_stop_reason")
+    adapter = witness_adapters.resolve_runnable_adapter("churro.v1")
+    capture = adapter.retain(
+        context.tree,
+        adapter="churro.v1",
+        view={"prompt": adapter.prompt(), "generation": feeding.churro_generation()},
+        raw_response=raw.encode("utf-8"),
+        transport_stop_reason=stop,
+        parser="xml",
+    )
+    parsed = capture["parse"]
+    # The transport's own stop reason, never `capture["stop_reason"]`: post-hoc
+    # repetition detection rewrites the latter, and a finding about the content
+    # may not decide whether the provider cut the response off (GOVERNANCE 7).
+    cut_off = stop in {"length", "max_new_tokens"}
+    if parsed["state"] == "parsed" and not (cut_off and parsed["text"] == ""):
+        text = parsed["text"]
+        complete = not cut_off
+        return (
+            Attempt(
+                # A cut-off response with text in it is still `read`: partial
+                # characters are evidence and `truncated=true` beside them says
+                # exactly how far to trust them. A cut-off response with NO text
+                # cannot take the branch above at all -- see below.
+                "genuinely-empty" if text == "" else "read",
+                text,
+                None,
+                DEFAULT_FORMAT_CAPABILITIES,
+                content_health(text, completed=complete),
+                None,
+            ),
+            capture,
+        )
+    if parsed["state"] == "parsed":
+        # Well-formed, empty, and cut off at the provider's bound. `read` is out
+        # (no characters) and `genuinely-empty` would be a lie of exactly the
+        # shape this stage has been burned by: that outcome means "this chair
+        # read the page's acts and reported nothing on each", a POSITIVE claim of
+        # absence that later feeds the Recensor's blank corroboration. A response
+        # the provider stopped before it emitted a character reported nothing
+        # because it was interrupted, not because there was nothing there --
+        # "complete" is refused unless everything reconciles (GOVERNANCE 2), and
+        # an unconfirmed blank sealed as confirmed is how ink goes missing
+        # (GOALS 1). It is an attempt that reached the boundary and yielded no
+        # usable testimony: `failed`, with the cut named.
+        return (
+            Attempt(
+                "failed",
+                None,
+                None,
+                DEFAULT_FORMAT_CAPABILITIES,
+                {
+                    "native_type": "unrecordable",
+                    "encoding": "invalid-or-unrecordable",
+                    "recordable": False,
+                    "empty": None,
+                    "blank": None,
+                    "truncated": None,
+                    "characters": None,
+                    "truncation_basis": (
+                        f"response cut off by the provider ({stop!r}) before it carried any "
+                        "text; an interrupted silence is not a reported absence"
+                    ),
+                },
+                (
+                    f"Churro response parsed empty after the provider stopped it at its bound "
+                    f"(transport_stop_reason {stop!r}); a cut-off response is not a confirmed "
+                    "blank page"
+                ),
+            ),
+            capture,
+        )
+    # The raw blob and parser refusal are still retained.  A malformed XML or
+    # visible truncation is a failed page testimony, never a repaired response.
+    # `recordable=False` ("invalid-or-unrecordable"), not `no_response_health`'s
+    # `recordable=None`: a response genuinely reached this boundary and its bytes
+    # are retained in `raw_response_ref` -- this chair was not absent and did not
+    # go unasked, it returned something this stage could not keep as a reading.
+    # `recordable=None` is reserved for the no-channel-at-all cases (`dead`,
+    # `not-run`, an attempt with no payload) and is routed through
+    # `require_accounted_unrecordable_channel` at the page writer, exactly like
+    # the fixture-declared `malformed` case above is at the act tally.
+    #
+    # **The cut is named even though `truncated` cannot be.** `recordable=False`
+    # fixes every measured field at null -- rightly, since nothing could be
+    # measured -- so `content_health.truncated` stays `None` here whatever the
+    # transport said. That leaves the reason and the basis as the only places a
+    # reader meets this record's facts, and "not parseable XML" alone sends an
+    # operator hunting a schema bug for a response the provider simply cut off
+    # at its token bound. Both facts are stated; neither is guessed, and the
+    # authority for both is the retained blob and `transport_stop_reason` beside
+    # it in `native_capture`.
+    cut_note = (
+        f"the provider stopped the response at its bound (transport_stop_reason {stop!r}) and "
+        if cut_off
+        else ""
+    )
+    basis = (
+        f"response cut off by the provider ({stop!r}); {parsed['reason']}"
+        if cut_off
+        else parsed["reason"]
+    )
+    return (
+        Attempt(
+            "failed",
+            None,
+            None,
+            DEFAULT_FORMAT_CAPABILITIES,
+            {
+                "native_type": "unrecordable",
+                "encoding": "invalid-or-unrecordable",
+                "recordable": False,
+                "empty": None,
+                "blank": None,
+                "truncated": None,
+                "characters": None,
+                "truncation_basis": basis,
+            },
+            f"Churro response retained but not usable: {cut_note}{parsed['reason']}",
+        ),
+        capture,
+    )
+
+
 def dead_attempt(resolved: AbsentChair) -> Attempt:
     """A chair the roster declares absent: unavailable before any attempt reached it."""
     return Attempt(
@@ -2009,11 +2273,19 @@ def publish_page_testimonia_and_attachments(
     # `declared_page_witness_chairs` already validates the sealed roster against
     # the configured occupants, so scope needs no further narrowing here.
     page_chairs = declared_page_witness_chairs(context)
+    validate_declared_churro_page_responses(context, page_chairs)
     limits, limits_digest = load_alignment_limits(context.args.alignment_config)
     context.require_sealed_config("alignment", limits_digest)
     page_records: dict[tuple[int, str], dict[str, str]] = {}
     page_observations: dict[tuple[int, str], list[dict[str, Any]]] = {}
     page_texts: dict[tuple[int, str], str] = {}
+    # What each page-scoped chair's own page attempt was, where a native capture
+    # made one. The legacy join derives its page outcome FROM the act attempts,
+    # so gating that path's act attachment on the act attempt stays coherent; a
+    # native capture is an independent full-page response, and reading the act
+    # attempt to decide what the PAGE record says is how the two come to
+    # disagree about the same chair on the same page.
+    page_attempts: dict[tuple[int, str], Attempt] = {}
     # The anchor is a page fact, not a chair's report, and it is kept in its own
     # map for that reason: parked in `page_texts` under a reserved chair slot it
     # shared a key space with the configured roster, so a chair carrying that
@@ -2067,14 +2339,48 @@ def publish_page_testimonia_and_attachments(
     for page_ordinal, page_acts in sorted(by_page.items()):
         page_subject = page_identity(context.fixture, page_ordinal)
         for chair in sorted(page_chairs):
-            join = page_join([(act, attempts_by_pair[(act["act_id"], chair)]) for act in page_acts])
-            native_payload, outcome = join.native_payload, join.outcome
-            unjoined_act_attempts = join.unjoined_act_attempts
+            captured = captured_churro_page_attempt(context, page_ordinal, chair)
+            if captured is None:
+                # Legacy fixture rows retain their deliberately synthetic join.
+                # A Churro row above never takes this path.
+                join = page_join(
+                    [(act, attempts_by_pair[(act["act_id"], chair)]) for act in page_acts]
+                )
+                page_attempt_result, native_capture = join, None
+                native_payload, outcome = join.native_payload, join.outcome
+                unjoined_act_attempts = join.unjoined_act_attempts
+            else:
+                page_attempt_result, native_capture = captured
+                native_payload, outcome = (
+                    page_attempt_result.native_payload,
+                    page_attempt_result.outcome,
+                )
+                unjoined_act_attempts = []
+                page_attempts[(page_ordinal, chair)] = page_attempt_result
             reading = outcome in WITNESS_READING_OUTCOMES
-            attempted_page = page_witness_attempted(page_acts, chair, attempts_by_pair)
-            failure_reason = page_failure_reason(unjoined_act_attempts, join.joined_act_attempts)
-            page_texts[(page_ordinal, chair)] = native_payload
-            health = content_health(native_payload, completed=reading)
+            attempted_page = captured is not None or page_witness_attempted(
+                page_acts, chair, attempts_by_pair
+            )
+            failure_reason = (
+                page_attempt_result.reason
+                if captured is not None
+                else page_failure_reason(
+                    unjoined_act_attempts, page_attempt_result.joined_act_attempts
+                )
+            )
+            # Only a retained reading. A failed native capture has no text, and
+            # a `None` parked here read back as "this page has no anchor" three
+            # hundred lines below -- an operator sent looking for an anchor file
+            # that is on disk, for a page whose witness response was the thing
+            # that failed. The page-attempt gate below is what keeps that lookup
+            # from being reached at all; this keeps the map's own type honest.
+            if isinstance(native_payload, str):
+                page_texts[(page_ordinal, chair)] = native_payload
+            health = (
+                page_attempt_result.health
+                if captured is not None
+                else content_health(native_payload, completed=reading)
+            )
             resolved = context.registry.resolve(chair)
             presented = presentation_for_page(context, page_ordinal) if attempted_page else {}
             if attempted_page and isinstance(resolved, ChairIdentity):
@@ -2135,6 +2441,7 @@ def publish_page_testimonia_and_attachments(
                 page_role=page_role,
                 unjoined_act_attempts=unjoined_act_attempts,
                 partition_disagreement=disagreement,
+                native_capture=native_capture,
                 chair=chair,
                 act_key=f"page-{page_ordinal}",
                 ordinal=ordinal,
@@ -2153,7 +2460,18 @@ def publish_page_testimonia_and_attachments(
                 format_capabilities=DEFAULT_FORMAT_CAPABILITIES,
                 native_payload=native_payload if reading else None,
                 witness_reported=None,
-                health=health if reading else no_response_health(reason=failure_reason),
+                # A native capture already carries its own correct health for a
+                # non-reading outcome -- notably `recordable=False` for a response
+                # that reached this boundary but did not parse, which is a
+                # different fact from the legacy join's `no_response_health`
+                # ("nothing reached this chair at all"). Only the legacy join
+                # path, which never retains a captured channel to be unrecordable,
+                # still falls back to that no-response shape.
+                health=(
+                    health
+                    if reading or captured is not None
+                    else no_response_health(reason=failure_reason)
+                ),
                 presented=presented,
                 observed=observed,
                 outcome=outcome,
@@ -2298,11 +2616,24 @@ def publish_page_testimonia_and_attachments(
         entries: list[dict[str, Any]] = []
         contributing_pages = contributing_pages_by_act.get(act["act_id"], [act["page_ordinal"]])
         for chair in context.witness_chairs:
-            attempt = attempts_by_pair[(act["act_id"], chair)]
+            act_attempt = attempts_by_pair[(act["act_id"], chair)]
             page_witness = chair in page_chairs and act["outcome"] == "proposed"
             alignment: dict[str, Any] | None = None
             if page_witness:
                 act_anchor = anchor_ranges.get((act["page_ordinal"], act["act_id"]))
+                # Whose reading this attachment is a view OF. The entry names one
+                # page Testimonium, so the answer is that record's own attempt
+                # wherever a native capture produced one -- and it is resolved per
+                # contributing page, because a chair can be captured on the act's
+                # primary page and not on its continuation. Under a native capture
+                # the act-scoped rows are a separate compatibility channel, and
+                # reading them here published an act attachment describing a
+                # response the referenced page record never made: an alignment
+                # computed over a page the chair failed to deliver, or a failed
+                # page laundered into `attached: true`. The legacy join keeps the
+                # act attempt because its page outcome is derived from exactly
+                # those attempts.
+                attempt = page_attempts.get((act["page_ordinal"], chair), act_attempt)
                 if attempt.outcome not in WITNESS_READING_OUTCOMES:
                     # There is no reading to place. Running the page alignment
                     # here would manufacture an `aligned` status for text this
@@ -2500,11 +2831,17 @@ def publish_page_testimonia_and_attachments(
                     # text.  The attachment itself is the page geometry this
                     # chair reported against the sealed proposal; no anchor
                     # selects a witness/proposal correspondence.
-                    page_attached = attempt.outcome in WITNESS_READING_OUTCOMES and any(
-                        reported_geometry_overlaps(
-                            {"observed": page_observations[(contributing_page, chair)]}, bounds
+                    contributing_attempt = page_attempts.get(
+                        (contributing_page, chair), act_attempt
+                    )
+                    page_attached = (
+                        contributing_attempt.outcome in WITNESS_READING_OUTCOMES
+                        and any(
+                            reported_geometry_overlaps(
+                                {"observed": page_observations[(contributing_page, chair)]}, bounds
+                            )
+                            for bounds in page_bounds
                         )
-                        for bounds in page_bounds
                     )
                     attachment_basis = "geometric-overlap" if page_attached else "unattached"
                     reference = page_records[(contributing_page, chair)]
@@ -2516,7 +2853,17 @@ def publish_page_testimonia_and_attachments(
                             "testimonium_ref": reference,
                             "attached": page_attached,
                             "attachment_basis": attachment_basis,
-                            "content_health": attempt.health,
+                            # The ACT attempt's health, deliberately, even under a
+                            # native page capture: both later readers require this
+                            # field to equal the chair's current act-scoped
+                            # Testimonium health, as the staleness check that
+                            # catches a reread appended after this derived view
+                            # was written (`pipeline/4_perlector/run.py`, reopened
+                            # F-O1; `pipeline/5_recensor/run.py`). It is a currency
+                            # check on the per-(act, chair) stream, not a claim
+                            # about the page response -- which is what `attached`
+                            # and `alignment` beside it describe.
+                            "content_health": act_attempt.health,
                             "alignment": page_alignment,
                             "span": (
                                 {
@@ -2529,7 +2876,9 @@ def publish_page_testimonia_and_attachments(
                         }
                     )
             else:
-                entries.append(act_scoped_attachment_entry(context, act, chair, attempt, ordinal))
+                entries.append(
+                    act_scoped_attachment_entry(context, act, chair, act_attempt, ordinal)
+                )
         context.publish(
             kind="act-attachment",
             subject_id=act["act_id"],

@@ -51,7 +51,7 @@ PAGE_TESTIMONIUM_REQUIRED_FIELDS: Final = frozenset(
     }
 )
 PAGE_TESTIMONIUM_OPTIONAL_FIELDS: Final = frozenset(
-    {"reason", "reported", "partition_disagreement"}
+    {"reason", "reported", "partition_disagreement", "native_capture"}
 )
 PAGE_ROLES: Final = frozenset({"primary", "continuation", "mixed"})
 
@@ -401,6 +401,8 @@ def validate_page_testimonium_payload(payload: Any) -> dict[str, Any]:
     validate_unpresented_regions(payload)
     if "partition_disagreement" in payload:
         validate_partition_disagreement(payload["partition_disagreement"])
+    if "native_capture" in payload:
+        validate_native_capture(payload["native_capture"])
     return validate_native_witness_geometry(payload)
 
 
@@ -578,6 +580,75 @@ def partition_disagreement(
         "ambiguous_pairings": ambiguous_pairings,
         "overlap_rule": dict(UNROUTED_OBSERVATION_OVERLAP),
     }
+
+
+_NATIVE_CAPTURE_FIELDS: Final = frozenset(
+    {
+        "schema",
+        "adapter",
+        "view",
+        "raw_response_ref",
+        "transport_stop_reason",
+        "stop_reason",
+        "findings",
+        "parse",
+    }
+)
+_NATIVE_CAPTURE_PARSE_STATES: Final = frozenset({"not-requested", "pending", "parsed", "failed"})
+
+
+def validate_native_capture(value: Any) -> dict[str, Any]:
+    """Close the retained native-witness model view, not merely its outer keys.
+
+    The raw response is content-addressed and immutable in its own blob
+    (`raw_response_ref`); this closes the shape of what was derived and
+    retained *about* it, at the same granularity every other field of this
+    schema is closed at -- an outer key set matching is not, on its own,
+    evidence that a resealed record still carries this stage's own facts.
+    """
+    if not isinstance(value, dict) or set(value) != _NATIVE_CAPTURE_FIELDS:
+        raise SchemaRefusal(
+            "a page Testimonium native capture is not its retained model-view schema"
+        )
+    for field in ("schema", "adapter", "transport_stop_reason", "stop_reason"):
+        if not isinstance(value[field], str) or not value[field]:
+            raise SchemaRefusal(f"a page Testimonium native capture has a blank {field}")
+    if not isinstance(value["view"], dict):
+        raise SchemaRefusal("a page Testimonium native capture view is not an object")
+    reference = value["raw_response_ref"]
+    if not isinstance(reference, dict) or set(reference) != {"relative_path", "sha256"}:
+        raise SchemaRefusal("a page Testimonium native capture has no raw-response reference")
+    if not all(isinstance(reference[key], str) and reference[key] for key in reference):
+        raise SchemaRefusal(
+            "a page Testimonium native capture has an invalid raw-response reference"
+        )
+    findings = value["findings"]
+    if not isinstance(findings, list) or not all(
+        isinstance(finding, dict) and isinstance(finding.get("kind"), str) and finding["kind"]
+        for finding in findings
+    ):
+        raise SchemaRefusal("a page Testimonium native capture has a malformed findings list")
+    parse = value["parse"]
+    state = parse.get("state") if isinstance(parse, dict) else None
+    if not isinstance(parse, dict) or state not in _NATIVE_CAPTURE_PARSE_STATES:
+        raise SchemaRefusal("a page Testimonium native capture has a malformed parse record")
+    parser = parse.get("parser")
+    if state == "not-requested":
+        expected, parser_valid = {"state", "parser"}, parser is None
+    elif state == "pending":
+        expected, parser_valid = {"state", "parser"}, isinstance(parser, str) and bool(parser)
+    else:
+        expected = {"state", "parser", "text" if state == "parsed" else "reason"}
+        parser_valid = isinstance(parser, str) and bool(parser)
+    if set(parse) != expected or not parser_valid:
+        raise SchemaRefusal("a page Testimonium native capture parse record has the wrong shape")
+    if state == "parsed" and not isinstance(parse["text"], str):
+        raise SchemaRefusal("a page Testimonium native capture claims parsed with no text")
+    if state == "failed" and not (isinstance(parse["reason"], str) and parse["reason"]):
+        raise SchemaRefusal(
+            "a page Testimonium native capture claims a parse failure with no reason"
+        )
+    return value
 
 
 def validate_partition_disagreement(value: Any) -> dict[str, Any]:
