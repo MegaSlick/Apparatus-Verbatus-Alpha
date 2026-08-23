@@ -53,6 +53,9 @@ class ErrorCode(StrEnum):
     CONSOLE_TREE_UNREADABLE = "console-tree-unreadable"
     ADVANCE_REFUSED = "advance-refused"
     BACKUP_FAILED = "backup-failed"
+    INGEST_REFUSED = "ingest-refused"
+    INGEST_PREVIEW_UNRESOLVED = "ingest-preview-unresolved"
+    INGEST_UNRESOLVED = "ingest-unresolved"
     INTERRUPTED = "interrupted"
     UNEXPECTED = "unexpected"
 
@@ -252,6 +255,21 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
         "The Mac backup did not finish with a verified snapshot.",
         "Existing content-addressed backup objects remain intact, but this run is not called backed up.",
         "Keep the saved detail, repair the named source or backup-directory problem, then run `verbatus backup` again; it safely reuses verified files.",
+    ),
+    ErrorCode.INGEST_REFUSED: ErrorCopy(
+        "The submission could not be prepared for the Door.",
+        "No folder was called ready to submit, and no pod was started or billed.",
+        "Read the refusal reason below, correct that exact input or confirmation file, then run `verbatus ingest` again; this is safe.",
+    ),
+    ErrorCode.INGEST_PREVIEW_UNRESOLVED: ErrorCopy(
+        "Ingest could not show you the plan it was going to write.",
+        "Nothing was written: the preview runs with no write rights at all, so the output folder you chose is untouched.",
+        "Keep the saved detail and run `verbatus ingest` again with the same empty output folder; this is safe.",
+    ),
+    ErrorCode.INGEST_UNRESOLVED: ErrorCopy(
+        "Ingest did not return a checked ready-folder record.",
+        "No pod was started or billed, but immutable ingest records may have been written before the interruption.",
+        "Do not reuse or remove the output folder. Preserve it and the saved detail, inspect its records, then use a new empty approved folder when retrying.",
     ),
     ErrorCode.INTERRUPTED: ErrorCopy(
         "The Verbatus command was interrupted before it reported an end state.",

@@ -381,12 +381,12 @@ def submit(
             refusal_report_out, roots, "private refusal report"
         )
     )
-    if resolved_manifest.is_relative_to(resolved_source):
+    if gate.same_or_inside(resolved_source, resolved_manifest):
         raise SubmitRefusal(
             "the submission manifest cannot be written inside the submitted folder; "
             "otherwise the next inventory includes its own prior output and cannot be idempotent"
         )
-    if report_target.is_relative_to(resolved_source):
+    if gate.same_or_inside(resolved_source, report_target):
         raise SubmitRefusal(
             "the private refusal report cannot be written inside the submitted folder; "
             "otherwise a retry inventories the tool-produced report as a submitted source"
