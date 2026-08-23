@@ -793,6 +793,14 @@ def test_resolving_a_path_outside_the_tree_is_refused(tmp_path):
             tree.resolve(bad)
 
 
+def test_a_path_the_filesystem_cannot_resolve_is_a_named_refusal(tmp_path):
+    """An embedded NUL is invalid at the OS boundary, not an interpreter failure."""
+    tree = make_run(tmp_path)
+
+    with pytest.raises(SchemaRefusal, match="could not be resolved inside the run tree"):
+        tree.resolve("1_exemplar/artifacts/a\x00b.json")
+
+
 def test_a_symlink_leading_out_of_the_tree_is_refused(tmp_path):
     """The `..` check cannot see this one: the path has no `..` in it, and only
     resolving it against the real filesystem shows where it lands.
@@ -873,6 +881,17 @@ def test_an_empty_stage_manifest_is_honest_rather_than_absent(tmp_path):
     assert manifest["blobs"] == []
 
 
+def test_a_manifest_refuses_a_stage_directory_replaced_by_a_regular_file(tmp_path):
+    """Missing inventory leaves are not honest absence below an invalid parent."""
+    tree = make_run(tmp_path)
+    stage_root = tree.resolve(writing_directory(DESIGNATOR))
+    stage_root.parent.mkdir(parents=True, exist_ok=True)
+    stage_root.write_bytes(b"not a stage directory")
+
+    with pytest.raises(SchemaRefusal, match="stage inventory.*not a directory"):
+        tree.build_manifest(DESIGNATOR)
+
+
 def test_a_manifest_refuses_a_derived_artifact_symlink_outside_the_run_tree(tmp_path):
     tree = make_run(tmp_path)
     envelope = make_envelope()
@@ -941,13 +960,17 @@ def test_a_manifest_refuses_a_symlink_cycle_inside_the_run_tree(tmp_path):
 
 
 def test_a_manifest_refuses_a_filesystem_symlink_loop_instead_of_skipping_it(tmp_path):
-    """A self-referential link has no directory target the walk can safely enter."""
+    """A self-link is named whether ``resolve`` returns it or raises for its loop.
+
+    Python 3.12 raises ``RuntimeError`` for the loop, while 3.13+ resolves as far
+    as possible in non-strict mode. Both supported behaviours must be refusals.
+    """
     tree = make_run(tmp_path)
     artifacts_root = tree.resolve(f"{writing_directory(DESIGNATOR)}/{ARTIFACTS_DIR}")
     artifacts_root.mkdir(parents=True)
     (artifacts_root / "loop").symlink_to("loop", target_is_directory=True)
 
-    with pytest.raises(SchemaRefusal, match="is a link"):
+    with pytest.raises(SchemaRefusal, match="is a link|could not be resolved inside the run tree"):
         tree.build_manifest(DESIGNATOR)
 
 
@@ -996,7 +1019,8 @@ def test_a_manifest_refuses_a_unique_directory_link_inside_the_run_tree(tmp_path
         tree.build_manifest(DESIGNATOR)
 
 
-def test_a_manifest_refuses_one_artifact_directory_reachable_at_two_paths(tmp_path):
+@pytest.mark.parametrize("alias_name", ("also-proposal", "z-proposal-alias"))
+def test_a_manifest_refuses_one_artifact_directory_reachable_at_two_paths(tmp_path, alias_name):
     """Aliasing: a link inside the tree to another directory inside the tree.
 
     Every step of it is contained, but a contained link still puts one artifact
@@ -1009,7 +1033,7 @@ def test_a_manifest_refuses_one_artifact_directory_reachable_at_two_paths(tmp_pa
     kind_directory = tree.resolve(
         tree.artifact_path(DESIGNATOR, "proposal", envelope["artifact_id"])
     ).parent
-    (kind_directory.parent / "also-proposal").symlink_to(kind_directory)
+    (kind_directory.parent / alias_name).symlink_to(kind_directory)
 
     with pytest.raises(SchemaRefusal, match="is a link|are the same directory"):
         tree.build_manifest(DESIGNATOR)
@@ -1393,6 +1417,27 @@ def test_a_manifest_hashes_the_same_artifact_read_it_verified(tmp_path, monkeypa
 
     assert reads == 1
     assert entry["sha256"] == digest_bytes(expected_bytes)
+
+
+def test_a_manifest_rechecks_containment_after_collecting_walk_members(tmp_path, monkeypatch):
+    """A path cannot become an out-of-tree link between the walk and its one read."""
+    tree = make_run(tmp_path)
+    envelope = make_envelope()
+    tree.publish_artifact(envelope)
+    artifact = tree.resolve(tree.artifact_path(DESIGNATOR, "proposal", envelope["artifact_id"]))
+    outside = tmp_path / "outside-after-walk.json"
+    outside.write_bytes(canonical_bytes(envelope))
+    real_walk = tree._walk_artifact_json
+
+    def replace_after_walk(directory):
+        yield from real_walk(directory)
+        artifact.unlink()
+        artifact.symlink_to(outside)
+
+    monkeypatch.setattr(tree, "_walk_artifact_json", replace_after_walk)
+
+    with pytest.raises(SchemaRefusal, match="resolves outside the run tree"):
+        tree.build_manifest(DESIGNATOR)
 
 
 # --- Inventory scope: harvest invariant #13 ------------------------------------

@@ -37,6 +37,7 @@ it needs.
 import errno
 import json
 import os
+import stat
 import sys
 import tempfile
 from collections.abc import Iterator
@@ -370,12 +371,13 @@ class RunTree:
             raise SchemaRefusal(f"{relative_path!r} escapes the run tree")
         try:
             resolved = (self.root / relative_path).resolve()
-        except (OSError, RuntimeError) as error:
+        except (OSError, RuntimeError, ValueError) as error:
             # `Path.resolve` reports a filesystem-level symlink loop as a
-            # RuntimeError (and some platforms report an OSError) before the
-            # containment comparison below can run.  That is still a path the
-            # run tree cannot safely resolve, not an interpreter failure a stage
-            # should surface as a traceback.
+            # RuntimeError (and some platforms report an OSError), and rejects
+            # paths the OS cannot represent with ValueError, before the containment
+            # comparison below can run. Those are still paths the run tree cannot
+            # safely resolve, not interpreter failures a stage should surface as
+            # tracebacks.
             raise SchemaRefusal(
                 f"{relative_path!r} could not be resolved inside the run tree: {error}"
             ) from error
@@ -753,11 +755,26 @@ class RunTree:
             # mismatch downstream of it happened to be reached first. Not sorted:
             # the walk emits in the order `sorted(rglob("*.json"))` did, and says so.
             members = list(self._walk_artifact_json(artifacts_root))
-            for relative_path, path in members:
+            for relative_path, _walked_path in members:
                 # One filesystem read supplies both the record that is verified
                 # and the digest published beside its fields.  Reading once to
                 # validate and again to hash allowed a concurrent replacement to
                 # pair metadata from one valid envelope with the digest of another.
+                # Re-resolve after the whole walk has been collected too: the path
+                # could have been replaced since the walk checked it, and reading
+                # the stale Path would follow a new link without containment.
+                path = self.resolve(relative_path)
+                lexical = self.root / relative_path
+                if path != lexical or lexical.is_symlink():
+                    raise SchemaRefusal(
+                        f"{relative_path!r} is a link to {str(path)!r}: a manifest "
+                        "reads the artifact file the store itself wrote, never an alias"
+                    )
+                if not path.is_file():
+                    raise SchemaRefusal(
+                        f"{relative_path!r} is no longer a regular artifact file after "
+                        "the manifest walk, so it cannot be read as artifact bytes"
+                    )
                 record, artifact_bytes = _read_json_with_bytes(path)
                 record = validate_envelope(record)
                 self._verify_artifact_run(record)
@@ -817,19 +834,35 @@ class RunTree:
         # `resolve` first, so a link that leaves the tree is refused as an escape
         # even when it is an intermediate component of the path.
         resolved = self.resolve(relative)
-        if resolved != lexical or lexical.is_symlink():
+        if resolved != lexical:
             raise SchemaRefusal(
                 f"{relative!r} is a link, to {str(resolved)!r}, where this stage's "
                 "inventory directory should be: a manifest is built from the directory "
                 "the store itself wrote, never through a link"
             )
-        if not resolved.exists():
-            return None
-        if not resolved.is_dir():
-            raise SchemaRefusal(
-                f"{relative!r} is not a directory, so this stage's inventory cannot be "
-                "walked and its manifest cannot be built"
-            )
+        current = self.root
+        for component in Path(relative).parts:
+            current /= component
+            current_relative = str(current.relative_to(self.root))
+            try:
+                mode = current.lstat().st_mode
+            except FileNotFoundError:
+                return None
+            except OSError as error:
+                raise SchemaRefusal(
+                    f"{current_relative!r} could not be inspected while locating stage "
+                    f"inventory {relative!r}: {error}"
+                ) from error
+            if stat.S_ISLNK(mode):
+                raise SchemaRefusal(
+                    f"{current_relative!r} is a link where a directory should be, so stage "
+                    f"inventory {relative!r} cannot be walked"
+                )
+            if not stat.S_ISDIR(mode):
+                raise SchemaRefusal(
+                    f"stage inventory {relative!r} cannot be reached because "
+                    f"{current_relative!r} is not a directory"
+                )
         return resolved
 
     def _walk_artifact_json(self, directory: Path) -> Iterator[tuple[str, Path]]:
