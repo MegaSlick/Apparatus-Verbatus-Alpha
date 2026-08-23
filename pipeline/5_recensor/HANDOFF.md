@@ -32,6 +32,14 @@ fatal accounting error; it is never resolved by sort order. Completed coverage i
 `read` plus `genuinely-empty`, while failed and not-run outcomes remain visible
 shortfalls.
 
+The act-attachment mirror is checked against those exact current records before
+the witness floor is counted. For a page witness, geometry against the sealed
+proposal independently derives `attached`; for an act-scoped witness, the exact
+current Testimonium's outcome derives `attached` and its retained payload derives
+`comparable`. The attachment must reference that current artifact. Thus a paired
+`attached: false, comparable: false` forgery cannot pass merely because the two
+booleans remain internally consistent.
+
 It reads the current Perlectio in the same unique-ordinal manner, verifies its
 direct evidence, and reconciles the Designator's proposed continuation flag
 against its own authoritative continuation link (see below). A non-completed

@@ -551,7 +551,10 @@ def test_a_non_reading_page_attempt_is_an_explicit_unaligned_reason_never_an_ali
         assert entry["attached"] is False
         assert entry["alignment"] == {
             "status": "unaligned",
-            "reason": "non-reading-page-attempt-failed",
+            # attestator_3's ACT attempt on a2 failed; its page-1 Testimonium
+            # read a1 and says `read`. The reason names the attempt that is
+            # actually non-reading rather than the record that is not.
+            "reason": "non-reading-act-attempt-failed",
         }, entry
 
 

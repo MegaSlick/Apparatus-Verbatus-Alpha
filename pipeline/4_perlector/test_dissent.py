@@ -3,15 +3,17 @@ metric; a raw-string cross-check beside the normalized one; an honest
 `"unknown"` for a witness format the comparator cannot yet reduce.
 """
 
+import ast
 import signal
 import threading
 import time
 import unicodedata
+from pathlib import Path
 
 import dissent
 import pytest
 
-from common.contracts.errors import SchemaRefusal
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_comparison_view_collapses_whitespace_and_reports_what_it_dropped():
@@ -158,6 +160,50 @@ def test_departures_are_an_alignment_and_expose_no_similarity_number():
         "a float anywhere in a dissent row is a similarity score wearing a shape; "
         "refusing ratios is what keeps the comparison from becoming a fuzzy-match picker"
     )
+
+
+def test_only_witness_coverage_may_count_across_chairs():
+    """The Perlector and Archetypus may carry chairs, never total them.
+
+    Counting the roster anywhere other than the receipt's `witness_coverage`
+    creates a second denominator that can quietly disagree with the floor.
+    This deliberately narrow structural guard catches the natural Python
+    spelling of such a counter while leaving per-chair equality comparison
+    intact.
+    """
+    sources = [
+        ROOT / "pipeline" / "4_perlector" / "run.py",
+        ROOT / "pipeline" / "6_archetypus" / "run.py",
+    ]
+    offenders = []
+    for path in sources:
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "sum"
+            ):
+                if "chair" in ast.unparse(node):
+                    offenders.append(f"{path}:{node.lineno}")
+    assert not offenders, f"cross-chair counters belong only in witness_coverage: {offenders}"
+
+
+def test_downstream_stages_do_not_branch_on_dissent_rows():
+    """Dissent travels as a Perlectio reference; it is not downstream input."""
+    sources = [
+        ROOT / "pipeline" / "5_recensor" / "run.py",
+        ROOT / "pipeline" / "6_archetypus" / "run.py",
+    ]
+    offenders = []
+    for path in sources:
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Subscript):
+                continue
+            if isinstance(node.slice, ast.Constant) and node.slice.value == "dissent":
+                offenders.append(f"{path}:{node.lineno}")
+    assert not offenders, f"only Perlector may branch on dissent rows: {offenders}"
 
 
 def test_a_non_reading_outcome_is_recorded_as_no_opinion_not_agreement():
@@ -323,11 +369,16 @@ def test_dissent_never_drops_an_unknown_chair_from_the_record():
     assert unknown_row["compared"] == "unknown"
 
 
-def test_a_completed_reading_outcome_with_no_reported_text_refuses():
-    with pytest.raises(SchemaRefusal, match="no text to compare"):
-        dissent.dissent_against(
-            "reading", [{"outcome": "read", "payload": {"chair": "attestator_1"}}]
-        )
+def test_a_completed_structured_witness_stays_visible_but_cannot_be_compared():
+    assert dissent.dissent_against(
+        "reading", [{"outcome": "read", "payload": {"chair": "attestator_1"}}]
+    ) == [
+        {
+            "chair": "attestator_1",
+            "compared": "unknown",
+            "reason": "no comparable text for this act: retained derived testimony is structured",
+        }
+    ]
 
 
 def test_this_module_pins_equality_only_and_takes_no_similarity_parameter():

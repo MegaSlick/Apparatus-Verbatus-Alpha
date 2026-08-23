@@ -43,7 +43,20 @@ from common.contracts.identities import is_well_formed, physical_act_id, physica
 
 SCHEMA: Final = "corpus-register-v1"
 _FORBIDDEN_PREFERENCE_FIELDS: Final = frozenset(
-    {"primary", "canonical", "best", "preferred", "superseded_by"}
+    {
+        "primary",
+        "canonical",
+        "best",
+        "preferred",
+        "superseded_by",
+        # These are witness-selection mechanisms under a different spelling.
+        # `agree` is deliberately absent: page partition evidence legitimately
+        # records `partition_disagreement`.
+        "consensus",
+        "majority",
+        "vote",
+        "quorum",
+    }
 )
 
 
@@ -309,18 +322,29 @@ def _correspondence_identity(record: dict[str, Any]) -> str:
     return f"{record['act_id']}->{record['physical_act_id']}"
 
 
-def _refuse_preference(value: Any) -> None:
+def refuse_preference(value: Any, *, what: str) -> None:
+    """Refuse a record that names a preference, saying whose record it is.
+
+    Shared by every consumer of this vocabulary, and `what` is not decoration:
+    the same recursive check now screens Testimonia, Perlectiones, Recensor
+    reviews and audit drafts, and a refusal that names the corpus register for
+    a fault in a Perlectio sends whoever reads the exit to the wrong producer --
+    the fault F-O2 already ruled against for two faults sharing one string.
+    """
     if isinstance(value, dict):
         forbidden = set(value) & _FORBIDDEN_PREFERENCE_FIELDS
         if forbidden:
-            raise SchemaRefusal(
-                f"corpus register may not express capture preference: {sorted(forbidden)}"
-            )
+            raise SchemaRefusal(f"{what} may not express preference: {sorted(forbidden)}")
         for child in value.values():
-            _refuse_preference(child)
+            refuse_preference(child, what=what)
     elif isinstance(value, list):
         for child in value:
-            _refuse_preference(child)
+            refuse_preference(child, what=what)
+
+
+def _refuse_preference(value: Any) -> None:
+    """The corpus register's own subject, for its callers that have only one."""
+    refuse_preference(value, what="corpus register")
 
 
 def _closed(record: Any, fields: set[str], what: str) -> dict[str, Any]:

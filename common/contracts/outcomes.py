@@ -421,11 +421,17 @@ def witness_coverage(
         for chair, outcome in chair_outcomes.items():
             fact = attachments.get(chair)
             if fact is True:
-                fact = {"attached": True}
+                fact = {"attached": True, "comparable": True}
             elif fact is False or fact is None:
-                fact = {"attached": False}
-            if not isinstance(fact, Mapping) or not isinstance(fact.get("attached"), bool):
-                raise FatalAccounting(f"act attachment fact for {chair!r} has no boolean attached")
+                fact = {"attached": False, "comparable": False}
+            if (
+                not isinstance(fact, Mapping)
+                or not isinstance(fact.get("attached"), bool)
+                or not isinstance(fact.get("comparable"), bool)
+            ):
+                raise FatalAccounting(
+                    f"act attachment fact for {chair!r} has no boolean attached/comparable pair"
+                )
             if fact.get("health_unrecorded") is True:
                 health_unrecorded += 1
             truncated = fact.get("truncated")
@@ -437,7 +443,7 @@ def witness_coverage(
                 )
             if outcome == "failed":
                 shortfalls["failed"] += 1
-            if not fact["attached"]:
+            if not fact["attached"] or not fact["comparable"]:
                 shortfalls["unaligned"] += 1
             elif outcome in WITNESS_READING_OUTCOMES and truncated is not True:
                 attached_chairs.add(chair)

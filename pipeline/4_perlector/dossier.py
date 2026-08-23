@@ -202,9 +202,20 @@ def _testimonium_entry(
             f"chair {chair!r} has no declared entry in {witness_context_path}; every "
             "configured witness must carry a factual dossier context, or none is described"
         )
+    payload = record["payload"]
+    # The narrow waist is the retained *derived* payload, never the vendor blob
+    # and no longer a second `payload.reported` projection.  Act-scoped text is
+    # this chair's own report; page testimony is replaced below only after its
+    # recorded per-act alignment supplies a safe slice.
+    own_report = payload.get("payload")
     reported = (
-        record["payload"].get("reported") if record["outcome"] in WITNESS_READING_OUTCOMES else None
+        own_report
+        if record["outcome"] in WITNESS_READING_OUTCOMES
+        and not payload.get("page_witness", False)
+        and isinstance(own_report, str)
+        else None
     )
+    reported_basis = "own-report" if reported is not None else "none"
     provenance = record["payload"].get("provenance")
     if not isinstance(provenance, dict):
         raise SchemaRefusal(f"Testimonium from {chair!r} has no resolved provenance")
@@ -248,6 +259,29 @@ def _testimonium_entry(
         "training_domain": training_domain,
         "outcome": record["outcome"],
         "reported": reported,
+        "reported_basis": reported_basis,
+        "presented": payload.get("presented", {}).get("kind", "none")
+        if isinstance(payload.get("presented"), dict) and payload.get("presented")
+        else "none",
+        "observed": sorted(
+            [
+                {
+                    "ordinal": observation["ordinal"],
+                    "bounds": copy.deepcopy(observation["bounds"]),
+                    "bounds_source": observation["bounds_source"],
+                }
+                for observation in payload.get("observed", [])
+            ],
+            key=lambda row: row["ordinal"],
+        ),
+        # Filled from the attachment's sealed-proposal derivation in
+        # `build_dossier`; this empty shape is intentional for a dossier built
+        # without attachment evidence (for example Lectio nuda).
+        "edge_deltas": [],
+        # [] beside a real presentation means all bound regions were presented;
+        # [] beside `presented: none` means no presentation speaks for any
+        # region.  The two meanings remain distinguishable by `presented`.
+        "unpresented": sorted(payload.get("unpresented_regions", [])),
     }
 
 
@@ -372,6 +406,7 @@ def build_dossier(
                 "a dossier may not be built from an attachment whose views are absent"
             )
         relabeled_views: dict[str, str] = {}
+        relabeled_deltas: dict[str, list[dict[str, Any]]] = {}
         for chair, text in views.items():
             label = witness_label(
                 chair,
@@ -388,9 +423,34 @@ def build_dossier(
                     "a colliding pseudonym would silently replace one chair's view"
                 )
             relabeled_views[label] = text
+        deltas = act_attachment.get("edge_deltas", {})
+        if not isinstance(deltas, dict):
+            raise SchemaRefusal("an act attachment reached the dossier with no edge-deltas mapping")
+        for chair, rows in deltas.items():
+            label = witness_label(
+                chair,
+                regime=regime,
+                run_id=context.tree.run_id,
+                config_digest=context.config_digest,
+            )
+            if not isinstance(rows, list):
+                raise SchemaRefusal("an act attachment edge-deltas entry is not a list")
+            if label in relabeled_deltas:
+                raise SchemaRefusal(
+                    f"two edge-deltas entries relabel to the same witness label {label!r}; "
+                    "a colliding pseudonym would silently replace one chair's geometry"
+                )
+            relabeled_deltas[label] = copy.deepcopy(rows)
+        for row in testimonia_rows:
+            label = row["witness_label"]
+            if label in relabeled_views:
+                row["reported"] = relabeled_views[label]
+                row["reported_basis"] = "page-slice"
+            row["edge_deltas"] = relabeled_deltas.get(label, [])
         dossier["act_attachment"] = {
             **act_attachment,
             "comparison_views": relabeled_views,
+            "edge_deltas": relabeled_deltas,
         }
     if prior_draft is not None:
         if prior_draft_view not in {"fed", "withheld"}:

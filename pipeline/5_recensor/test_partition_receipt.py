@@ -738,9 +738,24 @@ def _coverage_with_an_excluded_chair() -> dict:
 
     outcomes = {"attestator_1": "read", "attestator_2": "read", "attestator_3": "excluded"}
     attachments = {
-        "attestator_1": {"attached": True, "truncated": False, "health_unrecorded": False},
-        "attestator_2": {"attached": True, "truncated": False, "health_unrecorded": False},
-        "attestator_3": {"attached": False, "truncated": None, "health_unrecorded": True},
+        "attestator_1": {
+            "attached": True,
+            "comparable": True,
+            "truncated": False,
+            "health_unrecorded": False,
+        },
+        "attestator_2": {
+            "attached": True,
+            "comparable": True,
+            "truncated": False,
+            "health_unrecorded": False,
+        },
+        "attestator_3": {
+            "attached": False,
+            "comparable": False,
+            "truncated": None,
+            "health_unrecorded": True,
+        },
     }
     return witness_coverage(outcomes, 3, attachments=attachments)
 

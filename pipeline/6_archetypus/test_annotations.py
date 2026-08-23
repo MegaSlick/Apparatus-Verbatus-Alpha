@@ -673,7 +673,7 @@ def test_a_sealed_annotation_is_carried_out_rather_than_replaced_by_not_produced
 def _reported_by(tree: RunTree, reference: dict) -> str:
     """What that witness actually said, so a test variant can be a real quotation."""
     record = json.loads(tree.resolve(reference["relative_path"]).read_text(encoding="utf-8"))
-    return record["payload"]["reported"]
+    return record["payload"]["payload"]
 
 
 def test_a_damaged_act_establishes_as_partial_with_gaps_carried_whole(tmp_path):

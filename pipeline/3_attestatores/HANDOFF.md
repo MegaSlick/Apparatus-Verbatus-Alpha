@@ -522,13 +522,15 @@ Written by the same stage invocation that writes page testimony, one
 (`subject_id == act_id`). A held act carries one entry per chair with
 `page_witness` false, `attached` false, `page_ordinal` null, and `alignment`
 null. Its payload carries `attachments`: each entry with `chair`,
-`attached` (bool), `span` (`{start, end}`), `content_health` (dict or null —
+`attached` (bool), `comparable` (bool), `span` (`{start, end}`),
+`content_health` (dict or null —
 null is "health not recorded", a distinct fact), `page_witness` (bool,
 strictly), `page_ordinal` (int for a page witness, **null** for an act-scoped
 chair — the field is required either way, and the Perlector refuses a
 page-scoped attachment that omits it as readily as an act-scoped one that
 carries it), a `testimonium_ref` pointing at the chair's Testimonium or
-page-Testimonium, and
+page-Testimonium, an `attachment_basis` (`presented-region`, `anchor-line`,
+`geometric-overlap`, or `unattached`), and
 `alignment` — null for an act-scoped chair, and for a page witness exactly one
 of:
 
@@ -543,8 +545,18 @@ pair set against the regions it actually read
 (`pipeline/4_perlector/run.py::act_attachment_view`), so an attachment cannot
 claim a page the ink does not support, or drop one the ink does.
 
-- aligned: the closed key set `{status, anchor_basis, anchor_span,
-  witness_span, line_geometry, loss, offset_maps}`, with `anchor_basis` one of
+- aligned: the closed key set `{status, anchor_basis, anchor_chair,
+  anchor_span, witness_span, line_geometry, loss, offset_maps}`, with
+  `anchor_chair` naming the chair whose retained text supplied the anchor line
+  — a string exactly when `anchor_basis` is `act-anchor`, and null otherwise,
+  refused either way round by both readers. There is exactly one configured
+  Chandra chair to name (`declared_chandra_anchor_chair`); the Designator is
+  structurally out of reach because it is not a witness role and has no
+  retained text to anchor on. Whether the anchor should instead be taken from
+  the lectio prior is a real question and is NOT settled by this field: the
+  prior is written after this stage runs, so nothing here could read it, and
+  recording which chair was used is what keeps that open rather than
+  invisible. `anchor_basis` is one of
   `act-anchor` (computed through Chandra's located anchor line),
   `no-page-anchor` (a genuinely-empty witness's trivial zero-length attach on
   a page with no Chandra anchor at all — the ink-free/fallback path; blank
@@ -563,15 +575,35 @@ claim a page the ink does not support, or drop one the ink does.
   `no-raw-counterpart-for-aligned-span`,
   `character-limit`, `character-pair-limit`, `timeout`,
   `no-common-anchor-text` (the aligner's own reasons pass through
-  verbatim), `non-reading-page-attempt-<outcome>` for an attempt that
-  produced no reading, and `continuation-page-no-act-anchor` for a
+  verbatim), `non-reading-page-testimonium-<outcome>` for a native page
+  capture that produced no reading, `non-reading-act-attempt-<outcome>`
+  where the page record is the legacy join and this act's own attempt is
+  the non-reading fact (the page record itself may still read, on the
+  strength of another act), and `continuation-page-no-act-anchor` for a
   contributing page that is not the act's primary one.
 
-For a page witness, `attached` is true exactly when `alignment.status` is
-`aligned` and the attempt outcome is a reading — both the Perlector
-(`act_attachment_view`) and the Recensor (`act_attachment_facts`) refuse any
-other combination, and both pin the shapes above; a field change here is an
-interface change and lands in all three files in the same commit.
+For a page witness, `attached` is derived from geometry alone since Unit 10C:
+this chair's reported boxes overlap one of the act's sealed proposal regions and
+its outcome is a reading. `comparable` is the separate question of whether text
+exists to compare for THIS act — a page witness is comparable exactly when it is
+attached, its alignment is `aligned`, and its page record retains a string; an
+act-scoped chair, exactly when it is attached and its own retained derived
+`payload` is a string. A structured native report is therefore retained, visible
+and incomparable. `comparable` implies `attached`, never the reverse, and
+`common/contracts/outcomes.py::witness_coverage` counts a chair toward the
+witness floor only when BOTH hold — the guard that lets `dissent_against` record
+a structured witness as `compared: "unknown"` instead of refusing the run
+outright. Neither reader takes `comparable` on trust: the Perlector
+(`act_attachment_view`) and the Recensor (`act_attachment_facts`) each re-derive
+it from the Testimonium this entry names. `attached` is re-derived by the
+Perlector for both scopes and by the Recensor for both scopes: page witnesses
+from their geometry against the sealed proposal, and act-scoped witnesses from
+the outcome of the exact current Testimonium the attachment must reference.
+The Recensor derives act-scoped `comparable` from that same current record's
+retained payload, not from the attachment row's own `attached` boolean; forging
+both booleans false therefore cannot preserve the equation while removing a
+completed chair from the floor. All three files pin the shapes above; a field
+change here is an interface change and lands in all three in the same commit.
 
 The Recensor takes an act's chair-level `attached` as the OR across that chair's
 contributing pages (`act_attachment_facts`): the act-level floor asks whether the

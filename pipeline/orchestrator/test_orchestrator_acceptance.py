@@ -847,14 +847,47 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # platforms. Both digests were nevertheless re-measured twice each, in
 # independent temporary roots at canonical run id "r", after the candidate's
 # final byte, and both reproduced the values below.
-HAPPY_RUN_TREE_DIGEST = "01336a0fa9644d0d7266380e16ccf95c601c59969eff9dca5819e417b05b74ed"
+# Unit 14A re-pin: the happy tree now carries the retained-native testimony
+# seam -- its act attachments explicitly say whether they are comparable, and
+# the Perlector dossier records `reported_basis` plus sealed-proposal
+# `edge_deltas` rather than a retired `payload.reported` bridge. The Door's own
+# decode-environment record is unchanged (it still names both library routes it
+# can take, `common/stage.py::_decode_environment`); the semantic reducer
+# already makes every stage's decode-environment payload host-observation-only
+# in this pin, so it was never part of what moved. Happy remains 92 files and
+# exits 0. Both values were measured twice in independent roots by this
+# module's `orchestrate` and `semantic_snapshot_digest` helpers at canonical
+# run id "r".
+# Union re-pin (host, seam of Unit 9 x Unit 14A): each side above measured its
+# own tree — Unit 9's carried the ink-map stage without the native-testimony
+# seam, Unit 14A's the seam without the stage. The combined tree holds both, so
+# neither side's digest can stand; the values below are measured on THIS tree,
+# twice each in independent temporary roots at canonical run id "r", through
+# this module's own orchestrate and semantic_snapshot_digest helpers. Counts
+# stay Unit 9's 97/118 (the seam moves bytes, not files) at unchanged exits.
+HAPPY_RUN_TREE_DIGEST = "f872d89d04a4abf54f8f7ba41df6d4b89def69085515a432f543cbf2b553ba5e"
 # Review only, once more in the same seat: a page witness invoked on every act
 # and unusable on all of them now records the serving moment that produced it
 # (`provenance_for(..., attempted=attempted_page)`), where the `reading` gate
 # left `receipt_ref: None` beside a `presented` block claiming pixels were shown.
 # One `receipt_ref` field on attestator_3's page-2 record; no new file, no count
 # or exit change (97/3), and happy is untouched at the digest above.
-REVIEW_RUN_TREE_DIGEST = "a9f9ce3d4c763dc0b029cc8aa39af52dfba377e1be95564ff34742ce342c18d0"
+# Unit 14A audit: that renamed reason said something false. Under the legacy
+# page join the outcome carried into an unaligned attachment is THIS ACT'S
+# attempt, not the page Testimonium's -- `review`'s attestator_3 has a failed a2
+# attempt beside a page-1 Testimonium that read a1 and records `read` -- so the
+# record named a non-reading page Testimonium that had in fact read
+# (GOVERNANCE 10). The reason now names the attempt in that case
+# (`non-reading-act-attempt-<outcome>`) and keeps
+# `non-reading-page-testimonium-<outcome>` for a native page capture, which is
+# the only path where the page record's own attempt supplies it. One string on
+# one attestator_3 attachment row; the review tree is otherwise unchanged at 113
+# files and exit 3, and happy never carried that reason so its digest above is
+# untouched. Measured twice in independent temporary roots at canonical run id
+# "r" by this module's `orchestrate` and `semantic_snapshot_digest` helpers.
+# Union re-pin: see the seam entry above the happy digest — measured on the
+# combined Unit 9 x Unit 14A tree.
+REVIEW_RUN_TREE_DIGEST = "d8092b6eb8a44db04b85a1886bc5271d167311c6ef8aed68839d3e4b520d637d"
 
 
 def orchestrate(
@@ -3730,29 +3763,38 @@ def test_an_absent_witness_on_a_held_act_is_also_dead_not_not_run(
     assert by_chair["attestator_2"]["outcome"] == "not-run"
 
 
-def test_a_structured_testimonium_is_retained_here_and_refused_by_name_downstream(tmp_path):
-    """The known edge of the Testimonium split, pinned rather than left to be found.
+def test_a_structured_testimonium_is_retained_and_carried_as_an_incomparable_witness(tmp_path):
+    """Unit 14A retirement: a structured witness ends the run honestly, never a crash.
 
     Spec 07 requires `payload` to be the witness's native output, verbatim, never
     coerced into a shared body schema — so a witness whose real output is an object
-    lands here as an object. The Perlector's current dissent comparison still reads
-    a textual `reported` field, and this stage deliberately projects that only for a
-    *textual* native payload: picking a field out of a structured one to stand in
-    for the whole would be the coercion the spec refuses, one step further on.
+    lands here as an object. The Perlector's dossier now reads that retained
+    `payload` layer natively (`reported_basis` names the derivation), and
+    `dissent_against` records the chair as `compared: "unknown"` with the fact
+    named rather than raising: a structured report is visible, not silently
+    dropped and not a crash. The act still lands under-witnessed and the run
+    still ends `partial` rather than a falsely `complete` export.
 
-    So the pipeline cannot yet carry a structured witness end to end, and this test
-    exists to say exactly how it fails: a named `SchemaRefusal` at the Perlector
-    boundary naming the chair, with the Testimonium retained intact behind it —
-    never a reading assembled from part of a payload, and never a silent skip.
-    Removing this test is the Perlector owner's to do, once its reader consumes
-    `payload` natively; until then it is the honest record of a gap.
+    **Said exactly, because the mechanism matters more than the exit code.**
+    What holds the floor down *in this scenario* is `attached: False`: the page
+    join legitimately omits a structured act (its `unjoined_act_attempts` row
+    says so by name), the chair's page capture therefore observes no box over
+    a1's proposal, and the attachment is geometrically unattached. The
+    `comparable` boolean is the SECOND, independent guard, for the case this
+    fixture does not produce — a chair whose native geometry does overlap the
+    act while its retained testimony is structured (consult §3(b): after 10C,
+    attached and has-comparable-text came apart). That case is driven over real
+    records in `pipeline/5_recensor/test_comparability_floor.py`, and the
+    arithmetic in `common/contracts/test_contracts_algebra.py`; claiming this
+    scenario exercises it would report an instrument that did not run
+    (GOVERNANCE 10).
     """
     root = tmp_path / "runs"
     result = orchestrate(root, "r", "structured-witness")
 
-    assert result.returncode == 2, result.stderr
-    assert "carries no text to compare" in result.stderr
-    assert "attestator_1" in result.stderr
+    assert result.returncode == 3, result.stderr
+    assert "act a1 is held-for-review" in result.stdout
+    assert "act a1 is under-witnessed (2 of a floor of 3)" in result.stdout
 
     tree = RunTree(root, "r")
     structured = next(
@@ -3768,6 +3810,32 @@ def test_a_structured_testimonium_is_retained_here_and_refused_by_name_downstrea
     }
     assert "reported" not in structured["payload"], (
         "no field of a structured payload may be promoted to stand in for the whole"
+    )
+
+    perlectio = next(
+        record
+        for record in artifacts(tree, PERLECTOR, "perlectio")
+        if record["subject_id"] == structured["subject_id"]
+    )
+    unknown_row = next(
+        row for row in perlectio["payload"]["dissent"] if row["chair"] == "attestator_1"
+    )
+    assert unknown_row == {
+        "chair": "attestator_1",
+        "compared": "unknown",
+        "reason": "no comparable text for this act: retained derived testimony is structured",
+    }
+
+    # The mechanism, asserted rather than described, so the docstring above
+    # cannot drift into claiming a guard this run never reached.
+    attachment = next(
+        record
+        for record in artifacts(tree, ATTESTATORES, "act-attachment")
+        if record["subject_id"] == structured["subject_id"]
+    )
+    rows = [row for row in attachment["payload"]["attachments"] if row["chair"] == "attestator_1"]
+    assert rows and all(row["attached"] is False and row["comparable"] is False for row in rows), (
+        rows
     )
 
 
