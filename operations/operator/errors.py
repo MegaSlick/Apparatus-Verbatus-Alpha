@@ -53,6 +53,7 @@ class ErrorCode(StrEnum):
     CONSOLE_TREE_UNREADABLE = "console-tree-unreadable"
     ADVANCE_REFUSED = "advance-refused"
     BACKUP_FAILED = "backup-failed"
+    TRIAGE_REFUSED = "triage-refused"
     INTERRUPTED = "interrupted"
     UNEXPECTED = "unexpected"
 
@@ -252,6 +253,11 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
         "The Mac backup did not finish with a verified snapshot.",
         "Existing content-addressed backup objects remain intact, but this run is not called backed up.",
         "Keep the saved detail, repair the named source or backup-directory problem, then run `verbatus backup` again; it safely reuses verified files.",
+    ),
+    ErrorCode.TRIAGE_REFUSED: ErrorCopy(
+        "Triage could not safely record or show that review step.",
+        "No cluster was selected, no evidence was changed, and any earlier queue decisions remain visible.",
+        "Read the saved detail, repair the named triage document or path, then resume the queue; this is safe.",
     ),
     ErrorCode.INTERRUPTED: ErrorCopy(
         "The Verbatus command was interrupted before it reported an end state.",
