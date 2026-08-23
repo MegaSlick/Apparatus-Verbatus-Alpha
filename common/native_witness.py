@@ -51,7 +51,17 @@ PAGE_TESTIMONIUM_REQUIRED_FIELDS: Final = frozenset(
     }
 )
 PAGE_TESTIMONIUM_OPTIONAL_FIELDS: Final = frozenset(
-    {"reason", "reported", "partition_disagreement"}
+    {
+        "reason",
+        "reported",
+        "partition_disagreement",
+        # The retained responses this record's own derived geometry was
+        # quantized from, and the declared rule that converted them. Plural
+        # because a page record's partition may be assembled from more than one
+        # retained response; a page witness that answers once retains one.
+        "raw_response_refs",
+        "adapter_metadata",
+    }
 )
 PAGE_ROLES: Final = frozenset({"primary", "continuation", "mixed"})
 
@@ -401,7 +411,59 @@ def validate_page_testimonium_payload(payload: Any) -> dict[str, Any]:
     validate_unpresented_regions(payload)
     if "partition_disagreement" in payload:
         validate_partition_disagreement(payload["partition_disagreement"])
+    validate_retained_response_refs(payload)
     return validate_native_witness_geometry(payload)
+
+
+def validate_retained_response_refs(payload: dict[str, Any]) -> None:
+    """Close the page record's link back to the bytes its geometry came from.
+
+    A page Testimonium is the durable home of a page witness's own partition,
+    and its `observed` boxes are integers this pipeline computed from a native
+    response that carried floats. Without a reference to that retained response
+    the record states a derived result and holds no route back to the evidence
+    it was derived from: the raw blob remains on disk, but nothing in the record
+    that carries the geometry says which blob, or by what rule (GOALS 5;
+    ARCHITECTURE invariant 3, whose whole claim is that the exact thing shown to
+    a model is reproducible from what was recorded).
+
+    The strict blob-path check belongs to the producing stage, which owns its own
+    blob namespace. What is closed here is the shape every consumer reads, and
+    the pairing: geometry-bearing metadata without the bytes it describes is the
+    complete-looking partial record invariant 6 refuses.
+    """
+    refs = payload.get("raw_response_refs")
+    if refs is not None:
+        if not isinstance(refs, list) or not refs:
+            raise SchemaRefusal("a page Testimonium raw_response_refs is not a non-empty list")
+        for reference in refs:
+            if (
+                not isinstance(reference, dict)
+                or set(reference) != {"relative_path", "sha256"}
+                or not isinstance(reference["relative_path"], str)
+                or not reference["relative_path"]
+                or not isinstance(reference["sha256"], str)
+                or len(reference["sha256"]) != 64
+            ):
+                raise SchemaRefusal(
+                    "a page Testimonium retained-response reference is not a closed blob reference"
+                )
+        if len({reference["sha256"] for reference in refs}) != len(refs):
+            raise SchemaRefusal("a page Testimonium names one retained response twice")
+    metadata = payload.get("adapter_metadata")
+    if metadata is not None:
+        if (
+            not isinstance(metadata, dict)
+            or set(metadata) != {"geometry_quantization"}
+            or not isinstance(metadata["geometry_quantization"], str)
+            or not metadata["geometry_quantization"]
+        ):
+            raise SchemaRefusal("a page Testimonium adapter metadata is not its closed shape")
+        if refs is None:
+            raise SchemaRefusal(
+                "a page Testimonium declares a quantization rule with no retained response to "
+                "have applied it to"
+            )
 
 
 # A declared, deliberately UNMEASURED routing rule.  Unit 10 records only the

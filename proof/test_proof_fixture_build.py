@@ -15,6 +15,7 @@ describes — and that is asserted instead.
 """
 
 import hashlib
+import json
 import tomllib
 from pathlib import Path
 
@@ -30,6 +31,7 @@ from proof.build_fixture import (
     RECOVERY_BOUNDS,
     SCENARIO_TESTIMONY,
     TESTIMONY,
+    WITNESS_EMPTY,
     WITNESS_FAILURES,
     WITNESS_MALFORMED,
     WITNESS_NOT_RUN,
@@ -283,6 +285,30 @@ def test_fixture_testimonia_declare_native_payloads_not_the_retired_body_field(s
     assert scenario_rows == list(SCENARIO_TESTIMONY)
 
 
+def test_scenario_specific_chandra_text_keeps_its_reported_layout(skeleton):
+    """A scenario override must not silently turn a page witness into no witness."""
+    rows = [
+        row
+        for row in skeleton["testimony"]
+        if row.get("scenario") == "witness-capabilities" and row["chair"] == "attestator_1"
+    ]
+    assert [(row["scenario"], row["act_key"]) for row in rows] == [("witness-capabilities", "a1")]
+    raw = json.loads(rows[0]["raw_response"])
+    assert raw["markdown"] == rows[0]["payload"]
+    assert raw["blocks"] == [{"bbox": [20.25, 20.5, 180, 100.1]}]
+
+    # `structured-witness` is deliberately a Stage-3 native-payload boundary
+    # test, not a textual Chandra response. Its object must remain uncoerced,
+    # so it has no invented layout response to assert about.
+    structured = next(
+        row
+        for row in skeleton["testimony"]
+        if row.get("scenario") == "structured-witness" and row["chair"] == "attestator_1"
+    )
+    assert isinstance(structured["payload"], dict)
+    assert "raw_response" not in structured
+
+
 def test_the_review_scenario_exercises_the_repaired_failed_state(skeleton, models_config):
     """Validate the fixture's declared `failed` outcomes and configured chairs.
 
@@ -423,7 +449,40 @@ def test_the_completed_empty_witness_is_declared_for_a_known_scenario_and_chair(
     skeleton, models_config
 ):
     rows = skeleton["witness_empty"]
-    assert rows == [
+    assert rows == list(WITNESS_EMPTY)
+    # The page-scoped Chandra chair can only attach a completed empty response
+    # through geometry it actually reported.  These are raw native response
+    # inputs, not a presentation-derived default: a fabricated whole-page box
+    # would turn "shown" pixels into falsely observed ink.
+    #
+    # `page-fallback:3` is deliberately excluded from this set even though its
+    # chair is Chandra too: it is a recovery crop, and the architecture
+    # requires a recovery crop stay visibly under-witnessed rather than being
+    # retroactively "witness covered" by a later empty report over it
+    # (`test_an_ink_free_page_fallback_is_read_but_not_retroactively_witness_covered`).
+    # `confirmed-blank`/`blank-with-dissent` are the opposite case: a chair
+    # actually looked at act `a1`'s real Designator crop and found nothing, so
+    # its geometry must cover it for the Recensor's blank corroboration to have
+    # genuine evidence.
+    chandra_empty_rows = [
+        row
+        for row in rows
+        if row["chair"] == "attestator_1" and row["act_key"] != "page-fallback:3"
+    ]
+    assert {(row["scenario"], row["act_key"]) for row in chandra_empty_rows} == {
+        ("confirmed-blank", "a1"),
+        ("blank-with-dissent", "a1"),
+    }
+    for row in chandra_empty_rows:
+        raw = json.loads(row["raw_response"])
+        assert raw["markdown"] == ""
+        assert len(raw["blocks"]) == 1
+
+    # The remaining rows retain the original response-only declarations,
+    # including Chandra's own `page-fallback:3` row (see above).
+    assert [
+        row for row in rows if row["chair"] != "attestator_1" or row["act_key"] == "page-fallback:3"
+    ] == [
         {
             "scenario": "genuinely-empty-witness",
             "act_key": "a1",
@@ -442,12 +501,10 @@ def test_the_completed_empty_witness_is_declared_for_a_known_scenario_and_chair(
         # listed, so adding a fourth chair to models.toml turns this red.)
         # Every configured chair, so `confirmed-blank` has a genuine unanimous
         # absence for the Recensor's blank corroboration to confirm.
-        {"scenario": "confirmed-blank", "act_key": "a1", "chair": "attestator_1"},
         {"scenario": "confirmed-blank", "act_key": "a1", "chair": "attestator_2"},
         {"scenario": "confirmed-blank", "act_key": "a1", "chair": "attestator_3"},
         # Two of three: the third dissents by reporting its ordinary declared
         # (non-empty) testimony instead.
-        {"scenario": "blank-with-dissent", "act_key": "a1", "chair": "attestator_1"},
         {"scenario": "blank-with-dissent", "act_key": "a1", "chair": "attestator_2"},
     ]
     for row in rows:
