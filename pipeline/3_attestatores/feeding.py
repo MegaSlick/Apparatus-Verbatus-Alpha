@@ -322,12 +322,27 @@ def retain_model_view(
         "parse": {"state": "not-requested" if parser is None else "pending", "parser": parser},
     }
     if adapter == "churro.v1":
-        if finding := detect_repetition(raw_response):
-            record["findings"].append(finding)
-            # Only an actual repetition rewrites the stop reason; an
-            # uninspected capture is a recorded fact, not a detected failure.
-            if finding["kind"] == "post-hoc-repetition":
-                record["stop_reason"] = "partial-post-hoc-repetition-detected"
+        # What the detector is shown, and why it is not simply the raw bytes.
+        #
+        # `detect_repetition` compares windows at the TAIL of the response. A
+        # well-formed Churro reply ends in `</output>`, and those nine bytes sit
+        # inside every tail window, so no window can ever equal the one before
+        # it: run against the raw bytes of a complete response the detector
+        # returns None for a page of nothing but one clause repeated four
+        # hundred times. Measured, not reasoned -- `<output>` + a 40-character
+        # clause * 6 + `</output>` returns None, and the same bytes without the
+        # closing tag return `repeats=5`. That is an instrument reporting
+        # nothing on the exact input it exists for (GOVERNANCE 10), and it went
+        # unnoticed because every test of it either mocked the detector or fed
+        # it bare bytes with no envelope.
+        #
+        # So the parse runs FIRST and the detector inspects the transcription
+        # when there is one. This does not weaken the ordering GOVERNANCE 7
+        # requires: the raw blob is written at the top of this function, before
+        # either step, and neither the parse nor the finding can reach it. The
+        # finding records which view it inspected, because "no repetition in the
+        # parsed text" and "no repetition in an unparseable capture" are
+        # different facts and a reader must not have to guess which one it has.
         if parser == "xml":
             try:
                 record["parse"] = {
@@ -338,6 +353,21 @@ def retain_model_view(
             except SchemaRefusal as error:
                 record["parse"] = {"state": "failed", "parser": "xml", "reason": str(error)}
                 record["stop_reason"] = "partial-parse-failed"
+        parsed_text = record["parse"].get("text")
+        inspected, basis = (
+            (parsed_text.encode("utf-8"), "parsed-text")
+            if isinstance(parsed_text, str)
+            else (raw_response, "raw-response")
+        )
+        if finding := detect_repetition(inspected):
+            record["findings"].append({**finding, "inspected": basis})
+            # Only an actual repetition rewrites the stop reason; an
+            # uninspected capture is a recorded fact, not a detected failure.
+            # A parse refusal keeps the reason it already set: it is the more
+            # actionable fact, and the repetition survives in `findings`, which
+            # is where a finding lives anyway.
+            if finding["kind"] == "post-hoc-repetition" and record["parse"]["state"] != "failed":
+                record["stop_reason"] = "partial-post-hoc-repetition-detected"
     elif adapter == "chandra.v1" and parser == "json":
         # Import locally: the runnable sibling module imports this retention
         # seam, while its parser must remain the one owner of Chandra's shape.
