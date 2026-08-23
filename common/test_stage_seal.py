@@ -20,7 +20,15 @@ import pytest
 from common.chairs import ChairRegistry
 from common.contracts.canonical import canonical_bytes, self_hash
 from common.contracts.errors import FatalAccounting, SchemaRefusal
-from common.contracts.stages import ARMARIUM, ATTESTATORES, DOOR, EXEMPLAR, PERLECTOR
+from common.contracts.stages import (
+    ARCHETYPUS,
+    ARMARIUM,
+    ATTESTATORES,
+    DOOR,
+    EXEMPLAR,
+    PERLECTOR,
+    RECENSOR,
+)
 from common.runtree.store import RunTree
 from common.stage import (
     StageContext,
@@ -320,20 +328,45 @@ def test_door_deletion_trigger_survives_the_exemplar_manifest_write(tmp_path):
         verify_predecessor_seal(tree, EXEMPLAR)
 
 
+def test_the_attestatores_records_the_pixels_its_own_pass_computes():
+    """Unit 13 moved this stage from carrying crops to computing them.
+
+    DAI's presentation is cut from the sealed page and resampled inside the
+    Attestatores pass (`pipeline/3_attestatores/witness_adapters.py::_dai_present`
+    -> `common/imaging.py::resize_png_lanczos`, Pillow LANCZOS). Until that
+    landed, `produced_pixels: false` was true of the stage. Pinned here because
+    the fact is only observable in a sealed record nothing else reads back, and
+    a stage that quietly understates its own pixel work is exactly the drift the
+    decode-environment census exists to make visible.
+    """
+    environment = _decode_environment(ATTESTATORES)
+    assert environment["produced_pixels"] is True
+    assert environment["decode_paths_used"] == ["project-png"]
+
+
 def test_stage_role_fields_are_reported_by_name_without_refusal(tmp_path, capsys):
-    """The consult requires every field compared; Unit 17 owns fatality."""
+    """The consult requires every field compared; Unit 17 owns fatality.
+
+    Read at Recensor -> Archetypus, which is where the two role fields still
+    differ. They stopped differing at Attestatores -> Perlector when Unit 13 put
+    a real resample in the Attestatores pass: both sides now record the same
+    `project-png` route over pixels they computed. The property under test is
+    that a role-field difference is *named and not refused*, so the test follows
+    it to a boundary that still has one rather than asserting a difference the
+    census no longer has any reason to report.
+    """
     tree, run, registry, bindings = _tree(tmp_path)
-    context = _context(tree, run, registry, bindings)
+    context = _context(tree, run, registry, bindings, stage=RECENSOR)
     context.seal_boundary()
     context.finish()
-    assert _decode_environment(ATTESTATORES)["produced_pixels"] is False
-    assert _decode_environment(PERLECTOR)["produced_pixels"] is True
+    assert _decode_environment(RECENSOR)["produced_pixels"] is True
+    assert _decode_environment(ARCHETYPUS)["produced_pixels"] is False
     capsys.readouterr()
 
-    verify_predecessor_seal(tree, PERLECTOR)
+    verify_predecessor_seal(tree, ARCHETYPUS)
 
     reported = capsys.readouterr().err
-    assert "decode environment differs by name from attestatores" in reported
+    assert "decode environment differs by name from recensor" in reported
     assert "decode_paths_used" in reported
     assert "produced_pixels" in reported
 

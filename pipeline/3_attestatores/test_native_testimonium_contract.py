@@ -254,6 +254,24 @@ def _happy_run(tmp_path, run_id):
     return RunTree(tmp_path / "runs", run_id)
 
 
+def _region_testimonium(tree):
+    """Return a fixture Testimonium that presents a sealed Designator region.
+
+    DAI's independently re-derived presentation is deliberately an
+    ``adapter-crop``.  The tests below exercise the distinct 10B wall that
+    applies only when a record claims ``kind == \"region\"``.
+    """
+    return next(
+        tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
+        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
+        if entry["kind"] == "testimonium"
+        and tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])["payload"][
+            "presented"
+        ]["kind"]
+        == "region"
+    )
+
+
 def test_a_continuation_act_states_which_of_its_crops_the_derived_layer_omits(tmp_path):
     """0C ruled a continuation's second page is evidence. Its crop is bound by
     digest in `regions`/`inputs`, but `presented` binds one image recipe and
@@ -282,7 +300,14 @@ def test_a_continuation_act_states_which_of_its_crops_the_derived_layer_omits(tm
         record = tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
         expected = [second_crop] if entry["subject_id"] == continuation else []
         assert record["payload"]["unpresented_regions"] == expected, entry["artifact_id"]
-        assert record["payload"]["presented"]["region_ref"]["region_id"] != second_crop
+        presented = record["payload"]["presented"]
+        if presented["kind"] == "region":
+            assert presented["region_ref"]["region_id"] != second_crop
+        else:
+            # An adapter crop is a different image kind; it must never borrow
+            # the region-only identity field to make this assertion pass.
+            assert presented["kind"] == "adapter-crop"
+            assert "region_ref" not in presented
     assert single != continuation
 
 
@@ -413,11 +438,7 @@ def test_a_region_ref_naming_no_sealed_designator_region_is_refused(tmp_path):
     stands between a forged region identity and a witness basis."""
     tree = _happy_run(tmp_path, "unknown-region-ref")
     context = _Context(tree)
-    testimony = next(
-        tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
-        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
-        if entry["kind"] == "testimonium"
-    )
+    testimony = _region_testimonium(tree)
     forged = copy.deepcopy(testimony)
     forged["payload"]["presented"]["region_ref"] = {"region_id": "rgn_" + "0" * 16}
     forged["self_hash"] = self_hash(forged)
@@ -429,11 +450,7 @@ def test_a_region_ref_matching_two_manifest_rows_is_not_treated_as_unique(tmp_pa
     """Exercise the other arm of the same physical-identity lookup refusal."""
     tree = _happy_run(tmp_path, "duplicate-region-ref")
     context = _Context(tree)
-    testimony = next(
-        tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
-        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
-        if entry["kind"] == "testimonium"
-    )
+    testimony = _region_testimonium(tree)
     original = tree.build_manifest
     designator_manifest = original(DESIGNATOR)
     matching = next(

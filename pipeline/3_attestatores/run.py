@@ -173,6 +173,20 @@ def region_inputs(context, regions: list[dict]) -> list[dict[str, str]]:
     return sorted(inputs.values(), key=lambda item: (item["relative_path"], item["sha256"]))
 
 
+def testimonium_inputs(
+    context, regions: list[dict], presented: dict[str, Any]
+) -> list[dict[str, str]]:
+    """Bind proposal crops and the exact adapter-owned image a witness saw."""
+    inputs = {
+        (reference["relative_path"], reference["sha256"]): reference
+        for reference in region_inputs(context, regions)
+    }
+    if presented:
+        reference = context.input_ref(presented["image_path"])
+        inputs[(reference["relative_path"], reference["sha256"])] = reference
+    return sorted(inputs.values(), key=lambda item: (item["relative_path"], item["sha256"]))
+
+
 def presentation_for_region(region: dict[str, Any]) -> dict[str, Any]:
     """Derive one region presentation from a verified proposal record."""
     payload = region["payload"]
@@ -1383,9 +1397,9 @@ def validate_tallied_testimonium(
         if regions is None:
             regions = proposed_regions(context, act["act_id"])
             regions_by_act[act["act_id"]] = regions
-        if payload["regions"] != region_references(regions) or record["inputs"] != region_inputs(
-            context, regions
-        ):
+        if payload["regions"] != region_references(regions) or record[
+            "inputs"
+        ] != testimonium_inputs(context, regions, payload["presented"]):
             raise SchemaRefusal(
                 "a Testimonium tally record does not bind exactly the proposal regions and inputs"
             )
@@ -2154,7 +2168,7 @@ def publish_attempt(
         subject_id=act["act_id"],
         outcome=attempt.outcome,
         attempt=attempt_id(act["act_id"], f"read:{chair}", ordinal),
-        inputs=region_inputs(context, regions) if attempted else [],
+        inputs=testimonium_inputs(context, regions, presented) if attempted else [],
         payload=payload,
     )
 

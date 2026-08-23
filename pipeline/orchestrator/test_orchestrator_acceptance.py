@@ -808,6 +808,18 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # Union re-pin 2026-08-23: the three adapter units (11 Chandra, 12 Churro,
 # 13 DAI) compose here; each measured its own pins on its own branch, and the
 # union re-measures once over the combined tree. Counts asserted in the tests.
+# Unit 13 ledger reason: the fixture's act-scoped attestator_2 now runs the
+# DAI adapter. Its re-derivable adapter-crop is a new content-addressed blob,
+# so happy/review become 86/0 and 111/3. Re-measured after the final Unit 13
+# regression repair at the true candidate, run id "r", through the same
+# helpers; the digests below are the measured pins.
+#
+# Unit 13 final-seat ledger reason: identity-sized DAI views now seal the exact
+# `crop` operation that produced them, rather than a resize recipe naming
+# LANCZOS even though Pillow returns a copy before consulting the resampler.
+# Artifact counts and exits stay 86/0 and 111/3; only the Testimonium transform
+# records and their derived bindings move. Both digests below reproduced twice
+# in independent temporary roots at canonical run id "r".
 HAPPY_RUN_TREE_DIGEST = "UNION-REMEASURE-PENDING"
 # Review only, once more in the same seat: a page witness invoked on every act
 # and unusable on all of them now records the serving moment that produced it

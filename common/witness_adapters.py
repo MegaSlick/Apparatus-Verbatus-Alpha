@@ -15,7 +15,7 @@ from common.chairs.models import AbsentChair, ModelsConfig
 from common.contracts.errors import ContractError, SchemaRefusal
 
 WITNESS_SCOPES: Final = frozenset({"page", "act"})
-KNOWN_WITNESS_ADAPTER_NAMES: Final = frozenset({"chandra.v1", "churro.v1"})
+KNOWN_WITNESS_ADAPTER_NAMES: Final = frozenset({"chandra.v1", "churro.v1", "dai.v1"})
 
 
 class AdapterRefusal(SchemaRefusal):

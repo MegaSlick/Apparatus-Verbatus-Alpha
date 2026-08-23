@@ -21,12 +21,15 @@ from feeding import (
     chandra_capture_intake,
     churro_generation,
     churro_prompt,
+    dai_generation,
     dai_model_view,
+    dai_prompt,
     detect_repetition,
     execute_stage_major_schedule,
     retain_model_view,
     stage_major_schedule,
     validate_churro_xml,
+    validate_dai_text,
 )
 
 from common.chairs.models import AbsentChair
@@ -681,6 +684,46 @@ def test_dai_retains_resize_and_manifest_references_not_carried_prompt_bytes():
     assert set(view["prompts"]["system"]) == {"relative_path", "sha256"}
 
 
+def test_dai_carried_request_bytes_and_uncertainty_tokens_are_not_normalized():
+    prompt = dai_prompt()
+    assert prompt == {
+        "system": (
+            "Tu es un assistant archiviste. Tu dois lire des actes issus de registres "
+            "paroissiaux français, du 16è au 18è siècle. Extrais le texte de la marge, du "
+            "corps de l'acte, et éventuellement les signatures.\n"
+        ),
+        "user": "Extrais le texte de ce document.\n",
+    }
+    # Byte-exact against the cited vendor files, trailing newline included: the
+    # docstring's "byte-for-byte" claim is a checkable fact, not a description.
+    assert len(prompt["system"].encode("utf-8")) == 206
+    assert len(prompt["user"].encode("utf-8")) == 33
+    assert digest_bytes(prompt["system"].encode("utf-8")) == (
+        "b4e7d61d4f27f0aa46ba597ebfac3925b3ed87e72583def4bce2bd4f0393c333"
+    )
+    assert digest_bytes(prompt["user"].encode("utf-8")) == (
+        "3a5cd8eb3263f2511d207f49f9933b1cf184e95fd7a9534871207d8d8b6a3489"
+    )
+    # Every carried value, not only the one that would be tempting to "fix":
+    # `dai_generation`'s docstring says the shipped configuration crosses
+    # unchanged, and a single-field check left the other eight free to drift
+    # away from the cited file without any test noticing.
+    assert dai_generation() == {
+        "bos_token_id": 151_643,
+        "do_sample": True,
+        "eos_token_id": [151_645, 151_643],
+        "pad_token_id": 151_643,
+        "repetition_penalty": 1.05,
+        "temperature": 0.1,
+        "top_k": 1,
+        "top_p": 0.001,
+        "transformers_version": "5.2.0",
+    }
+    assert dai_generation()["do_sample"] is True
+    response = "[UNCERTAIN]  ſ [CROSSED_OUT]"
+    assert validate_dai_text(response.encode("utf-8")) == response
+
+
 def test_every_dai_ceiling_seals_where_it_came_from():
     """A sealed ceiling states its source, and a chosen one says it was chosen."""
     view = dai_model_view(
@@ -708,7 +751,16 @@ def test_every_dai_ceiling_seals_where_it_came_from():
 
 @pytest.mark.parametrize(
     ("width_px", "height_px", "expected"),
-    [(500, 10_000, (204, 4_080)), (1_500, 3_000, (1_086, 2_172))],
+    [
+        (500, 10_000, (204, 4_080)),
+        (1_500, 3_000, (1_086, 2_172)),
+        # Just past the 576:4096 crossover (design v2.1 s2 x the chosen height
+        # ceiling): a pre-folded `width_px * DAI_MAX_HEIGHT_PX // height_px`
+        # bound is a floor of a floor and previously undercut the true largest
+        # feasible width by one pixel here (564 x 4088, area 2,305,632) against
+        # the actual largest fit (565 x 4096, area 2,314,240 <= 2,359,296).
+        (581, 4_212, (565, 4_096)),
+    ],
 )
 def test_dai_resize_applies_height_and_total_pixel_ceilings(width_px, height_px, expected):
     view = dai_model_view(

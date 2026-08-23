@@ -51,7 +51,9 @@ SCHEDULING_POLICY = "chair-outer-act-inner.stage-major-parish.v1"
 # rather than spelled -1 at the two places that have to agree on it.
 _UNPLACED_ORDINAL = -1
 # The (adapter, parser) pairs `retain_model_view` can actually carry to a state.
-_RUNNABLE_PARSERS = frozenset({("chandra.v1", "json"), ("churro.v1", "xml")})
+_RUNNABLE_PARSERS = frozenset(
+    {("chandra.v1", "json"), ("churro.v1", "xml"), ("dai.v1", "text")}
+)
 _UNCERTAINTY_TOKENS = ("[UNCERTAIN]", "[CROSSED_OUT]")
 _REPETITION_WINDOW = 24
 _REPETITION_MIN_REPEATS = 3
@@ -103,6 +105,73 @@ def churro_prompt() -> dict[str, str]:
 def churro_generation() -> dict[str, int]:
     """The predeclared operational bound, not a content or repetition control."""
     return {"max_new_tokens": CHURRO_OUTPUT_TOKENS}
+
+
+def dai_prompt() -> dict[str, str]:
+    """Return DAI's two carried prompt files byte-for-byte as UTF-8 text.
+
+    Carried third-party content: ``system.txt`` (206 bytes, SHA-256
+    ``b4e7d61d4f27f0aa46ba597ebfac3925b3ed87e72583def4bce2bd4f0393c333``)
+    and ``query.txt`` (33 bytes, SHA-256
+    ``3a5cd8eb3263f2511d207f49f9933b1cf184e95fd7a9534871207d8d8b6a3489``)
+    from Teklia's pinned
+    ``Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR`` repository at
+    ``e371095d4ffe585f31f4974462931ddbac61ff64``:
+    https://huggingface.co/Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR/tree/e371095d4ffe585f31f4974462931ddbac61ff64.
+    The source declares no licence; its research-track use is Tyrel's settled
+    2026-08-20 ruling. These are named carries, not reconstructed instructions:
+    changing any character changes the trained request framing.
+    """
+    return {
+        "system": (
+            "Tu es un assistant archiviste. Tu dois lire des actes issus de registres "
+            "paroissiaux français, du 16è au 18è siècle. Extrais le texte de la marge, du "
+            "corps de l'acte, et éventuellement les signatures.\n"
+        ),
+        "user": "Extrais le texte de ce document.\n",
+    }
+
+
+def dai_generation() -> dict[str, Any]:
+    """Return DAI's carried ``generation_config.json`` without changing its values.
+
+    Carried third-party content: every value in ``generation_config.json`` (243
+    source bytes, SHA-256
+    ``f4cd2d54597a1a3cb38ac78d5cb275d06f6fd660fef52ee444a58d81297ff027``),
+    from the same pinned Teklia source and under the same no-licence/ruling
+    citation as :func:`dai_prompt`. What crosses is the nine values, re-typed as
+    a Python mapping; the source file's bytes are its JSON framing, which this
+    function does not return, so this is a source-file digest rather than a
+    byte-count claim about the mapping. This is the shipped generation
+    configuration, not a locally chosen decoding policy; in particular,
+    ``do_sample`` remains true.
+    """
+    return {
+        "bos_token_id": 151643,
+        "do_sample": True,
+        "eos_token_id": [151645, 151643],
+        "pad_token_id": 151643,
+        "repetition_penalty": 1.05,
+        "temperature": 0.1,
+        "top_k": 1,
+        "top_p": 0.001,
+        "transformers_version": "5.2.0",
+    }
+
+
+def validate_dai_text(raw: bytes) -> str:
+    """Decode DAI's text response exactly; uncertainty markers are not normalized.
+
+    ``[UNCERTAIN]`` and ``[CROSSED_OUT]`` are ordinary retained response text.
+    This parser does no whitespace, Unicode, or token rewriting, so both the
+    native payload and the DAI model view preserve them unaltered.
+    """
+    if not isinstance(raw, (bytes, bytearray)):
+        raise SchemaRefusal("DAI response is not raw bytes")
+    try:
+        return bytes(raw).decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise SchemaRefusal(f"DAI response is not UTF-8 text: {error}") from error
 
 
 def validate_churro_xml(raw: bytes) -> str:
@@ -225,19 +294,25 @@ def dai_model_view(
 
 
 def _dai_dimensions(width_px: int, height_px: int) -> tuple[int, int]:
-    """Largest integer aspect-preserving view within every DAI ceiling."""
-    upper_width = min(
-        width_px,
-        DAI_MAX_WIDTH_PX,
-        width_px * DAI_MAX_HEIGHT_PX // height_px,
-    )
+    """Largest integer aspect-preserving view within every DAI ceiling.
+
+    The search range is bounded only by ``width_px``/``DAI_MAX_WIDTH_PX``; the
+    height and total-pixel ceilings are both checked inside the search
+    predicate rather than pre-folded into the initial bound. A pre-folded
+    ``width_px * DAI_MAX_HEIGHT_PX // height_px`` bound looks equivalent but
+    is a floor of a floor, which can undercut the true largest feasible width
+    by one pixel for aspect ratios near the height ceiling.
+    """
+    upper_width = min(width_px, DAI_MAX_WIDTH_PX)
     if upper_width < 1:
         raise SchemaRefusal("DAI image aspect cannot fit the sealed height ceiling")
     low, high = 1, upper_width
     while low < high:
         candidate = (low + high + 1) // 2
         candidate_height = max(1, height_px * candidate // width_px)
-        if candidate * candidate_height <= DAI_MAX_TOTAL_PIXELS:
+        if candidate * candidate_height <= DAI_MAX_TOTAL_PIXELS and (
+            candidate_height <= DAI_MAX_HEIGHT_PX
+        ):
             low = candidate
         else:
             high = candidate - 1
@@ -383,6 +458,16 @@ def retain_model_view(
             record["stop_reason"] = "partial-parse-unrecognized-shape"
         else:
             record["parse"] = {"state": "parsed", "parser": "json", "text": parsed}
+    elif adapter == "dai.v1" and parser == "text":
+        try:
+            record["parse"] = {
+                "state": "parsed",
+                "parser": "text",
+                "text": validate_dai_text(raw_response),
+            }
+        except SchemaRefusal as error:
+            record["parse"] = {"state": "failed", "parser": "text", "reason": str(error)}
+            record["stop_reason"] = "partial-parse-failed"
     return record
 
 
