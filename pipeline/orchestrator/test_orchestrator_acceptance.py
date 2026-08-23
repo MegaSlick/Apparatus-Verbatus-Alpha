@@ -820,14 +820,14 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # Artifact counts and exits stay 86/0 and 111/3; only the Testimonium transform
 # records and their derived bindings move. Both digests below reproduced twice
 # in independent temporary roots at canonical run id "r".
-HAPPY_RUN_TREE_DIGEST = "UNION-REMEASURE-PENDING"
+HAPPY_RUN_TREE_DIGEST = "2d4c12b30eea8651b6954a396d758b538ea0aec5cf2e1bfcca1d54071469cccf"
 # Review only, once more in the same seat: a page witness invoked on every act
 # and unusable on all of them now records the serving moment that produced it
 # (`provenance_for(..., attempted=attempted_page)`), where the `reading` gate
 # left `receipt_ref: None` beside a `presented` block claiming pixels were shown.
 # One `receipt_ref` field on attestator_3's page-2 record; no new file, no count
 # or exit change (97/3), and happy is untouched at the digest above.
-REVIEW_RUN_TREE_DIGEST = "UNION-REMEASURE-PENDING"
+REVIEW_RUN_TREE_DIGEST = "c7bc959bdafae689fb8db14364621028daaf9b6e3d88b30637ba2a59446255ba"
 
 
 def orchestrate(
@@ -4445,7 +4445,7 @@ def test_repeating_the_identical_command_leaves_every_byte_unchanged(tmp_path):
     # the happy walking skeleton; repeatability still compares every byte.
     # Unit 12 adds four more files: one content-addressed raw Churro response
     # per (page, chair), retained before the XML is parsed at all.
-    assert len(before) == UNION_COUNT_PENDING
+    assert len(before) == 92
     assert semantic_snapshot_digest(root) == HAPPY_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "happy").returncode == 0
     after = snapshot(root)
@@ -4492,7 +4492,7 @@ def test_repeating_the_review_scenario_also_changes_nothing(tmp_path):
 
     # Unit 11 adds the same two retained Chandra-response blobs before review's
     # recovery loop; its append-only invariant is unchanged.
-    assert len(before) == 111
+    assert len(before) == 113
     assert semantic_snapshot_digest(root) == REVIEW_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "review").returncode == 3
     assert snapshot(root) == before

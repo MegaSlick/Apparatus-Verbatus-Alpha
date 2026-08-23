@@ -141,7 +141,6 @@ def test_two_chairs_may_share_one_adapter_at_different_scopes():
     for _, chair in sorted(models.chairs.items()):
         if isinstance(chair, ChairIdentity) and chair.witness_adapter is not None:
             by_adapter.setdefault(chair.witness_adapter, []).append(chair.witness_scope)
-    sharing = {name: scopes for name, scopes in by_adapter.items() if len(scopes) > 1}
     scoped = {name: set(scopes) for name, scopes in by_adapter.items()}
     assert scoped, "no adapter is bound at all; this test would pass vacuously"
     assert {"page", "act"} <= set().union(*scoped.values()), (

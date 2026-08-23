@@ -51,9 +51,7 @@ SCHEDULING_POLICY = "chair-outer-act-inner.stage-major-parish.v1"
 # rather than spelled -1 at the two places that have to agree on it.
 _UNPLACED_ORDINAL = -1
 # The (adapter, parser) pairs `retain_model_view` can actually carry to a state.
-_RUNNABLE_PARSERS = frozenset(
-    {("chandra.v1", "json"), ("churro.v1", "xml"), ("dai.v1", "text")}
-)
+_RUNNABLE_PARSERS = frozenset({("chandra.v1", "json"), ("churro.v1", "xml"), ("dai.v1", "text")})
 _UNCERTAINTY_TOKENS = ("[UNCERTAIN]", "[CROSSED_OUT]")
 _REPETITION_WINDOW = 24
 _REPETITION_MIN_REPEATS = 3
