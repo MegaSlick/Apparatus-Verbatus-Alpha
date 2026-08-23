@@ -595,6 +595,7 @@ def test_perlector_consumes_the_page_testimonium_named_by_an_act_attachment(
     for program in (
         "pipeline/1_exemplar/door.py",
         "pipeline/1_exemplar/run.py",
+        "pipeline/1_ink_map/run.py",
         "pipeline/2_designator/run.py",
         "pipeline/3_attestatores/run.py",
     ):
@@ -631,6 +632,7 @@ def _through_attestatores(root: Path, run_id: str, scenario: str = "happy") -> R
     for program in (
         "pipeline/1_exemplar/door.py",
         "pipeline/1_exemplar/run.py",
+        "pipeline/1_ink_map/run.py",
         "pipeline/2_designator/run.py",
         "pipeline/3_attestatores/run.py",
     ):

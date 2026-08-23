@@ -15,6 +15,7 @@ from typing import Final
 
 DOOR: Final = "door"
 EXEMPLAR: Final = "exemplar"
+INK_MAP: Final = "ink-map"
 DESIGNATOR: Final = "designator"
 ATTESTATORES: Final = "attestatores"
 PERLECTOR: Final = "perlector"
@@ -27,6 +28,7 @@ ARMARIUM: Final = "armarium"
 STAGES: Final = (
     DOOR,
     EXEMPLAR,
+    INK_MAP,
     DESIGNATOR,
     ATTESTATORES,
     PERLECTOR,
@@ -41,6 +43,7 @@ STAGES: Final = (
 # evidence to go quiet.
 STAGE_DIRECTORIES: Final = {
     EXEMPLAR: "1_exemplar",
+    INK_MAP: "1_ink_map",
     DESIGNATOR: "2_designator",
     ATTESTATORES: "3_attestatores",
     PERLECTOR: "4_perlector",
@@ -54,7 +57,8 @@ STAGE_DIRECTORIES: Final = {
 # malformed identity, a mismatched input digest, and a duplicate accounting entry.
 HANDOFFS: Final = (
     (DOOR, EXEMPLAR),
-    (EXEMPLAR, DESIGNATOR),
+    (EXEMPLAR, INK_MAP),
+    (INK_MAP, DESIGNATOR),
     (DESIGNATOR, ATTESTATORES),
     (ATTESTATORES, PERLECTOR),
     (PERLECTOR, RECENSOR),
@@ -67,7 +71,8 @@ HANDOFFS: Final = (
 # the orchestrator proves that final statement before it reports the run.
 SEAL_PREDECESSORS: Final = {
     EXEMPLAR: DOOR,
-    DESIGNATOR: EXEMPLAR,
+    INK_MAP: EXEMPLAR,
+    DESIGNATOR: INK_MAP,
     ATTESTATORES: DESIGNATOR,
     PERLECTOR: ATTESTATORES,
     RECENSOR: PERLECTOR,

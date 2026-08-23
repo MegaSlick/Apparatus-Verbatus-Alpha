@@ -125,7 +125,11 @@ def _designator_context(
 
 def _prepared_context(designator, root: Path, models_config: Path | None, description: str):
     """Run the Door and Exemplar, then open the matching Designator context."""
-    for program in ("pipeline/1_exemplar/door.py", "pipeline/1_exemplar/run.py"):
+    for program in (
+        "pipeline/1_exemplar/door.py",
+        "pipeline/1_exemplar/run.py",
+        "pipeline/1_ink_map/run.py",
+    ):
         result = _run(program, root, models_config)
         assert result.returncode == 0, f"{program}: {result.stderr}"
     return _designator_context(designator, root, models_config, description)
@@ -136,6 +140,7 @@ def _populated_context(tmp_path, models_config: Path | None = None):
     for program in (
         "pipeline/1_exemplar/door.py",
         "pipeline/1_exemplar/run.py",
+        "pipeline/1_ink_map/run.py",
         "pipeline/2_designator/run.py",
     ):
         result = _run(program, root, models_config)

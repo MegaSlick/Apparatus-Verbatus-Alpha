@@ -24,10 +24,6 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
-from residual_ink import page_residual_ink  # noqa: E402
-
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.canonical import digest_bytes  # noqa: E402
 from common.contracts.errors import ContractError, FatalAccounting  # noqa: E402
@@ -58,6 +54,7 @@ from common.recovery import (  # noqa: E402
     reconcile_recovery_requests,
     recovery_kind_budget,
 )
+from common.residual_ink import page_residual_ink  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
     EXIT_HELD,

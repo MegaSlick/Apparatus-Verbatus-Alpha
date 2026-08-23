@@ -54,7 +54,7 @@ def test_the_recensor_audit_never_calls_ink_what_the_designator_dismissed():
         ROOT / "pipeline" / "2_designator" / "structure.py", "SECONDARY_MARGIN"
     )
     recensor_contrast = _literal_constant(
-        ROOT / "pipeline" / "5_recensor" / "residual_ink.py",
+        ROOT / "common" / "residual_ink.py",
         "MINIMUM_CONTRAST_BELOW_BACKGROUND",
     )
     fallback_reader_margin = _literal_constant(

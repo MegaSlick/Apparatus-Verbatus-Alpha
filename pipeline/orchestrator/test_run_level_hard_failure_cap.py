@@ -135,6 +135,7 @@ def test_more_than_two_hard_failures_halts_the_run_at_the_next_checkpoint(tmp_pa
     for program in (
         "pipeline/1_exemplar/door.py",
         "pipeline/1_exemplar/run.py",
+        "pipeline/1_ink_map/run.py",
         "pipeline/2_designator/run.py",
         "pipeline/3_attestatores/run.py",
         "pipeline/4_perlector/run.py",
@@ -171,6 +172,7 @@ def test_re_running_a_halted_orchestration_halts_again_the_same_way(tmp_path):
     for program in (
         "pipeline/1_exemplar/door.py",
         "pipeline/1_exemplar/run.py",
+        "pipeline/1_ink_map/run.py",
         "pipeline/2_designator/run.py",
         "pipeline/3_attestatores/run.py",
         "pipeline/4_perlector/run.py",
@@ -195,6 +197,7 @@ def test_exactly_two_hard_failures_is_only_a_warning_and_the_run_continues(tmp_p
     for program in (
         "pipeline/1_exemplar/door.py",
         "pipeline/1_exemplar/run.py",
+        "pipeline/1_ink_map/run.py",
         "pipeline/2_designator/run.py",
         "pipeline/3_attestatores/run.py",
         "pipeline/4_perlector/run.py",
@@ -228,6 +231,7 @@ def test_a_direct_stage_refuses_a_halted_run_before_it_writes(tmp_path):
     for program in (
         "pipeline/1_exemplar/door.py",
         "pipeline/1_exemplar/run.py",
+        "pipeline/1_ink_map/run.py",
         "pipeline/2_designator/run.py",
         "pipeline/3_attestatores/run.py",
         "pipeline/4_perlector/run.py",
@@ -342,6 +346,7 @@ def test_a_breach_first_seen_at_a_stage_boundary_stops_the_rest_of_the_sequence(
     assert invoked == [
         orchestrator.STAGE_PROGRAMS["door"],
         orchestrator.STAGE_PROGRAMS["exemplar"],
+        orchestrator.STAGE_PROGRAMS["ink-map"],
         orchestrator.STAGE_PROGRAMS["designator"],
     ]
     printed = capsys.readouterr().out

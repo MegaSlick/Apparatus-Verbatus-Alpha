@@ -51,6 +51,7 @@ FIXTURE = "synthetic-two-page-v0"
 
 DOOR = "pipeline/1_exemplar/door.py"
 EXEMPLAR = "pipeline/1_exemplar/run.py"
+INK_MAP_PROGRAM = "pipeline/1_ink_map/run.py"
 DESIGNATOR_PROGRAM = "pipeline/2_designator/run.py"
 ATTESTATORES_PROGRAM = "pipeline/3_attestatores/run.py"
 PERLECTOR_PROGRAM = "pipeline/4_perlector/run.py"
@@ -58,7 +59,7 @@ RECENSOR_PROGRAM = "pipeline/5_recensor/run.py"
 ARCHETYPUS_PROGRAM = "pipeline/6_archetypus/run.py"
 ARMARIUM_PROGRAM = "pipeline/7_armarium/run.py"
 
-TO_ATTESTATORES = (DOOR, EXEMPLAR, DESIGNATOR_PROGRAM, ATTESTATORES_PROGRAM)
+TO_ATTESTATORES = (DOOR, EXEMPLAR, INK_MAP_PROGRAM, DESIGNATOR_PROGRAM, ATTESTATORES_PROGRAM)
 
 
 def invoke(run_root: Path, run_id: str, scenario: str, program: str, *extra: str):
