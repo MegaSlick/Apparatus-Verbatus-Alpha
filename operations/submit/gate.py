@@ -221,3 +221,29 @@ def require_approved_storage_location(
             "material may live, and an unlisted location is refused rather than allowed"
         )
     return resolved
+
+
+def _identity(path: Path) -> tuple[int, int] | None:
+    try:
+        status = path.stat()
+    except OSError:
+        return None
+    return (status.st_dev, status.st_ino)
+
+
+def same_or_inside(ancestor: Path, descendant: Path) -> bool:
+    """Whether one path is the other, or holds it, by filesystem identity.
+
+    Not `is_relative_to`, which compares spellings.  APFS is case-insensitive by
+    default, so `/approved/masters` and `/approved/Masters` are one directory
+    that compares unequal as text, and `Path.resolve` does not correct case on
+    macOS: a case-variant spelling walks straight through a textual containment
+    check and lands produced records inside the submitted folder.  Device and
+    inode decide whether two names are the same directory, and they settle a
+    bind mount with the same reading.  A descendant that does not exist yet is
+    judged by its parents, so a not-yet-written output file still answers.
+    """
+    target = _identity(ancestor)
+    if target is None:
+        return False
+    return any(_identity(candidate) == target for candidate in (descendant, *descendant.parents))
