@@ -678,7 +678,16 @@ class StageContext:
 
 _SEAL_EXCLUDED_KINDS: Final = frozenset({"stage-seal", "decode-environment"})
 _DECODE_PATHS: Final = frozenset({"project-png", "pillow", "pdfium", "none"})
-_PIXEL_STAGES: Final = frozenset({"door", "exemplar", "designator", "perlector", "recensor"})
+# Stages whose own pass turns bytes into pixels, as against passing an existing
+# derivative through. The Attestatores joined this set with the DAI adapter: its
+# presentation is cut from the sealed page and resampled here (Pillow LANCZOS,
+# `common/imaging.py::resize_png_lanczos`), so the stage that once only carried
+# crops now computes them. Recording `produced_pixels: false` for it after that
+# is a false statement in sealed evidence, which GOVERNANCE 6 does not allow the
+# record to make about its own pass.
+_PIXEL_STAGES: Final = frozenset(
+    {"door", "exemplar", "designator", "attestatores", "perlector", "recensor"}
+)
 _DECODER_NAMES: Final = frozenset({"pillow", "jpeg-codec", "pillow-heif", "libheif", "pdfium"})
 _DECODE_ENVIRONMENT_FIELDS: Final = frozenset(
     {"decoders", "platform", "machine", "decode_paths_used", "produced_pixels"}
@@ -765,6 +774,13 @@ def _decode_environment(stage: str) -> dict[str, Any]:
         "door": {"pillow", "pdfium"},
         "exemplar": {"project-png"},
         "designator": {"project-png"},
+        # `project-png` and not a bare `pillow`: the Attestatores' DAI crop and
+        # resize both run through `common/imaging.py`'s own decoder and its own
+        # deterministic encoder, which is the same route the Perlector's page
+        # render already takes for the same Pillow LANCZOS call. The route family
+        # is what this field names; the resampler itself is named in the
+        # presentation's own transform, where it is executable.
+        "attestatores": {"project-png"},
         "perlector": {"project-png"},
         "recensor": {"project-png"},
     }.get(stage, {"none"})

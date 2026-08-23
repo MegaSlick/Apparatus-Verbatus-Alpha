@@ -3,11 +3,19 @@
 import dataclasses
 import importlib.util
 import sys
+from io import BytesIO
 from pathlib import Path
 from types import ModuleType
 
 import pytest
+from PIL import Image
 
+from common.contracts.canonical import digest_bytes
+from common.contracts.errors import SchemaRefusal
+from common.contracts.identities import artifact_id
+from common.contracts.stages import ATTESTATORES, EXEMPLAR
+from common.imaging import encode_grayscale_png_deterministic
+from common.native_witness import validate_presented_page_binding
 from common.witness_adapters import KNOWN_WITNESS_ADAPTER_NAMES
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -29,7 +37,7 @@ def _load_local_adapters():
     return module
 
 
-def test_churro_is_the_only_currently_runnable_fixture_adapter_shape():
+def test_every_declared_adapter_has_a_runnable_fixture_shape():
     adapters = _load_local_adapters()
     assert set(adapters.RUNNABLE_ADAPTERS) == KNOWN_WITNESS_ADAPTER_NAMES
     spec = adapters.resolve_runnable_adapter("churro.v1")
@@ -40,6 +48,85 @@ def test_churro_is_the_only_currently_runnable_fixture_adapter_shape():
     # function answers there, and a rebinding to a different one is exactly the
     # change a later adapter unit must not make silently.
     assert spec.retain is adapters.feeding.retain_model_view
+
+
+class _Published:
+    def __init__(self, relative_path):
+        self.relative_path = relative_path
+
+
+class _DaiTree:
+    def __init__(self, page_bytes):
+        self.page_bytes = page_bytes
+        self.blobs = {}
+
+    def read_artifact(self, stage, kind, item_id):
+        assert (stage, kind, item_id) == (EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", "page-1"))
+        return {"payload": {"image_path": "1_exemplar/page-1.png", "ordinal": 1}}
+
+    def read_bytes(self, relative_path):
+        if relative_path == "1_exemplar/page-1.png":
+            return self.page_bytes
+        return self.blobs[relative_path]
+
+    def put_blob(self, stage, payload):
+        assert stage == ATTESTATORES
+        digest = digest_bytes(payload)
+        path = f"3_attestatores/blobs/sha256/{digest}"
+        self.blobs[path] = payload
+        return digest, _Published(path)
+
+
+class _DaiContext:
+    def __init__(self, page_bytes):
+        self.tree = _DaiTree(page_bytes)
+
+
+def test_dai_crop_resize_is_a_rederivable_adapter_crop_and_preserves_uncertainty_tokens():
+    """The shown pixels come from the sealed page recipe, not an opaque resize blob."""
+    page = encode_grayscale_png_deterministic(3_000, 2, [bytearray(3_000), bytearray(3_000)])
+    context = _DaiContext(page)
+    source = {
+        "kind": "region",
+        "source_page_id": "page-1",
+        "source_page_ordinal": 1,
+        "image_path": "2_designator/crop.png",
+        "image_sha256": "a" * 64,
+        "transform": {
+            "operation": "crop",
+            "source_page_id": "page-1",
+            "source_page_ordinal": 1,
+            "bounds": {"x": 0, "y": 0, "w": 3_000, "h": 2},
+        },
+        "region_ref": {"region_id": "region-1"},
+    }
+    adapters = _load_local_adapters()
+    presented = adapters.resolve_runnable_adapter("dai.v1").present(context, source)
+
+    assert presented["kind"] == "adapter-crop"
+    assert presented["transform"]["operation"] == "crop-resize-preserve-aspect"
+    assert presented["transform"]["resize"] == {
+        "resampler": "pillow-lanczos",
+        "dimension_rounding": "floor",
+        "source_width_px": 3_000,
+        "source_height_px": 2,
+        "target_width_px": 1_500,
+        "target_height_px": 1,
+    }
+    validate_presented_page_binding(
+        presented,
+        page_ordinal=1,
+        page_image_path="1_exemplar/page-1.png",
+        page_sha256=digest_bytes(page),
+        page_size=(3_000, 2),
+        page_bytes=page,
+    )
+    response = "[UNCERTAIN] Marie [CROSSED_OUT]"
+    assert adapters.resolve_runnable_adapter("dai.v1").parse(response.encode()) == response
+    assert adapters.resolve_runnable_adapter("dai.v1").observe(presented, response)[0]["span"] == {
+        "start": 0,
+        "end": len(response),
+    }
 
 
 def test_the_registry_binds_the_native_intake_contract_seams():
@@ -99,3 +186,158 @@ def test_local_callable_resolution_refuses_missing_or_unknown_names(name):
         adapters.resolve_runnable_adapter(name)
     assert caught.value.name == name
     assert repr(name) in str(caught.value)
+
+
+def _dai_page(width, height, mode="L"):
+    """A sealed page in a mode the door really seals, encoded as the door does."""
+    from common.imaging import _encode_crop_deterministic
+
+    image = Image.new(mode, (width, height), 1 if mode == "1" else 0)
+    for x in range(width):
+        for y in range(height):
+            image.putpixel((x, y), 0 if mode == "1" and x % 3 == 0 else (x * 7 + y * 13) % 256)
+    return _encode_crop_deterministic(image)
+
+
+def _dai_region(width, height, x=0, y=0):
+    return {
+        "kind": "region",
+        "source_page_id": "page-1",
+        "source_page_ordinal": 1,
+        "image_path": "2_designator/crop.png",
+        "image_sha256": "a" * 64,
+        "transform": {
+            "operation": "crop",
+            "source_page_id": "page-1",
+            "source_page_ordinal": 1,
+            "bounds": {"x": x, "y": y, "w": width, "h": height},
+        },
+        "region_ref": {"region_id": "region-1"},
+    }
+
+
+@pytest.mark.parametrize(
+    ("width", "height", "mode", "target", "operation"),
+    [
+        # The width ceiling itself, and the first size past it.
+        pytest.param(1_500, 100, "L", (1_500, 100), "crop", id="at-the-width-ceiling"),
+        pytest.param(
+            1_501,
+            100,
+            "L",
+            (1_500, 99),
+            "crop-resize-preserve-aspect",
+            id="one-past-the-width-ceiling",
+        ),
+        # 1536x1536 is the total-pixel ceiling exactly, and it is the width
+        # ceiling that binds there rather than the pixel budget.
+        pytest.param(
+            1_536,
+            1_536,
+            "L",
+            (1_500, 1_500),
+            "crop-resize-preserve-aspect",
+            id="at-the-total-pixel-ceiling",
+        ),
+        # 576x4096 = 2359296 exactly: all three ceilings meet on this one shape,
+        # which `DAI_LIMIT_SOURCES` names as the reason the height ceiling is 4096.
+        pytest.param(
+            576,
+            4_096,
+            "L",
+            (576, 4_096),
+            "crop",
+            id="where-all-three-ceilings-meet",
+        ),
+        pytest.param(
+            576,
+            4_097,
+            "L",
+            (575, 4_089),
+            "crop-resize-preserve-aspect",
+            id="one-past-the-height-ceiling",
+        ),
+        # The aspect band the pre-folded bound used to undercut by a pixel.
+        pytest.param(
+            581,
+            4_212,
+            "L",
+            (565, 4_096),
+            "crop-resize-preserve-aspect",
+            id="in-the-rounding-band",
+        ),
+        pytest.param(1, 1, "L", (1, 1), "crop", id="one-pixel"),
+        # A bilevel scan, which the door seals as mode `1` rather than promoting.
+        pytest.param(
+            1_600,
+            400,
+            "1",
+            (1_500, 375),
+            "crop-resize-preserve-aspect",
+            id="bilevel-resized",
+        ),
+        pytest.param(800, 400, "1", (800, 400), "crop", id="bilevel-needing-no-resize"),
+    ],
+)
+def test_the_recorded_transform_replays_to_the_same_bytes_at_every_ceiling(
+    width, height, mode, target, operation
+):
+    """Sonnet fuzzed the dimensions; this asks whether the RECORD round-trips.
+
+    ARCHITECTURE invariant 3 is a property of the recorded transform, not of the
+    arithmetic behind it: at each ceiling the published blob is re-derived from
+    the sealed page through the recipe alone and compared digest for digest.
+    """
+    page = _dai_page(width, height, mode)
+    context = _DaiContext(page)
+    adapters = _load_local_adapters()
+
+    presented = adapters.resolve_runnable_adapter("dai.v1").present(
+        context, _dai_region(width, height)
+    )
+
+    assert presented["transform"]["operation"] == operation
+    if operation == "crop":
+        assert "resize" not in presented["transform"]
+        assert target == (width, height)
+    else:
+        resize = presented["transform"]["resize"]
+        assert (resize["target_width_px"], resize["target_height_px"]) == target
+        assert resize["target_width_px"] <= 1_500
+        assert resize["target_height_px"] <= 4_096
+        assert resize["target_width_px"] * resize["target_height_px"] <= 2_359_296
+    validate_presented_page_binding(
+        presented,
+        page_ordinal=1,
+        page_image_path="1_exemplar/page-1.png",
+        page_sha256=digest_bytes(page),
+        page_size=(width, height),
+        page_bytes=page,
+    )
+    published = context.tree.blobs[presented["image_path"]]
+    assert digest_bytes(published) == presented["image_sha256"]
+    with Image.open(BytesIO(published)) as shown:
+        assert shown.size == target
+
+
+@pytest.mark.parametrize(
+    ("width", "height", "x", "y"),
+    [
+        pytest.param(2_001, 1_000, 0, 0, id="wider-than-the-page"),
+        pytest.param(2_000, 1_000, 1, 0, id="shifted-off-the-right-edge"),
+        pytest.param(500, 500, 1_900, 900, id="a-corner-box-running-off-two-edges"),
+    ],
+)
+def test_a_proposal_box_past_the_page_edge_is_refused_by_name(width, height, x, y):
+    """A detector that proposes past the edge is what Unit 9 brings, and this
+    seam answered it with `crop_png`'s bare ValueError — not a refusal any
+    caller here is written to account for."""
+    page = _dai_page(2_000, 1_000)
+    adapters = _load_local_adapters()
+    context = _DaiContext(page)
+
+    with pytest.raises(SchemaRefusal, match="falls outside the sealed source page"):
+        adapters.resolve_runnable_adapter("dai.v1").present(
+            context, _dai_region(width, height, x, y)
+        )
+    assert context.tree.blobs == {}, "a refused presentation published adapter bytes"

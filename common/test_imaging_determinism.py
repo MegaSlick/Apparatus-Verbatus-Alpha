@@ -31,6 +31,7 @@ from common.imaging import (
     encode_grayscale_png_deterministic,
     image_shown,
     render_triage_derivative,
+    resize_png_lanczos,
 )
 
 BOUNDS = {"x": 1, "y": 1, "w": 3, "h": 2}
@@ -543,3 +544,89 @@ def test_every_declared_conversion_is_executable_and_records_the_bytes_actual_mo
     assert geometry["color_mode"] == output_mode
     with Image.open(BytesIO(rendered)) as reread:
         assert reread.mode == output_mode
+
+
+# --- the bytes a resize writes ---------------------------------------------------
+
+
+def test_a_resized_view_is_framed_so_that_no_compressor_chooses_any_of_its_bytes():
+    """The half `crop_png` already had, for the operation Unit 13 added beside it.
+
+    A DAI adapter-crop is content-addressed exactly as a Designator crop is, and
+    `common/native_witness.py::validate_presented_page_binding` re-derives it and
+    compares digests. Pillow's own PNG writer here would put a wheel's bundled
+    zlib into the name of every DAI presentation.
+    """
+    resized = resize_png_lanczos(
+        crop_png(grayscale_page(20, 12), {"x": 0, "y": 0, "w": 20, "h": 12}), 10, 6
+    )
+
+    raw = stored_block_payload(idat_of(resized))
+    stride = len(raw) // 6
+    assert stride * 6 == len(raw)
+    assert all(raw[row * stride] == 0 for row in range(6)), "a scanline is not filter 0"
+    assert carries_only_image_chunks(resized)
+
+
+def test_a_resize_to_the_source_size_is_the_crop_itself_and_not_a_re_encoding():
+    """Terra's backup-reuse repair rests on this, so it is pinned rather than left
+    to be re-derived from Pillow's source each time someone asks.
+
+    `Image.resize` returns `self.copy()` before it reaches any filter when the
+    requested size is already the image's own. DAI records that case as an exact
+    crop rather than claiming a resampler ran; this helper's identity property
+    still pins why any identity-sized caller and its source have the same
+    digest-addressed bytes.
+    """
+    crop = crop_png(grayscale_page(20, 12), {"x": 0, "y": 0, "w": 20, "h": 12})
+
+    assert resize_png_lanczos(crop, 20, 12) == crop
+
+
+def bilevel_page(width: int = 40, height: int = 24) -> bytes:
+    """A mode `1` page, which the door seals as `1` rather than promoting it.
+
+    `pipeline/1_exemplar/image_formats.py::_PNG_IDENTITY_MODES` carries `1`, and
+    the triage instrument's `bitonal` conversion writes one deliberately, so a
+    bilevel register scan reaches a crop in this mode.
+    """
+    image = Image.new("1", (width, height), 1)
+    for x in range(0, width, 3):
+        for y in range(2, height - 2):
+            image.putpixel((x, y), 0)
+    return _encode_crop_deterministic(image)
+
+
+def test_a_bilevel_crop_is_really_resampled_rather_than_silently_decimated():
+    """Pillow answers LANCZOS on a `1` image with NEAREST and reports nothing.
+
+    The sealed transform names `pillow-lanczos`; if the substitution stood, that
+    word would describe an operation that never ran, and a re-deriver honouring
+    it literally would not reproduce these pixels from the same recipe
+    (ARCHITECTURE invariant 3). Compared against the nearest-neighbour result
+    directly, because "the mode came out as L" alone would still pass if the
+    promotion happened after the resample instead of before it.
+    """
+    crop = crop_png(bilevel_page(), {"x": 0, "y": 0, "w": 40, "h": 24})
+    with Image.open(BytesIO(crop)) as image:
+        image.load()
+        assert image.mode == "1", "the fixture stopped exercising the substitution"
+        decimated = _encode_crop_deterministic(
+            image.resize((20, 12), resample=Image.Resampling.NEAREST)
+        )
+
+    resized = resize_png_lanczos(crop, 20, 12)
+
+    assert resized != decimated
+    with Image.open(BytesIO(resized)) as reread:
+        assert reread.mode == "L"
+        assert len(set(reread.convert("L").tobytes())) > 2, "no intermediate samples were produced"
+
+
+def test_a_bilevel_crop_that_needs_no_resize_is_still_returned_untouched():
+    """The promotion exists to make a named resampler honest, so where Pillow
+    resamples nothing there is nothing to promote — and changing a crop's mode
+    on a copy would break the reuse property pinned above for bilevel pages."""
+    crop = crop_png(bilevel_page(), {"x": 0, "y": 0, "w": 40, "h": 24})
+
+    assert resize_png_lanczos(crop, 40, 24) == crop

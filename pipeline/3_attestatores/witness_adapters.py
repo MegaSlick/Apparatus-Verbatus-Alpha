@@ -22,8 +22,9 @@ Later units may rely on this boundary:
   with run-tree access for an adapter-owned crop, while
   ``observe(presentation, native_payload)`` derives the closed ``observed``
   entries from that exact image/response pair. Presentation kinds remain
-  ``page``, ``region``, and ``adapter-crop``: an adapter crop is a page-scoped
-  occupant's own subdivision, not a third witness scope;
+  ``page``, ``region``, and ``adapter-crop``: an adapter crop is an
+  adapter-owned derivative and not a third witness scope; DAI is act-scoped and
+  publishes one from its assigned proposal crop;
 * the Churro fixture adapter preserves its input presentation and returns only a
   ``bounds_source='presented'`` echo because its native payload has no layout.
   That source is explicitly excluded from routing and coverage; no geometry is
@@ -47,6 +48,10 @@ from typing import Any, Callable, Final
 import feeding
 
 from common.chairs.models import AbsentChair, ModelsConfig
+from common.contracts.errors import SchemaRefusal
+from common.contracts.identities import artifact_id
+from common.contracts.stages import ATTESTATORES, EXEMPLAR
+from common.imaging import crop_png, dimensions, resize_png_lanczos
 from common.native_witness import validate_presented
 from common.witness_adapters import AdapterRefusal, resolve_witness_adapter_name
 
@@ -103,6 +108,88 @@ def _observe(presentation: dict[str, Any], native_payload: Any) -> list[dict[str
     ]
 
 
+def _dai_present(context: Any, presentation: dict[str, Any]) -> dict[str, Any]:
+    """Cut and resize DAI's act view from its sealed source page.
+
+    The input is the Designator proposal presentation, not pixels the adapter
+    independently detected.  DAI is act-scoped; its detector/crop step is the
+    proposal it was assigned, and its own presentation is an ``adapter-crop``
+    so the complete crop→resize recipe remains executable in sealed-page space.
+    """
+    validate_presented(presentation)
+    if presentation["kind"] != "region":
+        raise SchemaRefusal("DAI accepts an act proposal region, not a page presentation")
+    source_transform = presentation["transform"]
+    page_id = source_transform["source_page_id"]
+    page = context.tree.read_artifact(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", page_id))
+    page_bytes = context.tree.read_bytes(page["payload"]["image_path"])
+    # Re-read against the page's real size now that it is in hand. The stage
+    # validates a Designator region against its sealed page before the adapter is
+    # reached, so this is a second wall rather than the only one -- but a box that
+    # ran off the page left here as `crop_png`'s bare ValueError, which is not a
+    # refusal any caller in this seam is written to account for, and a detector
+    # that proposes past the edge is exactly what Unit 9 will bring.
+    validate_presented(presentation, page_size=dimensions(page_bytes))
+    bounds = dict(source_transform["bounds"])
+    crop = crop_png(page_bytes, bounds)
+    source_width, source_height = dimensions(crop)
+    target_width, target_height = feeding._dai_dimensions(source_width, source_height)
+    model_transform: dict[str, Any] = {
+        "operation": "crop",
+        "source_page_id": page_id,
+        "source_page_ordinal": source_transform["source_page_ordinal"],
+        "bounds": bounds,
+    }
+    if (target_width, target_height) == (source_width, source_height):
+        # This is an exact crop, not a resize with a filter that never ran.
+        # Pillow returns a copy before consulting LANCZOS or the mode-1
+        # substitution on an identity-sized call. Recording the closed crop
+        # recipe states the operation that actually produced these bytes and
+        # keeps a bilevel no-op byte-identical to its Designator crop.
+        model_image = crop
+    else:
+        model_image = resize_png_lanczos(crop, target_width, target_height)
+        model_transform = {
+            **model_transform,
+            "operation": "crop-resize-preserve-aspect",
+            "resize": {
+                "resampler": "pillow-lanczos",
+                "dimension_rounding": "floor",
+                "source_width_px": source_width,
+                "source_height_px": source_height,
+                "target_width_px": target_width,
+                "target_height_px": target_height,
+            },
+        }
+    digest, published = context.tree.put_blob(ATTESTATORES, model_image)
+    return {
+        "kind": "adapter-crop",
+        "source_page_id": page_id,
+        "source_page_ordinal": source_transform["source_page_ordinal"],
+        "image_path": published.relative_path,
+        "image_sha256": digest,
+        "transform": model_transform,
+    }
+
+
+def _dai_observe(presentation: dict[str, Any], native_payload: Any) -> list[dict[str, Any]]:
+    """Retain DAI's text unchanged; it has no published native layout channel."""
+    validate_presented(presentation)
+    return [
+        {
+            "ordinal": 0,
+            "bounds": dict(presentation["transform"]["bounds"]),
+            "bounds_source": "presented",
+            # A failed/no-response attempt was still shown this exact image. It
+            # has no retained text to address, so the presentation fallback is
+            # honest but deliberately carries no span.
+            "span": {"start": 0, "end": len(native_payload)}
+            if isinstance(native_payload, str)
+            else None,
+        }
+    ]
+
+
 RUNNABLE_ADAPTERS: Final[dict[str, RunnableAdapter]] = {
     "churro.v1": RunnableAdapter(
         prompt=feeding.churro_prompt,
@@ -110,7 +197,14 @@ RUNNABLE_ADAPTERS: Final[dict[str, RunnableAdapter]] = {
         retain=feeding.retain_model_view,
         present=_present,
         observe=_observe,
-    )
+    ),
+    "dai.v1": RunnableAdapter(
+        prompt=feeding.dai_prompt,
+        parse=feeding.validate_dai_text,
+        retain=feeding.retain_model_view,
+        present=_dai_present,
+        observe=_dai_observe,
+    ),
 }
 
 

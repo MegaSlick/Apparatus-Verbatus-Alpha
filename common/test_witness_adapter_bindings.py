@@ -60,7 +60,7 @@ def test_a_known_adapter_name_with_no_configured_occupant_is_reported(monkeypatc
     monkeypatch.setattr(
         witness_adapters,
         "KNOWN_WITNESS_ADAPTER_NAMES",
-        frozenset({"churro.v1", "unbound.fixture.v1"}),
+        frozenset({"churro.v1", "dai.v1", "unbound.fixture.v1"}),
     )
     with warnings.catch_warnings():
         warnings.simplefilter("error")
@@ -131,9 +131,11 @@ def test_two_chairs_may_share_one_adapter_at_different_scopes():
     models = _models()
     witness_adapters.validate_witness_adapter_bindings(models)
     first = models.chairs["attestator_1"]
-    second = models.chairs["attestator_2"]
+    second = models.chairs["attestator_3"]
     assert first.witness_adapter == second.witness_adapter == "churro.v1"
-    assert (first.witness_scope, second.witness_scope) == ("page", "act")
+    assert (first.witness_scope, second.witness_scope) == ("page", "page")
+    assert models.chairs["attestator_2"].witness_adapter == "dai.v1"
+    assert models.chairs["attestator_2"].witness_scope == "act"
 
 
 @pytest.mark.parametrize(
@@ -211,7 +213,7 @@ def test_witness_adapter_is_inside_the_sealed_config_digest(monkeypatch):
     monkeypatch.setattr(
         witness_adapters,
         "KNOWN_WITNESS_ADAPTER_NAMES",
-        frozenset({"churro.v1", "other.fixture.v1"}),
+        frozenset({"churro.v1", "dai.v1", "other.fixture.v1"}),
     )
     fixture = load_fixture(str(ROOT / "proof"))
     sealed = run_config_bindings(_models(), fixture, "happy")["config_digest"]

@@ -14,6 +14,7 @@ from common.native_witness import (
     unpresented_region_ids,
     validate_native_witness_geometry,
     validate_page_testimonium_payload,
+    validate_presented,
     validate_presented_page_binding,
 )
 
@@ -454,3 +455,77 @@ def test_partition_disagreement_ties_from_the_proposal_side_too():
     assert len(disagreement["boundary_deltas"]) == 2
     assert disagreement["ambiguous_pairings"] == disagreement["boundary_deltas"]
     assert {pairing["observed_ordinal"] for pairing in disagreement["ambiguous_pairings"]} == {0, 1}
+
+
+def _resized_presentation():
+    """A well-formed `crop-resize-preserve-aspect` block over a 40x20 crop."""
+    value = payload()
+    value["presented"].update({"kind": "adapter-crop", "image_sha256": "b" * 64})
+    value["presented"]["image_path"] = "3_attestatores/blobs/sha256/" + "b" * 64
+    value["presented"]["transform"].update(
+        {
+            "operation": "crop-resize-preserve-aspect",
+            "bounds": {"x": 0, "y": 0, "w": 40, "h": 20},
+            "resize": {
+                "resampler": "pillow-lanczos",
+                "dimension_rounding": "floor",
+                "source_width_px": 40,
+                "source_height_px": 20,
+                "target_width_px": 20,
+                "target_height_px": 10,
+            },
+        }
+    )
+    return value["presented"]
+
+
+def test_a_resize_recipe_must_preserve_the_aspect_its_own_operation_names():
+    """The digest check alone cannot catch this: re-derivation replays whatever
+    target the record asked for, so a stretched view re-derives perfectly and
+    the operation's name is the only thing that was false. `_dai_observe` reports
+    the crop's page bounds as the box for the whole shown image, which is a
+    sound identification over a uniform scale and nothing else."""
+    presented = _resized_presentation()
+    validate_presented(presented)
+
+    presented["transform"]["resize"]["target_height_px"] = 18
+    with pytest.raises(SchemaRefusal, match="does not preserve the aspect"):
+        validate_presented(presented)
+
+
+def test_a_resize_recipe_rounds_down_and_never_up():
+    """`dimension_rounding` is `floor`, so 40x21 scaled to width 20 is 10 high,
+    not 11 — the one-pixel direction a reader would otherwise have to guess."""
+    presented = _resized_presentation()
+    presented["transform"]["bounds"]["h"] = 21
+    presented["transform"]["resize"]["source_height_px"] = 21
+    validate_presented(presented)
+
+    presented["transform"]["resize"]["target_height_px"] = 11
+    with pytest.raises(SchemaRefusal, match="does not preserve the aspect"):
+        validate_presented(presented)
+
+
+def test_a_resize_recipe_never_scales_a_dimension_away_entirely():
+    """A very wide crop floors to height 0; the recipe pins the 1px floor that
+    `common/imaging.py::resize_png_lanczos` would refuse a 0 for anyway."""
+    presented = _resized_presentation()
+    presented["transform"]["bounds"].update({"w": 4000, "h": 3})
+    presented["transform"]["resize"].update(
+        {"source_width_px": 4000, "source_height_px": 3, "target_width_px": 1000}
+    )
+    presented["transform"]["resize"]["target_height_px"] = 1
+    validate_presented(presented)
+
+    presented["transform"]["resize"]["target_height_px"] = 0
+    with pytest.raises(SchemaRefusal, match="resize dimensions are invalid"):
+        validate_presented(presented)
+
+
+def test_a_resize_dimension_is_typed_before_the_aspect_identity_reads_it():
+    """The type check runs first, so a string reaches a named refusal rather than
+    a TypeError from the arithmetic below it."""
+    presented = _resized_presentation()
+    presented["transform"]["resize"]["target_width_px"] = "20"
+    with pytest.raises(SchemaRefusal, match="resize dimensions are invalid"):
+        validate_presented(presented)

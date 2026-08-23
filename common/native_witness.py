@@ -13,7 +13,7 @@ from typing import Any, Final
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import SchemaRefusal
 from common.corpus_register import _refuse_preference
-from common.imaging import crop_png
+from common.imaging import crop_png, dimensions, resize_png_lanczos
 
 PRESENTATION_KINDS: Final = frozenset({"page", "region", "adapter-crop"})
 # `native`  — geometry the witness itself reported.
@@ -118,12 +118,19 @@ def validate_presented(value: Any, *, page_size: tuple[int, int] | None = None) 
     ):
         raise SchemaRefusal("a Testimonium presented block has invalid source or blob identity")
     transform = value["transform"]
-    if not isinstance(transform, dict) or set(transform) != {
+    if not isinstance(transform, dict):
+        raise SchemaRefusal("a Testimonium presented block has no complete page transform")
+    base_transform_fields = {
         "operation",
         "source_page_ordinal",
         "source_page_id",
         "bounds",
-    }:
+    }
+    if transform.get("operation") == "crop-resize-preserve-aspect":
+        required_transform_fields = base_transform_fields | {"resize"}
+    else:
+        required_transform_fields = base_transform_fields
+    if set(transform) != required_transform_fields:
         raise SchemaRefusal("a Testimonium presented block has no complete page transform")
     if (
         not isinstance(transform["operation"], str)
@@ -132,6 +139,50 @@ def validate_presented(value: Any, *, page_size: tuple[int, int] | None = None) 
     ):
         raise SchemaRefusal("a Testimonium presented transform disagrees with its source page")
     _bounds(transform["bounds"], "a Testimonium presented transform", page_size=page_size)
+    if transform["operation"] == "crop-resize-preserve-aspect":
+        resize = transform["resize"]
+        if not isinstance(resize, dict) or set(resize) != {
+            "resampler",
+            "dimension_rounding",
+            "source_width_px",
+            "source_height_px",
+            "target_width_px",
+            "target_height_px",
+        }:
+            raise SchemaRefusal("a resized adapter-crop has no closed resize recipe")
+        if resize["resampler"] != "pillow-lanczos" or resize["dimension_rounding"] != "floor":
+            raise SchemaRefusal("a resized adapter-crop has an unknown executable resize recipe")
+        # Typed before it is read: the aspect identity below does arithmetic on
+        # these four numbers, and the earlier ordering compared them first, which
+        # a string would have survived.
+        if not all(
+            _integer(resize[field]) and resize[field] > 0
+            for field in (
+                "source_width_px",
+                "source_height_px",
+                "target_width_px",
+                "target_height_px",
+            )
+        ):
+            raise SchemaRefusal("a resized adapter-crop resize dimensions are invalid")
+        bounds = transform["bounds"]
+        if resize["source_width_px"] != bounds["w"] or resize["source_height_px"] != bounds["h"]:
+            raise SchemaRefusal("a resized adapter-crop resize dimensions are invalid")
+        # `preserve-aspect` and `floor` are the operation's own words, so they are
+        # required to be true of the numbers beside them rather than left as
+        # description. Without this a record could name this operation over a
+        # target that stretches the crop, and still pass every other check here:
+        # the digest re-derives, because re-derivation replays whatever target
+        # the record asked for. What it would cost is the identification
+        # `_dai_observe` makes when it reports the crop's own page bounds as the
+        # box for the whole shown image, and the view-to-page mapping Unit 14
+        # reads that box through -- both are only sound over a uniform scale.
+        if resize["target_height_px"] != max(
+            1, resize["source_height_px"] * resize["target_width_px"] // resize["source_width_px"]
+        ):
+            raise SchemaRefusal(
+                "a resized adapter-crop does not preserve the aspect its operation names"
+            )
     if kind == "region":
         ref = value["region_ref"]
         if (
@@ -272,10 +323,9 @@ def validate_presented_page_binding(
     ARCHITECTURE invariant 3).
 
     A region presentation is re-derived against its own sealed Designator
-    record by the callers, which is stronger than this. An adapter-crop uses the
-    only recipe this four-field transform can express today: an exact PNG crop
-    from the sealed page. Its digest is re-derived here; a future resize or other
-    operation must extend the closed recipe rather than ride as an opaque word.
+    record by the callers, which is stronger than this. An adapter-crop is either
+    an exact PNG crop or the explicitly recorded LANCZOS resize of that crop;
+    its digest is always re-derived here.
     """
     kind = presented["kind"]
     whole_page = {"x": 0, "y": 0, "w": page_size[0], "h": page_size[1]}
@@ -302,7 +352,8 @@ def validate_presented_page_binding(
                 "an adapter-crop presentation carries the whole sealed page's blob under a "
                 "sub-page transform"
             )
-        if presented["transform"]["operation"] != "crop":
+        operation = presented["transform"]["operation"]
+        if operation not in {"crop", "crop-resize-preserve-aspect"}:
             raise SchemaRefusal(
                 "an adapter-crop presentation has no executable sealed-page crop transform"
             )
@@ -310,7 +361,15 @@ def validate_presented_page_binding(
             raise SchemaRefusal(
                 "an adapter-crop presentation cannot be re-derived without its sealed page bytes"
             )
-        expected_sha256 = digest_bytes(crop_png(page_bytes, bounds))
+        derived = crop_png(page_bytes, bounds)
+        if operation == "crop-resize-preserve-aspect":
+            resize = presented["transform"]["resize"]
+            if dimensions(derived) != (resize["source_width_px"], resize["source_height_px"]):
+                raise SchemaRefusal("a resized adapter-crop recipe disagrees with its sealed crop")
+            derived = resize_png_lanczos(
+                derived, resize["target_width_px"], resize["target_height_px"]
+            )
+        expected_sha256 = digest_bytes(derived)
         if presented["image_sha256"] != expected_sha256:
             raise SchemaRefusal(
                 "an adapter-crop presentation blob does not re-derive from its sealed page transform"

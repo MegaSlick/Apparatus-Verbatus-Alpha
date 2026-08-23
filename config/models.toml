@@ -83,7 +83,7 @@ digest_manifest = "f2c2238c06ea7a7646363d5f8cf1ba3daa39dd9b5eb9d94a753705959d396
 manifest = "manifests/attestator_2.json"
 serving_recipe = "fake-attestatores-v0"
 license_note = "fixture identity only; no model weights or model license apply"
-witness_adapter = "churro.v1"
+witness_adapter = "dai.v1"
 witness_scope = "act"
 
 [chairs.attestator_3]
