@@ -44,6 +44,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Final
 
+import chandra
 import feeding
 
 from common.chairs.models import AbsentChair, ModelsConfig
@@ -64,6 +65,16 @@ class RunnableAdapter:
     arm or from presentation metadata alone. The Churro fixture response carries
     no layout, so its honest fallback is a ``bounds_source='presented'`` echo that
     coverage and routing expressly exclude.
+
+    ``quantization`` is the sixth thing an adapter declares and the one thing
+    that is data rather than an operation: the exact rule name by which
+    ``observe`` turned native floats into integer sealed-page pixels, recorded
+    beside the raw digest in the record it produced. ``None`` is the honest
+    value for an adapter whose native response carries no geometry to convert --
+    Churro's does not -- and it is the default, so an adapter that has no rule
+    cannot acquire one by omission. Unit 10's handoff makes this a *property of
+    the adapter*, declared with it; naming it here is what stops the writing
+    stage from stamping one adapter's rule onto another's record.
     """
 
     prompt: Callable[..., Any]
@@ -71,6 +82,7 @@ class RunnableAdapter:
     retain: Callable[..., Any]
     present: Callable[..., Any]
     observe: Callable[..., Any]
+    quantization: str | None = None
 
 
 def _present(context: Any, presentation: dict[str, Any]) -> dict[str, Any]:
@@ -104,13 +116,21 @@ def _observe(presentation: dict[str, Any], native_payload: Any) -> list[dict[str
 
 
 RUNNABLE_ADAPTERS: Final[dict[str, RunnableAdapter]] = {
+    "chandra.v1": RunnableAdapter(
+        prompt=chandra.prompt,
+        parse=chandra.parse,
+        retain=chandra.retain,
+        present=chandra.present,
+        observe=chandra.observe,
+        quantization=chandra.QUANTIZATION_RULE,
+    ),
     "churro.v1": RunnableAdapter(
         prompt=feeding.churro_prompt,
         parse=feeding.validate_churro_xml,
         retain=feeding.retain_model_view,
         present=_present,
         observe=_observe,
-    )
+    ),
 }
 
 
@@ -122,6 +142,22 @@ def resolve_runnable_adapter(name: object) -> RunnableAdapter:
         return RUNNABLE_ADAPTERS[resolved]
     except KeyError as error:
         raise AdapterRefusal(name, "has no runnable Attestatores adapter") from error
+
+
+def declared_quantization_rules() -> frozenset[str]:
+    """Every quantization rule this stage's registry actually declares.
+
+    The writer stamps a record with its own adapter's rule; this is what the
+    record's schema is closed against. Derived from the registry rather than
+    listed, so an adapter that lands with a new rule is accepted by the schema
+    the moment it is bound -- and one that declares no rule cannot have a
+    neighbour's stamped on it.
+    """
+    return frozenset(
+        adapter.quantization
+        for adapter in RUNNABLE_ADAPTERS.values()
+        if adapter.quantization is not None
+    )
 
 
 def validate_runnable_adapter_bindings(models: ModelsConfig) -> None:

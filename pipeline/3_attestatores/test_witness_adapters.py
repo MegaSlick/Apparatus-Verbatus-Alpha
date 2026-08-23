@@ -29,7 +29,7 @@ def _load_local_adapters():
     return module
 
 
-def test_churro_is_the_only_currently_runnable_fixture_adapter_shape():
+def test_chandra_and_churro_have_runnable_fixture_adapter_shapes():
     adapters = _load_local_adapters()
     assert set(adapters.RUNNABLE_ADAPTERS) == KNOWN_WITNESS_ADAPTER_NAMES
     spec = adapters.resolve_runnable_adapter("churro.v1")
@@ -40,13 +40,26 @@ def test_churro_is_the_only_currently_runnable_fixture_adapter_shape():
     # function answers there, and a rebinding to a different one is exactly the
     # change a later adapter unit must not make silently.
     assert spec.retain is adapters.feeding.retain_model_view
+    chandra = adapters.resolve_runnable_adapter("chandra.v1")
+    assert set(chandra.prompt()) == {"instruction"}
+    assert chandra.parse(b'{"markdown":"text","blocks":[]}') == "text"
+    assert chandra.retain is adapters.chandra.retain
 
 
 def test_the_registry_binds_the_native_intake_contract_seams():
     """10B fills 10A's reserved derived-layer seams with real callables."""
     adapters = _load_local_adapters()
     fields = {field.name for field in dataclasses.fields(adapters.RunnableAdapter)}
-    assert fields == {"prompt", "parse", "retain", "present", "observe"}
+    # Five operations plus the one declaration. `quantization` is data, not a
+    # sixth role: it names the rule `observe` applied, so the record can state
+    # the conversion instead of the writing stage guessing which adapter's rule
+    # to stamp on it. An adapter with no native geometry declares None.
+    assert fields == {"prompt", "parse", "retain", "present", "observe", "quantization"}
+    assert adapters.RUNNABLE_ADAPTERS["churro.v1"].quantization is None
+    assert (
+        adapters.RUNNABLE_ADAPTERS["chandra.v1"].quantization == adapters.chandra.QUANTIZATION_RULE
+    )
+    assert adapters.declared_quantization_rules() == {adapters.chandra.QUANTIZATION_RULE}
     presented = {
         "kind": "page",
         "source_page_id": "page-1",

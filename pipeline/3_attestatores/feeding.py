@@ -51,7 +51,7 @@ SCHEDULING_POLICY = "chair-outer-act-inner.stage-major-parish.v1"
 # rather than spelled -1 at the two places that have to agree on it.
 _UNPLACED_ORDINAL = -1
 # The (adapter, parser) pairs `retain_model_view` can actually carry to a state.
-_RUNNABLE_PARSERS = frozenset({("churro.v1", "xml")})
+_RUNNABLE_PARSERS = frozenset({("chandra.v1", "json"), ("churro.v1", "xml")})
 _UNCERTAINTY_TOKENS = ("[UNCERTAIN]", "[CROSSED_OUT]")
 _REPETITION_WINDOW = 24
 _REPETITION_MIN_REPEATS = 3
@@ -338,6 +338,21 @@ def retain_model_view(
             except SchemaRefusal as error:
                 record["parse"] = {"state": "failed", "parser": "xml", "reason": str(error)}
                 record["stop_reason"] = "partial-parse-failed"
+    elif adapter == "chandra.v1" and parser == "json":
+        # Import locally: the runnable sibling module imports this retention
+        # seam, while its parser must remain the one owner of Chandra's shape.
+        from chandra import parse as parse_chandra
+
+        parsed = parse_chandra(raw_response)
+        if isinstance(parsed, dict) and set(parsed) == {"parse_outcome"}:
+            record["parse"] = {
+                "state": "unrecognized-shape",
+                "parser": "json",
+                "outcome": parsed["parse_outcome"],
+            }
+            record["stop_reason"] = "partial-parse-unrecognized-shape"
+        else:
+            record["parse"] = {"state": "parsed", "parser": "json", "text": parsed}
     return record
 
 
