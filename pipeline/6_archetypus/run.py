@@ -240,11 +240,13 @@ def _verify_act_attachment_view(
     attachment_view = dossier.get("act_attachment")
     if (
         not isinstance(attachment_view, dict)
-        or set(attachment_view) != {"reference", "page_witness_count", "comparison_views"}
+        or set(attachment_view)
+        != {"reference", "page_witness_count", "comparison_views", "edge_deltas"}
         or not isinstance(attachment_view["page_witness_count"], int)
         or isinstance(attachment_view["page_witness_count"], bool)
         or attachment_view["page_witness_count"] < 0
         or not isinstance(attachment_view["comparison_views"], dict)
+        or not isinstance(attachment_view["edge_deltas"], dict)
     ):
         raise SchemaRefusal(f"act {act_id} has malformed embedded act-attachment facts")
     reference = attachment_view["reference"]
@@ -299,7 +301,7 @@ def _verify_act_attachment_view(
         testimony = context.tree.read_artifact_reference(
             testimony_ref, stage=ATTESTATORES, kind="page-testimonium", subject_id=page_id
         )
-        reported = testimony.get("payload", {}).get("reported")
+        reported = testimony.get("payload", {}).get("payload")
         if (
             not isinstance(reported, str)
             or not isinstance(span, dict)
@@ -627,7 +629,7 @@ def accepted_primed_perlectio(
         testimonium_payload = testimonium.get("payload")
         if not isinstance(testimonium_payload, dict):
             raise SchemaRefusal(f"act {act_id} Testimonium basis {index} has no object payload")
-        reported = testimonium_payload.get("reported")
+        reported = testimonium_payload.get("payload")
         witnesses[reference_key] = (
             reported if testimonium["outcome"] in WITNESS_READING_OUTCOMES else None
         )

@@ -21,6 +21,17 @@ from common.runtree.store import RunTree
 
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
+
+
+def test_witness_derived_location_classes_remain_the_one_open_class():
+    """Unit 14 records location basis without settling the reproof question.
+
+    Do not widen this set for boundary disagreement: that is Recensor page
+    evidence, not a witness-derived text location.
+    """
+    assert audit.WITNESS_DERIVED_LOCATION_CLASSES == frozenset({"testimony-diff"})
+
+
 # Everything ahead of the Perlector, run as real programs. The Pass-C delivery
 # proof needs the stage's own `main()` in this process — that is the only way to
 # hold the reader object it actually called — so the evidence it reads must be

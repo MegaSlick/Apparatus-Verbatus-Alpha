@@ -13,7 +13,10 @@ import pytest
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import SchemaRefusal
 from common.contracts.stages import ATTESTATORES
-from common.native_witness import validate_observed
+from common.native_witness import (
+    partition_disagreement,
+    validate_observed,
+)
 from common.runtree.store import RunTree
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -290,27 +293,94 @@ def test_reading_order_is_the_response_order_and_no_other_key_reorders_it():
     assert [block["reading_index"] for block in json.loads(raw)["blocks"]] == [7, 0]
 
 
-def test_a_block_past_the_page_edge_is_refused_rather_than_clamped_into_the_page():
-    """The declared rule rounds outward, and outward past the page is a refusal.
+def test_a_page_edge_overshoot_is_named_per_block_without_clamping_or_losing_neighbours():
+    """One bad page-edge box is retained as a finding, never an in-page box.
 
     `ceil` on a max edge means any block whose float edge sits fractionally past
-    the sealed page derives a box the shared wall refuses, which takes the whole
-    Attestatores pass to `UNKNOWN`. Clamping it to the page instead would be the
-    cheaper failure and is the wrong one: on a Designator fallback crop -- whose
-    region *is* the whole page -- a clamped box lands exactly on the recovery
-    region and hands it the retrospective witness coverage a recovery crop may
-    never acquire. So the conversion never invents an in-page box from an
-    out-of-page report; it reports what it derived and lets the wall speak.
-
-    This test pins that ruling in both directions, so a later seat that finds the
-    hold expensive cannot quietly buy relief with a clamp.
+    the sealed page derives a box the shared wall refuses.  That fact belongs to
+    this block, not to a valid neighbouring block from the same retained response.
+    The durable page partition therefore carries the exact, out-of-page box as a
+    response-linked finding and retains the valid block in its ordinary observed
+    list.  Clamping would instead hand a fallback crop retrospective witness
+    coverage it never received.
     """
     chandra = _load_chandra()
-    raw = b'{"markdown":"one","blocks":[{"bbox":[0,0,200.2,260.0]}]}'
-    observed = chandra.observe(_presented(), raw)
-    assert observed[0]["bounds"] == {"x": 0, "y": 0, "w": 201, "h": 260}
+    attestatores = _load_stage_module("run")
+    raw = b'{"markdown":"two","blocks":[{"bbox":[10,10,100,100]},{"bbox":[0,0,200.2,260.0]}]}'
+    raw_ref = {
+        "relative_path": "3_attestatores/blobs/sha256/" + digest_bytes(raw),
+        "sha256": digest_bytes(raw),
+    }
+    surviving, overshoots = attestatores.chandra_page_partition_entries(
+        chandra.observe(_presented(), raw), page_size=(200, 260), raw_response_ref=raw_ref
+    )
+    assert surviving == [
+        {
+            "ordinal": 0,
+            "bounds": {"x": 10, "y": 10, "w": 90, "h": 90},
+            "bounds_source": "native",
+            "span": None,
+        }
+    ]
+    assert overshoots == [
+        {
+            "kind": "page-edge-overshoot",
+            "response_sha256": raw_ref["sha256"],
+            "ordinal": 1,
+            "bounds": {"x": 0, "y": 0, "w": 201, "h": 260},
+            "sealed_page_bounds": {"x": 0, "y": 0, "w": 200, "h": 260},
+        }
+    ]
+
+    disagreement = partition_disagreement(
+        {
+            "artifact_id": "page-testimonium",
+            "payload": {"presented": _presented(), "observed": surviving},
+        },
+        [],
+        page_edge_overshoots=overshoots,
+    )
+    durable = attestatores.page_testimonium_payload(
+        page_ordinal=1,
+        page_role="primary",
+        unjoined_act_attempts=[],
+        partition_disagreement=disagreement,
+        raw_response_refs=[raw_ref],
+        adapter_metadata={"geometry_quantization": chandra.QUANTIZATION_RULE},
+        chair="attestator_1",
+        act_key="page-1",
+        ordinal=1,
+        regions=[],
+        provenance={"chair": "attestator_1"},
+        format_capabilities=attestatores.DEFAULT_FORMAT_CAPABILITIES,
+        native_payload="two",
+        witness_reported=None,
+        health=attestatores.content_health("two", completed=True),
+        presented=_presented(),
+        observed=surviving,
+        unpresented_regions=[],
+        outcome="read",
+    )
+    assert durable["partition_disagreement"]["observed_boxes"] == [
+        {"ordinal": 0, "bounds": {"x": 10, "y": 10, "w": 90, "h": 90}, "bounds_source": "native"}
+    ]
+    assert durable["partition_disagreement"]["page_edge_overshoots"] == [overshoots[0]]
+
+    # The shared wall remains the refusal: the finding preserves these exact
+    # derived bounds, and they still cannot masquerade as an observation.
     with pytest.raises(SchemaRefusal, match="outside the sealed source page"):
-        validate_observed(observed, presented=_presented(), page_size=(200, 260))
+        validate_observed(
+            [
+                {
+                    "ordinal": 0,
+                    "bounds": overshoots[0]["bounds"],
+                    "bounds_source": "native",
+                    "span": None,
+                }
+            ],
+            presented=_presented(),
+            page_size=(200, 260),
+        )
 
 
 def test_a_parse_failure_keeps_its_bytes_and_its_name_through_the_written_record(tmp_path):

@@ -658,6 +658,33 @@ def test_granularity_identity_is_executable_for_interim_and_native_bases():
         _validate_coverage(candidate, require_complete_granularity=True)
 
 
+def test_an_attached_but_incomparable_witness_is_page_only_and_cannot_meet_the_floor():
+    """The structured-witness retirement is safe only with this identity.
+
+    Attachment records geometry; comparability records whether retained derived
+    testimony supplies this act's text.  A native box can establish the first
+    while the report is structured, but it must land in the existing unaligned
+    shortfall and in `page_granularity_only`, never satisfy the floor.
+    """
+    coverage = witness_coverage(
+        {"s1": "read", "s2": "read", "s3": "read"},
+        3,
+        attachments={
+            "s1": {"attached": True, "comparable": True},
+            "s2": {"attached": True, "comparable": True},
+            "s3": {"attached": True, "comparable": False},
+        },
+    )
+    assert coverage["under_witnessed"] is True
+    assert coverage["page_granularity_only"] == 1
+    assert coverage["shortfalls"]["unaligned"] == 1
+    assert (
+        sum(coverage["by_outcome"].get(outcome, 0) for outcome in outcomes.WITNESS_READING_OUTCOMES)
+        - coverage["page_granularity_only"]
+        == 2
+    )
+
+
 # --- The established text's own status: damage the category cannot express ------
 #
 # Opus-F1 / Sol-S4 (T0 export honesty). `delivered` says where an act ended and nothing about

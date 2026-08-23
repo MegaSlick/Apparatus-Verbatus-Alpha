@@ -12,7 +12,7 @@ from typing import Any, Final
 
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import SchemaRefusal
-from common.corpus_register import _refuse_preference
+from common.corpus_register import refuse_preference
 from common.imaging import crop_png, dimensions, resize_png_lanczos
 
 PRESENTATION_KINDS: Final = frozenset({"page", "region", "adapter-crop"})
@@ -53,7 +53,6 @@ PAGE_TESTIMONIUM_REQUIRED_FIELDS: Final = frozenset(
 PAGE_TESTIMONIUM_OPTIONAL_FIELDS: Final = frozenset(
     {
         "reason",
-        "reported",
         "partition_disagreement",
         # The retained responses this record's own derived geometry was
         # quantized from, and the declared rule that converted them. Plural
@@ -296,7 +295,7 @@ def validate_native_witness_geometry(
     """
     if not isinstance(payload, dict):
         raise SchemaRefusal("a Testimonium payload is not an object")
-    _refuse_preference(payload)
+    refuse_preference(payload, what="a Testimonium")
     presented = payload.get("presented")
     observed = payload.get("observed")
     if presented == {}:
@@ -472,8 +471,14 @@ def validate_page_testimonium_payload(payload: Any) -> dict[str, Any]:
         raise SchemaRefusal("a page Testimonium has invalid page scope facts")
     validate_unpresented_regions(payload)
     if "partition_disagreement" in payload:
-        validate_partition_disagreement(payload["partition_disagreement"])
+        disagreement = validate_partition_disagreement(payload["partition_disagreement"])
+    else:
+        disagreement = None
     validate_retained_response_refs(payload)
+    if disagreement is not None:
+        _validate_page_edge_overshoot_response_refs(
+            disagreement["page_edge_overshoots"], payload.get("raw_response_refs")
+        )
     if "native_capture" in payload:
         validate_native_capture(payload["native_capture"])
     return validate_native_witness_geometry(payload)
@@ -553,6 +558,58 @@ def reported_geometry_overlaps(payload: dict[str, Any], bounds: dict[str, int]) 
     )
 
 
+def split_page_edge_overshoots(
+    observed: list[dict[str, Any]], *, page_size: tuple[int, int]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Separate, never clamp, native boxes that run past a sealed page edge.
+
+    A Chandra response can name several independent layout blocks.  One box
+    whose quantized maximum edge exceeds the sealed page is not usable witness
+    geometry: the ordinary observed-box wall would refuse it, and changing its
+    edge to fit would falsely report a different box.  It also says nothing
+    about the other blocks in the response.  Keep those valid blocks, with
+    dense ordinals rebuilt from their surviving response order, and retain the
+    rejected box as a named fact for the durable page partition.
+
+    This helper intentionally accepts only already-derived, closed observation
+    entries.  It is not a permissive alternate validator: malformed geometry
+    still reaches the existing refusal path, and the returned overshoot keeps
+    the exact quantized bounds rather than an in-page substitute.
+    """
+    if (
+        not isinstance(page_size, tuple)
+        or len(page_size) != 2
+        or not all(_integer(value) and value > 0 for value in page_size)
+    ):
+        raise SchemaRefusal("a sealed page edge has no positive integer dimensions")
+    survivors: list[dict[str, Any]] = []
+    overshoots: list[dict[str, Any]] = []
+    page_bounds = {"x": 0, "y": 0, "w": page_size[0], "h": page_size[1]}
+    for item in observed:
+        if not isinstance(item, dict) or set(item) != {
+            "ordinal",
+            "bounds",
+            "bounds_source",
+            "span",
+        }:
+            raise SchemaRefusal("a page-edge check received a malformed observed entry")
+        if not _integer(item["ordinal"]):
+            raise SchemaRefusal("a page-edge check received an observed entry without an ordinal")
+        bounds = _bounds(item["bounds"], "a page-edge observed box", page_size=None)
+        if bounds["x"] + bounds["w"] > page_size[0] or bounds["y"] + bounds["h"] > page_size[1]:
+            overshoots.append(
+                {
+                    "kind": "page-edge-overshoot",
+                    "ordinal": item["ordinal"],
+                    "bounds": dict(bounds),
+                    "sealed_page_bounds": dict(page_bounds),
+                }
+            )
+        else:
+            survivors.append({**item, "ordinal": len(survivors), "bounds": dict(bounds)})
+    return survivors, overshoots
+
+
 def unrouted_observations(
     testimonia: list[dict[str, Any]],
     proposal_regions: list[dict[str, Any]],
@@ -618,7 +675,10 @@ def unrouted_observations(
 
 
 def partition_disagreement(
-    testimonium: dict[str, Any], proposal_regions: list[dict[str, Any]]
+    testimonium: dict[str, Any],
+    proposal_regions: list[dict[str, Any]],
+    *,
+    page_edge_overshoots: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Record page/chair partition facts without selecting any pairing.
 
@@ -703,6 +763,7 @@ def partition_disagreement(
         "ambiguous": bool(ambiguous_pairings),
         "ambiguous_pairings": ambiguous_pairings,
         "overlap_rule": dict(UNROUTED_OBSERVATION_OVERLAP),
+        "page_edge_overshoots": [] if page_edge_overshoots is None else page_edge_overshoots,
     }
 
 
@@ -786,6 +847,7 @@ def validate_partition_disagreement(value: Any) -> dict[str, Any]:
         "ambiguous",
         "ambiguous_pairings",
         "overlap_rule",
+        "page_edge_overshoots",
     }
     if not isinstance(value, dict) or set(value) != required:
         raise SchemaRefusal("a page Testimonium partition_disagreement is not its closed schema")
@@ -828,8 +890,67 @@ def validate_partition_disagreement(value: Any) -> dict[str, Any]:
             raise SchemaRefusal(
                 "a page Testimonium partition disagreement has malformed retained facts"
             )
+    overshoots = value["page_edge_overshoots"]
+    if not isinstance(overshoots, list):
+        raise SchemaRefusal(
+            "a page Testimonium partition disagreement has malformed page-edge findings"
+        )
+    seen_overshoots: set[tuple[str, int]] = set()
+    for finding in overshoots:
+        if not isinstance(finding, dict) or set(finding) != {
+            "kind",
+            "response_sha256",
+            "ordinal",
+            "bounds",
+            "sealed_page_bounds",
+        }:
+            raise SchemaRefusal("a page Testimonium page-edge finding is not its closed schema")
+        if (
+            finding["kind"] != "page-edge-overshoot"
+            or not isinstance(finding["response_sha256"], str)
+            or len(finding["response_sha256"]) != 64
+            or not _integer(finding["ordinal"])
+            or finding["ordinal"] < 0
+        ):
+            raise SchemaRefusal("a page Testimonium page-edge finding has invalid identity")
+        bounds = _bounds(finding["bounds"], "a page Testimonium page-edge finding", page_size=None)
+        page_bounds = _bounds(
+            finding["sealed_page_bounds"],
+            "a page Testimonium page-edge finding sealed page",
+            page_size=None,
+        )
+        if (
+            page_bounds["x"] != 0
+            or page_bounds["y"] != 0
+            or (
+                bounds["x"] + bounds["w"] <= page_bounds["w"]
+                and bounds["y"] + bounds["h"] <= page_bounds["h"]
+            )
+        ):
+            raise SchemaRefusal(
+                "a page Testimonium page-edge finding does not retain an out-of-page box"
+            )
+        key = (finding["response_sha256"], finding["ordinal"])
+        if key in seen_overshoots:
+            raise SchemaRefusal("a page Testimonium names one page-edge finding twice")
+        seen_overshoots.add(key)
     if value["ambiguous"] != bool(value["ambiguous_pairings"]):
         raise SchemaRefusal(
             "a page Testimonium partition disagreement omits its ambiguous pairings"
         )
     return value
+
+
+def _validate_page_edge_overshoot_response_refs(
+    overshoots: list[dict[str, Any]], raw_response_refs: Any
+) -> None:
+    """Require every rejected box to name bytes retained by its page record."""
+    if not overshoots:
+        return
+    if not isinstance(raw_response_refs, list):
+        raise SchemaRefusal("a page-edge finding has no retained response reference")
+    known = {reference["sha256"] for reference in raw_response_refs}
+    if any(finding["response_sha256"] not in known for finding in overshoots):
+        raise SchemaRefusal(
+            "a page-edge finding names no retained response on its page Testimonium"
+        )

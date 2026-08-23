@@ -246,16 +246,27 @@ def dissent_against(reading: str, testimonia: list[dict]) -> list[dict]:
         if record["outcome"] not in WITNESS_READING_OUTCOMES:
             rows.append({"chair": chair, "compared": False, "reason": record["outcome"]})
             continue
-        reported = record["payload"].get("comparison_reported", record["payload"].get("reported"))
+        # `reported` is accepted only as a test-fixture compatibility input;
+        # producer schemas no longer admit it.  The real derived waist is
+        # `payload`, and page slices still take priority.
+        reported = record["payload"].get(
+            "comparison_reported",
+            record["payload"].get("payload", record["payload"].get("reported")),
+        )
         if not isinstance(reported, str):
-            # Deliberately BEFORE the page-witness branch (F-P2, pinned by the
-            # acceptance suite's structured-witness scenario): a structured
-            # native payload must refuse here by name -- the honest record of
-            # the structured-witness gap -- and never slide under the
-            # page-witness "unknown" row into a run that calls itself complete.
-            raise SchemaRefusal(
-                f"completed Testimonium from chair {chair!r} carries no text to compare"
+            # Native testimony is retained in its derived layer, not coerced into
+            # a string-shaped compatibility bridge.  A structured report is
+            # therefore visible as incomparable.  The witness-floor seam counts
+            # attached AND comparable in the same change, so this cannot turn a
+            # complete run into an apparently witnessed one.
+            rows.append(
+                {
+                    "chair": chair,
+                    "compared": "unknown",
+                    "reason": "no comparable text for this act: retained derived testimony is structured",
+                }
             )
+            continue
         if not is_comparable(record):
             rows.append(
                 {

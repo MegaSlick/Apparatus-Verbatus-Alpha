@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from common.contracts.errors import FatalAccounting
+from common.contracts.errors import FatalAccounting, SchemaRefusal
 from common.contracts.identities import attempt_id
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -55,6 +55,25 @@ class _Context(SimpleNamespace):
         }
 
 
+class _PublishingContext:
+    def publish(self, **kwargs):
+        return kwargs
+
+
+@pytest.mark.parametrize("field", ["consensus", "majority", "vote", "quorum"])
+def test_review_payload_refuses_witness_preference_vocabulary(field):
+    """The durable review write has the same selector guard as Perlectio."""
+    with pytest.raises(SchemaRefusal, match="preference"):
+        RUN.publish_review(
+            _PublishingContext(),
+            subject_id="act-1",
+            outcome="accepted",
+            attempt="act-1:recense:1",
+            inputs=[],
+            payload={field: True},
+        )
+
+
 def _context(*records):
     return _Context(tree=_ArtifactTree(records))
 
@@ -85,7 +104,7 @@ def _page_testimonium(*, outcome, reported=..., attempt_ordinal=1, artifact_id=N
         "attempt_ordinal": attempt_ordinal,
     }
     if reported is not ...:
-        payload["reported"] = reported
+        payload["payload"] = reported
     return {
         "artifact_id": artifact_id or f"page-witness-{attempt_ordinal}",
         "stage": RUN.ATTESTATORES,
@@ -186,19 +205,22 @@ def test_artifact_tree_preserves_stage_ownership_in_manifests_and_reads():
         tree.read_artifact(RUN.ATTESTATORES, "conservation", "conservation-1")
 
 
-def test_a_reading_page_testimonium_cannot_lose_its_reported_text_and_take_the_skip():
-    """V4: the no-report skip belongs only to a non-reading page record."""
+def test_a_reading_page_testimonium_cannot_lose_its_native_payload_and_take_the_skip():
+    """V4: the no-payload skip belongs only to a non-reading page record."""
     act_reading = {
         "artifact_id": "act-reading-1",
         "stage": RUN.ATTESTATORES,
         "kind": "testimonium",
         "subject_id": "act-1",
         "outcome": "read",
-        "payload": {"chair": "attestator_1", "reported": "real act text"},
+        "payload": {"chair": "attestator_1", "payload": "real act text"},
     }
     context = _context(act_reading, _page_testimonium(outcome="read"))
 
-    with pytest.raises(FatalAccounting, match="reading page Testimonium has no reported text"):
+    with pytest.raises(
+        FatalAccounting,
+        match="reading page Testimonium has no retained derived payload for content coverage",
+    ):
         RUN.testimony_content_findings(context)
 
 
@@ -305,7 +327,7 @@ def test_unreported_page_content_is_unavailable_and_cannot_fire_the_shortfall_ro
     assert content == RUN.NO_PAGE_CONTENT_COVERAGE
     assert content["by_chair"] is None
     assert content["shortfall"] is None
-    assert "no page witness reported text for this page" in content["reason"]
+    assert "no page witness supplied comparable page text for this page" in content["reason"]
     assert content is not RUN.NO_PAGE_CONTENT_COVERAGE
     assert (
         RUN.review_route_from_findings(
@@ -594,12 +616,11 @@ def test_each_act_gets_a_private_copy_of_its_pages_geometry_finding():
     assert RUN.geometry_coverage_for({}, 7) is not RUN.NO_PAGE_CONSERVATION
 
 
-def test_a_non_textual_reported_page_body_is_named_as_its_own_fault():
-    """F-O2: two distinct producer faults may not share one refusal string."""
+def test_a_structured_native_page_payload_is_retained_without_text_coverage():
+    """F-O2: a declared non-comparable native payload is not forged into text."""
     context = _context(_page_testimonium(outcome="read", reported={"lines": []}))
 
-    with pytest.raises(FatalAccounting, match="reported page text is not text"):
-        RUN.testimony_content_findings(context)
+    assert RUN.testimony_content_findings(context) == {}
 
 
 def test_content_and_audit_holds_compose_in_stable_recorded_order():
