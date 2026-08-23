@@ -686,7 +686,7 @@ _DECODE_PATHS: Final = frozenset({"project-png", "pillow", "pdfium", "none"})
 # is a false statement in sealed evidence, which GOVERNANCE 6 does not allow the
 # record to make about its own pass.
 _PIXEL_STAGES: Final = frozenset(
-    {"door", "exemplar", "designator", "attestatores", "perlector", "recensor"}
+    {"door", "exemplar", "ink-map", "designator", "attestatores", "perlector", "recensor"}
 )
 _DECODER_NAMES: Final = frozenset({"pillow", "jpeg-codec", "pillow-heif", "libheif", "pdfium"})
 _DECODE_ENVIRONMENT_FIELDS: Final = frozenset(
@@ -773,6 +773,18 @@ def _decode_environment(stage: str) -> dict[str, Any]:
     paths = {
         "door": {"pillow", "pdfium"},
         "exemplar": {"project-png"},
+        # The ink map decodes through `common/imaging.py::grayscale_rows`, whose
+        # own lossless codec is the fast path and Pillow only its fallback --
+        # the identical call the Recensor makes for the identical measure two
+        # rows below. Declaring a bare `pillow` here named a route this stage
+        # does not take, and the census read it as real drift: an honest run
+        # printed "decode environment differs by name" at BOTH the
+        # Exemplar->ink-map and ink-map->Designator boundaries, so the one
+        # signal that exists to expose a genuine decoder difference fired twice
+        # per run over a difference that was never there. Unit 9's own
+        # definition of done is one implementation, not two; one implementation
+        # may not declare two routes.
+        "ink-map": {"project-png"},
         "designator": {"project-png"},
         # `project-png` and not a bare `pillow`: the Attestatores' DAI crop and
         # resize both run through `common/imaging.py`'s own decoder and its own

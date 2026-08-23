@@ -11,6 +11,7 @@ witness_floor = 3
 [adapter_recipes]
 door = "unproven-real-door"
 exemplar = "unproven-real-exemplar"
+ink-map = "deterministic-residual-ink-v1"
 designator = "unproven-real-designator"
 attestatores = "unproven-real-attestatores"
 perlector = "unproven-real-perlector"

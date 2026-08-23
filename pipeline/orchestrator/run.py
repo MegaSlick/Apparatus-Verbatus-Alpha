@@ -44,7 +44,7 @@ from common.armarium_formats import DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH  # noqa
 from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.identities import artifact_id  # noqa: E402
 from common.contracts.outcomes import ArmariumCategory, check_algebra_is_total  # noqa: E402
-from common.contracts.stages import ATTESTATORES, DESIGNATOR, RECENSOR  # noqa: E402
+from common.contracts.stages import ATTESTATORES, DESIGNATOR, INK_MAP, RECENSOR  # noqa: E402
 from common.hard_failure import (  # noqa: E402
     DEFAULT_HARD_FAILURE_CONFIG_PATH,
     load_hard_failure_policy,
@@ -84,6 +84,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SEQUENCE = (
     ("door", "pipeline/1_exemplar/door.py"),
     ("exemplar", "pipeline/1_exemplar/run.py"),
+    (INK_MAP, "pipeline/1_ink_map/run.py"),
     ("designator", "pipeline/2_designator/run.py"),
     (ATTESTATORES, "pipeline/3_attestatores/run.py"),
     ("perlector", "pipeline/4_perlector/run.py"),

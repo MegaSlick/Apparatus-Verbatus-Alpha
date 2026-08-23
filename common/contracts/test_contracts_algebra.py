@@ -27,7 +27,7 @@ from common.contracts.outcomes import (
     terminal_category,
     witness_coverage,
 )
-from common.contracts.stages import ARMARIUM, ATTESTATORES, DESIGNATOR, PERLECTOR, RECENSOR
+from common.contracts.stages import ARMARIUM, ATTESTATORES, DESIGNATOR, INK_MAP, PERLECTOR, RECENSOR
 from common.recensor_receipt import _validate_coverage
 
 # The exact shape of the algebra as this spec defines it. Pinned as counts so that
@@ -37,6 +37,7 @@ from common.recensor_receipt import _validate_coverage
 EXPECTED_VOCABULARY_SIZES = {
     "door": 4,
     "exemplar": 3,
+    "ink-map": 4,
     "designator": 6,
     "attestatores": 8,
     "perlector": 7,
@@ -49,6 +50,11 @@ EXPECTED_VOCABULARY_SIZES = {
 def test_algebra_is_total():
     """Both mappings total, and the two layers agree at every terminal edge."""
     check_algebra_is_total()
+
+
+def test_ink_map_names_edge_evidence_without_owning_unit_14s_hold():
+    assert classify(INK_MAP, "unclaimed-edge-ink") is OutcomeClass.UNRESOLVED
+    assert terminal_category(INK_MAP, "unclaimed-edge-ink") is None
 
 
 def test_vocabulary_shape_is_pinned():

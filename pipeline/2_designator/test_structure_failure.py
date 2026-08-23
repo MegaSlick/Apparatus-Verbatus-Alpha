@@ -309,7 +309,11 @@ def test_a_page_whose_background_cannot_be_inferred_is_still_cut_and_still_read(
     """
 
     root = tmp_path / "runs"
-    for program in ("pipeline/1_exemplar/door.py", "pipeline/1_exemplar/run.py"):
+    for program in (
+        "pipeline/1_exemplar/door.py",
+        "pipeline/1_exemplar/run.py",
+        "pipeline/1_ink_map/run.py",
+    ):
         result = _run_program(program, root)
         assert result.returncode == 0, f"{program}: {result.stderr}"
 
@@ -400,7 +404,11 @@ def test_faint_ink_outside_primary_proposals_withholds_complete_exit(tmp_path, m
     from proof.synthetic_pages import page_bytes
 
     root = tmp_path / "runs"
-    for program in ("pipeline/1_exemplar/door.py", "pipeline/1_exemplar/run.py"):
+    for program in (
+        "pipeline/1_exemplar/door.py",
+        "pipeline/1_exemplar/run.py",
+        "pipeline/1_ink_map/run.py",
+    ):
         result = _run_program(program, root)
         assert result.returncode == 0, f"{program}: {result.stderr}"
 
@@ -530,7 +538,11 @@ def _payloads(context, kind):
 
 def test_initial_pass_resolves_structure_provenance_once_for_all_crops(tmp_path, monkeypatch):
     root = tmp_path / "runs"
-    for program in ("pipeline/1_exemplar/door.py", "pipeline/1_exemplar/run.py"):
+    for program in (
+        "pipeline/1_exemplar/door.py",
+        "pipeline/1_exemplar/run.py",
+        "pipeline/1_ink_map/run.py",
+    ):
         result = _run_program(program, root)
         assert result.returncode == 0, f"{program}: {result.stderr}"
 
@@ -554,7 +566,11 @@ def test_initial_pass_resolves_structure_provenance_once_for_all_crops(tmp_path,
 def blank_first_page_run(tmp_path, monkeypatch):
     """One Designator pass whose page 1 has no ink on it at all."""
     root = tmp_path / "runs"
-    for program in ("pipeline/1_exemplar/door.py", "pipeline/1_exemplar/run.py"):
+    for program in (
+        "pipeline/1_exemplar/door.py",
+        "pipeline/1_exemplar/run.py",
+        "pipeline/1_ink_map/run.py",
+    ):
         result = _run_program(program, root)
         assert result.returncode == 0, f"{program}: {result.stderr}"
 
@@ -758,7 +774,11 @@ def test_the_missed_act_refusal_still_fires_where_detection_actually_ran(tmp_pat
     band quietly standing in for the detection that did not happen.
     """
     root = tmp_path / "runs"
-    for program in ("pipeline/1_exemplar/door.py", "pipeline/1_exemplar/run.py"):
+    for program in (
+        "pipeline/1_exemplar/door.py",
+        "pipeline/1_exemplar/run.py",
+        "pipeline/1_ink_map/run.py",
+    ):
         result = _run_program(program, root)
         assert result.returncode == 0, f"{program}: {result.stderr}"
 
