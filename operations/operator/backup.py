@@ -11,16 +11,19 @@ from __future__ import annotations
 
 import errno
 import hashlib
+import json
 import os
 import tempfile
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Final
 
 from common.contracts.canonical import canonical_bytes, digest_bytes
+from common.contracts.errors import ContractError
 from common.contracts.identities import validate_run_id
+from common.runtree.store import RunTree
 
-SCHEMA = "mac-run-backup.v1"
+SCHEMA = "mac-run-backup.v2"
 CHUNK_BYTES = 1024 * 1024
 # What a filesystem that will not hard-link answers with.  Named here for the
 # same reason `common/runtree/store.py::_atomic_create` names it, and with more
@@ -30,6 +33,12 @@ CHUNK_BYTES = 1024 * 1024
 # condition reaches the operator as an errno about a temporary file nobody asked
 # for, inside a message promising to name the backup-directory problem.
 _NO_HARD_LINKS: Final = frozenset({errno.EPERM, errno.EOPNOTSUPP, errno.ENOSYS})
+_LAYOUT_DIRECTORIES: Final = (
+    PurePosixPath("objects"),
+    PurePosixPath("objects/sha256"),
+    PurePosixPath("snapshots"),
+    PurePosixPath("snapshots/sha256"),
+)
 
 
 class BackupRefusal(RuntimeError):
@@ -50,6 +59,32 @@ class BackupReport:
             "reused": self.reused,
         }
 
+    @classmethod
+    def from_record(cls, value: object) -> BackupReport:
+        """Read the worker's closed success report without trusting its types."""
+
+        fields = {"schema", "snapshot_sha256", "copied", "reused"}
+        if not isinstance(value, dict) or set(value) != fields:
+            raise BackupRefusal(f"backup worker report must contain exactly {sorted(fields)}")
+        if value["schema"] != SCHEMA:
+            raise BackupRefusal(
+                f"backup worker report declares schema {value['schema']!r}, not {SCHEMA!r}"
+            )
+        snapshot_sha256 = value["snapshot_sha256"]
+        if not _is_sha256(snapshot_sha256):
+            raise BackupRefusal("backup worker report has no lowercase snapshot sha256")
+        counts: dict[str, int] = {}
+        for field in ("copied", "reused"):
+            count = value[field]
+            if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+                raise BackupRefusal(
+                    f"backup worker report field {field!r} must be a non-negative integer"
+                )
+            counts[field] = count
+        if counts["copied"] + counts["reused"] == 0:
+            raise BackupRefusal("backup worker report claims a successful snapshot of no files")
+        return cls(snapshot_sha256, counts["copied"], counts["reused"])
+
 
 def sync_run_tree(run_root: Path, run_id: str, mac_directory: Path) -> BackupReport:
     """Copy one run's regular files into a verified, append-only local store.
@@ -65,15 +100,16 @@ def sync_run_tree(run_root: Path, run_id: str, mac_directory: Path) -> BackupRep
     # run root resolves to a directory with a different name, and the snapshot
     # records which run was asked for.
     checked_run_id = validate_run_id(run_id)
-    root.mkdir(parents=True, exist_ok=True)
-    before = _inventory(source)
+    _prepare_backup_layout(source, root)
+    managed_paths = RunTree(run_root, checked_run_id).inventory_scope()
+    before, before_temporaries = _inventory(source, managed_paths)
     copied = reused = 0
     for relative, digest in before.items():
         outcome = _copy_verified(source / relative, root / "objects" / "sha256" / digest, digest)
         copied += outcome == "copied"
         reused += outcome == "reused"
-    after = _inventory(source)
-    if after != before:
+    after, after_temporaries = _inventory(source, managed_paths)
+    if (after, after_temporaries) != (before, before_temporaries):
         raise BackupRefusal(
             "the run tree changed while it was being copied; no current backup snapshot was published"
         )
@@ -84,11 +120,17 @@ def sync_run_tree(run_root: Path, run_id: str, mac_directory: Path) -> BackupRep
             {"relative_path": relative, "sha256": digest}
             for relative, digest in sorted(before.items())
         ],
+        # RunTree publishes through same-directory `.<target>.tmp-*` names.
+        # They are in-flight or crash residue, never published evidence. Their
+        # names remain in the snapshot so excluding them cannot become silent.
+        "excluded_publication_temporaries": list(before_temporaries),
     }
     data = canonical_bytes(record)
     snapshot_sha256 = digest_bytes(data)
     _publish_bytes(root / "snapshots" / "sha256" / f"{snapshot_sha256}.json", data)
-    return BackupReport(snapshot_sha256, copied, reused)
+    report = BackupReport(snapshot_sha256, copied, reused)
+    verify_backup_snapshot(root, checked_run_id, report)
+    return report
 
 
 def resolve_backup_paths(run_root: Path, run_id: str, mac_directory: Path) -> tuple[Path, Path]:
@@ -101,7 +143,10 @@ def resolve_backup_paths(run_root: Path, run_id: str, mac_directory: Path) -> tu
     checks would have had them created inside the run tree first.
     """
 
-    checked_run_id = validate_run_id(run_id)
+    try:
+        checked_run_id = validate_run_id(run_id)
+    except ContractError as error:
+        raise BackupRefusal(f"backup run id is invalid: {error}") from error
     requested_root = Path(run_root).resolve()
     source = (requested_root / checked_run_id).resolve()
     if not source.is_relative_to(requested_root):
@@ -113,7 +158,40 @@ def resolve_backup_paths(run_root: Path, run_id: str, mac_directory: Path) -> tu
         raise BackupRefusal("the Mac backup directory must not contain the source run tree")
     if _contains(source, root):
         raise BackupRefusal("the Mac backup directory must not sit inside the source run tree")
+    _validate_backup_layout(source, root)
     return source, root
+
+
+def _validate_backup_layout(source: Path, root: Path) -> None:
+    """Refuse layout aliases before any one of them can redirect a write."""
+
+    for directory in (root, *(root / part for part in _LAYOUT_DIRECTORIES)):
+        if directory.is_symlink():
+            raise BackupRefusal(
+                f"backup layout path {directory} is a symbolic link; no backup path may redirect"
+            )
+        if not directory.exists():
+            continue
+        if not directory.is_dir():
+            raise BackupRefusal(f"backup layout path {directory} exists but is not a directory")
+        if _contains(source, directory) or _contains(directory, source):
+            raise BackupRefusal(
+                f"backup layout path {directory} overlaps the source run tree by filesystem identity"
+            )
+
+
+def _prepare_backup_layout(source: Path, root: Path) -> None:
+    """Create only the fixed store layout, checking every component at each step."""
+
+    _validate_backup_layout(source, root)
+    for directory in (root, *(root / part for part in _LAYOUT_DIRECTORIES)):
+        try:
+            directory.mkdir(exist_ok=True)
+        except OSError as error:
+            raise BackupRefusal(
+                f"backup layout path {directory} could not be created: {error}"
+            ) from error
+        _validate_backup_layout(source, root)
 
 
 def _identity(path: Path) -> tuple[int, int] | None:
@@ -146,8 +224,11 @@ def _contains(ancestor: Path, descendant: Path) -> bool:
     return any(_identity(candidate) == target for candidate in (descendant, *descendant.parents))
 
 
-def _inventory(source: Path) -> dict[str, str]:
+def _inventory(
+    source: Path, managed_paths: tuple[str, ...]
+) -> tuple[dict[str, str], tuple[str, ...]]:
     inventory: dict[str, str] = {}
+    publication_temporaries: list[str] = []
     for path in sorted(source.rglob("*")):
         relative = path.relative_to(source).as_posix()
         if path.is_symlink():
@@ -156,31 +237,61 @@ def _inventory(source: Path) -> dict[str, str]:
             continue
         if not path.is_file():
             raise BackupRefusal(f"run tree member {relative!r} is not a regular file")
-        inventory[relative] = _sha256(path)
+        if _is_publication_temporary(relative, managed_paths):
+            publication_temporaries.append(relative)
+            continue
+        inventory[relative] = _sha256(path, what=f"run tree member {relative!r}")
     if not inventory:
         raise BackupRefusal("the selected run tree has no files to back up")
-    return inventory
+    return inventory, tuple(publication_temporaries)
 
 
-def _sha256(path: Path) -> str:
+def _is_publication_temporary(relative: str, managed_paths: tuple[str, ...]) -> bool:
+    """Whether `relative` is RunTree's private temporary for a managed target."""
+
+    path = PurePosixPath(relative)
+    if not path.name.startswith("."):
+        return False
+    target_name, separator, unique = path.name[1:].partition(".tmp-")
+    if not separator or not target_name or not unique:
+        return False
+    target = path.with_name(target_name).as_posix()
+    return any(
+        target.startswith(scope) if scope.endswith("/") else target == scope
+        for scope in managed_paths
+    )
+
+
+def _sha256(path: Path, *, what: str) -> str:
     digest = hashlib.sha256()
     try:
         with path.open("rb") as handle:
             for chunk in iter(lambda: handle.read(CHUNK_BYTES), b""):
                 digest.update(chunk)
     except OSError as error:
-        raise BackupRefusal(f"run tree member {path.name!r} could not be read: {error}") from error
+        raise BackupRefusal(f"{what} could not be read: {error}") from error
     return digest.hexdigest()
+
+
+def _is_sha256(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
 
 
 def _copy_verified(source: Path, target: Path, expected_sha256: str) -> str:
     if target.exists():
-        if not target.is_file() or target.is_symlink() or _sha256(target) != expected_sha256:
+        if (
+            not target.is_file()
+            or target.is_symlink()
+            or _sha256(target, what=f"backup object {target.name!r}") != expected_sha256
+        ):
             raise BackupRefusal(
                 f"backup object {target.name!r} already exists but does not verify; it was not overwritten"
             )
         return "reused"
-    target.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary = tempfile.mkstemp(prefix=".backup-", dir=target.parent)
     temporary_path = Path(temporary)
     try:
@@ -196,12 +307,16 @@ def _copy_verified(source: Path, target: Path, expected_sha256: str) -> str:
         try:
             _link_or_refuse(temporary_path, target)
         except FileExistsError:
-            if not target.is_file() or target.is_symlink() or _sha256(target) != expected_sha256:
+            if (
+                not target.is_file()
+                or target.is_symlink()
+                or _sha256(target, what=f"backup object {target.name!r}") != expected_sha256
+            ):
                 raise BackupRefusal(
                     f"backup object {target.name!r} appeared but does not verify; it was not overwritten"
                 ) from None
             return "reused"
-        if _sha256(target) != expected_sha256:
+        if _sha256(target, what=f"backup object {target.name!r}") != expected_sha256:
             raise BackupRefusal(f"backup object {target.name!r} did not verify after copy")
         return "copied"
     finally:
@@ -276,7 +391,6 @@ def _publish_bytes(target: Path, data: bytes) -> None:
     a snapshot's name reach `os.link` and escape as a bare `FileNotFoundError`
     from the read that was meant to refuse it.
     """
-    target.parent.mkdir(parents=True, exist_ok=True)
     if target.is_symlink() or target.exists():
         _refuse_a_different_snapshot(target, data)
         return
@@ -291,8 +405,77 @@ def _publish_bytes(target: Path, data: bytes) -> None:
             _link_or_refuse(temporary_path, target)
         except FileExistsError:
             _refuse_a_different_snapshot(target, data)
+        else:
+            try:
+                published = target.read_bytes()
+            except OSError as error:
+                raise BackupRefusal(
+                    f"backup snapshot could not be read back after publication: {error}"
+                ) from error
+            if published != data:
+                raise BackupRefusal("backup snapshot did not verify after publication")
     finally:
         try:
             temporary_path.unlink()
         except FileNotFoundError:
             pass
+
+
+def verify_backup_snapshot(root: Path, run_id: str, report: BackupReport) -> dict[str, object]:
+    """Read back the snapshot and every object before reporting backup success."""
+
+    target = root / "snapshots" / "sha256" / f"{report.snapshot_sha256}.json"
+    if target.is_symlink() or not target.is_file():
+        raise BackupRefusal("backup worker reported a snapshot that is not a regular file")
+    try:
+        data = target.read_bytes()
+    except OSError as error:
+        raise BackupRefusal(f"backup snapshot could not be read back: {error}") from error
+    if digest_bytes(data) != report.snapshot_sha256:
+        raise BackupRefusal("backup worker reported a snapshot whose bytes do not match its sha256")
+    try:
+        value = json.loads(data)
+    except (UnicodeDecodeError, ValueError, RecursionError) as error:
+        raise BackupRefusal(f"backup snapshot is not readable JSON: {error}") from error
+    fields = {"schema", "run_id", "files", "excluded_publication_temporaries"}
+    if not isinstance(value, dict) or set(value) != fields:
+        raise BackupRefusal(f"backup snapshot must contain exactly {sorted(fields)}")
+    if value["schema"] != SCHEMA or value["run_id"] != run_id:
+        raise BackupRefusal("backup snapshot does not name this schema and requested run id")
+    files = value["files"]
+    if not isinstance(files, list) or not files:
+        raise BackupRefusal("backup snapshot has no file inventory")
+    checked_rows: list[tuple[str, str]] = []
+    for row in files:
+        if not isinstance(row, dict) or set(row) != {"relative_path", "sha256"}:
+            raise BackupRefusal("backup snapshot has a malformed file row")
+        relative, digest = row["relative_path"], row["sha256"]
+        if (
+            not isinstance(relative, str)
+            or not relative
+            or PurePosixPath(relative).is_absolute()
+            or ".." in PurePosixPath(relative).parts
+            or not _is_sha256(digest)
+        ):
+            raise BackupRefusal("backup snapshot has a malformed relative path or sha256")
+        checked_rows.append((relative, digest))
+    if checked_rows != sorted(set(checked_rows)):
+        raise BackupRefusal("backup snapshot file inventory is not sorted and unique")
+    temporaries = value["excluded_publication_temporaries"]
+    if (
+        not isinstance(temporaries, list)
+        or any(not isinstance(path, str) or not path for path in temporaries)
+        or temporaries != sorted(set(temporaries))
+    ):
+        raise BackupRefusal("backup snapshot has a malformed publication-temporary inventory")
+    if len(checked_rows) != report.copied + report.reused:
+        raise BackupRefusal("backup worker report counts do not reconcile with its snapshot")
+    for digest in sorted({digest for _relative, digest in checked_rows}):
+        object_path = root / "objects" / "sha256" / digest
+        if (
+            object_path.is_symlink()
+            or not object_path.is_file()
+            or _sha256(object_path, what=f"backup object {digest!r}") != digest
+        ):
+            raise BackupRefusal(f"backup object {digest!r} does not verify on read-back")
+    return value

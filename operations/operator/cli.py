@@ -350,22 +350,26 @@ def _review_in_custody(run_root: Path, run_id: str, workspace: Path) -> None:
 def _backup_in_custody(run_root: Path, run_id: str, mac_directory: Path, workspace: Path) -> None:
     """Copy evidence only in the no-network, credential-free custody child."""
 
-    from .backup import BackupRefusal, resolve_backup_paths
+    from .backup import (
+        BackupRefusal,
+        BackupReport,
+        _prepare_backup_layout,
+        resolve_backup_paths,
+        verify_backup_snapshot,
+    )
 
     # The same rules the worker applies, applied before the parent creates
     # anything.  The parent prepares the destination layout, so a destination
     # that overlaps the run tree would have had `objects/` and `snapshots/`
     # created *inside* the sealed run tree on the way to the child refusing it.
     try:
-        _, destination = resolve_backup_paths(run_root, run_id, mac_directory)
+        source, destination = resolve_backup_paths(run_root, run_id, mac_directory)
+        # Landlock's custody allowance deliberately grants publication rights,
+        # not directory creation. Prepare the closed layout before the child;
+        # every existing component has already been refused if it redirects.
+        _prepare_backup_layout(source, destination)
     except BackupRefusal as refusal:
         raise OperatorError(ErrorCode.BACKUP_FAILED, detail=str(refusal)) from refusal
-    # Landlock's custody allowance deliberately grants only publication rights,
-    # not directory creation.  Prepare the empty layout before the credential-
-    # free child starts; the child can then only add content-addressed files
-    # beneath it, never replace an existing one or make an unrelated subtree.
-    for directory in (destination / "objects" / "sha256", destination / "snapshots" / "sha256"):
-        directory.mkdir(parents=True, exist_ok=True)
     command = python_module_command("operations.operator.backup_worker", workspace)
     request = json.dumps(
         {"run_root": str(run_root.resolve()), "run_id": run_id, "mac_directory": str(destination)}
@@ -375,22 +379,18 @@ def _backup_in_custody(run_root: Path, run_id: str, mac_directory: Path, workspa
     )
     if completed.returncode != 0:
         launcher = backend.launcher_failure(completed)
-        detail = launcher if launcher is not None else (completed.stderr or completed.stdout)
+        detail = launcher or completed.stderr.strip() or completed.stdout.strip()
+        if not detail:
+            detail = f"backup worker exited {completed.returncode} without a diagnostic"
         raise OperatorError(ErrorCode.BACKUP_FAILED, detail=detail)
     try:
-        report = json.loads(completed.stdout)
-        if not isinstance(report, dict) or set(report) != {
-            "copied",
-            "reused",
-            "schema",
-            "snapshot_sha256",
-        }:
-            raise ValueError("backup worker returned an invalid report")
-    except (json.JSONDecodeError, ValueError) as error:
+        report = BackupReport.from_record(json.loads(completed.stdout))
+        verify_backup_snapshot(destination, run_id, report)
+    except (BackupRefusal, ValueError, RecursionError) as error:
         raise OperatorError(ErrorCode.BACKUP_FAILED, detail=str(error)) from error
     _print(
         "Mac backup complete: "
-        f"{report['copied']} copied, {report['reused']} reused; snapshot {report['snapshot_sha256']}."
+        f"{report.copied} copied, {report.reused} reused; snapshot {report.snapshot_sha256}."
     )
 
 

@@ -38,7 +38,7 @@ any time to check on things.
 | `upload` | Sends your images to storage. | No — and it needs no rented machine at all. Do it first if you like. |
 | `run` | Processes the images through the pipeline. This build runs the declared synthetic fixture. | No new cost beyond the machine already running. |
 | `export` | Brings the finished results back to this computer. This build makes a base Armarium evidence bundle. | No. |
-| `backup` | Copies one completed or partial volume-hosted run tree to a local synced Mac directory. | No. It uses no provider credential, stores every file by SHA-256, and verifies every reused or copied byte. |
+| `backup` | Copies one completed or partial volume-hosted run tree to a local synced Mac directory. | No. It uses no provider credential, stores every published run-tree file by SHA-256, verifies every reused or copied byte, and records any excluded RunTree publication temporaries in the snapshot. |
 | `close` | Shuts the rented machine down. This build closes its fixture pod only. | A real close is what **stops** the pod cost. Always safe to run. |
 | `status` | Shows what is currently going on. | No — it only reads. It never starts, changes or spends anything. |
 

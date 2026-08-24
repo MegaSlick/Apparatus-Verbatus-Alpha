@@ -13,7 +13,7 @@ import pytest
 
 from . import backup as backup_module
 from . import cli
-from .backup import BackupRefusal, sync_run_tree
+from .backup import SCHEMA, BackupRefusal, sync_run_tree
 from .custody import credential_free_environment
 from .errors import ErrorCode, OperatorError
 
@@ -41,11 +41,16 @@ def test_backup_is_content_addressed_resumable_and_verifies_each_digest(tmp_path
     snapshot = mac / "snapshots" / "sha256" / f"{first.snapshot_sha256}.json"
     record = json.loads(snapshot.read_text())
     assert record["run_id"] == run_id
+    assert record["schema"] == SCHEMA
+    assert record["excluded_publication_temporaries"] == []
     assert {row["relative_path"] for row in record["files"]} == {
         "run.json",
         "receipts/sha256/" + "a" * 64 + ".json",
     }
-    assert all((mac / "objects" / "sha256" / row["sha256"]).is_file() for row in record["files"])
+    for row in record["files"]:
+        stored = mac / "objects" / "sha256" / row["sha256"]
+        assert stored.is_file()
+        assert hashlib.sha256(stored.read_bytes()).hexdigest() == row["sha256"]
 
 
 def test_backup_never_overwrites_an_object_with_the_wrong_digest(tmp_path: Path) -> None:
@@ -137,17 +142,17 @@ def test_backup_cli_uses_a_confined_credential_free_child(tmp_path: Path, monkey
         def launcher_failure(self, completed):
             return None
 
-    class Completed:
-        returncode = 0
-        stdout = json.dumps(
-            {"schema": "mac-run-backup.v1", "snapshot_sha256": "a" * 64, "copied": 2, "reused": 0}
-        )
-        stderr = ""
-
     def confined(command, *, writable, cwd, input_text):
         observed.update(
             {"command": command, "writable": writable, "request": json.loads(input_text)}
         )
+        report = sync_run_tree(volume, run_id, mac)
+
+        class Completed:
+            returncode = 0
+            stdout = json.dumps(report.to_record())
+            stderr = ""
+
         return Backend(), Completed()
 
     monkeypatch.setattr(cli, "run_confined", confined)
@@ -191,6 +196,110 @@ def test_backup_worker_failure_uses_the_named_three_part_operator_refusal(
         cli._backup_in_custody(volume, run_id, tmp_path / "mac", tmp_path)
     assert failure.value.code is ErrorCode.BACKUP_FAILED
     assert failure.value.render().count("\n") >= 2
+    assert "source changed" in failure.value.render()
+
+
+def test_backup_worker_failure_without_output_names_its_exit_status(
+    tmp_path: Path, monkeypatch
+) -> None:
+    volume, run_id = _run_tree(tmp_path)
+
+    class Backend:
+        def launcher_failure(self, completed):
+            return None
+
+    class Completed:
+        returncode = 2
+        stdout = ""
+        stderr = ""
+
+    monkeypatch.setattr(cli, "run_confined", lambda *args, **kwargs: (Backend(), Completed()))
+    with pytest.raises(OperatorError) as failure:
+        cli._backup_in_custody(volume, run_id, tmp_path / "mac", tmp_path)
+
+    assert "exited 2 without a diagnostic" in failure.value.render()
+
+
+def test_backup_invalid_run_id_uses_the_named_backup_refusal(tmp_path: Path) -> None:
+    volume, _run_id = _run_tree(tmp_path)
+
+    with pytest.raises(OperatorError) as failure:
+        cli._backup_in_custody(volume, "../escape", tmp_path / "mac", tmp_path)
+
+    assert failure.value.code is ErrorCode.BACKUP_FAILED
+    assert "run id is invalid" in failure.value.render()
+
+
+@pytest.mark.parametrize(
+    "report",
+    (
+        {"schema": "mac-run-backup.v1", "snapshot_sha256": "a" * 64, "copied": 2, "reused": 0},
+        {"schema": SCHEMA, "snapshot_sha256": "a" * 64, "copied": "2", "reused": 0},
+        {"schema": SCHEMA, "snapshot_sha256": "a" * 64, "copied": 0, "reused": 0},
+        {"schema": SCHEMA, "snapshot_sha256": "a" * 64, "copied": 2, "reused": 0},
+    ),
+)
+def test_backup_cli_refuses_a_worker_report_that_cannot_prove_success(
+    tmp_path: Path, monkeypatch, report: dict[str, object]
+) -> None:
+    volume, run_id = _run_tree(tmp_path)
+
+    class Backend:
+        def launcher_failure(self, completed):
+            return None
+
+    class Completed:
+        returncode = 0
+        stdout = json.dumps(report)
+        stderr = ""
+
+    monkeypatch.setattr(cli, "run_confined", lambda *args, **kwargs: (Backend(), Completed()))
+
+    with pytest.raises(OperatorError) as failure:
+        cli._backup_in_custody(volume, run_id, tmp_path / "mac", tmp_path)
+
+    assert failure.value.code is ErrorCode.BACKUP_FAILED
+    assert "backup worker report" in failure.value.render()
+
+
+def test_backup_cli_classifies_a_worker_report_json_conversion_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    volume, run_id = _run_tree(tmp_path)
+
+    class Backend:
+        def launcher_failure(self, completed):
+            return None
+
+    class Completed:
+        returncode = 0
+        stdout = '{"copied":' + "9" * 5000 + "}"
+        stderr = ""
+
+    monkeypatch.setattr(cli, "run_confined", lambda *args, **kwargs: (Backend(), Completed()))
+    with pytest.raises(OperatorError) as failure:
+        cli._backup_in_custody(volume, run_id, tmp_path / "mac", tmp_path)
+
+    assert failure.value.code is ErrorCode.BACKUP_FAILED
+    assert "integer string conversion" in failure.value.render()
+
+
+def test_backup_custody_refusal_names_a_worker_and_partial_backup_state(
+    tmp_path: Path, monkeypatch
+) -> None:
+    volume, run_id = _run_tree(tmp_path)
+
+    def refuse(*args, **kwargs):
+        raise OperatorError(ErrorCode.CONSOLE_CUSTODY_REFUSED, detail="Landlock unavailable")
+
+    monkeypatch.setattr(cli, "run_confined", refuse)
+    with pytest.raises(OperatorError) as failure:
+        cli._backup_in_custody(volume, run_id, tmp_path / "mac", tmp_path)
+
+    rendered = failure.value.render()
+    assert failure.value.code is ErrorCode.CONSOLE_CUSTODY_REFUSED
+    assert "custody worker" in rendered
+    assert "backup may have added verified objects" in rendered
 
 
 def test_backup_refuses_a_destination_inside_the_run_tree_without_writing_into_it(
@@ -226,6 +335,45 @@ def test_backup_refuses_a_destination_that_holds_the_run_tree(tmp_path: Path) ->
     volume, run_id = _run_tree(tmp_path)
     with pytest.raises(BackupRefusal, match="must not contain"):
         sync_run_tree(volume, run_id, volume)
+
+
+def test_backup_layout_symlink_cannot_redirect_writes_into_the_source(tmp_path: Path) -> None:
+    volume, run_id = _run_tree(tmp_path)
+    source = volume / run_id
+    before = {
+        path.relative_to(source).as_posix(): path.read_bytes()
+        for path in sorted(source.rglob("*"))
+        if path.is_file()
+    }
+    mac = tmp_path / "mac"
+    mac.mkdir()
+    (mac / "objects").symlink_to(source, target_is_directory=True)
+
+    with pytest.raises(BackupRefusal, match="symbolic link"):
+        sync_run_tree(volume, run_id, mac)
+
+    after = {
+        path.relative_to(source).as_posix(): path.read_bytes()
+        for path in sorted(source.rglob("*"))
+        if path.is_file()
+    }
+    assert after == before
+    assert not (source / "sha256").exists()
+    assert not (mac / "snapshots").exists()
+
+
+def test_backup_excludes_but_records_run_tree_publication_temporaries(tmp_path: Path) -> None:
+    volume, run_id = _run_tree(tmp_path)
+    temporary = volume / run_id / ".run.json.tmp-interrupted"
+    temporary.write_bytes(b"unpublished authority bytes")
+
+    report = sync_run_tree(volume, run_id, tmp_path / "mac")
+    snapshot = tmp_path / "mac" / "snapshots" / "sha256" / f"{report.snapshot_sha256}.json"
+    record = json.loads(snapshot.read_text())
+
+    assert record["excluded_publication_temporaries"] == [temporary.name]
+    assert temporary.name not in {row["relative_path"] for row in record["files"]}
+    assert report.copied == 2
 
 
 def test_the_overlap_check_reads_filesystem_identity_and_not_the_spelling(tmp_path: Path) -> None:
@@ -291,6 +439,24 @@ def test_backup_refuses_a_snapshot_name_taken_by_a_symlink(tmp_path: Path) -> No
     (mac / "snapshots" / "sha256" / f"{expected}.json").symlink_to(tmp_path / "nowhere")
 
     with pytest.raises(BackupRefusal, match="not a regular file"):
+        sync_run_tree(volume, run_id, mac)
+
+
+def test_backup_reads_a_new_snapshot_back_before_reporting_success(
+    tmp_path: Path, monkeypatch
+) -> None:
+    volume, run_id = _run_tree(tmp_path)
+    mac = tmp_path / "mac"
+    real_link = backup_module.os.link
+
+    def link_then_corrupt(source, target):
+        real_link(source, target)
+        if "snapshots" in Path(target).parts:
+            Path(target).write_bytes(b"corrupt after link")
+
+    monkeypatch.setattr(backup_module.os, "link", link_then_corrupt)
+
+    with pytest.raises(BackupRefusal, match="did not verify after publication"):
         sync_run_tree(volume, run_id, mac)
 
 

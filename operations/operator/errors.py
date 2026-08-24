@@ -234,9 +234,9 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
         "Preserve that record for review and repair or replace it before continuing; this is safe.",
     ),
     ErrorCode.CONSOLE_CUSTODY_REFUSED: ErrorCopy(
-        "The operator console or advance worker could not complete inside its custody boundary.",
-        "No provider action was reached. If this happened after an advance worker started, its append-only record may exist even though no checked result returned.",
-        "Follow the saved detail below. Before retrying an advance, open review and check its advance_records; otherwise fix the named Landlock or Seatbelt problem, then open the console again.",
+        "The operator console or a custody worker could not complete inside its OS boundary.",
+        "No provider action was reached. An advance may have appended a record, and a backup may have added verified objects, even though no checked result returned.",
+        "Follow the saved detail below. Inspect advance_records before retrying an advance; for a backup, keep its objects and retry after fixing the named boundary; otherwise fix Landlock or Seatbelt before reopening the console.",
     ),
     ErrorCode.CONSOLE_TREE_UNREADABLE: ErrorCopy(
         "The operator console could not read the selected run tree safely.",
@@ -251,7 +251,7 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
     ErrorCode.BACKUP_FAILED: ErrorCopy(
         "The Mac backup did not finish with a verified snapshot.",
         "Existing content-addressed backup objects remain intact, but this run is not called backed up.",
-        "Keep the saved detail, repair the named source or backup-directory problem, then run `verbatus backup` again; it safely reuses verified files.",
+        "Keep the saved detail, repair the named source, backup-directory, or worker-report problem, then run `verbatus backup` again; it safely reuses verified files.",
     ),
     ErrorCode.INTERRUPTED: ErrorCopy(
         "The Verbatus command was interrupted before it reported an end state.",

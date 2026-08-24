@@ -97,6 +97,19 @@ def _region_count(root: Path, run_id: str) -> int:
     return len([entry for entry in manifest["artifacts"] if entry["kind"] == "region"])
 
 
+def _kill_and_reap(process: subprocess.Popen[bytes]) -> int:
+    """Leave no recovery process group behind, including on an assertion path."""
+
+    if process.poll() is None:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            # The process group exited between poll and kill; wait still reaps
+            # the child and reports the state that won that race.
+            pass
+    return process.wait(timeout=120)
+
+
 def _crash_mid_recovery(volume: Path, scratch: Path) -> dict[str, str]:
     """Drive a real recovery on `volume` and SIGKILL it mid-member.
 
@@ -151,23 +164,26 @@ def _crash_mid_recovery(volume: Path, scratch: Path) -> dict[str, str]:
     # below is a hang guard, deliberately far larger than any load this window
     # scales to; it is not the window.
     hang_guard = time.monotonic() + 600
-    while _region_count(volume, "r") == region_count:
-        if process.poll() is not None:
-            raise AssertionError(
-                "recovery exited before it appended a crop:\n"
-                f"{err_path.read_text()}\n{out_path.read_text()}"
-            )
-        assert time.monotonic() < hang_guard, "the recovery driver neither appended nor exited"
-        time.sleep(0.01)
-    # The window between the Designator's append and the Perlector's first write
-    # measures 0.31s idle and 4.9-7.1s under the same ten-times load, against a
-    # poll costing at most 0.23s there: it widens with load rather than closing,
-    # which is what makes this an observation and not a race.
-    assert process.poll() is None, "recovery finished before the crash point"
-    os.killpg(process.pid, signal.SIGKILL)
+    try:
+        while _region_count(volume, "r") == region_count:
+            if process.poll() is not None:
+                raise AssertionError(
+                    "recovery exited before it appended a crop:\n"
+                    f"{err_path.read_text()}\n{out_path.read_text()}"
+                )
+            assert time.monotonic() < hang_guard, "the recovery driver neither appended nor exited"
+            time.sleep(0.01)
+        # The window between the Designator's append and the Perlector's first write
+        # measures 0.31s idle and 4.9-7.1s under the same ten-times load, against a
+        # poll costing at most 0.23s there: it widens with load rather than closing,
+        # which is what makes this an observation and not a race.
+        assert process.poll() is None, "recovery finished before the crash point"
+    except BaseException:
+        _kill_and_reap(process)
+        raise
     # Reaping a process group that has already been SIGKILLed; the bound is a
     # hang guard for an unreapable child, not a wait for work to finish.
-    assert process.wait(timeout=120) == -signal.SIGKILL
+    assert _kill_and_reap(process) == -signal.SIGKILL
 
     crashed = snapshot(volume)
     assert any(path not in before_crash for path in crashed), "the crash followed a real append"
@@ -225,8 +241,8 @@ def test_a_backup_of_a_mid_recovery_tree_restores_and_resumes_byte_identically(
     """The Mac backup of a tree whose recovery is mid-flight is a resumable tree.
 
     Three claims at once, none of which the crash test above reaches: that
-    `verbatus backup` publishes a snapshot for a tree holding an *in-progress*
-    recovery rather than refusing one; that restoring that snapshot reproduces
+    `verbatus backup` publishes a snapshot for a tree interrupted *mid-recovery*
+    rather than refusing one; that restoring that snapshot reproduces
     the crashed tree byte for byte; and that the driver resumes the restored
     copy to the same bytes as the tree it was copied from.  The test above
     already ties that tree to an uninterrupted local run, so the equality here
@@ -268,3 +284,22 @@ def _restore(mac: Path, snapshot_sha256: str, destination: Path) -> None:
         target = destination / record["run_id"] / row["relative_path"]
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
+
+
+def test_crash_observer_cleanup_kills_and_reaps_a_live_process_group(monkeypatch) -> None:
+    observed: list[object] = []
+
+    class Process:
+        pid = 123
+
+        def poll(self):
+            return None
+
+        def wait(self, *, timeout):
+            observed.append(("wait", timeout))
+            return -signal.SIGKILL
+
+    monkeypatch.setattr(os, "killpg", lambda pid, sent: observed.append(("killpg", pid, sent)))
+
+    assert _kill_and_reap(Process()) == -signal.SIGKILL
+    assert observed == [("killpg", 123, signal.SIGKILL), ("wait", 120)]
