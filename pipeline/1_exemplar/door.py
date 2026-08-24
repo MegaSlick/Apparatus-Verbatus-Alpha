@@ -1539,6 +1539,7 @@ def fixture_submission(args, registry) -> int:
         perlector_protocol_config_path=args.perlector_protocol_config,
         perlector_audit_config_path=args.perlector_audit_config,
         draft_fed=args.draft_fed,
+        serving_recipes_config_path=args.serving_recipes_config,
     )
     require_corpus_frame_shard(len(pages), bindings["sealed_config_digests"])
 

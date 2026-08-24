@@ -1091,6 +1091,14 @@ def stage_parser(description: str, *, accepts_chair: bool = False) -> argparse.A
         help="append-only corpus register to snapshot at ingress and verify at later stages",
     )
     parser.add_argument("--models-config", default="config/models.toml")
+    parser.add_argument(
+        "--serving-recipes-config",
+        default=str(DEFAULT_SERVING_RECIPES_CONFIG_PATH),
+        help=(
+            "complete serving-profile catalogue sealed into this run; the default is the "
+            "fixture-only catalogue"
+        ),
+    )
     parser.add_argument("--alignment-config", default=str(DEFAULT_ALIGNMENT_CONFIG_PATH))
     parser.add_argument("--pdf-render-config", default=str(DEFAULT_PDF_RENDER_CONFIG_PATH))
     parser.add_argument(
@@ -2418,6 +2426,7 @@ def open_context(
         perlector_protocol_config_path=args.perlector_protocol_config,
         perlector_audit_config_path=args.perlector_audit_config,
         draft_fed=args.draft_fed,
+        serving_recipes_config_path=args.serving_recipes_config,
     )
     tree = RunTree(Path(args.run_root), args.run_id)
     run = tree.read_run()

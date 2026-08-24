@@ -2407,6 +2407,55 @@ def test_config_catalogue_is_complete_for_the_fixture_roster_and_closed() -> Non
         model_and_tokenizer_pins(identity("reader", "reader-v1", revision="not-a-commit"))
 
 
+def test_real_catalogue_resolves_every_real_chair_at_every_tier_without_changing_fixture_coverage():
+    """The real roster is opt-in, and all of its rows remain preflight-red."""
+
+    root = Path(__file__).resolve().parents[2]
+    placement = load_placement_table(root / "config/pod_placement.toml")
+    tiers = tuple(tier.identifier for tier in placement.tiers)
+    fixture_models = load_models_toml(root / "config/models.toml")
+    fixture_catalogue = load_serving_recipes(root / "config/serving_recipes.toml")
+    real_models = load_models_toml(root / "config/models-real.toml")
+    real_catalogue = load_serving_recipes(root / "config/serving_recipes_real.toml")
+
+    # Keep the existing fixture coverage assertion on its unmodified default
+    # catalogue, then prove the flag-selected catalogue has the same complete
+    # one-chair/one-tier resolution property for the separate real roster.
+    verify_recipes_cover_chairs(fixture_models, fixture_catalogue, tiers)
+    verify_recipes_cover_chairs(real_models, real_catalogue, tiers)
+    configured = [
+        value for value in real_models.chairs.values() if isinstance(value, ChairIdentity)
+    ]
+    assert len(real_catalogue.profiles) == len(configured) * len(tiers)
+    for identity in configured:
+        for tier in tiers:
+            profile = real_catalogue.for_identity(identity, tier)
+            assert isinstance(profile, ServingProfile)
+            assert profile.preflight_state == "unproven"
+            assert profile.required_packages["vllm"] == "0.10.1"
+
+
+def test_real_catalogue_missing_row_refusal_names_the_exact_chair_and_tier() -> None:
+    """The opt-in catalogue fails closed with an operator-actionable row name."""
+
+    root = Path(__file__).resolve().parents[2]
+    placement = load_placement_table(root / "config/pod_placement.toml")
+    tiers = tuple(tier.identifier for tier in placement.tiers)
+    models = load_models_toml(root / "config/models-real.toml")
+    complete = load_serving_recipes(root / "config/serving_recipes_real.toml")
+    removed = complete.profiles[0]
+    incomplete = ServingRecipes(profiles=complete.profiles[1:])
+
+    with pytest.raises(ServingConfigurationError) as refusal:
+        verify_recipes_cover_chairs(models, incomplete, tiers)
+
+    detail = str(refusal.value)
+    assert "missing=" in detail
+    assert removed.recipe in detail
+    assert removed.chair in detail
+    assert removed.tier in detail
+
+
 def test_for_identity_refuses_both_zero_and_multiple_matches() -> None:
     """No nearest-tier/nearest-chair fallback: lookup is exact, or it refuses.
 
