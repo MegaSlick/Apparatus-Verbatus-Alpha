@@ -49,11 +49,13 @@ from common.contracts.outcomes import classify
 from common.contracts.serving import SERVING_CONFIG_INPUTS_FIELDS, SERVING_CONFIG_INPUTS_SCHEMA
 from common.contracts.stages import (
     ARMARIUM,
+    ATTESTATORES,
     DESIGNATOR,
     EXEMPLAR,
     PERLECTOR,
     RECENSOR,
     SEAL_PREDECESSORS,
+    STAGES,
     TRIAGE_MODES,
 )
 from common.corpus_register import read_snapshot, verify_snapshot_is_current
@@ -173,6 +175,77 @@ ATTEMPTED_WITNESS_OUTCOMES = frozenset({"read", "genuinely-empty", "failed"})
 # attached without being read; two identical literals in two files agreed only by
 # coincidence.  Found in audit; F-O3.
 WITNESS_READING_OUTCOMES = _WITNESS_READING_OUTCOMES
+
+# One closed vocabulary for staged driver selections and the console that
+# presents them.  Selection remains an invocation choice, never run-tree bytes.
+RUN_MODES: Final = TRIAGE_MODES
+
+# The boundaries a staged run can stop at *whatever mode it was invoked in*.
+#
+# The driver returns EXIT_HELD on a held Attestatores before it consults `mode`
+# at all (`pipeline/orchestrator/run.py`, the Attestatores branch above the
+# `mode in ("semi", "manual")` stop), and the Attestatores has already written
+# its completion seal by the time its attempt tally can come back UNKNOWN
+# (`pipeline/3_attestatores/run.py`: `context.seal_boundary()` precedes the
+# tally hold).  So an auto or semi invocation really can stop, mid-selection,
+# at a *sealed* boundary with a person in front of it.  Deriving the held set
+# from the selection alone said that boundary had been auto-passed, which is a
+# false statement about the driver in this same tree, and it refused the one
+# decision record that boundary is entitled to.  `test_advance_modes.py` pins
+# this set against the driver's own source so the two cannot drift apart.
+ALWAYS_HELD_BOUNDARIES: Final = frozenset({ATTESTATORES})
+
+
+def _named_boundary(name: str, role: str) -> str:
+    """Refuse a selection endpoint that owns no stage completion boundary.
+
+    `recovery` is a legal driver member (`--from designator --to recovery`
+    parses) and owns no stage program and no seal, so it is refused here by the
+    same sentence a typo is: what matters to a person at the console is which
+    names *do* carry a boundary, not which list the name failed to be in.
+    """
+
+    if name not in STAGES:
+        raise ContractError(
+            f"{role} names {name!r}, which owns no stage completion boundary; "
+            f"the boundaries are {', '.join(STAGES)}"
+        )
+    return name
+
+
+def held_advance_boundaries(
+    mode: str,
+    *,
+    stage: str,
+    from_stage: str | None = None,
+    to_stage: str | None = None,
+) -> frozenset[str]:
+    """Return every boundary a selected invocation can stop at, judging no evidence.
+
+    This is a claim about the *driver*, not about the run tree: it says where a
+    person can be waiting, never whether one is or whether they should advance.
+    """
+
+    if mode not in RUN_MODES:
+        raise ContractError(f"unknown staged run mode {mode!r}")
+    _named_boundary(stage, "the advanced boundary")
+    if mode == "auto":
+        if from_stage is not None or to_stage is not None:
+            raise ContractError("auto mode names no held range")
+        return ALWAYS_HELD_BOUNDARIES
+    if mode == "manual":
+        if from_stage is not None or to_stage is not None:
+            raise ContractError("manual mode names one stage, not a range")
+        return frozenset({stage})
+    if from_stage is None or to_stage is None:
+        raise ContractError("semi mode needs both the first and last stage of its range")
+    first = STAGES.index(_named_boundary(from_stage, "the semi-mode range start"))
+    last = STAGES.index(_named_boundary(to_stage, "the semi-mode range end"))
+    if first > last:
+        raise ContractError("semi mode cannot run a boundary backwards")
+    span = frozenset(STAGES[first : last + 1])
+    return frozenset({to_stage}) | (ALWAYS_HELD_BOUNDARIES & span)
+
 
 # Every top-level field a reading's model provenance may carry. A closed set,
 # because invariant #42 refuses *wrong-schema* provenance rather than a list of

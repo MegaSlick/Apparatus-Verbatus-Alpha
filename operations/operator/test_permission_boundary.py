@@ -51,6 +51,17 @@ def _make_run(tmp_path: Path) -> tuple[Path, str]:
     return run_root, "reviewed"
 
 
+def _armarium_digest(run_root: Path, run_id: str) -> str:
+    """The exact digest a caller must observe and bind before it may advance.
+
+    `trigger_advance`/`record_advance` refuse an omitted `expected_digest`
+    outright (they no longer trust "whatever is on disk right now"), so every
+    test that drives them past an unsealed-boundary refusal has to hand one
+    in, the same way a real caller would after showing it to an operator.
+    """
+    return advance.sealed_boundary(RunTree(run_root, run_id), "armarium")[1]
+
+
 def test_read_surface_projects_seals_census_pages_crops_and_optional_review_shape(tmp_path: Path):
     run_root, run_id = _make_run(tmp_path)
 
@@ -122,6 +133,7 @@ def test_advance_worker_is_external_and_binds_the_current_seal_digest(tmp_path: 
     run_root, run_id = _make_run(tmp_path)
     tree = RunTree(run_root, run_id)
     before = {path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")}
+    _, observed_digest = advance.sealed_boundary(tree, "armarium")
 
     reference = advance.trigger_advance(
         run_root,
@@ -129,6 +141,7 @@ def test_advance_worker_is_external_and_binds_the_current_seal_digest(tmp_path: 
         "armarium",
         reason="operator reviewed the sealed Armarium boundary",
         workspace=ROOT,
+        expected_digest=observed_digest,
     )
 
     after = {path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")}
@@ -141,6 +154,37 @@ def test_advance_worker_is_external_and_binds_the_current_seal_digest(tmp_path: 
         tree.read_bytes(tree.artifact_path("armarium", "stage-seal", seal["artifact_id"]))
     )
     assert "run_confined" in inspect.getsource(advance.trigger_advance)
+
+
+def test_write_approval_record_has_exactly_one_production_call_site() -> None:
+    """One implementation, really: nothing outside `advance.record_advance` writes one.
+
+    `RunTree.write_approval_record` is the generic append-only writer several
+    approval subjects share (Lectio nuda sampling, the Perlector's prior-draft
+    instrument, and this unit's stage-boundary advance). A second production
+    caller would be a second, unaudited route to minting one of those durable
+    records -- the write-side twin of GOVERNANCE 3's "a picker rebuilt under
+    another name is still a picker." Test files legitimately construct
+    approval records directly to set up fixtures and are excluded; only
+    source under the repository proper is asked to justify itself here.
+    """
+    root = Path(__file__).resolve().parents[2]
+    definition = root / "common" / "runtree" / "store.py"
+    call_sites = set()
+    # Tracked files only: a bare rglob also sweeps stray local checkouts
+    # (nested git worktrees under .claude/worktrees/), which are not
+    # production call sites and made this scan fail on machines that have them.
+    tracked = subprocess.run(
+        ["git", "ls-files", "*.py"], cwd=root, capture_output=True, text=True, check=True
+    ).stdout.splitlines()
+    for path in sorted(root / name for name in tracked):
+        if path.name.startswith("test_") or path == definition:
+            continue
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if "write_approval_record(" in line:
+                call_sites.add(str(path.relative_to(root)))
+                break
+    assert call_sites == {"operations/operator/advance.py"}
 
 
 def test_console_process_cannot_import_writers_or_keep_provider_credentials(tmp_path: Path):
@@ -199,7 +243,14 @@ def test_landlock_probe_absent_refuses_loudly_before_any_subprocess_runs(tmp_pat
     assert review_error.value.code == ErrorCode.CONSOLE_CUSTODY_REFUSED
 
     with pytest.raises(OperatorError) as advance_error:
-        advance.trigger_advance(run_root, run_id, "armarium", reason="x", workspace=ROOT)
+        advance.trigger_advance(
+            run_root,
+            run_id,
+            "armarium",
+            reason="x",
+            workspace=ROOT,
+            expected_digest=_armarium_digest(run_root, run_id),
+        )
     assert advance_error.value.code == ErrorCode.CONSOLE_CUSTODY_REFUSED
 
 
@@ -245,7 +296,14 @@ def test_a_launcher_that_never_established_its_boundary_is_a_custody_refusal(tmp
     assert review_error.value.code == ErrorCode.CONSOLE_CUSTODY_REFUSED
 
     with pytest.raises(OperatorError) as advance_error:
-        advance.trigger_advance(run_root, run_id, "armarium", reason="x", workspace=ROOT)
+        advance.trigger_advance(
+            run_root,
+            run_id,
+            "armarium",
+            reason="x",
+            workspace=ROOT,
+            expected_digest=_armarium_digest(run_root, run_id),
+        )
     assert advance_error.value.code == ErrorCode.CONSOLE_CUSTODY_REFUSED
 
 
@@ -271,7 +329,14 @@ def test_a_backend_that_does_not_actually_deny_writes_refuses_before_the_console
     assert "did not refuse both" in review_error.value.detail
 
     with pytest.raises(OperatorError) as advance_error:
-        advance.trigger_advance(run_root, run_id, "armarium", reason="x", workspace=ROOT)
+        advance.trigger_advance(
+            run_root,
+            run_id,
+            "armarium",
+            reason="x",
+            workspace=ROOT,
+            expected_digest=_armarium_digest(run_root, run_id),
+        )
     assert advance_error.value.code == ErrorCode.CONSOLE_CUSTODY_REFUSED
     assert "did not refuse both" in advance_error.value.detail
 
@@ -611,6 +676,7 @@ def test_verify_advance_detects_a_boundary_that_changed_after_it_was_advanced(tm
         "armarium",
         reason="operator reviewed the sealed Armarium boundary",
         workspace=ROOT,
+        expected_digest=_armarium_digest(run_root, run_id),
     )
     advance.verify_advance(tree, "armarium", reference)  # still names the advanced boundary
 
@@ -641,8 +707,14 @@ def test_two_advance_records_for_one_boundary_are_both_persisted_and_both_visibl
     bytes are safely on disk.
     """
     run_root, run_id = _make_run(tmp_path)
+    digest = _armarium_digest(run_root, run_id)
     first = advance.trigger_advance(
-        run_root, run_id, "armarium", reason="first reviewer signed off", workspace=ROOT
+        run_root,
+        run_id,
+        "armarium",
+        reason="first reviewer signed off",
+        workspace=ROOT,
+        expected_digest=digest,
     )
     second = advance.trigger_advance(
         run_root,
@@ -650,6 +722,7 @@ def test_two_advance_records_for_one_boundary_are_both_persisted_and_both_visibl
         "armarium",
         reason="second reviewer signed off independently",
         workspace=ROOT,
+        expected_digest=digest,
     )
     assert first.relative_path != second.relative_path
 
@@ -665,7 +738,12 @@ def test_review_refuses_an_advance_record_copied_under_a_false_content_address(t
     run_root, run_id = _make_run(tmp_path)
     tree = RunTree(run_root, run_id)
     reference = advance.trigger_advance(
-        run_root, run_id, "armarium", reason="reviewed once", workspace=ROOT
+        run_root,
+        run_id,
+        "armarium",
+        reason="reviewed once",
+        workspace=ROOT,
+        expected_digest=_armarium_digest(run_root, run_id),
     )
     false_path = tree.root / "receipts" / "sha256" / f"{'0' * 64}.json"
     false_path.write_bytes(tree.read_bytes(reference.relative_path))
@@ -996,7 +1074,12 @@ def test_a_relative_run_root_cannot_split_the_permitted_path_from_the_written_tr
     assert not Path(relative).is_absolute()
 
     reference = advance.trigger_advance(
-        relative, run_id, "armarium", reason="reviewed from a relative root", workspace=ROOT
+        relative,
+        run_id,
+        "armarium",
+        reason="reviewed from a relative root",
+        workspace=ROOT,
+        expected_digest=_armarium_digest(run_root, run_id),
     )
 
     tree = RunTree(run_root, run_id)
@@ -1016,7 +1099,12 @@ def test_an_advance_whose_boundary_later_changed_is_named_stale_where_a_person_r
     run_root, run_id = _make_run(tmp_path)
     tree = RunTree(run_root, run_id)
     advance.trigger_advance(
-        run_root, run_id, "armarium", reason="reviewed the sealed boundary", workspace=ROOT
+        run_root,
+        run_id,
+        "armarium",
+        reason="reviewed the sealed boundary",
+        workspace=ROOT,
+        expected_digest=_armarium_digest(run_root, run_id),
     )
 
     fresh = review.ReadOnlyRun(run_root, run_id).projection().advance_records

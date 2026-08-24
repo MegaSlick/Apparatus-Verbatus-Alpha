@@ -19,7 +19,7 @@ from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ApprovalRefusal, ContractError
 from common.contracts.stages import STAGES
 from common.runtree.store import RunTree
-from common.stage import latest_attempt
+from common.stage import held_advance_boundaries, latest_attempt
 
 from .custody import (
     python_module_command,
@@ -68,6 +68,56 @@ def sealed_boundary(tree: RunTree, stage: str) -> tuple[dict[str, Any], str]:
     return seal, digest_bytes(data)
 
 
+def boundary_summary(tree: RunTree, stage: str) -> dict[str, Any]:
+    """Project sealed boundary facts for display, never a recommendation."""
+
+    seal, digest = sealed_boundary(tree, stage)
+    payload = seal["payload"]
+    return {
+        "stage": stage,
+        "seal_digest": digest,
+        "attempt_ordinal": payload["attempt_ordinal"],
+        "config_digest": payload["config_digest"],
+        "artifact_inventory": payload["artifact_inventory"],
+        "blob_inventory": payload["blob_inventory"],
+        "census": payload["census"],
+    }
+
+
+def held_boundaries_for_mode(
+    mode: str,
+    *,
+    stage: str,
+    from_stage: str | None = None,
+    to_stage: str | None = None,
+) -> frozenset[str]:
+    """Refuse unless this selection is genuinely stopped at ``stage``.
+
+    The held set is the driver's, not this module's opinion of it: an auto run
+    still stops at the Attestatores' witnessed boundary, and so does a semi
+    range that spans it (`common.stage.ALWAYS_HELD_BOUNDARIES`).  Refusing
+    those was refusing the operator the one decision record a boundary that
+    really did stop the run is entitled to, on the strength of a sentence about
+    the driver that the driver contradicts.
+    """
+
+    try:
+        held = held_advance_boundaries(mode, stage=stage, from_stage=from_stage, to_stage=to_stage)
+    except ContractError as error:
+        raise ApprovalRefusal(f"advance refuses this mode selection: {error}") from error
+    if stage not in held:
+        waits = ", ".join(sorted(held))
+        if mode == "auto":
+            raise ApprovalRefusal(
+                f"advance refuses {stage} in auto mode: auto passes every selected boundary "
+                f"without a person-held record except {waits}, which stops a run in every mode"
+            )
+        raise ApprovalRefusal(
+            f"advance refuses {stage} in {mode} mode: that invocation waits at {waits}, not {stage}"
+        )
+    return held
+
+
 def record_advance(
     tree: RunTree,
     stage: str,
@@ -88,10 +138,23 @@ def record_advance(
     the staleness is permanent and visible — `verify_advance` refuses such a
     record, and `review._still_binds` names it stale on the one surface a
     person reads, every time they read it.
+
+    ``expected_digest`` is required, not merely checked when given: this is
+    the one function that can append an advance record, so it is the one
+    place that can silently drop the confirmation an operator was shown. An
+    ``expected_digest`` of ``None`` used to mean "compare against whatever is
+    on disk right now", which is not a check at all — it always matches
+    itself. A caller with no observed digest to bind has not shown anyone a
+    boundary to confirm, and must be refused before it can write.
     """
 
     _seal, seal_digest = sealed_boundary(tree, stage)
-    if expected_digest is not None and seal_digest != expected_digest:
+    if expected_digest is None:
+        raise ApprovalRefusal(
+            "advance refuses to record without the exact seal digest that was shown for "
+            "confirmation; a caller may not bind to whatever happens to be on disk right now"
+        )
+    if seal_digest != expected_digest:
         raise ApprovalRefusal(
             "advance refuses because the stage seal changed after the operator reviewed it; "
             "no boundary was advanced"
@@ -141,6 +204,12 @@ def trigger_advance(
     digest observed before launch. The worker rechecks that digest, so a seal
     changed between display and execution is refused rather than silently
     advancing a boundary the operator did not review.
+
+    ``expected_digest`` is required for the same reason it is required in
+    `record_advance`: an omitted value used to fall back to whatever digest
+    this call happened to read from disk, which trivially matches itself and
+    checks nothing. A caller with no digest to bind is a caller that showed no
+    one a boundary to confirm.
     """
 
     # Absolute before it is split between the two processes. The parent builds
@@ -156,7 +225,15 @@ def trigger_advance(
         _seal, current_digest = sealed_boundary(tree, stage)
     except ApprovalRefusal as error:
         raise OperatorError(ErrorCode.ADVANCE_REFUSED, detail=str(error)) from error
-    checked_digest = current_digest if expected_digest is None else expected_digest
+    if expected_digest is None:
+        raise OperatorError(
+            ErrorCode.ADVANCE_REFUSED,
+            detail=(
+                "no observed seal digest was given to bind; a caller may not trigger an "
+                "advance without the exact digest it showed for confirmation"
+            ),
+        )
+    checked_digest = expected_digest
     if checked_digest != current_digest:
         raise OperatorError(
             ErrorCode.ADVANCE_REFUSED,

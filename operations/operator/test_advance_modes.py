@@ -1,0 +1,593 @@
+"""The operator describes staged-run boundaries without choosing for a person."""
+
+from __future__ import annotations
+
+import ast
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+from common.contracts import stages as stage_names
+from common.contracts.canonical import canonical_bytes, self_hash
+from common.contracts.errors import ApprovalRefusal
+from common.contracts.stages import STAGES
+from common.runtree.store import RunTree
+from common.stage import ALWAYS_HELD_BOUNDARIES, RUN_MODES, held_advance_boundaries
+
+from . import advance, cli
+
+ROOT = Path(__file__).resolve().parents[2]
+ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
+
+
+def _run(tmp_path: Path, *selection: str) -> tuple[Path, str]:
+    root = tmp_path / "runs"
+    command = [
+        sys.executable,
+        str(ORCHESTRATOR),
+        "--fixture",
+        "synthetic-two-page-v0",
+        "--scenario",
+        "happy",
+        "--run-id",
+        "staged",
+        "--run-root",
+        str(root),
+    ]
+    completed = subprocess.run(
+        command,
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    if selection:
+        completed = subprocess.run(
+            [
+                *command,
+                *selection,
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert completed.returncode == 0, completed.stderr
+    return root, "staged"
+
+
+@pytest.mark.parametrize(
+    ("mode", "stage", "first", "last", "expected"),
+    (
+        ("manual", "designator", None, None, {"designator"}),
+        # A semi range that spans the Attestatores holds there too: the driver
+        # stops on its held exit before it looks at `mode` at all.
+        ("semi", "perlector", "designator", "perlector", {"attestatores", "perlector"}),
+        # ... and one that does not span it holds only at its own range end.
+        ("semi", "designator", "door", "designator", {"designator"}),
+        ("auto", "armarium", None, None, {"attestatores"}),
+    ),
+)
+def test_staged_mode_semantics_name_every_boundary_that_can_wait(
+    mode: str, stage: str, first: str | None, last: str | None, expected: set[str]
+) -> None:
+    assert held_advance_boundaries(mode, stage=stage, from_stage=first, to_stage=last) == expected
+
+
+def test_semi_mode_refuses_an_intermediate_boundary_not_actually_held() -> None:
+    with pytest.raises(ApprovalRefusal, match="waits at attestatores, perlector, not designator"):
+        advance.held_boundaries_for_mode(
+            "semi", stage="designator", from_stage="designator", to_stage="perlector"
+        )
+
+
+def _mode_independent_held_stages() -> frozenset[str]:
+    """Every stage the driver returns EXIT_HELD for without consulting ``mode``.
+
+    Read out of `run_sequence`'s own syntax rather than restated by hand. The
+    console's staged-mode model is a claim *about this function*, and the way
+    it was wrong before was that the claim and the function had never been
+    compared: `held_advance_boundaries` said auto waits for nobody while the
+    driver two directories away returned EXIT_HELD on a held Attestatores in
+    every mode. A hand-written list here would have agreed with whichever of
+    the two its author read last.
+    """
+
+    module = ast.parse(ORCHESTRATOR.read_text(encoding="utf-8"))
+    function = next(
+        node
+        for node in ast.walk(module)
+        if isinstance(node, ast.FunctionDef) and node.name == "run_sequence"
+    )
+    held: set[str] = set()
+    for branch in ast.walk(function):
+        if not isinstance(branch, ast.If):
+            continue
+        returns_held = any(
+            isinstance(node, ast.Return)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "EXIT_HELD"
+            for statement in branch.body
+            for node in ast.walk(statement)
+        )
+        if not returns_held:
+            continue
+        if any(isinstance(node, ast.Name) and node.id == "mode" for node in ast.walk(branch.test)):
+            continue  # a stop this selection's mode chose, not one every mode takes
+        for comparison in ast.walk(branch.test):
+            if (
+                not isinstance(comparison, ast.Compare)
+                or not isinstance(comparison.left, ast.Name)
+                or comparison.left.id != "name"
+                or not isinstance(comparison.ops[0], ast.Eq)
+            ):
+                continue
+            operand = comparison.comparators[0]
+            if isinstance(operand, ast.Constant):
+                held.add(operand.value)
+            elif isinstance(operand, ast.Name):
+                held.add(getattr(stage_names, operand.id))
+    return frozenset(held)
+
+
+def test_the_always_held_set_is_exactly_the_drivers_own_mode_independent_stops() -> None:
+    assert _mode_independent_held_stages() == ALWAYS_HELD_BOUNDARIES
+
+
+def test_the_attestatores_holds_after_it_has_already_sealed_its_boundary() -> None:
+    """The always-held boundary is a *sealed* one, which is why it is advanceable.
+
+    A hold that fired before the seal would leave nothing for an advance record
+    to bind, and this whole exception would be pointless. The Attestatores'
+    tally hold is emitted after `context.seal_boundary()`, so the boundary an
+    auto run stops at really does have a stage-seal in the tree.
+    """
+
+    source = (ROOT / "pipeline" / "3_attestatores" / "run.py").read_text(encoding="utf-8")
+    sealed_at = source.index("context.seal_boundary()")
+    tally_hold = source.index("Attestatores attempt tally UNKNOWN", sealed_at)
+    assert sealed_at < tally_hold
+
+
+def test_every_advanceable_boundary_is_a_driver_member_in_the_same_order() -> None:
+    """`held_advance_boundaries` indexes `STAGES`; the driver indexes its own sequence.
+
+    A semi range is resolved twice — once by the orchestrator over
+    `SEQUENCE_NAMES` and once here over `STAGES` — so the two orders agreeing is
+    load-bearing, not incidental. `recovery` is the one driver member with no
+    stage program and no completion seal; it is a legal `--to` for the driver
+    and names no boundary to advance, which is why the refusal below says so
+    in those words rather than calling it an unknown name.
+    """
+
+    from pipeline.orchestrator.run import SEQUENCE_NAMES
+
+    assert tuple(name for name in SEQUENCE_NAMES if name in STAGES) == STAGES
+    assert set(SEQUENCE_NAMES) - set(STAGES) == {"recovery"}
+
+
+def test_a_range_endpoint_with_no_boundary_names_the_boundaries_that_do() -> None:
+    with pytest.raises(ApprovalRefusal) as refusal:
+        advance.held_boundaries_for_mode(
+            "semi", stage="recensor", from_stage="designator", to_stage="recovery"
+        )
+
+    detail = str(refusal.value)
+    assert "'recovery'" in detail and "owns no stage completion boundary" in detail
+    assert all(boundary in detail for boundary in STAGES)
+
+
+def test_auto_mode_shows_boundary_state_then_refuses_an_advance_record(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    run_root, run_id = _run(tmp_path)
+
+    with pytest.raises(Exception) as refusal:
+        cli._advance_with_confirmation(
+            run_root,
+            run_id,
+            "armarium",
+            reason="operator reviewed the completed run",
+            workspace=ROOT,
+            mode="auto",
+        )
+
+    assert "auto mode" in (refusal.value.detail or "").lower()
+    rendered = capsys.readouterr().out
+    assert "Current boundary state" in rendered
+    assert "armarium: seal" in rendered
+
+
+def test_semi_mode_confirmation_binds_the_displayed_last_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    run_root, run_id = _run(tmp_path, "--from", "designator", "--to", "perlector")
+    monkeypatch.setattr(cli, "_typed_advance_confirmation", lambda phrase: phrase)
+
+    cli._advance_with_confirmation(
+        run_root,
+        run_id,
+        "perlector",
+        reason="operator reviewed the range endpoint",
+        workspace=ROOT,
+        mode="semi",
+        from_stage="designator",
+        to_stage="perlector",
+    )
+
+    rendered = capsys.readouterr().out
+    assert "Semi mode runs the inclusive range designator through perlector" in rendered
+    assert "This invocation waits at: attestatores, perlector." in rendered
+    assert "Sealed evidence summary:" in rendered
+    assert "Advance record:" in rendered
+
+
+def test_manual_mode_confirmation_binds_the_named_boundary_end_to_end(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The third mode gets the same live-fixture proof the other two already had.
+
+    Auto and semi each had an end-to-end case against a real sealed run tree;
+    manual, the mode that waits at every boundary, did not. A regression in
+    manual's own path (for example a stray `from_stage`/`to_stage` leaking
+    through) would not have failed any existing test.
+    """
+    run_root, run_id = _run(tmp_path)
+    monkeypatch.setattr(cli, "_typed_advance_confirmation", lambda phrase: phrase)
+
+    cli._advance_with_confirmation(
+        run_root,
+        run_id,
+        "designator",
+        reason="operator reviewed the manual boundary",
+        workspace=ROOT,
+        mode="manual",
+    )
+
+    rendered = capsys.readouterr().out
+    assert "Manual mode runs designator alone and passes nothing." in rendered
+    assert "This invocation waits at: designator." in rendered
+    assert "Sealed evidence summary:" in rendered
+    assert "Advance record:" in rendered
+
+
+def test_semi_mode_refuses_an_intermediate_boundary_end_to_end(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A mode declared one way must refuse against a boundary sealed another.
+
+    `held_boundaries_for_mode` already proves this in isolation; this repeats it
+    through the exact CLI entry point an operator drives, over a real sealed
+    run tree, and checks that the refusal writes nothing.
+    """
+    run_root, run_id = _run(tmp_path, "--from", "designator", "--to", "perlector")
+    monkeypatch.setattr(cli, "_typed_advance_confirmation", lambda phrase: phrase)
+    receipts = RunTree(run_root, run_id).root / "receipts" / "sha256"
+    before = set(receipts.glob("*.json")) if receipts.exists() else set()
+
+    with pytest.raises(Exception) as refusal:
+        cli._advance_with_confirmation(
+            run_root,
+            run_id,
+            "designator",
+            reason="operator reviewed the intermediate boundary",
+            workspace=ROOT,
+            mode="semi",
+            from_stage="designator",
+            to_stage="perlector",
+        )
+
+    assert "waits at attestatores, perlector, not designator" in (refusal.value.detail or "")
+    after = set(receipts.glob("*.json")) if receipts.exists() else set()
+    assert after == before
+
+
+def _reseal(run_root: Path, run_id: str, stage: str) -> str:
+    """Rewrite one stage's stored seal in place and return its new digest.
+
+    The console's whole confirmation binding is "the boundary you were shown is
+    the boundary that gets advanced", so the case that proves it has to move a
+    real seal on disk between the two moments rather than simulate the move.
+    """
+
+    tree = RunTree(run_root, run_id)
+    seal, _digest = advance.sealed_boundary(tree, stage)
+    record = tree.read_artifact(stage, "stage-seal", seal["artifact_id"])
+    record["payload"] = {
+        **record["payload"],
+        "census": [
+            *record["payload"]["census"],
+            {"kind": "probe", "outcome": "sealed", "count": 1},
+        ],
+    }
+    record["self_hash"] = self_hash(record)
+    tree.resolve(tree.artifact_path(stage, "stage-seal", seal["artifact_id"])).write_bytes(
+        canonical_bytes(record)
+    )
+    return advance.sealed_boundary(tree, stage)[1]
+
+
+def test_a_boundary_resealed_between_presentation_and_confirmation_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The typed digest binds the boundary that was *shown*, not the one on disk.
+
+    Nothing exercised this window through the console before: the digest check
+    in `trigger_advance` was proven only by callers that handed it a stale value
+    directly. Here the reseal happens inside the confirmation prompt itself —
+    exactly the interval a person spends reading the phrase — and the operator
+    then types the phrase they were shown, which is the only thing they could
+    have typed. The advance must refuse and write nothing.
+    """
+
+    run_root, run_id = _run(tmp_path)
+    tree = RunTree(run_root, run_id)
+    receipts = tree.root / "receipts" / "sha256"
+    before = set(receipts.glob("*.json")) if receipts.exists() else set()
+    shown: list[str] = []
+
+    def reseal_then_type(phrase: str) -> str:
+        shown.append(phrase)
+        _reseal(run_root, run_id, "armarium")
+        return phrase
+
+    monkeypatch.setattr(cli, "_typed_advance_confirmation", reseal_then_type)
+
+    with pytest.raises(Exception) as refusal:
+        cli._advance_with_confirmation(
+            run_root,
+            run_id,
+            "armarium",
+            reason="operator reviewed the boundary that then moved",
+            workspace=ROOT,
+            mode="manual",
+        )
+
+    assert "changed after it was shown for confirmation" in (refusal.value.detail or "")
+    assert len(shown) == 1
+    after = set(receipts.glob("*.json")) if receipts.exists() else set()
+    assert after == before
+
+
+def test_auto_mode_never_solicits_a_typed_confirmation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Refused before the prompt, not after it.
+
+    An auto boundary that solicited a confirmation and then discarded it would
+    still show a person a decision they cannot make. The existing auto case only
+    checked the refusal's wording, which a prompt-then-refuse ordering would
+    also have satisfied on a terminal with no stdin.
+    """
+
+    run_root, run_id = _run(tmp_path)
+    solicited: list[str] = []
+
+    def record_then_fail(phrase: str) -> str:
+        solicited.append(phrase)
+        raise AssertionError(f"auto mode solicited a confirmation: {phrase!r}")
+
+    monkeypatch.setattr(cli, "_typed_advance_confirmation", record_then_fail)
+
+    with pytest.raises(Exception) as refusal:
+        cli._advance_with_confirmation(
+            run_root,
+            run_id,
+            "armarium",
+            reason="operator reviewed the completed run",
+            workspace=ROOT,
+            mode="auto",
+        )
+
+    assert solicited == []
+    assert "auto mode" in (refusal.value.detail or "").lower()
+
+
+def test_auto_mode_advances_the_one_boundary_that_holds_in_every_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Auto mode may advance the boundary the driver holds in every mode.
+
+    The fixture run here completed, so this proves the console's *permission*,
+    not a hold: what it pins is that an auto invocation is no longer refused at
+    the Attestatores. It can be refused there no longer because the driver
+    returns EXIT_HELD at that boundary whatever mode it was invoked in, and the
+    boundary is already sealed when it does — so an auto run really can stop
+    with a person in front of a sealed boundary, and the record they are
+    entitled to append was being refused on the strength of a sentence about
+    auto mode that the driver contradicts. Declaring `--mode manual` to get
+    past that would have been an operator made to misdescribe their own run.
+    """
+
+    run_root, run_id = _run(tmp_path)
+    monkeypatch.setattr(cli, "_typed_advance_confirmation", lambda phrase: phrase)
+
+    cli._advance_with_confirmation(
+        run_root,
+        run_id,
+        "attestatores",
+        reason="operator reviewed the held witness boundary",
+        workspace=ROOT,
+        mode="auto",
+    )
+
+    rendered = capsys.readouterr().out
+    assert "This invocation waits at: attestatores." in rendered
+    assert "Advance record:" in rendered
+
+
+def test_an_unvalidated_mode_selection_states_no_boundary_before_it_refuses(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A semi selection with no range must not announce where it waits first.
+
+    The mode sentence used to be printed before the selection was checked, so
+    this exact invocation told the operator "it waits at None" and only then
+    refused. Presenting a boundary claim the console has not established is the
+    misrepresentation this surface exists to avoid, however obviously wrong the
+    word "None" looks to a reader who already knows.
+    """
+
+    run_root, run_id = _run(tmp_path)
+
+    with pytest.raises(Exception) as refusal:
+        cli._advance_with_confirmation(
+            run_root,
+            run_id,
+            "perlector",
+            reason="operator forgot the range",
+            workspace=ROOT,
+            mode="semi",
+        )
+
+    assert "needs both the first and last stage" in (refusal.value.detail or "")
+    rendered = capsys.readouterr().out
+    assert "waits at" not in rendered
+    assert "None" not in rendered
+    assert "Current boundary state" in rendered  # the evidence is still shown
+
+
+def test_the_advance_presentation_never_phrases_a_recommendation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Hard rule 8 on the surface that most invites a nudge.
+
+    Every line here projects a stored fact — a digest, an ordinal, a census, or
+    what the selected mode does. None of them may tell the operator which
+    boundary to advance or that a boundary looks fine, because a console that
+    ranks boundaries for a person is a picker with a friendlier vocabulary.
+    """
+
+    run_root, run_id = _run(tmp_path)
+    monkeypatch.setattr(cli, "_typed_advance_confirmation", lambda phrase: phrase)
+
+    cli._advance_with_confirmation(
+        run_root,
+        run_id,
+        "designator",
+        reason="operator reviewed the boundary",
+        workspace=ROOT,
+        mode="manual",
+    )
+
+    rendered = capsys.readouterr().out
+    lines = [line.lower() for line in rendered.splitlines() if "not a recommendation" not in line]
+    for phrasing in (
+        "recommend",
+        "suggest",
+        "advise",
+        "you should",
+        "ready to",
+        "safe to",
+        "looks ",
+        "best ",
+        "prefer",
+    ):
+        assert not any(phrasing in line for line in lines), phrasing
+
+
+def test_the_double_click_route_names_every_legal_value_it_asks_for(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A person at the double-click window has no `--help` to consult.
+
+    `--stage`, `--from-stage`, and `--to-stage` are checked against a closed
+    list the parser never shows on this route, so a prompt that does not name
+    the boundaries asks the operator to guess `ink-map` against `ink_map` and
+    then refuses the spelling it never offered.
+    """
+
+    prompts: list[str] = []
+    answers = iter(
+        ("advance", "/runs", "staged", "perlector", "reviewed", "semi", "designator", "perlector")
+    )
+
+    def ask(prompt: str) -> str:
+        prompts.append(prompt)
+        return next(answers)
+
+    monkeypatch.setattr("builtins.input", ask)
+
+    arguments = cli._interactive_arguments()
+
+    assert arguments == [
+        "advance",
+        "--run-root",
+        "/runs",
+        "--run-id",
+        "staged",
+        "--stage",
+        "perlector",
+        "--reason",
+        "reviewed",
+        "--mode",
+        "semi",
+        "--from-stage",
+        "designator",
+        "--to-stage",
+        "perlector",
+    ]
+    cli.build_parser().parse_args(arguments)
+
+    boundary_prompts = [
+        prompt for prompt in prompts if "one of:" in prompt and "invocation mode" not in prompt
+    ]
+    assert len(boundary_prompts) == 3
+    for prompt in boundary_prompts:
+        assert all(boundary in prompt for boundary in STAGES)
+    mode_prompt = next(prompt for prompt in prompts if "invocation mode" in prompt)
+    assert all(mode in mode_prompt for mode in RUN_MODES)
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected"),
+    (
+        ("manual", "manual mode names one stage, not a range"),
+        ("auto", "auto mode names no held range"),
+    ),
+)
+def test_a_range_given_to_a_rangeless_mode_is_refused_not_ignored(mode: str, expected: str) -> None:
+    """Silently dropping the range would make two different invocations one.
+
+    `--mode manual --from-stage designator --to-stage perlector` describes a run
+    that does not exist. Ignoring the endpoints would advance the named stage
+    anyway and record a decision about a selection nobody made.
+    """
+
+    with pytest.raises(ApprovalRefusal, match=expected):
+        advance.held_boundaries_for_mode(
+            mode, stage="perlector", from_stage="designator", to_stage="perlector"
+        )
+
+
+def test_the_declared_mode_is_presented_as_a_declaration_not_a_read_fact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`--mode` is unverifiable, and the surface has to say so.
+
+    Nothing in the run tree records how the driver was invoked — there is no
+    mode field on `run.json` and no stage artifact carries one — so the console
+    is repeating the operator's own word back to them. Printing it in the same
+    voice as the seal digests, which *are* read from the tree, would have made
+    an unchecked claim look like evidence on the one surface a person reads
+    before appending a durable decision.
+    """
+
+    run_root, run_id = _run(tmp_path)
+    monkeypatch.setattr(cli, "_typed_advance_confirmation", lambda phrase: phrase)
+
+    cli._advance_with_confirmation(
+        run_root,
+        run_id,
+        "designator",
+        reason="operator reviewed the boundary",
+        workspace=ROOT,
+        mode="manual",
+    )
+
+    rendered = capsys.readouterr().out
+    assert "Staged invocation mode, as you declared it: manual." in rendered
+    assert "records no invocation mode" in rendered
