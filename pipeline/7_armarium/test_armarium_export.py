@@ -19,6 +19,7 @@ from armarium_export import (
     _zip_bytes,
     build_armarium_bundle,
     canonical_text_sha256,
+    edge_hold_pages_from_rows,
     verify_delivered_bundle,
     verify_export_bundle,
     verify_projection_identity,
@@ -32,6 +33,7 @@ from common.contracts.errors import ApprovalRefusal, SchemaRefusal
 from common.contracts.outcomes import ArmariumCategory, run_aggregate
 from common.contracts.uncertainty import validate as validate_uncertainty
 from common.imaging import encode_grayscale_png
+from common.residual_ink import MINIMUM_INK_PIXELS
 
 TEXT_REGISTER = "text/_source_folder/register/readings.txt"
 
@@ -45,6 +47,24 @@ def _source_bytes(path: str) -> dict[str, bytes]:
         "1_exemplar/blobs/sha256/page": _pixels(80),
         "2_designator/blobs/sha256/crop": _pixels(40),
     }[path]
+
+
+def _mapped_page(ordinal: int = 1) -> dict:
+    """An ink-map row for a page Unit 9 never flagged: nothing to release."""
+    return {"ordinal": ordinal, "initial_outcome": "mapped", "remeasured": None}
+
+
+def _edge_page(ordinal: int = 1, *, outside: int, total: int = 10_000) -> dict:
+    """A flagged ink-map row carrying the numbers its release is judged on."""
+    return {
+        "ordinal": ordinal,
+        "initial_outcome": "unclaimed-edge-ink",
+        "remeasured": {
+            "total_ink_pixels": total,
+            "outside_ink_pixels": outside,
+            "edge_band_pixels": 64,
+        },
+    }
 
 
 def _projection(*, salvage_items=()) -> ArmariumProjection:
@@ -143,6 +163,7 @@ def _projection(*, salvage_items=()) -> ArmariumProjection:
             "act_text_status": {"one": "established"},
         },
         salvage_items=tuple(salvage_items),
+        ink_map_pages=(_mapped_page(),),
     )
 
 
@@ -229,6 +250,214 @@ def test_every_literal_projection_has_the_same_clean_text_and_hash(tmp_path):
     assert verify_projection_identity(bundle.data, tmp_path / "identity") == {
         "act-1": "Cǣsar d’Amours"
     }
+
+
+def _otherwise_complete(**fields) -> ArmariumProjection:
+    """A projection with nothing else wrong with it.
+
+    `_projection()` carries a held act, so every status assertion made over it
+    is already true before an edge hold is added; a test that used it could not
+    tell "the edge hold forced partial" from "this projection was always
+    partial". This one delivers every act it expects, so `complete` is the
+    honest baseline and any partial result has exactly one cause.
+    """
+    original = _projection()
+    acts = (original.acts[0],)
+    basis = {
+        **original.aggregate_basis,
+        "coverage_records": {"one": original.aggregate_basis["coverage_records"]["one"]},
+        "act_pages": {"one": [1]},
+    }
+    projection = replace(
+        original,
+        acts=acts,
+        expected_acts=1,
+        aggregate_basis=basis,
+        **fields,
+    )
+    return replace(
+        projection,
+        aggregate=run_aggregate(
+            {act["act_key"]: ArmariumCategory(act["category"]) for act in acts},
+            basis["coverage_records"],
+            {page["ordinal"]: page for page in projection.pages},
+            unaddressed_chairs=basis["unaddressed_chairs"],
+            act_pages=basis["act_pages"],
+            act_text_status=basis["act_text_status"],
+            # Mirrors the stage: an unreleased edge finding is one of the run's
+            # own unresolved causes, so the aggregate is measured with it.
+            edge_hold_pages=edge_hold_pages_from_rows(list(projection.ink_map_pages)),
+        ),
+    )
+
+
+def test_an_otherwise_complete_export_is_complete_without_an_edge_hold():
+    """The control the hold test needs: this projection's baseline is green."""
+    bundle = build_armarium_bundle(
+        _otherwise_complete(), _formats(embed_pixels=False), _source_bytes
+    )
+    manifest = json.loads(_members(bundle.data)[EXPORT_MANIFEST_NAME])
+    assert manifest["claims"]["status"] == "complete"
+    assert manifest["claims"]["partial_reasons"] == []
+    assert manifest["claims"]["ink_map"]["held_pages"] == []
+
+
+def test_an_unreleased_edge_finding_forces_a_partial_export_and_rejects_complete(tmp_path):
+    """A page-level hold is not erased because its acts happen to be complete.
+
+    Measured against the green control above, so the partial verdict, the named
+    reason and the refusal all have exactly one cause: page 1's re-measure
+    still leaves ink outside every cut.
+    """
+    bundle = build_armarium_bundle(
+        _otherwise_complete(ink_map_pages=(_edge_page(outside=5_000),)),
+        _formats(embed_pixels=False),
+        _source_bytes,
+    )
+    members = _members(bundle.data)
+    manifest = json.loads(members[EXPORT_MANIFEST_NAME])
+
+    assert manifest["claims"]["status"] == "partial"
+    assert manifest["claims"]["ink_map"]["held_pages"] == [1]
+    assert any("unclaimed-edge-ink" in reason for reason in manifest["claims"]["partial_reasons"])
+
+    manifest["claims"]["status"] = "complete"
+    manifest["claims"]["partial_reasons"] = []
+    _refresh_manifest(members, manifest)
+    with pytest.raises(SchemaRefusal, match="does not match its own terminal ledger"):
+        verify_export_bundle(_zip_bytes(members), tmp_path / "complete-refusal")
+
+
+def test_a_release_is_by_ink_and_a_partial_claim_does_not_make_one():
+    """Consult §4.4: release is by ink, not by decision.
+
+    The same flagged page, judged only on how much of its own edge ink the
+    Designator's cuts actually reached. A clear re-measure releases; a crop
+    that claims all but a trace still releases only if that trace is under the
+    ink map's own floor; a partial claim that leaves real ink outside holds.
+    """
+    # Total chosen so the ink map's *fraction* gate is the one deciding: 24 of
+    # 1,000 is 2.4%, over `MINIMUM_FRACTION_OUTSIDE_COVERAGE`, while 23 is under
+    # `MINIMUM_INK_PIXELS` and 24 of 10,000 would be under the fraction. Both
+    # halves of the shared gate are exercised, neither is assumed.
+    for outside, held in ((0, []), (MINIMUM_INK_PIXELS - 1, []), (MINIMUM_INK_PIXELS, [1])):
+        bundle = build_armarium_bundle(
+            _otherwise_complete(ink_map_pages=(_edge_page(outside=outside, total=1_000),)),
+            _formats(embed_pixels=False),
+            _source_bytes,
+        )
+        manifest = json.loads(_members(bundle.data)[EXPORT_MANIFEST_NAME])
+        assert manifest["claims"]["ink_map"]["held_pages"] == held, outside
+        assert manifest["claims"]["status"] == ("partial" if held else "complete"), outside
+
+
+def test_a_dropped_edge_hold_cannot_be_verified_away_on_a_clean_machine(tmp_path):
+    """The hold is derived from the source graph, never read out of its claim.
+
+    Every package member except EXPORT_MANIFEST.json used to be byte-identical
+    whether or not a page was held, and the verifier recomputed the terminal
+    ledger from `claims.ink_map.held_pages` -- so a manifest built with the
+    hold simply omitted verified clean against the very run that had it. The
+    ink-map rows now live in `sources.json`, and the held set is recomputed
+    from their recorded counts by the ink map's own gate.
+    """
+    held = _members(
+        build_armarium_bundle(
+            _otherwise_complete(ink_map_pages=(_edge_page(outside=5_000),)),
+            _formats(embed_pixels=False),
+            _source_bytes,
+        ).data
+    )
+    green = _members(
+        build_armarium_bundle(
+            _otherwise_complete(ink_map_pages=(_edge_page(outside=0),)),
+            _formats(embed_pixels=False),
+            _source_bytes,
+        ).data
+    )
+    # The evidence is now part of the package, so the two differ beyond the
+    # manifest. That difference is the whole point of the fix.
+    assert held["sources.json"] != green["sources.json"]
+
+    # The forgery is the *green* manifest over the *held* source graph, with
+    # its member digests repaired so nothing but the derivation itself can
+    # refuse it. Before the fix this package verified clean.
+    forged = dict(held)
+    green_manifest = json.loads(green[EXPORT_MANIFEST_NAME])
+    for row in green_manifest["members"]:
+        row["sha256"] = digest_bytes(forged[row["path"]])
+        row["bytes"] = len(forged[row["path"]])
+    _refresh_manifest(forged, green_manifest)
+    with pytest.raises(SchemaRefusal, match="ink-map hold claim does not match"):
+        verify_export_bundle(_zip_bytes(forged), tmp_path / "forged-green")
+
+
+def test_an_edited_ink_map_row_cannot_release_a_page_it_still_flags(tmp_path):
+    """Editing only the counts is refused by the claim they no longer support."""
+    members = _members(
+        build_armarium_bundle(
+            _otherwise_complete(ink_map_pages=(_edge_page(outside=5_000),)),
+            _formats(embed_pixels=False),
+            _source_bytes,
+        ).data
+    )
+    sources = json.loads(members["sources.json"])
+    sources["ink_map_pages"][0]["remeasured"]["outside_ink_pixels"] = 0
+    members["sources.json"] = canonical_bytes(sources)
+    _refresh_manifest_member(members, "sources.json")
+    with pytest.raises(SchemaRefusal, match="ink-map hold claim does not match"):
+        verify_export_bundle(_zip_bytes(members), tmp_path / "edited-row")
+
+
+def test_the_ink_map_denominator_must_be_exactly_the_sealed_page_census():
+    """Consult §4.3's cross-instrument identity, executable inside the package."""
+    with pytest.raises(SchemaRefusal, match="ink-map denominator is not exactly"):
+        build_armarium_bundle(
+            _otherwise_complete(ink_map_pages=()), _formats(embed_pixels=False), _source_bytes
+        )
+    with pytest.raises(SchemaRefusal, match="ink-map denominator is not exactly"):
+        build_armarium_bundle(
+            _otherwise_complete(ink_map_pages=(_mapped_page(), _mapped_page(2))),
+            _formats(embed_pixels=False),
+            _source_bytes,
+        )
+
+
+def test_a_page_the_map_never_flagged_may_not_carry_a_re_measurement():
+    """GOVERNANCE 10: absence of a measurement is recorded as absence."""
+    with pytest.raises(SchemaRefusal, match="re-measures an ink-map page its own map never"):
+        build_armarium_bundle(
+            _otherwise_complete(
+                ink_map_pages=(
+                    {
+                        "ordinal": 1,
+                        "initial_outcome": "mapped",
+                        "remeasured": {
+                            "total_ink_pixels": 0,
+                            "outside_ink_pixels": 0,
+                            "edge_band_pixels": 64,
+                        },
+                    },
+                )
+            ),
+            _formats(embed_pixels=False),
+            _source_bytes,
+        )
+
+
+def test_a_flagged_page_with_no_re_measurement_cannot_reach_an_export():
+    """A hold may not be released by a row that never says it was re-measured."""
+    with pytest.raises(SchemaRefusal, match="no re-measurement to release it"):
+        build_armarium_bundle(
+            replace(
+                _otherwise_complete(),
+                ink_map_pages=(
+                    {"ordinal": 1, "initial_outcome": "unclaimed-edge-ink", "remeasured": None},
+                ),
+            ),
+            _formats(embed_pixels=False),
+            _source_bytes,
+        )
 
 
 def test_manifest_uncertainty_status_reflects_no_literal_format_carriage(tmp_path):
@@ -1340,6 +1569,7 @@ def test_source_root_and_a_named_source_root_folder_cannot_collide(tmp_path):
         }
         for act in original.acts
     )
+    ink_map_pages = (_mapped_page(1), _mapped_page(2))
     source_manifest = (
         {"ordinal": 1, "relative_path": "root-folio.png", "sha256": digest_bytes(source)},
         {
@@ -1353,6 +1583,7 @@ def test_source_root_and_a_named_source_root_folder_cannot_collide(tmp_path):
             original,
             acts=held,
             pages=pages,
+            ink_map_pages=ink_map_pages,
             source_manifest=source_manifest,
             aggregate={
                 "status": "partial",
@@ -1920,6 +2151,9 @@ def test_a_refused_source_and_a_silent_page_each_land_in_a_named_set(tmp_path):
     projection = replace(
         base,
         pages=pages,
+        # One ink-map row per *sealed* page: page 2 was refused and never
+        # reached the map at all.
+        ink_map_pages=(_mapped_page(1), _mapped_page(3)),
         source_manifest=tuple(
             {
                 "ordinal": page["ordinal"],

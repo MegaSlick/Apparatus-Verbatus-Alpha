@@ -1860,17 +1860,25 @@ def _sealed_sibling_semi_finals(
 
 
 def flag_location_basis(
-    dossier: dict[str, Any], flags: list[dict[str, Any]]
+    dossier: dict[str, Any], flags: list[dict[str, Any]], text: str
 ) -> list[dict[str, str]]:
     """Name the chair and retained-text derivation behind testimony-diff flags.
 
     This records a location basis only; it does not promote testimony into a
     reading or make boundary geometry a text flag.
+
+    The denominator is the chairs whose retained text actually DEPARTS from
+    this reading -- ``audit_semi_finals`` raises one `testimony-diff` flag per
+    such chair (`pipeline/4_perlector/audit.py`) and is handed bare strings, so
+    it cannot name them. Deriving the basis from "every chair that reported"
+    instead would name a chair that agreed with the reading exactly as the
+    basis of a flag it did not raise: a claim about something nobody measured
+    (GOVERNANCE 10), over a denominator wider than the one the flags were
+    counted on. The two producers are held to the same count below rather than
+    trusted to stay aligned, because nothing else in the draft compares them.
     """
-    if not any(flag.get("class") == "testimony-diff" for flag in flags):
-        return []
     rows = dossier.get("testimonia", [])
-    return sorted(
+    basis = sorted(
         [
             {
                 "class": "testimony-diff",
@@ -1879,11 +1887,21 @@ def flag_location_basis(
             }
             for row in rows
             if isinstance(row, dict)
-            and row.get("reported") is not None
+            and isinstance(row.get("reported"), str)
+            and row["reported"] != text
             and row.get("reported_basis") in {"own-report", "page-slice"}
         ],
         key=lambda row: (row["chair"], row["derivation"]),
     )
+    raised = sum(1 for flag in flags if flag.get("class") == "testimony-diff")
+    if raised != len(basis):
+        raise FatalAccounting(
+            f"the audit raised {raised} testimony-diff flag(s) over this act's retained "
+            f"testimony but {len(basis)} chair(s) of it depart from the reading; a "
+            "flag-location basis may not be counted on a different denominator than "
+            "the flags it explains"
+        )
+    return basis
 
 
 def _page_flags(
@@ -2564,7 +2582,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             "round_cap": audit_policy["round_cap"],
             "policy": policy_record,
             "flags": flags,
-            "flag_location_basis": flag_location_basis(payload["dossier"], flags),
+            "flag_location_basis": flag_location_basis(payload["dossier"], flags, payload["text"]),
         }
         audit.validate_draft(draft_payload)
         draft = context.publish(

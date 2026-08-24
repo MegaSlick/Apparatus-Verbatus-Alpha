@@ -18,7 +18,7 @@ from common.contracts.canonical import digest_bytes  # noqa: E402
 from common.contracts.errors import FatalAccounting  # noqa: E402
 from common.contracts.stages import EXEMPLAR, INK_MAP  # noqa: E402
 from common.exemplar_boundary import verify_sealed_page_pixels  # noqa: E402
-from common.residual_ink import page_edge_ink, page_residual_ink  # noqa: E402
+from common.residual_ink import ink_runs, page_edge_ink, page_residual_ink  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
@@ -137,6 +137,9 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "page_ordinal": ordinal,
                 "ink": artifact_finding(ink_map),
                 "edge": artifact_finding(edge),
+                # Unit 14 reads this map; it never re-decodes page pixels to
+                # decide whether an outside observation asks for a recrop.
+                "edge_findings": ink_runs(image_bytes),
             },
         )
     context.seal_boundary()

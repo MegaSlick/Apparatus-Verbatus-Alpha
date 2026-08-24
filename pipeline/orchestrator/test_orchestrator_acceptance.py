@@ -865,7 +865,42 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # twice each in independent temporary roots at canonical run id "r", through
 # this module's own orchestrate and semantic_snapshot_digest helpers. Counts
 # stay Unit 9's 97/118 (the seam moves bytes, not files) at unchanged exits.
-HAPPY_RUN_TREE_DIGEST = "f872d89d04a4abf54f8f7ba41df6d4b89def69085515a432f543cbf2b553ba5e"
+# Unit 14B reconciliation: the initial Ink Map finding is pre-proposal evidence.
+# Armarium re-measures its retained runs against verified Designator crops, so
+# the fully claimed synthetic ink releases rather than turning happy into a
+# false hold. The positive remains real: a page with no such crop stays held.
+# Both pins were measured twice in independent roots with this module's
+# `orchestrate` and `semantic_snapshot_digest` helpers at run id `r`: happy is
+# 97/0 and review is 106/3.
+# Unit 14B fix pass 2: that release accidentally made Unit 10C's existing
+# witness-observation recovery conditional on the new edge-ink trigger. The
+# older path keeps its own origin and fallback-recrop budget; it is not an
+# edge-ink request. Restoring it re-adds the second review recovery round, so
+# review returns to 118/3 while happy remains 97/0. Both pins were measured at
+# canonical run id `r` in two independent roots through the same helpers after
+# this final semantic byte: happy reproduced its existing digest and review
+# reproduced the replacement below.
+# Unit 14B Opus audit: the Armarium's edge hold is now derived, on both sides,
+# from one recorded ink-map row per sealed page carried in `sources.json`
+# (`armarium-sources.v3`), so the clean-machine verifier recomputes the held set
+# from the package's own source graph instead of reading it back out of the
+# claim it produced. Every package member except EXPORT_MANIFEST.json used to be
+# byte-identical whether or not a page was held, so a manifest built with the
+# hold simply dropped verified clean against the very run that had it. Both
+# trees gain the evidence, so both digests move; counts and exits are unchanged
+# (happy 97/0, review 106/3). Measured twice in independent temporary roots at
+# canonical run id "r" through this module's own `orchestrate` and
+# `semantic_snapshot_digest` helpers.
+# Unit 14B Opus audit, again in both trees: an audit draft's
+# `flag_location_basis` named every chair that reported, not the chairs whose
+# retained text departs from the reading. On this very fixture both acts raise
+# two `testimony-diff` flags and the basis named three chairs -- attestator_1
+# agreed with the reading exactly and was recorded as the basis of a flag it
+# did not raise (GOVERNANCE 10, consult §4.7: a fact re-derived over a wider
+# denominator than its writer counted on). The two producers are now held to
+# the same count. Counts and exits unchanged (happy 97/0, review 106/3); both
+# re-measured twice in independent roots at run id "r".
+HAPPY_RUN_TREE_DIGEST = "e37df7cd50df862eaf556236fd5fafc81c308aa0a31c38ba8b7f86060f9b9a35"
 # Review only, once more in the same seat: a page witness invoked on every act
 # and unusable on all of them now records the serving moment that produced it
 # (`provenance_for(..., attempted=attempted_page)`), where the `reading` gate
@@ -887,7 +922,42 @@ HAPPY_RUN_TREE_DIGEST = "f872d89d04a4abf54f8f7ba41df6d4b89def69085515a432f543cbf
 # "r" by this module's `orchestrate` and `semantic_snapshot_digest` helpers.
 # Union re-pin: see the seam entry above the happy digest — measured on the
 # combined Unit 9 x Unit 14A tree.
-REVIEW_RUN_TREE_DIGEST = "d8092b6eb8a44db04b85a1886bc5271d167311c6ef8aed68839d3e4b520d637d"
+# Unit 14B Sonnet audit: fix pass 2's "restoration" above was the regression,
+# not the fix. Unit 10C's own `unclaimed_observations` is a witness's report --
+# a native/derived box the Attestatores reported, with no ink evidence behind
+# it -- and consult §4.5 (`/out/CONSULT_REPORT.md`, BINDING) requires Unit 9's
+# ink map to independently confirm real ink under that box before it may spend
+# a bounded recovery or hold an act; "the box is a pointer; the ink is the
+# evidence... this is what makes it not a picker." Measured directly against
+# the checked-in fixture (`common.residual_ink.ink_runs` over
+# `proof.synthetic_pages.page_bytes(1)`): the `review` scenario's marginal
+# witness box at page 1, x 0..10 / y 200..240, sits over zero ink. The second
+# review recovery round fix pass 2 restored was therefore spent on a2 (which
+# `hold_acts` declares should go straight to a hold) for no evidence at all --
+# a witness's own unconfirmed report picking a pipeline action for itself,
+# exactly what GOVERNANCE 3 forbids. Restoring the ink gate removes that
+# wasted round: a1's recovery request now names its true origin ("the crop may
+# be incomplete", not the coverage-origin phrase, since its own box is equally
+# unconfirmed by ink), and a2 goes directly to held-for-review, without an
+# intervening recovery-request/region/reading round. Review returns to 106
+# files at unchanged exit 3; happy is untouched (it carries no witness box at
+# all) at the digest above. Both pins were measured twice in independent
+# temporary roots at canonical run id "r" through this module's own
+# `orchestrate` and `semantic_snapshot_digest` helpers: happy reproduced its
+# existing digest and review reproduced the value below.
+# Unit 14B Opus audit: Sonnet's ink gate above is confirmed and unchanged -- the
+# marginal box still sits over measured-zero ink, so review keeps 106 files at
+# exit 3 and no recovery round returns. This digest moved once for the Armarium
+# source-graph byte named above the happy digest, and once more here: review's
+# one recovery request now records its `origin` as data beside the sentence that
+# states it, so the one-observation-one-request bound (consult base question 11)
+# counts a recorded fact rather than re-reading prose. Happy has no recovery
+# request, so its digest above is untouched by that second byte. The bound
+# itself changes no fixture behaviour -- no shipped scenario has ink under a
+# witness pointer at all -- and review stays at 106 files, exit 3. Measured
+# twice in independent temporary roots at canonical run id "r" through this
+# module's own `orchestrate` and `semantic_snapshot_digest` helpers.
+REVIEW_RUN_TREE_DIGEST = "e2b06456788dffb26ab81cac2ed0e23759344cabe2d75453642a6a9e82920c75"
 
 
 def orchestrate(
@@ -4605,8 +4675,11 @@ def test_repeating_the_review_scenario_also_changes_nothing(tmp_path):
     before = snapshot(root)
 
     # Unit 11 adds the same two retained Chandra-response blobs before review's
-    # recovery loop; its append-only invariant is unchanged.
-    assert len(before) == 118
+    # recovery loop; its append-only invariant is unchanged. Unit 14B Sonnet
+    # audit: 106, not 118 -- the ink-confirmation gate (consult §4.5) removes
+    # the second recovery round a2's unconfirmed witness box used to spend
+    # (see the REVIEW_RUN_TREE_DIGEST comment above).
+    assert len(before) == 106
     assert semantic_snapshot_digest(root) == REVIEW_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "review").returncode == 3
     assert snapshot(root) == before
@@ -4801,14 +4874,18 @@ def test_the_witness_uncovered_caveat_names_the_region_carrying_the_new_pixels(r
 
 
 def test_the_recovery_request_and_both_reading_attempts_survive(review_run):
+    """Unit 14B Sonnet audit: a2 no longer requests a spurious second recovery.
+
+    Before the correction, a2 (which `hold_acts` declares should go straight
+    to a hold) independently satisfied `wants_recovery` from the same page's
+    marginal witness box -- a report with zero ink behind it (consult §4.5;
+    see the `REVIEW_RUN_TREE_DIGEST` comment above). Only a1's scenario-
+    declared request is a real, retained coverage decision here.
+    """
     _, tree = review_run
     requests = artifacts(tree, RECENSOR, "recovery-request")
-    # a1's scenario-declared crop request and a2's request for the page witness's
-    # unclaimed native observation are distinct, retained coverage decisions.
-    # The latter is not a retry for its disagreeing text: it is the Recensor's
-    # sealed fallback-recrop decision for ink outside every proposal.
-    assert len(requests) == 2
-    assert {request["payload"]["act_key"] for request in requests} == {"a1", "a2"}
+    assert len(requests) == 1
+    assert {request["payload"]["act_key"] for request in requests} == {"a1"}
 
     readings = [
         record
@@ -4868,8 +4945,15 @@ def test_the_cross_page_act_is_witnessed_on_both_sides_of_the_break(review_run):
 
     The geometric coverage bit says whether a witness observation contains a
     particular region; it is not permission to omit a continuation region from
-    the Perlector's image basis.  Both sides must remain there even when an
-    observation did not cover one of them.
+    the Perlector's image basis.  Both sides must remain there even where a2 is
+    never recovered at all -- exactly the case `review` now exercises (Unit
+    14B Sonnet audit: a2's own second reading here used to come from the same
+    unconfirmed marginal witness box `REVIEW_RUN_TREE_DIGEST` above documents;
+    it is refused there for the same lack of ink evidence). The stronger claim
+    -- that a genuine recovery recrop keeps the far side of a real continuation
+    in the evidence -- is proven end to end by
+    `test_a_recrop_of_a_continuation_act_keeps_its_far_page_in_the_evidence`
+    against `continuation_recovery_run`, which declares a2 for recovery.
     """
     _, tree = review_run
     readings = [
@@ -4877,13 +4961,9 @@ def test_the_cross_page_act_is_witnessed_on_both_sides_of_the_break(review_run):
         for record in artifacts(tree, PERLECTOR, "perlectio")
         if record["payload"]["act_key"] == "a2"
     ]
-    # The second a2 reading is the normal execution of the second request: the
-    # disagreeing page witness observed ink outside every proposal, so the
-    # Recensor spent its threshold-gated fallback-recrop allowance for coverage.
-    assert sorted(record["payload"]["attempt_ordinal"] for record in readings) == [1, 2]
-    reading = max(readings, key=lambda record: record["payload"]["attempt_ordinal"])
+    assert sorted(record["payload"]["attempt_ordinal"] for record in readings) == [1]
+    reading = readings[0]
     regions = reading["payload"]["basis"]["regions"]
-    assert len(regions) == 3
     proposal_regions = {
         record["payload"]["region_id"]
         for record in artifacts(tree, DESIGNATOR, "region")
@@ -4899,12 +4979,11 @@ def test_the_cross_page_act_is_witnessed_on_both_sides_of_the_break(review_run):
 
 
 def test_recovery_stayed_inside_its_budget(review_run):
+    """Unit 14B Sonnet audit: one request, not two -- see the comment on
+    `test_the_recovery_request_and_both_reading_attempts_survive`."""
     _, tree = review_run
     requests = artifacts(tree, RECENSOR, "recovery-request")
-    # The second request comes from attestator_3's retained native observation
-    # outside every sealed proposal. It is coverage recovery, not a text-quality
-    # reroll, and each request retains the exact sealed policy that capped it.
-    assert len(requests) == 2
+    assert len(requests) == 1
     assert all(request["payload"]["budget_allowed"] <= 3 for request in requests), (
         "the absolute cap is a ruling"
     )
@@ -5603,6 +5682,35 @@ def test_the_page_loss_is_named_and_the_run_is_partial(refused_page_run):
         reason.startswith("page 2 was refused:") for reason in export["aggregate"]["reasons"]
     )
     assert export["aggregate"]["by_page_outcome"] == {"sealed": 1, "refused": 1}
+
+
+def test_unclaimed_edge_ink_remains_held_when_designator_cut_no_page_region(tmp_path):
+    """The positive edge case: an initial finding releases only after real coverage.
+
+    `structure-failure` leaves the fixture's actual edge ink without any
+    Designator crop.  It therefore proves the complementary case to happy: the
+    hold reaches the terminal ledger and makes the export visibly partial.
+    """
+    root = tmp_path / "runs"
+    result = orchestrate(root, "r", "structure-failure")
+    assert result.returncode == EXIT_HELD
+
+    tree = RunTree(root, "r")
+    export = export_of(tree)
+    bundle = tree.read_bytes(export["bundle"]["reference"]["relative_path"])
+    with ZipFile(BytesIO(bundle)) as archive:
+        manifest = json.loads(archive.read("EXPORT_MANIFEST.json"))
+
+    assert manifest["claims"]["status"] == "partial"
+    assert manifest["claims"]["ink_map"]["held_pages"] == [1, 2]
+    assert any("unclaimed-edge-ink" in reason for reason in manifest["claims"]["partial_reasons"])
+    page_reasons = {
+        row["unit_id"]: row["reason"]
+        for row in manifest["claims"]["terminal_ledger"]["units"]
+        if row["unit_type"] == "page"
+    }
+    assert set(page_reasons) == {"page:1", "page:2"}
+    assert all("unclaimed-edge-ink" in reason for reason in page_reasons.values())
 
 
 def test_the_act_with_the_lost_continuation_is_held_not_delivered(refused_page_run):

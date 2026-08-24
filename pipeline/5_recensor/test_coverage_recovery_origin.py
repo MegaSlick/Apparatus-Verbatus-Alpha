@@ -2,35 +2,43 @@
 
 Unit 10C gave the Recensor a second reason to spend a bounded fallback-recrop:
 a page witness's own native observation of ink outside every sealed proposal
-(`partition_disagreement.unclaimed_observations`).  In the `review` scenario
-that stimulus arrives beside a scenario-declared recrop on a1 and a scenario
-hold on a2, so nothing observable there separates the coverage route from the
-declared one -- an assertion about the coverage origin made against `review`
-is really an assertion about whichever cause happened to fire first.
+(`partition_disagreement.unclaimed_observations`).  That observation is a
+witness's report -- a *pointer*, in the consult's word -- never itself the
+evidence.  Unit 14B's binding consult (`/out/CONSULT_REPORT.md` §4.5) requires
+a second, independent conjunct before it may spend a bounded recovery or hold
+an act: Unit 9's own ink map must confirm real ink under that pointer.
+Without it, an Attestator's own mis-reported or hallucinated box could spend
+real recovery budget, or hold a real act, on zero actual ink -- the witness
+picking a pipeline action for itself, which GOVERNANCE 3 forbids by name.
 
-The `coverage-recovery` scenario exists for that separation.  It declares
-`recover_acts = []` and `hold_acts = []` and is otherwise the reference run, so
-the witness's unclaimed observation is the ONLY thing in it that can ask for a
-recovery or hold an act.  Three facts are proven here against that path:
+An earlier build pass wired the coverage route straight to
+`unclaimed_observations` with no ink confirmation at all. The
+`coverage-recovery` scenario's own marginal witness box (page 1,
+x 0..10 / y 200..240) is a measured, empirical proof this was live: the
+fixture's underlying page pixels there are entirely background -- zero ink --
+confirmed directly against `proof/synthetic_pages.py` (`common.residual_ink.
+ink_runs`); yet the unconfirmed route spent a real fallback-recrop, and with
+the allowance at zero, held a real act, on that empty box alone. This file now
+proves the corrected boundary: the same witness-alone stimulus asks for
+nothing, in the same shape, whatever the recovery budget is, while the raw
+finding stays visibly retained (GOVERNANCE 2) for a human to weigh. The
+ink-confirmed *positive* path -- where the pointer *is* backed by real ink --
+is proven at the unit level in `test_unit14b_trigger_contract.py`, against
+synthetic ink-map evidence, rather than by adding real ink to this shared
+fixture image: every other scenario's pinned run-tree digest is measured
+against these same page bytes, and widening this file's own claim should not
+silently move every one of them.
 
-1. With the policy's fallback-recrop allowance available, the request is made,
-   it names its origin as an observation rather than a doubt about the reading,
-   and the expanded crop the Designator cuts genuinely reaches the ink that
-   asked for it.  Recovery recovers coverage (GOVERNANCE 11).
-2. With the allowance at zero -- the policy turned off -- the act is held for
-   review, visibly, naming the spent budget; the finding survives on the page
-   Testimonium AND in the review record, and the run reports `partial`.  Nothing
-   disappears inside the loop (GOVERNANCE 2, ARCHITECTURE invariant 4).
-3. A coverage-origin request and a declared-origin request draw on ONE bounded
-   pool.  Three of them in any mixture reconcile; a fourth is refused at the
-   accounting boundary (`RULED_ABSOLUTE_CAP`, "PURE ABSOLUTE, STOP AT 3").
-
-Fact 3 is seeded directly rather than driven through a scenario, for the reason
-`test_recovery_absolute_cap.py` gives at length: `wants_recovery` grants an act
-at most one request in its lifetime (`used_total == 0`), so no scenario can
-drive one act to a second, third or fourth request through the ordinary loop.
-The arithmetic still has to hold for any caller that got there, and mixing the
-two origins is exactly the way a per-origin allowance would hide inside it.
+A third fact survives this correction untouched, seeded directly rather than
+driven through a scenario (`test_recovery_absolute_cap.py` gives the reason at
+length): a coverage-origin request and a declared-origin request draw on ONE
+bounded pool. Three of them in any mixture reconcile; a fourth is refused at
+the accounting boundary (`RULED_ABSOLUTE_CAP`, "PURE ABSOLUTE, STOP AT 3").
+`wants_recovery` grants an act at most one request in its lifetime
+(`used_total == 0`), so no scenario can drive one act to a second, third or
+fourth request through the ordinary loop; the arithmetic still has to hold for
+any caller that got there, and mixing the two origins is exactly the way a
+per-origin allowance would hide inside it.
 """
 
 import copy
@@ -73,14 +81,16 @@ BUDGET = {
 }
 
 
-def _orchestrate(run_root: Path, run_id: str, recovery_config: Path | None = None):
+def _orchestrate(
+    run_root: Path, run_id: str, recovery_config: Path | None = None, scenario: str = SCENARIO
+):
     command = [
         sys.executable,
         str(ORCHESTRATOR),
         "--fixture",
         FIXTURE,
         "--scenario",
-        SCENARIO,
+        scenario,
         "--run-id",
         run_id,
         "--run-root",
@@ -146,8 +156,16 @@ def _stage_seals(tree: RunTree, stage: str) -> list[dict]:
     )
 
 
-def test_an_unclaimed_observation_alone_spends_a_recrop_that_names_its_origin(tmp_path):
-    """(a) Budget available: the recrop happens and the record says why."""
+def test_an_unclaimed_observation_alone_spends_nothing_without_ink_confirmation(tmp_path):
+    """A witness's own unclaimed box, unconfirmed by real ink, asks for nothing.
+
+    The `coverage-recovery` fixture's marginal box is a deliberately
+    uncalibrated stimulus with no drawn ink beneath it (verified below,
+    directly against the page pixels). Under consult §4.5 that is a pointer
+    with no evidence, and the pointer alone may not spend a bounded recrop or
+    hold an act -- otherwise a page witness's own report, right or wrong,
+    would be picking a pipeline action for itself.
+    """
     root = tmp_path / "runs"
     result = _orchestrate(root, "r")
     assert result.returncode == 0, result.stderr
@@ -171,101 +189,49 @@ def test_an_unclaimed_observation_alone_spends_a_recrop_that_names_its_origin(tm
     with pytest.raises(AssertionError, match="overlaps the sealed proposal denominator"):
         _assert_observations_are_marginal(tree, mutated)
 
-    requests = _artifacts(tree, RECENSOR, "recovery-request")
-    assert requests, "an available fallback-recrop allowance was never spent on the finding"
-    for request in requests:
-        payload = request["payload"]
-        assert payload["recovery_kind"] == FALLBACK_RECROP
-        # The origin is named as an observation, not as a doubt about the
-        # reading: this request could not have come from the scenario, which
-        # declares no recovery at all.
-        assert COVERAGE_ORIGIN in payload["reason"]
-        assert DECLARED_ORIGIN not in payload["reason"]
-        # And it is named as data, not only as prose -- the observation that
-        # asked for the recrop travels inside the request that answers it.
-        carried = payload["testimony_content_coverage"]["unclaimed_observations"]
-        assert carried, "the request does not carry the observation it originated in"
-        for observation in carried:
-            assert observation["kind"] == "unrouted-observation"
-            assert observation["bounds"] in observed_bounds
-            assert observation["testimonium_id"], "the origin names no reporting Testimonium"
+    # The independent fact that makes the refusal below correct rather than
+    # merely convenient: Unit 9's own ink map records zero ink in every one of
+    # the retained boxes. A regression that started flagging real ink there
+    # would falsify this control and must not be read as this test passing.
+    from common.residual_ink import ink_runs
+    from proof.synthetic_pages import page_bytes
 
-    # Coverage, actually recovered: the expanded crop reaches the ink that asked
-    # for it.  A recovery request answered by a crop that still misses the
-    # observation would be a loop that recorded itself and recovered nothing.
-    recovery_regions = [
+    evidence = ink_runs(page_bytes(1))
+    for bounds in observed_bounds:
+        x0, x1 = bounds["x"], bounds["x"] + bounds["w"]
+        ink_here = sum(
+            max(0, min(x1, start + length) - max(x0, start))
+            for row in evidence["rows"][bounds["y"] : bounds["y"] + bounds["h"]]
+            for start, length in row
+        )
+        assert ink_here == 0, "the marginal stimulus is no longer an empty-ink control"
+
+    # No pipeline resource is spent on the unconfirmed pointer: no recovery
+    # request, no expanded crop, no hold.
+    assert not _artifacts(tree, RECENSOR, "recovery-request")
+    assert not [
         region
         for region in _artifacts(tree, DESIGNATOR, "region")
         if region["payload"]["origin"] == "recovery"
     ]
-    assert recovery_regions
-    for bounds in observed_bounds:
-        assert any(
-            _contains(region["payload"]["transform"]["bounds"], bounds)
-            for region in recovery_regions
-        ), f"no expanded recrop reaches the observation at {bounds}"
+    assert not [
+        review
+        for review in _artifacts(tree, RECENSOR, "review")
+        if review["outcome"] == "held-for-review"
+    ]
 
-    # The recovery crops expand from proposal ink, so the ordinary containing
-    # page observation overlaps both denominators. Attachment remains the
-    # proposal-derived fact and the recovery region adds no second basis.
-    page_records = _artifacts(tree, ATTESTATORES, "page-testimonium")
-    attachments = _artifacts(tree, ATTESTATORES, "act-attachment")
-    proposals_by_act = {
-        act_id: [
-            region
-            for region in _artifacts(tree, DESIGNATOR, "region")
-            if region["subject_id"] == act_id and region["payload"]["origin"] == "proposal"
-        ]
-        for act_id in {region["subject_id"] for region in recovery_regions}
-    }
-    for recovery in recovery_regions:
-        act_id = recovery["subject_id"]
-        observation = next(
-            observed
-            for record in page_records
-            if record["payload"]["chair"] == "attestator_1"
-            for observed in record["payload"]["observed"]
-            if observed["bounds_source"] in {"native", "derived"}
-            and any(
-                _overlaps(observed["bounds"], proposal["payload"]["transform"]["bounds"])
-                for proposal in proposals_by_act[act_id]
-            )
-            and _overlaps(observed["bounds"], recovery["payload"]["transform"]["bounds"])
-        )
-        assert observation
-        attachment = next(record for record in attachments if record["subject_id"] == act_id)
-        row = next(
-            row
-            for row in attachment["payload"]["attachments"]
-            if row["chair"] == "attestator_1" and row["page_ordinal"] == 1
-        )
-        assert row["attached"] is True
-        assert row["attachment_basis"] == "geometric-overlap"
+    # Nothing is lost silently (GOVERNANCE 2): the witness's own report is
+    # still there for a human to weigh, even though it triggers no action.
+    assert retained
 
-    # Receipt items and the latest Recensor seal census describe the same two
-    # accepted acts after re-entry. Every stage that re-entered has an exact
-    # contiguous seal chain; no intermediate round disappears.
     receipt = tree.read_recensor_partition_receipt()
     assert receipt["recensor_status"] == "complete"
     assert receipt["expected_act_count"] == len(receipt["items"]) == 2
     assert {item["review_outcome"] for item in receipt["items"]} == {"accepted"}
-    expected_seals = {DESIGNATOR: [1, 2, 3], "perlector": [1, 2, 3], RECENSOR: [1, 2]}
+    expected_seals = {DESIGNATOR: [1], "perlector": [1], RECENSOR: [1]}
     for stage, expected_ordinals in expected_seals.items():
         seals = _stage_seals(tree, stage)
         assert [seal["payload"]["attempt_ordinal"] for seal in seals] == expected_ordinals
-    latest_census = _stage_seals(tree, RECENSOR)[-1]["payload"]["census"]
-    assert {tuple(sorted(row.items())) for row in latest_census} >= {
-        tuple(sorted({"count": 2, "kind": "review", "outcome": "accepted"}.items())),
-        tuple(
-            sorted(
-                {
-                    "count": len(requests),
-                    "kind": "recovery-request",
-                    "outcome": "recovery-requested",
-                }.items()
-            )
-        ),
-    }
 
 
 def test_observation_inside_only_a_recovery_crop_stays_unattached_in_floor_accounting(
@@ -277,9 +243,18 @@ def test_observation_inside_only_a_recovery_crop_stays_unattached_in_floor_accou
     sealed a2 proposal. Its only honest attachment basis is `unattached`; the
     native-granularity floor must exclude that chair as well. Including recovery
     regions in the Recensor denominator makes this test fail at the drift alarm.
+
+    The recovery crop this test needs is driven through `continuation-recovery`
+    (`recover_acts = ["a2"]`), a scenario-DECLARED recrop untouched by consult
+    §4.5's ink confirmation -- that gate governs the witness-pointer coverage
+    route this test is not exercising. The marginal witness box itself is
+    injected directly below, exactly as before; only the scenario supplying a2's
+    real expanded crop has changed, because `coverage-recovery` no longer
+    produces one for an unconfirmed witness pointer with no ink beneath it.
     """
+    origin_scenario = "continuation-recovery"
     root = tmp_path / "runs"
-    result = _orchestrate(root, "recovery-only")
+    result = _orchestrate(root, "recovery-only", scenario=origin_scenario)
     assert result.returncode == 0, result.stderr
     tree = RunTree(root, "recovery-only")
     recensor = _load_recensor()
@@ -290,7 +265,7 @@ def test_observation_inside_only_a_recovery_crop_stays_unattached_in_floor_accou
             "--run-id",
             "recovery-only",
             "--scenario",
-            SCENARIO,
+            origin_scenario,
             "--fixture-root",
             str(ROOT / "proof"),
         ]
@@ -366,44 +341,46 @@ def test_observation_inside_only_a_recovery_crop_stays_unattached_in_floor_accou
 @pytest.mark.parametrize(
     ("policy", "run_id"),
     [
+        ("absolute_cap = 3\n[budget]\nfallback_recrop = 3\npage_level_reread = 0\n", "normal"),
         ("absolute_cap = 3\n[budget]\nfallback_recrop = 0\npage_level_reread = 0\n", "off"),
         # A page-level allowance is a different, unimplemented operation; it may
         # not be spent as though it were a crop, whatever the request's origin.
         ("absolute_cap = 3\n[budget]\nfallback_recrop = 0\npage_level_reread = 1\n", "page-only"),
     ],
 )
-def test_without_the_allowance_the_coverage_finding_is_held_visibly_not_lost(
-    tmp_path, policy, run_id
-):
-    """(b) Policy off: visible-but-pending, never a silent drop."""
+def test_the_refusal_does_not_depend_on_the_recovery_budget(tmp_path, policy, run_id):
+    """The unconfirmed pointer asks for nothing whether or not there is budget.
+
+    Before consult §4.5's ink confirmation was restored, an available
+    allowance spent it and an exhausted one held the act on it -- the budget
+    state was the only thing separating "spends real work" from "holds a real
+    act" on a witness's own unconfirmed box. Now neither happens at any
+    budget: the refusal is about missing evidence, not about running out of
+    room to act on missing evidence.
+    """
     root = tmp_path / "runs"
     recovery_config = tmp_path / f"{run_id}.toml"
     recovery_config.write_text(policy, encoding="utf-8")
     result = _orchestrate(root, run_id, recovery_config=recovery_config)
-    # Partial, and it says so: a held act may never appear behind a complete run.
-    assert result.returncode == 3, result.stderr
-    assert f"run {run_id}: partial" in result.stdout
+    assert result.returncode == 0, result.stderr
+    assert f"run {run_id}: complete" in result.stdout
 
     tree = RunTree(root, run_id)
-    assert not _artifacts(tree, RECENSOR, "recovery-request"), (
-        "a spent request appeared with no allowance to spend"
-    )
+    assert not _artifacts(tree, RECENSOR, "recovery-request")
     assert not [
         region
         for region in _artifacts(tree, DESIGNATOR, "region")
         if region["payload"]["origin"] == "recovery"
     ]
+    assert not [
+        review
+        for review in _artifacts(tree, RECENSOR, "review")
+        if review["outcome"] == "held-for-review"
+    ]
 
-    # The finding survives in both places it is written: on the witness's own
-    # page Testimonium, which no budget decision touches, and inside the review
-    # that held the act, which is where a reviewer will look.
+    # The witness's own report is still visible (GOVERNANCE 2), whatever the
+    # budget was, even though no budget decision was ever reached over it.
     assert _retained_observations(tree)
-    reviews = _artifacts(tree, RECENSOR, "review")
-    assert reviews
-    for review in reviews:
-        assert review["outcome"] == "held-for-review"
-        assert "fallback-recrops use 0 of their budget of 0" in review["payload"]["reason"]
-        assert review["payload"]["testimony_content_coverage"]["unclaimed_observations"]
 
 
 def _load_recensor():
