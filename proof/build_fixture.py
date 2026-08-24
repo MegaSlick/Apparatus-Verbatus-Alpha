@@ -537,14 +537,24 @@ def toml_string(value: str) -> str:
     without the escape into a multi-line form would have been worse, because the
     string the stage read back would no longer be the string declared here.
     """
-    escaped = (
-        value.replace("\\", "\\\\")
-        .replace('"', '\\"')
-        .replace("\n", "\\n")
-        .replace("\r", "\\r")
-        .replace("\t", "\\t")
-    )
-    return f'"{escaped}"'
+    escapes = {
+        "\\": "\\\\",
+        '"': '\\"',
+        "\b": "\\b",
+        "\t": "\\t",
+        "\n": "\\n",
+        "\f": "\\f",
+        "\r": "\\r",
+    }
+    escaped = []
+    for character in value:
+        if character in escapes:
+            escaped.append(escapes[character])
+        elif ord(character) <= 0x1F or ord(character) == 0x7F:
+            escaped.append(f"\\u{ord(character):04X}")
+        else:
+            escaped.append(character)
+    return f'"{"".join(escaped)}"'
 
 
 def toml_value(value) -> str:

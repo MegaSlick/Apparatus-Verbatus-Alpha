@@ -339,7 +339,27 @@ def act_attachment_facts(context, act_id: str, outcomes: dict[str, str]) -> dict
                 raise FatalAccounting(
                     f"act {act_id} page witness {chair!r} points to a different page Testimonium"
                 )
-            geometrically_attached = outcomes.get(chair) in WITNESS_READING_OUTCOMES and any(
+            native_capture = page_payload.get("native_capture")
+            if native_capture is not None:
+                if native_capture["raw_response_ref"] not in page_testimonium.get("inputs", []):
+                    raise FatalAccounting(
+                        f"act {act_id} page witness {chair!r} does not bind its retained raw "
+                        "response as a verified input"
+                    )
+                if native_capture["adapter"] != context.registry.resolve(chair).witness_adapter:
+                    raise FatalAccounting(
+                        f"act {act_id} page witness {chair!r} attributes its native capture to "
+                        "an adapter other than that chair's configured boundary"
+                    )
+            # Native capture makes the page response independent of the
+            # act-scoped compatibility Testimonium, whose successful outcome
+            # must not turn a failed page attempt into coverage. A legacy page
+            # join instead aggregates multiple act attempts, so its per-act
+            # attachment remains gated by this act's own outcome.
+            attachment_outcome = (
+                page_testimonium["outcome"] if native_capture is not None else outcomes.get(chair)
+            )
+            geometrically_attached = attachment_outcome in WITNESS_READING_OUTCOMES and any(
                 reported_geometry_overlaps(page_payload, bounds)
                 for bounds in proposal_page["bounds"]
             )

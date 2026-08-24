@@ -53,6 +53,7 @@ from pathlib import Path
 
 import pytest
 
+from common.contracts.errors import SchemaRefusal
 from common.contracts.stages import ATTESTATORES, RECENSOR
 from common.runtree.store import RunTree
 
@@ -138,6 +139,7 @@ def test_a_captured_page_reading_parses_and_keeps_its_raw_bytes(native_run):
     # all -- the parsed text is a derived view of it, never a replacement.
     raw = native_run.read_bytes(capture["raw_response_ref"]["relative_path"])
     assert raw == f"<output>{payload['payload']}</output>".encode()
+    assert capture["raw_response_ref"] in record["inputs"]
     assert payload["content_health"]["recordable"] is True
     assert payload["content_health"]["truncated"] is False
     assert payload["content_health"]["characters"] == len(payload["payload"])
@@ -304,6 +306,25 @@ def test_the_pinned_happy_run_captures_through_churro_without_moving_a_reading(h
     assert records[(2, "attestator_3")]["payload"]["payload"] == (
         "SYNTHETIC ACT TWO delta epsiIon zeta eta"
     )
+
+
+def test_a_page_testimonium_read_verifies_its_retained_raw_response(tmp_path):
+    """The nested reference is also an envelope input, so missing bytes cannot pass."""
+    root = tmp_path / "runs"
+    result = _orchestrate(root, "happy")
+    assert result.returncode == 0, result.stderr
+    tree = RunTree(root, "r")
+    entry = next(
+        item
+        for item in tree.build_manifest(ATTESTATORES)["artifacts"]
+        if item["kind"] == "page-testimonium"
+    )
+    record = tree.read_artifact(ATTESTATORES, "page-testimonium", entry["artifact_id"])
+    raw_ref = record["payload"]["native_capture"]["raw_response_ref"]
+    tree.resolve(raw_ref["relative_path"]).write_bytes(b"tampered raw response")
+
+    with pytest.raises(SchemaRefusal, match="digest"):
+        tree.read_artifact(ATTESTATORES, "page-testimonium", entry["artifact_id"])
 
 
 def test_a_witness_reading_order_that_departs_from_the_anchor_degrades_visibly():

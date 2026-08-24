@@ -789,6 +789,13 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # this module's own `orchestrate` and `semantic_snapshot_digest` helpers at
 # canonical run id "r", after the last byte of the candidate was in place.
 # Counts and exits: 88/0 (happy) and 109/3 (review).
+# Sol formal review binds each retained raw Churro response into its page
+# Testimonium envelope's `inputs`, so every consumer read verifies the bytes
+# against `raw_response_ref` rather than trusting a nested reference it never
+# opens. The same four files remain and every payload fact is unchanged; only
+# happy's four page-artifact envelopes and their downstream references move.
+# Re-measured through this module at canonical run id "r": 88/0. Review has no
+# native captures, so its 109 files and digest remain unchanged.
 #
 # Opus audit seat (10C, seat 3 of 4): the declared fixture gains one scenario,
 # `coverage-recovery`, and the single native observation that scenario needs.
@@ -804,7 +811,7 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # exit code changes — 84/0 and 109/3 hold, and each digest below reproduced
 # twice in independent temporary roots through this module's own `orchestrate`
 # and `semantic_snapshot_digest` helpers at canonical run id "r".
-HAPPY_RUN_TREE_DIGEST = "4c1843676ca00be3d1aef2f39f8805a32c5314be13ee7edd01c81b6fa6f97126"
+HAPPY_RUN_TREE_DIGEST = "553000b2fc5fb62dbbc11729d8d50654de121710c98be2c5c19294fec0c2f141"
 # Review only, once more in the same seat: a page witness invoked on every act
 # and unusable on all of them now records the serving moment that produced it
 # (`provenance_for(..., attempted=attempted_page)`), where the `reading` gate

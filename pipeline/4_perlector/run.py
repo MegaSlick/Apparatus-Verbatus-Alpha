@@ -674,6 +674,18 @@ def act_attachment_view(
             # the third mirror of the Recensor's (see `current_page_testimonia`).
             if page_testimonia_seen is not None and isinstance(page_payload, dict):
                 page_testimonia_seen[testimonium["artifact_id"]] = testimonium
+            native_capture = page_payload.get("native_capture")
+            if native_capture is not None:
+                if native_capture["raw_response_ref"] not in testimonium.get("inputs", []):
+                    raise SchemaRefusal(
+                        f"act {act_id} page Testimonium for chair {chair!r} does not bind its "
+                        "retained raw response as a verified input"
+                    )
+                if native_capture["adapter"] != context.registry.resolve(chair).witness_adapter:
+                    raise SchemaRefusal(
+                        f"act {act_id} page Testimonium for chair {chair!r} attributes its "
+                        "native capture to an adapter other than that chair's configured boundary"
+                    )
             # The SEALED PROPOSAL geometry, never every current basis region.
             # The writer computes this attachment from `proposed_regions`
             # (`pipeline/3_attestatores/run.py`) and cannot do otherwise: a
@@ -695,9 +707,18 @@ def act_attachment_view(
                 if basis["source_page_ordinal"] == attachment_page
                 and basis["region_id"] in proposal_region_ids
             ]
-            geometrically_attached = chair_testimonium[
-                "outcome"
-            ] in WITNESS_READING_OUTCOMES and any(
+            # A native page capture is independent of the act-scoped
+            # compatibility response, so the latter cannot launder a failed
+            # page response into attached testimony. The legacy synthetic page
+            # join is the opposite: its page outcome aggregates several acts,
+            # and this act's own outcome remains the only honest gate for its
+            # attachment.
+            attachment_outcome = (
+                testimonium["outcome"]
+                if native_capture is not None
+                else chair_testimonium["outcome"]
+            )
+            geometrically_attached = attachment_outcome in WITNESS_READING_OUTCOMES and any(
                 reported_geometry_overlaps(page_payload, basis["transform"]["bounds"])
                 for basis in page_bases
             )

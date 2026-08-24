@@ -1160,6 +1160,11 @@ def preflight_appendable_ordinals(
     lets publication use the exact regions preflight already verified instead of
     walking and hashing Designator again.
     """
+    # A malformed native page declaration must refuse before `attempt_pass`
+    # publishes the act-scoped compatibility records. Checking only in the page
+    # writer stranded a half-written Attestatores layer that its next invocation
+    # could only diagnose as UNKNOWN.
+    validate_declared_churro_page_responses(context, declared_page_witness_chairs(context))
     regions_by_act: dict[str, tuple[list[dict], str | None]] = {}
     attempts_by_pair: dict[tuple[str, str], Attempt] = {}
     appending = [
@@ -1528,6 +1533,34 @@ def churro_page_capture(context, page_ordinal: int, chair: str) -> dict[str, Any
 _CHURRO_PAGE_RESPONSE_FIELDS: Final = frozenset(
     {"scenario", "page_ordinal", "chair", "raw_xml", "transport_stop_reason"}
 )
+_CHURRO_PAGE_RESPONSE_REQUIRED_FIELDS: Final = frozenset(
+    {"page_ordinal", "chair", "raw_xml", "transport_stop_reason"}
+)
+_CHURRO_COMPLETE_STOP_REASONS: Final = frozenset({"eos", "stop"})
+_CHURRO_CUTOFF_STOP_REASONS: Final = frozenset({"length", "max_new_tokens"})
+
+
+def churro_page_response_bytes(row: dict[str, Any]) -> tuple[bytes, str]:
+    """Validate one declared transport result and return its exact UTF-8 bytes."""
+    if missing := sorted(_CHURRO_PAGE_RESPONSE_REQUIRED_FIELDS - set(row)):
+        raise SchemaRefusal(f"a Churro page response lacks required field(s) {missing}")
+    raw = row["raw_xml"]
+    if not isinstance(raw, str):
+        raise SchemaRefusal("a Churro page response raw_xml is not text")
+    try:
+        raw_bytes = raw.encode("utf-8", "strict")
+    except UnicodeEncodeError as error:
+        raise SchemaRefusal(
+            f"a Churro page response raw_xml is not valid UTF-8 text: {error}"
+        ) from error
+    stop = row["transport_stop_reason"]
+    allowed_stops = _CHURRO_COMPLETE_STOP_REASONS | _CHURRO_CUTOFF_STOP_REASONS
+    if not isinstance(stop, str) or stop not in allowed_stops:
+        raise SchemaRefusal(
+            f"a Churro page response declares unknown transport_stop_reason {stop!r}; "
+            f"expected one of {sorted(allowed_stops)}"
+        )
+    return raw_bytes, stop
 
 
 def validate_declared_churro_page_responses(context, page_chairs: set[str]) -> None:
@@ -1561,11 +1594,13 @@ def validate_declared_churro_page_responses(context, page_chairs: set[str]) -> N
     absent_chairs = {
         chair for chair in context.witness_chairs if isinstance(configured.get(chair), AbsentChair)
     }
-    seen: set[tuple[int, str]] = set()
+    seen: set[tuple[str | None, int, str]] = set()
     for row in context.fixture.get("churro_page_response", []):
         if not isinstance(row, dict):
             raise SchemaRefusal("a fixture [[churro_page_response]] row is not a table")
         scenario = row.get("scenario")
+        if scenario is not None and (not isinstance(scenario, str) or not scenario):
+            raise SchemaRefusal("a Churro page response scenario is not nonblank text")
         if scenario is not None and scenario != context.scenario:
             continue
         if unknown := sorted(set(row) - _CHURRO_PAGE_RESPONSE_FIELDS):
@@ -1580,11 +1615,19 @@ def validate_declared_churro_page_responses(context, page_chairs: set[str]) -> N
             )
         if not isinstance(chair, str) or not chair:
             raise SchemaRefusal("a Churro page response declares no chair")
+        churro_page_response_bytes(row)
         if page_ordinal not in declared_pages:
             raise SchemaRefusal(
                 f"a Churro page response names page {page_ordinal}, which the sealed fixture "
                 f"does not declare (declared: {sorted(o for o in declared_pages if o is not None)})"
             )
+        key = (scenario, page_ordinal, chair)
+        if key in seen:
+            raise SchemaRefusal(
+                "the fixture declares more than one Churro page response for "
+                f"{(page_ordinal, chair)!r} at declaration scope {scenario!r}"
+            )
+        seen.add(key)
         if chair in absent_chairs:
             continue
         if chair not in page_chairs:
@@ -1594,31 +1637,36 @@ def validate_declared_churro_page_responses(context, page_chairs: set[str]) -> N
                 f"{sorted(absent_chairs)}); a response no page-scoped chair can be asked for "
                 "would never be captured at all"
             )
-        if (page_ordinal, chair) in seen:
+        configured_chair = configured[chair]
+        if not isinstance(configured_chair, ChairIdentity) or (
+            configured_chair.witness_adapter != "churro.v1"
+        ):
             raise SchemaRefusal(
-                "the fixture declares more than one Churro page response for "
-                f"{(page_ordinal, chair)!r} in scenario {context.scenario!r}"
+                f"a Churro page response names chair {chair!r}, whose configured adapter is "
+                f"{getattr(configured_chair, 'witness_adapter', None)!r}, not 'churro.v1'; "
+                "fixture bytes may not be attributed to a different model boundary"
             )
-        seen.add((page_ordinal, chair))
 
 
 def captured_churro_page_attempt(
-    context, page_ordinal: int, chair: str
+    context, page_ordinal: int, chair: str, adapter_name: str
 ) -> tuple[Attempt, dict[str, Any]] | None:
     """Capture, then parse, one real-format Churro response without retrying it."""
     row = churro_page_capture(context, page_ordinal, chair)
     if row is None:
         return None
-    raw = row.get("raw_xml")
-    stop = row.get("transport_stop_reason")
-    if not isinstance(raw, str) or not isinstance(stop, str) or not stop:
-        raise SchemaRefusal("a Churro page response needs raw_xml and transport_stop_reason")
-    adapter = witness_adapters.resolve_runnable_adapter("churro.v1")
+    raw, stop = churro_page_response_bytes(row)
+    if adapter_name != "churro.v1":
+        raise SchemaRefusal(
+            f"a Churro page response for chair {chair!r} reached adapter {adapter_name!r}; "
+            "fixture bytes may not be attributed to a different model boundary"
+        )
+    adapter = witness_adapters.resolve_runnable_adapter(adapter_name)
     capture = adapter.retain(
         context.tree,
         adapter="churro.v1",
         view={"prompt": adapter.prompt(), "generation": feeding.churro_generation()},
-        raw_response=raw.encode("utf-8"),
+        raw_response=raw,
         transport_stop_reason=stop,
         parser="xml",
     )
@@ -1626,7 +1674,7 @@ def captured_churro_page_attempt(
     # The transport's own stop reason, never `capture["stop_reason"]`: post-hoc
     # repetition detection rewrites the latter, and a finding about the content
     # may not decide whether the provider cut the response off (GOVERNANCE 7).
-    cut_off = stop in {"length", "max_new_tokens"}
+    cut_off = stop in _CHURRO_CUTOFF_STOP_REASONS
     if parsed["state"] == "parsed" and not (cut_off and parsed["text"] == ""):
         text = parsed["text"]
         complete = not cut_off
@@ -1655,27 +1703,15 @@ def captured_churro_page_attempt(
         # because it was interrupted, not because there was nothing there --
         # "complete" is refused unless everything reconciles (GOVERNANCE 2), and
         # an unconfirmed blank sealed as confirmed is how ink goes missing
-        # (GOALS 1). It is an attempt that reached the boundary and yielded no
-        # usable testimony: `failed`, with the cut named.
+        # (GOALS 1). Its valid empty body remains retained and measured, but it
+        # is not usable testimony: `failed`, with the cut named.
         return (
             Attempt(
                 "failed",
-                None,
+                "",
                 None,
                 DEFAULT_FORMAT_CAPABILITIES,
-                {
-                    "native_type": "unrecordable",
-                    "encoding": "invalid-or-unrecordable",
-                    "recordable": False,
-                    "empty": None,
-                    "blank": None,
-                    "truncated": None,
-                    "characters": None,
-                    "truncation_basis": (
-                        f"response cut off by the provider ({stop!r}) before it carried any "
-                        "text; an interrupted silence is not a reported absence"
-                    ),
-                },
+                content_health("", completed=False),
                 (
                     f"Churro response parsed empty after the provider stopped it at its bound "
                     f"(transport_stop_reason {stop!r}); a cut-off response is not a confirmed "
@@ -2273,7 +2309,6 @@ def publish_page_testimonia_and_attachments(
     # `declared_page_witness_chairs` already validates the sealed roster against
     # the configured occupants, so scope needs no further narrowing here.
     page_chairs = declared_page_witness_chairs(context)
-    validate_declared_churro_page_responses(context, page_chairs)
     limits, limits_digest = load_alignment_limits(context.args.alignment_config)
     context.require_sealed_config("alignment", limits_digest)
     page_records: dict[tuple[int, str], dict[str, str]] = {}
@@ -2339,7 +2374,14 @@ def publish_page_testimonia_and_attachments(
     for page_ordinal, page_acts in sorted(by_page.items()):
         page_subject = page_identity(context.fixture, page_ordinal)
         for chair in sorted(page_chairs):
-            captured = captured_churro_page_attempt(context, page_ordinal, chair)
+            resolved = context.registry.resolve(chair)
+            if not isinstance(resolved, ChairIdentity):
+                raise FatalAccounting(
+                    f"page witness chair {chair!r} did not resolve to a configured identity"
+                )
+            captured = captured_churro_page_attempt(
+                context, page_ordinal, chair, resolved.witness_adapter
+            )
             if captured is None:
                 # Legacy fixture rows retain their deliberately synthetic join.
                 # A Churro row above never takes this path.
@@ -2381,7 +2423,6 @@ def publish_page_testimonia_and_attachments(
                 if captured is not None
                 else content_health(native_payload, completed=reading)
             )
-            resolved = context.registry.resolve(chair)
             presented = presentation_for_page(context, page_ordinal) if attempted_page else {}
             if attempted_page and isinstance(resolved, ChairIdentity):
                 presented = witness_adapters.resolve_runnable_adapter(
@@ -2458,7 +2499,12 @@ def publish_page_testimonia_and_attachments(
                 # which is why the contradiction was silent rather than refused.
                 provenance=provenance_for(context, resolved, attempted=attempted_page),
                 format_capabilities=DEFAULT_FORMAT_CAPABILITIES,
-                native_payload=native_payload if reading else None,
+                # A captured, cut-off empty body is valid parsed text even though
+                # it is not a reported absence. Keep that empty string under the
+                # failed outcome; only an unparseable capture has no native
+                # payload. The legacy join retains its existing non-reading
+                # no-response shape.
+                native_payload=native_payload if reading or captured is not None else None,
                 witness_reported=None,
                 # A native capture already carries its own correct health for a
                 # non-reading outcome -- notably `recordable=False` for a response
@@ -2482,7 +2528,10 @@ def publish_page_testimonia_and_attachments(
                 subject_id=page_subject,
                 outcome=outcome,
                 attempt=page_attempt,
-                inputs=[context.input_ref(presented["image_path"])] if presented else [],
+                inputs=(
+                    ([context.input_ref(presented["image_path"])] if presented else [])
+                    + ([native_capture["raw_response_ref"]] if native_capture is not None else [])
+                ),
                 payload=payload,
             )
             page_records[(page_ordinal, chair)] = context.artifact_ref(

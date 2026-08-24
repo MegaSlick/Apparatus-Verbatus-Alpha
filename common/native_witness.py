@@ -12,6 +12,7 @@ from typing import Any, Final
 
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import SchemaRefusal
+from common.contracts.stages import ATTESTATORES, writing_directory
 from common.corpus_register import _refuse_preference
 from common.imaging import crop_png
 
@@ -402,7 +403,83 @@ def validate_page_testimonium_payload(payload: Any) -> dict[str, Any]:
     if "partition_disagreement" in payload:
         validate_partition_disagreement(payload["partition_disagreement"])
     if "native_capture" in payload:
-        validate_native_capture(payload["native_capture"])
+        capture = validate_native_capture(payload["native_capture"])
+        if capture["adapter"] == "churro.v1":
+            parse = capture["parse"]
+            parsed_text = parse.get("text")
+            if parse["state"] == "parsed":
+                if payload["payload"] != parsed_text:
+                    raise SchemaRefusal(
+                        "a Churro page Testimonium payload differs from its parsed native capture"
+                    )
+                cut_off = capture["transport_stop_reason"] in _CHURRO_CUTOFF_STOP_REASONS
+                expected_health = {
+                    "native_type": "string",
+                    "encoding": "utf-8-json-native",
+                    "recordable": True,
+                    "empty": parsed_text == "",
+                    "blank": parsed_text.strip() == "",
+                    "truncated": cut_off,
+                    "characters": len(parsed_text),
+                    "truncation_basis": "trusted-response-boundary",
+                }
+                if payload["content_health"] != expected_health:
+                    raise SchemaRefusal(
+                        "a Churro page Testimonium health differs from its parsed native capture"
+                    )
+                interrupted_silence = cut_off and parsed_text == ""
+                if interrupted_silence:
+                    if "reported" in payload:
+                        raise SchemaRefusal(
+                            "a cut-off empty Churro page capture claims a reported absence"
+                        )
+                    if not (isinstance(payload.get("reason"), str) and payload["reason"].strip()):
+                        raise SchemaRefusal(
+                            "a cut-off empty Churro page capture has no failed-attempt reason"
+                        )
+                elif payload.get("reported") != parsed_text:
+                    raise SchemaRefusal(
+                        "a parsed Churro page Testimonium lacks its exact textual projection"
+                    )
+                elif "reason" in payload:
+                    raise SchemaRefusal(
+                        "a usable Churro page capture carries a failed-attempt reason"
+                    )
+            else:
+                if payload["payload"] is not None or "reported" in payload:
+                    raise SchemaRefusal(
+                        "an unparseable Churro page capture claims retained page text"
+                    )
+                cut_off = capture["transport_stop_reason"] in _CHURRO_CUTOFF_STOP_REASONS
+                basis = (
+                    "response cut off by the provider "
+                    f"({capture['transport_stop_reason']!r}); {parse['reason']}"
+                    if cut_off
+                    else parse["reason"]
+                )
+                expected_health = {
+                    "native_type": "unrecordable",
+                    "encoding": "invalid-or-unrecordable",
+                    "recordable": False,
+                    "empty": None,
+                    "blank": None,
+                    "truncated": None,
+                    "characters": None,
+                    "truncation_basis": basis,
+                }
+                if payload["content_health"] != expected_health:
+                    raise SchemaRefusal(
+                        "an unparseable Churro page Testimonium health differs from its capture"
+                    )
+                reason = payload.get("reason")
+                if (
+                    not isinstance(reason, str)
+                    or not reason.strip()
+                    or parse["reason"] not in reason
+                ):
+                    raise SchemaRefusal(
+                        "an unparseable Churro page capture has no reason naming its parser refusal"
+                    )
     return validate_native_witness_geometry(payload)
 
 
@@ -595,6 +672,11 @@ _NATIVE_CAPTURE_FIELDS: Final = frozenset(
     }
 )
 _NATIVE_CAPTURE_PARSE_STATES: Final = frozenset({"not-requested", "pending", "parsed", "failed"})
+_CHURRO_CAPTURE_FINDING_KINDS: Final = frozenset(
+    {"post-hoc-repetition", "post-hoc-repetition-uninspected"}
+)
+_CHURRO_COMPLETE_STOP_REASONS: Final = frozenset({"eos", "stop"})
+_CHURRO_CUTOFF_STOP_REASONS: Final = frozenset({"length", "max_new_tokens"})
 
 
 def validate_native_capture(value: Any) -> dict[str, Any]:
@@ -613,6 +695,10 @@ def validate_native_capture(value: Any) -> dict[str, Any]:
     for field in ("schema", "adapter", "transport_stop_reason", "stop_reason"):
         if not isinstance(value[field], str) or not value[field]:
             raise SchemaRefusal(f"a page Testimonium native capture has a blank {field}")
+    if value["schema"] != "attestatores-model-view.v1":
+        raise SchemaRefusal(
+            "a page Testimonium native capture has an unknown retained model-view schema"
+        )
     if not isinstance(value["view"], dict):
         raise SchemaRefusal("a page Testimonium native capture view is not an object")
     reference = value["raw_response_ref"]
@@ -621,6 +707,17 @@ def validate_native_capture(value: Any) -> dict[str, Any]:
     if not all(isinstance(reference[key], str) and reference[key] for key in reference):
         raise SchemaRefusal(
             "a page Testimonium native capture has an invalid raw-response reference"
+        )
+    digest = reference["sha256"]
+    expected_path = f"{writing_directory(ATTESTATORES)}/blobs/sha256/{digest}"
+    if (
+        len(digest) != 64
+        or any(character not in "0123456789abcdef" for character in digest)
+        or reference["relative_path"] != expected_path
+    ):
+        raise SchemaRefusal(
+            "a page Testimonium native capture raw-response reference is not its "
+            "content-addressed Attestatores blob path and digest"
         )
     findings = value["findings"]
     if not isinstance(findings, list) or not all(
@@ -648,6 +745,71 @@ def validate_native_capture(value: Any) -> dict[str, Any]:
         raise SchemaRefusal(
             "a page Testimonium native capture claims a parse failure with no reason"
         )
+    if value["adapter"] == "churro.v1":
+        allowed_stops = _CHURRO_COMPLETE_STOP_REASONS | _CHURRO_CUTOFF_STOP_REASONS
+        if value["transport_stop_reason"] not in allowed_stops:
+            raise SchemaRefusal(
+                "a Churro page capture has an unknown transport stop reason "
+                f"{value['transport_stop_reason']!r}"
+            )
+        view = value["view"]
+        if set(view) != {"prompt", "generation"}:
+            raise SchemaRefusal(
+                "a Churro page capture does not retain exactly its prompt and generation view"
+            )
+        prompt, generation = view["prompt"], view["generation"]
+        if (
+            not isinstance(prompt, dict)
+            or set(prompt) != {"system", "user"}
+            or any(not isinstance(prompt[field], str) or not prompt[field] for field in prompt)
+        ):
+            raise SchemaRefusal("a Churro page capture has no closed nonblank prompt view")
+        if (
+            not isinstance(generation, dict)
+            or set(generation) != {"max_new_tokens"}
+            or not isinstance(generation["max_new_tokens"], int)
+            or isinstance(generation["max_new_tokens"], bool)
+            or generation["max_new_tokens"] <= 0
+        ):
+            raise SchemaRefusal("a Churro page capture has no positive generation bound")
+        if state not in {"parsed", "failed"} or parser != "xml":
+            raise SchemaRefusal("a retained Churro page capture has no terminal XML parse record")
+        for finding in findings:
+            kind = finding["kind"]
+            if kind not in _CHURRO_CAPTURE_FINDING_KINDS:
+                raise SchemaRefusal(f"a Churro page capture has unknown finding kind {kind!r}")
+            if kind == "post-hoc-repetition":
+                if set(finding) != {"kind", "unit_characters", "repeats", "inspected"} or any(
+                    not isinstance(finding[field], int)
+                    or isinstance(finding[field], bool)
+                    or finding[field] <= 0
+                    for field in ("unit_characters", "repeats")
+                ):
+                    raise SchemaRefusal(
+                        "a Churro page capture has a malformed post-hoc repetition finding"
+                    )
+            elif set(finding) != {"kind", "reason", "inspected"} or not (
+                isinstance(finding["reason"], str) and finding["reason"]
+            ):
+                raise SchemaRefusal(
+                    "a Churro page capture has a malformed uninspected-repetition finding"
+                )
+            if finding["inspected"] not in {"parsed-text", "raw-response"}:
+                raise SchemaRefusal(
+                    "a Churro page capture repetition finding does not name the inspected view"
+                )
+        repeated = any(finding["kind"] == "post-hoc-repetition" for finding in findings)
+        expected_stop = (
+            "partial-parse-failed"
+            if state == "failed"
+            else "partial-post-hoc-repetition-detected"
+            if repeated
+            else value["transport_stop_reason"]
+        )
+        if value["stop_reason"] != expected_stop:
+            raise SchemaRefusal(
+                "a Churro page capture stop reason disagrees with its parse and findings"
+            )
     return value
 
 

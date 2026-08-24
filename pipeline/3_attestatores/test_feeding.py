@@ -29,7 +29,7 @@ from feeding import (
     validate_churro_xml,
 )
 
-from common.chairs.models import AbsentChair
+from common.chairs.models import AbsentChair, ChairIdentity
 from common.chandra_custody import retain_chandra_response
 from common.contracts.canonical import digest_bytes, digest_of
 from common.contracts.errors import SchemaRefusal
@@ -52,6 +52,23 @@ def _ref(path: str, digest: str = "a" * 64) -> dict[str, str]:
     return {"relative_path": path, "sha256": digest}
 
 
+def _chair(role: str, *, adapter: str = "churro.v1", scope: str = "page") -> ChairIdentity:
+    return ChairIdentity(
+        role=role,
+        source="local-repository",
+        repo=None,
+        path=role,
+        revision=None,
+        digest_manifest="a" * 64,
+        manifest=f"{role}.json",
+        adapter_of=None,
+        serving_recipe="fixture",
+        license_note="fixture",
+        witness_adapter=adapter,
+        witness_scope=scope,
+    )
+
+
 class _Tree:
     """Mimics the run tree's real numbered stage directories (`writing_directory`),
     not the bare stage name — see common/chandra_custody.py's module docstring for
@@ -59,10 +76,12 @@ class _Tree:
 
     def __init__(self, *, receipt_chair="designator_structure"):
         self.blobs = {}
+        self.put_calls = 0
         self.receipts = []
         self.receipt_chair = receipt_chair
 
     def put_blob(self, stage, data):
+        self.put_calls += 1
         digest = digest_bytes(data)
         path = f"{writing_directory(stage)}/{BLOBS_DIR}/{digest}"
         self.blobs[path] = data
@@ -333,7 +352,7 @@ def test_churro_page_capture_is_full_page_xml_and_surfaces_transport_truncation(
         },
     )
 
-    result = attestatores.captured_churro_page_attempt(context, 1, "attestator_1")
+    result = attestatores.captured_churro_page_attempt(context, 1, "attestator_1", "churro.v1")
 
     assert result is not None
     attempt, capture = result
@@ -348,6 +367,7 @@ def test_churro_page_capture_is_full_page_xml_and_surfaces_transport_truncation(
     assert tree.blobs[capture["raw_response_ref"]["relative_path"]] == (
         b"<output>first act\nsecond act</output>"
     )
+    assert tree.put_calls == 1, "one declared response must cross capture exactly once"
 
 
 def test_churro_page_capture_keeps_repetition_finding_after_raw_capture(monkeypatch):
@@ -377,7 +397,7 @@ def test_churro_page_capture_keeps_repetition_finding_after_raw_capture(monkeypa
         return {"kind": "post-hoc-repetition", "unit_characters": 24, "repeats": 3}
 
     monkeypatch.setattr(feeding, "detect_repetition", detector)
-    _, capture = attestatores.captured_churro_page_attempt(context, 1, "attestator_1")
+    _, capture = attestatores.captured_churro_page_attempt(context, 1, "attestator_1", "churro.v1")
 
     assert capture["findings"] == [
         {
@@ -414,7 +434,7 @@ def test_churro_page_capture_of_malformed_xml_keeps_raw_bytes_and_is_unrecordabl
         },
     )
 
-    result = attestatores.captured_churro_page_attempt(context, 1, "attestator_1")
+    result = attestatores.captured_churro_page_attempt(context, 1, "attestator_1", "churro.v1")
 
     assert result is not None
     attempt, capture = result
@@ -460,13 +480,21 @@ def test_a_cut_off_empty_response_is_not_a_confirmed_blank_page():
                 ]
             },
         )
-        return attestatores.captured_churro_page_attempt(context, 1, "attestator_1")
+        return attestatores.captured_churro_page_attempt(context, 1, "attestator_1", "churro.v1")
 
     cut, _ = _capture("<output></output>", "length")
     assert cut.outcome == "failed"
-    assert cut.native_payload is None
-    assert cut.health["recordable"] is False
-    assert "not a reported absence" in cut.health["truncation_basis"]
+    assert cut.native_payload == ""
+    assert cut.health == {
+        "native_type": "string",
+        "encoding": "utf-8-json-native",
+        "recordable": True,
+        "empty": True,
+        "blank": True,
+        "truncated": True,
+        "characters": 0,
+        "truncation_basis": "trusted-response-boundary",
+    }
     assert "not a confirmed blank page" in cut.reason
 
     # The same empty response the provider finished normally IS a reported
@@ -519,17 +547,117 @@ def test_a_declared_response_no_page_chair_could_be_asked_for_is_refused():
 
     with pytest.raises(attestatores.SchemaRefusal, match="does not seal"):
         attestatores.validate_declared_churro_page_responses(
-            _context("attestator_2", 1, {"attestator_1": object()}), page_chairs
+            _context(
+                "attestator_2",
+                1,
+                {
+                    "attestator_1": _chair("attestator_1"),
+                    "attestator_2": _chair("attestator_2", scope="act"),
+                },
+            ),
+            page_chairs,
         )
     with pytest.raises(attestatores.SchemaRefusal, match="does not declare"):
         attestatores.validate_declared_churro_page_responses(
-            _context("attestator_1", 9, {"attestator_1": object()}), page_chairs
+            _context("attestator_1", 9, {"attestator_1": _chair("attestator_1")}),
+            page_chairs,
         )
     # The absent chair passes over quietly: well-formed declaration, no chair.
     attestatores.validate_declared_churro_page_responses(
-        _context("attestator_3", 1, {"attestator_1": object(), "attestator_3": absent}),
+        _context(
+            "attestator_3",
+            1,
+            {"attestator_1": _chair("attestator_1"), "attestator_3": absent},
+        ),
         page_chairs,
     )
+
+
+def test_churro_declaration_preflight_allows_one_default_overridden_by_one_scenario_row():
+    """Validation must preserve the lookup precedence it documents."""
+    attestatores = _load_attestatores()
+    chair = _chair("attestator_1")
+    rows = [
+        {
+            "page_ordinal": 1,
+            "chair": "attestator_1",
+            "raw_xml": "<output>default</output>",
+            "transport_stop_reason": "eos",
+        },
+        {
+            "scenario": "churro-native",
+            "page_ordinal": 1,
+            "chair": "attestator_1",
+            "raw_xml": "<output>scoped</output>",
+            "transport_stop_reason": "eos",
+        },
+    ]
+    context = SimpleNamespace(
+        scenario="churro-native",
+        witness_chairs=["attestator_1"],
+        registry=SimpleNamespace(config=SimpleNamespace(chairs={"attestator_1": chair})),
+        fixture={"page": [{"ordinal": 1}], "churro_page_response": rows},
+    )
+
+    attestatores.validate_declared_churro_page_responses(context, {"attestator_1"})
+    assert attestatores.churro_page_capture(context, 1, "attestator_1") is rows[1]
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (lambda row: row.pop("raw_xml"), "lacks required field"),
+        (lambda row: row.update(transport_stop_reason="network-error"), "unknown transport"),
+        (lambda row: row.update(raw_xml="\ud800"), "not valid UTF-8"),
+    ],
+)
+def test_churro_declaration_preflight_names_malformed_transport_facts_even_for_an_absent_chair(
+    mutate, message
+):
+    """An absent occupant does not make its fixture declaration schema-free."""
+    attestatores = _load_attestatores()
+    row = {
+        "page_ordinal": 1,
+        "chair": "attestator_3",
+        "raw_xml": "<output>x</output>",
+        "transport_stop_reason": "eos",
+    }
+    mutate(row)
+    absent = AbsentChair(role="attestator_3", reason="fixture absence")
+    context = SimpleNamespace(
+        scenario="churro-native",
+        witness_chairs=["attestator_3"],
+        registry=SimpleNamespace(config=SimpleNamespace(chairs={"attestator_3": absent})),
+        fixture={"page": [{"ordinal": 1}], "churro_page_response": [row]},
+    )
+    with pytest.raises(attestatores.SchemaRefusal, match=message):
+        attestatores.validate_declared_churro_page_responses(context, set())
+
+
+def test_churro_declarations_are_checked_in_the_no_write_attempt_preflight():
+    """A bad page row refuses before the caller can enter `attempt_pass`."""
+    attestatores = _load_attestatores()
+    chair = _chair("attestator_1", adapter="not-churro.v1")
+    context = SimpleNamespace(
+        scenario="churro-native",
+        witness_chairs=["attestator_1"],
+        registry=SimpleNamespace(config=SimpleNamespace(chairs={"attestator_1": chair})),
+        fixture={
+            "page": [{"ordinal": 1}],
+            "churro_page_response": [
+                {
+                    "page_ordinal": 1,
+                    "chair": "attestator_1",
+                    "raw_xml": "<output>x</output>",
+                    "transport_stop_reason": "eos",
+                }
+            ],
+        },
+    )
+    index = attestatores.AttemptIndex(False, {}, {})
+
+    with pytest.raises(attestatores.SchemaRefusal, match="different model boundary"):
+        attestatores.preflight_appendable_ordinals(context, [], 1, {}, index)
 
 
 def test_one_scenarios_declared_response_is_not_another_scenarios_default():

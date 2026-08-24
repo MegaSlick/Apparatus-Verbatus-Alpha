@@ -38,6 +38,7 @@ from proof.build_fixture import (
     build_ingress_manifest,
     build_skeleton_fixture,
     render_all,
+    toml_string,
     toml_value,
 )
 from proof.synthetic_pages import ALL_PAGES, FIXTURE_ID, PAGES, render_page
@@ -49,6 +50,12 @@ MODELS_CONFIG = PROOF_ROOT.parent / "config" / "models.toml"
 def load(name: str) -> dict:
     with open(PROOF_ROOT / name, "rb") as handle:
         return tomllib.load(handle)
+
+
+def test_toml_string_round_trips_every_forbidden_basic_string_control():
+    value = 'quote=" slash=\\ controls=' + "".join(chr(code) for code in range(0x20)) + "\x7f"
+    decoded = tomllib.loads(f"value = {toml_string(value)}\n")
+    assert decoded["value"] == value
 
 
 @pytest.fixture(scope="module")

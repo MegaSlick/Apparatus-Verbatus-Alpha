@@ -586,6 +586,10 @@ def test_a_crop_written_by_another_encoder_is_not_refused_as_untraceable(real_re
             lambda payload: payload["provenance"].update({"receipt_ref": None}),
             "serving receipt",
         ),
+        (
+            lambda payload: payload["native_capture"].update(adapter="another-adapter.v1"),
+            "configured boundary",
+        ),
     ],
 )
 def test_page_testimonium_consumer_closes_payload_and_provenance(
@@ -619,6 +623,62 @@ def test_page_testimonium_consumer_closes_payload_and_provenance(
     proposal_ids = {region["payload"]["region_id"] for region in proposals}
     with pytest.raises(SchemaRefusal, match=message):
         perlector.act_attachment_view(context, act, testimonia, bases, proposal_ids)
+
+
+def test_page_attachment_uses_the_page_attempt_outcome_not_the_compatibility_act_outcome(
+    real_region, monkeypatch
+):
+    """A failed native page response cannot be laundered by a successful act row."""
+    context, region = real_region
+    proposal_seal = context.tree.read_artifact(
+        DESIGNATOR,
+        "proposal-seal",
+        artifact_id(DESIGNATOR, "proposal-seal", "proposal-seal", None),
+    )
+    act = next(
+        row
+        for row in proposal_seal["payload"]["expected_acts"]
+        if row["act_id"] == region["subject_id"]
+    )
+    regions, proposals = perlector.act_regions(context, act["act_id"])
+    testimonia = perlector.testimonia_of(context, act["act_id"], proposals)
+    bases = [perlector.verify_region(context, row) for row in regions]
+    proposal_ids = {row["payload"]["region_id"] for row in proposals}
+    original_view = perlector.act_attachment_view(context, act, testimonia, bases, proposal_ids)
+
+    original_artifact = context.tree.read_artifact
+    original_reference = context.tree.read_artifact_reference
+
+    def failed_attachment(stage, kind, artifact_id_):
+        record = original_artifact(stage, kind, artifact_id_)
+        if (
+            stage == ATTESTATORES
+            and kind == "act-attachment"
+            and record["subject_id"] == act["act_id"]
+        ):
+            record = copy.deepcopy(record)
+            entry = next(
+                item
+                for item in record["payload"]["attachments"]
+                if item["chair"] == "attestator_1" and item["page_ordinal"] == 1
+            )
+            assert entry["attached"] is True
+            entry.update(attached=False, attachment_basis="unattached", span=None)
+        return record
+
+    def failed_page(reference, *, stage, kind, subject_id):
+        record = original_reference(reference, stage=stage, kind=kind, subject_id=subject_id)
+        if kind == "page-testimonium" and record["payload"]["chair"] == "attestator_1":
+            record = copy.deepcopy(record)
+            record["outcome"] = "failed"
+        return record
+
+    monkeypatch.setattr(context.tree, "read_artifact", failed_attachment)
+    monkeypatch.setattr(context.tree, "read_artifact_reference", failed_page)
+
+    view = perlector.act_attachment_view(context, act, testimonia, bases, proposal_ids)
+    assert "attestator_1" in original_view["comparison_views"]
+    assert "attestator_1" not in view["comparison_views"]
 
 
 def test_a_recovery_crop_cannot_retroactively_attach_a_page_witness(real_region, monkeypatch):
