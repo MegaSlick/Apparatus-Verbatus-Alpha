@@ -8,10 +8,12 @@ or preference: correspondence is a consumer lookup, never witness testimony.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any, Final
 
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import SchemaRefusal
+from common.contracts.stages import ATTESTATORES, writing_directory
 from common.corpus_register import _refuse_preference
 from common.imaging import crop_png
 
@@ -390,7 +392,9 @@ def unpresented_region_ids(
     return unpresented
 
 
-def validate_page_testimonium_payload(payload: Any) -> dict[str, Any]:
+def validate_page_testimonium_payload(
+    payload: Any, *, read_bytes: Callable[[str], bytes] | None = None
+) -> dict[str, Any]:
     """Close the page-scoped native Testimonium at writer and consumer seams."""
     if not isinstance(payload, dict) or not (
         set(payload) <= PAGE_TESTIMONIUM_REQUIRED_FIELDS | PAGE_TESTIMONIUM_OPTIONAL_FIELDS
@@ -411,11 +415,13 @@ def validate_page_testimonium_payload(payload: Any) -> dict[str, Any]:
     validate_unpresented_regions(payload)
     if "partition_disagreement" in payload:
         validate_partition_disagreement(payload["partition_disagreement"])
-    validate_retained_response_refs(payload)
+    validate_retained_response_refs(payload, read_bytes=read_bytes)
     return validate_native_witness_geometry(payload)
 
 
-def validate_retained_response_refs(payload: dict[str, Any]) -> None:
+def validate_retained_response_refs(
+    payload: dict[str, Any], *, read_bytes: Callable[[str], bytes] | None = None
+) -> None:
     """Close the page record's link back to the bytes its geometry came from.
 
     A page Testimonium is the durable home of a page witness's own partition,
@@ -437,6 +443,7 @@ def validate_retained_response_refs(payload: dict[str, Any]) -> None:
         if not isinstance(refs, list) or not refs:
             raise SchemaRefusal("a page Testimonium raw_response_refs is not a non-empty list")
         for reference in refs:
+            expected_prefix = f"{writing_directory(ATTESTATORES)}/blobs/sha256/"
             if (
                 not isinstance(reference, dict)
                 or set(reference) != {"relative_path", "sha256"}
@@ -444,12 +451,28 @@ def validate_retained_response_refs(payload: dict[str, Any]) -> None:
                 or not reference["relative_path"]
                 or not isinstance(reference["sha256"], str)
                 or len(reference["sha256"]) != 64
+                or any(character not in "0123456789abcdef" for character in reference["sha256"])
+                or reference["relative_path"] != expected_prefix + reference["sha256"]
             ):
                 raise SchemaRefusal(
                     "a page Testimonium retained-response reference is not a closed blob reference"
                 )
         if len({reference["sha256"] for reference in refs}) != len(refs):
             raise SchemaRefusal("a page Testimonium names one retained response twice")
+        if read_bytes is not None:
+            for reference in refs:
+                try:
+                    retained = read_bytes(reference["relative_path"])
+                except OSError as error:
+                    raise SchemaRefusal(
+                        f"page Testimonium retained response {reference['relative_path']} could "
+                        f"not be read: {error}"
+                    ) from error
+                if digest_bytes(retained) != reference["sha256"]:
+                    raise SchemaRefusal(
+                        f"page Testimonium retained response {reference['relative_path']} "
+                        "differs from its digest"
+                    )
     metadata = payload.get("adapter_metadata")
     if metadata is not None:
         if (

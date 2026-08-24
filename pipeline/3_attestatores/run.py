@@ -35,6 +35,7 @@ import witness_adapters  # noqa: E402
 from common.alignment import align_to_anchor, load_alignment_limits, markup_text_view  # noqa: E402
 from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
+from common.contracts.canonical import digest_bytes  # noqa: E402
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal  # noqa: E402
 from common.contracts.identities import artifact_id, attempt_id  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR, PERLECTOR  # noqa: E402
@@ -893,13 +894,15 @@ def declared_adapter_metadata(
 
 def validate_raw_response_ref(reference: Any) -> dict[str, str]:
     """Close one retained-response reference to this stage's own blob store."""
+    prefix = "3_attestatores/blobs/sha256/"
     if (
         not isinstance(reference, dict)
         or set(reference) != {"relative_path", "sha256"}
         or not isinstance(reference["relative_path"], str)
-        or not reference["relative_path"].startswith("3_attestatores/blobs/sha256/")
         or not isinstance(reference["sha256"], str)
         or len(reference["sha256"]) != 64
+        or any(character not in "0123456789abcdef" for character in reference["sha256"])
+        or reference["relative_path"] != prefix + reference["sha256"]
     ):
         raise SchemaRefusal("a Testimonium raw_response_ref is not an Attestatores blob reference")
     return reference
@@ -927,6 +930,50 @@ def validate_adapter_metadata(payload: Any) -> None:
         raise SchemaRefusal(
             "a Testimonium adapter metadata is not a quantization rule any bound adapter declares"
         )
+    provenance = payload.get("provenance")
+    identity = provenance.get("resolved_identity") if isinstance(provenance, dict) else None
+    adapter_name = identity.get("witness_adapter") if isinstance(identity, dict) else None
+    if isinstance(adapter_name, str):
+        expected = witness_adapters.resolve_runnable_adapter(adapter_name).quantization
+        if metadata["geometry_quantization"] != expected:
+            raise SchemaRefusal(
+                "a Testimonium adapter metadata does not belong to its resolved witness adapter"
+            )
+
+
+def validate_retained_response_pairing(payload: dict[str, Any]) -> None:
+    """Require retained bytes and their adapter rule to describe one record."""
+    references = (
+        payload.get("raw_response_refs")
+        if "raw_response_refs" in payload
+        else ([payload["raw_response_ref"]] if "raw_response_ref" in payload else [])
+    )
+    if "adapter_metadata" in payload and not references:
+        raise SchemaRefusal("a Testimonium declares adapter metadata without a retained response")
+    provenance = payload.get("provenance")
+    identity = provenance.get("resolved_identity") if isinstance(provenance, dict) else None
+    adapter_name = identity.get("witness_adapter") if isinstance(identity, dict) else None
+    if isinstance(adapter_name, str):
+        quantization = witness_adapters.resolve_runnable_adapter(adapter_name).quantization
+        if references and quantization is not None and "adapter_metadata" not in payload:
+            raise SchemaRefusal(
+                "a Testimonium retained a quantized adapter response without naming its rule"
+            )
+
+
+def validate_retained_response_blob(tree: Any, reference: Any) -> None:
+    """Re-read one retained response so a missing or changed blob cannot pass a tally."""
+    checked = validate_raw_response_ref(reference)
+    try:
+        data = tree.read_bytes(checked["relative_path"])
+    except OSError as error:
+        raise SchemaRefusal(
+            f"retained witness response {checked['relative_path']} could not be read: {error}"
+        ) from error
+    if digest_bytes(data) != checked["sha256"]:
+        raise SchemaRefusal(
+            f"retained witness response {checked['relative_path']} differs from its digest"
+        )
 
 
 def validate_testimonium_payload(payload: Any) -> dict[str, Any]:
@@ -945,6 +992,7 @@ def validate_testimonium_payload(payload: Any) -> dict[str, Any]:
     if "raw_response_ref" in payload:
         validate_raw_response_ref(payload["raw_response_ref"])
     validate_adapter_metadata(payload)
+    validate_retained_response_pairing(payload)
     return validate_native_witness_geometry(payload)
 
 
@@ -1001,6 +1049,8 @@ def validate_page_testimonium_payload(payload: Any) -> dict[str, Any]:
     for reference in payload.get("raw_response_refs", []) if isinstance(payload, dict) else []:
         validate_raw_response_ref(reference)
     validate_adapter_metadata(payload)
+    if isinstance(payload, dict):
+        validate_retained_response_pairing(payload)
     return validate_shared_page_testimonium_payload(payload)
 
 
@@ -1317,6 +1367,8 @@ def validate_tallied_testimonium(
     if not isinstance(payload, dict):
         raise SchemaRefusal("a Testimonium tally record has no object payload")
     validate_testimonium_payload(payload)
+    if "raw_response_ref" in payload:
+        validate_retained_response_blob(context.tree, payload["raw_response_ref"])
     validate_testimonium_presentation(context, record)
     chair = payload["chair"]
     if not isinstance(chair, str) or chair not in context.witness_chairs:
@@ -1732,15 +1784,38 @@ def resolve_attempt(
                     if parsed["state"] == "parsed"
                     else {"parse_outcome": parsed["outcome"]}
                 )
+                if parsed["state"] == "parsed" and response.get("payload") != native_payload:
+                    raise SchemaRefusal(
+                        "fixture Chandra raw response text differs from its declared payload"
+                    )
+                (
+                    native_payload,
+                    witness_reported,
+                    capabilities,
+                    health,
+                    recording_problem,
+                ) = prepared_response({**response, "payload": native_payload})
                 health = content_health(native_payload, completed=True)
-                outcome = "genuinely-empty" if native_payload == "" else "read"
+                if parsed["state"] != "parsed":
+                    outcome = "failed"
+                    reason = f"the Chandra response shape was not recognized: {parsed['outcome']}"
+                    if recording_problem is not None:
+                        reason = f"{reason}; {recording_problem}"
+                elif recording_problem is not None:
+                    outcome = "failed"
+                    reason = (
+                        f"the provider response was refused without repair: {recording_problem}"
+                    )
+                else:
+                    outcome = "genuinely-empty" if native_payload == "" else "read"
+                    reason = None
                 return Attempt(
                     outcome,
                     native_payload,
-                    response.get("witness_reported"),
-                    format_capabilities_for(response),
+                    witness_reported,
+                    capabilities,
                     health,
-                    None,
+                    reason,
                     retained["raw_response_ref"],
                     raw_response,
                 )

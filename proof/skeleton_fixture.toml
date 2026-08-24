@@ -323,7 +323,7 @@ h = 146
 act_key = "a1"
 chair = "attestator_1"
 payload = "SYNTHETIC ACT ONE alpha beta gamma"
-raw_response = "{\"markdown\":\"SYNTHETIC ACT ONE alpha beta gamma\",\"blocks\":[{\"bbox\":[20.25,20.5,180,100.1]}]}"
+raw_response = "{\"schema\":\"fixture-chandra-response.v1\",\"markdown\":\"SYNTHETIC ACT ONE alpha beta gamma\",\"blocks\":[{\"bbox\":[20.25,20.5,180,100.1]}]}"
 
 [[testimony]]
 act_key = "a1"
@@ -339,7 +339,7 @@ payload = "SYNTHETIC ACT ONE alpha beta"
 act_key = "a2"
 chair = "attestator_1"
 payload = "SYNTHETIC ACT TWO delta epsilon zeta eta"
-raw_response = "{\"markdown\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"blocks\":[{\"bbox\":[20.25,120.5,180,220.1]}]}"
+raw_response = "{\"schema\":\"fixture-chandra-response.v1\",\"markdown\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"blocks\":[{\"bbox\":[20.25,120.5,180,220.1]}]}"
 
 [[testimony]]
 act_key = "a2"
@@ -358,7 +358,7 @@ chair = "attestator_1"
 payload = "SYNTHETIC ACT ONE alpha beta gamma"
 witness_reported = { confidence = "high" }
 format_capabilities = { can_express_layout = false, can_express_uncertainty = false }
-raw_response = "{\"markdown\":\"SYNTHETIC ACT ONE alpha beta gamma\",\"blocks\":[{\"bbox\":[20.25,20.5,180,100.1]}]}"
+raw_response = "{\"schema\":\"fixture-chandra-response.v1\",\"markdown\":\"SYNTHETIC ACT ONE alpha beta gamma\",\"blocks\":[{\"bbox\":[20.25,20.5,180,100.1]}]}"
 
 [[testimony]]
 scenario = "witness-capabilities"
@@ -620,7 +620,7 @@ chair = "attestator_3"
 scenario = "confirmed-blank"
 act_key = "a1"
 chair = "attestator_1"
-raw_response = "{\"markdown\":\"\",\"blocks\":[{\"bbox\":[20.25,20.5,180,100.1]}]}"
+raw_response = "{\"schema\":\"fixture-chandra-response.v1\",\"markdown\":\"\",\"blocks\":[{\"bbox\":[20.25,20.5,180,100.1]}]}"
 
 [[witness_empty]]
 scenario = "confirmed-blank"
@@ -636,7 +636,7 @@ chair = "attestator_3"
 scenario = "blank-with-dissent"
 act_key = "a1"
 chair = "attestator_1"
-raw_response = "{\"markdown\":\"\",\"blocks\":[{\"bbox\":[20.25,20.5,180,100.1]}]}"
+raw_response = "{\"schema\":\"fixture-chandra-response.v1\",\"markdown\":\"\",\"blocks\":[{\"bbox\":[20.25,20.5,180,100.1]}]}"
 
 [[witness_empty]]
 scenario = "blank-with-dissent"

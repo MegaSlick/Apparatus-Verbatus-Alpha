@@ -625,7 +625,7 @@ def act_attachment_view(
                 subject_id=page_ids[attachment_page],
             )
             page_payload = testimonium.get("payload")
-            validate_page_testimonium_payload(page_payload)
+            validate_page_testimonium_payload(page_payload, read_bytes=context.tree.read_bytes)
             validate_serving_provenance(
                 context,
                 page_payload["provenance"],

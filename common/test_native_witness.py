@@ -15,6 +15,7 @@ from common.native_witness import (
     validate_native_witness_geometry,
     validate_page_testimonium_payload,
     validate_presented_page_binding,
+    validate_retained_response_refs,
 )
 
 
@@ -370,6 +371,42 @@ def test_page_payload_closure_is_shared_with_the_consumer_and_refuses_unhashable
     )
     with pytest.raises(SchemaRefusal, match="invalid page scope facts"):
         validate_page_testimonium_payload(value)
+
+
+def test_page_retained_response_reference_rechecks_the_blob_bytes():
+    raw = b"retained native response"
+    digest = digest_bytes(raw)
+    reference = {"relative_path": f"3_attestatores/blobs/sha256/{digest}", "sha256": digest}
+    validate_retained_response_refs(
+        {"raw_response_refs": [reference]}, read_bytes=lambda _path: raw
+    )
+    with pytest.raises(SchemaRefusal, match="differs from its digest"):
+        validate_retained_response_refs(
+            {"raw_response_refs": [reference]}, read_bytes=lambda _path: b"changed"
+        )
+    with pytest.raises(SchemaRefusal, match="could not be read"):
+        validate_retained_response_refs(
+            {"raw_response_refs": [reference]},
+            read_bytes=lambda _path: (_ for _ in ()).throw(FileNotFoundError("gone")),
+        )
+
+
+def test_page_retained_response_digest_is_lowercase_hex():
+    reference = {
+        "relative_path": "3_attestatores/blobs/sha256/" + "z" * 64,
+        "sha256": "z" * 64,
+    }
+    with pytest.raises(SchemaRefusal, match="closed blob reference"):
+        validate_retained_response_refs({"raw_response_refs": [reference]})
+
+
+def test_page_retained_response_path_is_derived_from_its_digest():
+    reference = {
+        "relative_path": "3_attestatores/blobs/sha256/" + "a" * 64,
+        "sha256": "b" * 64,
+    }
+    with pytest.raises(SchemaRefusal, match="closed blob reference"):
+        validate_retained_response_refs({"raw_response_refs": [reference]})
 
 
 def test_partition_disagreement_retains_all_ambiguous_geometry_without_a_winner():

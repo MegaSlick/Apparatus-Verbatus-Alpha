@@ -7,6 +7,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -62,7 +63,10 @@ def _presented():
 
 def test_chandra_quantizes_retained_float_boxes_by_its_declared_rule():
     chandra = _load_chandra()
-    raw = b'{"markdown":"one","blocks":[{"bbox":[20.25,20.5,180.0,100.1]}]}'
+    raw = (
+        b'{"schema":"fixture-chandra-response.v1","markdown":"one",'
+        b'"blocks":[{"bbox":[20.25,20.5,180.0,100.1]}]}'
+    )
     assert chandra.observe(_presented(), raw) == [
         {
             "ordinal": 0,
@@ -140,12 +144,151 @@ def test_chandra_shape_surprise_keeps_bytes_with_a_named_parse_outcome(tmp_path)
     assert record["parse"] == {
         "state": "unrecognized-shape",
         "parser": "json",
-        "outcome": "missing-text",
+        "outcome": "unverified-response-schema",
     }
     chandra = _load_chandra()
-    assert chandra.parse(b'{"markdown":"text","blocks":[{"bbox":[0,0,"bad",1]}]}') == {
-        "parse_outcome": "malformed-block-geometry"
-    }
+    assert chandra.parse(
+        b'{"schema":"fixture-chandra-response.v1","markdown":"text",'
+        b'"blocks":[{"bbox":[0,0,"bad",1]}]}'
+    ) == {"parse_outcome": "malformed-block-geometry"}
+
+
+def test_chandra_shape_surprise_is_a_failed_attempt_not_a_successful_read(tmp_path):
+    """Named bytes remain evidence, but an unread schema is not a reading."""
+    from common.chairs import load_models_toml
+
+    attestatores = _load_stage_module("run")
+    resolved = load_models_toml(ROOT / "config/models.toml").chairs["attestator_1"]
+    context = SimpleNamespace(
+        tree=RunTree(tmp_path / "runs", "r"),
+        scenario="shape-surprise",
+        fixture={
+            "testimony": [
+                {
+                    "scenario": "shape-surprise",
+                    "act_key": "a1",
+                    "chair": "attestator_1",
+                    "payload": "declared fixture text",
+                    "raw_response": '{"schema":"fixture-chandra-response.v1","unknown":"shape"}',
+                }
+            ],
+            "witness_empty": [],
+        },
+    )
+    attempt = attestatores.resolve_attempt(
+        context,
+        {"act_key": "a1"},
+        "attestator_1",
+        resolved,
+        {"ordinal": 1, "empty": set(), "not_run": set(), "failures": set(), "malformed": {}},
+    )
+    assert attempt.outcome == "failed"
+    assert attempt.native_payload == {"parse_outcome": "missing-text"}
+    assert attempt.reason == "the Chandra response shape was not recognized: missing-text"
+    assert attempt.raw_response_ref is not None
+
+
+def test_chandra_raw_text_must_equal_the_fixture_payload_after_retention(tmp_path):
+    """A fixture row cannot declare two readings for the same response."""
+    from common.chairs import load_models_toml
+
+    attestatores = _load_stage_module("run")
+    resolved = load_models_toml(ROOT / "config/models.toml").chairs["attestator_1"]
+    tree = RunTree(tmp_path / "runs", "r")
+    raw = b'{"schema":"fixture-chandra-response.v1","markdown":"actual","blocks":[]}'
+    context = SimpleNamespace(
+        tree=tree,
+        scenario="mismatch",
+        fixture={
+            "testimony": [
+                {
+                    "scenario": "mismatch",
+                    "act_key": "a1",
+                    "chair": "attestator_1",
+                    "payload": "different declaration",
+                    "raw_response": raw.decode(),
+                }
+            ],
+            "witness_empty": [],
+        },
+    )
+    with pytest.raises(SchemaRefusal, match="raw response text differs"):
+        attestatores.resolve_attempt(
+            context,
+            {"act_key": "a1"},
+            "attestator_1",
+            resolved,
+            {
+                "ordinal": 1,
+                "empty": set(),
+                "not_run": set(),
+                "failures": set(),
+                "malformed": {},
+            },
+        )
+    digest = digest_bytes(raw)
+    assert tree.read_bytes(f"3_attestatores/blobs/sha256/{digest}") == raw
+
+
+def test_chandra_malformed_capabilities_fail_only_that_retained_attempt(tmp_path):
+    from common.chairs import load_models_toml
+
+    attestatores = _load_stage_module("run")
+    resolved = load_models_toml(ROOT / "config/models.toml").chairs["attestator_1"]
+    context = SimpleNamespace(
+        tree=RunTree(tmp_path / "runs", "r"),
+        scenario="bad-capabilities",
+        fixture={
+            "testimony": [
+                {
+                    "scenario": "bad-capabilities",
+                    "act_key": "a1",
+                    "chair": "attestator_1",
+                    "payload": "actual",
+                    "raw_response": (
+                        '{"schema":"fixture-chandra-response.v1","markdown":"actual","blocks":[]}'
+                    ),
+                    "format_capabilities": "not-an-object",
+                }
+            ],
+            "witness_empty": [],
+        },
+    )
+    attempt = attestatores.resolve_attempt(
+        context,
+        {"act_key": "a1"},
+        "attestator_1",
+        resolved,
+        {"ordinal": 1, "empty": set(), "not_run": set(), "failures": set(), "malformed": {}},
+    )
+    assert attempt.outcome == "failed"
+    assert attempt.native_payload == "actual"
+    assert attempt.raw_response_ref is not None
+    assert "format capabilities could not be retained" in attempt.reason
+
+
+def test_chandra_conflicting_text_fields_and_huge_coordinates_are_named():
+    chandra = _load_chandra()
+    assert chandra.parse(
+        b'{"schema":"fixture-chandra-response.v1","markdown":"one","text":"two","blocks":[]}'
+    ) == {"parse_outcome": "conflicting-text-fields"}
+    raw = json.dumps(
+        {
+            "schema": "fixture-chandra-response.v1",
+            "markdown": "one",
+            "blocks": [{"bbox": [0, 0, 10**400, 1]}],
+        }
+    ).encode()
+    assert chandra.parse(raw) == {"parse_outcome": "malformed-block-geometry"}
+    assert chandra.observe(_presented(), raw) == []
+
+
+def test_an_unverified_chandra_wire_shape_cannot_acquire_fixture_geometry():
+    """Only explicitly synthetic bytes use the placeholder page-pixel rule."""
+    chandra = _load_chandra()
+    raw = b'{"markdown":"plausible live response","blocks":[{"bbox":[0,0,100,100]}]}'
+    assert chandra.parse(raw) == {"parse_outcome": "unverified-response-schema"}
+    assert chandra.observe(_presented(), raw) == []
 
 
 def test_chandra_out_of_order_stage_invocation_holds_cleanly(tmp_path):
@@ -210,7 +353,10 @@ def test_overlapping_native_blocks_are_both_retained_as_reported_geometry():
     the partition record hold the competing pairings (GOVERNANCE 3).
     """
     chandra = _load_chandra()
-    raw = b'{"markdown":"one","blocks":[{"bbox":[10,10,100,100]},{"bbox":[50,50,150,150]}]}'
+    raw = (
+        b'{"schema":"fixture-chandra-response.v1","markdown":"one",'
+        b'"blocks":[{"bbox":[10,10,100,100]},{"bbox":[50,50,150,150]}]}'
+    )
     observed = chandra.observe(_presented(), raw)
     assert [item["bounds"] for item in observed] == [
         {"x": 10, "y": 10, "w": 90, "h": 90},
@@ -243,7 +389,9 @@ def test_a_degenerate_native_box_is_named_and_derives_no_geometry(bbox):
     have to catch downstream.
     """
     chandra = _load_chandra()
-    raw = json.dumps({"markdown": "one", "blocks": [{"bbox": bbox}]}).encode("utf-8")
+    raw = json.dumps(
+        {"schema": "fixture-chandra-response.v1", "markdown": "one", "blocks": [{"bbox": bbox}]}
+    ).encode("utf-8")
     assert chandra.parse(raw) == {"parse_outcome": "malformed-block-geometry"}
     assert chandra.observe(_presented(), raw) == []
 
@@ -259,7 +407,11 @@ def test_one_degenerate_box_does_not_let_its_neighbours_pass_unnamed():
     """
     chandra = _load_chandra()
     raw = json.dumps(
-        {"markdown": "one", "blocks": [{"bbox": [10, 10, 100, 100]}, {"bbox": [10, 10, 10, 10]}]}
+        {
+            "schema": "fixture-chandra-response.v1",
+            "markdown": "one",
+            "blocks": [{"bbox": [10, 10, 100, 100]}, {"bbox": [10, 10, 10, 10]}],
+        }
     ).encode("utf-8")
     assert chandra.parse(raw) == {"parse_outcome": "malformed-block-geometry"}
     assert chandra.observe(_presented(), raw) == []
@@ -277,6 +429,7 @@ def test_reading_order_is_the_response_order_and_no_other_key_reorders_it():
     chandra = _load_chandra()
     raw = json.dumps(
         {
+            "schema": "fixture-chandra-response.v1",
             "markdown": "two blocks",
             "blocks": [
                 {"bbox": [10, 120, 100, 200], "reading_index": 7},
@@ -306,7 +459,10 @@ def test_a_block_past_the_page_edge_is_refused_rather_than_clamped_into_the_page
     hold expensive cannot quietly buy relief with a clamp.
     """
     chandra = _load_chandra()
-    raw = b'{"markdown":"one","blocks":[{"bbox":[0,0,200.2,260.0]}]}'
+    raw = (
+        b'{"schema":"fixture-chandra-response.v1","markdown":"one",'
+        b'"blocks":[{"bbox":[0,0,200.2,260.0]}]}'
+    )
     observed = chandra.observe(_presented(), raw)
     assert observed[0]["bounds"] == {"x": 0, "y": 0, "w": 201, "h": 260}
     with pytest.raises(SchemaRefusal, match="outside the sealed source page"):
@@ -329,7 +485,10 @@ def test_a_parse_failure_keeps_its_bytes_and_its_name_through_the_written_record
     # so this needs the real store rather than the stub above, not a whole
     # orchestrated run.
     tree = RunTree(tmp_path / "runs", "r")
-    raw = b'{"markdown":"text","blocks":[{"bbox":[0,0,"bad",1]}]}'
+    raw = (
+        b'{"schema":"fixture-chandra-response.v1","markdown":"text",'
+        b'"blocks":[{"bbox":[0,0,"bad",1]}]}'
+    )
     retained = feeding.retain_model_view(
         tree,
         adapter="chandra.v1",
@@ -387,6 +546,67 @@ def test_an_unknown_quantization_rule_is_refused_by_name(tmp_path):
         attestatores.validate_adapter_metadata(
             {"adapter_metadata": {"geometry_quantization": "invented.v9.round-to-taste"}}
         )
+
+
+def test_quantization_metadata_belongs_to_the_recorded_adapter_and_blob():
+    attestatores = _load_stage_module("run")
+    chandra_rule = _load_chandra().QUANTIZATION_RULE
+    payload = {
+        "provenance": {"resolved_identity": {"witness_adapter": "churro.v1"}},
+        "adapter_metadata": {"geometry_quantization": chandra_rule},
+        "raw_response_ref": {
+            "relative_path": "3_attestatores/blobs/sha256/" + "a" * 64,
+            "sha256": "a" * 64,
+        },
+    }
+    with pytest.raises(SchemaRefusal, match="does not belong"):
+        attestatores.validate_adapter_metadata(payload)
+    with pytest.raises(SchemaRefusal, match="without a retained response"):
+        attestatores.validate_retained_response_pairing(
+            {"adapter_metadata": {"geometry_quantization": chandra_rule}}
+        )
+    with pytest.raises(SchemaRefusal, match="without naming its rule"):
+        attestatores.validate_retained_response_pairing(
+            {
+                "provenance": {"resolved_identity": {"witness_adapter": "chandra.v1"}},
+                "raw_response_ref": payload["raw_response_ref"],
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "reference",
+    (
+        {
+            "relative_path": "3_attestatores/blobs/sha256/" + "a" * 64,
+            "sha256": "z" * 64,
+        },
+        {
+            "relative_path": "3_attestatores/blobs/sha256/" + "a" * 64,
+            "sha256": "b" * 64,
+        },
+        {
+            "relative_path": "3_attestatores/blobs/sha256/../../elsewhere",
+            "sha256": "a" * 64,
+        },
+    ),
+)
+def test_retained_response_reference_is_the_exact_lowercase_digest_path(reference):
+    attestatores = _load_stage_module("run")
+    with pytest.raises(SchemaRefusal, match="Attestatores blob reference"):
+        attestatores.validate_raw_response_ref(reference)
+
+
+def test_act_tally_rechecks_retained_response_bytes(tmp_path):
+    attestatores = _load_stage_module("run")
+    tree = RunTree(tmp_path / "runs", "r")
+    raw = b"retained response"
+    digest, published = tree.put_blob(ATTESTATORES, raw)
+    reference = {"relative_path": published.relative_path, "sha256": digest}
+    attestatores.validate_retained_response_blob(tree, reference)
+    tree.resolve(published.relative_path).write_bytes(b"changed")
+    with pytest.raises(SchemaRefusal, match="differs from its digest"):
+        attestatores.validate_retained_response_blob(tree, reference)
 
 
 def test_the_page_record_names_the_bytes_its_own_geometry_was_quantized_from(tmp_path):

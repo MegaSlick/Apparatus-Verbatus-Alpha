@@ -35,6 +35,7 @@ from typing import Any
 from common.native_witness import validate_presented
 
 QUANTIZATION_RULE = "chandra.v1.floor-min-ceil-max.sealed-page-pixels"
+FIXTURE_RESPONSE_SCHEMA = "fixture-chandra-response.v1"
 
 
 def prompt() -> dict[str, str]:
@@ -52,6 +53,10 @@ def parse(raw_response: bytes) -> Any:
         return {"parse_outcome": "invalid-json"}
     if not isinstance(decoded, dict):
         return {"parse_outcome": "top-level-not-object"}
+    if decoded.get("schema") != FIXTURE_RESPONSE_SCHEMA:
+        return {"parse_outcome": "unverified-response-schema"}
+    if "markdown" in decoded and "text" in decoded and decoded["markdown"] != decoded["text"]:
+        return {"parse_outcome": "conflicting-text-fields"}
     text = decoded.get("markdown", decoded.get("text"))
     blocks = decoded.get("blocks")
     if not isinstance(text, str):
@@ -95,7 +100,11 @@ def observe(presentation: dict[str, Any], native_payload: Any) -> list[dict[str,
         decoded = json.loads(native_payload.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
         return []
-    if not isinstance(decoded, dict) or not isinstance(decoded.get("blocks"), list):
+    if (
+        not isinstance(decoded, dict)
+        or decoded.get("schema") != FIXTURE_RESPONSE_SCHEMA
+        or not isinstance(decoded.get("blocks"), list)
+    ):
         return []
     observed: list[dict[str, Any]] = []
     for block in decoded["blocks"]:
@@ -116,7 +125,13 @@ def _quantize_box(value: Any) -> dict[str, int] | None:
         return None
     if any(isinstance(item, bool) or not isinstance(item, (int, float)) for item in value):
         return None
-    x0, y0, x1, y1 = (float(item) for item in value)
+    try:
+        x0, y0, x1, y1 = (float(item) for item in value)
+    except OverflowError:
+        # JSON integers have arbitrary precision in Python.  A coordinate too
+        # large for the float-based quantization rule is malformed geometry,
+        # not an interpreter error that may escape the named parse boundary.
+        return None
     if not all(math.isfinite(item) for item in (x0, y0, x1, y1)):
         return None
     left, top, right, bottom = math.floor(x0), math.floor(y0), math.ceil(x1), math.ceil(y1)

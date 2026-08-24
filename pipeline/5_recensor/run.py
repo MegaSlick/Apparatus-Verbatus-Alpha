@@ -327,7 +327,9 @@ def act_attachment_facts(context, act_id: str, outcomes: dict[str, str]) -> dict
                     kind="page-testimonium",
                     subject_id=proposal_page["source_page_id"],
                 )
-                page_payload = validate_page_testimonium_payload(page_testimonium.get("payload"))
+                page_payload = validate_page_testimonium_payload(
+                    page_testimonium.get("payload"), read_bytes=context.tree.read_bytes
+                )
             except ContractError as error:
                 raise FatalAccounting(
                     f"act {act_id} page witness {chair!r} has no valid page geometry: {error}"

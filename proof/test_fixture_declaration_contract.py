@@ -46,7 +46,6 @@ whichever adapter a chair is bound to, its own `parse`/`observe` answer here.
 from __future__ import annotations
 
 import importlib.util
-import json
 import sys
 import tomllib
 from pathlib import Path
@@ -71,7 +70,7 @@ RESPONSE_TABLES = ("testimony", "witness_empty", "witness_failure", "witness_not
 # Every key a response row may use to declare reported geometry. Claim 3 refuses
 # all of them over a minted region, so adding a second geometry channel later
 # cannot quietly escape the wall by not being called `raw_response`.
-GEOMETRY_BEARING_KEYS = ("raw_response", "blocks", "observed", "x", "y", "w", "h")
+GEOMETRY_BEARING_KEYS = ("blocks", "observed", "x", "y", "w", "h")
 
 
 def _load_local_adapters():
@@ -209,6 +208,25 @@ def base_rows_that_retain_a_response(skeleton: dict[str, Any]) -> set[tuple[str,
         for row in skeleton["testimony"]
         if "scenario" not in row and "raw_response" in row
     }
+
+
+def reported_geometry_declarations(
+    skeleton: dict[str, Any],
+    row: dict[str, Any],
+    chairs: dict[str, ChairIdentity],
+    adapters: Any,
+) -> list[str]:
+    """Which row fields actually declare witness-reported geometry."""
+    present = [key for key in GEOMETRY_BEARING_KEYS if key in row]
+    raw = row.get("raw_response")
+    if raw is None:
+        return present
+    page = page_for_act_key(skeleton, row["act_key"])
+    adapter = adapters.resolve_runnable_adapter(chairs[row["chair"]].witness_adapter)
+    observed = adapter.observe(page_presentation(page), raw.encode("utf-8"))
+    if any(item["bounds_source"] in {"native", "derived"} for item in observed):
+        present.append("raw_response")
+    return present
 
 
 # --- Claim 1: every declaring row names something that exists ------------------
@@ -370,7 +388,9 @@ def test_every_declared_native_observation_lies_inside_its_own_sealed_page(skele
 # --- Claim 3: a minted region stays visibly under-witnessed --------------------
 
 
-def test_no_declaration_hands_a_minted_fallback_region_reported_geometry(skeleton):
+def test_no_declaration_hands_a_minted_fallback_region_reported_geometry(
+    skeleton, chairs, adapters
+):
     """The retroactive-coverage wall, enforced at the declaration.
 
     A page the fixture leaves unmarked reaches the witnesses as a Designator
@@ -385,11 +405,24 @@ def test_no_declaration_hands_a_minted_fallback_region_reported_geometry(skeleto
     for table, row in response_rows(skeleton):
         if row["act_key"] not in minted:
             continue
-        present = [key for key in GEOMETRY_BEARING_KEYS if key in row]
+        present = reported_geometry_declarations(skeleton, row, chairs, adapters)
         assert not present, (
             f"{table} row {row!r} declares geometry ({present}) over minted region "
             f"{row['act_key']}; a recovery crop stays visibly under-witnessed"
         )
+
+
+def test_a_geometry_free_raw_response_is_not_mislabeled_as_reported_geometry(
+    skeleton, chairs, adapters
+):
+    """Retained bytes are custody; only their adapter can say they contain boxes."""
+    row = {
+        "scenario": "ink-free-page",
+        "act_key": "page-fallback:3",
+        "chair": "attestator_2",
+        "raw_response": "<output></output>",
+    }
+    assert reported_geometry_declarations(skeleton, row, chairs, adapters) == []
 
 
 def test_a_minted_fallback_region_is_still_allowed_a_response(skeleton):
@@ -429,7 +462,7 @@ def test_no_attempt_is_declared_twice(skeleton):
         seen[identity] = table
 
 
-def test_a_retained_response_and_its_declared_payload_are_the_same_text(skeleton):
+def test_a_retained_response_and_its_declared_payload_are_the_same_text(skeleton, chairs, adapters):
     """One reading per attempt (GOVERNANCE 5), stated where both halves exist.
 
     A row carries the payload the stage records and, for a native adapter, the
@@ -441,8 +474,8 @@ def test_a_retained_response_and_its_declared_payload_are_the_same_text(skeleton
     for row in skeleton["testimony"]:
         if "raw_response" not in row or not isinstance(row["payload"], str):
             continue
-        retained = json.loads(row["raw_response"])
-        text = retained.get("markdown", retained.get("text"))
+        adapter = adapters.resolve_runnable_adapter(chairs[row["chair"]].witness_adapter)
+        text = adapter.parse(row["raw_response"].encode("utf-8"))
         assert text == row["payload"], (
             f"testimony row {row!r} retains {text!r} but declares payload {row['payload']!r}"
         )
@@ -450,8 +483,8 @@ def test_a_retained_response_and_its_declared_payload_are_the_same_text(skeleton
     for row in skeleton.get("witness_empty", []):
         if "raw_response" not in row:
             continue
-        retained = json.loads(row["raw_response"])
-        text = retained.get("markdown", retained.get("text"))
+        adapter = adapters.resolve_runnable_adapter(chairs[row["chair"]].witness_adapter)
+        text = adapter.parse(row["raw_response"].encode("utf-8"))
         assert text == "", (
             f"witness_empty row {row!r} declares a completed empty response but retains {text!r}"
         )

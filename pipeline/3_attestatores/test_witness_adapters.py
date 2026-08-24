@@ -42,7 +42,10 @@ def test_chandra_and_churro_have_runnable_fixture_adapter_shapes():
     assert spec.retain is adapters.feeding.retain_model_view
     chandra = adapters.resolve_runnable_adapter("chandra.v1")
     assert set(chandra.prompt()) == {"instruction"}
-    assert chandra.parse(b'{"markdown":"text","blocks":[]}') == "text"
+    assert (
+        chandra.parse(b'{"schema":"fixture-chandra-response.v1","markdown":"text","blocks":[]}')
+        == "text"
+    )
     assert chandra.retain is adapters.chandra.retain
 
 

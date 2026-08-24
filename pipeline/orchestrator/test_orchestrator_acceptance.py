@@ -818,14 +818,22 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # digest below reproduced twice in independent temporary roots through this
 # module's own `orchestrate` and `semantic_snapshot_digest` helpers at canonical
 # run id "r".
-HAPPY_RUN_TREE_DIGEST = "caa83f120631596e9eb92393b37ad514243cebebce50c9f25ecb2217172d42cb"
+# Phase-2 Sol review re-pin: the placeholder JSON accepted by the offline
+# Chandra adapter now carries an explicit fixture schema.  Without that label,
+# a real but still-unverified Chandra response that happened to expose the same
+# generic `markdown`/`blocks`/`bbox` keys could acquire the fixture's declared
+# sealed-page-pixel quantization rule.  The label changes the fixture bytes,
+# their retained blob digests, and the config digest bound into every artifact;
+# counts and exits remain 86/0 and 111/3.  Both digests below reproduced twice
+# from independent canonical-id `r` runs after the correction.
+HAPPY_RUN_TREE_DIGEST = "2bdd0ef9f5d7ea63feaf2855793c0d9d2961700c125b3cb4efb108d4c8bc5de5"
 # Review only, once more in the same seat: a page witness invoked on every act
 # and unusable on all of them now records the serving moment that produced it
 # (`provenance_for(..., attempted=attempted_page)`), where the `reading` gate
 # left `receipt_ref: None` beside a `presented` block claiming pixels were shown.
 # One `receipt_ref` field on attestator_3's page-2 record; no new file, no count
 # or exit change (97/3), and happy is untouched at the digest above.
-REVIEW_RUN_TREE_DIGEST = "44c6042f04441fcf8537c9c40ab6559ccb3e3aace3d141ad0b21896a39db95d5"
+REVIEW_RUN_TREE_DIGEST = "d7520f0178b3b1df62533540507f37ce9a7041928ad22d4321fc3059fa52f63a"
 
 
 def orchestrate(

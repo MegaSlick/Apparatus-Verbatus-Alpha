@@ -145,6 +145,7 @@ def chandra_raw_response(payload: str, bounds: dict[str, int]) -> str:
     """
     return json.dumps(
         {
+            "schema": "fixture-chandra-response.v1",
             "markdown": payload,
             "blocks": [
                 {
