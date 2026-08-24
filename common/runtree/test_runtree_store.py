@@ -355,15 +355,13 @@ def test_an_edited_run_authority_is_refused(tmp_path):
         ('{"count": ' + "9" * 700 + "}", "integer at"),
     ),
 )
-def test_a_run_authority_that_was_never_hashable_is_not_accused_of_being_edited(
-    tmp_path, damage, named
-):
+def test_a_run_authority_with_uncanonical_current_content_names_that_cause(tmp_path, damage, named):
     """`run.json` is read as bare JSON, never through an envelope, so this is the
-    only place its damage gets named. A record carrying a value the canonical
-    serializer refuses was never hashable at all, and "the run authority was edited
-    after it was sealed" sends an operator hunting an edit nobody made. Written as
-    bytes rather than through `canonical_bytes`, because the whole point is a file
-    this pipeline could not have produced."""
+    only place its damage gets named. This test deliberately edits a sealed record
+    to a value the canonical serializer refuses; that current value prevents a
+    digest comparison, so the boundary names the cause without claiming the bytes
+    establish when it arose. Written without `canonical_bytes`, because the whole
+    point is a file the pipeline could not produce in its current form."""
     tree = make_run(tmp_path)
     record = tree.read_run()
     record["render_settings"] = json.loads(damage)

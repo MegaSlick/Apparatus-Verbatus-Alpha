@@ -36,6 +36,15 @@ def _load_perlector():
 perlector = _load_perlector()
 
 
+class _UnhashableString(str):
+    __hash__ = None
+
+
+class _HostileReprString(str):
+    def __repr__(self):
+        raise RuntimeError("the refusal rendered an untrusted chair-name subclass")
+
+
 def _context(declared, chairs=("attestator_1", "attestator_3")):
     return SimpleNamespace(fixture={"page_witness_chairs": declared}, witness_chairs=chairs)
 
@@ -81,6 +90,18 @@ def test_a_duplicated_chair_is_refused_here_exactly_as_the_producer_refuses_it()
         perlector.declared_page_witness_chairs(_context(["attestator_1", "attestator_1"]))
 
 
+@pytest.mark.parametrize(
+    "chair",
+    (
+        pytest.param(_UnhashableString("attestator_1"), id="unhashable-string-subclass"),
+        pytest.param(_HostileReprString("attestator_33"), id="hostile-repr-string-subclass"),
+    ),
+)
+def test_a_chair_name_string_subclass_is_refused_before_set_or_rendering(chair):
+    with pytest.raises(SchemaRefusal, match="unique list of chair names"):
+        perlector.declared_page_witness_chairs(_context([chair]))
+
+
 def test_a_chair_outside_the_configured_roster_is_refused_and_both_halves_named():
     """The silent case, and the reason this check is worth having on the reader's
     side at all: nothing in the run tree contradicts a declaration that names
@@ -90,6 +111,16 @@ def test_a_chair_outside_the_configured_roster_is_refused_and_both_halves_named(
     message = str(caught.value)
     assert "attestator_33" in message
     assert "attestator_1" in message and "attestator_3" in message
+
+
+def test_an_all_held_preflight_still_validates_the_run_declaration():
+    """Held acts skip Testimonium accounting but still produce immutable
+    ``not-run`` Perlectiones. The run-global declaration must refuse before those
+    writes rather than disappearing behind the held-act shortcut."""
+    context = _context(["attestator_33"])
+
+    with pytest.raises(SchemaRefusal, match="outside this run's configured witness roster"):
+        perlector.preflight_testimonia_denominator(context, [{"outcome": "held"}])
 
 
 def test_a_chair_name_carrying_a_surrogate_is_refused_printably():

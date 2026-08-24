@@ -133,6 +133,18 @@ def test_a_surrogate_refusal_is_itself_printable():
     str(caught.value).encode("utf-8")
 
 
+def test_a_surrogate_refusal_pairs_the_offender_with_its_canonical_path():
+    """The encoder sees sorted keys, so the diagnostic locator must too.
+
+    Insertion order puts ``z`` first here while canonical JSON puts ``a`` first.
+    Walking the former used to report the encoder's ``\\ud800`` offender at
+    ``$.z``, where the different ``\\udfff`` character actually lives.
+    """
+    with pytest.raises(TypeError) as caught:
+        canonical_bytes({"z": "\udfff", "a": SURROGATE})
+    assert "unencodable character '\\ud800' at $.a" in str(caught.value)
+
+
 def test_a_record_carrying_a_surrogate_fails_its_hash_rather_than_crashing():
     record = {"a": SURROGATE, "self_hash": "0" * 64}
     assert verify_self_hash(record) is False
@@ -229,10 +241,10 @@ def test_only_tyrel_approves():
     assert "only Tyrel approves" in str(caught.value)
 
 
-def test_an_unhashable_record_is_told_apart_from_an_edited_one():
+def test_unhashable_current_content_is_told_apart_from_a_digest_mismatch():
     """`verify_self_hash` answers one boolean, which is right for a check and
-    wrong for a message: "changed after publication" accuses someone of an edit,
-    and a record that never had a canonical form was not edited by anybody."""
+    wrong for a message: unhashable current contents provide no computed digest
+    to compare with the stored one, while canonical edited contents do."""
     edited = sound_approval()
     edited["reason"] = "actually it was fine"
     assert self_hash_refusal(edited) is None
@@ -241,10 +253,10 @@ def test_an_unhashable_record_is_told_apart_from_an_edited_one():
     assert "unencodable" in (self_hash_refusal({"a": SURROGATE, "self_hash": "0" * 64}) or "")
 
 
-def test_an_approval_that_was_never_hashable_is_not_accused_of_being_edited():
-    """This record is the evidence that Tyrel approved something, so why it was
-    refused is the first thing anyone will want. Both facts are refusals; they are
-    not the same accusation."""
+def test_an_approval_with_unhashable_current_content_names_that_cause():
+    """This deliberately edits a sealed approval to an unhashable value. The
+    boundary can name why no comparison is now possible without pretending the
+    current bytes prove whether that value began malformed or changed later."""
     record = sound_approval()
     record["reason"] = SURROGATE
     with pytest.raises(ApprovalRefusal) as caught:

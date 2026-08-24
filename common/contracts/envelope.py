@@ -197,16 +197,17 @@ def validate_envelope(envelope: Any) -> dict[str, Any]:
         # `verify_self_hash` swallows both `RecursionError` and `TypeError` so
         # every one of its many boolean callers gets a safe refusal instead of a
         # crash. That breadth costs the specific diagnostic here: the serializer
-        # already names the exact offending field and value, and "changed after
-        # publication" is the wrong story for a record that was never hashable
-        # in the first place. `self_hash_refusal` recomputes once more on this
-        # refusal-only path to recover that detail without widening
+        # already names the exact offending field and value. Current contents
+        # that cannot be hashed provide no digest to compare and cannot establish
+        # whether they began malformed or changed later. `self_hash_refusal`
+        # recomputes once more on this refusal-only path to recover that detail
+        # without widening
         # `verify_self_hash`'s contract for its other fourteen-odd callers.
         #
         # The recursion band is named here too rather than falling through to
-        # the sentence below: a record too deep to walk was never checkable on
-        # this machine, which is not the same fact as an edit and must not wear
-        # its words.
+        # the sentence below: current contents too deep to walk are not
+        # checkable on this machine, so no digest comparison can establish a
+        # mismatch.
         unhashable = self_hash_refusal(envelope)
         if unhashable is not None:
             raise SchemaRefusal(f"artifact fails its self-hash: {unhashable}")

@@ -10,6 +10,16 @@ import pytest
 
 from common.contracts.errors import SchemaRefusal
 
+
+class _UnhashableString(str):
+    __hash__ = None
+
+
+class _HostileReprString(str):
+    def __repr__(self):
+        raise RuntimeError("the refusal rendered an untrusted string subclass")
+
+
 # --- Uncertain spans: read text, bounds-checked -------------------------------
 
 
@@ -83,13 +93,15 @@ def _recursive_list() -> list:
         pytest.param("low\0", id="null-byte"),
         pytest.param({"\ud800": "low"}, id="surrogate-key"),
         pytest.param(_recursive_list(), id="recursive"),
+        pytest.param(_UnhashableString("low"), id="unhashable-string-subclass"),
+        pytest.param(_HostileReprString("maybe"), id="hostile-repr-string-subclass"),
     ],
 )
-def test_an_undeclared_confidence_refuses_printably(confidence):
+def test_a_noncanonical_or_undeclared_confidence_refuses_printably(confidence):
     """The refusal interpolates the offending value, and the refusal is printed.
-    Strings use `!r`, which escapes a surrogate; every other type is named without
-    rendering its value, so a huge integer or recursive container cannot crash the
-    report of the refusal."""
+    Exact built-in strings use `!r`, which escapes a surrogate; every other type
+    is named without rendering its value, so a huge integer, recursive container,
+    or hostile string subclass cannot crash the report of the refusal."""
     with pytest.raises(SchemaRefusal, match="confidence") as caught:
         annotations.validate_uncertain_spans(
             [{"start": 0, "end": 1, "alternatives": [], "confidence": confidence}], "reading"

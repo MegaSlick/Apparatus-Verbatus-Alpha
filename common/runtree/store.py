@@ -308,7 +308,7 @@ class RunTree:
         return tree
 
     def read_run(self) -> dict[str, Any]:
-        """The run authority, refused if it was edited after it was sealed."""
+        """The run authority, refused unless its self-hash verifies its current contents."""
         run_file = self.root / RUN_FILE
         if not run_file.exists():
             raise IncompatibleReuse(
@@ -320,10 +320,10 @@ class RunTree:
             # `run.json` is read here as bare JSON, not through an envelope, so
             # this is the first and only place its damage is named. A record
             # carrying a value the canonical serializer refuses — a float, a
-            # non-string key, a lone surrogate — was never hashable to begin
-            # with, and telling an operator it "was edited after it was sealed"
-            # sends them hunting an edit nobody made. Both are refusals; they
-            # are different facts about the tree.
+            # non-string key, a lone surrogate — has no current digest to compare
+            # with the stored one. Those bytes cannot establish whether it began
+            # malformed or was damaged or edited later, so name the present
+            # canonicalization cause rather than inventing that history.
             unhashable = self_hash_refusal(record)
             if unhashable is not None:
                 raise IncompatibleReuse(

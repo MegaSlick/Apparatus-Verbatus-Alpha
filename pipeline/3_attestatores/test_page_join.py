@@ -35,6 +35,15 @@ attestatores = _load_attestatores()
 Attempt = attestatores.Attempt
 
 
+class _UnhashableString(str):
+    __hash__ = None
+
+
+class _HostileReprString(str):
+    def __repr__(self):
+        raise RuntimeError("the refusal rendered an untrusted chair-name subclass")
+
+
 @pytest.mark.parametrize(
     "bad_chair",
     ([], {}, [[]], {"nested": []}, {"a": {"b": [1, 2]}}, [[[]]], [{"a": [{}]}]),
@@ -110,13 +119,30 @@ def test_the_roster_refusal_names_the_roster_and_not_only_the_offender():
 )
 def test_declared_page_witness_chairs_refuses_values_no_chair_name_could_be(bad_chair):
     """The type check must precede every structural use of these values, and it
-    must not itself walk them. `isinstance(item, str)` is O(1) on each and answers
-    for all six."""
+    must not itself walk them. The exact-type check is O(1) on each and answers
+    every case without invoking value-defined hashing or rendering."""
     if bad_chair == "recursive":
         recursive: list = []
         recursive.append(recursive)
         bad_chair = recursive
     context = SimpleNamespace(fixture={"page_witness_chairs": [bad_chair]})
+
+    with pytest.raises(SchemaRefusal, match="unique string list"):
+        attestatores.declared_page_witness_chairs(context)
+
+
+@pytest.mark.parametrize(
+    "chair",
+    (
+        pytest.param(_UnhashableString("attestator_1"), id="unhashable-string-subclass"),
+        pytest.param(_HostileReprString("attestator_33"), id="hostile-repr-string-subclass"),
+    ),
+)
+def test_a_chair_name_string_subclass_is_refused_before_set_or_rendering(chair):
+    context = SimpleNamespace(
+        fixture={"page_witness_chairs": [chair]},
+        witness_chairs=("attestator_1",),
+    )
 
     with pytest.raises(SchemaRefusal, match="unique string list"):
         attestatores.declared_page_witness_chairs(context)
@@ -187,7 +213,6 @@ class _FunctionPublishCalls(ast.NodeVisitor):
     def __init__(self):
         self.calls: list[ast.Call] = []
         self.attributes: list[ast.Attribute] = []
-        self.declaration_lines: list[int] = []
         self.bypass_lines: list[int] = []
 
     def visit_FunctionDef(self, node):
@@ -223,9 +248,28 @@ class _FunctionPublishCalls(ast.NodeVisitor):
             and node.args[1].value == "publish"
         ):
             self.bypass_lines.append(node.lineno)
-        if isinstance(node.func, ast.Name) and node.func.id == "declared_page_witness_chairs":
-            self.declaration_lines.append(node.lineno)
         self.generic_visit(node)
+
+
+def _dominating_declaration_line(function: ast.FunctionDef | ast.AsyncFunctionDef) -> int:
+    """A direct top-level declaration call, or -1 when none exists.
+
+    A top-level expression or assignment must execute before Python can reach a
+    later statement in the function. Merely finding the call anywhere in the
+    body is not enough: it may sit under a branch that never runs while a publish
+    below it still does.
+    """
+    for statement in function.body:
+        value = None
+        if isinstance(statement, (ast.Assign, ast.AnnAssign, ast.Expr)):
+            value = statement.value
+        if (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Name)
+            and value.func.id == "declared_page_witness_chairs"
+        ):
+            return statement.lineno
+    return -1
 
 
 def _testimonium_write_scan(source: str):
@@ -263,7 +307,7 @@ def _testimonium_write_scan(source: str):
                 dynamic.setdefault(function_name, []).append(call.lineno)
                 continue
             if kind_keywords[0].value in {"testimonium", "page-testimonium"}:
-                declaration_line = min(visitor.declaration_lines, default=-1)
+                declaration_line = _dominating_declaration_line(function)
                 writers.setdefault(function_name, (declaration_line, []))[1].append(call.lineno)
     return writers, dynamic, aliases, bypasses
 
@@ -308,6 +352,12 @@ def third(context):
     writer = getattr(context, 'publish')
     writer(kind='testimonium', payload={})
 """
+    conditional = """
+def third(context):
+    if False:
+        declared_page_witness_chairs(context)
+    context.publish(kind='testimonium', payload={})
+"""
 
     assert set(_testimonium_write_scan(literal)[0]) == {"third"}
     assert set(_testimonium_write_scan(dynamic)[1]) == {"third"}
@@ -315,17 +365,21 @@ def third(context):
     assert next(iter(_testimonium_write_scan(nested)[0])).startswith("third@")
     assert set(_testimonium_write_scan(lower_level)[3]) == {"third"}
     assert set(_testimonium_write_scan(reflected)[3]) == {"third"}
+    assert _testimonium_write_scan(conditional)[0]["third"][0] == -1
 
 
-def test_every_testimonium_write_path_validates_the_declaration_first():
+def test_every_testimonium_writer_has_a_dominating_declaration_call():
     """The static half, and the half that covers a write path nobody has written yet.
 
     The runtime test above proves the two writers this module has today check
     before they seal. It cannot prove that a *third* one added later does — an
     uncalled writer leaves no trace. So this reads the module's own source and
-    requires every function that publishes a Testimonium kind to reach
-    `declared_page_witness_chairs` before its first `context.publish`, and
-    requires the set of such functions to be exactly the two that do.
+    requires every function that publishes a Testimonium kind to make a direct,
+    top-level `declared_page_witness_chairs` call before its first
+    `context.publish`, and requires the set of such functions to be exactly the
+    two that do. The top-level restriction is what makes source order a real
+    dominance guarantee rather than a call hidden under a branch that may not
+    run.
 
     Same instrument as `common/runtree/test_runtree_store.py`'s scan for a store
     writer that invents its own path, and for the same reason: the property is

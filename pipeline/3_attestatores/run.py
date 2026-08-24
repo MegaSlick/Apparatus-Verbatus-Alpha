@@ -1410,7 +1410,7 @@ def declared_page_witness_chairs(context) -> set[str]:
     declared = context.fixture.get("page_witness_chairs", [])
     if (
         not isinstance(declared, list)
-        or any(not isinstance(chair, str) for chair in declared)
+        or any(type(chair) is not str for chair in declared)
         or len(declared) != len(set(declared))
     ):
         raise SchemaRefusal("fixture page_witness_chairs is not a unique string list")
@@ -1456,7 +1456,8 @@ def publish_attempt(
         outcome=attempt.outcome,
         reason=attempt.reason,
     )
-    if chair in declared_page_witness_chairs(context):
+    page_witness_chairs = declared_page_witness_chairs(context)
+    if chair in page_witness_chairs:
         # This is the fixture's interim act view of an immutable page witness.
         # Its attachment points at the retained page Testimonium; R4 replaces
         # this declared view with alignment, not with another witness kind.

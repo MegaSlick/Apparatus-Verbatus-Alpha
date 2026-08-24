@@ -187,8 +187,8 @@ def test_a_parsed_artifact_with_a_float_is_refused_by_name_at_the_envelope_bound
 def test_the_float_refusal_names_the_offending_field_and_value():
     """The point of recomputing on the refusal path is the diagnostic. A test that
     only asserts `SchemaRefusal` passes just as happily on the generic "changed
-    after publication" sentence, which is the wrong story for a record that was
-    never hashable — so the assertion has to be on what it says."""
+    after publication" sentence, even though no current digest exists to compare
+    with the stored one — so the assertion has to be on what it says."""
     parsed = json.loads(json.dumps(sound_envelope()))
     parsed["payload"] = {"nested": {"scale": 1.5}}
 
@@ -228,10 +228,10 @@ def test_a_parsed_artifact_with_a_lone_surrogate_is_refused_by_name(payload):
     message.encode("utf-8")
 
 
-def test_a_record_too_deep_to_hash_is_not_accused_of_having_been_edited():
+def test_a_record_too_deep_to_hash_is_not_reported_as_a_verified_mismatch():
     """`verify_self_hash` returns False for a record whose recursive walk exhausts
-    the stack. That is the right answer to the check and the wrong sentence for an
-    operator: nobody edited it, and no machine here could ever have verified it."""
+    the stack. That is the right answer to the check, but the generic mismatch
+    sentence would claim a comparison this machine could not perform."""
     nested: dict = {"leaf": 1}
     for _ in range(2000):
         nested = {"nested": nested}

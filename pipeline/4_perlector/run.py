@@ -237,7 +237,7 @@ def declared_page_witness_chairs(context) -> set[str]:
     declared = context.fixture.get("page_witness_chairs", [])
     if (
         not isinstance(declared, list)
-        or any(not isinstance(item, str) for item in declared)
+        or any(type(item) is not str for item in declared)
         or len(declared) != len(set(declared))
     ):
         raise SchemaRefusal(
@@ -638,14 +638,21 @@ def perlector_chair(context) -> ChairIdentity | AbsentChair:
 
 
 def preflight_testimonia_denominator(context, acts: list[dict]) -> None:
-    """Validate every requested act's witness denominator before any Perlectio writes.
+    """Validate the run declaration and every requested witness denominator before writes.
 
     A Perlectio is immutable, so one published over a short denominator cannot
     be corrected: restoring the missing witness changes the bytes under the same
     reading identity, and the run can no longer resume normally. Checking the
     whole requested set first is what stops a malformed act discovered late from
     leaving an unfixable reading behind it.
+
+    The page-witness declaration is run-global and is checked even when every
+    requested act is held. Held acts have no Testimonium denominator to inspect,
+    but silently accepting a malformed fixture while publishing their explicit
+    ``not-run`` Perlectiones would still leave the consumer boundary weaker than
+    its producer.
     """
+    declared_page_witness_chairs(context)
     for act in acts:
         if act["outcome"] == "held":
             continue

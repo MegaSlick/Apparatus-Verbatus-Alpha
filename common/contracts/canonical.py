@@ -111,7 +111,12 @@ def _unencodable_path(value: Any, path: str = "$") -> str | None:
             return path
         return None
     if isinstance(value, dict):
-        for key, item in value.items():
+        # Match ``json.dumps(sort_keys=True)`` above.  The encoding error names
+        # the first surrogate in canonical key order; walking insertion order
+        # could pair that offender with a different field's path when a record
+        # carried more than one unencodable string.
+        for key in sorted(value):
+            item = value[key]
             # Keys are always strings by the time this runs: `_refuse_floats`
             # has already refused any other kind. Guarded anyway rather than
             # assumed, because a locator that raises while locating would put
@@ -235,14 +240,15 @@ def verify_self_hash(record: dict[str, Any], field: str = "self_hash") -> bool:
 
 
 def self_hash_refusal(record: dict[str, Any], field: str = "self_hash") -> str | None:
-    """Why this record could never be hashed at all, or None if it merely differs.
+    """Why this record's current contents cannot be hashed, or None if they can.
 
     `verify_self_hash` answers one boolean for its many callers, which is the
     right shape for a check but throws away *which* of two very different facts
-    it found: a record whose sealed bytes were edited afterwards, and a record
-    that had no canonical form to be sealed from in the first place. Only the
-    first is "changed after publication", and telling an operator that story
-    about the second sends them looking for an edit nobody made.
+    it found: current contents whose computed digest differs from the stored
+    digest, and current contents for which no digest can be computed at all. A
+    malformed record may have begun that way or may have been damaged or edited
+    after sealing; its present bytes cannot establish that history. They can and
+    should name the canonicalization failure that prevents the comparison.
 
     A refusing caller — never the check itself — recomputes here to recover the
     distinction, so the breadth `verify_self_hash` needs for its other callers
