@@ -542,6 +542,33 @@ def test_a_failed_atomic_publish_leaves_the_complete_predecessor(tmp_path, monke
     assert list(tmp_path.glob(".register.json.tmp-*")) == []
 
 
+def test_a_directory_fsync_failure_reports_a_complete_but_not_proven_durable_successor(
+    tmp_path, monkeypatch
+):
+    """A crash window after rename is not misreported as an untouched register."""
+    path = tmp_path / "register.json"
+    path.write_bytes(empty_register())
+    real_fsync = corpus_register.os.fsync
+    calls = 0
+
+    def fail_second_fsync(descriptor):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("simulated crash before directory durability")
+        return real_fsync(descriptor)
+
+    monkeypatch.setattr(corpus_register.os, "fsync", fail_second_fsync)
+    with pytest.raises(ContractError, match="was replaced but its directory entry is not proven"):
+        append_records(path, [_declaration()], expected_digest=EMPTY_REGISTER_DIGEST)
+
+    # Rename is atomic: even in the uncertain-durability window, a live process
+    # sees the complete successor rather than a torn JSON document.
+    validate_register_bytes(path.read_bytes())
+    assert json.loads(path.read_bytes())["records"] == [_declaration()]
+    assert list(tmp_path.glob(".register.json.tmp-*")) == []
+
+
 # --- The sealed snapshot, and the check that cannot be skipped -------------------
 
 
@@ -748,3 +775,86 @@ def test_retracting_one_link_twice_is_refused_and_a_fresh_act_may_reappend_its_m
         }
     )
     assert members_of(register, PAGE) == sorted(["a" * 64, "b" * 64])
+
+
+def test_a_correspondence_declared_twice_without_a_retraction_is_refused():
+    """A second identical declaration records nothing new and is not evidence."""
+    duplicate = _correspondence("pg_0123456789abcdef", "act_0123456789abcdef")
+    with pytest.raises(SchemaRefusal, match="declaring it twice records nothing new"):
+        validate_register_bytes(_register(members=["a" * 64], extra=[duplicate]))
+
+
+def test_a_retracted_correspondence_is_reasserted_by_a_new_run_not_resurrected():
+    """A retraction made in error must not be a corpus-lifetime fact.
+
+    Membership already works this way: reasserting withdrawn members is a new
+    operator act with its own appending run. A correspondence that could not be
+    reasserted at all would leave a wrongly corrected act with only one route
+    back to its physical act -- minting a second one for it, which is the
+    duplication the whole correspondence step exists to prevent.
+    """
+    act = "act_0123456789abcdef"
+    declaration = _correspondence("pg_0123456789abcdef", act)
+    withdrawal = {
+        "kind": "retraction",
+        "retracts": f"{act}->{ACT}",
+        "reason": "a person confirmed two frames as one page and was wrong",
+        "appending_run": "triage-2",
+    }
+    withdrawn = _register(members=["a" * 64], extra=[withdrawal])
+    assert resolve_proposal(withdrawn, act) == {
+        "outcome": "finding",
+        "code": "retracted-physical-act",
+        "act_id": act,
+    }
+    reasserted = {**declaration, "appending_run": "triage-3"}
+    restored = _register(members=["a" * 64], extra=[withdrawal, reasserted])
+    resolution = resolve_proposal(restored, act)
+    assert resolution["outcome"] == "resolved"
+    assert resolution["physical_act_id"] == ACT
+    # Nothing was deleted: the withdrawn declaration and its reason are still in
+    # the register beside the one that reasserted it.
+    assert json.loads(restored)["records"][-3:] == [declaration, withdrawal, reasserted]
+    # Retracting the already-withdrawn declaration a second time corrects nothing,
+    # exactly as retracting one membership link twice does.
+    with pytest.raises(SchemaRefusal, match="a retraction that corrects nothing"):
+        validate_register_bytes(
+            _register(
+                members=["a" * 64],
+                extra=[withdrawal, {**withdrawal, "appending_run": "triage-4"}],
+            )
+        )
+
+
+def test_a_reasserted_correspondence_is_retractable_again(tmp_path):
+    """The lifecycle closes: declare, withdraw, reassert, withdraw again."""
+    act = "act_0123456789abcdef"
+    withdrawal = {
+        "kind": "retraction",
+        "retracts": f"{act}->{ACT}",
+        "reason": "wrong capture",
+        "appending_run": "triage-2",
+    }
+    reasserted = {
+        **_correspondence("pg_0123456789abcdef", act),
+        "appending_run": "triage-3",
+    }
+    again = {**withdrawal, "reason": "wrong a second time", "appending_run": "triage-4"}
+    register = _register(members=["a" * 64], extra=[withdrawal, reasserted, again])
+    assert resolve_proposal(register, act)["code"] == "retracted-physical-act"
+    assert len(json.loads(register)["records"]) == 7
+
+
+def test_a_reasserted_correspondence_must_be_a_new_operator_run():
+    """Redeclaration is a new act, never replay of the withdrawn declaration."""
+    act = "act_0123456789abcdef"
+    declaration = _correspondence("pg_0123456789abcdef", act)
+    withdrawal = {
+        "kind": "retraction",
+        "retracts": f"{act}->{ACT}",
+        "reason": "wrong capture",
+        "appending_run": "triage-2",
+    }
+    replayed = {**declaration, "evidence": ["operator:looked-again"]}
+    with pytest.raises(SchemaRefusal, match="repeats immutable record"):
+        validate_register_bytes(_register(members=["a" * 64], extra=[withdrawal, replayed]))
