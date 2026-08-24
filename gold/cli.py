@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
+import os
 import sys
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
 
 from common.contracts.errors import ContractError, SchemaRefusal
 
@@ -32,6 +36,44 @@ def _records_in(directory: str) -> list[dict[str, object]]:
     if not root.is_dir():
         raise SchemaRefusal(f"{directory} is not a directory of gold records")
     return [read_json(path) for path in sorted(root.glob("*.json"))]
+
+
+@contextmanager
+def _locked_corpus(directory: str | Path) -> Iterator[Path]:
+    """Serialize validation and publication for one gold-record directory.
+
+    A collection rule cannot be enforced by checking before an unlocked write:
+    two writers can both validate the same old directory and then publish records
+    whose union is contradictory. Lock the directory itself so no lock artifact
+    becomes part of the corpus or needs its own cleanup and recovery semantics.
+    """
+    root = Path(directory)
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    except OSError as error:
+        raise SchemaRefusal(
+            f"the gold-record directory {root} could not be opened for a publication "
+            "lock. Another writer therefore cannot be excluded, so publishing could "
+            "create contradictory immutable records. Correct the directory path or "
+            "permissions and retry; no gold record was written"
+        ) from error
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+    except OSError as error:
+        os.close(descriptor)
+        raise SchemaRefusal(
+            f"the gold-record directory {root} could not acquire its publication lock. "
+            "Another writer therefore cannot be excluded, so publishing could create "
+            "contradictory immutable records. Use a local filesystem that supports "
+            "advisory locks and retry; no gold record was written"
+        ) from error
+    try:
+        yield root
+    finally:
+        # Closing the descriptor releases `flock` even when the protected operation
+        # raises, without risking a second unlock error masking the real refusal.
+        os.close(descriptor)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -81,25 +123,33 @@ def main(argv: list[str] | None = None) -> int:
         draw, selected = build_sampling_draw(
             args.run, read_json(args.catalog), read_json(args.plan)
         )
-        # The draw is the membership authority, so it is published FIRST: an
-        # interrupted run then leaves a draw whose members are partly missing --
-        # which verify-sampling refuses by name -- never orphan samples with no
-        # membership record to check them against.
-        write_append_only(Path(args.output_dir) / f"draw-{draw['self_hash']}.json", draw)
-        for record in selected:
-            write_append_only(Path(args.output_dir) / f"{record['sample_digest']}.json", record)
+        with _locked_corpus(args.output_dir) as output:
+            existing = _records_in(str(output))
+            # Validate the state the whole command would create before publishing
+            # its first immutable byte. This also makes an interrupted identical
+            # run resumable: repeated identical records are reuse, and the union
+            # includes every member the retained draw says is still missing.
+            validate_corpus([*existing, draw, *selected], args.run)
+            # The draw is the membership authority, so it is published FIRST: an
+            # interrupted run then leaves a draw whose members are partly missing --
+            # which verify-sampling refuses by name -- never orphan samples with no
+            # membership record to check them against.
+            write_append_only(output / f"draw-{draw['self_hash']}.json", draw)
+            for record in selected:
+                write_append_only(output / f"{record['sample_digest']}.json", record)
     elif args.command == "ingest-manual":
         record = ingest_manual_pick(args.run, read_json(args.pick))
         output = Path(args.output)
-        existing = _records_in(str(output.parent)) if output.parent.is_dir() else []
-        # A stratum is a collection fact, not a property R0 can derive from one
-        # pick. Reconcile the destination corpus before publishing so a second
-        # spelling of the same page is refused rather than counted twice -- any
-        # second spelling, not only one that also restratifies the page, since
-        # `sample_digest` binds `selection_basis` and a restated wording alone
-        # mints a second individually valid sample of one hand-picked page.
-        validate_corpus([*existing, record], args.run)
-        write_append_only(output, record)
+        with _locked_corpus(output.parent):
+            existing = _records_in(str(output.parent))
+            # A stratum is a collection fact, not a property R0 can derive from one
+            # pick. Reconcile the destination corpus before publishing so a second
+            # spelling of the same page is refused rather than counted twice -- any
+            # second spelling, not only one that also restratifies the page, since
+            # `sample_digest` binds `selection_basis` and a restated wording alone
+            # mints a second individually valid sample of one hand-picked page.
+            validate_corpus([*existing, record], args.run)
+            write_append_only(output, record)
     elif args.command == "bind-instrument":
         write_append_only(
             args.output,
@@ -167,7 +217,8 @@ def main(argv: list[str] | None = None) -> int:
         if not corpus_records:
             raise SchemaRefusal(
                 f"{args.directory} holds no gold records to validate; validate-corpus "
-                "checks a corpus, not an empty directory"
+                "checks a corpus, not an empty directory. Put one corpus's JSON records "
+                "in that directory and retry"
             )
         validate_corpus(corpus_records, args.run)
     else:

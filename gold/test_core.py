@@ -6,6 +6,7 @@ import errno
 import json
 import subprocess
 import sys
+import threading
 import unicodedata
 from pathlib import Path
 
@@ -16,10 +17,12 @@ from common.contracts.errors import IncompatibleReuse, SchemaRefusal
 from common.contracts.identities import act_id, page_id
 from gold import cli
 from gold.core import (
+    DRAW_SCHEMA,
     ILLEGIBLE,
     LAYOUT_SCHEMA,
     MANUAL_PICK_SCHEMA,
     PADDING_SCHEMA,
+    SAMPLE_SCHEMA,
     adjudicate,
     bind_instrument,
     build_sample,
@@ -34,6 +37,7 @@ from gold.core import (
     validate_layout,
     validate_measurement,
     validate_padding,
+    validate_record,
     validate_sample,
     validate_sampling_draw,
     verify_stratified_selection,
@@ -184,7 +188,7 @@ def test_same_page_bytes_at_two_ordinals_are_ranked_as_distinct_pages(tmp_path):
     # Reusing the first page's act identity on the other ordinal contradicts the
     # identity's page binding even though the two page digests are equal.
     misplaced = bind_instrument(by_ordinal[2], acts[0], _sha("e"), path)
-    with pytest.raises(SchemaRefusal, match="one act identity may not cross pages"):
+    with pytest.raises(SchemaRefusal, match="contradictory custody.*Verify the act"):
         validate_corpus([*selected, *custody, misplaced], path)
 
 
@@ -554,8 +558,71 @@ def test_layout_padding_and_instrument_records_are_closed_and_self_hashed(tmp_pa
         validate_layout(layout)
     layout["regions"][0] = {"kind": "act", "rect": {"x": 99, "y": 1, "w": 2, "h": 1}}
     layout["self_hash"] = self_hash(layout)
-    with pytest.raises(SchemaRefusal, match="outside its 100x200 sample page"):
+    with pytest.raises(SchemaRefusal, match="Regenerate an unpublished annotation.*preserve"):
         validate_layout(layout)
+    padding["rectangles"] = [{"x": 1, "y": 199, "w": 1, "h": 2}]
+    padding["self_hash"] = self_hash(padding)
+    with pytest.raises(SchemaRefusal, match="Regenerate an unpublished annotation.*preserve"):
+        validate_padding(padding)
+
+
+def test_page_dimension_refusals_name_the_missing_fact_and_remedy(tmp_path):
+    """Dimensions newly make rectangle bounds meaningful, so every input route
+    that supplies them must tell the operator both what is absent and how to fix it."""
+    path, frame, pages = run_file(tmp_path)
+    rows = catalog(pages)
+    missing = [dict(row) for row in rows]
+    missing[0].pop("width")
+    with pytest.raises(SchemaRefusal, match="width.*height.*Add the missing fields"):
+        sample_stratified(path, missing, plan_for(frame, rows))
+
+    page = rows[0]
+    pick = {
+        "schema": MANUAL_PICK_SCHEMA,
+        "selection_basis": "basis",
+        "page": {key: value for key, value in page.items() if key != "height"},
+        "set": set_for_page(frame, page["sha256"]),
+    }
+    with pytest.raises(SchemaRefusal, match="width.*height.*Add the missing fields"):
+        ingest_manual_pick(path, pick)
+
+    sample = sample_stratified(path, rows, plan_for(frame, rows))[0]
+    sample["page"].pop("height")
+    with pytest.raises(SchemaRefusal, match="width.*height.*Regenerate.*preserve"):
+        validate_sample(sample)
+
+
+def test_dimension_bearing_records_use_a_new_schema_identity(tmp_path):
+    """Adding dimensions changes self-hashed record meaning. The new reader must
+    never reinterpret a dimensionless v1 record as its dimension-bearing format."""
+    assert SAMPLE_SCHEMA == "gold-page-sample.v2"
+    assert DRAW_SCHEMA == "gold-sampling-draw.v2"
+    assert MANUAL_PICK_SCHEMA == "gold-manual-pick.v2"
+    assert LAYOUT_SCHEMA == "gold-page-layout.v2"
+    assert PADDING_SCHEMA == "gold-padding-rectangles.v2"
+
+    path, frame, pages = run_file(tmp_path)
+    sample = sample_stratified(path, catalog(pages), plan_for(frame, catalog(pages)))[0]
+    legacy = json.loads(json.dumps(sample))
+    legacy["schema"] = "gold-page-sample.v1"
+    legacy["sample_digest"] = digest_bytes(
+        canonical_bytes(
+            {
+                key: value
+                for key, value in legacy.items()
+                if key not in {"sample_digest", "self_hash"}
+            }
+        )
+    )
+    legacy["self_hash"] = self_hash(legacy)
+    with pytest.raises(
+        SchemaRefusal, match="predates required page dimensions.*Preserve.*do not edit"
+    ):
+        validate_sample(legacy)
+    with pytest.raises(
+        SchemaRefusal, match="predates required page dimensions.*Preserve.*do not edit"
+    ):
+        validate_record(legacy)
 
 
 def _act(index=0):
@@ -964,7 +1031,7 @@ def test_one_frame_digest_cannot_carry_contradictory_frame_facts(tmp_path):
     forged["sample_digest"] = digest_bytes(canonical_bytes(without))
     forged["self_hash"] = self_hash(forged)
     assert validate_sample(forged) == forged
-    with pytest.raises(SchemaRefusal, match="contradictory page_digest or seed"):
+    with pytest.raises(SchemaRefusal, match="different authorities.*Keep immutable records"):
         validate_corpus([samples[1], forged])
 
 
@@ -1104,7 +1171,7 @@ def test_corpus_refuses_orphaned_or_conflicting_adjudication_custody(tmp_path):
 def test_the_corpus_api_refuses_an_empty_collection():
     """The CLI already names an empty directory, but the public collection gate
     must not return success when called directly with nothing to establish."""
-    with pytest.raises(SchemaRefusal, match="empty collection proves no custody"):
+    with pytest.raises(SchemaRefusal, match="empty collection proves no custody.*Supply"):
         validate_corpus([])
 
 
@@ -1117,7 +1184,7 @@ def test_corpus_refuses_a_started_reading_chain_without_its_adjudication(tmp_pat
     sample = sample_stratified(path, catalog(pages), plan_for(frame, catalog(pages)))[0]
     first, second = _pair(sample, "Marie Anne", "Marie Jeanne", path)
     for partial in ([sample, first], [sample, first, second]):
-        with pytest.raises(SchemaRefusal, match="transcriptions but no adjudication"):
+        with pytest.raises(SchemaRefusal, match="custody chain is incomplete.*adjudicate"):
             validate_corpus(partial, path)
     established = adjudicate(first, second, adjudicator="hand-c", text="Marie Anne")
     assert validate_corpus([sample, first, second, established], path)
@@ -1201,11 +1268,11 @@ def test_corpus_refuses_a_manual_pick_that_contradicts_the_retained_catalog(tmp_
 
     restratified = _pick(path, frame, {**never_drawn, "stratum": "invented"}, "Tyrel B1 pick")
     assert validate_sample(restratified, path) == restratified  # well-formed alone
-    with pytest.raises(SchemaRefusal, match="may not restratify the corpus"):
+    with pytest.raises(SchemaRefusal, match="silently restratify.*Regenerate.*preserve"):
         validate_corpus([draw, *selected, restratified], path)
 
     enlarged = _pick(path, frame, {**never_drawn, "width": 999_999}, "Tyrel B1 pick")
-    with pytest.raises(SchemaRefusal, match="in the catalog the retained draw was drawn from"):
+    with pytest.raises(SchemaRefusal, match="rectangle boundary is therefore ambiguous.*preserve"):
         validate_corpus([draw, *selected, enlarged], path)
     # And the enlargement is what would otherwise have let a rectangle off the page.
     layout = {
@@ -1215,7 +1282,7 @@ def test_corpus_refuses_a_manual_pick_that_contradicts_the_retained_catalog(tmp_
     }
     layout["self_hash"] = self_hash(layout)
     assert validate_layout(layout, path) == layout
-    with pytest.raises(SchemaRefusal, match="in the catalog the retained draw was drawn from"):
+    with pytest.raises(SchemaRefusal, match="rectangle boundary is therefore ambiguous.*preserve"):
         validate_corpus([draw, *selected, layout], path)
 
 
@@ -1240,7 +1307,7 @@ def test_corpus_refuses_one_page_carried_by_two_manual_records(tmp_path):
     again = _pick(path, frame, never_drawn, "Tyrel B1 pick, restated")
     assert first["sample_digest"] != again["sample_digest"]
     assert first["page"] == again["page"]
-    with pytest.raises(SchemaRefusal, match="two different manual sample records"):
+    with pytest.raises(SchemaRefusal, match="count one corpus page twice.*hold the corpus"):
         validate_corpus([draw, *selected, first, again], path)
 
     already_drawn = next(row for row in rows if (row["ordinal"], row["sha256"]) in drawn)
@@ -1287,7 +1354,7 @@ def test_corpus_refuses_duplicate_seeded_samples_and_page_annotations(tmp_path):
                 record["calibrated_for_this_corpus"] = True
             record["self_hash"] = self_hash(record)
             records.append(record)
-        with pytest.raises(SchemaRefusal, match="two conflicting"):
+        with pytest.raises(SchemaRefusal, match="no unique gold annotation.*hold the corpus"):
             validate_corpus([seeded, *records], path)
 
         manual = _pick(path, frame, seeded["page"], "the same page selected manually")
@@ -1373,7 +1440,7 @@ def test_corpus_refuses_a_drawn_page_re_minted_under_another_method(tmp_path):
     relabeled["self_hash"] = self_hash(relabeled)
     assert validate_sample(relabeled, path) == relabeled  # well-formed alone
     others = [record for record in selected if record is not real]
-    with pytest.raises(SchemaRefusal, match="does not carry as a stratified-seed sample"):
+    with pytest.raises(SchemaRefusal, match="has vanished.*byte-identical original.*hold"):
         validate_corpus([draw, relabeled, *others], path)
 
 
@@ -1391,6 +1458,82 @@ def test_corpus_refuses_two_recorded_draws_in_one_gold_corpus(tmp_path):
     assert first["self_hash"] != second["self_hash"]
     with pytest.raises(SchemaRefusal, match="different sampling draws"):
         validate_corpus([first, second], path)
+
+
+def test_sample_refuses_a_second_draw_before_publishing_any_of_it(tmp_path):
+    """A draw is an immutable collection authority, so discovering the conflict
+    after publishing its first file leaves a corpus no later command can repair.
+    The writer validates the prospective union before any second-draw byte lands."""
+    path, frame, pages = run_file(tmp_path)
+    rows = catalog(pages)
+    first_plan = plan_for(frame, rows)
+    second_plan = {gold_set: dict(quotas) for gold_set, quotas in first_plan.items()}
+    sampled_stratum = next(
+        stratum for stratum, quota in second_plan["calibration"].items() if quota
+    )
+    second_plan["calibration"][sampled_stratum] = 0
+    for name, payload in (("catalog", rows), ("first", first_plan), ("second", second_plan)):
+        (tmp_path / f"{name}.json").write_text(json.dumps(payload), encoding="utf-8")
+    output = tmp_path / "records"
+    common = [
+        "--run",
+        str(path),
+        "--catalog",
+        str(tmp_path / "catalog.json"),
+        "--output-dir",
+        str(output),
+    ]
+    assert cli.main(["sample", *common, "--plan", str(tmp_path / "first.json")]) == 0
+    before = {item.name: item.read_bytes() for item in output.glob("*.json")}
+
+    with pytest.raises(SchemaRefusal, match="separate gold-record directory"):
+        cli.main(["sample", *common, "--plan", str(tmp_path / "second.json")])
+
+    assert {item.name: item.read_bytes() for item in output.glob("*.json")} == before
+    assert cli.main(["validate-corpus", str(output), "--run", str(path)]) == 0
+
+
+def test_corpus_transaction_lock_serializes_check_and_publish(tmp_path):
+    """Two corpus writers must not both validate the same stale directory state.
+    The second transaction cannot enter until the first has finished publishing."""
+    entered = threading.Event()
+    acquired = threading.Event()
+
+    with cli._locked_corpus(tmp_path):
+
+        def contend() -> None:
+            entered.set()
+            with cli._locked_corpus(tmp_path):
+                acquired.set()
+
+        contender = threading.Thread(target=contend)
+        contender.start()
+        assert entered.wait(timeout=1)
+        assert not acquired.wait(timeout=0.1)
+
+    contender.join(timeout=1)
+    assert not contender.is_alive()
+    assert acquired.is_set()
+
+
+def test_corpus_lock_failures_are_named_before_any_record_is_written(tmp_path, monkeypatch):
+    """Lock failure cannot fall through to an unlocked publication or a traceback;
+    the refusal states the risk, the safe remedy, and that no evidence was written."""
+
+    def refuse_lock(_descriptor, _operation):
+        raise OSError("locking unavailable")
+
+    monkeypatch.setattr(cli.fcntl, "flock", refuse_lock)
+    with pytest.raises(SchemaRefusal, match="supports advisory locks.*no gold record was written"):
+        with cli._locked_corpus(tmp_path):
+            raise AssertionError("an unheld corpus lock must never yield")
+
+    assert not list(tmp_path.glob("*.json"))
+
+
+def test_cli_empty_corpus_refusal_names_the_next_step(tmp_path):
+    with pytest.raises(SchemaRefusal, match="Put one corpus's JSON records.*retry"):
+        cli.main(["validate-corpus", str(tmp_path)])
 
 
 def test_corpus_refuses_an_instrument_membership_without_its_sample(tmp_path):
@@ -1440,7 +1583,7 @@ def test_cli_verify_sampling_replays_what_the_sampler_wrote(tmp_path):
         == 0
     )
     sample_file = next(
-        item for item in written if json.loads(item.read_text())["schema"] == "gold-page-sample.v1"
+        item for item in written if json.loads(item.read_text())["schema"] == SAMPLE_SCHEMA
     )
     sample_file.unlink()
     with pytest.raises(SchemaRefusal, match="diverge.*membership|membership.*diverge"):
@@ -1651,9 +1794,9 @@ def test_unhashable_enum_spellings_are_named_refusals_not_type_errors(tmp_path):
     path, frame, pages = run_file(tmp_path)
     sample = sample_stratified(path, catalog(pages), plan_for(frame, catalog(pages)))[0]
     for field, expected in (
-        ("method", "method is not recognized"),
-        ("claimed_set", "claimed_set is not a recognized"),
-        ("set", "set conflicts"),
+        ("method", "Use 'stratified-seed' or 'manual' and retry"),
+        ("claimed_set", "Use 'calibration' or 'locked-acceptance' and retry"),
+        ("set", "Regenerate an unpublished sample from the page sha256"),
     ):
         forged = json.loads(json.dumps(sample))
         forged[field] = []
@@ -1671,7 +1814,7 @@ def test_unhashable_enum_spellings_are_named_refusals_not_type_errors(tmp_path):
         "page": catalog(pages)[0],
         "set": [],
     }
-    with pytest.raises(SchemaRefusal, match="manual pick set is not recognized"):
+    with pytest.raises(SchemaRefusal, match="Use 'calibration' or 'locked-acceptance' and retry"):
         ingest_manual_pick(path, pick)
 
     layout = {
@@ -1680,5 +1823,5 @@ def test_unhashable_enum_spellings_are_named_refusals_not_type_errors(tmp_path):
         "regions": [{"kind": [], "rect": {"x": 1, "y": 1, "w": 2, "h": 2}}],
     }
     layout["self_hash"] = self_hash(layout)
-    with pytest.raises(SchemaRefusal, match="region kind is not recognized"):
+    with pytest.raises(SchemaRefusal, match="Regenerate.*act, non-act-text.*preserve"):
         validate_layout(layout)

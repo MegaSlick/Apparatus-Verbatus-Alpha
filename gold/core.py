@@ -27,14 +27,23 @@ from common.contracts.canonical import (
 from common.contracts.errors import IncompatibleReuse, SchemaRefusal
 from common.contracts.identities import is_well_formed
 
-SAMPLE_SCHEMA = "gold-page-sample.v1"
-DRAW_SCHEMA = "gold-sampling-draw.v1"
-MANUAL_PICK_SCHEMA = "gold-manual-pick.v1"
-LAYOUT_SCHEMA = "gold-page-layout.v1"
-PADDING_SCHEMA = "gold-padding-rectangles.v1"
+SAMPLE_SCHEMA = "gold-page-sample.v2"
+DRAW_SCHEMA = "gold-sampling-draw.v2"
+MANUAL_PICK_SCHEMA = "gold-manual-pick.v2"
+LAYOUT_SCHEMA = "gold-page-layout.v2"
+PADDING_SCHEMA = "gold-padding-rectangles.v2"
 MEASUREMENT_SCHEMA = "gold-instrument-membership.v1"
 TRANSCRIPTION_SCHEMA = "gold-transcription.v1"
 ADJUDICATION_SCHEMA = "gold-adjudication.v1"
+_DIMENSIONLESS_SCHEMAS = frozenset(
+    {
+        "gold-page-sample.v1",
+        "gold-sampling-draw.v1",
+        "gold-manual-pick.v1",
+        "gold-page-layout.v1",
+        "gold-padding-rectangles.v1",
+    }
+)
 # The one spelling of "I cannot read this", reserved so an unreadable span is
 # counted rather than guessed at, and never quietly dropped from a transcription.
 ILLEGIBLE = "[ILLEGIBLE]"
@@ -54,6 +63,16 @@ _NO_HARD_LINKS = frozenset({errno.EPERM, errno.EOPNOTSUPP, errno.ENOSYS})
 def _refuse(condition: bool, message: str) -> None:
     if condition:
         raise SchemaRefusal(message)
+
+
+def _refuse_dimensionless_schema(schema: Any) -> None:
+    _refuse(
+        isinstance(schema, str) and schema in _DIMENSIONLESS_SCHEMAS,
+        f"gold schema {schema!r} predates required page dimensions. This reader cannot "
+        "prove that its rectangles lie on their pages. Preserve the v1 bytes unchanged "
+        "and use their historical reader or an explicit, provenance-preserving migration; "
+        "do not edit the record in place",
+    )
 
 
 def _sha(value: Any, field: str) -> str:
@@ -220,7 +239,9 @@ def _catalog(rows: Any, source: list[dict[str, Any]]) -> list[dict[str, Any]]:
         _refuse(
             not isinstance(row, dict)
             or set(row) != {"ordinal", "sha256", "stratum", "width", "height"},
-            "catalog row has the wrong closed schema",
+            "catalog row has the wrong closed schema. Each row must carry exactly ordinal, "
+            "sha256, stratum, width, and height. Add the missing fields or remove extras "
+            "and retry",
         )
         ordinal, page_sha, stratum = row["ordinal"], row["sha256"], row["stratum"]
         _refuse(
@@ -234,7 +255,9 @@ def _catalog(rows: Any, source: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 not isinstance(row[dimension], int)
                 or isinstance(row[dimension], bool)
                 or row[dimension] <= 0,
-                f"catalog page {dimension} is not a positive integer",
+                f"catalog page {dimension} is not a positive integer. Rectangle bounds "
+                "cannot be checked without a real page size. Record the page's positive "
+                f"integer {dimension} in the catalog and retry",
             )
         found.add((ordinal, page_sha))
         result.append(dict(row))
@@ -258,11 +281,13 @@ def _method_facts(method: Any, claimed_set: Any, sampling: Any) -> None:
     """
     _refuse(
         not isinstance(method, str) or method not in {"stratified-seed", "manual"},
-        "sample method is not recognized",
+        "sample method is not recognized. Its selection provenance therefore cannot be "
+        "interpreted. Use 'stratified-seed' or 'manual' and retry",
     )
     _refuse(
         claimed_set is not None and (not isinstance(claimed_set, str) or claimed_set not in SETS),
-        "claimed_set is not a recognized gold set",
+        "claimed_set is not a recognized gold set. The picker's stated partition would "
+        "otherwise be ambiguous. Use 'calibration' or 'locked-acceptance' and retry",
     )
     if method == "stratified-seed":
         _refuse(claimed_set is not None, "an automatic draw carries no human claimed_set")
@@ -440,6 +465,7 @@ def validate_sampling_draw(record: Any, run_path: str | Path | None = None) -> d
         or set(record) != {"schema", "frame", "catalog", "plan", "members", "self_hash"},
         "sampling draw has the wrong closed schema",
     )
+    _refuse_dimensionless_schema(record["schema"])
     _refuse(record["schema"] != DRAW_SCHEMA, "sampling draw schema is not recognized")
     frame = record["frame"]
     _refuse(
@@ -584,12 +610,15 @@ def ingest_manual_pick(run_path: str | Path, pick: Any) -> dict[str, Any]:
         not isinstance(pick, dict) or set(pick) != {"schema", "selection_basis", "page", "set"},
         "manual pick has the wrong closed schema",
     )
+    _refuse_dimensionless_schema(pick["schema"])
     _refuse(pick["schema"] != MANUAL_PICK_SCHEMA, "manual pick schema is not recognized")
     page = pick["page"]
     _refuse(
         not isinstance(page, dict)
         or set(page) != {"ordinal", "sha256", "stratum", "width", "height"},
-        "manual pick page has the wrong closed schema",
+        "manual pick page has the wrong closed schema. Its page must carry exactly "
+        "ordinal, sha256, stratum, width, and height. Add the missing fields or remove "
+        "extras and retry",
     )
     _refuse(
         not isinstance(page["ordinal"], int) or isinstance(page["ordinal"], bool),
@@ -605,7 +634,9 @@ def ingest_manual_pick(run_path: str | Path, pick: Any) -> dict[str, Any]:
             not isinstance(page[dimension], int)
             or isinstance(page[dimension], bool)
             or page[dimension] <= 0,
-            f"manual pick page {dimension} is not a positive integer",
+            f"manual pick page {dimension} is not a positive integer. Rectangle bounds "
+            "cannot be checked without a real page size. Record the page's positive "
+            f"integer {dimension} and retry",
         )
     _refuse(
         not isinstance(pick["selection_basis"], str) or not pick["selection_basis"].strip(),
@@ -618,7 +649,8 @@ def ingest_manual_pick(run_path: str | Path, pick: Any) -> dict[str, Any]:
     )
     _refuse(
         not isinstance(pick["set"], str) or pick["set"] not in SETS,
-        "manual pick set is not recognized",
+        "manual pick set is not recognized. The picker's stated partition would otherwise "
+        "be ambiguous. Use 'calibration' or 'locked-acceptance' and retry",
     )
     sample = build_sample(
         frame,
@@ -745,9 +777,9 @@ def _escaped_illegibilities(value: str, label: str) -> set[int]:
             continue
         _refuse(
             True,
-            f"{label} carries a backslash that escapes nothing; the only escapes gold "
-            f"text defines are \\illegible for the literal source word and \\\\ for a "
-            "literal backslash",
+            f"{label} carries a backslash that escapes nothing. A lone escape would make "
+            f"the stored reading ambiguous. Write \\illegible for the literal source word "
+            "or \\\\ for a literal backslash and retry",
         )
     return starts
 
@@ -1011,7 +1043,10 @@ def _rectangle(value: Any, label: str, width: int, height: int) -> None:
     _refuse(value["w"] == 0 or value["h"] == 0, f"{label} has zero area")
     _refuse(
         value["x"] + value["w"] > width or value["y"] + value["h"] > height,
-        f"{label} lies outside its {width}x{height} sample page",
+        f"{label} lies outside its {width}x{height} sample page. The annotation cannot "
+        "describe pixels beyond the declared page. Regenerate an unpublished annotation "
+        "with the corrected rectangle or catalog dimensions; preserve a published record "
+        "and hold its corpus for review",
     )
 
 
@@ -1022,6 +1057,7 @@ def _validate_page_bound_record(
         not isinstance(record, dict) or set(record) != {"schema", "sample", *extra, "self_hash"},
         "gold record has the wrong closed schema",
     )
+    _refuse_dimensionless_schema(record["schema"])
     _refuse(record["schema"] != schema, "gold record schema is not recognized")
     validate_sample(record["sample"], run_path)
     _refuse(not verify_self_hash(record), "gold record fails its self-hash")
@@ -1046,6 +1082,7 @@ def validate_sample(record: Any, run_path: str | Path | None = None) -> dict[str
         },
         "sample has the wrong closed schema",
     )
+    _refuse_dimensionless_schema(record["schema"])
     _refuse(record["schema"] != SAMPLE_SCHEMA, "sample schema is not recognized")
     _method_facts(record["method"], record["claimed_set"], record["sampling"])
     _refuse(
@@ -1071,7 +1108,9 @@ def validate_sample(record: Any, run_path: str | Path | None = None) -> dict[str
     _refuse(
         not isinstance(page, dict)
         or set(page) != {"ordinal", "sha256", "stratum", "width", "height"},
-        "sample page has the wrong closed schema",
+        "sample page has the wrong closed schema. Its page must carry exactly ordinal, "
+        "sha256, stratum, width, and height. Regenerate an unpublished sample from its "
+        "catalog; preserve a published record and hold its corpus for review",
     )
     _refuse(
         not isinstance(page["ordinal"], int) or isinstance(page["ordinal"], bool),
@@ -1087,13 +1126,18 @@ def validate_sample(record: Any, run_path: str | Path | None = None) -> dict[str
             not isinstance(page[dimension], int)
             or isinstance(page[dimension], bool)
             or page[dimension] <= 0,
-            f"sample page {dimension} is not a positive integer",
+            f"sample page {dimension} is not a positive integer. Rectangle bounds "
+            "cannot be checked without a real page size. Regenerate an unpublished sample "
+            f"from the catalog's {dimension}; preserve a published record and hold its "
+            "corpus for review",
         )
     _refuse(
         not isinstance(record["set"], str)
         or record["set"] not in SETS
         or record["set"] != set_for_page(frame, page["sha256"]),
-        "sample set conflicts with the page-derived partition",
+        "sample set conflicts with the page-derived partition. The page would otherwise "
+        "belong to two gold sets. Regenerate an unpublished sample from the page sha256; "
+        "preserve a published record and hold its corpus for review",
     )
     without = {
         key: value for key, value in record.items() if key not in {"sample_digest", "self_hash"}
@@ -1137,7 +1181,9 @@ def validate_layout(record: Any, run_path: str | Path | None = None) -> dict[str
         )
         _refuse(
             not isinstance(region["kind"], str) or region["kind"] not in REGION_KINDS,
-            "layout region kind is not recognized",
+            "layout region kind is not recognized. The region therefore has no closed "
+            "layout meaning. Regenerate an unpublished annotation with act, non-act-text, "
+            "occlusion, or true-blank; preserve a published record for review",
         )
         _rectangle(
             region["rect"],
@@ -1194,6 +1240,7 @@ def validate_measurement(record: Any) -> dict[str, Any]:
 def validate_record(record: Any, run_path: str | Path | None = None) -> dict[str, Any]:
     """Validate any gold record by the schema it declares."""
     schema = record.get("schema") if isinstance(record, dict) else None
+    _refuse_dimensionless_schema(schema)
     if schema == SAMPLE_SCHEMA:
         return validate_sample(record, run_path)
     if schema == DRAW_SCHEMA:
@@ -1257,10 +1304,15 @@ def validate_corpus(records: Any, run_path: str | Path | None = None) -> list[di
     those pages" claims to close. Every seeded sample reached from any record,
     embedded or standing alone, must be one the retained draw produced.
     """
-    _refuse(not isinstance(records, list), "gold corpus records is not a list")
+    _refuse(
+        not isinstance(records, list),
+        "gold corpus records is not a list. Collection custody cannot be reconciled from "
+        "another shape. Pass the records from one corpus as a JSON list and retry",
+    )
     _refuse(
         not records,
-        "gold corpus has no records; an empty collection proves no custody facts",
+        "gold corpus has no records. An empty collection proves no custody facts. Supply "
+        "the records from one corpus and retry",
     )
     validated = [validate_record(record, run_path) for record in records]
     samples = [
@@ -1273,7 +1325,8 @@ def validate_corpus(records: Any, run_path: str | Path | None = None) -> list[di
         len(draws) > 1,
         f"these gold records retain {len(draws)} different sampling draws; a gold corpus "
         "is drawn once per corpus frame, so two draws are two designs and neither can "
-        "speak for the records beside it",
+        "speak for the records beside it. Keep each draw in a separate gold-record "
+        "directory",
     )
     frames: dict[str, dict[str, str]] = {}
     for sample in samples:
@@ -1282,7 +1335,9 @@ def validate_corpus(records: Any, run_path: str | Path | None = None) -> list[di
         _refuse(
             prior != frame,
             f"corpus frame digest {frame['frame_digest']} carries contradictory page_digest "
-            "or seed facts across gold records",
+            "or seed facts across gold records. One frame identity therefore denotes two "
+            "different authorities. Keep immutable records unchanged and separate the "
+            "frames, or regenerate an unpublished bad record from the R0 authority",
         )
     for draw in draws.values():
         frame = draw["frame"]
@@ -1290,7 +1345,9 @@ def validate_corpus(records: Any, run_path: str | Path | None = None) -> list[di
         _refuse(
             prior != frame,
             f"corpus frame digest {frame['frame_digest']} carries contradictory page_digest "
-            "or seed facts across gold records",
+            "or seed facts across gold records. One frame identity therefore denotes two "
+            "different authorities. Keep immutable records unchanged and separate the "
+            "frames, or regenerate an unpublished bad record from the R0 authority",
         )
     _refuse(
         len(frames) > 1,
@@ -1314,8 +1371,10 @@ def validate_corpus(records: Any, run_path: str | Path | None = None) -> list[di
         _refuse(
             bool(missing),
             f"the retained sampling draw selected {len(missing)} page(s) that this gold "
-            "corpus does not carry as a stratified-seed sample; a drawn page cannot vanish "
-            f"or be re-minted under another method (first missing {missing[:1]})",
+            "corpus does not carry as a stratified-seed sample. A drawn page has vanished "
+            f"or been re-minted under another method (first missing {missing[:1]}). Recover "
+            "the byte-identical original seeded record, or preserve the corpus as partial "
+            "and hold it for review",
         )
         # The draw retains the whole normalized catalog -- every page in the frame,
         # not only the selected ones -- so where a corpus keeps a draw it also keeps
@@ -1336,20 +1395,25 @@ def validate_corpus(records: Any, run_path: str | Path | None = None) -> list[di
                 row is None,
                 f"sample {sample['sample_digest']} names page {page['ordinal']}/"
                 f"{page['sha256']}, which is not in the catalog the retained draw was "
-                "drawn from",
+                "drawn from. The sample therefore has no place in this sampling design. "
+                "Keep the record unchanged and validate it only beside its matching draw; "
+                "hold this corpus for review",
             )
             _refuse(
                 row["stratum"] != page["stratum"],
                 f"page {page['ordinal']} is stratified {page['stratum']!r} by sample "
                 f"{sample['sample_digest']} and {row['stratum']!r} by the catalog the "
-                "retained draw was drawn from; a pick may not restratify the corpus "
-                "the draw was designed over",
+                "retained draw was drawn from. The pick would silently restratify the "
+                "corpus the draw was designed over. Regenerate an unpublished pick from "
+                "the catalog stratum; preserve a published record and hold it for review",
             )
             _refuse(
                 (row["width"], row["height"]) != (page["width"], page["height"]),
                 f"page {page['ordinal']} is {page['width']}x{page['height']} in sample "
                 f"{sample['sample_digest']} and {row['width']}x{row['height']} in the "
-                "catalog the retained draw was drawn from",
+                "catalog the retained draw was drawn from. Its rectangle boundary is "
+                "therefore ambiguous. Regenerate an unpublished sample from the catalog "
+                "dimensions; preserve a published record and hold it for review",
             )
     pages: dict[tuple[int, str], dict[str, Any]] = {}
     for sample in samples:
@@ -1365,7 +1429,9 @@ def validate_corpus(records: Any, run_path: str | Path | None = None) -> list[di
             (first["width"], first["height"]) != (page["width"], page["height"]),
             f"page {page['ordinal']}/{page['sha256']} has dimensions "
             f"{first['width']}x{first['height']} in one record and "
-            f"{page['width']}x{page['height']} in another",
+            f"{page['width']}x{page['height']} in another. Its rectangle boundary is "
+            "therefore ambiguous. Keep both immutable records unchanged and hold the corpus "
+            "for review",
         )
 
     samples_by_digest: dict[str, dict[str, Any]] = {}
@@ -1390,8 +1456,9 @@ def validate_corpus(records: Any, run_path: str | Path | None = None) -> list[di
         _refuse(
             prior_digest != sample["sample_digest"],
             f"page {page['ordinal']}/{page['sha256']} is carried by two different "
-            f"{sample['method']} sample records; one corpus page has one sample record "
-            "per selection method",
+            f"{sample['method']} sample records. Counting both would count one corpus page "
+            "twice under one method. Do not publish the second record; if both are already "
+            "immutable, preserve them and hold the corpus for review",
         )
 
     # Layout and padding are page facts, not facts about whichever sample record
@@ -1415,7 +1482,8 @@ def validate_corpus(records: Any, run_path: str | Path | None = None) -> list[di
         _refuse(
             prior != facts,
             f"page {page['ordinal']}/{page['sha256']} has two conflicting "
-            f"{record['schema']} records; a page has one gold annotation of each kind",
+            f"{record['schema']} records. The page therefore has no unique gold annotation "
+            "of that kind. Preserve both records and hold the corpus for review",
         )
 
     # Act custody is keyed on the act, not on (sample, act). An act identity binds
@@ -1447,8 +1515,9 @@ def validate_corpus(records: Any, run_path: str | Path | None = None) -> list[di
         _refuse(
             prior != identity,
             f"act {record['act_identity']} is bound to page {prior[0]}/{prior[1]} in one "
-            f"gold record and page {identity[0]}/{identity[1]} in {label}; one act identity "
-            "may not cross pages",
+            f"gold record and page {identity[0]}/{identity[1]} in {label}. One act identity "
+            "therefore has contradictory custody. Verify the act and sample bindings, then "
+            "correct the unpublished record or hold immutable records for review",
         )
 
     for record in validated:
@@ -1466,7 +1535,8 @@ def validate_corpus(records: Any, run_path: str | Path | None = None) -> list[di
         _refuse(
             prior_digest != record["self_hash"],
             f"transcriber {record['transcriber']!r} supplied two transcription records for "
-            f"act {record['act_identity']}",
+            f"act {record['act_identity']}. The act no longer has one independent reading "
+            "from that person. Preserve both records and hold the corpus for review",
         )
         transcriptions_by_digest[record["self_hash"]] = record
         transcriptions_by_act.setdefault(record["act_identity"], set()).add(record["self_hash"])
@@ -1513,8 +1583,9 @@ def validate_corpus(records: Any, run_path: str | Path | None = None) -> list[di
     _refuse(
         bool(unadjudicated),
         f"{len(unadjudicated)} act(s) have independently stored transcriptions but no "
-        f"adjudication; a started gold-reading custody chain may not end silently "
-        f"(first unadjudicated {unadjudicated[:1]})",
+        f"adjudication (first unadjudicated {unadjudicated[:1]}). The started gold-reading "
+        "custody chain is incomplete. Collect the second independent transcription if "
+        "needed, adjudicate the exact stored pair, and retry",
     )
     return validated
 

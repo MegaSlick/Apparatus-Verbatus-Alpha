@@ -14,7 +14,7 @@ partition independent of the frame means the same page cannot switch sets when a
 page is added or a shard is resplit. A quota that the partition cannot fill is
 refused; the sampler never crosses the boundary.
 
-The same command writes one `gold-sampling-draw.v1` record beside the selected
+The same command writes one `gold-sampling-draw.v2` record beside the selected
 sample records. It retains the normalized whole-frame catalog, predeclared plan,
 and selected sample digests, so `verify-sampling records/ --run RUN.json` needs no
 unrecorded catalog or plan bytes. Selected membership is recomputed from those
@@ -34,7 +34,7 @@ in the same directory is validated but is not reconciled against the draw's
 picks share one directory by design.  It is still reconciled against the draw's
 retained *catalog*, but by `validate-corpus` rather than here — see Custody.
 
-`ingest-manual` accepts Tyrel's `gold-manual-pick.v1` record, which has
+`ingest-manual` accepts Tyrel's `gold-manual-pick.v2` record, which has
 `selection_basis`, the bound page/stratum, and his stated set.  It records that
 selection unchanged; it does not choose a replacement page.  The persisted
 sample's `set` is always the page-derived partition — calibration/locked-acceptance
@@ -109,7 +109,7 @@ make the measurement circular.
 
 ## Custody
 
-The layout schema embeds its source `gold-page-sample.v1`, whose page carries
+The layout schema embeds its source `gold-page-sample.v2`, whose page carries
 positive pixel `width` and `height`, and has closed
 `act`, `non-act-text`, `occlusion`, and `true-blank` rectangle kinds.  The padding
 schema also embeds its source sample and carries only rectangles plus the required
@@ -118,6 +118,11 @@ for a sample, layout, or padding record, pass `--run` to prove the derived page 
 frame facts against the R0 authority again (an embedded sample is otherwise only
 checked for internal self-consistency, not that it names a real run).
 `bind-instrument` accepts the same optional `--run`.
+
+The dimension-bearing sample, draw, manual-pick, layout, and padding schemas are
+version 2. Version 1 did not carry a page size and therefore cannot honestly mean
+"this rectangle lies on its page" under the new reader. Existing v1 bytes remain
+immutable evidence; this tool refuses rather than silently reinterpret them.
 
 `--run` proves the page facts R0 actually carries, which are its ordinal and
 sha256.  A page's `stratum`, `width`, and `height` are not among them: R0's
