@@ -24,6 +24,9 @@ from common.runtree.store import RunTree
 
 PAGE = physical_page_id("synthetic", "volume-1", "12r")
 ACT = physical_act_id(PAGE, "entry-4")
+CAPTURE_PAGE = page_id({"kind": "source", "sha256": "c" * 64}, {"operation": "whole"})
+CAPTURE_BOUNDS = {"x": 10, "y": 20, "w": 30, "h": 40}
+CAPTURE_ACT = act_id(CAPTURE_PAGE, "proposal", CAPTURE_BOUNDS)
 
 
 def _declaration(page=PAGE, *, corpus="synthetic", volume="volume-1", designation="12r"):
@@ -46,11 +49,21 @@ def _membership(members, *, page=PAGE, predecessor=None, run="triage-1"):
     }
 
 
-def _correspondence(page_identity, act, *, physical_page=PAGE, physical_act=ACT):
+def _correspondence(
+    page_identity,
+    act,
+    bounds,
+    *,
+    act_class="proposal",
+    physical_page=PAGE,
+    physical_act=ACT,
+):
     return {
         "kind": "correspondence",
         "page_id": page_identity,
         "act_id": act,
+        "act_class": act_class,
+        "act_bounds": bounds,
         "physical_page_id": physical_page,
         "physical_act_id": physical_act,
         "evidence": ["declared-fixture"],
@@ -73,7 +86,7 @@ def _register(*, members, extra=()):
                     "evidence": ["declared-fixture"],
                     "appending_run": "triage-1",
                 },
-                _correspondence("pg_0123456789abcdef", "act_0123456789abcdef"),
+                _correspondence(CAPTURE_PAGE, CAPTURE_ACT, CAPTURE_BOUNDS),
                 *extra,
             ],
         }
@@ -146,7 +159,10 @@ def test_preference_field_is_refused_at_the_register_boundary():
 def test_declared_correspondence_resolves_two_capture_proposals_to_one_physical_act():
     value = json.loads(_register(members=["a" * 64, "b" * 64]))
     first = _record(_register(members=["a" * 64]), "correspondence")
-    second = {**first, "page_id": "pg_fedcba9876543210", "act_id": "act_fedcba9876543210"}
+    second_page = page_id({"kind": "source", "sha256": "d" * 64}, {"operation": "whole"})
+    second_bounds = {"x": 11, "y": 21, "w": 31, "h": 41}
+    second_act = act_id(second_page, "proposal", second_bounds)
+    second = _correspondence(second_page, second_act, second_bounds)
     value["records"].append(second)
     snapshot = canonical_bytes(value)
     assert (
@@ -217,9 +233,19 @@ def test_a_hard_reshoot_unions_two_captures_shared_act_into_one_physical_act():
                     "appending_run": "triage-1",
                 },
                 _correspondence(
-                    page_a, acts_a[3], physical_page=physical_p, physical_act=physical_p4
+                    page_a,
+                    acts_a[3],
+                    {"x": 40, "y": 0, "w": 8, "h": 8},
+                    physical_page=physical_p,
+                    physical_act=physical_p4,
                 ),
-                _correspondence(page_b, act_4b, physical_page=physical_p, physical_act=physical_p4),
+                _correspondence(
+                    page_b,
+                    act_4b,
+                    {"x": 41, "y": 1, "w": 9, "h": 9},
+                    physical_page=physical_p,
+                    physical_act=physical_p4,
+                ),
             ],
         }
     )
@@ -299,7 +325,7 @@ def test_a_retracted_correspondence_stops_resolving_and_says_which_finding_it_is
 
 def test_a_retraction_naming_no_earlier_record_is_refused():
     """A retraction that corrects nothing reads like a correction that happened."""
-    with pytest.raises(SchemaRefusal, match="which no earlier correspondence"):
+    with pytest.raises(SchemaRefusal, match="which no earlier correspondence or membership"):
         validate_register_bytes(
             _register(
                 members=["a" * 64],
@@ -383,6 +409,34 @@ def test_a_membership_record_may_not_withdraw_a_capture():
         )
 
 
+def test_a_wrong_membership_can_be_retracted_without_deleting_its_evidence():
+    """Correction removes the assertion from current membership, not the record.
+
+    A later link repeats the cumulative historical member set, so retraction is
+    scoped to the page/capture assertion rather than to one link in the chain.
+    The later capture remains active and every membership record remains bytes in
+    the validated register.
+    """
+    first = _membership(["a" * 64])
+    second = _membership(["a" * 64, "b" * 64], predecessor=digest_of(first), run="triage-2")
+    assertion = f"membership:{PAGE}->{'a' * 64}"
+    retraction = {
+        "kind": "retraction",
+        "retracts": assertion,
+        "reason": "the first capture belongs to the facing physical page",
+        "appending_run": "triage-3",
+    }
+    register = canonical_bytes(
+        {"schema": SCHEMA, "records": [_declaration(), first, second, retraction]}
+    )
+
+    validated = validate_register_bytes(register)
+    assert first in validated["records"]
+    assert second in validated["records"]
+    assert retraction in validated["records"]
+    assert members_of(register, PAGE) == ["b" * 64]
+
+
 def test_membership_for_an_undeclared_physical_page_is_refused():
     with pytest.raises(SchemaRefusal, match="before any earlier record declares it"):
         validate_register_bytes(
@@ -428,8 +482,9 @@ def test_a_correspondence_cannot_move_an_act_minted_for_another_physical_page():
                     "appending_run": "triage-1",
                 },
                 _correspondence(
-                    "pg_0123456789abcdef",
-                    "act_0123456789abcdef",
+                    CAPTURE_PAGE,
+                    CAPTURE_ACT,
+                    CAPTURE_BOUNDS,
                     physical_page=PAGE,
                     physical_act=other_act,
                 ),
@@ -449,13 +504,25 @@ def test_resolution_records_must_name_evidence_and_well_formed_local_identities(
     with pytest.raises(SchemaRefusal, match="must name one or more evidence"):
         validate_register_bytes(canonical_bytes(register))
 
+
+def test_a_correspondence_cannot_pair_an_act_with_a_different_capture_page():
+    register = json.loads(_register(members=["a" * 64]))
+    correspondence = next(
+        record for record in register["records"] if record["kind"] == "correspondence"
+    )
+    correspondence["page_id"] = page_id(
+        {"kind": "source", "sha256": "e" * 64}, {"operation": "whole"}
+    )
+    with pytest.raises(SchemaRefusal, match="does not bind the page, class, and bounds"):
+        validate_register_bytes(canonical_bytes(register))
+
     correspondence["evidence"] = ["declared-fixture"]
     correspondence["page_id"] = "not-a-page"
     with pytest.raises(SchemaRefusal, match="well-formed pg_ identity"):
         validate_register_bytes(canonical_bytes(register))
 
 
-def test_a_retraction_may_only_name_an_earlier_correspondence():
+def test_a_retraction_may_only_name_an_earlier_retractable_assertion():
     value = canonical_bytes(
         {
             "schema": SCHEMA,
@@ -470,8 +537,16 @@ def test_a_retraction_may_only_name_an_earlier_correspondence():
             ],
         }
     )
-    with pytest.raises(SchemaRefusal, match="no earlier correspondence"):
+    with pytest.raises(SchemaRefusal, match="no earlier correspondence or membership"):
         validate_register_bytes(value)
+
+
+def test_register_lookups_refuse_malformed_identity_tokens():
+    register = _register(members=["a" * 64])
+    with pytest.raises(SchemaRefusal, match="well-formed act_ identity"):
+        resolve_proposal(register, "not-an-act")
+    with pytest.raises(SchemaRefusal, match="well-formed ppg_ identity"):
+        members_of(register, "ppg_not-a-digest")
 
 
 def test_two_unicode_spellings_of_one_designation_declare_one_physical_page():
@@ -585,14 +660,34 @@ def test_a_tampered_run_snapshot_is_refused_by_the_register_reader(tmp_path):
 def test_a_run_bound_to_a_register_refuses_a_stage_that_was_given_none():
     """A check an operator disables by forgetting a flag is not a check: the
     appended correspondence would otherwise reach half a run's stages."""
-    run = {"register_digest": register_digest(_register(members=["a" * 64]))}
+    run = {
+        "register_digest": register_digest(_register(members=["a" * 64])),
+        "register_required": True,
+    }
+    with pytest.raises(IncompatibleReuse, match="must be given --corpus-register"):
+        verify_snapshot_is_current(run, None)
+
+
+def test_an_explicitly_empty_register_still_requires_the_live_register_flag():
+    """An empty live register can grow after ingress, so its presence is a bound fact."""
+    run = {"register_digest": EMPTY_REGISTER_DIGEST, "register_required": True}
     with pytest.raises(IncompatibleReuse, match="must be given --corpus-register"):
         verify_snapshot_is_current(run, None)
 
 
 def test_a_run_bound_to_no_register_needs_no_flag():
-    verify_snapshot_is_current({"register_digest": EMPTY_REGISTER_DIGEST}, None)
+    verify_snapshot_is_current(
+        {"register_digest": EMPTY_REGISTER_DIGEST, "register_required": False}, None
+    )
     assert register_digest(empty_register()) == EMPTY_REGISTER_DIGEST
+
+
+def test_a_run_created_without_a_register_refuses_one_introduced_later(tmp_path):
+    register_path = tmp_path / "register.json"
+    register_path.write_bytes(empty_register())
+    run = {"register_digest": EMPTY_REGISTER_DIGEST, "register_required": False}
+    with pytest.raises(IncompatibleReuse, match="may not introduce one"):
+        verify_snapshot_is_current(run, str(register_path))
 
 
 def test_a_refused_register_reuse_leaves_no_bytes_in_the_existing_run(tmp_path):

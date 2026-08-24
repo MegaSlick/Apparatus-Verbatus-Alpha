@@ -16,6 +16,7 @@ import pytest
 from common.contracts import identities
 from common.contracts.canonical import canonical_bytes
 from common.contracts.errors import IdentityRefusal
+from common.fixture_identity import page_identity
 
 SOURCE = "a" * 64
 BOUNDS_ORIGINAL = {"x": 10, "y": 20, "w": 300, "h": 90}
@@ -32,7 +33,9 @@ def test_the_same_bindings_always_derive_the_same_identity():
 
 
 def test_a_submission_ordinal_does_not_enter_page_identity():
-    assert identities.page_id(ORIGIN, WHOLE) == identities.page_id(ORIGIN, WHOLE)
+    first = {"page": [{"ordinal": 1, "sha256": SOURCE}]}
+    moved = {"page": [{"ordinal": 99, "sha256": SOURCE}]}
+    assert page_identity(first, 1) == page_identity(moved, 99)
 
 
 def test_inserting_an_earlier_source_leaves_existing_page_identities_unchanged():
@@ -113,7 +116,7 @@ def test_region_identity_changes_on_recrop_and_on_any_transform_change():
 def test_two_acts_on_one_page_are_distinct():
     page = identities.page_id(ORIGIN, WHOLE)
     assert identities.act_id(page, "proposal", BOUNDS_ORIGINAL) != identities.act_id(
-        page, "residual", BOUNDS_ORIGINAL
+        page, "proposal", {**BOUNDS_ORIGINAL, "x": BOUNDS_ORIGINAL["x"] + 1}
     )
 
 
@@ -202,6 +205,26 @@ def test_act_bindings_refuse_a_shape_the_minting_path_could_never_produce():
             "act",
             identities.act_bindings(page, "residual", {**BOUNDS_ORIGINAL, "note": "extra"}),
         )
+
+
+def test_page_and_act_bindings_refuse_malformed_identity_facts():
+    with pytest.raises(IdentityRefusal, match="lowercase SHA-256"):
+        identities.page_id({"kind": "source", "sha256": "not-a-digest"}, WHOLE)
+    with pytest.raises(IdentityRefusal, match="non-negative integer x/y"):
+        identities.page_id(
+            ORIGIN,
+            {"operation": "split", "bounds": {"x": 0, "y": 0, "w": 0, "h": 10}},
+        )
+    page = identities.page_id(ORIGIN, WHOLE)
+    with pytest.raises(IdentityRefusal, match="well-formed pg_ identity"):
+        identities.act_id("page-0000000000000001", "proposal", BOUNDS_ORIGINAL)
+    with pytest.raises(IdentityRefusal, match="positive integer w/h"):
+        identities.act_id(page, "proposal", {**BOUNDS_ORIGINAL, "h": -1})
+
+
+def test_physical_act_refuses_a_prefix_only_physical_page_token():
+    with pytest.raises(IdentityRefusal, match="well-formed ppg_ identity"):
+        identities.physical_act_id("ppg_not-a-digest", "entry-1")
 
 
 def test_two_unicode_spellings_of_one_declaration_are_one_physical_identity():

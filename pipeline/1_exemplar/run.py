@@ -2,7 +2,7 @@
 
 Reads what the door admitted and seals each admitted source as a page: the bytes
 into the run tree's blob store, and a `page` artifact binding the page identity to
-the source digest and the ordinal. From here on, every region in the run traces back
+the immutable origin and transform. From here on, every region in the run traces back
 to one of these — ARCHITECTURE's second invariant — because a region's identity is
 derived from an act's, and an act's from a page's.
 

@@ -202,7 +202,7 @@ def test_the_three_minted_act_classes_produce_three_different_identities():
     the worst case: a page-fallback act and a residual both cover ink the
     structure pass did not propose, and identity is all that separates them.
     """
-    page = "page-0000000000000001"
+    page = "pg_0000000000000001"
     bounds = {"x": 0, "y": 0, "w": 10, "h": 10}
 
     proposed = act_id(page, "proposal", bounds)
@@ -212,6 +212,6 @@ def test_the_three_minted_act_classes_produce_three_different_identities():
     assert len({proposed, residual, fallback}) == 3
 
 
-def test_closed_act_classes_are_the_designator_side_guard():
+def test_fallback_key_remains_presentation_only():
     assert FALLBACK_KEY == "page-fallback:3"
     assert not hasattr(attestatores, "_is_page_fallback")

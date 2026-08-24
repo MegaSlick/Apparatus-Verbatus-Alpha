@@ -30,7 +30,14 @@ from typing import Any, Final, Iterator
 
 from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of
 from common.contracts.errors import ContractError, IncompatibleReuse, SchemaRefusal
-from common.contracts.identities import is_well_formed, physical_act_id, physical_page_id
+from common.contracts.identities import (
+    act_id as local_act_id,
+)
+from common.contracts.identities import (
+    is_well_formed,
+    physical_act_id,
+    physical_page_id,
+)
 
 SCHEMA: Final = "corpus-register-v1"
 _FORBIDDEN_PREFERENCE_FIELDS: Final = frozenset(
@@ -175,14 +182,28 @@ def verify_snapshot_is_current(run: dict[str, Any], register_path: str | None) -
     others, with nothing anywhere saying so.
     """
     sealed = run.get("register_digest")
+    required = run.get("register_required")
+    if not _is_sha256(sealed) or not isinstance(required, bool):
+        raise IncompatibleReuse(
+            "run.json does not carry a valid corpus-register digest and presence binding"
+        )
     if register_path is None:
-        if sealed != EMPTY_REGISTER_DIGEST:
+        if required:
             raise IncompatibleReuse(
                 "this run was created against a corpus register, so every stage in it must "
                 "be given --corpus-register to check that register against the run's sealed "
                 "snapshot; a skipped check reads exactly like a passed one"
             )
+        if sealed != EMPTY_REGISTER_DIGEST:
+            raise IncompatibleReuse(
+                "run.json claims no corpus register but binds a non-empty register snapshot"
+            )
         return
+    if not required:
+        raise IncompatibleReuse(
+            "this run was created without a corpus register, so a later stage may not introduce "
+            "one; start a new run against that register instead"
+        )
     try:
         live = register_digest(Path(register_path).read_bytes())
     except OSError as error:
@@ -204,6 +225,8 @@ class _Reading:
         self.physical_act_pages: dict[str, str] = {}
         self.correspondences: set[str] = set()
         self.membership_head: dict[str, tuple[str, frozenset[str]]] = {}
+        self.membership_assertions: dict[str, tuple[str, str]] = {}
+        self.retracted_members: dict[str, set[str]] = {}
 
 
 def validate_register_bytes(data: bytes) -> dict[str, Any]:
@@ -237,8 +260,13 @@ def members_of(data: bytes, physical_page: str) -> list[str]:
     declared page with no capture yet are both the empty list on purpose: this
     reads membership, it does not assert that a page exists.
     """
-    head = _read(data)[1].membership_head.get(physical_page)
-    return sorted(head[1]) if head is not None else []
+    reading = _read(data)[1]
+    _identity(physical_page, "ppg", "membership lookup physical page")
+    head = reading.membership_head.get(physical_page)
+    if head is None:
+        return []
+    active = set(head[1]) - reading.retracted_members.get(physical_page, set())
+    return sorted(active)
 
 
 def resolve_proposal(data: bytes, act_id: str) -> dict[str, str]:
@@ -257,6 +285,7 @@ def resolve_proposal(data: bytes, act_id: str) -> dict[str, str]:
     different things.
     """
     register = validate_register_bytes(data)
+    _identity(act_id, "act", "proposal resolution act_id")
     retracted = {
         record["retracts"] for record in register["records"] if record["kind"] == "retraction"
     }
@@ -277,6 +306,11 @@ def resolve_proposal(data: bytes, act_id: str) -> dict[str, str]:
 
 def _correspondence_identity(record: dict[str, Any]) -> str:
     return f"{record['act_id']}->{record['physical_act_id']}"
+
+
+def _membership_assertion_identity(physical_page: str, member: str) -> str:
+    """The retractable assertion that one capture shows one physical page."""
+    return f"membership:{physical_page}->{member}"
 
 
 def _refuse_preference(value: Any) -> None:
@@ -358,6 +392,9 @@ def _validate_record(record: Any, reading: _Reading) -> None:
         )
         _validate_membership(row, reading)
         identity = f"membership:{digest_of(row)}"
+        for member in row["members"]:
+            assertion = _membership_assertion_identity(row["physical_page_id"], member)
+            reading.membership_assertions[assertion] = (row["physical_page_id"], member)
     elif kind == "physical-act":
         row = _closed(
             record,
@@ -390,6 +427,8 @@ def _validate_record(record: Any, reading: _Reading) -> None:
                 "kind",
                 "page_id",
                 "act_id",
+                "act_class",
+                "act_bounds",
                 "physical_page_id",
                 "physical_act_id",
                 "evidence",
@@ -403,6 +442,18 @@ def _validate_record(record: Any, reading: _Reading) -> None:
         _identity(row["act_id"], "act", "correspondence act_id")
         _identity(row["physical_page_id"], "ppg", "correspondence physical_page_id")
         _identity(row["physical_act_id"], "pac", "correspondence physical_act_id")
+        try:
+            expected_local_act = local_act_id(row["page_id"], row["act_class"], row["act_bounds"])
+        except (KeyError, TypeError) as error:  # pragma: no cover - defensive
+            raise SchemaRefusal("correspondence has malformed local act bindings") from error
+        except ContractError as error:
+            raise SchemaRefusal(
+                f"correspondence has malformed local act bindings: {error}"
+            ) from error
+        if row["act_id"] != expected_local_act:
+            raise SchemaRefusal(
+                "correspondence act_id does not bind the page, class, and bounds beside it"
+            )
         _evidence(row["evidence"], "correspondence evidence")
         _require_declared(row["physical_page_id"], reading.physical_pages, "physical page")
         _require_declared(row["physical_act_id"], reading.physical_acts, "physical act")
@@ -420,12 +471,19 @@ def _validate_record(record: Any, reading: _Reading) -> None:
         ):
             raise SchemaRefusal("retraction record is malformed")
         # A retraction naming nothing retracts nothing while reading as a
-        # correction that happened. It is refused rather than filed.
-        if row["retracts"] not in reading.correspondences:
+        # correction that happened. It is refused rather than filed. Both
+        # resolvable assertion kinds are retractable: an act correspondence,
+        # or the claim that one capture shows one physical page.
+        membership = reading.membership_assertions.get(row["retracts"])
+        if row["retracts"] not in reading.correspondences and membership is None:
             raise SchemaRefusal(
-                f"retraction names {row['retracts']!r}, which no earlier correspondence in "
-                "this register declares; a retraction that corrects nothing is not a correction"
+                f"retraction names {row['retracts']!r}, which no earlier correspondence or "
+                "membership assertion in this register declares; a retraction that corrects "
+                "nothing is not a correction"
             )
+        if membership is not None:
+            page, member = membership
+            reading.retracted_members.setdefault(page, set()).add(member)
         identity = f"retract:{row['retracts']}"
     else:
         raise SchemaRefusal(f"unknown corpus register record kind {kind!r}")

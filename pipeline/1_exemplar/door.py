@@ -1129,7 +1129,7 @@ def fixture_submission(args, registry) -> int:
         ingress=synthetic_fixture_ingress_record(),
         render_settings={"pdf": pdf_settings.to_record()},
         sealed_config_digests=bindings["sealed_config_digests"],
-        register_bytes=Path(args.corpus_register).read_bytes() if args.corpus_register else None,
+        register_bytes=_read_corpus_register(args.corpus_register),
     )
     context = _door_context(
         tree,
@@ -1296,7 +1296,7 @@ def real_submission(args, registry) -> int:
         ingress=real_ingress_record(),
         render_settings={"pdf": pdf_settings.to_record()},
         sealed_config_digests=bindings["sealed_config_digests"],
-        register_bytes=Path(args.corpus_register).read_bytes() if args.corpus_register else None,
+        register_bytes=_read_corpus_register(args.corpus_register),
     )
 
     context = _door_context(
@@ -1325,6 +1325,19 @@ def real_submission(args, registry) -> int:
         open_source=open_source,
     )
     return _finish_door_run(context, tree, admitted)
+
+
+def _read_corpus_register(register_path: str | None) -> bytes | None:
+    """Read an optional register before run creation, with a recoverable refusal."""
+    if register_path is None:
+        return None
+    try:
+        return Path(register_path).read_bytes()
+    except OSError as error:
+        raise ContractError(
+            "the corpus register could not be read before run creation; no run or admission "
+            "record was written; provide a readable canonical register and retry"
+        ) from error
 
 
 def _announce_refusal_report(tree: RunTree, refusal_report: str | None) -> None:

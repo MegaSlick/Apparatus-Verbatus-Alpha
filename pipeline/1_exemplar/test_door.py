@@ -48,6 +48,17 @@ from operations.submit import gate, submit
 POLICY = load_format_policy()
 
 
+def test_an_unreadable_corpus_register_is_a_named_pre_creation_refusal(tmp_path):
+    with pytest.raises(
+        ContractError,
+        match=(
+            "could not be read before run creation; no run or admission record was written; "
+            "provide a readable canonical register and retry"
+        ),
+    ):
+        door._read_corpus_register(str(tmp_path / "missing-register.json"))
+
+
 def _sealed_binding_digests() -> dict[str, str]:
     """The configuration digests every `_real_bindings` caller has to supply.
 

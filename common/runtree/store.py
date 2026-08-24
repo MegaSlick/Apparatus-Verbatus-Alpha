@@ -85,6 +85,7 @@ _BOUND_FIELDS: Final = (
     "witness_chairs",
     "corpus_frame_membership",
     "register_digest",
+    "register_required",
 )
 _INGRESS_FIELD: Final = "ingress"
 
@@ -193,6 +194,7 @@ class RunTree:
         # very register as an incompatible reuse — writing into a tree while
         # telling the operator nothing was written.
         snapshot = empty_register() if register_bytes is None else register_bytes
+        register_required = register_bytes is not None
         validate_register_bytes(snapshot)
         snapshot_digest = digest_bytes(snapshot)
         # An ordinal names one page. Two rows carrying the same one do not describe
@@ -238,6 +240,7 @@ class RunTree:
             "witness_chairs": sorted(witness_chairs),
             "corpus_frame_membership": membership,
             "register_digest": snapshot_digest,
+            "register_required": register_required,
         }
         if ingress is not None:
             authority[_INGRESS_FIELD] = ingress

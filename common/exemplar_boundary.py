@@ -81,7 +81,9 @@ def verify_sealed_page_pixels(
     )
     expected_page_id = page_id(origin, {"operation": "whole"})
     if page.get("subject_id") != expected_page_id:
-        raise ContractError("a sealed Exemplar page identity does not bind its pixels and ordinal")
+        raise ContractError(
+            "a sealed Exemplar page identity does not bind its immutable origin and transform"
+        )
 
     blob_path = tree.blob_path(DOOR, source_digest)
     if payload.get("image_path") != blob_path:

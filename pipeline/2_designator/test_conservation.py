@@ -32,13 +32,23 @@ def _load_designator_run():
     path = Path(__file__).resolve().parent / "run.py"
     spec = importlib.util.spec_from_file_location("designator_run_under_test", path)
     module = importlib.util.module_from_spec(spec)
-    sys.path.insert(0, str(path.parent))
-    spec.loader.exec_module(module)
+    original_path = list(sys.path)
+    try:
+        sys.path.insert(0, str(path.parent))
+        spec.loader.exec_module(module)
+    finally:
+        sys.path[:] = original_path
     return module
 
 
 def blank_rows(width: int, height: int) -> list[bytearray]:
     return [bytearray([BACKGROUND] * width) for _ in range(height)]
+
+
+def test_loading_the_designator_run_module_does_not_change_import_search_order():
+    before = list(sys.path)
+    _load_designator_run()
+    assert sys.path == before
 
 
 def paint_rect(rows: list[bytearray], x: int, y: int, w: int, h: int, value: int = INK) -> None:

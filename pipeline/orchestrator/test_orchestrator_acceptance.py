@@ -617,8 +617,15 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # `(perlector, failed)` written into it. Comment bytes only; both digests
 # re-measured twice through this module's own helpers at the same tree, counts
 # and exits held at 64/0 and 71/3.
-HAPPY_RUN_TREE_DIGEST = "1f36941dd9f33167cfd87d5bb7a2d7921577db8fc1b0caeeed34c11db9bf0d94"
-REVIEW_RUN_TREE_DIGEST = "5e8333d054306c3dcc5030a1ac668543b67a96dd6aa4d1c6bccb463dc9d57649"
+# Re-pinned in the Unit 18 formal correction pass after `run.json` began binding
+# `register_required` separately from `register_digest`. The distinction closes
+# the empty-register drift hole: an explicitly supplied empty register can grow,
+# so later stages must not mistake its empty digest for "no live register to
+# check." The new authority field moves both semantic trees; file counts and
+# exits remain 65/0 and 72/3. Both values below were measured from independent
+# orchestrator runs, never derived from the preceding pins.
+HAPPY_RUN_TREE_DIGEST = "ffba411c60bc363d1d5f4d3c6c07b796c253e8726359e0af7e9a7bfe980c069e"
+REVIEW_RUN_TREE_DIGEST = "db33df93959bd09ce173087af8ba3b53f3ca34bab87affc515ca544ede061739"
 
 
 def orchestrate(

@@ -6,7 +6,7 @@ reader recomputes and refuses a mismatch, instead of trusting a string that arri
 in a file. It is also what makes the architecture's first invariant — act identity
 survives recropping — a property a test can prove rather than a habit:
 
-    act_id    binds the original proposal          -> a recrop cannot change it
+    act_id    binds the original class and bounds  -> a recrop cannot change it
     region_id binds the act AND the transform      -> a recrop must change it
 
 Both statements fall out of what each identity hashes, so no code has to remember
@@ -103,6 +103,35 @@ def _closed(value: Any, fields: set[str], what: str) -> dict[str, Any]:
     return value
 
 
+def _sha256(value: Any, what: str) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise IdentityRefusal(f"{what} must be a lowercase SHA-256 digest")
+    return value
+
+
+def _bounds(value: Any, what: str) -> dict[str, int]:
+    row = _closed(value, {"x", "y", "w", "h"}, what)
+    if (
+        any(not isinstance(item, int) or isinstance(item, bool) for item in row.values())
+        or row["x"] < 0
+        or row["y"] < 0
+        or row["w"] <= 0
+        or row["h"] <= 0
+    ):
+        raise IdentityRefusal(f"{what} must have non-negative integer x/y and positive integer w/h")
+    return row
+
+
+def _identity(value: Any, prefix: str, what: str) -> str:
+    if not is_well_formed(value) or not value.startswith(f"{prefix}_"):
+        raise IdentityRefusal(f"{what} must be a well-formed {prefix}_ identity")
+    return value
+
+
 def page_bindings(origin: Any, transform: Any) -> dict[str, Any]:
     """A rendered page binds immutable origin bytes and its parent-space transform.
 
@@ -119,16 +148,16 @@ def page_bindings(origin: Any, transform: Any) -> dict[str, Any]:
         )
     )
     if origin["kind"] == "source":
-        if not isinstance(origin["sha256"], str):
-            raise IdentityRefusal("source page origin has no sha256")
+        _sha256(origin["sha256"], "source page origin sha256")
     elif origin["kind"] == "container-page":
         if (
-            not isinstance(origin["container_sha256"], str)
-            or not isinstance(origin["container_page_index"], int)
+            not isinstance(origin["container_page_index"], int)
             or isinstance(origin["container_page_index"], bool)
-            or origin["render_contract"] is None
+            or origin["container_page_index"] < 0
+            or not isinstance(origin["render_contract"], dict)
         ):
             raise IdentityRefusal("container-page origin has malformed immutable facts")
+        _sha256(origin["container_sha256"], "container page origin sha256")
     else:
         raise IdentityRefusal("page origin kind must be 'source' or 'container-page'")
     transform = (
@@ -139,7 +168,7 @@ def page_bindings(origin: Any, transform: Any) -> dict[str, Any]:
     if transform["operation"] == "whole":
         pass
     elif transform["operation"] == "split":
-        _closed(transform["bounds"], {"x", "y", "w", "h"}, "split bounds")
+        _bounds(transform["bounds"], "split bounds")
     else:
         raise IdentityRefusal("page transform operation must be 'whole' or 'split'")
     return {"origin": origin, "transform": transform}
@@ -153,9 +182,9 @@ ACT_CLASSES: Final = frozenset({"proposal", "residual", "page-fallback"})
 
 
 def act_bindings(page: str, act_class: str, bounds: Any) -> dict[str, Any]:
-    """An act binds its image-local page, class and original bounds.
+    """An act binds its image-local page, class and originally minted bounds.
 
-    The *original* proposal bounds, never the current ones. This is the whole
+    The *originally minted* bounds, never the current ones. This is the whole
     mechanism behind "act identity survives recropping": a recrop produces new
     bounds and therefore a new region, and cannot reach these bindings at all.
 
@@ -173,7 +202,8 @@ def act_bindings(page: str, act_class: str, bounds: Any) -> dict[str, Any]:
     """
     if act_class not in ACT_CLASSES:
         raise IdentityRefusal("act class must be 'proposal', 'residual', or 'page-fallback'")
-    _closed(bounds, {"x", "y", "w", "h"}, "act bounds")
+    _identity(page, "pg", "act page")
+    _bounds(bounds, "act bounds")
     return {
         "page_id": page,
         "class": act_class,
@@ -217,15 +247,11 @@ def physical_page_id(corpus_id: str, volume_id: str, designation: str) -> str:
 
 
 def physical_act_bindings(physical_page: str, mint_designation: str) -> dict[str, str]:
-    if (
-        not isinstance(physical_page, str)
-        or not physical_page.startswith("ppg_")
-        or not isinstance(mint_designation, str)
-        or not mint_designation
-    ):
+    if not isinstance(mint_designation, str) or not mint_designation:
         raise IdentityRefusal(
             "physical act bindings require a physical page id and mint designation"
         )
+    _identity(physical_page, "ppg", "physical act page")
     return {
         "physical_page_id": physical_page,
         "mint_designation": _declared_text(mint_designation),

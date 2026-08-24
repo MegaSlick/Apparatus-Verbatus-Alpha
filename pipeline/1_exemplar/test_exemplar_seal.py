@@ -43,8 +43,12 @@ def _load_exemplar_run():
     """
     spec = importlib.util.spec_from_file_location("exemplar_run_under_test", EXEMPLAR_CLI)
     module = importlib.util.module_from_spec(spec)
-    sys.path.insert(0, str(EXEMPLAR_CLI.parent))
-    spec.loader.exec_module(module)
+    original_path = list(sys.path)
+    try:
+        sys.path.insert(0, str(EXEMPLAR_CLI.parent))
+        spec.loader.exec_module(module)
+    finally:
+        sys.path[:] = original_path
     return module
 
 
@@ -181,8 +185,8 @@ def test_the_run_carries_exactly_one_corpus_seal_naming_every_page(tmp_path):
 
 def test_a_sealed_page_is_named_by_the_digest_that_was_actually_admitted(tmp_path):
     """Audit Q12's defect was a truncated hash of the *path*. Identity binds the
-    content digest and the ordinal — and the digest of the bytes the door admitted,
-    not of what anybody declared about them."""
+    immutable source digest and whole-image transform — and the digest of the bytes
+    the door admitted, not the submission ordinal or what anybody declared."""
     tree, files = build_door_run(tmp_path / "runs")
     assert run_exemplar(tmp_path / "runs").returncode == 0
 
@@ -193,6 +197,12 @@ def test_a_sealed_page_is_named_by_the_digest_that_was_actually_admitted(tmp_pat
     record = tree.read_artifact(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", expected))
     assert record["outcome"] == "sealed"
     assert record["payload"]["ordinal"] == 1
+
+
+def test_loading_the_exemplar_run_module_does_not_change_import_search_order():
+    before = list(sys.path)
+    _load_exemplar_run()
+    assert sys.path == before
 
 
 def test_a_pdf_page_rendered_below_its_run_target_says_so_in_the_sealed_page_record():
