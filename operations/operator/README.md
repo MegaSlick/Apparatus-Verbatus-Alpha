@@ -110,8 +110,11 @@ three things, whether or not the shutdown could be confirmed. This rehearsal exe
 the same report shape with fixture provider and billing evidence:
 
 1. It tells you whether the machine is **confirmed gone** — proved by the provider saying
-   so twice, independently, *and* by provider billing records covering the whole window — and
-   what it cost through that point. If it could not prove all of that, it says
+   so twice, independently, *and* by non-empty, exact-pod billing records inside a
+   declared window through the requested cutoff — and what it cost through that point.
+   Those records do **not** yet prove that returned billing buckets fill the whole
+   declared window; that remains unproven until real RunPod lifecycle output is
+   recorded. If it could not prove the observations it does require, it says
    **UNVERIFIED CLOSE** and tells you exactly what to go and check yourself.
 2. It reminds you that **the storage volume keeps costing money on its own**. Closing the
    machine does not delete your storage and does not stop that charge.
