@@ -10,7 +10,7 @@ that is not an omission.  The witness only proves a page read because someone
 rendered it into that page's pixels, so its entropy source, its lifetime and its
 rotation belong to whoever authors the golden fixture; this callable can only
 refuse a value that could not do the job whatever its origin.  The contract for
-that caller: draw it from a CSPRNG over a large alphabet, mint a new one
+that caller: draw it from a CSPRNG over the URL-safe ASCII token alphabet, mint a new one
 whenever the page is re-rendered, and never carry one across fixtures.  This
 callable cannot infer how a supplied string was generated.  A weak or
 reused witness can be guessed or memorized and therefore can make the smoke
@@ -32,7 +32,7 @@ this seam does not support.
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -40,7 +40,7 @@ from common.chairs.models import ChairIdentity
 from operations.pod.preflight import PlacementTier, SmokeResult, UtilizationSample
 
 from .errors import ServingConfigurationError
-from .manager import AdapterCalibration, ServiceHandle
+from .manager import AdapterCalibration, ServiceHandle, _active_chat_image_bytes
 
 _WITNESS_PREFIX = "PAGE-WITNESS: "
 _MINIMUM_WITNESS_LENGTH = 32
@@ -71,7 +71,7 @@ class VisionSmokeCall:
             or not self.page_witness.strip()
         ):
             raise ValueError(
-                "golden-page witness must be a non-blank unguessable string of at least "
+                "golden-page witness must be a non-blank string of at least "
                 f"{_MINIMUM_WITNESS_LENGTH} characters"
             )
         # A page witness is a token, not prose.  Whitespace makes its visible
@@ -82,6 +82,13 @@ class VisionSmokeCall:
             raise ValueError(
                 "golden-page witness must contain no whitespace: it is a visible token "
                 "returned on one exact output line"
+            )
+        if not self.page_witness.isascii() or not all(
+            character.isalnum() or character in "-_" for character in self.page_witness
+        ):
+            raise ValueError(
+                "golden-page witness must use only visible URL-safe ASCII letters, digits, "
+                "hyphen, or underscore"
             )
         # The class contract above is that the witness never reaches the model
         # in text.  `prompt` is a constant today, so this holds by inspection —
@@ -129,18 +136,18 @@ class VisionSmokeCall:
             prompt=self.prompt,
             mime_type=_FIXTURE_MIME_TYPE,
         )
-        _require_declared_format(fixture)
         payload = calibration.request_payload()
+        _require_declared_format(payload, fixture)
         answer = handle.request_fixture_image("chat-completions", payload, fixture=fixture)
 
         expected = _WITNESS_PREFIX + self.page_witness
         shape_valid = len(answer.outputs) == 1
-        # `nonempty` is structurally equal to `shape_valid` here, and is kept
-        # because `SmokeResult` requires the field, not because it adds a
-        # measurement: `parse_openai_answer` already refuses any choice whose
-        # content is blank, so a blank answer never reaches this line — it
-        # arrives at the runner as `smoke-read-failed`, earlier and louder.
-        nonempty = shape_valid and bool(answer.outputs[0].strip())
+        # Keep this independent of shape: multiple parsed choices are still
+        # nonempty, even though they fail the one-output and exact-format rules.
+        # `parse_openai_answer` already refuses a blank choice, so a blank
+        # answer never reaches this line — it arrives at the runner as
+        # `smoke-read-failed`, earlier and louder.
+        nonempty = bool(answer.outputs) and all(bool(output.strip()) for output in answer.outputs)
         # The prompt asks for exactly one line.  Stripping here would silently
         # accept surrounding spaces or extra blank lines and report them as
         # format-valid, a broader claim than the output rule actually measured.
@@ -157,7 +164,6 @@ class VisionSmokeCall:
             nonempty=nonempty,
             format_valid=format_valid,
             receipt={
-                "fixture": fixture.name,
                 "fixture_response_sha256": answer.response_sha256,
                 "resolved_identity": identity.to_record(),
                 "resolved_revision": identity.receipt_revision,
@@ -170,26 +176,20 @@ class VisionSmokeCall:
         )
 
 
-def _require_declared_format(fixture: Path) -> None:
-    """Refuse a golden page whose bytes are not the format the request declares.
+def _require_declared_format(payload: Mapping[str, object], fixture: Path) -> None:
+    """Refuse a sealed request whose bytes are not the format it declares.
 
     The request travels as ``data:image/png;base64,...``.  Nothing else on this
-    path inspects those bytes for format — ``AdapterCalibration`` binds their
-    digest, and ``ServingSmokeReader`` re-hashes them — and the runner's fixture
-    path is a free caller seam (``PreflightRunner`` takes any ``Path``).  A JPEG
-    or TIFF golden page would therefore be sent declared as a PNG, false in the
-    request and in the launch audit that digests it.  The signature is what the
-    declaration is about; the filename suffix is not.
+    path inspects those bytes for format.  Inspect the sealed payload rather
+    than reopening ``fixture``: the latter would validate a different snapshot
+    if the path changed after ``AdapterCalibration`` read it.  The manager then
+    independently requires these payload bytes to match the local fixture and
+    the reader's pre-launch digest.  The signature is what the declaration is
+    about; the filename suffix is not.
     """
 
-    try:
-        with fixture.open("rb") as stream:
-            signature = stream.read(len(_PNG_SIGNATURE))
-    except OSError as error:
-        raise ServingConfigurationError(
-            f"cannot read golden-page fixture {fixture}: {error}"
-        ) from error
-    if signature != _PNG_SIGNATURE:
+    image_bytes = _active_chat_image_bytes(payload, label="golden-page request")
+    if not image_bytes.startswith(_PNG_SIGNATURE):
         raise ServingConfigurationError(
             f"golden-page fixture {fixture.name} is not a PNG, but the vision smoke request "
             f"declares {_FIXTURE_MIME_TYPE}; supply a PNG page, or a smoke callable that "

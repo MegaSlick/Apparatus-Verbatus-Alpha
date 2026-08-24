@@ -240,8 +240,9 @@ golden page and deliberately absent from the prompt — and requires the answer 
 be exactly `PAGE-WITNESS: <witness>`. The lifecycle already proves the request
 carried the exact local fixture bytes; this adds the semantic half, that
 something on the far side of the wire read them. An answer assembled from the
-prompt alone yields the literal `PAGE-WITNESS: <the page witness string>` and is
-refused. The receipt records the resolved identity and revision, the
+prompt alone yields the literal `PAGE-WITNESS: <the page witness string>`, is
+marked format-invalid, and makes preflight refuse the chair. The receipt records
+the resolved identity and revision, the
 `served_model_id` the *response body itself* named (`parse_openai_answer` refuses
 a response whose `model` is not the exact served alias, so this is per-answer and
 not per-connection state), the response digest that binds the receipt to the one
@@ -252,27 +253,29 @@ off, so the witness leaves the process only as that digest.
 **Whose job the witness is.** Nothing here generates one, and that is not an
 omission: the witness proves a page read only because someone rendered it into
 the page's pixels, so entropy, lifetime and rotation belong to whoever authors
-the fixture. This callable refuses only what could not do the job whatever its
-origin — a value under 32 characters, a blank one, one carrying visually
-ambiguous whitespace despite being a token on one line, and one that occurs in
-the prompt. It cannot measure entropy, and does not pretend to. A weak or reused
-witness can be guessed or memorized and can therefore make the smoke falsely
-green without a page read;
+the fixture. The caller draws it from a CSPRNG over the URL-safe ASCII token
+alphabet. This callable refuses only what could not do the job whatever its
+origin — a value under 32 characters, a blank one, whitespace, non-visible or
+non-token characters, and one that occurs in the prompt. It cannot measure
+entropy, and does not pretend to. A weak or reused witness can be guessed or
+memorized and can therefore make the smoke falsely green without a page read;
 the caller contract is a precondition of the claim, not a property inferred from
 the supplied string. Entropy and rotation remain the fixture author's
 responsibility and are named open rather than reported closed.
 
-The request declares `image/png` and the fixture bytes are checked against the
-PNG signature, because nothing else on this path inspects them for format —
-`AdapterCalibration` binds their digest and `ServingSmokeReader` re-hashes them,
-and `PreflightRunner` takes any `Path`. A non-PNG golden page is refused by name
+The request declares `image/png` and the sealed request bytes are checked
+against the PNG signature, because nothing else on this path inspects them for
+format — `AdapterCalibration` binds their digest and `ServingSmokeReader`
+re-hashes the local fixture, and `PreflightRunner` takes any `Path`. Checking
+the request snapshot matters: reopening the path could validate replacement
+bytes after the request was assembled. A non-PNG golden page is refused by name
 rather than travelling under a declaration the bytes do not support.
 
-`SmokeResult.nonempty` is structurally equal to `shape_valid` here. It is kept
-because the result type requires the field, not because it adds a measurement:
-`parse_openai_answer` already refuses a blank choice, so a blank answer reaches
-the runner as `smoke-read-failed`, earlier and louder than a format flag would
-be.
+`SmokeResult.nonempty` reports the parsed outputs independently of
+`shape_valid`: multiple nonempty choices fail shape and format without falsely
+claiming that their text was empty. `parse_openai_answer` already refuses a
+blank choice, so a blank answer reaches the runner as `smoke-read-failed`,
+earlier and louder than a format flag would be.
 
 **One call at a time.** `ServiceHandle` records its last fixture request on
 itself and `ServingSmokeReader` corroborates the returned receipt against that

@@ -3479,7 +3479,9 @@ def test_vision_smoke_call_refuses_an_unstarted_service_handle(tmp_path: Path) -
         vision_smoke()(unstarted, chair, fixture, smoke_placement())
 
 
-def test_vision_smoke_call_refuses_an_answer_producible_from_its_prompt(tmp_path: Path) -> None:
+def test_vision_smoke_call_marks_an_answer_producible_from_its_prompt_invalid(
+    tmp_path: Path,
+) -> None:
     chair = identity("reader", "reader-v1")
     expected = f"PAGE-WITNESS: {PAGE_WITNESS}"
     prompt_only_answer = "PAGE-WITNESS: <the page witness string>"
@@ -3548,6 +3550,86 @@ def test_vision_smoke_call_accepts_the_exact_model_answer_and_records_identity(
     assert launcher.processes[0].terminate_calls == 1
 
 
+def test_vision_smoke_call_reports_multiple_nonempty_choices_honestly(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    chair = identity("reader", "reader-v1")
+    expected = f"PAGE-WITNESS: {PAGE_WITNESS}"
+    manager, _, http, launcher, _, _ = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+        ),
+        model_ids=("reader-api",),
+        outputs={"reader-api": expected},
+    )
+    fixture = tmp_path / "golden-page.png"
+    write_golden_page(fixture)
+    handle = manager.start(chair, TIER)
+    original_request = http.request
+
+    def two_choice_request(
+        method: str,
+        url: str,
+        *,
+        body: bytes | None,
+        timeout_seconds: float,
+    ) -> HttpResponse:
+        response = original_request(
+            method,
+            url,
+            body=body,
+            timeout_seconds=timeout_seconds,
+        )
+        if method == "POST" and url.endswith("/chat/completions"):
+            response_body = json.loads(response.body)
+            response_body["choices"].append(response_body["choices"][0])
+            return HttpResponse(response.status, json.dumps(response_body).encode())
+        return response
+
+    monkeypatch.setattr(http, "request", two_choice_request)
+
+    result = vision_smoke()(handle, chair, fixture, smoke_placement())
+
+    assert result.shape_valid is False
+    assert result.nonempty is True
+    assert result.format_valid is False
+    handle.stop()
+    assert launcher.processes[0].terminate_calls == 1
+
+
+def test_vision_smoke_receipt_does_not_retain_a_witness_bearing_fixture_name(
+    tmp_path: Path,
+) -> None:
+    chair = identity("reader", "reader-v1")
+    expected = f"PAGE-WITNESS: {PAGE_WITNESS}"
+    manager, _, _, launcher, _, _ = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+        ),
+        model_ids=("reader-api",),
+        outputs={"reader-api": expected},
+    )
+    fixture = tmp_path / f"{PAGE_WITNESS}.png"
+    write_golden_page(fixture)
+    handle = manager.start(chair, TIER)
+
+    result = vision_smoke()(handle, chair, fixture, smoke_placement())
+
+    assert "fixture" not in result.receipt
+    assert PAGE_WITNESS not in json.dumps(result.receipt, sort_keys=True)
+    handle.stop()
+    assert launcher.processes[0].terminate_calls == 1
+
+
 @pytest.mark.parametrize(
     "answer",
     [
@@ -3557,7 +3639,7 @@ def test_vision_smoke_call_accepts_the_exact_model_answer_and_records_identity(
         f"\nPAGE-WITNESS: {PAGE_WITNESS}",
     ],
 )
-def test_vision_smoke_call_refuses_text_outside_the_exact_witness_line(
+def test_vision_smoke_call_marks_text_outside_the_exact_witness_line_invalid(
     tmp_path: Path,
     answer: str,
 ) -> None:
@@ -3607,9 +3689,19 @@ def test_vision_smoke_call_refuses_ambiguous_whitespace_in_a_witness_token(
 
 
 @pytest.mark.parametrize("witness", ["short", " " * 40, 1234, None])
-def test_vision_smoke_call_refuses_a_witness_that_cannot_be_unguessable(witness: object) -> None:
-    with pytest.raises(ValueError, match="non-blank unguessable string"):
+def test_vision_smoke_call_refuses_a_non_string_blank_or_too_short_witness(
+    witness: object,
+) -> None:
+    with pytest.raises(ValueError, match="non-blank string"):
         VisionSmokeCall(witness)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("witness", ["\x00" * 32, "\u200b" * 32, "\u0301" * 32, "!" * 32])
+def test_vision_smoke_call_refuses_a_witness_that_is_not_a_visible_url_safe_token(
+    witness: str,
+) -> None:
+    with pytest.raises(ValueError, match="visible URL-safe ASCII"):
+        VisionSmokeCall(witness)
 
 
 def test_vision_smoke_call_refuses_a_prompt_that_carries_its_own_witness() -> None:
@@ -3655,6 +3747,49 @@ def test_vision_smoke_call_refuses_a_golden_page_that_is_not_the_declared_format
         vision_smoke()(handle, chair, fixture, smoke_placement())
 
     assert handle.fixture_requests_completed == 0
+    handle.stop()
+    assert launcher.processes[0].terminate_calls == 1
+
+
+def test_vision_smoke_call_checks_the_format_of_the_sealed_request_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A path replacement cannot make non-PNG request bytes inherit a PNG declaration."""
+
+    chair = identity("reader", "reader-v1")
+    call = vision_smoke()
+    stale_fixture = tmp_path / "before-replacement.png"
+    stale_fixture.write_bytes(b"not a PNG")
+    stale_calibration = AdapterCalibration.from_image_fixture(
+        fixture=stale_fixture,
+        prompt=call.prompt,
+        mime_type="image/png",
+    )
+    manager, _, _, launcher, _, _ = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+        ),
+        model_ids=("reader-api",),
+        outputs={"reader-api": f"PAGE-WITNESS: {PAGE_WITNESS}"},
+    )
+    fixture = tmp_path / "golden-page.png"
+    write_golden_page(fixture)
+    handle = manager.start(chair, TIER)
+    monkeypatch.setattr(
+        AdapterCalibration,
+        "from_image_fixture",
+        staticmethod(lambda **unused: stale_calibration),
+    )
+
+    with pytest.raises(ServingConfigurationError, match="is not a PNG"):
+        call(handle, chair, fixture, smoke_placement())
+
+    assert handle.requests_completed == 0
     handle.stop()
     assert launcher.processes[0].terminate_calls == 1
 
