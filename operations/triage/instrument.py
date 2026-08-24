@@ -19,7 +19,7 @@ from PIL import Image
 from common.contracts.canonical import digest_bytes, digest_of
 from common.contracts.errors import ContractError
 from common.corpus_register import _refuse_preference
-from common.imaging import encode_image_deterministic, imaging_library_versions
+from common.imaging import MAX_PIXELS, encode_image_deterministic, imaging_library_versions
 
 RECIPE_SCHEMA: Final = "triage-producer-recipe.v1"
 EVIDENCE_SCHEMA: Final = "cluster-candidate-evidence.v1"
@@ -103,7 +103,7 @@ EVIDENCE_FIELDS: Final = (
 
 
 class InstrumentRefusal(ContractError):
-    """A declared precondition that makes a pair ineligible for comparison."""
+    """A named configuration, recipe, source, or comparison contract refusal."""
 
 
 @dataclass(frozen=True)
@@ -257,10 +257,21 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> InstrumentConfig:
     """Read the producer-only declaration once and refuse undeclared tuning."""
     try:
         raw = Path(path).read_bytes()
-        record = tomllib.loads(raw.decode("utf-8"))
-    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+    except OSError as error:
         raise InstrumentRefusal(
             f"triage instrument configuration at {path} could not be read"
+        ) from error
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise InstrumentRefusal(
+            f"triage instrument configuration at {path} is not valid UTF-8"
+        ) from error
+    try:
+        record = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as error:
+        raise InstrumentRefusal(
+            f"triage instrument configuration at {path} is not valid TOML"
         ) from error
     if set(record) != {"instrument", "thresholds", "measurement_status"}:
         raise InstrumentRefusal("triage instrument configuration has the wrong closed schema")
@@ -330,6 +341,15 @@ def _axis_bounds(length: int, cells: int) -> tuple[tuple[int, int], ...]:
     return tuple(bounds)
 
 
+def _require_image_bounds(image: Image.Image) -> None:
+    if image.width <= 0 or image.height <= 0:
+        raise InstrumentRefusal("cannot build a proxy from an empty image")
+    if image.width * image.height > MAX_PIXELS:
+        raise InstrumentRefusal(
+            f"triage proxy source is past the declared {MAX_PIXELS}-pixel bound"
+        )
+
+
 def _grid(image: Image.Image, columns: int, rows: int, mean_delta: int) -> tuple[Cell, ...]:
     if image.mode != "L":
         raise InstrumentRefusal("triage grids require grayscale L pixels")
@@ -356,8 +376,7 @@ def build_proxies(
 ) -> ProxySet:
     """Make deterministic proxy PNGs and the 64×48 signature from decoded pixels."""
     _lower_sha256(source_frame_sha256, "proxy source frame digest")
-    if image.width <= 0 or image.height <= 0:
-        raise InstrumentRefusal("cannot build a proxy from an empty image")
+    _require_image_bounds(image)
     grayscale = image.convert("L")
     signature_image = _reduce_to_edge(grayscale, config.signature_max_edge)
     review_image = _reduce_to_edge(grayscale, config.review_max_edge)
@@ -391,8 +410,17 @@ def build_proxies_from_bytes(data: bytes, config: InstrumentConfig) -> ProxySet:
     """Decode source bytes once for an offline producer; masters remain untouched."""
     try:
         with Image.open(BytesIO(data)) as image:
+            _require_image_bounds(image)
             image.load()
             return build_proxies(image, source_frame_sha256=digest_bytes(data), config=config)
+    except (Image.DecompressionBombError, Image.DecompressionBombWarning) as error:
+        raise InstrumentRefusal(
+            "triage proxy source exceeds the decoder pixel safety bound"
+        ) from error
+    except MemoryError as error:
+        raise InstrumentRefusal(
+            "triage proxy decoding exhausted memory before a proxy could be built"
+        ) from error
     except (OSError, ValueError) as error:
         raise InstrumentRefusal("triage proxy source bytes could not be decoded") from error
 
@@ -414,12 +442,26 @@ def producer_recipe(config: InstrumentConfig) -> dict[str, Any]:
             "grid_columns": config.grid_columns,
             "grid_rows": config.grid_rows,
             "remainder_policy": "leading-cells-receive-one-pixel",
+            "cell_mean_rounding": "floor",
             "cell_values": ["mean_intensity", "ink_count_below_cell_mean_minus_delta"],
             "mean_delta": config.mean_delta,
         },
         "comparison_recipe": {
             "equal_dimension_precondition": "refuse",
             "offset_cells": config.offset_cells,
+            "offset_selection": (
+                "maximize agreeing-cell count, then overlap, then minimize Manhattan offset, "
+                "then prefer lower signed y and x"
+            ),
+            "disagreement_components": "four-connected cells in the left-grid overlap",
+            "per_mille_rounding": "floor",
+            "verdict_rule": (
+                "near-duplicate iff agreement reaches link threshold and either no component "
+                "exists or at most two components include a largest blob reaching blob share; "
+                "otherwise complementary-candidate iff agreement is below link threshold and "
+                "at most three components include a largest blob reaching span share; otherwise "
+                "unrelated"
+            ),
             "mean_tolerance": config.mean_tolerance,
             "ink_tolerance": config.ink_tolerance,
             "link_agreement_per_mille": config.link_agreement_per_mille,
@@ -431,6 +473,7 @@ def producer_recipe(config: InstrumentConfig) -> dict[str, Any]:
         },
         "candidate_selection_recipe": {
             "submission_window": config.submission_window,
+            "submission_window_rule": "each frame with its preceding N submission indices",
             "global_prefilter_grid": [
                 config.global_prefilter_columns,
                 config.global_prefilter_rows,
@@ -438,10 +481,12 @@ def producer_recipe(config: InstrumentConfig) -> dict[str, Any]:
             "global_prefilter_agreeing_cells": config.global_prefilter_agreeing_cells,
             "global_prefilter_mean_tolerance": config.global_prefilter_mean_tolerance,
             "global_prefilter_ink_tolerance": config.global_prefilter_ink_tolerance,
+            "global_prefilter_scope": "every unordered source-frame pair",
+            "deduplication": "union by submission-index pair before full comparison",
         },
         "imaging_library_versions": imaging_library_versions(),
         "determinism": {
-            "claim": "identical input bytes, recorded recipe, and recorded library versions produce identical bytes",
+            "claim": "identical input bytes, recorded recipe, and recorded library versions produce identical proxy bytes",
             "cross_version_claim": "NOT_CLAIMED",
             "jpeg_remeasure_failure": JPEG_REMEASURE_FAILURE,
         },
@@ -487,13 +532,20 @@ def validate_producer_recipe(record: Any) -> dict[str, Any]:
         )
     if proxy["integer_factor_rule"] != "smallest k with max(width,height)/k <= declared_max_edge":
         raise InstrumentRefusal("triage producer recipe proxy scale rule is not declared")
-    for field in ("signature_max_edge", "review_max_edge"):
-        _plain_positive_int(proxy[field], f"recipe {field}")
+    signature_max_edge = _plain_positive_int(
+        proxy["signature_max_edge"], "recipe signature_max_edge"
+    )
+    review_max_edge = _plain_positive_int(proxy["review_max_edge"], "recipe review_max_edge")
+    if signature_max_edge > review_max_edge:
+        raise InstrumentRefusal(
+            "triage producer recipe signature proxy edge exceeds its review proxy edge"
+        )
     signature = record["signature_recipe"]
     if not isinstance(signature, dict) or set(signature) != {
         "grid_columns",
         "grid_rows",
         "remainder_policy",
+        "cell_mean_rounding",
         "cell_values",
         "mean_delta",
     }:
@@ -502,9 +554,11 @@ def validate_producer_recipe(record: Any) -> dict[str, Any]:
         )
     if signature["grid_columns"] != 64 or signature["grid_rows"] != 48:
         raise InstrumentRefusal("triage producer recipe signature grid is not 64 by 48")
-    if signature["remainder_policy"] != "leading-cells-receive-one-pixel" or signature[
-        "cell_values"
-    ] != ["mean_intensity", "ink_count_below_cell_mean_minus_delta"]:
+    if (
+        signature["remainder_policy"] != "leading-cells-receive-one-pixel"
+        or signature["cell_mean_rounding"] != "floor"
+        or signature["cell_values"] != ["mean_intensity", "ink_count_below_cell_mean_minus_delta"]
+    ):
         raise InstrumentRefusal(
             "triage producer recipe signature semantics are not the declared integer grid"
         )
@@ -513,6 +567,10 @@ def validate_producer_recipe(record: Any) -> dict[str, Any]:
     if not isinstance(comparison, dict) or set(comparison) != {
         "equal_dimension_precondition",
         "offset_cells",
+        "offset_selection",
+        "disagreement_components",
+        "per_mille_rounding",
+        "verdict_rule",
         "mean_tolerance",
         "ink_tolerance",
         "link_agreement_per_mille",
@@ -527,6 +585,17 @@ def validate_producer_recipe(record: Any) -> dict[str, Any]:
         )
     if comparison["equal_dimension_precondition"] != "refuse" or comparison["offset_cells"] != 3:
         raise InstrumentRefusal("triage producer recipe comparison preconditions are not declared")
+    if (
+        comparison["offset_selection"]
+        != "maximize agreeing-cell count, then overlap, then minimize Manhattan offset, then prefer lower signed y and x"
+        or comparison["disagreement_components"] != "four-connected cells in the left-grid overlap"
+        or comparison["per_mille_rounding"] != "floor"
+        or comparison["verdict_rule"]
+        != "near-duplicate iff agreement reaches link threshold and either no component exists or at most two components include a largest blob reaching blob share; otherwise complementary-candidate iff agreement is below link threshold and at most three components include a largest blob reaching span share; otherwise unrelated"
+    ):
+        raise InstrumentRefusal(
+            "triage producer recipe comparison semantics are not the declared integer rules"
+        )
     if comparison["verdicts"] != list(_VERDICTS):
         raise InstrumentRefusal("triage producer recipe verdict vocabulary is not closed")
     if comparison["evidence_fields"] != list(EVIDENCE_FIELDS):
@@ -541,34 +610,62 @@ def validate_producer_recipe(record: Any) -> dict[str, Any]:
         raise InstrumentRefusal(
             "triage producer recipe does not carry the declared signature blindness statement"
         )
-    for field in (
-        "mean_tolerance",
-        "ink_tolerance",
-        "link_agreement_per_mille",
-        "blob_share_per_mille",
-        "span_share_per_mille",
+    comparison_values = {
+        field: _plain_positive_int(comparison[field], f"recipe {field}")
+        for field in (
+            "mean_tolerance",
+            "ink_tolerance",
+            "link_agreement_per_mille",
+            "blob_share_per_mille",
+            "span_share_per_mille",
+        )
+    }
+    if any(
+        comparison_values[field] > 1000
+        for field in (
+            "link_agreement_per_mille",
+            "blob_share_per_mille",
+            "span_share_per_mille",
+        )
     ):
-        _plain_positive_int(comparison[field], f"recipe {field}")
+        raise InstrumentRefusal("triage producer recipe per-mille thresholds exceed 1000")
     selection = record["candidate_selection_recipe"]
     if not isinstance(selection, dict) or set(selection) != {
         "submission_window",
+        "submission_window_rule",
         "global_prefilter_grid",
         "global_prefilter_agreeing_cells",
         "global_prefilter_mean_tolerance",
         "global_prefilter_ink_tolerance",
+        "global_prefilter_scope",
+        "deduplication",
     }:
         raise InstrumentRefusal(
             "triage producer recipe candidate selection has the wrong closed schema"
         )
     if selection["global_prefilter_grid"] != [4, 4]:
         raise InstrumentRefusal("triage producer recipe global prefilter is not 16 cells")
-    for field in (
-        "submission_window",
-        "global_prefilter_agreeing_cells",
-        "global_prefilter_mean_tolerance",
-        "global_prefilter_ink_tolerance",
+    if (
+        selection["submission_window_rule"] != "each frame with its preceding N submission indices"
+        or selection["global_prefilter_scope"] != "every unordered source-frame pair"
+        or selection["deduplication"] != "union by submission-index pair before full comparison"
     ):
-        _plain_positive_int(selection[field], f"recipe {field}")
+        raise InstrumentRefusal(
+            "triage producer recipe candidate selection semantics are not declared"
+        )
+    selection_values = {
+        field: _plain_positive_int(selection[field], f"recipe {field}")
+        for field in (
+            "submission_window",
+            "global_prefilter_agreeing_cells",
+            "global_prefilter_mean_tolerance",
+            "global_prefilter_ink_tolerance",
+        )
+    }
+    if selection_values["global_prefilter_agreeing_cells"] > 16:
+        raise InstrumentRefusal(
+            "triage producer recipe global prefilter requires more than its 16 cells"
+        )
     versions = record["imaging_library_versions"]
     if (
         not isinstance(versions, dict)
@@ -594,7 +691,7 @@ def validate_producer_recipe(record: Any) -> dict[str, Any]:
             "jpeg_remeasure_failure",
         }
         or determinism["claim"]
-        != "identical input bytes, recorded recipe, and recorded library versions produce identical bytes"
+        != "identical input bytes, recorded recipe, and recorded library versions produce identical proxy bytes"
         or determinism["cross_version_claim"] != "NOT_CLAIMED"
         or determinism["jpeg_remeasure_failure"] != JPEG_REMEASURE_FAILURE
     ):
@@ -618,6 +715,11 @@ def _cell_agrees(left: Cell, right: Cell, config: InstrumentConfig) -> bool:
         abs(left.mean_intensity - right.mean_intensity) <= config.mean_tolerance
         and abs(left.ink_count - right.ink_count) <= config.ink_tolerance
     )
+
+
+def _require_cells(cells: Sequence[Cell], expected: int, what: str) -> None:
+    if len(cells) != expected or any(not isinstance(cell, Cell) for cell in cells):
+        raise InstrumentRefusal(f"{what} must carry exactly {expected} declared mean-and-ink cells")
 
 
 def _overlap_pairs(
@@ -748,22 +850,80 @@ def validate_candidate_evidence(record: Any, config: InstrumentConfig) -> dict[s
         for field in integer_fields
     ):
         raise InstrumentRefusal("candidate evidence measures must be non-negative integers")
+    expected_overlap = (config.grid_columns - abs(offset["x"])) * (
+        config.grid_rows - abs(offset["y"])
+    )
+    overlapping = record["overlapping_cells"]
+    agreeing = record["agreeing_cells"]
+    components = record["disagreeing_component_count"]
+    largest_share = record["largest_component_share"]
     if (
-        record["overlapping_cells"] == 0
-        or record["agreeing_cells"] > record["overlapping_cells"]
-        or record["disagreeing_component_count"] > record["overlapping_cells"]
-        or record["largest_component_share"] > 1000
+        overlapping != expected_overlap
+        or agreeing > overlapping
+        or largest_share > 1000
         or record["ink_count_distance_per_mille"] > 1000
+        or (
+            record["ink_count_total_left"] + record["ink_count_total_right"] == 0
+            and record["ink_count_distance_per_mille"] != 0
+        )
     ):
         raise InstrumentRefusal("candidate evidence integer measures are internally inconsistent")
+    disagreements = overlapping - agreeing
+    if disagreements == 0:
+        inconsistent_components = components != 0 or largest_share != 0
+    else:
+        minimum_largest = (disagreements + components - 1) // components if components else 0
+        inconsistent_components = (
+            not 1 <= components <= disagreements
+            or largest_share > disagreements * 1000 // overlapping
+            or largest_share < minimum_largest * 1000 // overlapping
+        )
+    if inconsistent_components:
+        raise InstrumentRefusal("candidate evidence component measures are internally inconsistent")
     if record.get("verdict") not in _VERDICTS:
         raise InstrumentRefusal("candidate evidence verdict is outside the named enum")
+    expected_verdict = _verdict_for_metrics(
+        agreeing,
+        overlapping,
+        components,
+        largest_share,
+        config,
+    )
+    if record["verdict"] != expected_verdict:
+        raise InstrumentRefusal(
+            "candidate evidence verdict contradicts its recorded integer measures"
+        )
     if record.get("thresholds") != config.thresholds_record():
         raise InstrumentRefusal(
             "candidate evidence thresholds, reasons, or measurement status do not match its configuration"
         )
     _refuse_preference(record)
     return record
+
+
+def _verdict_for_metrics(
+    agreeing: int,
+    overlapping: int,
+    components: int,
+    largest_share: int,
+    config: InstrumentConfig,
+) -> str:
+    agreement_reaches_link = agreeing * 1000 >= config.link_agreement_per_mille * overlapping
+    near_duplicate = agreement_reaches_link and (
+        components == 0 or (components <= 2 and largest_share >= config.blob_share_per_mille)
+    )
+    complementary = (
+        not agreement_reaches_link
+        and components <= 3
+        and largest_share >= config.span_share_per_mille
+    )
+    return (
+        "near-duplicate"
+        if near_duplicate
+        else "complementary-candidate"
+        if complementary
+        else "unrelated"
+    )
 
 
 def compare_signatures(
@@ -774,6 +934,9 @@ def compare_signatures(
         raise InstrumentRefusal(
             "candidate frames have unequal dimensions; deterministic co-visibility comparison refuses"
         )
+    expected_cells = config.grid_columns * config.grid_rows
+    _require_cells(left.cells, expected_cells, "candidate left signature")
+    _require_cells(right.cells, expected_cells, "candidate right signature")
     pair = _canonical_pair(left.source_frame_sha256, right.source_frame_sha256)
     # Pair identity is unordered. Canonicalizing the operands makes the signed
     # offset and left/right ink totals stable too, rather than letting submission
@@ -795,21 +958,12 @@ def compare_signatures(
     agreeing = sum(agrees for agrees, _x, _y in pairs)
     components, largest = _components((x, y) for agrees, x, y in pairs if not agrees)
     largest_share = largest * 1000 // overlapping
-    agreement_reaches_link = agreeing * 1000 >= config.link_agreement_per_mille * overlapping
-    near_duplicate = agreement_reaches_link and (
-        components == 0 or (components <= 2 and largest_share >= config.blob_share_per_mille)
-    )
-    complementary = (
-        not agreement_reaches_link
-        and components <= 3
-        and largest_share >= config.span_share_per_mille
-    )
-    verdict = (
-        "near-duplicate"
-        if near_duplicate
-        else "complementary-candidate"
-        if complementary
-        else "unrelated"
+    verdict = _verdict_for_metrics(
+        agreeing,
+        overlapping,
+        components,
+        largest_share,
+        config,
     )
     ink_left, ink_right, ink_disparity = _ink_overlap(left, right, offset_x, offset_y, config)
     record = {
@@ -867,6 +1021,9 @@ def select_candidate_pairs(
     subquadratic.  Full 64×48 comparisons run only for the deduplicated pair set.
     """
     _require_unique_frame_digests(signatures)
+    expected_coarse_cells = config.global_prefilter_columns * config.global_prefilter_rows
+    for signature in signatures:
+        _require_cells(signature.coarse_cells, expected_coarse_cells, "candidate coarse signature")
     pairs: set[tuple[int, int]] = set()
     refused: set[tuple[int, int]] = set()
     window_pairs = 0
@@ -931,6 +1088,11 @@ def evidence_manifest(
         raise InstrumentRefusal(
             "candidate pass repeats a proxy source frame digest, so pair identity is ambiguous"
         )
+    expected_selection = select_candidate_pairs([proxy.signature for proxy in proxies], config)
+    if selection != expected_selection:
+        raise InstrumentRefusal(
+            "candidate selection does not match the complete selection recomputed from this pass"
+        )
     if selection.cost.unique_candidate_pairs != len(
         selection.pairs
     ) or selection.cost.dimension_refused_pairs != len(selection.dimension_refused):
@@ -958,6 +1120,16 @@ def evidence_manifest(
             "candidate evidence does not account for every selected pair: "
             f"{len(emitted)} records for {selection.cost.unique_candidate_pairs} selected pairs"
         )
+    expected_evidence = [
+        compare_signatures(proxies[left].signature, proxies[right].signature, config)
+        for left, right in selection.pairs
+    ]
+    actual_by_pair = {tuple(record["both_digests"]): record for record in validated_evidence}
+    expected_by_pair = {tuple(record["both_digests"]): record for record in expected_evidence}
+    if actual_by_pair != expected_by_pair:
+        raise InstrumentRefusal(
+            "candidate evidence measures do not match the records recomputed from this pass"
+        )
     record = {
         "schema": EVIDENCE_MANIFEST_SCHEMA,
         "instrument_config_sha256": config.source_sha256,
@@ -966,6 +1138,9 @@ def evidence_manifest(
         "candidate_cost": selection.cost.to_record(),
         "emitted_evidence_records": len(emitted),
         "emitted_pairs_sha256": digest_of(sorted(list(pair) for pair in emitted)),
+        "evidence_records_sha256": digest_of(
+            sorted(validated_evidence, key=lambda item: tuple(item["both_digests"]))
+        ),
         "dimension_refused_pairs": [
             list(
                 _canonical_pair(

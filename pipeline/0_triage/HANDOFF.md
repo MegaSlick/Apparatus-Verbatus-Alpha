@@ -167,7 +167,9 @@ it never promotes a verdict by itself.
 One pass accepts each source-frame digest exactly once. Pair identity is the sorted pair of
 distinct source digests, regardless of submission order. The evidence manifest closes over
 exact pair multiplicities, names every unequal-dimension refusal by digest, and carries the
-frame set and instrument configuration that produced it. A duplicate frame digest, a
+frame set and instrument configuration that produced it. It binds a digest of the complete
+validated evidence-record contents as well as the pair set, so the pass detects both a
+missing pair and changed evidence for a retained pair. A duplicate frame digest, a
 duplicate emitted pair, a missing selected pair, or an evidence/recipe configuration mismatch
 is a whole-pass refusal. `_refuse_preference` remains mandatory on the recipe, every evidence
 record, the evidence manifest, confirmations, decision-manifest rows, cluster records, and

@@ -54,6 +54,43 @@ def test_proxy_bytes_are_idempotent_and_the_checked_in_png_digest_is_pinned():
     assert first.signature_png_sha256 == digest_bytes(first.signature_png)
 
 
+def test_proxy_decode_refuses_before_loading_past_the_declared_pixel_bound(monkeypatch):
+    config = instrument.load_config()
+    monkeypatch.setattr(instrument, "MAX_PIXELS", 3)
+    source = png_bytes(Image.new("L", (2, 2), 220))
+    with pytest.raises(instrument.InstrumentRefusal, match="3-pixel bound"):
+        instrument.build_proxies_from_bytes(source, config)
+
+
+@pytest.mark.parametrize(
+    ("failure", "reason"),
+    [
+        (Image.DecompressionBombError("synthetic bomb"), "decoder pixel safety bound"),
+        (MemoryError("synthetic exhaustion"), "exhausted memory"),
+    ],
+)
+def test_proxy_decode_names_resource_failures(monkeypatch, failure, reason):
+    config = instrument.load_config()
+
+    def fail_open(_source):
+        raise failure
+
+    monkeypatch.setattr(instrument.Image, "open", fail_open)
+    with pytest.raises(instrument.InstrumentRefusal, match=reason):
+        instrument.build_proxies_from_bytes(b"synthetic", config)
+
+
+@pytest.mark.parametrize(
+    ("content", "reason"),
+    [(b"\xff", "valid UTF-8"), (b"not = valid = toml", "valid TOML")],
+)
+def test_configuration_parse_refusals_name_the_actual_format_failure(tmp_path, content, reason):
+    config_path = tmp_path / "instrument.toml"
+    config_path.write_bytes(content)
+    with pytest.raises(instrument.InstrumentRefusal, match=reason):
+        instrument.load_config(config_path)
+
+
 def test_jpeg_recipe_records_versions_and_requires_remeasurement_across_versions():
     config = instrument.load_config()
     jpeg = BytesIO()
@@ -208,6 +245,30 @@ def test_unequal_dimensions_are_a_declared_comparison_refusal():
     )
     with pytest.raises(instrument.InstrumentRefusal, match="unequal dimensions"):
         instrument.compare_signatures(one.signature, two.signature, config)
+
+
+def test_malformed_signature_lengths_are_named_refusals_not_index_or_zip_errors():
+    config = instrument.load_config()
+    one = instrument.build_proxies(synthetic_page(), source_frame_sha256="a" * 64, config=config)
+    two = instrument.build_proxies(synthetic_page(), source_frame_sha256="b" * 64, config=config)
+    short_cells = instrument.SignatureGrid(
+        source_frame_sha256=one.signature.source_frame_sha256,
+        frame_size=one.signature.frame_size,
+        proxy_size=one.signature.proxy_size,
+        cells=one.signature.cells[:-1],
+        coarse_cells=one.signature.coarse_cells,
+    )
+    with pytest.raises(instrument.InstrumentRefusal, match="left signature must carry exactly"):
+        instrument.compare_signatures(short_cells, two.signature, config)
+    short_coarse = instrument.SignatureGrid(
+        source_frame_sha256=one.signature.source_frame_sha256,
+        frame_size=one.signature.frame_size,
+        proxy_size=one.signature.proxy_size,
+        cells=one.signature.cells,
+        coarse_cells=one.signature.coarse_cells[:-1],
+    )
+    with pytest.raises(instrument.InstrumentRefusal, match="coarse signature must carry exactly"):
+        instrument.select_candidate_pairs([short_coarse, two.signature], config)
 
 
 def test_every_produced_record_runs_through_the_shared_preference_refusal(monkeypatch):
@@ -400,6 +461,27 @@ def test_the_sealed_recipe_states_what_the_signature_cannot_separate():
         instrument.validate_producer_recipe(dropped)
 
 
+@pytest.mark.parametrize(
+    ("section", "field"),
+    [
+        ("signature_recipe", "cell_mean_rounding"),
+        ("comparison_recipe", "offset_selection"),
+        ("comparison_recipe", "disagreement_components"),
+        ("comparison_recipe", "per_mille_rounding"),
+        ("comparison_recipe", "verdict_rule"),
+        ("candidate_selection_recipe", "submission_window_rule"),
+        ("candidate_selection_recipe", "global_prefilter_scope"),
+        ("candidate_selection_recipe", "deduplication"),
+    ],
+)
+def test_the_sealed_recipe_refuses_changed_reproduction_semantics(section, field):
+    config = instrument.load_config()
+    recipe = json.loads(json.dumps(instrument.producer_recipe(config)))
+    recipe[section][field] = "different algorithm"
+    with pytest.raises(instrument.InstrumentRefusal, match="semantics|integer grid"):
+        instrument.validate_producer_recipe(recipe)
+
+
 def test_evidence_itself_declares_that_its_thresholds_are_unmeasured():
     config = instrument.load_config()
     evidence = verdict_for(ruled_form(), ruled_form(), config)
@@ -415,6 +497,29 @@ def test_recipe_validation_refuses_a_strengthened_determinism_claim():
         instrument.validate_producer_recipe(overstated)
 
 
+@pytest.mark.parametrize(
+    ("section", "field", "value", "reason"),
+    [
+        ("proxy_recipe", "signature_max_edge", 4096, "signature proxy edge"),
+        ("comparison_recipe", "link_agreement_per_mille", 1001, "per-mille"),
+        (
+            "candidate_selection_recipe",
+            "global_prefilter_agreeing_cells",
+            17,
+            "more than its 16 cells",
+        ),
+    ],
+)
+def test_recipe_validation_refuses_values_its_source_configuration_cannot_load(
+    section, field, value, reason
+):
+    config = instrument.load_config()
+    recipe = json.loads(json.dumps(instrument.producer_recipe(config)))
+    recipe[section][field] = value
+    with pytest.raises(instrument.InstrumentRefusal, match=reason):
+        instrument.validate_producer_recipe(recipe)
+
+
 def test_persisted_evidence_refuses_non_integer_measures_and_non_enum_verdicts():
     config = instrument.load_config()
     evidence = verdict_for(ruled_form(), ruled_form(), config)
@@ -426,6 +531,23 @@ def test_persisted_evidence_refuses_non_integer_measures_and_non_enum_verdicts()
     linked["verdict"] = "same-page-link"
     with pytest.raises(instrument.InstrumentRefusal, match="named enum"):
         instrument.validate_candidate_evidence(linked, config)
+
+
+def test_persisted_evidence_refuses_a_valid_enum_that_contradicts_its_measures():
+    config = instrument.load_config()
+    evidence = verdict_for(ruled_form(), ruled_form(), config)
+    evidence["verdict"] = "unrelated"
+    with pytest.raises(instrument.InstrumentRefusal, match="contradicts its recorded"):
+        instrument.validate_candidate_evidence(evidence, config)
+
+
+def test_persisted_evidence_refuses_an_overlap_impossible_for_its_offset():
+    config = instrument.load_config()
+    evidence = verdict_for(ruled_form(), ruled_form(), config)
+    evidence["agreeing_cells"] -= 1
+    evidence["overlapping_cells"] -= 1
+    with pytest.raises(instrument.InstrumentRefusal, match="internally inconsistent"):
+        instrument.validate_candidate_evidence(evidence, config)
 
 
 def test_persisted_evidence_cannot_drop_its_reason_or_unmeasured_status():
@@ -516,6 +638,46 @@ def test_a_dropped_evidence_record_is_refused_by_name_not_silently_shorter():
         ]
         == 6
     )
+
+
+def test_a_caller_supplied_subset_cannot_redefine_the_pass_denominator():
+    config = instrument.load_config()
+    proxies = frames(*[(256, 192)] * 4)
+    complete = instrument.select_candidate_pairs([proxy.signature for proxy in proxies], config)
+    subset = instrument.CandidateSelection(
+        pairs=complete.pairs[:1],
+        dimension_refused=(),
+        cost=instrument.CandidateCost(
+            submission_window_pairs=1,
+            coarse_pairs_examined=0,
+            global_prefilter_passes=0,
+            unique_candidate_pairs=1,
+            dimension_refused_pairs=0,
+        ),
+    )
+    evidence = [
+        instrument.compare_signatures(proxies[left].signature, proxies[right].signature, config)
+        for left, right in subset.pairs
+    ]
+    with pytest.raises(instrument.InstrumentRefusal, match="complete selection recomputed"):
+        instrument.evidence_manifest(proxies, subset, evidence, config)
+
+
+def test_the_pass_manifest_binds_evidence_contents_not_only_pair_identities():
+    config = instrument.load_config()
+    proxies = frames((256, 192), (256, 192))
+    selection = instrument.select_candidate_pairs([proxy.signature for proxy in proxies], config)
+    evidence = [
+        instrument.compare_signatures(proxies[left].signature, proxies[right].signature, config)
+        for left, right in selection.pairs
+    ]
+    original = instrument.evidence_manifest(proxies, selection, evidence, config)
+    assert original["evidence_records_sha256"] == digest_of(evidence)
+    changed = json.loads(json.dumps(evidence))
+    changed[0]["ink_count_total_left"] += 1
+    assert original["evidence_records_sha256"] != digest_of(changed)
+    with pytest.raises(instrument.InstrumentRefusal, match="records recomputed from this pass"):
+        instrument.evidence_manifest(proxies, selection, changed, config)
 
 
 def test_a_pair_refused_for_unequal_dimensions_is_named_not_dropped():

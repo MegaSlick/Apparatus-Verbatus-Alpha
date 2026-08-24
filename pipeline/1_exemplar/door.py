@@ -246,23 +246,28 @@ def load_triage_decisions(
     run tree's write-once artifacts. Digested from the same bytes that were
     parsed, because two reads can straddle a rewrite.
     """
-    try:
-        manifest_bytes = Path(manifest_path).read_bytes()
-        document = json.loads(manifest_bytes.decode("utf-8"))
-        clusters_bytes = Path(clusters_path).read_bytes() if clusters_path is not None else None
-        clusters_document = (
-            json.loads(clusters_bytes.decode("utf-8")) if clusters_bytes is not None else None
+
+    def read_document(path: str | Path, label: str) -> tuple[bytes, Any]:
+        try:
+            raw = Path(path).read_bytes()
+        except OSError as error:
+            raise ContractError(f"the {label} could not be read") from error
+        try:
+            return raw, json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError) as error:
+            raise ContractError(f"the {label} is not valid UTF-8 JSON") from error
+
+    manifest_bytes, document = read_document(manifest_path, "triage decision manifest")
+    if clusters_path is not None:
+        clusters_bytes, clusters_document = read_document(clusters_path, "triage cluster records")
+    else:
+        clusters_bytes = clusters_document = None
+    if producer_recipe_path is not None:
+        recipe_bytes, recipe_document = read_document(
+            producer_recipe_path, "triage producer recipe"
         )
-        recipe_bytes = (
-            Path(producer_recipe_path).read_bytes() if producer_recipe_path is not None else None
-        )
-        recipe_document = (
-            json.loads(recipe_bytes.decode("utf-8")) if recipe_bytes is not None else None
-        )
-    except (OSError, UnicodeDecodeError, ValueError) as error:
-        raise ContractError(
-            "the triage decision manifest, cluster records, or producer recipe could not be read"
-        ) from error
+    else:
+        recipe_bytes = recipe_document = None
     digests = {"triage-decision-manifest": digest_bytes(manifest_bytes)}
     if clusters_bytes is not None:
         digests["triage-re-shoot-clusters"] = digest_bytes(clusters_bytes)

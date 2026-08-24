@@ -868,8 +868,22 @@ def test_a_missing_triage_producer_recipe_path_is_a_named_read_refusal(tmp_path)
         encoding="utf-8",
     )
     missing = tmp_path / "nonexistent-recipe.json"
-    with pytest.raises(ContractError, match="producer recipe could not be read"):
+    with pytest.raises(ContractError, match="^the triage producer recipe could not be read$"):
         door.load_triage_decisions(manifest_path, producer_recipe_path=missing)
+
+
+def test_a_non_json_triage_producer_recipe_names_its_exact_parse_failure(tmp_path):
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {"schema": door.triage_manifest.MANIFEST_SCHEMA, "corpus_id": "parish-a", "records": []}
+        ),
+        encoding="utf-8",
+    )
+    bad_recipe = tmp_path / "recipe.json"
+    bad_recipe.write_text("not JSON", encoding="utf-8")
+    with pytest.raises(ContractError, match="^the triage producer recipe is not valid UTF-8 JSON$"):
+        door.load_triage_decisions(manifest_path, producer_recipe_path=bad_recipe)
 
 
 def test_a_malformed_triage_producer_recipe_is_refused_by_name(tmp_path):

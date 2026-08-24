@@ -247,6 +247,8 @@ reader holding the frame digests and the recipe can recompute the selection and 
 pair the pass failed to emit, instead of taking a shorter list at face value. Frame source
 digests are unique within one pass and each pair is canonical by sorted digest; duplicate
 frame identity is refused before index pairs can masquerade as distinct evidence pairs.
+The manifest binds both the canonical pair set and the complete validated evidence-record
+contents, so changing a verdict or measure without changing the pass manifest is detectable.
 
 `hard-failure` is the family's fourth member and the last to be sealed. It is the one
 policy the orchestrator must read *before* the run exists — the tally threshold has to
