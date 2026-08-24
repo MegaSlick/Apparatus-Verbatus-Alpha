@@ -236,6 +236,26 @@ def physical_act_id(physical_page: str, mint_designation: str) -> str:
     return derive("physical-act", physical_act_bindings(physical_page, mint_designation))
 
 
+def physical_act_component_designation(physical_page: str, local_act_ids: list[str]) -> str:
+    """The order-independent designation for an initially discovered physical act.
+
+    A correspondence component is a set.  In particular its first encountered
+    local proposal is not evidence that it is more authoritative than another
+    member, so callers may not use a capture order or a representative act as
+    the mint input.
+    """
+    if not isinstance(physical_page, str) or not physical_page.startswith("ppg_"):
+        raise IdentityRefusal("physical-act component designation requires a physical page id")
+    if (
+        not isinstance(local_act_ids, list)
+        or not local_act_ids
+        or local_act_ids != sorted(set(local_act_ids))
+        or not all(isinstance(item, str) and item.startswith("act_") for item in local_act_ids)
+    ):
+        raise IdentityRefusal("physical-act component designation requires sorted unique act ids")
+    return digest_of({"physical_page_id": physical_page, "initial_local_act_ids": local_act_ids})
+
+
 def region_bindings(act: str, transform: Any) -> dict[str, Any]:
     """A region is one act seen through one exact, reproducible transform.
 
