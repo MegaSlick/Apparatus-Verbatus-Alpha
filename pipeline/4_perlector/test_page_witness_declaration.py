@@ -73,8 +73,11 @@ def test_no_page_scoped_occupant_is_a_valid_empty_declaration():
     ),
 )
 def test_a_scope_roster_that_is_not_a_list_of_chair_names_is_refused(roster):
-    with pytest.raises(SchemaRefusal, match="unique list of chair names"):
+    with pytest.raises(SchemaRefusal, match="unique list of chair names") as caught:
         perlector.declared_page_witness_chairs(_context(roster))
+    message = str(caught.value)
+    assert "Page-witness scope cannot be derived" in message
+    assert "Start a new run" in message
 
 
 def test_a_duplicate_scope_chair_is_refused():

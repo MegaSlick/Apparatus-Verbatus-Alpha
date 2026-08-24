@@ -79,7 +79,7 @@ def test_an_unknown_page_witness_chair_is_refused_not_dropped_from_the_join():
     """A declared typo is evidence of a missing witness, not an empty intersection."""
     context = _scope_context(["attestator_33"])
 
-    with pytest.raises(SchemaRefusal, match="absent from models.toml"):
+    with pytest.raises(SchemaRefusal, match="absent from the current models configuration"):
         attestatores.publish_page_testimonia_and_attachments(
             context, acts=[], ordinal=1, attempts_by_pair={}, regions_by_act={}
         )
@@ -94,7 +94,7 @@ def test_an_unknown_page_witness_chair_is_refused_by_the_shared_accessor_itself(
     write paths unrefused before the join ever runs."""
     context = _scope_context(["attestator_33"])
 
-    with pytest.raises(SchemaRefusal, match="absent from models.toml"):
+    with pytest.raises(SchemaRefusal, match="absent from the current models configuration"):
         attestatores.declared_page_witness_chairs(context)
 
 
@@ -110,6 +110,8 @@ def test_the_roster_refusal_names_the_roster_and_not_only_the_offender():
     message = str(caught.value)
     assert "attestator_33" in message
     assert "attestator_1" in message and "attestator_3" in message
+    assert "do not describe the same witness set" in message
+    assert "start a new run; do not edit sealed evidence" in message
 
 
 @pytest.mark.parametrize(
@@ -180,7 +182,7 @@ def test_no_testimonium_is_sealed_before_the_declaration_is_validated():
         publish=lambda **kwargs: published.append(kwargs),
     )
 
-    with pytest.raises(SchemaRefusal, match="absent from models.toml"):
+    with pytest.raises(SchemaRefusal, match="absent from the current models configuration"):
         attestatores.publish_attempt(
             context,
             act={"act_id": "act_0123456789abcdef", "act_key": "1-1"},

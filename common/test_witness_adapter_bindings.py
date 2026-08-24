@@ -30,21 +30,31 @@ def _with_witness(**changes: object) -> ModelsConfig:
 
 
 def test_a_configured_witness_without_an_adapter_refuses_by_chair_before_a_run_exists():
-    with pytest.raises(ContractError, match="chair 'attestator_1' has no witness_adapter"):
+    with pytest.raises(
+        ContractError, match="chair 'attestator_1' has no witness_adapter"
+    ) as caught:
         run_config_bindings(
             _with_witness(witness_adapter=None, witness_scope=None),
             load_fixture(str(ROOT / "proof")),
             "happy",
         )
+    message = str(caught.value)
+    assert "no native boundary to run" in message
+    assert "Add witness_adapter and witness_scope" in message
 
 
 def test_an_unknown_adapter_name_refuses_at_run_binding_by_that_name():
-    with pytest.raises(ContractError, match="witness adapter 'not-an-adapter' is not declared"):
+    with pytest.raises(
+        ContractError, match="witness adapter 'not-an-adapter' is not declared"
+    ) as caught:
         run_config_bindings(
             _with_witness(witness_adapter="not-an-adapter"),
             load_fixture(str(ROOT / "proof")),
             "happy",
         )
+    message = str(caught.value)
+    assert "No adapter code can run for its chair" in message
+    assert "add the new shared declaration and runnable binding together" in message
 
 
 def test_a_known_adapter_name_with_no_configured_occupant_is_reported(monkeypatch, capsys):
@@ -117,8 +127,11 @@ def test_bad_witness_scope_is_refused_by_the_closed_models_schema(scope):
             }
         },
     }
-    with pytest.raises(ContractError, match="witness_scope must be exactly 'page' or 'act'"):
+    with pytest.raises(ContractError, match="invalid witness_scope") as caught:
         parse_models_config(raw)
+    message = str(caught.value)
+    assert "cannot determine whether it runs once per page or once per act" in message
+    assert "Set witness_scope to exactly 'page' or 'act'" in message
 
 
 def test_two_chairs_may_share_one_adapter_at_different_scopes():
@@ -171,8 +184,11 @@ def test_a_non_witness_chair_may_not_declare_a_witness_boundary(rows):
             }
         },
     }
-    with pytest.raises(ContractError, match="belong to an Attestator chair only"):
+    with pytest.raises(ContractError, match="non-Attestator chair") as caught:
         parse_models_config(raw)
+    message = str(caught.value)
+    assert "never invokes a native witness boundary" in message
+    assert "Remove both fields or move them" in message
 
 
 def test_the_live_roster_declares_the_rows_on_witness_chairs_and_nowhere_else():

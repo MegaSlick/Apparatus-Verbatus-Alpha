@@ -75,11 +75,31 @@ class RunnableAdapter:
     retain: Callable[..., Any]
 
 
+def _retain_churro_model_view(
+    tree: Any,
+    *,
+    view: dict[str, Any],
+    raw_response: bytes,
+    transport_stop_reason: str,
+    parser: str | None = None,
+) -> dict[str, Any]:
+    """Retain one Churro view without letting its registry identity be relabeled."""
+
+    return feeding.retain_model_view(
+        tree,
+        adapter="churro.v1",
+        view=view,
+        raw_response=raw_response,
+        transport_stop_reason=transport_stop_reason,
+        parser=parser,
+    )
+
+
 RUNNABLE_ADAPTERS: Final[dict[str, RunnableAdapter]] = {
     "churro.v1": RunnableAdapter(
         prompt=feeding.churro_prompt,
         parse=feeding.validate_churro_xml,
-        retain=feeding.retain_model_view,
+        retain=_retain_churro_model_view,
     )
 }
 
@@ -91,7 +111,12 @@ def resolve_runnable_adapter(name: object) -> RunnableAdapter:
     try:
         return RUNNABLE_ADAPTERS[resolved]
     except KeyError as error:
-        raise AdapterRefusal(name, "has no runnable Attestatores adapter") from error
+        raise AdapterRefusal(
+            name,
+            "has no runnable Attestatores binding",
+            "Its shared declaration cannot execute at the native witness boundary",
+            "Add the same exact name to RUNNABLE_ADAPTERS before retrying",
+        ) from error
 
 
 def validate_runnable_adapter_bindings(models: ModelsConfig) -> None:

@@ -186,16 +186,24 @@ def _parse_chair(role: str, values: Any) -> ChairIdentity | AbsentChair:
     if not is_witness_role(role) and (witness_adapter is not None or witness_scope is not None):
         raise ConfigurationRefusal(
             role,
-            "witness_adapter/witness_scope belong to an Attestator chair only; "
-            "no other role is shown a witness's native boundary",
+            "declares witness_adapter or witness_scope on a non-Attestator chair. This role "
+            "never invokes a native witness boundary. Remove both fields or move them to the "
+            "intended [chairs.attestator_*] table",
         )
     if witness_adapter is None and witness_scope is not None:
-        raise ConfigurationRefusal(role, "witness_scope is forbidden without witness_adapter")
+        raise ConfigurationRefusal(
+            role,
+            "declares witness_scope without witness_adapter. Scope alone names no runnable "
+            "native boundary. Add the exact witness_adapter name or remove witness_scope",
+        )
     if witness_adapter is not None:
         witness_adapter = _text(role, "witness_adapter", witness_adapter)
         if witness_scope not in ("page", "act"):
             raise ConfigurationRefusal(
-                role, "witness_scope must be exactly 'page' or 'act' when witness_adapter is set"
+                role,
+                f"declares invalid witness_scope {witness_scope!r}. The adapter cannot determine "
+                "whether it runs once per page or once per act. Set witness_scope to exactly "
+                "'page' or 'act'",
             )
 
     return ChairIdentity(

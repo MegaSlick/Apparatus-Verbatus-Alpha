@@ -1173,7 +1173,7 @@ def load_fixture(fixture_root: str) -> dict[str, Any]:
         raise ContractError(f"{path} declares no pages or no acts")
     if "page_witness_chairs" in fixture:
         raise ContractError(
-            f"{path} declares page_witness_chairs, a key retired to config/models.toml's "
+            f"{path} declares page_witness_chairs, a key retired to the models configuration's "
             "witness_scope. A stale fixture carrying it would be silently ignored rather "
             "than honoured; remove the key so the sealed roster is the only source of scope."
         )

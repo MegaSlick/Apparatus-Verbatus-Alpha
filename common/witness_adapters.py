@@ -21,18 +21,38 @@ KNOWN_WITNESS_ADAPTER_NAMES: Final = frozenset({"churro.v1"})
 class AdapterRefusal(SchemaRefusal):
     """A configured witness adapter name has no declared shared binding."""
 
-    def __init__(self, name: object, reason: str):
+    def __init__(self, name: object, happened: str, meaning: str, next_step: str):
         self.name = name
-        super().__init__(f"witness adapter {name!r} {reason}")
+        if isinstance(name, str) or name is None:
+            display = repr(name)
+        else:
+            # A non-string is refused for its type, before its representation is
+            # trusted.  In particular, repr(10**5000) raises under Python's
+            # integer-rendering safety limit, and an object's custom __repr__
+            # can raise anything at all.  Neither may replace the named refusal.
+            display = f"<{type(name).__name__}>"
+        super().__init__(f"witness adapter {display} {happened}. {meaning}. {next_step}")
 
 
 def resolve_witness_adapter_name(name: object) -> str:
     """Require one exact declared adapter name, never a default or near match."""
 
     if not isinstance(name, str) or not name.strip():
-        raise AdapterRefusal(name, "is blank or not a string")
+        raise AdapterRefusal(
+            name,
+            "is blank or not a string",
+            "No exact adapter can be resolved for its chair",
+            f"Set witness_adapter in the models configuration to one of "
+            f"{sorted(KNOWN_WITNESS_ADAPTER_NAMES)!r}",
+        )
     if name not in KNOWN_WITNESS_ADAPTER_NAMES:
-        raise AdapterRefusal(name, "is not declared")
+        raise AdapterRefusal(
+            name,
+            "is not declared",
+            "No adapter code can run for its chair",
+            f"Set witness_adapter to one of {sorted(KNOWN_WITNESS_ADAPTER_NAMES)!r}, or add "
+            "the new shared declaration and runnable binding together before retrying",
+        )
     return name
 
 
@@ -53,12 +73,15 @@ def validate_witness_adapter_bindings(models: ModelsConfig) -> None:
             continue
         if identity.witness_adapter is None:
             raise ContractError(
-                f"chair {chair!r} has no witness_adapter; a configured witness has no "
-                "native boundary to run"
+                f"chair {chair!r} has no witness_adapter. Its configured occupant has no native "
+                "boundary to run. Add witness_adapter and witness_scope to that chair in "
+                "the models configuration before starting a run"
             )
         if identity.witness_scope not in WITNESS_SCOPES:
             raise ContractError(
-                f"chair {chair!r} has invalid witness_scope {identity.witness_scope!r}"
+                f"chair {chair!r} has invalid witness_scope {identity.witness_scope!r}. Its "
+                "adapter cannot determine whether to run per page or per act. Set witness_scope "
+                "to exactly 'page' or 'act' before starting a run"
             )
         declared.add(resolve_witness_adapter_name(identity.witness_adapter))
 

@@ -1469,13 +1469,20 @@ def declared_page_witness_chairs(context) -> set[str]:
         or any(not isinstance(chair, str) for chair in roster)
         or len(roster) != len(set(roster))
     ):
-        raise SchemaRefusal("the sealed witness roster is not a unique list of chair names")
+        raise SchemaRefusal(
+            "the sealed witness roster is not a unique list of chair names. Page-witness scope "
+            "cannot be derived from this run authority. Start a new run from the sealed models "
+            "configuration; do not edit the existing run"
+        )
     configured = context.registry.config.chairs
     unknown = set(roster) - set(configured)
     if unknown:
         raise SchemaRefusal(
-            "the sealed witness roster names chair(s) absent from models.toml: "
-            f"{sorted(unknown)} not in {sorted(configured)}"
+            "the sealed witness roster names chair(s) absent from the current models "
+            "configuration: "
+            f"{sorted(unknown)} not in {sorted(configured)}. The run authority and current models "
+            "configuration do not describe the same witness set. Reopen the run with its original "
+            "models configuration or start a new run; do not edit sealed evidence"
         )
     return {
         chair
