@@ -95,7 +95,9 @@ an opaque operation string.
 
 `observed` is the witness-order list of integer sealed-page boxes, each with a
 dense zero-based ordinal, `bounds_source` in `native | derived | presented`, and
-an optional non-overlapping span into this Testimonium's own retained text. It
+an optional non-overlapping span into this Testimonium's own retained text. Every
+box is contained by the exact presented image's page-space bounds; a witness
+cannot report pixels its presentation did not include. It
 carries no act identity, preference, authority, or confidence field. `presented`
 is an explicit no-geometry fallback: it restates the image sent and is excluded
 from both unrouted-ink detection and Unit 10C coverage. Only `native` and

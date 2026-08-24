@@ -320,8 +320,8 @@ def test_door_deletion_trigger_survives_the_exemplar_manifest_write(tmp_path):
         verify_predecessor_seal(tree, EXEMPLAR)
 
 
-def test_stage_role_fields_are_reported_by_name_without_refusal(tmp_path, capsys):
-    """The consult requires every field compared; Unit 17 owns fatality."""
+def test_a_clean_consumer_reconstructs_the_producers_environment(tmp_path, capsys):
+    """Different stage roles must not manufacture a predecessor mismatch."""
     tree, run, registry, bindings = _tree(tmp_path)
     context = _context(tree, run, registry, bindings)
     context.seal_boundary()
@@ -333,14 +333,10 @@ def test_stage_role_fields_are_reported_by_name_without_refusal(tmp_path, capsys
     verify_predecessor_seal(tree, PERLECTOR)
 
     reported = capsys.readouterr().err
-    assert "decode environment differs by name from attestatores" in reported
-    assert "decode_paths_used" in reported
-    assert "produced_pixels" in reported
+    assert "decode environment differs" not in reported
 
 
-def test_a_decoder_version_that_moved_between_stages_is_reported_by_name(
-    tmp_path, capsys, monkeypatch
-):
+def test_a_producer_environment_change_is_reported_field_by_field(tmp_path, capsys, monkeypatch):
     """Still an observation, never a refusal: Unit 17 owns the fatal policy."""
     tree, run, registry, bindings = _tree(tmp_path)
     context = _context(tree, run, registry, bindings)
@@ -349,11 +345,13 @@ def test_a_decoder_version_that_moved_between_stages_is_reported_by_name(
 
     import common.stage as stage_module
 
-    moved = _decode_environment(PERLECTOR)
+    moved = _decode_environment(ATTESTATORES)
     moved["decoders"] = [
         dict(row, version="0.0.0-moved") if row["name"] == "pillow" else row
         for row in moved["decoders"]
     ]
+    moved["decode_paths_used"] = ["project-png"]
+    moved["produced_pixels"] = True
     monkeypatch.setattr(stage_module, "_decode_environment", lambda _: moved)
     capsys.readouterr()
 
@@ -362,6 +360,8 @@ def test_a_decoder_version_that_moved_between_stages_is_reported_by_name(
     reported = capsys.readouterr().err
     assert "decode environment differs by name from attestatores" in reported
     assert "pillow" in reported
+    assert "decode_paths_used" in reported
+    assert "produced_pixels" in reported
 
 
 def test_a_malformed_decode_environment_is_a_named_refusal_not_a_difference(tmp_path):

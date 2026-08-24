@@ -200,6 +200,28 @@ def test_degenerate_corner_boxes_satisfy_the_schema_and_stay_witness_geometry():
     assert validate_native_witness_geometry(value, page_size=(100, 80)) is value
 
 
+def test_an_observed_box_cannot_claim_pixels_outside_the_exact_presented_image():
+    """Page-space coordinates still have to fall inside the image the chair saw.
+    Page bounds alone admitted a native box wholly outside a region presentation,
+    attributing pixels to a witness that its own record said were never shown."""
+    value = payload()
+    value["presented"]["kind"] = "region"
+    value["presented"]["region_ref"] = {"region_id": "rgn_0123456789abcdef"}
+    value["presented"]["transform"].update(
+        {"operation": "crop", "bounds": {"x": 10, "y": 10, "w": 20, "h": 20}}
+    )
+    value["observed"] = [
+        {
+            "ordinal": 0,
+            "bounds": {"x": 0, "y": 0, "w": 5, "h": 5},
+            "bounds_source": "native",
+            "span": None,
+        }
+    ]
+    with pytest.raises(SchemaRefusal, match="outside the exact image presentation"):
+        validate_native_witness_geometry(value, page_size=(100, 80))
+
+
 def test_a_page_presentation_may_not_name_another_page_s_blob():
     """The forgery this wall exists for: a self-consistent record naming page 1
     while carrying page 2's real, digest-bound pixels. Its boxes would then be

@@ -161,11 +161,16 @@ def region_references(regions: list[dict]) -> list[dict[str, str]]:
     ]
 
 
-def region_inputs(context, regions: list[dict]) -> list[dict[str, str]]:
-    """Bind each distinct crop blob once while retaining every region in payloads."""
+def region_inputs(
+    context, regions: list[dict], presented: dict[str, Any] | None = None
+) -> list[dict[str, str]]:
+    """Bind every proposal crop and the exact presentation, each distinct blob once."""
     inputs = {}
     for record in regions:
         reference = context.input_ref(record["payload"]["image_path"])
+        inputs[reference["relative_path"]] = reference
+    if presented:
+        reference = context.input_ref(presented["image_path"])
         inputs[reference["relative_path"]] = reference
     return sorted(inputs.values(), key=lambda item: (item["relative_path"], item["sha256"]))
 
@@ -1254,7 +1259,7 @@ def validate_tallied_testimonium(
             regions = proposed_regions(context, act["act_id"])
             regions_by_act[act["act_id"]] = regions
         if payload["regions"] != region_references(regions) or record["inputs"] != region_inputs(
-            context, regions
+            context, regions, payload["presented"]
         ):
             raise SchemaRefusal(
                 "a Testimonium tally record does not bind exactly the proposal regions and inputs"
@@ -1690,16 +1695,6 @@ def publish_attempt(
     unpresented_regions = unpresented_region_ids(presented, regions) if attempted else []
     if not presented:
         observed: list[dict[str, Any]] = []
-    elif any(
-        row.get("chair") == chair and row.get("page_ordinal") == presented["source_page_ordinal"]
-        for row in context.fixture.get("native_observation", [])
-    ):
-        observed = native_observed_for(
-            context,
-            chair=chair,
-            page_ordinal=presented["source_page_ordinal"],
-            presented=presented,
-        )
     elif isinstance(resolved, ChairIdentity):
         observed = witness_adapters.resolve_runnable_adapter(resolved.witness_adapter).observe(
             presented, attempt.native_payload
@@ -1732,7 +1727,7 @@ def publish_attempt(
         subject_id=act["act_id"],
         outcome=attempt.outcome,
         attempt=attempt_id(act["act_id"], f"read:{chair}", ordinal),
-        inputs=region_inputs(context, regions) if attempted else [],
+        inputs=region_inputs(context, regions, presented) if attempted else [],
         payload=payload,
     )
 
@@ -2052,6 +2047,12 @@ def publish_page_testimonia_and_attachments(
 
     for page_ordinal, page_acts in sorted(by_page.items()):
         page_subject = page_identity(context.fixture, page_ordinal)
+        page_proposal_regions = [
+            region
+            for act in page_acts
+            for region in regions_by_act[act["act_id"]][0]
+            if region["payload"]["transform"]["source_page_ordinal"] == page_ordinal
+        ]
         for chair in sorted(page_chairs):
             join = page_join([(act, attempts_by_pair[(act["act_id"], chair)]) for act in page_acts])
             native_payload, outcome = join.native_payload, join.outcome
@@ -2067,6 +2068,9 @@ def publish_page_testimonia_and_attachments(
                 presented = witness_adapters.resolve_runnable_adapter(
                     resolved.witness_adapter
                 ).present(context, presented)
+            unpresented_regions = (
+                unpresented_region_ids(presented, page_proposal_regions) if attempted_page else []
+            )
             page_attempt = attempt_id(page_subject, f"read:{chair}", ordinal)
             roles = {
                 "primary" if act["page_ordinal"] == page_ordinal else "continuation"
@@ -2118,6 +2122,7 @@ def publish_page_testimonia_and_attachments(
                 health=health if reading else no_response_health(reason=failure_reason),
                 presented=presented,
                 observed=observed,
+                unpresented_regions=unpresented_regions,
                 outcome=outcome,
                 reason=None if reading else failure_reason,
             )

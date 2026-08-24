@@ -286,6 +286,32 @@ def test_a_continuation_act_states_which_of_its_crops_the_derived_layer_omits(tm
     assert single != continuation
 
 
+def test_page_native_geometry_is_not_copied_into_region_compatibility_records(tmp_path):
+    """The fixture's native observation belongs to one page-scoped report. Copying
+    it into each act compatibility record put the same box outside both recorded
+    region presentations and emitted three findings for one witness observation."""
+    tree = _happy_run(tmp_path, "native-page-scope")
+    native = []
+    for entry in tree.build_manifest(ATTESTATORES)["artifacts"]:
+        if entry["kind"] not in {"testimonium", "page-testimonium"}:
+            continue
+        record = tree.read_artifact(ATTESTATORES, entry["kind"], entry["artifact_id"])
+        presented = record["payload"]["presented"]
+        for observation in record["payload"]["observed"]:
+            if observation["bounds_source"] == "native":
+                native.append((entry["kind"], record))
+            if presented:
+                outer = presented["transform"]["bounds"]
+                inner = observation["bounds"]
+                assert outer["x"] <= inner["x"]
+                assert outer["y"] <= inner["y"]
+                assert outer["x"] + outer["w"] >= inner["x"] + inner["w"]
+                assert outer["y"] + outer["h"] >= inner["y"] + inner["h"]
+    assert [(kind, record["payload"]["chair"]) for kind, record in native] == [
+        ("page-testimonium", "attestator_1")
+    ]
+
+
 def test_a_page_presentation_naming_another_page_s_blob_is_refused_at_the_tally_seam(tmp_path):
     """The wall wired into `validate_testimonium_presentation`: a self-consistent
     record whose presented blob is a real, digest-bound sealed page -- the wrong

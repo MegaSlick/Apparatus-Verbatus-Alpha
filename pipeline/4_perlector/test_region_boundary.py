@@ -433,6 +433,150 @@ def test_a_testimonium_may_not_understate_which_of_its_crops_it_speaks_for(tmp_p
         perlector.validate_testimonium_regions(context, adapter_crop, proposals)
 
 
+def test_act_testimonium_consumer_reconciles_outcome_regions_and_inputs(real_region):
+    """A resealed record cannot detach an attempted report from its presentation
+    or from the exact proposal/input denominator the Attestatores retained."""
+    context, region = real_region
+    _, proposals = perlector.act_regions(context, region["subject_id"])
+    testimony = next(
+        context.tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
+        for entry in context.tree.build_manifest(ATTESTATORES)["artifacts"]
+        if entry["kind"] == "testimonium" and entry["subject_id"] == region["subject_id"]
+    )
+
+    unpresented = copy.deepcopy(testimony)
+    unpresented["payload"].update({"presented": {}, "observed": [], "unpresented_regions": []})
+    unpresented["inputs"] = []
+    with pytest.raises(SchemaRefusal, match="attempted Testimonium has no image presentation"):
+        perlector.validate_testimonium_regions(context, unpresented, proposals)
+
+    not_attempted = copy.deepcopy(testimony)
+    not_attempted["outcome"] = "not-run"
+    with pytest.raises(SchemaRefusal, match="non-attempted Testimonium carries"):
+        perlector.validate_testimonium_regions(context, not_attempted, proposals)
+
+    shortened = copy.deepcopy(testimony)
+    shortened["payload"]["regions"] = []
+    with pytest.raises(SchemaRefusal, match="does not bind exactly its original proposal"):
+        perlector.validate_testimonium_regions(context, shortened, proposals)
+
+    extra_input = copy.deepcopy(testimony)
+    other = next(
+        row
+        for row in perlector.sealed_proposal_regions(context)
+        if row["subject_id"] != testimony["subject_id"]
+    )
+    extra_input["inputs"].append(context.input_ref(other["payload"]["image_path"]))
+    extra_input["inputs"].sort(key=lambda row: (row["relative_path"], row["sha256"]))
+    with pytest.raises(SchemaRefusal, match="does not bind exactly its proposal and presentation"):
+        perlector.validate_testimonium_regions(context, extra_input, proposals)
+
+
+def test_page_testimonium_consumer_reconciles_outcome_page_and_inputs(real_region):
+    context, _ = real_region
+    proposals = perlector.sealed_proposal_regions(context)
+    testimony = next(
+        context.tree.read_artifact(ATTESTATORES, "page-testimonium", entry["artifact_id"])
+        for entry in context.tree.build_manifest(ATTESTATORES)["artifacts"]
+        if entry["kind"] == "page-testimonium" and entry["outcome"] == "read"
+    )
+    perlector.validate_page_testimonium_record(context, testimony, proposals)
+
+    unpresented = copy.deepcopy(testimony)
+    unpresented["payload"].update({"presented": {}, "observed": [], "unpresented_regions": []})
+    unpresented["inputs"] = []
+    with pytest.raises(SchemaRefusal, match="attempted page Testimonium has no image"):
+        perlector.validate_page_testimonium_record(context, unpresented, proposals)
+
+    not_attempted = copy.deepcopy(testimony)
+    not_attempted["outcome"] = "not-run"
+    with pytest.raises(SchemaRefusal, match="non-attempted page Testimonium carries"):
+        perlector.validate_page_testimonium_record(context, not_attempted, proposals)
+
+    wrong_subject = copy.deepcopy(testimony)
+    other_page = next(
+        context.tree.read_artifact(EXEMPLAR, "page", entry["artifact_id"])
+        for entry in context.tree.build_manifest(EXEMPLAR)["artifacts"]
+        if entry["kind"] == "page" and entry["subject_id"] != testimony["subject_id"]
+    )
+    wrong_subject["payload"]["presented"] = attestatores_presentation = {
+        "kind": "page",
+        "source_page_id": other_page["subject_id"],
+        "source_page_ordinal": other_page["payload"]["ordinal"],
+        "image_path": other_page["payload"]["image_path"],
+        "image_sha256": other_page["payload"]["source_sha256"],
+        "transform": {
+            "operation": "whole",
+            "source_page_id": other_page["subject_id"],
+            "source_page_ordinal": other_page["payload"]["ordinal"],
+            "bounds": dict(testimony["payload"]["presented"]["transform"]["bounds"]),
+        },
+    }
+    wrong_subject["payload"]["observed"] = [
+        {
+            "ordinal": 0,
+            "bounds": dict(attestatores_presentation["transform"]["bounds"]),
+            "bounds_source": "presented",
+            "span": None,
+        }
+    ]
+    wrong_subject["inputs"] = [context.input_ref(other_page["payload"]["image_path"])]
+    with pytest.raises(SchemaRefusal, match="presentation names a different page"):
+        perlector.validate_page_testimonium_record(context, wrong_subject, proposals)
+
+    extra_input = copy.deepcopy(testimony)
+    extra_input["inputs"].append(context.input_ref(proposals[0]["payload"]["image_path"]))
+    extra_input["inputs"].sort(key=lambda row: (row["relative_path"], row["sha256"]))
+    with pytest.raises(SchemaRefusal, match="does not bind exactly its presented image"):
+        perlector.validate_page_testimonium_record(context, extra_input, proposals)
+
+
+def test_page_adapter_crop_cannot_hide_proposals_outside_its_presentation(real_region):
+    """The page consumer re-derives the disclosure for adapter crops too. An
+    adapter may narrow its image, but it may not leave the page record looking
+    complete while another sealed proposal lies outside that image."""
+    context, _ = real_region
+    proposals = perlector.sealed_proposal_regions(context)
+    testimony = next(
+        context.tree.read_artifact(ATTESTATORES, "page-testimonium", entry["artifact_id"])
+        for entry in context.tree.build_manifest(ATTESTATORES)["artifacts"]
+        if entry["kind"] == "page-testimonium"
+        and entry["outcome"] == "read"
+        and sum(
+            region["payload"]["transform"]["source_page_id"] == entry["subject_id"]
+            for region in proposals
+        )
+        >= 2
+    )
+    crop = next(
+        region
+        for region in proposals
+        if region["payload"]["transform"]["source_page_id"] == testimony["subject_id"]
+    )
+    forged = copy.deepcopy(testimony)
+    forged["payload"]["presented"] = {
+        "kind": "adapter-crop",
+        "source_page_id": testimony["subject_id"],
+        "source_page_ordinal": testimony["payload"]["page_ordinal"],
+        "image_path": crop["payload"]["image_path"],
+        "image_sha256": crop["payload"]["image_sha256"],
+        "transform": crop["payload"]["transform"],
+    }
+    forged["payload"]["observed"] = [
+        {
+            "ordinal": 0,
+            "bounds": dict(crop["payload"]["transform"]["bounds"]),
+            "bounds_source": "presented",
+            "span": None,
+        }
+    ]
+    forged["payload"]["unpresented_regions"] = []
+    forged["inputs"] = [context.input_ref(crop["payload"]["image_path"])]
+
+    with pytest.raises(SchemaRefusal, match="proposal regions outside its presentation"):
+        perlector.validate_page_testimonium_record(context, forged, proposals)
+
+
 def test_a_genuinely_empty_testimonium_marks_its_actual_regions_witness_covered():
     """Completed empty is evidence of inspection, unlike failed or not-run."""
     testimonia = [

@@ -750,14 +750,22 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # space). A schema field on an existing kind: counts and exits hold at 84/0 and
 # 97/3, no artifact kind added. Re-measured through this module's own
 # `orchestrate` and `semantic_snapshot_digest` helpers at canonical run id "r".
-HAPPY_RUN_TREE_DIGEST = "1d9309b6a95f27ab7f189d9b8cdde4429125a74749c5370a5723d09a2272b2b4"
+# Phase-2 Sol review: the fixture-native page observation now remains solely on
+# its page Testimonium. It was copied into both act compatibility records on the
+# page even though their recorded region presentations did not contain that box,
+# producing three findings for one observation and claiming pixels those two
+# presentations never showed. The act records now retain their adapter's honest
+# `bounds_source="presented"` fallback; the page record retains the one native
+# box. Artifact counts and exits remain 84/0 and 97/3. Re-measured through this
+# module's `orchestrate` and `semantic_snapshot_digest` helpers at run id "r".
+HAPPY_RUN_TREE_DIGEST = "8f985c37e15aa04c2fc511e330ec10992154f5716ae2e7acd818e835c47c4609"
 # Review only, once more in the same seat: a page witness invoked on every act
 # and unusable on all of them now records the serving moment that produced it
 # (`provenance_for(..., attempted=attempted_page)`), where the `reading` gate
 # left `receipt_ref: None` beside a `presented` block claiming pixels were shown.
 # One `receipt_ref` field on attestator_3's page-2 record; no new file, no count
 # or exit change (97/3), and happy is untouched at the digest above.
-REVIEW_RUN_TREE_DIGEST = "311fa757d74ccfae882709a32057e449e4743c5aa6aa82f11d316db0f454d30c"
+REVIEW_RUN_TREE_DIGEST = "5d9b67dfc55dad65c394f487436be1cb39c5097686d91d0254c5d72749dfa86e"
 
 
 def orchestrate(

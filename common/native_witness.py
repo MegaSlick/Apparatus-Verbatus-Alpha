@@ -187,7 +187,19 @@ def validate_observed(
             raise SchemaRefusal(
                 "a presented-source observed box differs from the presented transform"
             )
-        _bounds(item["bounds"], "a Testimonium observed box", page_size=page_size)
+        bounds = _bounds(item["bounds"], "a Testimonium observed box", page_size=page_size)
+        presented_bounds = presented["transform"]["bounds"]
+        if not (
+            presented_bounds["x"] <= bounds["x"]
+            and presented_bounds["y"] <= bounds["y"]
+            and presented_bounds["x"] + presented_bounds["w"] >= bounds["x"] + bounds["w"]
+            and presented_bounds["y"] + presented_bounds["h"] >= bounds["y"] + bounds["h"]
+        ):
+            raise SchemaRefusal(
+                "a Testimonium observed box falls outside the exact image presentation. "
+                "The record would attribute unseen page pixels to this witness. Correct the "
+                "adapter's page-space transform or refuse this response"
+            )
         span = item["span"]
         if span is not None:
             if (
