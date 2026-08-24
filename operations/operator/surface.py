@@ -42,6 +42,7 @@ from operations.pod.models import (
     require_billing_cutoff_margin_seconds,
     require_utc,
 )
+from operations.pod.notify_bridge import NotifyOutcome as PodNotifyOutcome
 from operations.pod.preflight import (
     CacheMismatch,
     GpuProfile,
@@ -370,15 +371,27 @@ class OperatorSurface:
         action = "adopt" if adopt_pod_id is not None else "create"
         prepared = PreparedLaunch(request, action, adopt_pod_id, result, policy, runtime)
         self._show_paid_preview(prepared)
+        self._record_spend_alert(prepared)
         if result.state is not LaunchState.PREVIEW or result.preview is None:
             self._record_failure("launch", result.state.value, result.detail)
             if adopt_pod_id is not None:
                 raise OperatorError(ErrorCode.ADOPTION_REFUSED, detail=result.detail)
             raise self._launch_error(result)
         if not result.preview.assessment.allowed:
-            self._record_failure("launch", "refused-ceiling", result.detail)
+            assessment = result.preview.assessment
+            if assessment.balance_unobservable_triggered:
+                refusal_state = LaunchState.REFUSED_BALANCE_UNOBSERVABLE.value
+            elif assessment.hard_floor_triggered:
+                refusal_state = LaunchState.REFUSED_BALANCE_FLOOR.value
+            else:
+                refusal_state = LaunchState.REFUSED_CEILING.value
+            self._record_failure("launch", refusal_state, result.detail)
             if adopt_pod_id is not None:
                 code = ErrorCode.ADOPTION_REFUSED
+            elif assessment.balance_unobservable_triggered:
+                code = ErrorCode.BALANCE_UNOBSERVABLE
+            elif assessment.hard_floor_triggered:
+                code = ErrorCode.BALANCE_FLOOR_REACHED
             else:
                 code = (
                     ErrorCode.SPEND_POLICY_REQUIRED
@@ -1054,6 +1067,7 @@ class OperatorSurface:
             shutdown=self._shutdown(policy),
             now=self.now,
             controller_armer=FixtureControllerArmer(self.now),
+            notifier=self._notify_spend,
         )
 
     def _close_policy(self) -> tuple[SpendPolicy | None, str | None]:
@@ -1155,8 +1169,29 @@ class OperatorSurface:
                 "- Hard lifetime ceiling: "
                 + _human_duration(assessment.policy.hard_lifetime_seconds)
             )
+            self.present(
+                f"- Account-balance hard floor: ${assessment.policy.account_balance_floor_usd}"
+            )
+            self.present(
+                "- Account-balance warning threshold: "
+                f"${assessment.policy.account_balance_alert_usd}"
+            )
+            observation = assessment.balance_observation
+            if observation is None:
+                self.present("- Observed account balance: unavailable")
+            else:
+                self.present(
+                    "- Observed account balance: "
+                    f"${observation.available_usd} at {observation.observed_at.isoformat()} "
+                    f"from {observation.source}"
+                )
+            self.present(f"- Other reserved liability: ${assessment.reserved_liability_usd}")
         else:
             self.present("- Spending ceiling: not configured")
+        for alert in assessment.alerts:
+            self.present(f"- Warning: {alert}")
+        for notification in assessment.alert_notifications:
+            self.present(notification)
         if assessment.reasons:
             for reason in assessment.reasons:
                 self.present(f"- Check: {reason}")
@@ -1178,6 +1213,19 @@ class OperatorSurface:
             return OperatorError(ErrorCode.PRICE_CHANGED, detail=detail)
         if result.state is LaunchState.REFUSED_CEILING:
             return OperatorError(ErrorCode.PAID_ACTION_REFUSED, detail=detail)
+        if (
+            result.state
+            in {
+                LaunchState.REFUSED_BALANCE_FLOOR,
+                LaunchState.REFUSED_BALANCE_UNOBSERVABLE,
+            }
+            and result.record is not None
+        ):
+            return OperatorError(ErrorCode.LAUNCH_UNRESOLVED, detail=detail)
+        if result.state is LaunchState.REFUSED_BALANCE_FLOOR:
+            return OperatorError(ErrorCode.BALANCE_FLOOR_REACHED, detail=detail)
+        if result.state is LaunchState.REFUSED_BALANCE_UNOBSERVABLE:
+            return OperatorError(ErrorCode.BALANCE_UNOBSERVABLE, detail=detail)
         if result.state in {
             LaunchState.REFUSED_SHUTDOWN_NOT_READY,
             LaunchState.REFUSED_CONTROLLER_NOT_READY,
@@ -1314,6 +1362,30 @@ class OperatorSurface:
         except OperatorError as record_error:
             # Keep the original operational failure as the command's result,
             # but never hide that its supporting receipt/index also failed.
+            for line in record_error.render().splitlines():
+                self.present(line)
+
+    def _record_spend_alert(self, prepared: PreparedLaunch) -> None:
+        """Persist warning/delivery evidence without retaining its live challenge."""
+
+        preview = prepared.result.preview
+        if preview is None or not preview.assessment.alerts:
+            return
+        try:
+            self._write_action(
+                "spend-alert",
+                {
+                    "summary": "A low account-balance warning was assessed.",
+                    "action": preview.action,
+                    "subject": preview.subject,
+                    "spend": preview.assessment.to_record(),
+                },
+                descriptor_action="spend-alert",
+            )
+        except OperatorError as record_error:
+            # A warning and its launch decision already exist. Losing the
+            # receipt is said aloud, but notification bookkeeping cannot become
+            # a paid-action gate.
             for line in record_error.render().splitlines():
                 self.present(line)
 
@@ -1516,6 +1588,16 @@ class OperatorSurface:
                 True, False, f"the notifier raised: {type(error).__name__}"
             )
         self.present(outcome.line())
+
+    def _notify_spend(self, message: str) -> PodNotifyOutcome:
+        """Carry one spend warning through the operator's opted-in notifier."""
+
+        one_line = " ".join(message.split()) or "no spend-warning detail recorded"
+        try:
+            outcome = self.notifier("milestone", one_line)
+        except Exception as error:  # a broken notifier is not a spend gate
+            return PodNotifyOutcome(True, False, f"the notifier raised: {type(error).__name__}")
+        return PodNotifyOutcome(outcome.attempted, outcome.delivered, outcome.detail)
 
     def _show_close(self, report: CloseReport, receipt: Path) -> None:
         self._present_captured_cost(report)

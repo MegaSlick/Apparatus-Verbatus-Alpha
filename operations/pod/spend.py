@@ -141,11 +141,12 @@ class SpendPolicy:
             "account_balance_alert_usd",
             as_decimal(self.account_balance_alert_usd, "account balance alert"),
         )
+        if self.account_balance_alert_usd <= 0:
+            raise SpendRefusal("account balance alert must be positive")
         if (
             self.max_hourly_usd <= 0
             or self.max_estimated_metered_cost_usd <= 0
             or self.account_balance_floor_usd <= 0
-            or self.account_balance_alert_usd <= 0
         ):
             raise SpendRefusal("money ceilings and account-balance floor must be positive")
         if self.account_balance_alert_usd <= self.account_balance_floor_usd:
@@ -217,7 +218,13 @@ class SpendAssessment:
 
     @property
     def hard_floor_triggered(self) -> bool:
-        return any("hard floor" in reason for reason in self.reasons)
+        return any(
+            reason == "observed account balance is at or below the hard floor"
+            or reason.startswith(
+                "other reserved paid-action liability plus the estimated cost of this action "
+            )
+            for reason in self.reasons
+        )
 
     @property
     def balance_unobservable_triggered(self) -> bool:
@@ -230,14 +237,15 @@ class SpendAssessment:
         """
 
         return any(
-            marker in reason
-            for reason in self.reasons
-            for marker in (
-                "was not observed",
-                "balance observation is stale",
-                "balance observation is dated in the future",
-                "balance safety could not be established",
+            reason.startswith(
+                (
+                    "available account balance was not observed",
+                    "balance observation is stale",
+                    "balance observation is dated in the future",
+                    "balance safety could not be established",
+                )
             )
+            for reason in self.reasons
         )
 
     @property

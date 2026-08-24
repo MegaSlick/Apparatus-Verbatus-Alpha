@@ -131,6 +131,10 @@ without waiting out the delivery debounce, so a genuinely new drop is not lost.
 """
 
 
+class _SpendGateLockFailure(OSError):
+    """The reservation lock could not be acquired before a paid action."""
+
+
 class LaunchState(StrEnum):
     """Create/adopt outcomes.  Only guarded creation/adoption is green."""
 
@@ -297,7 +301,7 @@ class PodRuntime:
         try:
             with self._spend_gate_lock():
                 return self._create_locked(request, confirmation=confirmation)
-        except OSError as error:
+        except _SpendGateLockFailure as error:
             return LaunchResult(
                 LaunchState.REFUSED_BALANCE_UNOBSERVABLE,
                 detail=(
@@ -358,9 +362,11 @@ class PodRuntime:
         try:
             lease_id = self._token("lease id")
             owner_token = self._token("lease owner token")
-        except ValueError as error:
+        except Exception as error:
             return LaunchResult(
-                LaunchState.LEASE_FAILURE, preview_result.preview, detail=str(error)
+                LaunchState.LEASE_FAILURE,
+                preview_result.preview,
+                detail=f"could not mint lease identity: {error}",
             )
         # Sealing is request preparation, not lease arming.  Inside the lease
         # try below, a malformed request reported as LEASE_FAILURE -- the durable
@@ -536,7 +542,7 @@ class PodRuntime:
                     expected=expected,
                     confirmation=confirmation,
                 )
-        except OSError as error:
+        except _SpendGateLockFailure as error:
             return LaunchResult(
                 LaunchState.REFUSED_BALANCE_UNOBSERVABLE,
                 detail=(
@@ -602,12 +608,12 @@ class PodRuntime:
         try:
             lease_id = self._token("lease id")
             owner_token = self._token("lease owner token")
-        except ValueError as error:
+        except Exception as error:
             return LaunchResult(
                 LaunchState.LEASE_FAILURE,
                 preview_result.preview,
                 record=preview_result.record,
-                detail=str(error),
+                detail=f"could not mint lease identity: {error}",
             )
         store = self._store(lease_id)
         try:
@@ -702,14 +708,24 @@ class PodRuntime:
         # lease-root path proceed far enough to retain the existing, precise
         # LEASE_FAILURE handling (including confirmed-adoption close) while still
         # serializing every caller that names the same root.
-        self.lease_root.parent.mkdir(parents=True, exist_ok=True)
-        path = self.lease_root.parent / f".{self.lease_root.name}.spend-gate.lock"
-        with path.open("a+b") as handle:
+        handle = None
+        try:
+            lock_root = self.lease_root.resolve(strict=False)
+            lock_root.parent.mkdir(parents=True, exist_ok=True)
+            path = lock_root.parent / f".{lock_root.name}.spend-gate.lock"
+            handle = path.open("a+b")
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        except (OSError, RuntimeError) as error:
+            if handle is not None:
+                handle.close()
+            raise _SpendGateLockFailure(str(error)) from error
+        try:
+            yield
+        finally:
+            # Closing the descriptor releases flock. There is no separate
+            # unlock operation whose failure can overwrite a result after the
+            # provider has already created or adopted a billing pod.
+            handle.close()
 
     def _reserved_liability(
         self, *, now: datetime, exclude: Path | None = None
@@ -826,7 +842,13 @@ class PodRuntime:
             else:
                 self._record_nonalert_balance(action, subject, assessment)
         except Exception as error:  # notification state can never become a spend gate
-            notifications.append(f"Phone notification: NOT DELIVERED ({error!r}).")
+            if assessment.alerts:
+                notifications.append(f"Phone notification: NOT DELIVERED ({error!r}).")
+            else:
+                notifications.append(
+                    "Phone notification recovery state: NOT RECORDED "
+                    f"({type(error).__name__}). No notification was due."
+                )
         if not notifications:
             return assessment
         return replace(assessment, alert_notifications=tuple(notifications))
@@ -850,7 +872,12 @@ class PodRuntime:
                         active=True,
                         safe_observations=0,
                     )
-                return None
+                return NotifyOutcome(
+                    False,
+                    False,
+                    "a delivered warning for this action and subject is still inside "
+                    "the debounce window",
+                )
             message = (
                 f"Spend warning: {alert}; {action} {subject}; observed available balance "
                 f"${observation.available_usd}."
@@ -953,6 +980,12 @@ class PodRuntime:
             return
         safe = observation.available_usd > policy.account_balance_alert_usd
         path = self._spend_alert_stamp_path(action, subject)
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            # No delivered low-balance episode exists to re-arm. In particular,
+            # a safe preview should not create the lease directory or a lock file.
+            return
         with self._alert_state_lock(path):
             state = self._load_spend_alert_state(path)
             if state is None or state["active"] is False:
@@ -999,9 +1032,16 @@ class PodRuntime:
         if self.balance_source is None:
             return None, "no account-balance source is configured for this provider"
         try:
-            return self.balance_source.observe_account_balance(), None
+            observation = self.balance_source.observe_account_balance()
         except Exception as error:
             return None, f"{type(error).__name__}: {error}"
+        if not isinstance(observation, AccountBalanceObservation):
+            return (
+                None,
+                "account-balance source returned "
+                f"{type(observation).__name__}, not AccountBalanceObservation",
+            )
+        return observation, None
 
     def _claim_challenge(
         self, action: str, subject: str, hard_deadline: datetime, expected: str, typed: str | None
@@ -1237,7 +1277,7 @@ class PodRuntime:
         owner_token: str,
         preview: PaidActionPreview,
     ) -> tuple[LaunchResult | None, PaidActionPreview]:
-        """Return the actual-price assessment even when it remains allowed.
+        """Return the post-create spend assessment even when it remains allowed.
 
         Adoption already assesses the observed record, so only `create` needs
         this: it gates on `estimate()` before the pod exists, and the price the
@@ -1261,11 +1301,13 @@ class PodRuntime:
         # carry a phrase that would authorize anything.
         close, detail = self._close_and_record(
             record=record,
-            reason=f"{action} price on the created pod exceeded its ceiling",
+            reason=(
+                f"{action} post-create spend assessment refused: " + "; ".join(assessment.reasons)
+            ),
             store=store,
             owner_token=owner_token,
             situation=(
-                "created pod bills outside the configured ceiling ("
+                "created pod failed its post-create spend assessment ("
                 + "; ".join(assessment.reasons)
                 + ")"
             ),
