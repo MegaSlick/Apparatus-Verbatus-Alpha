@@ -7,8 +7,9 @@ from run import resolve_sampling_approval
 
 from common.chairs import load_models_toml
 from common.contracts.approval import build_approval_record
+from common.contracts.canonical import canonical_bytes, digest_bytes
 from common.contracts.errors import ContractError
-from common.runtree.store import RunTree
+from common.runtree.store import RECEIPTS_DIR, RunTree
 from common.stage import (
     NUDA_APPROVAL_SUBJECT,
     PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT,
@@ -46,13 +47,26 @@ def _resolve(context, subject):
     return resolve_sampling_approval(context, approval_ref=subject, subject=subject)
 
 
+def _write_unchecked_receipt(tree, data: bytes) -> None:
+    digest = digest_bytes(data)
+    path = tree.resolve(tree.receipt_path(digest))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+
+
 @pytest.mark.parametrize("subject", SUBJECTS)
 def test_each_arm_refuses_a_stale_record_for_an_older_config(tmp_path, subject):
     context = _context(tmp_path, "a" * 64)
-    context.tree.write_approval_record(_record(subject, "b" * 64))
+    reference, _ = context.tree.write_approval_record(_record(subject, "b" * 64))
 
-    with pytest.raises(ContractError, match="not this run's sealed config_digest"):
+    with pytest.raises(ContractError) as refusal:
         _resolve(context, subject)
+
+    message = str(refusal.value)
+    assert "not this run's sealed config_digest" in message
+    assert reference.relative_path in message
+    assert context.config_digest in message
+    assert "start a new run tree" in message
 
 
 @pytest.mark.parametrize(
@@ -111,15 +125,62 @@ def test_each_arm_refuses_when_its_rate_changed_after_the_record_was_sealed(
 @pytest.mark.parametrize("subject", SUBJECTS)
 def test_each_arm_refuses_two_records_even_when_one_is_current(tmp_path, subject):
     context = _context(tmp_path, "a" * 64)
-    context.tree.write_approval_record(
+    current, _ = context.tree.write_approval_record(
         _record(subject, context.config_digest, reason="test-only current design")
     )
-    context.tree.write_approval_record(
+    stale, _ = context.tree.write_approval_record(
         _record(subject, "b" * 64, reason="test-only superseded design")
     )
 
-    with pytest.raises(ContractError, match="2 approval records name experiment"):
+    with pytest.raises(ContractError) as refusal:
         _resolve(context, subject)
+
+    message = str(refusal.value)
+    assert "2 validated approval records" in message
+    assert current.relative_path in message
+    assert stale.relative_path in message
+    assert context.config_digest in message
+    assert "start a new run tree" in message
+
+
+@pytest.mark.parametrize("subject", SUBJECTS)
+@pytest.mark.parametrize(
+    ("data", "cause"),
+    ((b"[", "malformed JSON"), (b"[]", "JSON list, not an object")),
+)
+def test_each_arm_refuses_an_uninspectable_receipt_instead_of_skipping_it(
+    tmp_path, subject, data, cause
+):
+    context = _context(tmp_path, "a" * 64)
+    context.tree.write_approval_record(_record(subject, context.config_digest))
+    _write_unchecked_receipt(context.tree, data)
+
+    with pytest.raises(ContractError) as refusal:
+        _resolve(context, subject)
+
+    message = str(refusal.value)
+    assert cause in message
+    assert RECEIPTS_DIR in message
+    assert "cannot prove exactly one approval" in message
+    assert "hold this run for review" in message
+
+
+@pytest.mark.parametrize("subject", SUBJECTS)
+def test_each_arm_validates_every_candidate_before_calling_two_records_ambiguous(tmp_path, subject):
+    context = _context(tmp_path, "a" * 64)
+    context.tree.write_approval_record(_record(subject, context.config_digest))
+    corrupt = _record(subject, context.config_digest, reason="test-only second design")
+    corrupt["reason"] = "edited after approval"
+    _write_unchecked_receipt(context.tree, canonical_bytes(corrupt))
+
+    with pytest.raises(ContractError) as refusal:
+        _resolve(context, subject)
+
+    message = str(refusal.value)
+    assert "self-hash" in message
+    assert RECEIPTS_DIR in message
+    assert context.config_digest in message
+    assert "start a new run tree" in message
 
 
 @pytest.mark.parametrize("subject", SUBJECTS)

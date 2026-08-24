@@ -124,10 +124,39 @@ def resolve_sampling_approval(context, *, approval_ref: str, subject: str) -> Ap
     candidates: list[ApprovalRecordReference] = []
     if receipts.is_dir():
         for path in sorted(receipts.glob("*.json")):
+            relative_path = f"{RECEIPTS_DIR}/{path.name}"
             try:
                 decoded = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, UnicodeDecodeError, ValueError):
-                continue
+            except OSError as error:
+                cause = error.strerror or error.__class__.__name__
+                raise ContractError(
+                    f"receipt {relative_path!r} could not be read while resolving approval for "
+                    f"experiment {subject!r}: {cause}. The sampling gate cannot prove exactly "
+                    "one approval while any receipt is unreadable. Restore the exact immutable "
+                    "receipt bytes or hold this run for review, then rerun the Perlector"
+                ) from error
+            except UnicodeDecodeError as error:
+                raise ContractError(
+                    f"receipt {relative_path!r} is not UTF-8 while resolving approval for "
+                    f"experiment {subject!r}. The sampling gate cannot prove exactly one "
+                    "approval while any receipt is undecodable. Restore the exact immutable "
+                    "receipt bytes or hold this run for review, then rerun the Perlector"
+                ) from error
+            except ValueError as error:
+                raise ContractError(
+                    f"receipt {relative_path!r} is malformed JSON while resolving approval for "
+                    f"experiment {subject!r}: {error}. The sampling gate cannot prove exactly "
+                    "one approval while any receipt is malformed. Restore the exact immutable "
+                    "receipt bytes or hold this run for review, then rerun the Perlector"
+                ) from error
+            if not isinstance(decoded, dict):
+                raise ContractError(
+                    f"receipt {relative_path!r} is a JSON {type(decoded).__name__}, not an object, "
+                    f"while resolving approval for experiment {subject!r}. The sampling gate "
+                    "cannot prove exactly one approval without inspecting every receipt object. "
+                    "Restore the exact immutable receipt bytes or hold this run for review, then "
+                    "rerun the Perlector"
+                )
             if decoded.get("subject_ids") != [subject]:
                 continue
             digest = path.stem
@@ -145,31 +174,46 @@ def resolve_sampling_approval(context, *, approval_ref: str, subject: str) -> Ap
             f"[{subject!r}], action 'other', and target_version_hash "
             f"{context.config_digest}"
         )
-    if len(candidates) != 1:
+    records = []
+    for candidate in candidates:
+        try:
+            records.append(context.tree.read_approval_record(candidate))
+        except ApprovalRefusal as error:
+            raise ContractError(
+                f"approval record {candidate.relative_path!r} for experiment {subject!r} is "
+                f"refused: {error}. The sampling gate cannot accept that record for this run's "
+                f"sealed config_digest {context.config_digest}. Preserve this run for review and "
+                "start a new run tree with one valid approval record before sampling"
+            ) from error
+    if len(records) != 1:
+        paths = [candidate.relative_path for candidate in candidates]
         raise ContractError(
-            f"{len(candidates)} approval records name experiment {subject!r}; the sampling "
-            "gate requires exactly one unambiguous typed approval record"
+            f"{len(records)} validated approval records {paths} name experiment {subject!r} for "
+            f"this run's sealed config_digest {context.config_digest}. The sampling gate cannot "
+            "choose among approval records; it requires exactly one. Preserve this run for review "
+            "and start a new run tree with one current approval record before sampling"
         )
 
-    try:
-        record = context.tree.read_approval_record(candidates[0])
-    except ApprovalRefusal as error:
-        raise ContractError(f"approval for experiment {subject!r} is refused: {error}") from error
+    record = records[0]
     # "exclusion" and "salvage-promotion" approve a different governed action entirely
     # (GOVERNANCE 1); a sampling design is filed under "other" so a record meant to
     # authorize an exclusion can never double as a sampling approval by coincidence
     # of subject text.
     if record["action"] != "other":
         raise ContractError(
-            f"approval for experiment {subject!r} has action {record['action']!r}, not "
-            "'other'; a sampling design approval is not an exclusion or salvage-promotion "
-            "record"
+            f"approval record {candidates[0].relative_path!r} for experiment {subject!r} has "
+            f"action {record['action']!r}, not 'other', for this run's sealed config_digest "
+            f"{context.config_digest}. A sampling design approval is not an exclusion or "
+            "salvage-promotion record. Preserve this run for review and start a new run tree with "
+            "one approval record for action 'other' before sampling"
         )
     if record["target_version_hash"] != context.config_digest:
         raise ContractError(
-            f"approval for experiment {subject!r} names version "
-            f"{record['target_version_hash']}, not this run's sealed config_digest "
-            f"{context.config_digest}"
+            f"approval record {candidates[0].relative_path!r} for experiment {subject!r} names "
+            f"version {record['target_version_hash']}, not this run's sealed config_digest "
+            f"{context.config_digest}. The record approves a different sealed configuration. "
+            "Preserve this run for review and start a new run tree with one approval record for "
+            "the configuration that will be sampled"
         )
     return ApprovalRecordBinding(
         candidates[0],

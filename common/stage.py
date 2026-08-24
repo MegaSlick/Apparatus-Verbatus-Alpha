@@ -395,10 +395,11 @@ class StageContext:
 
     @property
     def nuda_approval_ref(self) -> str:
-        """Tyrel's reference for the sampling design this run draws nuda under.
+        """The sealed selector for the sampling design this run draws nuda under.
 
-        Empty when nothing is sampled. `run_config_bindings` refuses a non-zero
-        rate that carries none, so a populated rate always has one.
+        Empty when nothing is sampled. `run_config_bindings` requires the exact
+        recognized selector for a non-zero rate; the Perlector later resolves
+        that selector to Tyrel's typed approval-record reference in the run tree.
         """
         return self.args.nuda_approval_ref
 
