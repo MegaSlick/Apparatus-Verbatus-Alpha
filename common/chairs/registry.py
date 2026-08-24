@@ -134,15 +134,16 @@ class HuggingFaceMaterializationFetcher:
         outside the evidence tree and inside the volume's reserved promotion space.
         """
 
-        if not destination.is_dir() or any(destination.iterdir()):
+        if destination.is_symlink() or not destination.is_dir() or any(destination.iterdir()):
             raise DigestMismatchRefusal(
-                repo, "materialization destination must be an existing empty directory"
+                repo, "materialization destination must be an existing empty regular directory"
             )
         client_cache = destination.with_name(f"{destination.name}.huggingface-cache")
         if client_cache.exists() or client_cache.is_symlink():
             raise DigestMismatchRefusal(
                 repo, f"per-call Hugging Face cache path already exists: {client_cache}"
             )
+        failure: BaseException | None = None
         try:
             downloaded = self.client.snapshot_download(
                 repo_id=repo, revision=revision, cache_dir=client_cache
@@ -152,13 +153,51 @@ class HuggingFaceMaterializationFetcher:
                 raise DigestMismatchRefusal(
                     repo, "Hugging Face returned no regular snapshot directory"
                 )
+            resolved_source = source.resolve()
+            resolved_cache = client_cache.resolve()
+            if not resolved_source.is_relative_to(resolved_cache):
+                raise DigestMismatchRefusal(
+                    repo,
+                    "Hugging Face returned a snapshot outside its per-call cache; only the "
+                    "requested revision below that isolated cache can enter staging",
+                )
             shutil.copytree(source, destination, dirs_exist_ok=True)
         except OSError as error:
-            raise DigestMismatchRefusal(
+            failure = DigestMismatchRefusal(
                 repo, f"cannot copy the pinned Hugging Face snapshot into staging: {error}"
-            ) from error
+            )
+            raise failure from error
+        except BaseException as error:
+            failure = error
+            raise
         finally:
-            shutil.rmtree(client_cache, ignore_errors=True)
+            _cleanup_huggingface_cache(client_cache, repo, failure)
+
+
+def _cleanup_huggingface_cache(
+    client_cache: Path, repo: str, failure: BaseException | None
+) -> None:
+    """Remove client state and keep both causes when acquisition also failed."""
+
+    try:
+        if client_cache.is_symlink():
+            client_cache.unlink(missing_ok=True)
+        elif client_cache.exists():
+            shutil.rmtree(client_cache)
+    except OSError as cleanup_error:
+        detail = f"per-call Hugging Face cache cleanup failed at {client_cache}: {cleanup_error}"
+        if failure is None:
+            raise DigestMismatchRefusal(repo, detail) from cleanup_error
+        if isinstance(failure, Exception):
+            raise DigestMismatchRefusal(repo, f"{failure}; {detail}") from failure
+        failure.add_note(detail)
+
+
+def load_model_card_metadata(path: Path) -> dict[str, object] | None:
+    """Parse one local card through the registry's deferred Hugging Face door."""
+
+    client = HuggingFaceFetcher.from_huggingface_hub().client
+    return client.metadata_load(path)  # type: ignore[no-any-return,attr-defined]
 
 
 class ChairRegistry:

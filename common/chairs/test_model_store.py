@@ -475,6 +475,76 @@ def test_materializer_refuses_a_staging_root_symlink_before_fetching_outside_sto
     assert sorted(outside.iterdir()) == []
 
 
+def test_materializer_refuses_a_fetcher_that_replaces_its_staging_directory(tmp_path):
+    store = tmp_path / "store"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "model.safetensors").write_bytes(b"outside weights")
+    (outside / "README.md").write_text("---\nlicense: openrail\n---\n", encoding="utf-8")
+
+    class _ReplacesDestination:
+        def fetch(self, repo: str, revision: str, destination: Path) -> None:
+            destination.rmdir()
+            destination.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(DigestMismatchRefusal, match="replaced the materialization destination"):
+        materialize_real_roster(
+            store, _ReplacesDestination(), capacity=dict(_MATERIALIZATION_CAPACITY)
+        )
+
+    assert not (outside / UNTEXTED_LICENCE_SNAPSHOT).exists()
+    assert sorted((store / "staging").iterdir()) == []
+
+
+def test_materializer_names_a_cleanup_failure_without_losing_the_fetch_failure(
+    tmp_path, monkeypatch
+):
+    class _FailsAfterWriting:
+        def fetch(self, repo: str, revision: str, destination: Path) -> None:
+            (destination / "partial.safetensors").write_bytes(b"partial")
+            raise RuntimeError("fetch transport failed")
+
+    def refuse_cleanup(path, **kwargs):
+        raise PermissionError("cleanup denied")
+
+    monkeypatch.setattr(model_store.shutil, "rmtree", refuse_cleanup)
+
+    with pytest.raises(
+        DigestMismatchRefusal,
+        match="fetch transport failed.*staging cleanup also failed.*cleanup denied",
+    ):
+        materialize_real_roster(
+            tmp_path, _FailsAfterWriting(), capacity=dict(_MATERIALIZATION_CAPACITY)
+        )
+
+
+def test_materializer_refuses_a_staged_symlink_before_reading_its_target(tmp_path, monkeypatch):
+    outside_index = tmp_path / "outside-index.json"
+    outside_index.write_text(
+        json.dumps({"weight_map": {"layer": "model.safetensors"}}), encoding="utf-8"
+    )
+
+    class _SymlinkedShardIndex:
+        def fetch(self, repo: str, revision: str, destination: Path) -> None:
+            (destination / "model.safetensors").write_bytes(b"weights")
+            (destination / "LICENSE").write_text("terms", encoding="utf-8")
+            (destination / "model.safetensors.index.json").symlink_to(outside_index)
+
+    real_read_text = Path.read_text
+
+    def refuse_external_read(path, *args, **kwargs):
+        if path.resolve() == outside_index:
+            raise AssertionError("the external shard index was read")
+        return real_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", refuse_external_read)
+
+    with pytest.raises(DigestMismatchRefusal, match="symlink"):
+        materialize_real_roster(
+            tmp_path, _SymlinkedShardIndex(), capacity=dict(_MATERIALIZATION_CAPACITY)
+        )
+
+
 def test_promote_verified_snapshot_refuses_a_manifest_name_no_record_may_reference(tmp_path):
     record = _store(tmp_path)
     entry = next(item for item in record["artifacts"] if item["artifact"] == "churro-3B")
@@ -903,6 +973,14 @@ class _FakeMaterializationFetcher:
         self.calls.append((repo, revision))
         destination.mkdir(parents=True, exist_ok=True)
         (destination / "model.safetensors").write_bytes(f"weights {repo}@{revision}".encode())
+        requirement = next(item for item in REQUIRED_ARTIFACTS if item.repo == repo)
+        metadata = ""
+        if requirement.license_declaration is not None:
+            license_id, separator, license_name = requirement.license_declaration.partition(": ")
+            metadata = f"license: {license_id}\n"
+            if separator:
+                metadata += f"license_name: {license_name}\n"
+        (destination / "README.md").write_text(f"---\n{metadata}---\n", encoding="utf-8")
         if "RecordGold" in repo:
             (destination / "system.txt").write_text("system prompt", encoding="utf-8")
             (destination / "query.txt").write_text("query prompt", encoding="utf-8")
@@ -1116,7 +1194,6 @@ def test_a_repository_that_ships_no_licence_file_may_still_have_declared_one(tmp
         def fetch(self, repo: str, revision: str, destination: Path) -> None:
             super().fetch(repo, revision, destination)
             (destination / "LICENSE").unlink(missing_ok=True)
-            (destination / "README.md").write_text("model card", encoding="utf-8")
 
     materialize_real_roster(tmp_path, _NoLicenceFiles(), capacity=dict(_MATERIALIZATION_CAPACITY))
 
@@ -1155,6 +1232,40 @@ def test_declared_licence_observation_requires_the_model_card_it_cites(tmp_path)
     assert not (tmp_path / UNTEXTED_LICENCE_SNAPSHOT).exists()
 
 
+def test_declared_licence_observation_must_match_the_fetched_model_card(tmp_path):
+    requirement = next(item for item in REQUIRED_ARTIFACTS if item.artifact == "yolo26-detection")
+    (tmp_path / "model.pt").write_bytes(b"weights")
+    (tmp_path / "README.md").write_text("---\nlicense: apache-2.0\n---\n", encoding="utf-8")
+
+    with pytest.raises(
+        DigestMismatchRefusal,
+        match="model card declares 'apache-2.0'.*roster policy expects 'agpl-3.0'",
+    ):
+        model_store._snapshot_licence(tmp_path, requirement)
+
+    assert not (tmp_path / UNTEXTED_LICENCE_SNAPSHOT).exists()
+
+
+def test_undeclared_licence_observation_requires_the_model_card_it_describes(tmp_path):
+    requirement = next(item for item in REQUIRED_ARTIFACTS if item.artifact == "dai-recordgold-atr")
+    (tmp_path / "model.safetensors").write_bytes(b"weights")
+
+    with pytest.raises(DigestMismatchRefusal, match="no regular README.md"):
+        model_store._snapshot_licence(tmp_path, requirement)
+
+    assert not (tmp_path / UNDECLARED_LICENCE_SNAPSHOT).exists()
+
+
+def test_nested_third_party_licence_is_not_called_the_repository_licence(tmp_path):
+    requirement = next(item for item in REQUIRED_ARTIFACTS if item.artifact == "dai-recordgold-atr")
+    (tmp_path / "README.md").write_text("---\nbase_model: example/base\n---\n", encoding="utf-8")
+    nested = tmp_path / "vendor"
+    nested.mkdir()
+    (nested / "LICENSE").write_text("third-party terms", encoding="utf-8")
+
+    assert model_store._snapshot_licence(tmp_path, requirement) == UNDECLARED_LICENCE_SNAPSHOT
+
+
 @pytest.mark.parametrize(
     ("artifact", "reserved_name"),
     [
@@ -1166,8 +1277,10 @@ def test_synthetic_licence_observation_never_overwrites_repository_bytes(
     tmp_path, artifact, reserved_name
 ):
     requirement = next(item for item in REQUIRED_ARTIFACTS if item.artifact == artifact)
+    metadata = ""
     if requirement.license_declaration is not None:
-        (tmp_path / "README.md").write_text("model card", encoding="utf-8")
+        metadata = f"license: {requirement.license_declaration}\n"
+    (tmp_path / "README.md").write_text(f"---\n{metadata}---\n", encoding="utf-8")
     reserved = tmp_path / reserved_name
     reserved.write_bytes(b"upstream repository bytes")
 
@@ -1197,6 +1310,21 @@ def test_declared_without_text_record_keeps_its_model_card_required(tmp_path):
         derived_inventory(record)
 
 
+def test_undeclared_record_keeps_the_model_card_that_proves_absence_required(tmp_path):
+    record = _store(tmp_path)
+    dai = next(item for item in record["artifacts"] if item["artifact"] == "dai-recordgold-atr")
+    dai["license"] = UNDECLARED_LICENCE_SNAPSHOT
+    dai["required_files"] = [
+        UNDECLARED_LICENCE_SNAPSHOT,
+        "model.safetensors",
+        "query.txt",
+        "system.txt",
+    ]
+
+    with pytest.raises(DigestMismatchRefusal, match="README.md.*required file"):
+        derived_inventory(record)
+
+
 def test_store_rechecks_synthetic_licence_text_against_roster_policy(tmp_path):
     record = _store(tmp_path)
     dai = next(item for item in record["artifacts"] if item["artifact"] == "dai-recordgold-atr")
@@ -1205,10 +1333,12 @@ def test_store_rechecks_synthetic_licence_text_against_roster_policy(tmp_path):
     (snapshot / UNDECLARED_LICENCE_SNAPSHOT).write_text(
         "a different claim about the pinned repository\n", encoding="utf-8"
     )
+    (snapshot / "README.md").write_text("---\nbase_model: example/base\n---\n", encoding="utf-8")
     dai["license"] = UNDECLARED_LICENCE_SNAPSHOT
     dai["required_files"] = sorted(
         {
             UNDECLARED_LICENCE_SNAPSHOT,
+            "README.md",
             "model.safetensors",
             *(entry["path"] for entry in dai["carried"]),
         }

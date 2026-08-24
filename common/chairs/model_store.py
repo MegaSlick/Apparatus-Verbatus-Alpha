@@ -1,9 +1,10 @@
-"""Verification of the durable, off-repository model store.
+"""Materialization and verification of the durable, off-repository model store.
 
-This module deliberately has no downloader, HTTP client, or cache-fill path.  A
-host operator materializes the pinned bytes once; consumers then use this module
-to prove the store and its derived records still agree.  It never fetches, and
-its few writers preserve every evidence version: inventories and manifests
+This module owns the downloader-agnostic materialization workflow and the
+verification of its durable evidence.  The injected fetcher acquires each pinned
+revision; the network client itself lives in :mod:`common.chairs.registry`.
+Consumers use this module to prove the store and its derived records still
+agree. Its writers preserve every evidence version: inventories and manifests
 publish once, while each download-record version is digest-addressed and only
 its active copy moves. Differing evidence is never overwritten (GOVERNANCE 4).
 The documented store root is
@@ -30,7 +31,7 @@ from .manifests import (
     verify_snapshot,
 )
 from .models import ChairIdentity, is_hf_revision, is_sha256
-from .registry import CACHE_DESCRIPTOR
+from .registry import CACHE_DESCRIPTOR, load_model_card_metadata
 
 STORE_SCHEMA = "verbatus-model-store.v1"
 INVENTORY_SCHEMA = "verbatus-model-inventory.v1"
@@ -247,6 +248,13 @@ def materialize_real_roster(
         staging = Path(tempfile.mkdtemp(prefix=f".{requirement.artifact}.fetch-", dir=staging_root))
         try:
             fetcher.fetch(requirement.repo, requirement.revision, staging)
+            if staging.is_symlink() or not staging.is_dir():
+                raise DigestMismatchRefusal(
+                    requirement.artifact,
+                    "the fetcher replaced the materialization destination instead of writing "
+                    "the pinned revision below the empty staging directory",
+                )
+            _refuse_staged_symlinks(staging, requirement.artifact)
             licence = _snapshot_licence(staging, requirement)
             carried = _carried_content(requirement, staging)
             payloads = sorted(
@@ -261,10 +269,10 @@ def materialize_real_roster(
             _refuse_unpinned_additions(staging, requirement.artifact)
             indexed = _indexed_shards(staging, requirement.artifact)
             licence_evidence = {licence}
-            if licence == UNTEXTED_LICENCE_SNAPSHOT:
-                # The synthetic observation says the repository's own model card
-                # carries the declaration.  Requiring that card keeps a broken
-                # fetch from making the store say evidence arrived when it did not.
+            if licence in {UNTEXTED_LICENCE_SNAPSHOT, UNDECLARED_LICENCE_SNAPSHOT}:
+                # Either synthetic observation makes a claim about the repository's
+                # own model card. Requiring that card keeps a broken fetch from
+                # making the store say evidence arrived when it did not.
                 licence_evidence.add(MODEL_CARD_PATH)
             required_files = sorted(
                 {*licence_evidence, *payloads, *indexed, *(x["path"] for x in carried)}
@@ -297,14 +305,13 @@ def materialize_real_roster(
             record = _replace_record_artifact(record, present)
             write_download_record(record, root)
             completed[requirement.artifact] = _materialization_receipt(present)
-        except BaseException:
+        except BaseException as error:
             # `BaseException`, not `Exception`: a multi-hour weights fetch is
             # interrupted by ^C or a shutdown signal far more often than by a
             # Python error, and those raise `KeyboardInterrupt` — which the
             # narrower clause let past, leaving a part-fetched staging tree on
             # the volume the record's own capacity plan is trying to account for.
-            if staging.exists():
-                shutil.rmtree(staging, ignore_errors=True)
+            _cleanup_failed_staging(staging, requirement.artifact, error)
             raise
 
     # One whole-store verification, after every fetch and before any claim is made
@@ -346,6 +353,47 @@ def materialize_real_roster(
         # loss of a fact GOVERNANCE 2 forbids.
         "unattributed_staging_entries": _unattributed_staging_entries(root),
     }
+
+
+def _cleanup_failed_staging(staging: Path, artifact: str, failure: BaseException) -> None:
+    """Remove one failed fetch tree, keeping both failures if cleanup is refused."""
+
+    try:
+        if staging.is_symlink():
+            staging.unlink(missing_ok=True)
+        elif staging.exists():
+            shutil.rmtree(staging)
+    except OSError as cleanup_error:
+        detail = (
+            f"materialization failed ({failure}); staging cleanup also failed at "
+            f"{staging}: {cleanup_error}"
+        )
+        if isinstance(failure, Exception):
+            raise DigestMismatchRefusal(artifact, detail) from failure
+        failure.add_note(detail)
+
+
+def _refuse_staged_symlinks(snapshot: Path, artifact: str) -> None:
+    """Refuse links before any semantic inspection can follow their targets."""
+
+    def refuse_walk(error: OSError) -> None:
+        raise DigestMismatchRefusal(
+            artifact, f"the fetched revision cannot be inspected for symlinks: {error}"
+        ) from error
+
+    for directory, directories, filenames in os.walk(
+        snapshot, followlinks=False, onerror=refuse_walk
+    ):
+        parent = Path(directory)
+        for name in [*directories, *filenames]:
+            candidate = parent / name
+            if candidate.is_symlink():
+                relative = candidate.relative_to(snapshot).as_posix()
+                raise DigestMismatchRefusal(
+                    artifact,
+                    f"the fetched revision carries a symlink at {relative!r}; materialization "
+                    "never reads or manifests a link target",
+                )
 
 
 # A fetcher's contract is the pinned revision and nothing else, so anything a
@@ -547,21 +595,20 @@ def _snapshot_licence(snapshot: Path, requirement: RequiredArtifact) -> str:
     second records that there is nothing to read.
     """
 
-    candidates = sorted(
-        path
-        for path in snapshot.rglob("*")
-        if path.is_file() and path.name.lower() in LICENCE_FILE_NAMES
-    )
+    try:
+        candidates = sorted(
+            path
+            for path in snapshot.iterdir()
+            if path.is_file() and path.name.lower() in LICENCE_FILE_NAMES
+        )
+    except OSError as error:
+        raise DigestMismatchRefusal(
+            requirement.artifact, f"cannot inspect the fetched repository root: {error}"
+        ) from error
     if candidates:
         return candidates[0].relative_to(snapshot).as_posix()
+    _reconcile_model_card_licence(snapshot, requirement)
     if requirement.license_declaration is not None:
-        model_card = snapshot / MODEL_CARD_PATH
-        if model_card.is_symlink() or not model_card.is_file():
-            raise DigestMismatchRefusal(
-                requirement.artifact,
-                f"the fetched revision has no regular {MODEL_CARD_PATH} to support its "
-                f"declared licence {requirement.license_declaration!r}",
-            )
         path = snapshot / UNTEXTED_LICENCE_SNAPSHOT
         _write_licence_observation(
             path,
@@ -579,6 +626,52 @@ def _snapshot_licence(snapshot: Path, requirement: RequiredArtifact) -> str:
         requirement.artifact,
     )
     return path.name
+
+
+def _reconcile_model_card_licence(snapshot: Path, requirement: RequiredArtifact) -> None:
+    """Verify the fetched card before publishing a claim about its licence metadata."""
+
+    model_card = snapshot / MODEL_CARD_PATH
+    if model_card.is_symlink() or not model_card.is_file():
+        raise DigestMismatchRefusal(
+            requirement.artifact,
+            f"the fetched revision has no regular {MODEL_CARD_PATH} from which to verify "
+            "its licence declaration",
+        )
+    try:
+        metadata = load_model_card_metadata(model_card)
+    except Exception as error:
+        raise DigestMismatchRefusal(
+            requirement.artifact,
+            f"the fetched {MODEL_CARD_PATH} has unreadable model-card metadata: {error}",
+        ) from error
+    raw_license = metadata.get("license") if metadata is not None else None
+    if raw_license is None:
+        observed = None
+    elif not isinstance(raw_license, str) or not raw_license.strip():
+        raise DigestMismatchRefusal(
+            requirement.artifact,
+            f"the fetched {MODEL_CARD_PATH} licence declaration must be nonblank text or absent, "
+            f"not {raw_license!r}",
+        )
+    else:
+        observed = raw_license.strip()
+        if observed == "other":
+            raw_name = metadata.get("license_name")
+            if not isinstance(raw_name, str) or not raw_name.strip():
+                raise DigestMismatchRefusal(
+                    requirement.artifact,
+                    f"the fetched {MODEL_CARD_PATH} declares licence 'other' without a "
+                    "nonblank license_name",
+                )
+            observed = f"other: {raw_name.strip()}"
+    if observed != requirement.license_declaration:
+        raise DigestMismatchRefusal(
+            requirement.artifact,
+            f"the fetched model card declares {observed!r}, but roster policy expects "
+            f"{requirement.license_declaration!r}; synthetic licence evidence is never "
+            "published from a disagreement",
+        )
 
 
 def _licence_observation_text(requirement: RequiredArtifact) -> str:
@@ -708,7 +801,7 @@ def load_download_record(store_root: str | Path) -> dict[str, Any]:
 def write_download_record(record: Mapping[str, Any], store_root: str | Path) -> str:
     """Version the host record immutably and move its active copy atomically.
 
-    The host operator assembles ``record`` from what was actually fetched; this
+    The caller assembles ``record`` from what was actually fetched; this
     function only guarantees the bytes on disk are the exact canonical form
     :func:`load_download_record` requires, so a hand-formatted file never earns
     a "not canonical bytes" refusal that names no cause. A store evolves from
@@ -1070,7 +1163,7 @@ def _verify_synthetic_licence_observation(snapshot: Path, item: Mapping[str, Any
 
 
 def promote_verified_snapshot(store_root: str | Path, artifact: Mapping[str, Any]) -> str:
-    """Host-side promotion primitive: hash a staged snapshot, publish its manifest once.
+    """Store-side promotion primitive: hash a staged snapshot, publish its manifest once.
 
     This is where a pin is *born*, and it is the one place in this package that
     derives one from bytes rather than checking bytes against one.  That is not
@@ -1283,13 +1376,11 @@ def _validate_record(raw: Mapping[str, Any]) -> None:
     # `capacity` is a self-declared plan, exactly like a ServingProfile's GPU
     # figures (operations/serving/config.py) are "configuration/planning values,
     # never a claim that an unmeasured card can sustain them" (GOVERNANCE 10).
-    # Nothing here calls `shutil.disk_usage`: this module never fetches or
-    # touches the host beyond the bytes a chair's manifest already names, so it
-    # has no more standing to assert free disk space than a human operator's
-    # own accounting does. The arithmetic below only catches an internally
-    # inconsistent plan (headroom or availability that contradicts itself); the
-    # actual backstop against a full disk is `_publish_once` failing loudly when
-    # a write really cannot complete.
+    # Nothing here calls `shutil.disk_usage`: the caller supplies the capacity
+    # observation made for this volume, while this record preserves that plan.
+    # The arithmetic below only catches an internally inconsistent plan
+    # (headroom or availability that contradicts itself); the actual backstop
+    # against a full disk is a materialization write failing loudly.
     capacity = raw["capacity"]
     if (
         not isinstance(capacity, Mapping)
@@ -1480,10 +1571,10 @@ def _validate_record(raw: Mapping[str, Any]) -> None:
                         f"synthetic licence evidence must be {expected!r} for this roster "
                         f"declaration, not {item['license']!r}",
                     )
-                if expected == UNTEXTED_LICENCE_SNAPSHOT and MODEL_CARD_PATH not in required_files:
+                if MODEL_CARD_PATH not in required_files:
                     raise DigestMismatchRefusal(
                         item["artifact"],
-                        f"declared-without-text evidence cites {MODEL_CARD_PATH}, which must "
+                        f"synthetic licence evidence cites {MODEL_CARD_PATH}, which must "
                         "therefore be a required file",
                     )
         if not any(PurePosixPath(path).suffix in MODEL_PAYLOAD_SUFFIXES for path in required_files):

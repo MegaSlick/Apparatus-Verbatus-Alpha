@@ -503,3 +503,74 @@ def test_the_materialization_fetcher_separates_client_state_without_deleting_rep
         if path.is_file()
     ] == [".cache/repository-owned.json", "config.json"]
     assert not Path(f"{destination}.huggingface-cache").exists()
+
+
+def test_the_materialization_fetcher_refuses_a_symlinked_destination(tmp_path):
+    from common.chairs.errors import DigestMismatchRefusal
+    from common.chairs.registry import HuggingFaceMaterializationFetcher
+
+    class ClientMustNotRun:
+        def snapshot_download(self, **kwargs):
+            raise AssertionError("a symlinked destination must be refused before download")
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    destination = tmp_path / "staging"
+    destination.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(DigestMismatchRefusal, match="existing empty regular directory"):
+        HuggingFaceMaterializationFetcher(ClientMustNotRun()).fetch(
+            "fixture-org/pinned", "a" * 40, destination
+        )
+
+    assert sorted(outside.iterdir()) == []
+
+
+def test_the_materialization_fetcher_refuses_a_snapshot_outside_its_per_call_cache(tmp_path):
+    from common.chairs.errors import DigestMismatchRefusal
+    from common.chairs.registry import HuggingFaceMaterializationFetcher
+
+    outside = tmp_path / "unrelated-snapshot"
+    outside.mkdir()
+    (outside / "model.safetensors").write_bytes(b"unrelated bytes")
+
+    class ReturnsUnrelatedDirectory:
+        def snapshot_download(self, **kwargs):
+            return outside
+
+    destination = tmp_path / "staging"
+    destination.mkdir()
+
+    with pytest.raises(DigestMismatchRefusal, match="outside its per-call cache"):
+        HuggingFaceMaterializationFetcher(ReturnsUnrelatedDirectory()).fetch(
+            "fixture-org/pinned", "a" * 40, destination
+        )
+
+    assert sorted(destination.iterdir()) == []
+
+
+def test_the_materialization_fetcher_names_a_per_call_cache_cleanup_failure(tmp_path, monkeypatch):
+    from common.chairs.errors import DigestMismatchRefusal
+    from common.chairs.registry import HuggingFaceMaterializationFetcher
+
+    class CachedSnapshotClientFake:
+        def snapshot_download(self, **kwargs):
+            source = Path(kwargs["cache_dir"]) / "snapshot"
+            source.mkdir(parents=True)
+            (source / "model.safetensors").write_bytes(b"pinned bytes")
+            return source
+
+    def refuse_cleanup(path):
+        raise PermissionError("cache cleanup denied")
+
+    monkeypatch.setattr("common.chairs.registry.shutil.rmtree", refuse_cleanup)
+    destination = tmp_path / "staging"
+    destination.mkdir()
+
+    with pytest.raises(
+        DigestMismatchRefusal,
+        match="per-call Hugging Face cache cleanup failed.*cache cleanup denied",
+    ):
+        HuggingFaceMaterializationFetcher(CachedSnapshotClientFake()).fetch(
+            "fixture-org/pinned", "a" * 40, destination
+        )

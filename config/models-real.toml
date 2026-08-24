@@ -3,8 +3,9 @@
 # all-zero digest below is an intentional pre-materialization sentinel, not a
 # manifest pin: the pod's materializer fetches each exact revision, builds the
 # canonical manifests, snapshots the licence text, and returns measured digests
-# for an ordinary reviewed edit here.  Until then `ensure()` refuses because no
-# manifest exists; this file never turns an unmeasured fetch into a serving claim.
+# for an ordinary reviewed edit here. Until then `ensure()` names the all-zero
+# value as a pre-materialization sentinel; this file never turns an unmeasured
+# fetch into a serving claim.
 
 witness_floor = 3
 
