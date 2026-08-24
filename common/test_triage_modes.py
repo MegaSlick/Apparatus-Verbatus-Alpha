@@ -70,3 +70,17 @@ def test_a_config_declaring_an_unshared_mode_name_is_refused(tmp_path):
     )
     with pytest.raises(ContractError, match="wrong closed schema"):
         require_triage_modes({"triage-modes": digest_bytes(config.read_bytes())}, config)
+
+
+@pytest.mark.parametrize(
+    ("raw", "cause"),
+    [
+        (b"\xff", "not valid UTF-8"),
+        (b"[manual\n", "not valid TOML"),
+    ],
+)
+def test_an_unreadable_triage_config_names_its_actual_cause(tmp_path, raw, cause):
+    config = tmp_path / "triage_modes.toml"
+    config.write_bytes(raw)
+    with pytest.raises(ContractError, match=cause):
+        require_triage_modes({"triage-modes": digest_bytes(raw)}, config)

@@ -22,6 +22,7 @@ geometry defaults hidden in this manifest.
 from __future__ import annotations
 
 import xml.etree.ElementTree as ET
+from collections.abc import Mapping as MappingABC
 from typing import Any, Final, Mapping
 
 from common.contracts.canonical import canonical_bytes, digest_bytes, is_sha256
@@ -58,6 +59,13 @@ _CLUSTER_FIELDS: Final = {
     "member_frame_sha256",
     "split_count",
 }
+
+
+class _ClosedFixtureTreeBuilder(ET.TreeBuilder):
+    """Reject declarations outside the deliberately tiny fixture-only XML seam."""
+
+    def doctype(self, name: str, pubid: str | None, system: str | None) -> None:
+        raise SchemaRefusal("ScanTailor fixture declarations are outside the closed XML shape")
 
 
 def _plain_int(value: Any) -> bool:
@@ -119,11 +127,12 @@ def _row_digest(row: Mapping[str, Any]) -> str:
     payload = {key: value for key, value in row.items() if key != "manifest_row_sha256"}
     try:
         return digest_bytes(canonical_bytes(payload))
-    except TypeError as error:
-        # `canonical_bytes` refuses floats with a TypeError. A caller building a
-        # row is inside this contract's refusal algebra, so it is one here too;
-        # a bare TypeError would escape every `except SchemaRefusal` in the
-        # pipeline.
+    except (TypeError, ValueError, RecursionError) as error:
+        # `canonical_bytes` refuses unsupported values with TypeError, circular
+        # containers with ValueError, and cycles found by its own pre-walk with
+        # RecursionError. A caller building a row is inside this contract's refusal
+        # algebra, so each is one here too; a bare built-in exception would escape
+        # every `except SchemaRefusal` in the pipeline.
         raise SchemaRefusal(f"triage row cannot be canonically serialized: {error}") from error
 
 
@@ -288,8 +297,8 @@ def validate_cluster_record(record: Any) -> dict[str, Any]:
     if (
         not isinstance(members, list)
         or len(members) < 2
-        or len(set(members)) != len(members)
         or not all(is_sha256(member) for member in members)
+        or len(set(members)) != len(members)
     ):
         raise SchemaRefusal("triage cluster record needs two or more distinct frame source digests")
     if not _plain_int(record["split_count"]) or record["split_count"] < 1:
@@ -327,6 +336,8 @@ def validate_manifest(
             "triage manifest names re-shoot clusters, so it cannot be validated without "
             "their corpus-scoped cluster records"
         )
+    if clusters is not None and not isinstance(clusters, MappingABC):
+        raise SchemaRefusal("triage cluster records must be supplied as a mapping by cluster id")
     checked: dict[str, Mapping[str, Any]] = {}
     for cluster_id, record in (clusters or {}).items():
         checked[cluster_id] = validate_cluster_record(record)
@@ -399,7 +410,8 @@ def transcribe_scantailor_project(
     requirement is for.
     """
     try:
-        root = ET.fromstring(project_bytes)
+        parser = ET.XMLParser(target=_ClosedFixtureTreeBuilder())
+        root = ET.fromstring(project_bytes, parser=parser)
     except ET.ParseError as error:
         raise SchemaRefusal("ScanTailor project fixture is not XML") from error
     if root.tag != "scantailor-project" or set(root.attrib) != {"shape", "version"}:
@@ -410,6 +422,8 @@ def transcribe_scantailor_project(
         raise SchemaRefusal(
             "ScanTailor project shape is unverified; only the documented fixture seam is accepted"
         )
+    if root.text and root.text.strip():
+        raise SchemaRefusal("ScanTailor fixture project has text outside its closed XML shape")
     version = root.attrib["version"]
     if not version.strip():
         raise SchemaRefusal("ScanTailor project records no version, so no actor can be resolved")
@@ -424,6 +438,10 @@ def transcribe_scantailor_project(
             "operation_order",
         }:
             raise SchemaRefusal("ScanTailor fixture page has the wrong closed geometry shape")
+        if page.text and page.text.strip():
+            raise SchemaRefusal(
+                "ScanTailor fixture page has text outside its closed geometry shape"
+            )
         parts = []
         for part in page:
             if part.tag != "part" or set(part.attrib) != {
@@ -438,6 +456,8 @@ def transcribe_scantailor_project(
                 "crop_space",
             }:
                 raise SchemaRefusal("ScanTailor fixture part has the wrong closed geometry shape")
+            if len(part) or (part.text and part.text.strip()):
+                raise SchemaRefusal("ScanTailor fixture part has content outside its closed shape")
             try:
                 rotation = int(part.attrib["rotation_millidegrees"])
             except ValueError as error:
@@ -455,13 +475,20 @@ def transcribe_scantailor_project(
                     rotation_canvas=part.attrib["rotation_canvas"],
                 )
             )
+            if part.tail and part.tail.strip():
+                raise SchemaRefusal(
+                    "ScanTailor fixture page has text outside its closed geometry shape"
+                )
         if not parts:
             raise SchemaRefusal("ScanTailor fixture page declares no split part")
         try:
             frame = {"width": int(page.attrib["width"]), "height": int(page.attrib["height"])}
-            confidence = int(page.attrib["confidence"])
         except ValueError as error:
             raise SchemaRefusal("ScanTailor fixture page dimensions are malformed") from error
+        try:
+            confidence = int(page.attrib["confidence"])
+        except ValueError as error:
+            raise SchemaRefusal("ScanTailor fixture page confidence is malformed") from error
         rows.append(
             make_row(
                 corpus_id=corpus_id,
@@ -475,6 +502,8 @@ def transcribe_scantailor_project(
                 human_override=human_override,
             )
         )
+        if page.tail and page.tail.strip():
+            raise SchemaRefusal("ScanTailor fixture project has text outside its closed XML shape")
     if not rows:
         raise SchemaRefusal("ScanTailor project fixture declares no pages")
     return rows

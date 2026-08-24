@@ -187,12 +187,19 @@ def test_no_winner_field_can_be_added_to_a_cluster_row():
         validate_manifest(manifest([]), {"opening-35": record})
 
 
-def test_every_refusal_this_contract_raises_is_a_typed_schema_refusal():
+def test_a_malformed_row_raises_the_typed_schema_refusal_caught_by_recorders():
     # `errors.py` exists so a stage can catch what it means to catch, and the
     # pipeline's live recorders catch `SchemaRefusal`. A refusal raised as the
     # bare base class sails past every one of them.
     with pytest.raises(SchemaRefusal):
         validate_manifest(manifest([{"nonsense": 1}]))
+
+
+def test_a_cyclic_row_value_is_a_typed_refusal_not_a_recursion_crash():
+    cycle = {}
+    cycle["identity"] = cycle
+    with pytest.raises(SchemaRefusal, match="cannot be canonically serialized"):
+        row(actor={"kind": "model", "identity": cycle, "revision": "r17"})
 
 
 def test_split_must_partition_its_frame_and_cluster_must_contain_the_frame():
@@ -507,6 +514,14 @@ def test_a_cluster_record_filed_under_another_cluster_id_is_refused():
         validate_manifest(manifest([named]), {"opening-35": misfiled})
 
 
+def test_malformed_cluster_inputs_stay_inside_the_schema_refusal_algebra():
+    malformed_member = cluster([DIGEST_A, []])
+    with pytest.raises(SchemaRefusal, match="frame source digests"):
+        validate_manifest(manifest([]), {"opening-35": malformed_member})
+    with pytest.raises(SchemaRefusal, match="supplied as a mapping"):
+        validate_manifest(manifest([]), [malformed_member])
+
+
 def test_manifest_rows_and_cluster_records_cannot_cross_corpus_scope():
     source = row()
     with pytest.raises(ContractError, match="row from a different corpus"):
@@ -617,9 +632,30 @@ def test_scantailor_refuses_a_page_missing_the_closed_attribute_set():
         transcribe(project(truncated))
 
 
+def test_scantailor_refuses_malformed_confidence_with_the_right_cause():
+    malformed = page(fixture_part()).replace(b'confidence="0"', b'confidence="unknown"')
+    with pytest.raises(ContractError, match="confidence is malformed"):
+        transcribe(project(malformed))
+
+
 def test_scantailor_refuses_a_part_missing_the_closed_attribute_set():
     with pytest.raises(ContractError, match="part has the wrong closed geometry shape"):
         transcribe(project(page(fixture_part(conventions=b""))))
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b'<!DOCTYPE scantailor-project><scantailor-project shape="unverified-fixture-v0" '
+        b'version="6.0"></scantailor-project>',
+        project(page(fixture_part().replace(b" />", b"><ignored /></part>"))),
+        project(page(b"unexpected" + fixture_part())),
+        project(page(fixture_part()) + b"unexpected"),
+    ],
+)
+def test_scantailor_refuses_content_outside_the_closed_fixture_shape(payload):
+    with pytest.raises(SchemaRefusal, match="outside.*closed"):
+        transcribe(payload)
 
 
 def test_scantailor_refuses_a_page_with_no_split_part():

@@ -1160,9 +1160,16 @@ def require_triage_modes(
         path = Path(__file__).resolve().parents[1] / "config" / "triage_modes.toml"
     try:
         raw = Path(path).read_bytes()
-        record = tomllib.loads(raw.decode("utf-8"))
-    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+    except OSError as error:
         raise ContractError(f"triage modes configuration at {path} could not be read") from error
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ContractError(f"triage modes configuration at {path} is not valid UTF-8") from error
+    try:
+        record = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as error:
+        raise ContractError(f"triage modes configuration at {path} is not valid TOML") from error
     if set(record) != set(TRIAGE_MODES) or any(
         not isinstance(policy, dict)
         or set(policy) != {"review_at_or_below_confidence"}
