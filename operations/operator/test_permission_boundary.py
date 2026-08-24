@@ -51,6 +51,10 @@ def _make_run(tmp_path: Path) -> tuple[Path, str]:
     return run_root, "reviewed"
 
 
+def _boundary_digest(run_root: Path, run_id: str, stage: str = "armarium") -> str:
+    return advance.sealed_boundary(RunTree(run_root, run_id), stage)[1]
+
+
 def test_read_surface_projects_seals_census_pages_crops_and_optional_review_shape(tmp_path: Path):
     run_root, run_id = _make_run(tmp_path)
 
@@ -111,10 +115,69 @@ def test_external_trigger_refuses_an_unsealed_boundary_before_creating_its_write
             "designator",
             reason="not actually sealed",
             workspace=ROOT,
+            expected_digest="c" * 64,
         )
 
     assert excinfo.value.code == ErrorCode.ADVANCE_REFUSED
     assert not (tree.root / "receipts").exists()
+
+
+def test_the_record_writer_refuses_a_missing_digest_before_any_record_is_written(tmp_path):
+    run_root, run_id = _make_run(tmp_path)
+    tree = RunTree(run_root, run_id)
+    before = {path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")}
+
+    with pytest.raises(ApprovalRefusal, match="no reviewed stage-seal digest"):
+        advance.record_advance(tree, "armarium", reason="there was no boundary digest to bind")
+
+    assert {path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")} == before
+
+
+def test_the_external_trigger_refuses_an_advance_that_names_no_reviewed_digest(tmp_path):
+    """Both sides of the worker boundary refuse, and the outer one has no default.
+
+    `expected_digest` is keyword-only with no default, so the ordinary way to
+    omit it does not compile a call at all. This covers the other way in: a
+    caller that passes the value through and hands over `None` or an empty
+    string. Either would otherwise bind the advance to whatever seal happened
+    to be current, which is the substitution the typed confirmation exists to
+    prevent.
+    """
+    run_root, run_id = _make_run(tmp_path)
+    tree = RunTree(run_root, run_id)
+    before = {path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")}
+
+    for absent in (None, ""):
+        with pytest.raises(OperatorError) as excinfo:
+            advance.trigger_advance(
+                run_root,
+                run_id,
+                "armarium",
+                reason="no digest was ever confirmed",
+                workspace=ROOT,
+                expected_digest=absent,
+            )
+        assert excinfo.value.code == ErrorCode.ADVANCE_REFUSED
+        assert "no reviewed stage-seal digest" in (excinfo.value.detail or "")
+
+    assert {path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")} == before
+
+
+def test_an_explicitly_blank_advance_timestamp_is_refused_not_replaced_with_now(tmp_path):
+    run_root, run_id = _make_run(tmp_path)
+    tree = RunTree(run_root, run_id)
+    before = {path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")}
+
+    with pytest.raises(ApprovalRefusal, match="no timestamp"):
+        advance.record_advance(
+            tree,
+            "armarium",
+            reason="reviewed",
+            timestamp="",
+            expected_digest=_boundary_digest(run_root, run_id),
+        )
+
+    assert {path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")} == before
 
 
 def test_advance_worker_is_external_and_binds_the_current_seal_digest(tmp_path: Path):
@@ -128,6 +191,7 @@ def test_advance_worker_is_external_and_binds_the_current_seal_digest(tmp_path: 
         "armarium",
         reason="operator reviewed the sealed Armarium boundary",
         workspace=ROOT,
+        expected_digest=_boundary_digest(run_root, run_id),
     )
 
     after = {path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")}
@@ -140,6 +204,147 @@ def test_advance_worker_is_external_and_binds_the_current_seal_digest(tmp_path: 
         tree.read_bytes(tree.artifact_path("armarium", "stage-seal", seal["artifact_id"]))
     )
     assert "run_confined" in inspect.getsource(advance.trigger_advance)
+
+
+# The macOS Seatbelt profile is `deny default` with a global `file-read*`, so the
+# confined worker may read anything and load the extension modules `common.stage`
+# already pulls in at import — but not `ctypes`, whose libffi trampolines this
+# repository measured aborting a confined child (`custody._launcher_environment_hidden`
+# imports it inside a Linux-only branch for exactly that reason). Seal verification
+# reaches `common.stage._decode_environment`, and `import pypdfium2` there is a
+# `ctypes` import. A chamber cannot run Seatbelt, so these two tests reproduce the
+# *dependency* rather than the denial: they make the denied names unimportable and
+# ask which side of the worker boundary still works.
+_DENIED_UNDER_SEATBELT = ("ctypes", "_ctypes", "pypdfium2")
+
+_BLOCKED_IMPORT_PRELUDE = """
+import sys
+
+DENIED = frozenset({denied!r})
+
+
+class _Denied:
+    def find_spec(self, name, path=None, target=None):
+        if name.split(".")[0] in DENIED:
+            raise ImportError(name + " is denied here, as Seatbelt denies it to the worker")
+        return None
+
+
+sys.path.insert(0, sys.argv[1])
+sys.meta_path.insert(0, _Denied())
+"""
+
+
+def _without_seatbelt_denied_imports(
+    body: str, *arguments: str, stdin: str = ""
+) -> subprocess.CompletedProcess:
+    """Run `body` in a fresh interpreter where the Seatbelt-denied names cannot import."""
+
+    source = _BLOCKED_IMPORT_PRELUDE.format(denied=_DENIED_UNDER_SEATBELT) + body
+    return subprocess.run(
+        [sys.executable, "-c", source, str(ROOT), *arguments],
+        cwd=ROOT,
+        input=stdin,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_the_confined_worker_completes_an_advance_without_the_imports_seatbelt_denies(tmp_path):
+    """The worker's whole path must not touch `ctypes`; the checker's path does.
+
+    Both halves are asserted here because either alone is misleading. The
+    worker succeeding proves nothing if the blocker never blocks anything, and
+    the checker failing proves nothing about where verification now runs.
+    Together they say: the operation that fails under Seatbelt is real, it is
+    on the verification path, and the verification path is no longer inside
+    the confined process.
+    """
+    run_root, run_id = _make_run(tmp_path)
+    tree = RunTree(run_root, run_id)
+    before = {path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")}
+    request = json.dumps(
+        {
+            "stage": "armarium",
+            "reason": "reviewed with the denied imports unavailable",
+            "expected_digest": _boundary_digest(run_root, run_id),
+        }
+    )
+
+    worker = _without_seatbelt_denied_imports(
+        "from operations.operator.advance_worker import main\nsys.exit(main(sys.argv[2:]))\n",
+        "--run-root",
+        str(run_root),
+        "--run-id",
+        run_id,
+        stdin=request,
+    )
+    assert worker.returncode == 0, worker.stderr
+    reference = ApprovalRecordReference(**json.loads(worker.stdout))
+    assert {path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")} - before
+    assert advance.verify_advance(tree, "armarium", reference)["reason"] == (
+        "reviewed with the denied imports unavailable"
+    )
+
+    checker = _without_seatbelt_denied_imports(
+        "from common.runtree.store import RunTree\n"
+        "from operations.operator.advance import verify_sealed_boundary\n"
+        "verify_sealed_boundary(RunTree(sys.argv[2], sys.argv[3]), sys.argv[4])\n",
+        str(run_root),
+        run_id,
+        "armarium",
+    )
+    assert checker.returncode != 0
+    assert "pypdfium2 is denied here" in checker.stderr
+
+
+def test_a_boundary_that_stopped_verifying_is_refused_before_the_worker_is_launched(
+    tmp_path, monkeypatch
+):
+    """The review's property, asserted where it now lives: in the parent.
+
+    Deleting a witnessed artifact leaves the stage-seal's own bytes untouched,
+    so the reviewed digest still matches and the digest equality both sides
+    bind would pass this through. Only verification catches it — which is why
+    the parent must run it, and must run it before the worker exists and
+    before the one directory the worker may write into is created.
+    """
+    run_root, run_id = _make_run(tmp_path)
+    tree = RunTree(run_root, run_id)
+    reviewed_digest = _boundary_digest(run_root, run_id, "attestatores")
+    receipts_before = {path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")}
+    witnessed = next(
+        row
+        for row in tree.build_manifest("attestatores", verify_inputs=False)["artifacts"]
+        if row["kind"] not in {"stage-seal", "decode-environment"}
+    )
+    tree.resolve(witnessed["relative_path"]).unlink()
+
+    # The seal bytes did not move, so the digest the operator confirmed is
+    # still the current one: nothing about equality refuses this advance.
+    assert advance.stored_boundary(tree, "attestatores")[1] == reviewed_digest
+
+    def _never(*_args, **_kwargs):
+        raise AssertionError("the worker was launched for a boundary that no longer verifies")
+
+    monkeypatch.setattr(advance, "run_confined", _never)
+
+    with pytest.raises(OperatorError) as excinfo:
+        advance.trigger_advance(
+            run_root,
+            run_id,
+            "attestatores",
+            reason="the seal no longer witnesses what is on disk",
+            workspace=ROOT,
+            expected_digest=reviewed_digest,
+        )
+
+    assert excinfo.value.code == ErrorCode.ADVANCE_REFUSED
+    assert "no longer verifies against the run tree" in (excinfo.value.detail or "")
+    assert {
+        path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")
+    } == receipts_before
 
 
 def test_console_process_cannot_import_writers_or_keep_provider_credentials(tmp_path: Path):
@@ -173,6 +378,13 @@ def test_console_process_cannot_import_writers_or_keep_provider_credentials(tmp_
     assert not target.exists()
 
 
+def test_console_rejects_actual_process_arguments(monkeypatch):
+    monkeypatch.setattr(console.sys, "argv", ["verbatus-review", "/a/run/tree"])
+
+    with pytest.raises(SystemExit, match="already-checked projection"):
+        console.main()
+
+
 # --- The platform seam: Landlock is Linux-only; production is Tyrel's macOS host. -----
 
 
@@ -198,7 +410,14 @@ def test_landlock_probe_absent_refuses_loudly_before_any_subprocess_runs(tmp_pat
     assert review_error.value.code == ErrorCode.CONSOLE_CUSTODY_REFUSED
 
     with pytest.raises(OperatorError) as advance_error:
-        advance.trigger_advance(run_root, run_id, "armarium", reason="x", workspace=ROOT)
+        advance.trigger_advance(
+            run_root,
+            run_id,
+            "armarium",
+            reason="x",
+            workspace=ROOT,
+            expected_digest=_boundary_digest(run_root, run_id),
+        )
     assert advance_error.value.code == ErrorCode.CONSOLE_CUSTODY_REFUSED
 
 
@@ -244,7 +463,14 @@ def test_a_launcher_that_never_established_its_boundary_is_a_custody_refusal(tmp
     assert review_error.value.code == ErrorCode.CONSOLE_CUSTODY_REFUSED
 
     with pytest.raises(OperatorError) as advance_error:
-        advance.trigger_advance(run_root, run_id, "armarium", reason="x", workspace=ROOT)
+        advance.trigger_advance(
+            run_root,
+            run_id,
+            "armarium",
+            reason="x",
+            workspace=ROOT,
+            expected_digest=_boundary_digest(run_root, run_id),
+        )
     assert advance_error.value.code == ErrorCode.CONSOLE_CUSTODY_REFUSED
 
 
@@ -270,7 +496,14 @@ def test_a_backend_that_does_not_actually_deny_writes_refuses_before_the_console
     assert "did not refuse both" in review_error.value.detail
 
     with pytest.raises(OperatorError) as advance_error:
-        advance.trigger_advance(run_root, run_id, "armarium", reason="x", workspace=ROOT)
+        advance.trigger_advance(
+            run_root,
+            run_id,
+            "armarium",
+            reason="x",
+            workspace=ROOT,
+            expected_digest=_boundary_digest(run_root, run_id),
+        )
     assert advance_error.value.code == ErrorCode.CONSOLE_CUSTODY_REFUSED
     assert "did not refuse both" in advance_error.value.detail
 
@@ -492,10 +725,34 @@ def test_the_confined_child_inherits_no_interpreter_or_loader_hook(tmp_path):
     original_path = list(custody.sys.path)
     try:
         custody.sys.path.insert(0, str(attacker_packages))
-        command = custody.python_module_command("operations.operator.console", ROOT)
+        command = custody.python_module_command("operations.operator.console")
     finally:
         custody.sys.path[:] = original_path
     assert str(attacker_packages.resolve()) not in json.loads(command[7])
+
+
+def test_no_caller_can_nominate_the_tree_the_confined_child_imports_from(tmp_path):
+    """The import root is the loaded checkout, and there is no argument to say otherwise.
+
+    A confined child that imported from a caller-supplied tree would take its
+    code from whoever chose that path. The child's *working* directory is a
+    different decision, made at `run_confined(cwd=...)`: under an installed
+    wheel the operator's workspace is legitimately not this checkout, so the
+    two values must stay separate rather than be checked against each other.
+    """
+    other = tmp_path / "other-checkout"
+    (other / "operations" / "operator").mkdir(parents=True)
+    (other / "operations" / "operator" / "custody.py").write_text(
+        "# a different tree may not choose the worker code\n", encoding="utf-8"
+    )
+
+    command = custody.python_module_command("operations.operator.advance_worker")
+
+    assert Path(command[5]) == ROOT
+    assert Path(command[5]) != other.resolve()
+    assert str(other) not in command
+    # `workspace` is not an ignored parameter here; it is not a parameter.
+    assert "workspace" not in inspect.signature(custody.python_module_command).parameters
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="requires the native Landlock backend")
@@ -600,6 +857,118 @@ def test_require_no_provider_credentials_refuses_on_the_same_marker_shapes():
 # --- The advance record: both layers of the two-layer claim, and its visibility. ------
 
 
+def test_review_marks_invalid_and_advance_refuses_when_a_sealed_inventory_lost_evidence(tmp_path):
+    run_root, run_id = _make_run(tmp_path)
+    tree = RunTree(run_root, run_id)
+    reviewed_digest = _boundary_digest(run_root, run_id, "attestatores")
+    receipts_before = {path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")}
+    testimony = next(
+        row
+        for row in tree.build_manifest("attestatores", verify_inputs=False)["artifacts"]
+        if row["kind"] not in {"stage-seal", "decode-environment"}
+    )
+    tree.resolve(testimony["relative_path"]).unlink()
+
+    projected = review.ReadOnlyRun(run_root, run_id).projection()
+    boundary = next(row for row in projected.boundaries if row["stage"] == "attestatores")
+    assert boundary["seal_present"] is True
+    assert boundary["sealed"] is False
+    assert "inventory no longer matches disk" in boundary["seal_note"]
+
+    with pytest.raises(OperatorError) as advance_error:
+        advance.trigger_advance(
+            run_root,
+            run_id,
+            "attestatores",
+            reason="must not advance damaged evidence",
+            workspace=ROOT,
+            expected_digest=reviewed_digest,
+        )
+    assert advance_error.value.code == ErrorCode.ADVANCE_REFUSED
+    assert "inventory no longer matches disk" in (advance_error.value.detail or "")
+    assert {
+        path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")
+    } == receipts_before
+
+
+def test_review_image_rows_refuse_bytes_that_do_not_match_their_sealed_digest():
+    stored = b"changed page bytes"
+    tree = types.SimpleNamespace(read_bytes=lambda _path: stored)
+    page = {
+        "ordinal": 1,
+        "page_id": "pg_example",
+        "outcome": "sealed",
+        "image_path": "1_exemplar/blobs/sha256/example",
+        "image_sha256": "0" * 64,
+    }
+    act = {
+        "act_id": "act_example",
+        "act_key": "a1",
+        "category": "delivered",
+        "source_regions": [
+            {
+                "source_page_ordinal": 1,
+                "region_id": "rgn_example",
+                "image_path": "2_designator/blobs/sha256/example",
+                "image_sha256": "0" * 64,
+            }
+        ],
+    }
+
+    with pytest.raises(OperatorError) as page_error:
+        review._image_row(tree, page)
+    assert "sealed page" in (page_error.value.detail or "")
+    with pytest.raises(OperatorError) as crop_error:
+        review._act_row(tree, act)
+    assert "act crop" in (crop_error.value.detail or "")
+
+
+def test_review_keeps_an_unsealed_page_visible_with_its_reason():
+    row = review._image_row(
+        types.SimpleNamespace(),
+        {"ordinal": 2, "page_id": None, "outcome": "refused", "reason": "decoder refused"},
+    )
+
+    assert row == {
+        "ordinal": 2,
+        "page_id": None,
+        "outcome": "refused",
+        "reason": "decoder refused",
+        "image_sha256": None,
+        "image_data_url": None,
+    }
+
+
+def test_review_refuses_an_armarium_projection_that_omits_an_accounting_list():
+    tree = types.SimpleNamespace(read_artifact=lambda *_args: {"payload": {"pages": []}})
+
+    with pytest.raises(OperatorError) as excinfo:
+        review._armarium_payload(tree)
+    assert "no delivered list" in (excinfo.value.detail or "")
+
+
+def test_unreadable_tree_recovery_never_instructs_an_evidence_repair():
+    rendered = OperatorError(ErrorCode.CONSOLE_TREE_UNREADABLE).render()
+
+    assert "Preserve the run tree unchanged" in rendered
+    assert "never edit the damaged evidence in place" in rendered
+    assert "repair the named evidence" not in rendered
+
+
+def test_review_refuses_bundle_bytes_that_do_not_match_the_export_reference():
+    tree = types.SimpleNamespace(read_bytes=lambda _path: b"changed bundle")
+    payload = {
+        "bundle": {
+            "reference": {"relative_path": "7_armarium/blobs/sha256/example", "sha256": "0" * 64},
+            "sha256": "0" * 64,
+        }
+    }
+
+    with pytest.raises(OperatorError) as excinfo:
+        review._review_items(tree, payload)
+    assert "Armarium bundle" in (excinfo.value.detail or "")
+
+
 def test_verify_advance_detects_a_boundary_that_changed_after_it_was_advanced(tmp_path):
     """Digest binding must be proven against a boundary that actually changed."""
     run_root, run_id = _make_run(tmp_path)
@@ -610,6 +979,7 @@ def test_verify_advance_detects_a_boundary_that_changed_after_it_was_advanced(tm
         "armarium",
         reason="operator reviewed the sealed Armarium boundary",
         workspace=ROOT,
+        expected_digest=_boundary_digest(run_root, run_id),
     )
     advance.verify_advance(tree, "armarium", reference)  # still names the advanced boundary
 
@@ -641,7 +1011,12 @@ def test_two_advance_records_for_one_boundary_are_both_persisted_and_both_visibl
     """
     run_root, run_id = _make_run(tmp_path)
     first = advance.trigger_advance(
-        run_root, run_id, "armarium", reason="first reviewer signed off", workspace=ROOT
+        run_root,
+        run_id,
+        "armarium",
+        reason="first reviewer signed off",
+        workspace=ROOT,
+        expected_digest=_boundary_digest(run_root, run_id),
     )
     second = advance.trigger_advance(
         run_root,
@@ -649,6 +1024,7 @@ def test_two_advance_records_for_one_boundary_are_both_persisted_and_both_visibl
         "armarium",
         reason="second reviewer signed off independently",
         workspace=ROOT,
+        expected_digest=_boundary_digest(run_root, run_id),
     )
     assert first.relative_path != second.relative_path
 
@@ -664,7 +1040,12 @@ def test_review_refuses_an_advance_record_copied_under_a_false_content_address(t
     run_root, run_id = _make_run(tmp_path)
     tree = RunTree(run_root, run_id)
     reference = advance.trigger_advance(
-        run_root, run_id, "armarium", reason="reviewed once", workspace=ROOT
+        run_root,
+        run_id,
+        "armarium",
+        reason="reviewed once",
+        workspace=ROOT,
+        expected_digest=_boundary_digest(run_root, run_id),
     )
     false_path = tree.root / "receipts" / "sha256" / f"{'0' * 64}.json"
     false_path.write_bytes(tree.read_bytes(reference.relative_path))
@@ -995,7 +1376,12 @@ def test_a_relative_run_root_cannot_split_the_permitted_path_from_the_written_tr
     assert not Path(relative).is_absolute()
 
     reference = advance.trigger_advance(
-        relative, run_id, "armarium", reason="reviewed from a relative root", workspace=ROOT
+        relative,
+        run_id,
+        "armarium",
+        reason="reviewed from a relative root",
+        workspace=ROOT,
+        expected_digest=_boundary_digest(run_root, run_id),
     )
 
     tree = RunTree(run_root, run_id)
@@ -1015,7 +1401,12 @@ def test_an_advance_whose_boundary_later_changed_is_named_stale_where_a_person_r
     run_root, run_id = _make_run(tmp_path)
     tree = RunTree(run_root, run_id)
     advance.trigger_advance(
-        run_root, run_id, "armarium", reason="reviewed the sealed boundary", workspace=ROOT
+        run_root,
+        run_id,
+        "armarium",
+        reason="reviewed the sealed boundary",
+        workspace=ROOT,
+        expected_digest=_boundary_digest(run_root, run_id),
     )
 
     fresh = review.ReadOnlyRun(run_root, run_id).projection().advance_records

@@ -14,7 +14,8 @@ from typing import Sequence
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    if argv:
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments:
         raise SystemExit(
             "verbatus-review receives its already-checked projection on standard input"
         )

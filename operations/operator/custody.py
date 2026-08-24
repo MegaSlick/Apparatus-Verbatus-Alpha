@@ -92,7 +92,7 @@ _CUSTODY_ENVIRONMENT_NAMES: Final = frozenset(
 # Isolated mode implies `-E` and `-s`, removes the current directory from the
 # interpreter's implicit import path, and `-S` prevents a system `.pth` or
 # `sitecustomize` hook from running before this repository chooses its import
-# roots explicitly. The module command below inserts the checked workspace and
+# roots explicitly. The module command below inserts the loaded checkout and
 # the interpreter's already-active package directories only after isolated
 # startup has completed; it never executes their `.pth` or customization hooks.
 CHILD_INTERPRETER_FLAGS: Final = ("-I", "-S")
@@ -132,19 +132,30 @@ def custody_environment(source: dict[str, str] | None = None) -> dict[str, str]:
 
 _RUN_MODULE_SOURCE: Final = (
     "import json, runpy, sys\n"
-    "workspace = sys.argv.pop(1)\n"
+    "checkout = sys.argv.pop(1)\n"
     "module = sys.argv.pop(1)\n"
     "package_roots = json.loads(sys.argv.pop(1))\n"
-    "sys.path.insert(0, workspace)\n"
+    "sys.path.insert(0, checkout)\n"
     "sys.path.extend(package_roots)\n"
     "runpy.run_module(module, run_name='__main__')\n"
 )
 
 
-def python_module_command(module: str, workspace: Path, *arguments: str) -> list[str]:
-    """Name one repository module and known package roots after isolated startup."""
+def python_module_command(module: str, *arguments: str) -> list[str]:
+    """Name one loaded-checkout module and known roots after isolated startup.
 
-    root = workspace.resolve()
+    The import root is fixed to the checkout that loaded this custody
+    boundary, and this function takes no workspace argument at all, so no
+    caller can nominate the tree the confined child imports from. The child's
+    *working directory* is a separate decision the trusted parent makes at
+    `run_confined(cwd=...)`, and the separation is deliberate: under an
+    installed wheel the operator's workspace is legitimately not this checkout
+    (see the `--workspace` default in `cli.py`), so the two cannot be checked
+    against each other. Isolated startup keeps that working directory off
+    `sys.path`, which is what makes holding them apart safe.
+    """
+
+    root = Path(__file__).resolve().parents[2]
     # Derive these from the interpreter installation, never from `sys.path`:
     # PYTHONPATH has already influenced the parent interpreter's `sys.path` by
     # the time this function runs, and forwarding a conveniently named attacker
@@ -325,24 +336,13 @@ class SeatbeltConfinement(Confinement):
     means an accidentally omitted operation fails closed in the native probe.
     The profile is applied before ``execvp`` and remains attached across exec.
 
-    **This backend has not been executed on macOS.** It was authored and
-    unit-tested on Linux against a stubbed platform probe, which is why
-    `verify_confinement` exists: the profile proves itself on the host before
-    either child is trusted, so a profile that is wrong refuses loudly instead
-    of running the console unconfined. That makes the failure mode a refusal
-    rather than an unconfined console — it does not make the backend verified.
-    Three things only a native run can settle, and the integration host must
-    settle them before the console is relied on there:
-
-      * that deny-default leaves the child able to read/write its captured
-        stdin/stdout pipes, which are not vnode operations but have not been
-        observed;
-      * that a Python interpreter starts at all under this profile, including
-        whatever `.pyc` writes it attempts and abandons;
-      * that `verify_confinement`'s probe reports both expected refusals rather
-        than the launcher's own diagnostic, which is the difference between
-        "the profile applied and denied the operations" and "the profile never
-        applied".
+    This backend was exercised on macOS 15 (Darwin 24) through both confined
+    children. The native run established that captured stdin/stdout remain
+    usable, the framework interpreter's exact re-exec target is sufficient,
+    and `verify_confinement` observes denied writes and outbound connections
+    after the profile applies. The probe still runs before every launch: a
+    past native pass is evidence about that host and moment, not permission to
+    assume a later host enforces the same profile.
     """
 
     name = "macOS Seatbelt (sandbox-exec)"

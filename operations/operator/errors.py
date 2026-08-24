@@ -240,7 +240,7 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
     ErrorCode.CONSOLE_TREE_UNREADABLE: ErrorCopy(
         "The operator console could not read the selected run tree safely.",
         "It did not guess at missing evidence or change the run tree.",
-        "Preserve the run tree and repair the named evidence problem before opening it again; this is safe.",
+        "Preserve the run tree unchanged and investigate the named evidence problem. Resume only from retained valid evidence, or create a new run; never edit the damaged evidence in place.",
     ),
     ErrorCode.ADVANCE_REFUSED: ErrorCopy(
         "The requested stage boundary could not be advanced.",

@@ -17,9 +17,9 @@ from typing import Any
 from common.contracts.approval import ApprovalRecordReference, build_approval_record
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ApprovalRefusal, ContractError
-from common.contracts.stages import STAGES
+from common.contracts.stages import ARMARIUM, SEAL_PREDECESSORS, STAGES
 from common.runtree.store import RunTree
-from common.stage import latest_attempt
+from common.stage import latest_attempt, verify_final_seal, verify_predecessor_seal
 
 from .custody import (
     python_module_command,
@@ -39,8 +39,23 @@ def advance_subject(stage: str) -> str:
     return f"stage-boundary:{stage}"
 
 
-def sealed_boundary(tree: RunTree, stage: str) -> tuple[dict[str, Any], str]:
-    """Read the current stored seal and its bytes' digest, refusing no seal.
+def verify_sealed_boundary(tree: RunTree, stage: str) -> None:
+    """Verify that one stored seal still witnesses the evidence now on disk."""
+
+    advance_subject(stage)  # refuses an unknown stage before anything is read
+    if stage == ARMARIUM:
+        verify_final_seal(tree)
+        return
+    consumers = [consumer for consumer, producer in SEAL_PREDECESSORS.items() if producer == stage]
+    if len(consumers) != 1:  # the closed stage graph must give every non-final seal one reader
+        raise ApprovalRefusal(
+            f"stage {stage!r} has no unique seal verifier; no boundary was advanced"
+        )
+    verify_predecessor_seal(tree, consumers[0])
+
+
+def stored_boundary(tree: RunTree, stage: str) -> tuple[dict[str, Any], str]:
+    """Read the current stored seal and digest without claiming it is still valid.
 
     The digest is taken from the immutable artifact bytes, not reconstructed
     from its payload.  A later re-seal therefore changes the value an advance
@@ -57,15 +72,36 @@ def sealed_boundary(tree: RunTree, stage: str) -> tuple[dict[str, Any], str]:
         ]
     except (ContractError, KeyError, TypeError) as error:
         raise ApprovalRefusal(
-            f"advance could not read {stage}'s stored completion seal; no boundary was advanced"
+            f"advance could not read {stage}'s stored completion seal ({error}); "
+            "no boundary was advanced"
         ) from error
     if not seals:
         raise ApprovalRefusal(
             f"advance refuses {stage}: it has no stored stage-seal, so there is no witnessed boundary to pass"
         )
     seal = latest_attempt(seals, f"{stage} stage seal", operation="seal")
-    data = tree.read_bytes(tree.artifact_path(stage, "stage-seal", seal["artifact_id"]))
+    try:
+        data = tree.read_bytes(tree.artifact_path(stage, "stage-seal", seal["artifact_id"]))
+    except (KeyError, OSError, TypeError) as error:
+        raise ApprovalRefusal(
+            f"advance could not read {stage}'s stored completion seal bytes ({error}); "
+            "no boundary was advanced"
+        ) from error
     return seal, digest_bytes(data)
+
+
+def sealed_boundary(tree: RunTree, stage: str) -> tuple[dict[str, Any], str]:
+    """Read a stored seal only when it still witnesses the evidence on disk."""
+
+    seal, digest = stored_boundary(tree, stage)
+    try:
+        verify_sealed_boundary(tree, stage)
+    except ContractError as error:
+        raise ApprovalRefusal(
+            f"advance refuses {stage}: its stored completion seal no longer verifies against "
+            f"the run tree ({error}); no boundary was advanced"
+        ) from error
+    return seal, digest
 
 
 def record_advance(
@@ -78,20 +114,55 @@ def record_advance(
 ) -> ApprovalRecordReference:
     """Append the one allowed decision record after proving its boundary exists.
 
+    **The boundary's verification belongs to the launching parent, and this
+    half of the worker boundary deliberately does not repeat it.**
+    `trigger_advance` calls `sealed_boundary` — `stored_boundary` *plus*
+    `verify_sealed_boundary` — unconfined, read-only, and before the receipt
+    directory is created, so a boundary whose seal no longer verifies still
+    refuses before any advance record exists. This function reads the same
+    stored seal and binds the digest the parent verified.
+
+    It does not re-verify, because inside the confined worker it cannot.
+    `verify_predecessor_seal` and `verify_final_seal` end in
+    `common.stage._decode_environment`, whose `import pypdfium2` pulls in
+    `ctypes` — the one import this repository has already measured aborting a
+    confined child under the macOS Seatbelt profile, recorded at
+    `custody._launcher_environment_hidden`, which imports `ctypes` inside its
+    Linux-only branch for exactly that reason. Widening the profile to admit
+    it is refused on principle: the boundary does not widen to accommodate a
+    checker.
+
+    **Nothing that can refuse was lost by the move.** Every refusal
+    `_verify_stage_seal` raises is reached by reading files, which the profile
+    already permits; the single step that needs the decoders is explicitly an
+    observation Unit 17 owns and never a refusal. In the worker that
+    observation was written to a stderr pipe `trigger_advance` discards on
+    success, so moving it to the parent is where it reaches a person at all
+    (GOVERNANCE 2). Splitting a diagnostic-free variant out of
+    `_verify_stage_seal` was the alternative and is declined: that function
+    exists to be the single definition of what a seal means, and a second,
+    weaker entry point beside it is the shape its own docstring warns against.
+
     **The read-then-write window is closed by detection, not by locking, and
     that is the decision rather than an omission.** A seal re-written between
-    `sealed_boundary` above and the write below leaves a record binding a
-    digest that is already stale. No number of re-reads closes that: there is
-    no cross-process lock over a run tree, and GOVERNANCE 4 forbids retracting
-    the record once it is written, so a post-write check could only report
-    what the binding already reports. What the binding buys instead is that
+    the `stored_boundary` read above and the write below — or between the
+    parent's verification and this process starting at all — leaves a record
+    binding a digest that is already stale. No number of re-reads closes that:
+    there is no cross-process lock over a run tree, and GOVERNANCE 4 forbids
+    retracting the record once it is written, so a post-write check could only
+    report what the binding already reports. What the binding buys instead is that
     the staleness is permanent and visible — `verify_advance` refuses such a
     record, and `review._still_binds` names it stale on the one surface a
     person reads, every time they read it.
     """
 
-    _seal, seal_digest = sealed_boundary(tree, stage)
-    if expected_digest is not None and seal_digest != expected_digest:
+    _seal, seal_digest = stored_boundary(tree, stage)
+    if expected_digest is None:
+        raise ApprovalRefusal(
+            "advance refuses because no reviewed stage-seal digest was supplied; "
+            "no boundary was advanced"
+        )
+    if seal_digest != expected_digest:
         raise ApprovalRefusal(
             "advance refuses because the stage seal changed after the operator reviewed it; "
             "no boundary was advanced"
@@ -101,7 +172,9 @@ def record_advance(
         ADVANCE_ACTION,
         reason,
         seal_digest,
-        timestamp or datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        timestamp
+        if timestamp is not None
+        else datetime.now(UTC).isoformat().replace("+00:00", "Z"),
     )
     reference, _result = tree.write_approval_record(record)
     return reference
@@ -111,13 +184,20 @@ def verify_advance(tree: RunTree, stage: str, reference: ApprovalRecordReference
     """Read an advance only when it still names this exact sealed boundary."""
 
     record = tree.read_approval_record(reference)
-    _seal, current_digest = sealed_boundary(tree, stage)
+    _seal, current_digest = stored_boundary(tree, stage)
     if record["action"] != ADVANCE_ACTION or record["subject_ids"] != [advance_subject(stage)]:
         raise ApprovalRefusal("advance record does not name this stage boundary")
     if record["target_version_hash"] != current_digest:
         raise ApprovalRefusal(
             "advance record binds a different stage-seal digest; the boundary changed after it was advanced"
         )
+    try:
+        verify_sealed_boundary(tree, stage)
+    except ContractError as error:
+        raise ApprovalRefusal(
+            f"advance record names {stage}, but that stage-seal no longer verifies against "
+            f"the run tree ({error})"
+        ) from error
     return record
 
 
@@ -128,7 +208,7 @@ def trigger_advance(
     *,
     reason: str,
     workspace: str | Path,
-    expected_digest: str | None = None,
+    expected_digest: str,
 ) -> ApprovalRecordReference:
     """Run the narrow decision worker outside the renderer process.
 
@@ -141,6 +221,19 @@ def trigger_advance(
     digest observed before launch. The worker rechecks that digest, so a seal
     changed between display and execution is refused rather than silently
     advancing a boundary the operator did not review.
+
+    ``expected_digest`` is required, with no default, because the alternative
+    is a caller that binds an advance to whatever boundary happens to be
+    current — the exact substitution the typed confirmation exists to prevent.
+    A default would make that the quiet path and the reviewed digest the
+    opt-in. `record_advance` refuses a missing digest too: the same fact
+    enforced on both sides of the worker boundary.
+
+    The two sides are not symmetric about *verification*, and that asymmetry
+    is deliberate rather than an omission: seal verification re-derives the
+    local decode environment, which the Seatbelt profile denies inside the
+    worker, so it is performed here — before the worker is launched and before
+    its writable directory exists. `record_advance` carries the full reasoning.
     """
 
     # Absolute before it is split between the two processes. The parent builds
@@ -152,11 +245,29 @@ def trigger_advance(
     # orchestrator's own `--run-root`.)
     root = Path(run_root).resolve()
     tree = RunTree(root, run_id)
+    # **This is the boundary's verification, and it happens here because the
+    # confined worker cannot perform it.** `sealed_boundary` refuses a seal
+    # that no longer witnesses the evidence on disk, and it runs unconfined,
+    # read-only, and above the `receipt_dir.mkdir` below — so the review's
+    # property holds exactly as stated: a boundary whose seal no longer
+    # verifies refuses before any advance record exists, and before the one
+    # path the worker is permitted to write into is even created. The worker's
+    # own check is the digest equality it binds; `record_advance` says why.
     try:
         _seal, current_digest = sealed_boundary(tree, stage)
     except ApprovalRefusal as error:
         raise OperatorError(ErrorCode.ADVANCE_REFUSED, detail=str(error)) from error
-    checked_digest = current_digest if expected_digest is None else expected_digest
+    # Checked after the seal is read, so an unsealed boundary is still refused
+    # as unsealed rather than reported as a malformed request.
+    if not isinstance(expected_digest, str) or not expected_digest:
+        raise OperatorError(
+            ErrorCode.ADVANCE_REFUSED,
+            detail=(
+                "no reviewed stage-seal digest was supplied; a caller may not bind an "
+                "advance to whatever boundary happens to be current"
+            ),
+        )
+    checked_digest = expected_digest
     if checked_digest != current_digest:
         raise OperatorError(
             ErrorCode.ADVANCE_REFUSED,
@@ -179,7 +290,6 @@ def trigger_advance(
     request = json.dumps({"stage": stage, "reason": reason, "expected_digest": checked_digest})
     command = python_module_command(
         "operations.operator.advance_worker",
-        Path(workspace),
         "--run-root",
         str(root),
         "--run-id",

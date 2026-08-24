@@ -16,8 +16,8 @@ from common.contracts.errors import ContractError
 from common.contracts.identities import artifact_id
 from common.contracts.stages import ARMARIUM, STAGES
 from common.runtree.store import RunTree
-from common.stage import latest_attempt
 
+from .advance import stored_boundary, verify_sealed_boundary
 from .errors import ErrorCode, OperatorError
 
 
@@ -53,16 +53,33 @@ class ReadOnlyRun:
                     if row["kind"] == "stage-seal"
                 ]
                 if not seals:
-                    boundaries.append({"stage": stage, "sealed": False, "census": []})
+                    boundaries.append(
+                        {
+                            "stage": stage,
+                            "sealed": False,
+                            "seal_present": False,
+                            "seal_note": "this stage has no stored stage-seal",
+                            "census": [],
+                        }
+                    )
                     continue
-                seal = latest_attempt(seals, f"{stage} stage seal", operation="seal")
-                path = tree.artifact_path(stage, "stage-seal", seal["artifact_id"])
+                seal, seal_digest = stored_boundary(tree, stage)
+                try:
+                    verify_sealed_boundary(tree, stage)
+                except ContractError as error:
+                    seal_valid = False
+                    seal_note = str(error)
+                else:
+                    seal_valid = True
+                    seal_note = None
                 boundaries.append(
                     {
                         "stage": stage,
-                        "sealed": True,
+                        "sealed": seal_valid,
+                        "seal_present": True,
+                        "seal_note": seal_note,
                         "seal_artifact_id": seal["artifact_id"],
-                        "seal_digest": digest_bytes(tree.read_bytes(path)),
+                        "seal_digest": seal_digest,
                         "census": seal["payload"]["census"],
                     }
                 )
@@ -78,14 +95,14 @@ class ReadOnlyRun:
                 pages,
                 acts,
                 _review_items(tree, payload),
-                _advance_records(tree, _sealed_digests(boundaries)),
+                _advance_records(tree, _boundary_states(boundaries)),
             )
         except OperatorError:
             raise
         except (ContractError, KeyError, OSError, TypeError, ValueError) as error:
             raise OperatorError(
                 ErrorCode.CONSOLE_TREE_UNREADABLE,
-                detail="a stage boundary or immutable image reference could not be read",
+                detail=f"the run tree's sealed evidence could not be verified: {error}",
             ) from error
 
 
@@ -105,24 +122,45 @@ def _armarium_payload(tree: RunTree) -> dict[str, Any]:
             ErrorCode.CONSOLE_TREE_UNREADABLE, detail="the Armarium export payload is not an object"
         )
     for name in ("pages", "delivered", "non_delivered"):
-        if not isinstance(payload.get(name, []), list):
+        if name not in payload or not isinstance(payload[name], list):
             raise OperatorError(
-                ErrorCode.CONSOLE_TREE_UNREADABLE, detail=f"the Armarium {name} value is not a list"
+                ErrorCode.CONSOLE_TREE_UNREADABLE,
+                detail=f"the Armarium export has no {name} list",
             )
     return payload
 
 
 def _image_row(tree: RunTree, row: Any) -> dict[str, Any]:
-    if not isinstance(row, dict) or not isinstance(row.get("image_path"), str):
+    if not isinstance(row, dict):
         raise OperatorError(
-            ErrorCode.CONSOLE_TREE_UNREADABLE, detail="a page has no immutable image path"
+            ErrorCode.CONSOLE_TREE_UNREADABLE, detail="an Armarium page is not an object"
         )
-    data = tree.read_bytes(row["image_path"])
-    return {
+    projected = {
         "ordinal": row.get("ordinal"),
         "page_id": row.get("page_id"),
         "outcome": row.get("outcome"),
-        "image_sha256": digest_bytes(data),
+        "reason": row.get("reason"),
+    }
+    if row.get("outcome") != "sealed":
+        return {**projected, "image_sha256": None, "image_data_url": None}
+    if not isinstance(row.get("image_path"), str) or not isinstance(row.get("image_sha256"), str):
+        raise OperatorError(
+            ErrorCode.CONSOLE_TREE_UNREADABLE,
+            detail=f"sealed page {row.get('ordinal')!r} has no immutable image reference",
+        )
+    data = tree.read_bytes(row["image_path"])
+    actual = digest_bytes(data)
+    if actual != row["image_sha256"]:
+        raise OperatorError(
+            ErrorCode.CONSOLE_TREE_UNREADABLE,
+            detail=(
+                f"sealed page {row.get('ordinal')!r} image bytes have digest {actual}, not "
+                f"the recorded digest {row['image_sha256']}"
+            ),
+        )
+    return {
+        **projected,
+        "image_sha256": actual,
         "image_data_url": "data:image/png;base64," + base64.b64encode(data).decode("ascii"),
     }
 
@@ -132,18 +170,37 @@ def _act_row(tree: RunTree, row: Any) -> dict[str, Any]:
         raise OperatorError(
             ErrorCode.CONSOLE_TREE_UNREADABLE, detail="an Armarium act is not an object"
         )
+    regions = row.get("source_regions", [])
+    if not isinstance(regions, list):
+        raise OperatorError(
+            ErrorCode.CONSOLE_TREE_UNREADABLE, detail="an Armarium act has no crop list"
+        )
     crops = []
-    for region in row.get("source_regions", []):
-        if not isinstance(region, dict) or not isinstance(region.get("image_path"), str):
+    for region in regions:
+        if (
+            not isinstance(region, dict)
+            or not isinstance(region.get("image_path"), str)
+            or not isinstance(region.get("image_sha256"), str)
+        ):
             raise OperatorError(
-                ErrorCode.CONSOLE_TREE_UNREADABLE, detail="an act crop has no immutable image path"
+                ErrorCode.CONSOLE_TREE_UNREADABLE,
+                detail="an act crop has no immutable image reference",
             )
         data = tree.read_bytes(region["image_path"])
+        actual = digest_bytes(data)
+        if actual != region["image_sha256"]:
+            raise OperatorError(
+                ErrorCode.CONSOLE_TREE_UNREADABLE,
+                detail=(
+                    f"act crop {region.get('region_id')!r} bytes have digest {actual}, not "
+                    f"the recorded digest {region['image_sha256']}"
+                ),
+            )
         crops.append(
             {
                 "ordinal": region.get("source_page_ordinal"),
                 "region_id": region.get("region_id"),
-                "image_sha256": digest_bytes(data),
+                "image_sha256": actual,
                 "image_data_url": "data:image/png;base64," + base64.b64encode(data).decode("ascii"),
             }
         )
@@ -151,6 +208,7 @@ def _act_row(tree: RunTree, row: Any) -> dict[str, Any]:
         "act_id": row.get("act_id"),
         "act_key": row.get("act_key"),
         "category": row.get("category"),
+        "reason": row.get("reason"),
         "crops": crops,
     }
 
@@ -158,14 +216,16 @@ def _act_row(tree: RunTree, row: Any) -> dict[str, Any]:
 ADVANCE_SUBJECT_PREFIX = "stage-boundary:"
 
 
-def _sealed_digests(boundaries: list[dict[str, Any]]) -> dict[str, str]:
-    """The digest each stage's seal has *right now*, by stage."""
+def _boundary_states(boundaries: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """The present, valid-or-invalid state of each stored stage seal."""
 
-    return {row["stage"]: row["seal_digest"] for row in boundaries if row["sealed"]}
+    return {row["stage"]: row for row in boundaries if row.get("seal_present")}
 
 
-def _advance_records(tree: RunTree, sealed: dict[str, str]) -> tuple[dict[str, Any], ...]:
-    """Every advance decision on record for this run, oldest reference-name first.
+def _advance_records(
+    tree: RunTree, boundaries: dict[str, dict[str, Any]]
+) -> tuple[dict[str, Any], ...]:
+    """Every advance decision on record, in stable content-addressed path order.
 
     ``receipts/sha256/`` is content-addressed, so two advance records for the
     same stage boundary — an append, never an overwrite — are two distinct
@@ -214,13 +274,13 @@ def _advance_records(tree: RunTree, sealed: dict[str, str]) -> tuple[dict[str, A
                 **record,
                 "relative_path": relative_path,
                 "sha256": digest,
-                **_still_binds(record, sealed),
+                **_still_binds(record, boundaries),
             }
         )
     return tuple(records)
 
 
-def _still_binds(record: dict[str, Any], sealed: dict[str, str]) -> dict[str, Any]:
+def _still_binds(record: dict[str, Any], boundaries: dict[str, dict[str, Any]]) -> dict[str, Any]:
     """Say, on the surface a person reads, whether this advance still binds its boundary.
 
     `advance.verify_advance` already refuses a record whose seal changed after
@@ -243,18 +303,28 @@ def _still_binds(record: dict[str, Any], sealed: dict[str, str]) -> dict[str, An
             "boundary_note": "this advance record names no single stage boundary",
         }
     stage = subjects[0][len(ADVANCE_SUBJECT_PREFIX) :]
-    current = sealed.get(stage)
-    if current is None:
+    boundary = boundaries.get(stage)
+    if boundary is None:
         return {
             "boundary_stage": stage,
             "boundary_current": False,
             "boundary_note": f"{stage} has no stored stage-seal now, so this advance binds a boundary that is no longer there",
         }
+    current = boundary["seal_digest"]
     if current != record["target_version_hash"]:
         return {
             "boundary_stage": stage,
             "boundary_current": False,
             "boundary_note": f"{stage}'s seal changed after this advance was recorded; the advance binds an earlier boundary",
+        }
+    if not boundary["sealed"]:
+        return {
+            "boundary_stage": stage,
+            "boundary_current": False,
+            "boundary_note": (
+                f"{stage}'s stored seal no longer verifies against the run tree: "
+                f"{boundary['seal_note']}"
+            ),
         }
     return {"boundary_stage": stage, "boundary_current": True, "boundary_note": None}
 
@@ -266,12 +336,26 @@ def _review_items(tree: RunTree, payload: dict[str, Any]) -> tuple[dict[str, Any
     if not isinstance(path, str):
         return None
     try:
-        with zipfile.ZipFile(io.BytesIO(tree.read_bytes(path))) as archive:
+        data = tree.read_bytes(path)
+        expected = reference.get("sha256")
+        declared = bundle.get("sha256")
+        actual = digest_bytes(data)
+        if not isinstance(expected, str) or declared != expected or actual != expected:
+            raise OperatorError(
+                ErrorCode.CONSOLE_TREE_UNREADABLE,
+                detail=(
+                    f"the Armarium bundle at {path} has digest {actual}, not its sealed "
+                    f"reference {expected!r}"
+                ),
+            )
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
             if "review-items.jsonl" not in archive.namelist():
                 return None
             return tuple(
                 json.loads(line) for line in archive.read("review-items.jsonl").splitlines()
             )
+    except OperatorError:
+        raise
     except (OSError, ValueError, zipfile.BadZipFile) as error:
         raise OperatorError(
             ErrorCode.CONSOLE_TREE_UNREADABLE, detail="review-items.jsonl could not be read"

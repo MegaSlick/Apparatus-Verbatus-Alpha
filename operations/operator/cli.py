@@ -314,7 +314,7 @@ def _review_in_custody(run_root: Path, run_id: str, workspace: Path) -> None:
     # It can deceive its viewer about those bytes if compromised, but cannot
     # reopen the evidence to mutate it or reach any pipeline/provider module.
     projection = dataclasses.asdict(ReadOnlyRun(run_root, run_id).projection())
-    command = python_module_command("operations.operator.console", workspace)
+    command = python_module_command("operations.operator.console")
     backend, completed = run_confined(
         command,
         writable=None,
