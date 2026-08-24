@@ -50,6 +50,7 @@ from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.identities import artifact_id, page_id  # noqa: E402
 from common.contracts.stages import DOOR, EXEMPLAR  # noqa: E402
 from common.corpus_register import read_snapshot, verify_snapshot_is_current  # noqa: E402
+from common.exemplar_boundary import _verify_triage_derivative  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
@@ -572,7 +573,7 @@ def _verify_admitted_blob(
             )
         is_derivative = _is_triage_derivative(rendered_from["render_contract"])
         if is_derivative:
-            parent_ref = _verify_derivative_admission(
+            parent_ref, parent, parent_bytes = _verify_derivative_admission(
                 payload, source, rendered_from["render_contract"], tree
             )
         else:
@@ -583,7 +584,7 @@ def _verify_admitted_blob(
                 run,
                 container_format=container_format,
             )
-    expected_inputs = 2 if is_derivative else 1
+    expected_inputs = len({stored_at, parent_ref["relative_path"]}) if is_derivative else 1
     if len(admission["inputs"]) != expected_inputs:
         raise ContractError(
             "a sealed derivative page must carry its pixels and untouched master"
@@ -626,6 +627,8 @@ def _verify_admitted_blob(
     if digest_bytes(blob) != sealed_digest:
         raise ContractError("an admitted blob's bytes no longer match their sealed digest")
     verify_input_bytes(input_ref, blob)
+    if is_derivative:
+        _verify_triage_derivative(rendered_from["render_contract"], parent_bytes, parent, blob)
     return {"relative_path": stored_at, "sha256": sealed_digest}
 
 
@@ -639,8 +642,8 @@ def _is_triage_derivative(contract: Any) -> bool:
 
 def _verify_derivative_admission(
     payload: dict[str, Any], source: dict[str, Any], contract: dict[str, Any], tree: RunTree
-) -> dict[str, str]:
-    """Check the parent-link shape before a derivative page can become sealed."""
+) -> tuple[dict[str, str], dict[str, Any], bytes]:
+    """Check and read the parent before a derivative page can become sealed."""
     parent = payload.get("parent_frame")
     derivative = contract.get("derivative_page")
     if (
@@ -657,9 +660,16 @@ def _verify_derivative_admission(
     ):
         raise ContractError("a derivative page does not carry a valid immutable parent frame")
     parent_ref = {"relative_path": parent["stored_at"], "sha256": parent["sha256"]}
-    if payload.get("stored_at") == parent_ref["relative_path"]:
-        raise ContractError("a derivative page overwrites its submitted master bytes")
-    return parent_ref
+    try:
+        parent_bytes = tree.read_bytes(parent_ref["relative_path"])
+    except OSError as error:
+        raise ContractError(
+            "a derivative page's submitted master could not be read; the page was not sealed "
+            "because its lineage cannot be re-derived; restore the content-addressed master "
+            "from the submitted bytes before retrying"
+        ) from error
+    verify_input_bytes(parent_ref, parent_bytes)
+    return parent_ref, parent, parent_bytes
 
 
 def _verify_render_contract(

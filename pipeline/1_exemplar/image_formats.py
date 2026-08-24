@@ -1404,11 +1404,12 @@ _PNG_IDENTITY_MODES: Final = frozenset({"1", "L", "LA", "RGB", "RGBA", "I;16"})
 def render_raster_page(
     data: bytes, page_index: int, split_part: dict[str, Any] | None = None
 ) -> tuple[bytes, ImageGeometry, dict[str, Any]]:
-    """Render a fanned raster page to lossless PNG or lossless TIFF pixels.
+    """Render a whole raster losslessly, or apply one declared triage part.
 
-    Standard Pillow modes retain compact PNG output.  The modes whose samples PNG
-    cannot faithfully hold keep their native samples in TIFF; an Exemplar page is
-    immutable evidence, not a display preview allowed to crush its values.
+    On the whole-page path, standard Pillow modes retain compact PNG output and
+    modes whose samples PNG cannot faithfully hold keep their native samples in
+    TIFF. The split path applies its recorded crop, rotation, and colour conversion
+    and returns the deterministic PNG plus the complete apply record.
     """
     decoded = decode_raster(data, page_index=page_index)
     if split_part is not None:

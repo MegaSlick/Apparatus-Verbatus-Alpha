@@ -843,6 +843,38 @@ def test_triage_digest_mismatch_is_a_named_door_refusal(tmp_path):
     assert reason_code(record["payload"]["reason"]) == RefusalReason.DIGEST_MISMATCH
 
 
+@pytest.mark.parametrize(
+    ("which", "expected"),
+    [
+        ("manifest", "triage decision manifest"),
+        ("clusters", "triage re-shoot cluster records"),
+    ],
+)
+def test_a_malformed_triage_document_names_its_role_effect_and_remedy(tmp_path, which, expected):
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema": door.triage_manifest.MANIFEST_SCHEMA,
+                "corpus_id": "parish-a",
+                "records": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    clusters_path = tmp_path / "clusters.json"
+    clusters_path.write_text("{}", encoding="utf-8")
+    (manifest_path if which == "manifest" else clusters_path).write_bytes(b"\xffnot-json")
+
+    with pytest.raises(ContractError, match=f"{expected} is not valid UTF-8 JSON") as refused:
+        door.load_triage_decisions(
+            manifest_path,
+            clusters_path if which == "clusters" else None,
+        )
+    assert "no run was created" in str(refused.value)
+    assert "export valid UTF-8 JSON and retry" in str(refused.value)
+
+
 def test_split_render_uses_the_deterministic_common_encoder():
     """Same-process repetition alone would pass even for a Pillow-chosen framing;
     the claim under test is that a *different* PNG-writing zlib build still yields
@@ -2510,7 +2542,9 @@ def test_a_master_this_encoder_would_convert_is_a_named_page_refusal(tmp_path):
     )
     record = admissions(tree)[1]
     assert record["outcome"] == "refused"
+    assert reason_code(record["payload"]["reason"]) == RefusalReason.UNSUPPORTED_VARIANT
     assert "colour_mode 'keep'" in record["payload"]["reason"]
+    assert "Declare the conversion this page needs" in record["payload"]["reason"]
 
 
 def test_a_split_derivative_records_its_master_mode_and_the_mode_it_was_sealed_in():
@@ -2655,6 +2689,23 @@ def test_content_aware_shards_impose_no_shard_ceiling_of_their_own():
         door.content_aware_shards(sources, max_pages_per_shard=2, max_shards=3)
 
 
+@pytest.mark.parametrize(
+    ("max_pages", "max_shards"),
+    [(True, None), (1.5, None), ("2", None), (2, True), (2, 1.5), (2, "3")],
+)
+def test_content_aware_shard_limits_are_positive_integer_counts(max_pages, max_shards):
+    sources = [SourceEntry(1, "one.jpg", "a" * 64)]
+
+    with pytest.raises(ContractError, match="non-positive or non-integer") as refused:
+        door.content_aware_shards(
+            sources,
+            max_pages_per_shard=max_pages,
+            max_shards=max_shards,
+        )
+    assert "no shard plan was returned" in str(refused.value)
+    assert "pass positive integer limits" in str(refused.value)
+
+
 def test_a_re_shoot_cluster_that_would_straddle_the_submitted_shard_is_refused(tmp_path):
     """The seam a *production* run can actually place is the operator's folder cut.
 
@@ -2699,7 +2750,7 @@ def test_a_re_shoot_cluster_that_would_straddle_the_submitted_shard_is_refused(t
     }
     # Only the first member is in this submitted folder: the operator cut the
     # corpus between two shots of one opening.
-    with pytest.raises(ContractError, match="would cross this submitted shard"):
+    with pytest.raises(ContractError, match="would cross this submitted shard") as crossing:
         door.expand_sources(
             [{"relative_path": "a.png", "sha256": first_digest}],
             reader({"a.png": first}),
@@ -2707,8 +2758,10 @@ def test_a_re_shoot_cluster_that_would_straddle_the_submitted_shard_is_refused(t
             triage_rows=rows,
             triage_clusters={"opening-7": cluster},
         )
+    assert "no source expansion was returned" in str(crossing.value)
+    assert "submit every cluster member in the same shard" in str(crossing.value)
 
-    with pytest.raises(ContractError, match="no supplied cluster record"):
+    with pytest.raises(ContractError, match="no supplied cluster record") as unresolved:
         door.expand_sources(
             [
                 {"relative_path": "a.png", "sha256": first_digest},
@@ -2719,6 +2772,8 @@ def test_a_re_shoot_cluster_that_would_straddle_the_submitted_shard_is_refused(t
             triage_rows=rows,
             triage_clusters={},
         )
+    assert "cluster cannot be reconciled" in str(unresolved.value)
+    assert "supply the matching corpus-scoped cluster record" in str(unresolved.value)
 
 
 def test_a_legal_seam_between_byte_identical_split_files_is_not_mistaken_for_a_pair():
@@ -2829,6 +2884,53 @@ def _single_part_triage_row(
     )
 
 
+def test_triage_rows_reconcile_exactly_with_the_submitted_shard():
+    submitted = png(4, 3)
+    absent = png(5, 3)
+    rows = {
+        digest_bytes(submitted): _single_part_triage_row(submitted, frame=(4, 3)),
+        digest_bytes(absent): _single_part_triage_row(absent, frame=(5, 3)),
+    }
+
+    with pytest.raises(ContractError, match="1 row.*no submitted source frame") as refused:
+        expand_sources(
+            [{"relative_path": "submitted.png", "sha256": digest_bytes(submitted)}],
+            reader({"submitted.png": submitted}),
+            POLICY,
+            triage_rows=rows,
+        )
+    assert "no source expansion was returned" in str(refused.value)
+    assert "exactly match the submitted shard" in str(refused.value)
+
+
+def test_a_missing_triage_row_names_the_loss_it_prevents_and_the_remedy():
+    submitted = png(4, 3)
+
+    with pytest.raises(ContractError, match="no row for a submitted source frame") as refused:
+        expand_sources(
+            [{"relative_path": "submitted.png", "sha256": digest_bytes(submitted)}],
+            reader({"submitted.png": submitted}),
+            POLICY,
+            triage_rows={},
+        )
+    assert "disappear from the post-split census" in str(refused.value)
+    assert "one row for every submitted frame digest" in str(refused.value)
+
+
+def test_cluster_records_without_a_decision_manifest_are_not_ignored():
+    submitted = png(4, 3)
+
+    with pytest.raises(ContractError, match="without a decision manifest") as refused:
+        expand_sources(
+            [{"relative_path": "submitted.png", "sha256": digest_bytes(submitted)}],
+            reader({"submitted.png": submitted}),
+            POLICY,
+            triage_clusters={},
+        )
+    assert "no ordinals were assigned" in str(refused.value)
+    assert "supply the matching triage decision manifest" in str(refused.value)
+
+
 def _triage_decision(master: bytes, row: dict):
     source = SourceEntry(
         1,
@@ -2851,6 +2953,8 @@ def test_the_frame_boundary_refuses_a_one_pixel_mismatch_on_every_edge(declared_
 
     assert decision.outcome == "refused"
     assert "frame dimensions do not match" in decision.reason
+    assert "could omit or shift source pixels" in decision.reason
+    assert "regenerate the row against the stored raster dimensions" in decision.reason
 
 
 def test_exact_frame_equality_is_checked_before_a_part_rotation_changes_output_geometry():

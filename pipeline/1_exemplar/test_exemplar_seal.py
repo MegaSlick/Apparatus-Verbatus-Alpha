@@ -29,6 +29,8 @@ from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash,
 from common.contracts.errors import ContractError
 from common.contracts.identities import artifact_id, page_id, physical_page_id
 from common.contracts.stages import DOOR, EXEMPLAR
+from common.exemplar_boundary import verify_sealed_page_pixels
+from common.imaging import encode_image_deterministic
 from common.runtree.store import RunTree
 from common.stage import EXIT_FATAL, StageContext
 from operations.submit import submit
@@ -210,6 +212,97 @@ def test_triage_spread_fans_out_to_sealed_derivative_pages_with_rederived_lineag
         tree.read_bytes(admission["payload"]["parent_frame"]["stored_at"]) == master
         for admission in admissions
     )
+
+
+def test_a_noop_derivative_and_its_master_share_one_content_address(tmp_path):
+    """Identical roles share one input; the master is not overwritten or lost."""
+    master = encode_image_deterministic(Image.new("L", (4, 3), 37))
+    digest = digest_bytes(master)
+    part = door.triage_manifest.make_part(
+        {"x": 0, "y": 0, "w": 4, "h": 3},
+        {"x": 0, "y": 0, "w": 4, "h": 3},
+        0,
+        colour_mode="keep",
+    )
+    row = door.triage_manifest.make_row(
+        corpus_id="parish-a",
+        source_frame_sha256=digest,
+        frame={"width": 4, "height": 3},
+        split=door.triage_manifest.make_split([part]),
+        re_shoot_cluster_id=None,
+        confidence=4,
+        mode="auto",
+        actor={"kind": "model", "identity": "triage", "revision": "r1"},
+        human_override=False,
+    )
+    sources = door.expand_sources(
+        [{"relative_path": "page.png", "sha256": digest}],
+        lambda _path: master,
+        door.admission.load_format_policy(),
+        triage_rows={digest: row},
+    )
+
+    tree, _ = build_door_run(tmp_path / "runs", files={"page.png": master}, sources=sources)
+    admission = tree.read_artifact(DOOR, "admission", artifact_id(DOOR, "admission", "source-1"))
+    assert admission["payload"]["sha256"] == digest
+    assert admission["payload"]["parent_frame"]["sha256"] == digest
+    assert len(admission["inputs"]) == 1
+
+    result = run_exemplar(tmp_path / "runs")
+    assert result.returncode == 0, result.stderr
+    run = tree.read_run()
+    page = next(
+        tree.read_artifact(EXEMPLAR, "page", entry["artifact_id"])
+        for entry in tree.build_manifest(EXEMPLAR)["artifacts"]
+        if entry["kind"] == "page"
+    )
+    verify_sealed_page_pixels(tree, run, run["source_manifest"][0], page)
+
+
+def test_exemplar_rederives_a_derivative_recipe_before_sealing_it(tmp_path):
+    """A rehashed but false Door recipe cannot acquire an Exemplar seal."""
+    master = encode_image_deterministic(Image.new("L", (4, 3), 37))
+    digest = digest_bytes(master)
+    part = door.triage_manifest.make_part(
+        {"x": 0, "y": 0, "w": 4, "h": 3},
+        {"x": 0, "y": 0, "w": 4, "h": 3},
+        0,
+        colour_mode="keep",
+    )
+    row = door.triage_manifest.make_row(
+        corpus_id="parish-a",
+        source_frame_sha256=digest,
+        frame={"width": 4, "height": 3},
+        split=door.triage_manifest.make_split([part]),
+        re_shoot_cluster_id=None,
+        confidence=4,
+        mode="auto",
+        actor={"kind": "model", "identity": "triage", "revision": "r1"},
+        human_override=False,
+    )
+    sources = door.expand_sources(
+        [{"relative_path": "page.png", "sha256": digest}],
+        lambda _path: master,
+        door.admission.load_format_policy(),
+        triage_rows={digest: row},
+    )
+    tree, _ = build_door_run(tmp_path / "runs", files={"page.png": master}, sources=sources)
+    identity = artifact_id(DOOR, "admission", "source-1")
+    path = tree.resolve(tree.artifact_path(DOOR, "admission", identity))
+    record = json.loads(path.read_text(encoding="utf-8"))
+    recipe = record["payload"]["rendered_from"]["render_contract"]["derivative_page"][
+        "apply_recipe"
+    ]
+    recipe["rotation_fill"] = "invented-fill"
+    record["self_hash"] = self_hash(record)
+    path.write_bytes(canonical_bytes(record))
+    tree.write_manifest(DOOR)
+
+    result = run_exemplar(tmp_path / "runs")
+    assert result.returncode == EXIT_FATAL
+    assert "changes its recorded raster apply recipe" in result.stderr
+    assert not (tree.root / "1_exemplar" / "artifacts" / "page").exists()
+    assert not (tree.root / "1_exemplar" / "artifacts" / "seal").exists()
 
 
 def run_exemplar(

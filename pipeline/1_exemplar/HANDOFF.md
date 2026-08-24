@@ -155,9 +155,12 @@ source — a PDF or TIFF page index, or a split part index.
 
 The JPEG master is never re-encoded. Its untouched bytes are stored under their own
 digest as the admission's `parent_frame`, and the PNG page is a derivative that
-inputs both its own pixels and that master. `common/exemplar_boundary.py`
-re-derives the page from the master's bytes plus the recorded transform and
-compares byte for byte, so the pixels are provably the master's.
+inputs both its own pixels and that master. When an exact no-op over an already
+deterministic PNG gives both roles the same content address, the admission carries
+that reference once rather than violating the artifact contract by double-counting
+it. `common/exemplar_boundary.py` re-derives the page from the master's bytes plus
+the recorded transform and compares byte for byte, so the pixels are provably the
+master's.
 
 **What the recorded render contract asserts, and what it does not.**
 

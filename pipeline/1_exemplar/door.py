@@ -115,7 +115,7 @@ from operations.submit import submit as submission_ledger  # noqa: E402
 
 
 class SourceEntry(NamedTuple):
-    """One standalone raster or one page fanned out from a source container."""
+    """One raster, container page, or triage part in the post-fan-out census."""
 
     ordinal: int
     declared_path: str
@@ -242,30 +242,32 @@ def load_triage_decisions(
     run tree's write-once artifacts. Digested from the same bytes that were
     parsed, because two reads can straddle a rewrite.
     """
-    try:
-        manifest_bytes = Path(manifest_path).read_bytes()
-        document = json.loads(manifest_bytes.decode("utf-8"))
-        clusters_bytes = Path(clusters_path).read_bytes() if clusters_path is not None else None
-        clusters_document = (
-            json.loads(clusters_bytes.decode("utf-8")) if clusters_bytes is not None else None
-        )
-    except (OSError, UnicodeDecodeError, ValueError) as error:
-        raise ContractError(
-            "the triage decision manifest or cluster records could not be read"
-        ) from error
+    manifest_bytes, document = _read_triage_document(manifest_path, "triage decision manifest")
+    clusters_bytes, clusters_document = (
+        _read_triage_document(clusters_path, "triage re-shoot cluster records")
+        if clusters_path is not None
+        else (None, None)
+    )
     digests = {"triage-decision-manifest": digest_bytes(manifest_bytes)}
     if clusters_bytes is not None:
         digests["triage-re-shoot-clusters"] = digest_bytes(clusters_bytes)
     if clusters_document is not None:
         if not isinstance(clusters_document, dict):
-            raise ContractError("the triage cluster records must be an object keyed by cluster id")
+            raise ContractError(
+                "the triage re-shoot cluster records are not an object keyed by cluster id; "
+                "no run was created because their memberships cannot be resolved; export the "
+                "records as one JSON object keyed by cluster id and retry"
+            )
         clusters = clusters_document
     else:
         clusters = None
     try:
         checked = triage_manifest.validate_manifest(document, clusters)
     except ContractError as error:
-        raise ContractError(f"the triage decision manifest is invalid: {error}") from error
+        raise ContractError(
+            f"the triage decision manifest is invalid ({error}); no run was created because "
+            "its page geometry cannot be trusted; correct the named manifest violation and retry"
+        ) from error
     rows: dict[str, dict[str, Any]] = {}
     for row in checked["records"]:
         digest = row["source_frame_sha256"]
@@ -275,6 +277,24 @@ def load_triage_decisions(
             )
         rows[digest] = row
     return rows, dict(clusters or {}), digests
+
+
+def _read_triage_document(path: str | Path, label: str) -> tuple[bytes, Any]:
+    """Read one private triage JSON document once with actionable refusal copy."""
+    try:
+        data = Path(path).read_bytes()
+    except OSError as error:
+        raise ContractError(
+            f"the {label} could not be read; no run was created because its decisions are "
+            "unavailable; restore a readable file inside an approved storage root and retry"
+        ) from error
+    try:
+        return data, json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as error:
+        raise ContractError(
+            f"the {label} is not valid UTF-8 JSON; no run was created because its decisions "
+            "cannot be interpreted; export valid UTF-8 JSON and retry"
+        ) from error
 
 
 def decide(
@@ -328,7 +348,10 @@ def decide(
             frame = source.triage_row["frame"]
             if (decoded.width, decoded.height) != (frame["width"], frame["height"]):
                 raise ContractError(
-                    "triage row frame dimensions do not match the decoded submitted frame"
+                    "triage row frame dimensions do not match the decoded submitted frame; this "
+                    "page part was refused because applying those coordinates could omit or shift "
+                    "source pixels; regenerate the row against the stored raster dimensions and "
+                    "retry"
                 )
             part = source.triage_row["split"]["parts"][source.triage_part_index]
             page_bytes, _geometry, contract = render_raster_page(data, frame_index, part)
@@ -340,7 +363,15 @@ def decide(
                 None,
                 None,
             )
-        except (ContractError, FormatRefusal) as error:
+        except FormatRefusal as error:
+            return _Decision(
+                "refused",
+                admission.reason(admission._refusal_code(error), str(error)),
+                None,
+                None,
+                None,
+            )
+        except ContractError as error:
             return _Decision(
                 "refused",
                 admission.reason(RefusalReason.CORRUPT, str(error)),
@@ -498,6 +529,13 @@ def expand_sources(
     closed within its own row, so this pass holds one descriptor at a time rather
     than one per file in the folder.
     """
+    if triage_clusters is not None and triage_rows is None:
+        raise ContractError(
+            "triage cluster records were supplied without a decision manifest; no ordinals "
+            "were assigned because cluster evidence cannot be reconciled on its own; supply "
+            "the matching triage decision manifest and retry"
+        )
+    submitted_digests = {row["sha256"] for row in files}
     ordinal = 0
     sources: list[SourceEntry] = []
     for row in sorted(files, key=lambda item: item["relative_path"]):
@@ -509,7 +547,10 @@ def expand_sources(
             triage_row = triage_rows.get(declared_sha256)
             if triage_row is None:
                 raise ContractError(
-                    "the triage decision manifest has no row for a submitted source frame"
+                    "the triage decision manifest has no row for a submitted source frame; no "
+                    "source expansion was returned because that frame would disappear from the "
+                    "post-split census; regenerate the manifest with one row for every submitted "
+                    "frame digest and retry"
                 )
         if declared_size is not None and (
             not isinstance(declared_size, int)
@@ -610,7 +651,10 @@ def expand_sources(
             assert triage_row is not None
             if data is None or detected == "pdf":
                 raise ContractError(
-                    "a triage decision row names a source that is not one decodable raster frame"
+                    "a triage decision row names a source that is not one decodable raster frame; "
+                    "no source expansion was returned because its geometry cannot be applied to "
+                    "that source; remove the stale row or regenerate it against a single-frame "
+                    "raster and retry"
                 )
             try:
                 frame_count = count_raster_pages(data)
@@ -623,7 +667,10 @@ def expand_sources(
                 continue
             if frame_count != 1:
                 raise ContractError(
-                    "a triage decision row may name one submitted raster frame, not a page container"
+                    "a triage decision row names a multi-page raster container; no source "
+                    "expansion was returned because one frame-space recipe cannot describe every "
+                    "page; omit that container from the triage manifest and let the Door fan out "
+                    "its pages"
                 )
             for part_index in range(len(triage_row["split"]["parts"])):
                 append(
@@ -659,11 +706,10 @@ def expand_sources(
         for page_index in range(page_count):
             append(page_index, detected)
     if triage_rows is not None and triage_clusters is not None:
-        submitted = {row["sha256"] for row in files}
         named_clusters = {
             row["re_shoot_cluster_id"]
             for digest, row in triage_rows.items()
-            if digest in submitted and row["re_shoot_cluster_id"] is not None
+            if digest in submitted_digests and row["re_shoot_cluster_id"] is not None
         }
         for cluster_id in named_clusters:
             record = triage_clusters.get(cluster_id)
@@ -673,14 +719,26 @@ def expand_sources(
                 # here. A caller assembling rows itself can, and a bare KeyError
                 # would escape every `except ContractError` above this one.
                 raise ContractError(
-                    "a submitted frame names a re-shoot cluster with no supplied cluster record"
+                    "a submitted frame names a re-shoot cluster with no supplied cluster record; "
+                    "no source expansion was returned because the cluster cannot be reconciled; "
+                    "supply the matching corpus-scoped cluster record and retry"
                 )
             members = set(record["member_frame_sha256"])
-            if not members <= submitted:
+            if not members <= submitted_digests:
                 raise ContractError(
-                    "a re-shoot cluster would cross this submitted shard; every cluster member "
-                    "must be admitted together and no canonical frame may be selected"
+                    "a re-shoot cluster would cross this submitted shard; no source expansion was "
+                    "returned because every member must remain visible together and no canonical "
+                    "frame may be selected; submit every cluster member in the same shard and retry"
                 )
+    if triage_rows is not None:
+        unsubmitted_rows = set(triage_rows) - submitted_digests
+        if unsubmitted_rows:
+            raise ContractError(
+                "the triage decision manifest contains "
+                f"{len(unsubmitted_rows)} row(s) naming no submitted source frame; no source "
+                "expansion was returned because ignoring a decision would lose evidence; supply "
+                "a manifest whose rows exactly match the submitted shard and retry"
+            )
     return sources
 
 
@@ -701,11 +759,27 @@ def content_aware_shards(
     consequence of it, not a second ceiling. A caller that genuinely has one
     passes it.
     """
-    if max_pages_per_shard < 1 or (max_shards is not None and max_shards < 1):
-        raise ContractError("content-aware sharding needs positive page and shard limits")
+    if (
+        not isinstance(max_pages_per_shard, int)
+        or isinstance(max_pages_per_shard, bool)
+        or max_pages_per_shard < 1
+        or (
+            max_shards is not None
+            and (not isinstance(max_shards, int) or isinstance(max_shards, bool) or max_shards < 1)
+        )
+    ):
+        raise ContractError(
+            "content-aware sharding received a non-positive or non-integer page or shard limit; "
+            "no shard plan was returned because slice boundaries must be exact page counts; "
+            "pass positive integer limits and retry"
+        )
     ordered = sorted(sources, key=lambda source: source.ordinal)
     if not ordered:
-        raise ContractError("content-aware sharding has no submitted pages to divide")
+        raise ContractError(
+            "content-aware sharding received no submitted pages; no shard plan was returned "
+            "because an empty plan would hide an empty submission; supply a non-empty post-split "
+            "page census and retry"
+        )
     blocked: set[int] = set()
     # A split fan-out is adjacent by construction; do not place a seam after
     # its first (or any non-final) part.  A cluster may not be adjacent, so every
@@ -740,14 +814,18 @@ def content_aware_shards(
             if end == start:
                 raise ContractError(
                     "content-aware shard refusal: every legal seam within the configured "
-                    "page cap would cut a split pair or re-shoot cluster"
+                    "page cap would cut a split pair or re-shoot cluster; no shard plan was "
+                    "returned because those units must remain whole; place the whole unit in a "
+                    "shard within the sealed cap, or stop for Tyrel if the cap itself conflicts"
                 )
         shards.append(ordered[start:end])
         start = end
     if max_shards is not None and len(shards) > max_shards:
         raise ContractError(
             "content-aware shard refusal: the configured shard count is exhausted without "
-            "cutting a split pair or re-shoot cluster"
+            "cutting a split pair or re-shoot cluster; no shard plan was returned because the "
+            "caller ceiling cannot be met honestly; remove or increase that caller-supplied "
+            "ceiling and retry"
         )
     return shards
 
@@ -1036,7 +1114,14 @@ def process_sources(
                     "stored_at": parent.relative_path,
                     "source_frame_index": source.source_frame_index or 0,
                 }
-                inputs.append(context.input_ref(parent.relative_path))
+                # Content addressing can make the derivative and master the same
+                # blob: a full-frame, zero-rotation ``keep`` decision over a PNG
+                # already written by the deterministic encoder is a real example.
+                # One reference then proves both roles. Publishing it twice would
+                # violate the envelope's no-duplicate-input contract and turn an
+                # exact no-op into a fatal artifact error.
+                if parent.relative_path != published.relative_path:
+                    inputs.append(context.input_ref(parent.relative_path))
             if duplicate_of is not None:
                 extra["duplicate_of"] = duplicate_of
             _publish(
@@ -1954,7 +2039,9 @@ def _real_bindings(
                 # `RunTree.create` then refuses the reuse by name instead of the
                 # swap being caught only where a changed row happens to reach an
                 # already-published admission. Empty for a submission with no
-                # split decisions, so an ordinary run's digest is unchanged.
+                # split decisions, so an ordinary run binds that absence
+                # explicitly. The bumped Door implementation revision already
+                # makes this version a different run authority from its predecessor.
                 "triage_document_digests": dict(sorted((triage_document_digests or {}).items())),
                 "corpus_frame_policy": corpus_frame_policy,
                 "corpus_frame_config_sha256": corpus_frame_config_sha256,

@@ -741,14 +741,15 @@ def _verify_admission(
             "a sealed derivative page's parent frame disagrees with its submitted master"
         )
     parent_ref = {"relative_path": parent_path, "sha256": parent_digest}
+    expected_inputs = {
+        (blob_ref["relative_path"], blob_ref["sha256"]),
+        (parent_ref["relative_path"], parent_ref["sha256"]),
+    }
     if {
         (reference.get("relative_path"), reference.get("sha256"))
         for reference in admission.get("inputs", [])
         if isinstance(reference, dict)
-    } != {
-        (blob_ref["relative_path"], blob_ref["sha256"]),
-        (parent_ref["relative_path"], parent_ref["sha256"]),
-    } or len(admission.get("inputs", [])) != 2:
+    } != expected_inputs or len(admission.get("inputs", [])) != len(expected_inputs):
         raise ContractError("a sealed derivative page does not input exactly its pixels and master")
     parent_bytes = _read_checked(tree, parent_ref, "the derivative page's submitted master")
     sealed_bytes = _read_checked(tree, blob_ref, "the sealed derivative page")

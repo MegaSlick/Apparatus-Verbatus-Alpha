@@ -698,9 +698,9 @@ def imaging_library_versions() -> dict[str, str]:
     """The decoder versions that can change a derivative page's pixels.
 
     One place, so the recipe a Door render records and the drift a boundary
-    reports can never name different numbers. `pillow_heif` is imported inside
-    the call rather than at module scope: every stage in the tree imports this
-    module, and only the two callers here need the HEIF decoder resolved.
+    reports can never name different numbers. ``pillow_heif`` is already imported
+    and registered at module load so Pillow can open HEIF-family evidence; this
+    function owns only the version record shared by those two callers.
     """
     import pillow_heif
 
@@ -735,7 +735,7 @@ def render_triage_derivative(
     *,
     page_index: int,
     part: dict,
-) -> tuple[bytes, dict[str, int | str]]:
+) -> tuple[bytes, dict[str, int | str | list[str]]]:
     """Apply Unit 5's closed part-local geometry and encode a sealed PNG.
 
     The caller has already validated the Unit 5 row.  Keeping the operation
