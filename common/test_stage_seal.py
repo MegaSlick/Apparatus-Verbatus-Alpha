@@ -17,7 +17,14 @@ import pytest
 from common.chairs import ChairRegistry
 from common.contracts.canonical import canonical_bytes, self_hash
 from common.contracts.errors import FatalAccounting, SchemaRefusal
-from common.contracts.stages import ATTESTATORES, DOOR, EXEMPLAR, PERLECTOR
+from common.contracts.stages import (
+    ARCHETYPUS,
+    ARMARIUM,
+    ATTESTATORES,
+    DOOR,
+    EXEMPLAR,
+    PERLECTOR,
+)
 from common.runtree.store import RunTree
 from common.stage import (
     StageContext,
@@ -173,6 +180,20 @@ def test_manifest_entry_reordering_does_not_change_the_named_seal_set(tmp_path):
     assert _context(tree, run, registry, bindings).seal_boundary().reused
 
 
+def test_a_sibling_stage_named_by_the_stored_manifest_is_a_refusal(tmp_path):
+    tree, run, registry, bindings = _tree(tmp_path)
+    context = _context(tree, run, registry, bindings)
+    context.seal_boundary()
+    context.finish()
+    stored_path = tree.resolve(tree.manifest_path(ATTESTATORES))
+    stored = json.loads(stored_path.read_text(encoding="utf-8"))
+    stored["stage"] = EXEMPLAR
+    stored_path.write_text(json.dumps(stored), encoding="utf-8")
+
+    with pytest.raises(SchemaRefusal, match="sibling inventory"):
+        _context(tree, run, registry, bindings).seal_boundary()
+
+
 def test_an_ordinal_gap_is_refused_even_without_a_stored_manifest_trigger(tmp_path):
     tree, _, _, _ = _two_sealed_passes(tmp_path)
     first = _seal_ids(tree)[1]
@@ -277,6 +298,24 @@ def test_a_decoder_version_that_moved_between_stages_is_reported_by_name(
     assert "pillow" in reported
 
 
+def test_decode_environment_bytes_cannot_change_under_an_existing_seal(tmp_path):
+    """The seal binds the environment record, not only its deterministic name."""
+    tree, run, registry, bindings = _tree(tmp_path)
+    context = _context(tree, run, registry, bindings)
+    context.seal_boundary()
+    context.finish()
+    seal = _stage_records(tree, ATTESTATORES, "stage-seal")[0]
+    environment_id = seal["payload"]["decode_environment_artifact_id"]
+    environment = tree.read_artifact(ATTESTATORES, "decode-environment", environment_id)
+    environment["payload"]["platform"] += "-changed-after-seal"
+    environment["self_hash"] = self_hash(environment)
+    path = tree.resolve(tree.artifact_path(ATTESTATORES, "decode-environment", environment_id))
+    path.write_bytes(canonical_bytes(environment))
+
+    with pytest.raises(SchemaRefusal, match="decode-environment digest differs"):
+        verify_predecessor_seal(tree, PERLECTOR)
+
+
 def test_a_malformed_decode_environment_is_a_named_refusal_not_a_difference(tmp_path):
     """Report-only applies to valid differences, not to a forged record shape."""
     tree, run, registry, bindings = _tree(tmp_path)
@@ -293,3 +332,18 @@ def test_a_malformed_decode_environment_is_a_named_refusal_not_a_difference(tmp_
 
     with pytest.raises(SchemaRefusal, match="malformed produced_pixels"):
         verify_predecessor_seal(tree, PERLECTOR)
+
+
+def test_the_orchestrator_consumes_armariums_seal_not_archetypus_again(tmp_path):
+    tree, run, registry, bindings = _tree(tmp_path)
+    archetypus = _context(tree, run, registry, bindings, stage=ARCHETYPUS)
+    archetypus.seal_boundary()
+    archetypus.finish()
+    armarium = _context(tree, run, registry, bindings, stage=ARMARIUM)
+    armarium.seal_boundary()
+    armarium.finish()
+    final_seal = _stage_records(tree, ARMARIUM, "stage-seal")[0]
+    tree.resolve(tree.artifact_path(ARMARIUM, "stage-seal", final_seal["artifact_id"])).unlink()
+
+    with pytest.raises(SchemaRefusal, match="orchestrator refuses: predecessor armarium"):
+        verify_predecessor_seal(tree, "orchestrator")

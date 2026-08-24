@@ -41,7 +41,7 @@ EXPECTED_VOCABULARY_SIZES = {
     "perlector": 7,
     "recensor": 7,
     "archetypus": 4,
-    "armarium": 5,
+    "armarium": 7,
 }
 
 
@@ -110,6 +110,12 @@ def test_witness_outcome_classes_are_pinned():
         "sealed": "completed",
         "recorded": "completed",
     }
+
+
+def test_armarium_boundary_evidence_is_nonterminal_not_delivered_output():
+    for outcome in ("sealed", "recorded"):
+        assert classify(ARMARIUM, outcome) is OutcomeClass.COMPLETED
+        assert terminal_category(ARMARIUM, outcome) is None
 
 
 def test_no_witness_outcome_terminates_an_act():
@@ -556,7 +562,9 @@ def test_coverage_for_an_unknown_act_is_fatal():
 def test_armarium_categories_and_vocabulary_cannot_drift_apart():
     """Meta-invariant #91 — drift checks over agreement surfaces: wherever two
     files must agree, a test reads both from source and fails on divergence."""
-    assert set(outcomes.VOCABULARIES[ARMARIUM]) == {category.value for category in ArmariumCategory}
+    assert set(outcomes.VOCABULARIES[ARMARIUM]) - set(outcomes.BOUNDARY_OUTCOMES.values()) == {
+        category.value for category in ArmariumCategory
+    }
 
 
 def test_the_under_witnessed_count_is_the_attached_reads_never_the_wider_class():

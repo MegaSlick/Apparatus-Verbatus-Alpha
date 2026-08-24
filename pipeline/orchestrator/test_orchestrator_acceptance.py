@@ -52,12 +52,15 @@ from common.runtree.store import RunTree
 from common.stage import (
     EXIT_FATAL,
     EXIT_HELD,
+    _decode_environment,
     _stage_seal_payload,
+    _validate_decode_environment,
     latest_attempt,
     load_fixture,
     open_context,
     run_config_bindings,
     stage_parser,
+    verify_predecessor_seal,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -673,13 +676,12 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # `decode-environment` and `stage-seal`; recovery re-entries add their own pair,
 # so review is measured rather than inferred. Measured through this module's
 # `orchestrate` and `semantic_snapshot_digest`; the host re-measures at integration.
-# Re-pinned in the final Unit 1A audit: Door's producer inventory moved from the
-# shared `manifest.json` to `manifest-door.json`, so Exemplar can no longer erase
-# the stored deleted-seal trigger. One derived file was added to each tree;
-# counts/exits are 84/0 and 97/3. Both digests reproduced through this module's
-# own helpers in two independent temporary roots.
-HAPPY_RUN_TREE_DIGEST = "a7a486ae9b11fcd3a797cead86711c1066119150a06fd0f013d1b9be2b55f7ff"
-REVIEW_RUN_TREE_DIGEST = "726de01dff7fccdd4c05edf8ea4b10291502e6104d44a770b36d661bc79c093a"
+# Re-pinned in the Phase-2 Sol correction: seals now bind their decode-environment
+# bytes and Armarium boundary records no longer claim delivery. Counts/exits stay
+# 84/0 and 97/3. Both digests reproduced through this module's own helpers in
+# independent temporary roots after first being observed in the two pin tests.
+HAPPY_RUN_TREE_DIGEST = "d8ecfd8ce6290811cd251404da4606f5d7d22e4bc72b946b8caeffe10c812136"
+REVIEW_RUN_TREE_DIGEST = "0d559d405ba49bae94b21fdeccead9f27e68eb72e21349a871c1ac73699d130e"
 
 
 def orchestrate(
@@ -1004,20 +1006,25 @@ def _semantic_export_artifact(data: bytes, replacements: dict[str, str]) -> byte
 
 
 def _semantic_decode_environment(data: bytes) -> bytes | None:
-    """Keep platform decoder probes visible in records but out of tree pins."""
+    """Normalize host probes while retaining the stage's semantic decode role."""
     try:
         record = json.loads(data)
     except (UnicodeDecodeError, json.JSONDecodeError):
         return None
-    if (
-        not isinstance(record, dict)
-        or record.get("kind") != "decode-environment"
-        or canonical_bytes(record) != data
-        or record.get("self_hash") != self_hash(record)
-    ):
+    if not isinstance(record, dict) or record.get("kind") != "decode-environment":
+        return None
+    try:
+        environment = _validate_decode_environment(record.get("payload"), "acceptance pin")
+    except SchemaRefusal:
+        return None
+    if canonical_bytes(record) != data or record.get("self_hash") != self_hash(record):
         return None
     semantic = deepcopy(record)
-    semantic["payload"] = {"environment": "platform-normalized"}
+    semantic["payload"] = deepcopy(environment)
+    for decoder in semantic["payload"]["decoders"]:
+        decoder["version"] = "platform-normalized"
+    semantic["payload"]["platform"] = "platform-normalized"
+    semantic["payload"]["machine"] = "platform-normalized"
     semantic["self_hash"] = self_hash(semantic)
     return canonical_bytes(semantic)
 
@@ -1083,6 +1090,7 @@ def _semantic_stage_seal(data: bytes, replacements: dict[str, str]) -> bytes | N
             "blob_inventory",
             "census",
             "decode_environment_artifact_id",
+            "decode_environment_sha256",
         }
         or payload["stage"] not in STAGES
         or record.get("stage") != payload["stage"]
@@ -1113,12 +1121,14 @@ def _semantic_stage_seal(data: bytes, replacements: dict[str, str]) -> bytes | N
                 "register_digest",
                 "artifact_inventory",
                 "blob_inventory",
+                "decode_environment_sha256",
             )
         )
         or not isinstance(payload["attempt_id"], str)
         or not isinstance(payload["decode_environment_artifact_id"], str)
         or payload["artifact_inventory"] not in replacements
         or payload["blob_inventory"] not in replacements
+        or payload["decode_environment_sha256"] not in replacements
     ):
         return None
     semantic = _replace_semantic_digests(record, replacements)
@@ -1496,7 +1506,7 @@ def test_semantic_snapshot_normalizes_stage_seals_over_equivalent_png_containers
             adapter_revision="fixture-exemplar-v0",
             inputs=[],
             attempt=seal_attempt,
-            payload={"environment": "fixture"},
+            payload=_decode_environment(EXEMPLAR),
         )
         environment_path = (
             run
@@ -1529,6 +1539,7 @@ def test_semantic_snapshot_normalizes_stage_seals_over_equivalent_png_containers
             "blob_inventory": digest_of([{"name": png_digest, "sha256_of_content": png_digest}]),
             "census": [{"kind": "page", "outcome": "sealed", "count": 1}],
             "decode_environment_artifact_id": environment["artifact_id"],
+            "decode_environment_sha256": digest_bytes(environment_data),
         }
         seal = build_envelope(
             run_id="r",
@@ -1619,6 +1630,36 @@ def test_semantic_snapshot_normalizes_monkeypatched_decode_environment_probe(tmp
 
     assert snapshot(tmp_path) != raw_before
     assert semantic_snapshot_digest(tmp_path) == semantic_before
+
+
+def test_semantic_snapshot_keeps_decode_role_fields_in_the_acceptance_pin(tmp_path):
+    """Host versions vary; whether a stage decoded or produced pixels does not."""
+    path = tmp_path / "decode-environment.json"
+    payload = _decode_environment(DOOR)
+
+    def write_environment(value):
+        record = build_envelope(
+            run_id="environment-role-test",
+            artifact_id=artifact_id(DOOR, "decode-environment", DOOR, "att_1234567890abcdef"),
+            subject_id=DOOR,
+            stage=DOOR,
+            kind="decode-environment",
+            outcome="recorded",
+            config_digest="a" * 64,
+            adapter_revision="fixture-door-v0",
+            inputs=[],
+            attempt="att_1234567890abcdef",
+            payload=value,
+        )
+        path.write_bytes(canonical_bytes(record))
+
+    write_environment(payload)
+    semantic_before = semantic_snapshot_digest(tmp_path)
+    changed = deepcopy(payload)
+    changed["produced_pixels"] = not changed["produced_pixels"]
+    write_environment(changed)
+
+    assert semantic_snapshot_digest(tmp_path) != semantic_before
 
 
 def _acceptance_sqlite(
@@ -4509,12 +4550,14 @@ def test_each_stage_seal_corruption_stops_its_named_consumer(
     before = snapshot(root)
 
     if consumer == "orchestrator":
-        result = orchestrate(root, "r", "happy")
+        # Do not rerun Armarium: that would let the producer's own scan refuse
+        # first and would not exercise the final consumer this row names.
+        with pytest.raises(ContractError, match="skeleton.v99|schema"):
+            verify_predecessor_seal(tree, consumer)
     else:
         result = invoke_stage(root, "r", "happy", CONSUMER_PROGRAMS[consumer])
-
-    assert result.returncode != 0
-    assert "skeleton.v99" in result.stderr or "SchemaRefusal" in result.stderr
+        assert result.returncode != 0
+        assert "skeleton.v99" in result.stderr or "SchemaRefusal" in result.stderr
     assert snapshot(root) == before
 
 

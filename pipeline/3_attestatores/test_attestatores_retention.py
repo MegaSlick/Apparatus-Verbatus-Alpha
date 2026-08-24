@@ -219,10 +219,12 @@ def test_a_whole_pass_resolves_designator_inputs_once_per_act_not_once_per_chair
     )
 
     assert attestatores.main() == 0
-    # History index, the seal's prior/inventory checks, final manifest, and
-    # independent tally.  Completion evidence adds fixed stage-level walks; it
-    # must not reintroduce a walk per act or chair.
-    assert attestatores_manifest_calls == 6
+    # History index, prior-seal lookup, the post-environment seal inventory,
+    # final manifest, and independent tally. The former sixth walk eagerly built
+    # and discarded a first-pass seal payload before its decode-environment
+    # existed; binding those bytes into the seal made that non-validation walk
+    # invalid and removed it without weakening any published boundary check.
+    assert attestatores_manifest_calls == 5
     assert attempt_calls == 6  # one per act/chair, never re-resolved for publication
 
     act_ids = {record["subject_id"] for record in _testimonia(tree)}

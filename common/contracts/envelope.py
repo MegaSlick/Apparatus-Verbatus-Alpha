@@ -23,8 +23,8 @@ from typing import Any, Final
 from .canonical import SCHEMA_LABEL, digest_bytes, self_hash, verify_self_hash
 from .errors import ReservedKindRefusal, SchemaRefusal
 from .identities import artifact_id, is_well_formed
-from .outcomes import classify, require_approval
-from .stages import STAGES
+from .outcomes import BOUNDARY_OUTCOMES, classify, require_approval
+from .stages import EXEMPLAR, STAGES
 
 _REQUIRED: Final = (
     "schema",
@@ -179,8 +179,26 @@ def validate_envelope(envelope: Any) -> dict[str, Any]:
 
     # Fatal rather than a refusal when the outcome is in no set: that is invariant
     # #10's imbalance, and it is not a unit the run may route around.
-    classify(stage, envelope["outcome"])
-    require_approval(stage, envelope["outcome"], envelope.get("approval_ref"))
+    outcome = envelope["outcome"]
+    expected_boundary_outcome = BOUNDARY_OUTCOMES.get(envelope["kind"])
+    if expected_boundary_outcome is not None and outcome != expected_boundary_outcome:
+        raise SchemaRefusal(
+            f"boundary artifact {envelope['kind']!r} has outcome {outcome!r}, not its "
+            f"required boundary outcome {expected_boundary_outcome!r}"
+        )
+    classify(stage, outcome)
+    if expected_boundary_outcome is None and (
+        outcome == BOUNDARY_OUTCOMES["decode-environment"]
+        or (outcome == BOUNDARY_OUTCOMES["stage-seal"] and stage != EXEMPLAR)
+    ):
+        # ``sealed`` predates completion seals as Exemplar's ordinary success
+        # outcome. Every other occurrence, and every ``recorded`` occurrence,
+        # was introduced solely for the two boundary kinds above.
+        raise SchemaRefusal(
+            f"ordinary {stage} artifact {envelope['kind']!r} cannot carry boundary "
+            f"outcome {outcome!r}"
+        )
+    require_approval(stage, outcome, envelope.get("approval_ref"))
 
     validate_input_refs(envelope["inputs"])
 

@@ -44,11 +44,15 @@ from common.contracts.errors import (
 from common.contracts.identities import act_bindings, artifact_id, attempt_id
 from common.contracts.identities import act_id as derive_act_id
 from common.contracts.identities import verify as verify_identity
-from common.contracts.outcomes import WITNESS_READING_OUTCOMES as _WITNESS_READING_OUTCOMES
-from common.contracts.outcomes import classify
+from common.contracts.outcomes import (
+    BOUNDARY_OUTCOMES,
+    classify,
+)
+from common.contracts.outcomes import (
+    WITNESS_READING_OUTCOMES as _WITNESS_READING_OUTCOMES,
+)
 from common.contracts.serving import SERVING_CONFIG_INPUTS_FIELDS, SERVING_CONFIG_INPUTS_SCHEMA
 from common.contracts.stages import (
-    ARMARIUM,
     DESIGNATOR,
     EXEMPLAR,
     PERLECTOR,
@@ -464,7 +468,6 @@ class StageContext:
         )
         attempt = attempt_id(self.stage, "seal", ordinal)
         decode_id = artifact_id(self.stage, "decode-environment", self.stage, attempt)
-        payload = _stage_seal_payload(self.tree, self.stage, ordinal, attempt, decode_id)
         # A restart that did not change any stage-owned evidence reuses the
         # previous witnessed statement instead of manufacturing a new attempt.
         if records:
@@ -658,10 +661,11 @@ _DECODE_ENVIRONMENT_FIELDS: Final = frozenset(
 
 
 def _boundary_outcome(stage: str, kind: str) -> str:
-    """Armarium's closed terminal vocabulary has no non-terminal record state."""
-    if stage == ARMARIUM:
-        return "delivered"
-    return "sealed" if kind == "stage-seal" else "recorded"
+    """The non-terminal outcome reserved for one boundary artifact kind."""
+    try:
+        return BOUNDARY_OUTCOMES[kind]
+    except KeyError:
+        raise SchemaRefusal(f"{stage} cannot publish unknown boundary kind {kind!r}") from None
 
 
 def _stage_records(tree: RunTree, stage: str, kind: str) -> list[dict[str, Any]]:
@@ -701,8 +705,10 @@ def _refuse_deleted_seal(tree: RunTree, stage: str, present: set[str]) -> None:
     if not isinstance(stored, dict) or not isinstance(stored.get("artifacts"), list):
         raise SchemaRefusal(f"stored {stage} manifest cannot establish its prior seal")
     if stored.get("stage") != stage:
-        # Door and Exemplar share a directory but own separate inventories.
-        return
+        raise SchemaRefusal(
+            f"stored {stage} manifest names producer {stored.get('stage')!r}; "
+            "a sibling inventory cannot establish which completion seals existed"
+        )
     named: set[str] = set()
     for entry in stored["artifacts"]:
         if not isinstance(entry, dict) or entry.get("kind") != "stage-seal":
@@ -813,6 +819,16 @@ def _stage_seal_payload(
     for entry in artifacts:
         key = (entry["kind"], entry["outcome"])
         census[key] = census.get(key, 0) + 1
+    decode_environment_path = tree.artifact_path(
+        stage, "decode-environment", decode_environment_artifact_id
+    )
+    try:
+        decode_environment_sha256 = digest_bytes(tree.read_bytes(decode_environment_path))
+    except OSError as error:
+        raise SchemaRefusal(
+            f"{stage} cannot seal its boundary: decode-environment "
+            f"{decode_environment_artifact_id!r} is unreadable: {error}"
+        ) from error
     return {
         "stage": stage,
         "attempt_ordinal": ordinal,
@@ -826,6 +842,7 @@ def _stage_seal_payload(
             for (kind, outcome), count in sorted(census.items())
         ],
         "decode_environment_artifact_id": decode_environment_artifact_id,
+        "decode_environment_sha256": decode_environment_sha256,
     }
 
 
@@ -861,6 +878,24 @@ def verify_predecessor_seal(tree: RunTree, stage: str) -> None:
         raise SchemaRefusal(
             f"{stage} refuses {predecessor} stage-seal: register_digest differs from run authority"
         )
+    try:
+        environment = tree.read_artifact(predecessor, "decode-environment", expected_id)
+        environment_bytes = tree.read_bytes(
+            tree.artifact_path(predecessor, "decode-environment", expected_id)
+        )
+    except (ContractError, OSError) as error:
+        raise SchemaRefusal(
+            f"{stage} refuses {predecessor} stage-seal: its decode-environment is missing or damaged"
+        ) from error
+    previous_environment = _validate_decode_environment(
+        environment.get("payload"), f"{predecessor} stored"
+    )
+    actual_environment_sha256 = digest_bytes(environment_bytes)
+    if payload.get("decode_environment_sha256") != actual_environment_sha256:
+        raise SchemaRefusal(
+            f"{stage} refuses {predecessor} stage-seal: its decode-environment digest "
+            "differs from the witnessed bytes"
+        )
     expected = _stage_seal_payload(
         tree,
         predecessor,
@@ -872,15 +907,6 @@ def verify_predecessor_seal(tree: RunTree, stage: str) -> None:
         raise SchemaRefusal(
             f"{stage} refuses {predecessor} stage-seal: its named inventory no longer matches disk"
         )
-    try:
-        environment = tree.read_artifact(predecessor, "decode-environment", expected_id)
-    except (ContractError, OSError) as error:
-        raise SchemaRefusal(
-            f"{stage} refuses {predecessor} stage-seal: its decode-environment is missing or damaged"
-        ) from error
-    previous_environment = _validate_decode_environment(
-        environment.get("payload"), f"{predecessor} stored"
-    )
     current_environment = _validate_decode_environment(
         _decode_environment(stage), f"{stage} current"
     )

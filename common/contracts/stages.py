@@ -63,8 +63,7 @@ HANDOFFS: Final = (
 )
 
 # Completion seals are witnessed statements at the end of each producer pass.
-# Unlike HANDOFFS this includes Armarium: no later stage consumes its seal, so
-# the orchestrator proves that final statement before it reports the run.
+# Keys are consumers, including the orchestrator as Armarium's final consumer.
 SEAL_PREDECESSORS: Final = {
     EXEMPLAR: DOOR,
     DESIGNATOR: EXEMPLAR,
@@ -73,6 +72,7 @@ SEAL_PREDECESSORS: Final = {
     RECENSOR: PERLECTOR,
     ARCHETYPUS: RECENSOR,
     ARMARIUM: ARCHETYPUS,
+    "orchestrator": ARMARIUM,
 }
 
 

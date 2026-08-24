@@ -3,8 +3,9 @@
 # Stage-completion seal
 
 Before this producer's final manifest it publishes one `decode-environment` and
-one `stage-seal`. The seal witnesses this pass's disk inventory, blob contents,
-run `config_digest` and `register_digest`, and `(kind, outcome)` census. An exit
+one `stage-seal`, or reuses both on a byte-identical retry. The seal witnesses
+this pass's disk inventory and blob contents, and binds the exact decode-environment
+bytes, run `config_digest` and `register_digest`, and `(kind, outcome)` census. An exit
 held after publishing stage evidence seals it (holds remain in its census); a
 pass held or refused before publishing stage evidence does not seal, so the
 successor correctly refuses the missing boundary. Every difference in decoders,

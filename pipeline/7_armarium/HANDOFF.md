@@ -3,8 +3,9 @@
 # Stage-completion seal
 
 Before this producer's final manifest it publishes one `decode-environment` and
-one `stage-seal`. The seal witnesses this pass's disk inventory, blob contents,
-run `config_digest` and `register_digest`, and `(kind, outcome)` census. An exit
+one `stage-seal`, or reuses both on a byte-identical retry. The seal witnesses
+this pass's disk inventory and blob contents, and binds the exact decode-environment
+bytes, run `config_digest` and `register_digest`, and `(kind, outcome)` census. An exit
 held after publishing stage evidence seals it (holds remain in its census); a
 pass held or refused before publishing stage evidence does not seal, so the
 orchestrator correctly refuses a missing final boundary. Every difference in
@@ -18,13 +19,9 @@ when any named seal is no longer on disk. Ordinals are the contiguous run 1..N,
 so removing the latest leaves a prefix that still looks whole — and the earlier
 statement would then answer for a boundary it never witnessed.
 
-The Armarium's two boundary records carry terminal outcomes (`delivered`), because
-this stage's vocabulary is the five closed Armarium categories and has no
-non-terminal state to lend them. Nothing in the pipeline aggregates this stage's
-artifacts by outcome — `bundle.py` reads the one `export` record by id — so the
-records cannot inflate a delivered count today. A future reader that walks this
-manifest must filter `stage-seal`/`decode-environment` first, exactly as
-`test_projection_identity.py` does.
+The Armarium's two boundary records carry the same non-terminal `sealed` and
+`recorded` outcomes as every other stage. They are completed bookkeeping, never
+`delivered` output; only the `export` record may make that terminal claim.
 The Armarium publishes the terminal `kind="export"` record and one
 `kind="manifest-entry"` per expected act. Both are ordinary artifacts under
 `7_armarium/artifacts/`; the stage manifest is derived inventory, never a competing

@@ -145,14 +145,18 @@ VOCABULARIES: Final[dict[str, dict[str, OutcomeClass]]] = {
     },
 }
 
-# These two record kinds are stage-boundary evidence, not a second outcome
-# algebra.  They nevertheless use the ordinary envelope, whose outcome is
-# intentionally total by producer stage.
+BOUNDARY_OUTCOMES: Final = {
+    "stage-seal": "sealed",
+    "decode-environment": "recorded",
+}
+
+# These two outcomes describe stage-boundary evidence, not an act's terminal
+# category. They use the ordinary envelope at every producer, including
+# Armarium; calling its boundary records ``delivered`` would falsely present
+# bookkeeping as exported text.
 for _stage in VOCABULARIES:
-    if _stage == ARMARIUM:
-        continue
-    VOCABULARIES[_stage]["sealed"] = _C.COMPLETED
-    VOCABULARIES[_stage]["recorded"] = _C.COMPLETED
+    for _outcome in BOUNDARY_OUTCOMES.values():
+        VOCABULARIES[_stage][_outcome] = _C.COMPLETED
 
 # --- The transition table: (stage, outcome) -> terminal category, or None -------
 #
@@ -197,10 +201,8 @@ TERMINAL_CATEGORY: Final[dict[tuple[str, str], ArmariumCategory | None]] = {
 }
 
 for _stage in VOCABULARIES:
-    if _stage == ARMARIUM:
-        continue
-    TERMINAL_CATEGORY[(_stage, "sealed")] = None
-    TERMINAL_CATEGORY[(_stage, "recorded")] = None
+    for _outcome in BOUNDARY_OUTCOMES.values():
+        TERMINAL_CATEGORY[(_stage, _outcome)] = None
 
 # The Perlector's failures are transitive on purpose: a truncated or failed reading
 # is the Recensor's to act on — it may request bounded recovery — and only the

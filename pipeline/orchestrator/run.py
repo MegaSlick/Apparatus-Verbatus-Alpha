@@ -387,14 +387,14 @@ def main() -> int:
         report_halt(args, halted)
         return EXIT_RUN_HALTED
 
+    # Armarium has no stage successor, so the orchestrator consumes and proves
+    # its final boundary before it reads the export inside that boundary.
+    verify_predecessor_seal(tree, "orchestrator")
     export = tree.read_artifact(
         "armarium",
         "export",
         artifact_id("armarium", "export", "export", None),
     )
-    # Armarium has no successor to open a context and prove its seal, so the
-    # orchestrator is its named consumer at the run's final boundary.
-    verify_predecessor_seal(tree, "armarium")
     status, lines = terminal_report(export)
     print(f"run {args.run_id}: {status}")
     for line in lines:
