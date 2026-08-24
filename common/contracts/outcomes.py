@@ -595,6 +595,7 @@ def run_aggregate(
     unaddressed_chairs: Sequence[str] | None = None,
     act_pages: Mapping[str, Sequence[int]] | None = None,
     act_text_status: Mapping[str, str] | None = None,
+    edge_hold_pages: Sequence[int] | None = None,
 ) -> dict[str, Any]:
     """The run's own terminal state, and every reason it is not `complete`.
 
@@ -635,6 +636,16 @@ def run_aggregate(
     to be ordinary rather than exceptional. A non-`established` status therefore
     contributes its own named reason, exactly as an under-witnessed act or a refused
     page does.
+
+    `edge_hold_pages` names every sealed page carrying an Ink Map
+    `unclaimed-edge-ink` finding that the Designator's actual cuts did not
+    release (consult §4.4). It is the one unresolved cause that belongs to a
+    *page* rather than to any act on it -- nobody yet knows which act, if any,
+    the ink is part of -- so a page whose acts all delivered still leaves the
+    run unreconciled. Without it the terminal ledger held the page while this
+    aggregate, beside it in the same manifest, still said `complete`: one
+    export, two statuses, and the reassuring one is the one a reader sees
+    first (GOVERNANCE 2; invariant 6).
 
     A delivered act with no status supplied is named too, rather than assumed whole:
     that is the same "this run does not know" `NO_ATTRIBUTION_REASON` refuses to
@@ -684,6 +695,12 @@ def run_aggregate(
     # whose role no stage addresses — a misspelt witness, most plainly — was
     # resolved by nothing and named in no artifact, and the run still reported
     # `complete`. It is named here instead, every time.
+    for ordinal in sorted(edge_hold_pages or ()):
+        reasons.append(
+            f"page {ordinal} carries unreleased unclaimed-edge-ink: ink at its edge that no "
+            "Designator crop on the page claims, so its coverage is not reconciled"
+        )
+
     for chair in sorted(unaddressed_chairs or ()):
         reasons.append(
             f"chair {chair} is configured and no stage addresses that role, so nothing "

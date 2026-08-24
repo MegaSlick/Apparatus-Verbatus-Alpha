@@ -102,6 +102,30 @@ SUBSTANTIAL_INK_PIXELS = 2_000
 EDGE_BAND_PIXELS = 64
 
 
+def coverage_flag(total_ink_pixels: int, outside_ink_pixels: int) -> tuple[float, bool]:
+    """The one outside-coverage gate, and the ratio it is read against.
+
+    Either gate flags on its own. The fraction gate catches a miss that is
+    large *relative to* what the page carries; the absolute gate catches one
+    that is large *full stop*, which on a dense page the fraction gate alone
+    would let through (see `SUBSTANTIAL_INK_PIXELS`). This can only ever add
+    a flag, never remove one — every page flagged before this second gate
+    existed is still flagged by the first.
+
+    One function rather than a copy per measure, because the Armarium's export
+    verifier recomputes this predicate over recorded counts on a clean machine
+    (`pipeline/7_armarium/armarium_export.py`). A verifier applying its own
+    fourth copy of the arithmetic would be checking a different instrument
+    than the one that measured, which is not a check.
+    """
+    fraction_outside = (outside_ink_pixels / total_ink_pixels) if total_ink_pixels else 0.0
+    flagged = outside_ink_pixels >= SUBSTANTIAL_INK_PIXELS or (
+        outside_ink_pixels >= MINIMUM_INK_PIXELS
+        and fraction_outside >= MINIMUM_FRACTION_OUTSIDE_COVERAGE
+    )
+    return fraction_outside, flagged
+
+
 def _ink_table(background: int) -> bytes:
     """A 256-entry translation table mapping every pixel value to 1 (ink) or 0.
 
@@ -189,16 +213,7 @@ def residual_ink(
             int.from_bytes(ink_row, "big") & ~int.from_bytes(covered_row, "big")
         ).bit_count()
 
-    fraction_outside = (outside_ink / total_ink) if total_ink else 0.0
-    # Either gate flags on its own. The fraction gate catches a miss that is
-    # large *relative to* what the page carries; the absolute gate catches one
-    # that is large *full stop*, which on a dense page the fraction gate alone
-    # would let through (see `SUBSTANTIAL_INK_PIXELS`). This can only ever add
-    # a flag, never remove one — every page flagged before this second gate
-    # existed is still flagged by the first.
-    flagged = outside_ink >= SUBSTANTIAL_INK_PIXELS or (
-        outside_ink >= MINIMUM_INK_PIXELS and fraction_outside >= MINIMUM_FRACTION_OUTSIDE_COVERAGE
-    )
+    fraction_outside, flagged = coverage_flag(total_ink, outside_ink)
     return {
         "background_level": background,
         "total_ink_pixels": total_ink,
@@ -212,6 +227,130 @@ def page_residual_ink(image_bytes: bytes, covered: list[Bounds]) -> dict[str, An
     """`residual_ink`, decoding the sealed page bytes first."""
     width, height, rows = grayscale_rows(image_bytes)
     return residual_ink(width, height, rows, covered)
+
+
+def ink_runs(image_bytes: bytes) -> dict[str, Any]:
+    """The ink map's reusable, lossless page-space evidence.
+
+    This is produced once by the ink-map stage.  Later consumers count runs in
+    a supplied box; they must not decode the page and make a second ink
+    measurement under a denominator the map writer could not have seen.
+    """
+    width, height, rows = grayscale_rows(image_bytes)
+    table = _ink_table(_background_level(rows))
+    encoded: list[list[list[int]]] = []
+    for row in rows:
+        bits = row.translate(table)
+        runs: list[list[int]] = []
+        start = 0
+        while start < width:
+            start = bits.find(1, start)
+            if start < 0:
+                break
+            end = bits.find(0, start)
+            if end < 0:
+                end = width
+            runs.append([start, end - start])
+            start = end
+        encoded.append(runs)
+    return {"schema": "ink-runs.v1", "width": width, "height": height, "rows": encoded}
+
+
+def edge_ink_from_runs(evidence: dict[str, Any], covered: list[Bounds]) -> dict[str, Any]:
+    """Re-measure the edge finding against later Designator cuts.
+
+    ``page_edge_ink`` deliberately runs before proposals exist, so its positive
+    outcome is a *candidate* coverage finding, not a final page verdict.  The
+    Ink Map retains these lossless ink runs precisely so the Designator's actual
+    cuts can release a finding without a later stage decoding the page under a
+    different measurement.  This is the same edge band and the same flag gates
+    as ``page_edge_ink``; only ``covered`` has changed.
+    """
+    if not isinstance(evidence, dict) or evidence.get("schema") != "ink-runs.v1":
+        raise ValueError("ink-run evidence has the wrong schema")
+    width, height, rows = evidence.get("width"), evidence.get("height"), evidence.get("rows")
+    if (
+        not isinstance(width, int)
+        or isinstance(width, bool)
+        or width <= 0
+        or not isinstance(height, int)
+        or isinstance(height, bool)
+        or height <= 0
+        or not isinstance(rows, list)
+        or len(rows) != height
+    ):
+        raise ValueError("ink-run evidence has invalid dimensions")
+
+    band = min(EDGE_BAND_PIXELS, width // 2, height // 2)
+    total_ink = 0
+    outside_ink = 0
+    for y, row in enumerate(rows):
+        if not isinstance(row, list):
+            raise ValueError("ink-run evidence has a malformed row")
+        runs: list[tuple[int, int]] = []
+        previous_end = 0
+        for run in row:
+            if (
+                not isinstance(run, list)
+                or len(run) != 2
+                or not all(isinstance(value, int) and not isinstance(value, bool) for value in run)
+            ):
+                raise ValueError("ink-run evidence has a malformed run")
+            start, length = run
+            end = start + length
+            if start < previous_end or length <= 0 or end > width:
+                raise ValueError("ink-run evidence has unordered or out-of-bounds runs")
+            runs.append((start, end))
+            previous_end = end
+
+        total_ink += sum(end - start for start, end in runs)
+        if band == 0:
+            continue
+        edge_intervals = (
+            [(0, width)] if y < band or y >= height - band else [(0, band), (width - band, width)]
+        )
+        covered_intervals = sorted(
+            (
+                max(0, min(bounds["x"], width)),
+                max(0, min(bounds["x"] + bounds["w"], width)),
+            )
+            for bounds in covered
+            if bounds["y"] <= y < bounds["y"] + bounds["h"]
+        )
+        merged_coverage: list[tuple[int, int]] = []
+        for start, end in covered_intervals:
+            if start >= end:
+                continue
+            if merged_coverage and start <= merged_coverage[-1][1]:
+                merged_coverage[-1] = (merged_coverage[-1][0], max(end, merged_coverage[-1][1]))
+            else:
+                merged_coverage.append((start, end))
+        for run_start, run_end in runs:
+            for edge_start, edge_end in edge_intervals:
+                start, end = max(run_start, edge_start), min(run_end, edge_end)
+                if start >= end:
+                    continue
+                cursor = start
+                for covered_start, covered_end in merged_coverage:
+                    if covered_end <= cursor:
+                        continue
+                    if covered_start >= end:
+                        break
+                    outside_ink += max(0, min(covered_start, end) - cursor)
+                    cursor = max(cursor, covered_end)
+                    if cursor >= end:
+                        break
+                outside_ink += max(0, end - cursor)
+
+    fraction_outside, flagged = coverage_flag(total_ink, outside_ink)
+    return {
+        "total_ink_pixels": total_ink,
+        "outside_ink_pixels": outside_ink,
+        "fraction_outside": fraction_outside,
+        "flagged": flagged,
+        "edge_band_pixels": band,
+        "named_finding": "unclaimed-edge-ink",
+    }
 
 
 def page_edge_ink(image_bytes: bytes) -> dict[str, Any]:

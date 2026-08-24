@@ -32,6 +32,7 @@ from armarium_export import (  # noqa: E402
     ARMARIUM_ARCHIVE_NAME,
     ArmariumProjection,
     build_armarium_bundle,
+    edge_hold_pages_from_rows,
 )
 
 from common.chairs.registry import ChairRegistry  # noqa: E402
@@ -52,6 +53,7 @@ from common.contracts.stages import (  # noqa: E402
     ATTESTATORES,
     DESIGNATOR,
     EXEMPLAR,
+    INK_MAP,
     PERLECTOR,
     RECENSOR,
 )
@@ -62,6 +64,7 @@ from common.exemplar_boundary import (  # noqa: E402
     verify_exemplar_crop_lineage,
     verify_sealed_page_pixels,
 )
+from common.residual_ink import edge_ink_from_runs  # noqa: E402
 from common.stage import (  # noqa: E402
     ATTEMPTED_WITNESS_OUTCOMES,
     EXIT_COMPLETE,
@@ -198,6 +201,71 @@ def page_census(context) -> dict[int, dict]:
     return census
 
 
+def ink_map_page_rows(
+    context, census: dict[int, dict], claimed_bounds: dict[int, list[dict]]
+) -> tuple[dict, ...]:
+    """Re-measure the Ink Map against the Designator's actual cuts, and say so.
+
+    The pre-proposal map cannot know whether edge ink belongs to an act.  Its
+    lossless page-space runs let this final boundary apply the Designator's
+    recorded crop geometry to the *same measurement*, so a claimed edge mark
+    releases and a genuinely unclaimed one remains visible for review.
+
+    One row per sealed page, carrying what was found and what was re-measured
+    rather than only the resulting hold. The export's clean-machine verifier
+    recomputes the held set from these numbers with the ink map's own gate; a
+    bare list of held ordinals would be a claim it could only check against
+    itself. A page the map never flagged is re-measured by nobody and records
+    `remeasured: None`, because writing zeros for it would put a measurement
+    that was never taken into the record (GOVERNANCE 10).
+    """
+    found: dict[int, dict] = {}
+    for entry in context.tree.build_manifest(INK_MAP)["artifacts"]:
+        if entry["kind"] != "ink-map":
+            continue
+        record = context.tree.read_artifact(INK_MAP, "ink-map", entry["artifact_id"])
+        payload = record.get("payload", {})
+        ordinal = payload.get("page_ordinal") if isinstance(payload, dict) else None
+        # A second record for one page is refused rather than resolved: an ink
+        # map re-sealed while this release was being computed would otherwise
+        # let whichever copy the walk reached last decide the hold.
+        if not isinstance(ordinal, int) or isinstance(ordinal, bool) or ordinal in found:
+            raise FatalAccounting("ink-map has no unique page finding for the Armarium")
+        if record["outcome"] not in {"mapped", "unclaimed-edge-ink"}:
+            raise FatalAccounting("ink-map has an unknown page finding outcome")
+        evidence = payload.get("edge_findings")
+        if not isinstance(evidence, dict):
+            raise FatalAccounting("ink-map has no reusable page-space edge evidence")
+        found[ordinal] = {"outcome": record["outcome"], "evidence": evidence}
+    sealed = {ordinal for ordinal, page in census.items() if page.get("outcome") == "sealed"}
+    if set(found) != sealed:
+        raise FatalAccounting("ink-map page denominator does not match the Armarium page census")
+    rows = []
+    for ordinal in sorted(found):
+        finding = found[ordinal]
+        remeasured = None
+        if finding["outcome"] == "unclaimed-edge-ink":
+            try:
+                measure = edge_ink_from_runs(finding["evidence"], claimed_bounds.get(ordinal, []))
+            except (KeyError, TypeError, ValueError) as error:
+                raise FatalAccounting(
+                    "ink-map page-space edge evidence cannot be re-measured"
+                ) from error
+            remeasured = {
+                "total_ink_pixels": measure["total_ink_pixels"],
+                "outside_ink_pixels": measure["outside_ink_pixels"],
+                "edge_band_pixels": measure["edge_band_pixels"],
+            }
+        rows.append(
+            {
+                "ordinal": ordinal,
+                "initial_outcome": finding["outcome"],
+                "remeasured": remeasured,
+            }
+        )
+    return tuple(rows)
+
+
 def _cached_manifest(context, stage: str, manifest_cache: dict[str, dict]) -> dict:
     """``context.tree.build_manifest(stage)``, read and revalidated once per run.
 
@@ -251,6 +319,28 @@ def pages_marked_out(context, manifest_cache: dict[str, dict]) -> dict[str, list
         if ordinal not in marked[act_id]:
             marked[act_id].append(ordinal)
     return {act_id: sorted(ordinals) for act_id, ordinals in marked.items()}
+
+
+def claimed_bounds_by_page(context, manifest_cache: dict[str, dict]) -> dict[int, list[dict]]:
+    """The verified capture rectangles which can release an edge finding."""
+    claimed: dict[int, list[dict]] = {}
+    for entry in _cached_manifest(context, DESIGNATOR, manifest_cache)["artifacts"]:
+        if entry["kind"] != "region":
+            continue
+        region = context.tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
+        try:
+            verified = verify_exemplar_crop_lineage(context.tree, context.run, region)
+        except ContractError as error:
+            raise FatalAccounting(
+                f"the Designator region {entry['artifact_id']} cannot be verified as a crop of "
+                "the Exemplar page it claims to mark out"
+            ) from error
+        transform = region.get("payload", {}).get("transform")
+        bounds = transform.get("bounds") if isinstance(transform, dict) else None
+        if not isinstance(bounds, dict):
+            raise FatalAccounting("a verified Designator region has no crop bounds")
+        claimed.setdefault(verified["source_page_ordinal"], []).append(bounds)
+    return claimed
 
 
 def artifacts_for(
@@ -868,6 +958,17 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         )
 
     unaddressed = list(unaddressed_chairs(context.registry.config))
+    # Measured before the aggregate, not after it: an unreleased edge finding is
+    # one of the run's own unresolved causes, so an aggregate computed without it
+    # would say `complete` beside a terminal ledger that holds the page.
+    # No capability sniff around this call. `page_census` above already reached
+    # `context.tree.build_manifest` unconditionally, so a tree without it never
+    # arrives here at all -- and a guard that silently yields "no holds" beside
+    # a hold gate is the shape that becomes reachable later without anyone
+    # noticing (GOVERNANCE 2).
+    ink_map_pages = ink_map_page_rows(
+        context, census, claimed_bounds_by_page(context, manifest_cache)
+    )
     aggregate = run_aggregate(
         categories,
         coverages,
@@ -875,6 +976,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         unaddressed_chairs=unaddressed,
         act_pages=act_pages,
         act_text_status=act_text_status,
+        edge_hold_pages=edge_hold_pages_from_rows(ink_map_pages),
     )
     expected_count = len(expected)
     if len(categories) != expected_count:
@@ -904,6 +1006,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 # is recomputable on a clean machine rather than merely asserted.
                 "act_text_status": act_text_status,
             },
+            ink_map_pages=ink_map_pages,
         ),
         formats,
         context.tree.read_bytes,

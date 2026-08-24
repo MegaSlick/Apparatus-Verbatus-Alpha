@@ -91,11 +91,13 @@ def test_the_real_recovery_request_names_fallback_recrop(tmp_path):
         for entry in tree.build_manifest(RECENSOR)["artifacts"]
         if entry["kind"] == "recovery-request"
     ]
-    # Review retains the scenario-declared a1 request and the second request
-    # from attestator_3's unclaimed native page observation. Both are coverage
-    # recovery and must name the one implemented operation explicitly.
-    assert len(requests) == 2
-    assert {request["payload"]["act_key"] for request in requests} == {"a1", "a2"}
+    # Review retains only the scenario-declared a1 request. Consult §4.5 (see
+    # `test_unit14b_trigger_contract.py`): attestator_3's unclaimed native page
+    # observation is a pointer, not itself the evidence, and Unit 9's ink map
+    # records zero ink under it, so it confirms nothing and a2 goes straight
+    # to held-for-review instead of spending a second recrop.
+    assert len(requests) == 1
+    assert {request["payload"]["act_key"] for request in requests} == {"a1"}
     assert {request["payload"]["recovery_kind"] for request in requests} == {FALLBACK_RECROP}
 
     reviews = [
@@ -103,10 +105,9 @@ def test_the_real_recovery_request_names_fallback_recrop(tmp_path):
         for entry in tree.build_manifest(RECENSOR)["artifacts"]
         if entry["kind"] == "review" and entry["outcome"] == "recovery-requested"
     ]
-    assert len(reviews) == 2
+    assert len(reviews) == 1
     by_act = {review["payload"]["act_key"]: review for review in reviews}
     assert by_act["a1"]["payload"]["continuation"]["is_continuation"] is False
-    assert by_act["a2"]["payload"]["continuation"]["is_continuation"] is True
 
 
 # --- recovery_state: an isolated tree, so a malformed kind is the only thing
