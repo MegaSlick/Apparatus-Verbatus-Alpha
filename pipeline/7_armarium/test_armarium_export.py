@@ -7,6 +7,7 @@ import sqlite3
 import unicodedata
 from dataclasses import replace
 from io import BytesIO
+from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZIP_STORED, ZipFile
 
 import pytest
@@ -16,6 +17,7 @@ from armarium_export import (
     ArmariumProjection,
     _page_ledger_category,
     _terminal_ledger,
+    _verify_acts_schema,
     _zip_bytes,
     build_armarium_bundle,
     canonical_text_sha256,
@@ -87,7 +89,12 @@ def _projection(*, salvage_items=()) -> ArmariumProjection:
                 "provenance": {"chair": "perlector"},
                 "source_regions": [region],
                 "reason": None,
-                "evidence_refs": [],
+                "evidence_refs": [
+                    {
+                        "relative_path": "5_recensor/artifacts/review/act-1.json",
+                        "sha256": "b" * 64,
+                    }
+                ],
                 "witnesses": [{"chair": "attestator_1"}],
             },
             {
@@ -98,7 +105,12 @@ def _projection(*, salvage_items=()) -> ArmariumProjection:
                 "provenance": None,
                 "source_regions": [],
                 "reason": "the review remains unresolved",
-                "evidence_refs": [],
+                "evidence_refs": [
+                    {
+                        "relative_path": "5_recensor/artifacts/review/act-2.json",
+                        "sha256": "c" * 64,
+                    }
+                ],
             },
         ),
         pages=(
@@ -621,13 +633,26 @@ def test_delivered_gate_requires_review_evidence_references(tmp_path):
     bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
     members = _members(bundle.data)
     rows = [json.loads(line) for line in members["review-items.jsonl"].decode("utf-8").splitlines()]
-    assert rows[0]["evidence_refs"] == []
+    assert rows[0]["evidence_refs"]
     del rows[0]["evidence_refs"]
     members["review-items.jsonl"] = b"".join(canonical_bytes(row) + b"\n" for row in rows)
     _refresh_manifest_member(members, "review-items.jsonl")
 
     with pytest.raises(SchemaRefusal, match="field set"):
         verify_delivered_bundle(_zip_bytes(members), tmp_path / "delivered")
+
+
+def test_an_evidence_reference_list_may_not_be_empty(tmp_path):
+    """Every act has a Recensor review citation, so empty means evidence was lost."""
+    projection = _projection()
+    uncited = {**projection.acts[0], "evidence_refs": []}
+
+    with pytest.raises(SchemaRefusal, match="must retain at least the Recensor review"):
+        build_armarium_bundle(
+            replace(projection, acts=(uncited, *projection.acts[1:])),
+            _formats(embed_pixels=False),
+            _source_bytes,
+        )
 
 
 def test_delivered_gate_refuses_retired_fields_on_an_act_v2_row(tmp_path):
@@ -662,6 +687,21 @@ def test_delivered_gate_requires_sqlite_product_identity(tmp_path):
 
     with pytest.raises(SchemaRefusal, match="SQLite product identity"):
         verify_delivered_bundle(_zip_bytes(members), tmp_path / "delivered")
+
+
+def test_a_verifier_without_fts5_names_why_sqlite_identity_cannot_be_checked(monkeypatch):
+    """A missing verifier capability is a refusal, not a raw sqlite traceback."""
+
+    def no_fts5():
+        raise sqlite3.OperationalError("no such module: fts5")
+
+    monkeypatch.setattr("armarium_export._expected_acts_schema", no_fts5)
+    connection = sqlite3.connect(":memory:")
+    try:
+        with pytest.raises(SchemaRefusal, match="requires FTS5 support"):
+            _verify_acts_schema(connection)
+    finally:
+        connection.close()
 
 
 def test_delivered_gate_requires_the_fts5_index_to_actually_carry_the_fold(tmp_path):
@@ -897,6 +937,27 @@ def test_a_resealed_manifest_may_not_carry_a_field_this_build_never_writes(mutat
         verify_delivered_bundle(_resealed_manifest(mutate), tmp_path / "delivered")
 
 
+def test_an_unhashable_salvage_status_is_a_named_refusal(tmp_path):
+    """Package-supplied JSON values may not escape the verifier as Python errors."""
+
+    def replace_status(manifest):
+        manifest["claims"]["salvage"]["status"] = ["accounted"]
+
+    with pytest.raises(SchemaRefusal, match="invalid salvage-tier status"):
+        verify_delivered_bundle(_resealed_manifest(replace_status), tmp_path / "delivered")
+
+
+@pytest.mark.parametrize("field", ["fixture_id", "scenario"])
+def test_a_manifest_run_binding_requires_string_identities(field, tmp_path):
+    """An exact key set is not a schema if package-supplied identity types are unchecked."""
+
+    def replace_identity(manifest):
+        manifest["run"][field] = ["not", "an", "identity"]
+
+    with pytest.raises(SchemaRefusal, match="non-blank fixture and scenario identities"):
+        verify_delivered_bundle(_resealed_manifest(replace_identity), tmp_path / "delivered")
+
+
 def test_a_source_graph_evidence_ref_that_cites_nothing_is_refused_in_every_format_set(tmp_path):
     """The decoy check has to live where every package carries the citation.
 
@@ -1056,6 +1117,22 @@ def test_sealed_source_page_cannot_carry_a_resealed_refusal_reason(tmp_path):
     _refresh_manifest_member(members, "sources.json")
 
     with pytest.raises(SchemaRefusal, match="sealed package source page carries a refusal reason"):
+        verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
+
+
+def test_a_refused_source_page_requires_a_nonblank_terminal_reason(tmp_path):
+    """Whitespace does not name why a source failed to seal or what remains unresolved."""
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    sources = json.loads(members["sources.json"])
+    page = sources["pages"][0]
+    page["outcome"] = "refused"
+    page["reason"] = "   "
+    page.pop("page_image")
+    members["sources.json"] = canonical_bytes(sources)
+    _refresh_manifest_member(members, "sources.json")
+
+    with pytest.raises(SchemaRefusal, match="refused package source page has no terminal reason"):
         verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
 
 
@@ -2123,12 +2200,13 @@ def test_a_compressed_member_is_refused_before_a_byte_is_decompressed(tmp_path):
     assert not [path for path in clean.rglob("*") if path.is_file()]
 
 
-def test_a_prepopulated_clean_root_is_refused_before_archive_extraction(tmp_path):
-    """Ambient filesystem entries are not package members, even at expected paths.
+def test_a_preexisting_file_symlink_is_refused_before_archive_extraction(tmp_path):
+    """A linked ambient entry is refused even when it occupies an expected path.
 
-    In particular, extraction follows a pre-existing file symlink. Refusing the root
-    before opening the archive proves neither member accounting nor text-bundle reads
-    can be redirected through the two former ``rglob`` walks.
+    Ordinary files are safely replaced (including hard links, tested below), so the
+    refusal is specifically about a symlink that extraction would otherwise follow.
+    Refusing it before opening the archive proves neither member accounting nor
+    text-bundle reads can be redirected through the two former ``rglob`` walks.
     """
     bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
     outside = tmp_path / "outside.json"
@@ -2159,6 +2237,30 @@ def test_a_preexisting_hard_link_is_replaced_without_writing_outside_the_clean_r
     assert manifest["schema"] == "armarium-export-manifest.v2"
     assert outside.read_bytes() == b"bytes outside the extraction root"
     assert linked.stat().st_ino != shared_inode
+
+
+def test_an_extraction_cleanup_failure_names_the_leftover_temporary_file(tmp_path, monkeypatch):
+    """A failed cleanup is part of the refusal, never a silently retained member."""
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    clean = tmp_path / "clean"
+    real_unlink = Path.unlink
+
+    monkeypatch.setattr(
+        "armarium_export._atomic_replace",
+        lambda _source, _target: (_ for _ in ()).throw(OSError("simulated replace failure")),
+    )
+
+    def fail_temporary_unlink(path, *args, **kwargs):
+        if ".extracting-" in path.name:
+            raise OSError("simulated cleanup failure")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_temporary_unlink)
+
+    with pytest.raises(SchemaRefusal, match="temporary file .* could not be removed"):
+        verify_export_bundle(bundle.data, clean)
+
+    assert list(clean.rglob("*.extracting-*")), "the test must exercise a real leftover file"
 
 
 @pytest.mark.parametrize(

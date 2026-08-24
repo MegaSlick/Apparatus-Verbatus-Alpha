@@ -212,12 +212,20 @@ def test_a_resealed_bundle_that_declines_search_fold_recomputation_is_not_publis
 
     assert result.returncode != 0
     assert "search-fold recomputation was not run" in result.stderr
+    assert "use a verifier whose Unicode database matches" in result.stderr
     assert not out.exists()
     assert not list(tmp_path.glob(".delivery.publishing-*"))
 
 
-def test_a_resealed_package_cannot_rebind_the_run_it_claims_to_export(tmp_path, happy_run):
-    """The clean verifier has no run tree; the publisher does, and must use it."""
+def test_a_resealed_package_cannot_disagree_with_its_export_artifacts_run_binding(
+    tmp_path, happy_run
+):
+    """The publisher checks package labels against the immutable run-tree records.
+
+    This proves internal consistency, not cryptographic authenticity: a party able
+    to rewrite both the export artifact and the package is outside the run tree's
+    immutability contract and would require an external trust root to detect.
+    """
     root = tmp_path / "runs"
     shutil.copytree(happy_run / "r", root / "r")
     tree = RunTree(root, "r")
@@ -232,6 +240,7 @@ def test_a_resealed_package_cannot_rebind_the_run_it_claims_to_export(tmp_path, 
 
     assert result.returncode != 0
     assert "run binding" in result.stderr
+    assert "restore the immutable run tree from an intact copy" in result.stderr
     assert not out.exists()
 
 
@@ -258,6 +267,7 @@ def test_a_resealed_export_cannot_misreport_the_verified_package_aggregate(tmp_p
 
     assert result.returncode != 0
     assert "aggregate disagrees" in result.stderr
+    assert "restore the immutable run tree from an intact copy" in result.stderr
     assert not out.exists()
 
 

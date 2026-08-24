@@ -86,6 +86,7 @@ from common.stage import (  # noqa: E402
     stage_parser,
     validate_serving_provenance,
 )
+from common.witness_regime import witness_label  # noqa: E402
 
 # The three silences, kept apart, and the derivation over them, both imported
 # from `common/contracts/outcomes.py` rather than spelled here. The Armarium
@@ -174,7 +175,7 @@ def _reference_key(reference: dict) -> tuple[str, str]:
 
 
 def _verify_comparison_views(
-    act_id: str, derived: dict[str, str], embedded: dict, dossier: dict
+    context, act_id: str, derived: dict[str, str], embedded: dict, dossier: dict
 ) -> None:
     """Hold the embedded page-witness views to the retained page Testimonia they slice.
 
@@ -187,16 +188,11 @@ def _verify_comparison_views(
     blinded run at this stage -- a whole configured run mode dead at the
     establishing constructor.
 
-    Under `named` the check is the strict one: same labels, same text, chair by
-    chair. Under `blinded` the chair a view belongs to is a fact this stage cannot
-    recompute -- the pseudonym is a digest, and the function that computes it lives
-    in the Perlector, which the stage-import boundary keeps out of here
-    (`pipeline/test_stage_import_boundaries.py`). What is still checkable, and is
-    checked: every embedded label is one of the dossier's own witness labels rather
-    than an invented string, and the views themselves are exactly the slices of the
-    retained page Testimonia this function re-derived -- same count, same text, none
-    added and none dropped. What is not proved under blinding is the *attribution*
-    of a view to a pseudonym, and it is named here rather than left to look proved.
+    The label rule lives in ``common`` because both the Perlector producer and this
+    independent downstream verifier need it. Thus named and blinded regimes receive
+    the same strict check: same labels and same text, witness by witness. Comparing
+    only a blinded multiset would let two authentic views exchange pseudonyms while
+    preserving every count and every byte of text, corrupting attribution silently.
     """
     if not isinstance(embedded, dict):
         raise SchemaRefusal(f"act {act_id} embedded comparison views are not a mapping")
@@ -207,30 +203,40 @@ def _verify_comparison_views(
             f"of {sorted(WITNESS_CONTEXT_REGIMES)}; an unrecognized regime is refused, never "
             "checked as though it were the default"
         )
-    # The literal, not a constant: the two regime names are declared once in
-    # `common.stage.WITNESS_CONTEXT_REGIMES`, which is checked just above, and the
-    # `NAMED`/`BLINDED` constants spelling them live in `pipeline/4_perlector/regime.py`
-    # where the stage-import boundary keeps them. Moving that module into `common/`
-    # is the recommended follow-up and would give both stages one name for this.
-    if regime == "named":
-        if embedded != derived:
-            raise SchemaRefusal(
-                f"act {act_id} embedded comparison views disagree with its attachment"
-            )
-        return
-    if any(not isinstance(text, str) for text in embedded.values()):
-        raise SchemaRefusal(f"act {act_id} embeds a comparison view that is not text")
     rows = dossier.get("testimonia")
     if not isinstance(rows, list):
         raise SchemaRefusal(f"act {act_id} embeds a dossier with no testimonium rows")
-    labels = {row.get("witness_label") for row in rows if isinstance(row, dict)}
-    unknown = sorted(label for label in embedded if label not in labels)
-    if unknown:
+    labels = [row.get("witness_label") for row in rows if isinstance(row, dict)]
+    if (
+        len(labels) != len(rows)
+        or any(not isinstance(label, str) or not label for label in labels)
+        or len(set(labels)) != len(labels)
+    ):
+        raise SchemaRefusal(f"act {act_id} embeds malformed or repeated witness labels")
+    try:
+        expected = {
+            witness_label(
+                chair,
+                regime=regime,
+                run_id=context.tree.run_id,
+                config_digest=context.config_digest,
+            ): text
+            for chair, text in derived.items()
+        }
+    except ValueError as error:
         raise SchemaRefusal(
-            f"act {act_id} embeds comparison view(s) labelled {unknown}, which name no witness "
-            "this dossier carries"
+            f"act {act_id} attachment names a witness that cannot be labelled"
+        ) from error
+    if len(expected) != len(derived):
+        raise SchemaRefusal(
+            f"act {act_id} attachment witness labels collide; one comparison view would "
+            "silently replace another"
         )
-    if sorted(embedded.values()) != sorted(derived.values()):
+    if not set(expected).issubset(labels):
+        raise SchemaRefusal(
+            f"act {act_id} embeds comparison view(s) that name no witness this dossier carries"
+        )
+    if embedded != expected:
         raise SchemaRefusal(f"act {act_id} embedded comparison views disagree with its attachment")
 
 
@@ -279,11 +285,24 @@ def _verify_act_attachment_view(
         )
     count = 0
     views: dict[str, str] = {}
+    seen_chairs: set[str] = set()
     for item in attachments:
-        if not isinstance(item, dict) or not isinstance(item.get("page_witness"), bool):
+        if (
+            not isinstance(item, dict)
+            or not isinstance(item.get("page_witness"), bool)
+            or not isinstance(item.get("attached"), bool)
+            or not isinstance(item.get("chair"), str)
+            or not item["chair"]
+        ):
             raise SchemaRefusal(
                 f"act {act_id} referenced act-attachment has malformed witness scope"
             )
+        if item["chair"] in seen_chairs:
+            raise SchemaRefusal(
+                f"act {act_id} referenced act-attachment repeats witness {item['chair']!r}; "
+                "a repeated chair would silently replace a comparison view"
+            )
+        seen_chairs.add(item["chair"])
         if not item["page_witness"]:
             continue
         count += 1
@@ -295,7 +314,7 @@ def _verify_act_attachment_view(
             item.get("testimonium_ref"),
         )
         span = alignment.get("witness_span") if isinstance(alignment, dict) else None
-        if not isinstance(chair, str) or not _is_ref_shaped(testimony_ref):
+        if not _is_ref_shaped(testimony_ref):
             raise SchemaRefusal(f"act {act_id} referenced act-attachment has malformed witness")
         testimony = context.tree.read_artifact_reference(
             testimony_ref, stage=ATTESTATORES, kind="page-testimonium", subject_id=page_id
@@ -318,7 +337,7 @@ def _verify_act_attachment_view(
         raise SchemaRefusal(
             f"act {act_id} embedded page-witness count disagrees with its attachment"
         )
-    _verify_comparison_views(act_id, views, attachment_view["comparison_views"], dossier)
+    _verify_comparison_views(context, act_id, views, attachment_view["comparison_views"], dossier)
     if dossier.get("dossier_digest") != digest_of(
         {key: value for key, value in dossier.items() if key != "dossier_digest"}
     ):

@@ -127,7 +127,10 @@ def publish(tree: RunTree, out_dir: Path) -> dict:
             manifest = verify_delivered_bundle(data, staging / EXTRACTION_NAME)
             if aggregate != manifest.get("aggregate"):
                 raise ContractError(
-                    "the delivered bundle's aggregate disagrees with the sealed export artifact"
+                    "the delivered bundle's aggregate disagrees with the sealed export artifact; "
+                    "nothing was published because the run tree and package no longer describe "
+                    "one result; restore the immutable run tree from an intact copy before "
+                    "retrying publication"
                 )
             run = tree.read_run()
             expected_run_binding = {
@@ -136,13 +139,17 @@ def publish(tree: RunTree, out_dir: Path) -> dict:
                 "config_digest": run.get("config_digest"),
             }
             if manifest.get("run") != expected_run_binding:
-                # A clean-machine verifier has no external run to authenticate these
-                # three labels against. The publisher does: its artifact has already
-                # been checked against run.json, so accepting a different package
-                # binding here would discard the one authority available at the gate.
+                # A clean-machine verifier has no external record to compare these
+                # labels with. The publisher does: fixture/scenario come from the
+                # immutable export artifact, while config_digest comes from run.json.
+                # This is an internal-consistency check, not a signature over either
+                # file; authenticity beyond the run-tree immutability contract would
+                # require an external trust root this package does not claim to have.
                 raise ContractError(
-                    "the delivered bundle's run binding disagrees with the sealed run it "
-                    "claims to export"
+                    "the delivered bundle's run binding disagrees with the sealed export "
+                    "artifact or run configuration digest; nothing was published because the "
+                    "package is internally inconsistent with this run tree; restore the "
+                    "immutable run tree from an intact copy before retrying publication"
                 )
             bundle_record = payload.get("bundle")
             if (
@@ -152,7 +159,9 @@ def publish(tree: RunTree, out_dir: Path) -> dict:
             ):
                 raise ContractError(
                     "the delivered bundle's manifest identity or status disagrees with the "
-                    "sealed export artifact"
+                    "sealed export artifact; nothing was published because the package and its "
+                    "run-tree envelope are not one sealed result; restore the immutable run "
+                    "tree from an intact copy before retrying publication"
                 )
             verification = manifest.get("verification", {})
             search_fold_verification = verification.get("search_fold")
@@ -166,7 +175,9 @@ def publish(tree: RunTree, out_dir: Path) -> dict:
                 # select this branch by changing only export_metadata.unidata_version.
                 raise ContractError(
                     "the delivered bundle's search-fold recomputation was not run; "
-                    "a declined terminal measurement is a publication refusal, not a pass"
+                    "a declined terminal measurement is a publication refusal, so nothing was "
+                    "published; use a verifier whose Unicode database matches the package's "
+                    "recorded version and retry"
                 )
             (staging / ARMARIUM_ARCHIVE_NAME).write_bytes(data)
             # `mkdtemp` creates at 0o700, so the published directory's permissions

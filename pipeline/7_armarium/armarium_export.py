@@ -573,8 +573,12 @@ def _extract_archive_members(archive: ZipFile, root: Path, names: list[str]) -> 
             if temporary is not None:
                 try:
                     temporary.unlink(missing_ok=True)
-                except OSError:
-                    pass
+                except OSError as cleanup_error:
+                    raise SchemaRefusal(
+                        f"package member {name!r} could not be extracted safely, and its "
+                        f"temporary file {temporary} could not be removed; the clean root is "
+                        "incomplete and must not be used"
+                    ) from cleanup_error
 
 
 _MANIFEST_FIELDS: Final = frozenset(
@@ -681,7 +685,16 @@ def _verify_manifest_field_closure(manifest: dict[str, Any]) -> None:
     their key sets here would be a place for the two to drift.
     """
     _require_exact_fields(manifest, _MANIFEST_FIELDS, subject="EXPORT_MANIFEST.json")
-    _require_exact_fields(manifest["run"], _MANIFEST_RUN_FIELDS, subject="the manifest run binding")
+    run = _require_exact_fields(
+        manifest["run"], _MANIFEST_RUN_FIELDS, subject="the manifest run binding"
+    )
+    if any(
+        not isinstance(run.get(field), str) or not run[field].strip()
+        for field in ("fixture_id", "scenario")
+    ):
+        raise SchemaRefusal(
+            "the manifest run binding has no non-blank fixture and scenario identities"
+        )
     claims = _require_exact_fields(
         manifest["claims"], _MANIFEST_CLAIM_FIELDS, subject="the manifest claims block"
     )
@@ -690,7 +703,8 @@ def _verify_manifest_field_closure(manifest: dict[str, Any]) -> None:
     salvage = claims["salvage"]
     if not isinstance(salvage, dict):
         raise SchemaRefusal("the manifest salvage claim is not an object")
-    expected = _SALVAGE_CLAIM_FIELDS.get(salvage.get("status"))
+    status = salvage.get("status")
+    expected = _SALVAGE_CLAIM_FIELDS.get(status) if isinstance(status, str) else None
     if expected is None:
         raise SchemaRefusal("EXPORT_MANIFEST.json has an invalid salvage-tier status")
     _require_exact_fields(salvage, expected, subject="the manifest salvage claim")
@@ -1551,7 +1565,7 @@ def _verify_retained_references(value: Any) -> None:
 
 
 def _verify_evidence_refs(evidence_refs: Any, *, subject: str) -> None:
-    """Require every declared evidence reference to actually cite something.
+    """Require at least one evidence reference, and require each to cite something.
 
     ``_verify_retained_references`` only refuses a citation that lies about its
     availability -- it has no opinion on a dict that makes no citation at all,
@@ -1560,9 +1574,18 @@ def _verify_evidence_refs(evidence_refs: Any, *, subject: str) -> None:
     exists to be a list of citations, and an entry with no ``run_relative_path``
     at all -- ``{}``, or a note with no path -- passed every check above while
     citing nothing, which is exactly the evidence-corrupting gap D:B7 names.
+
+    Production always supplies the Recensor review reference, including for an act
+    that produced no established reading. An empty list therefore does not mean
+    "there was no evidence"; it means the terminal projection dropped the one
+    citation every act is guaranteed to have.
     """
-    if not isinstance(evidence_refs, list):
-        raise SchemaRefusal(f"{subject} has no evidence_refs list")
+    if not isinstance(evidence_refs, list) or not evidence_refs:
+        raise SchemaRefusal(
+            f"{subject} has no evidence citations; evidence_refs must retain at least the "
+            "Recensor review reference, and an empty list is refused rather than treated "
+            "as complete provenance"
+        )
     for item in evidence_refs:
         if (
             not isinstance(item, dict)
@@ -2141,7 +2164,14 @@ def _verify_acts_schema(connection: sqlite3.Connection) -> None:
     (FTS5's shadow tables, SQLite's implicit unique indexes) is whatever the
     reference database grew, never an allowance written down here.
     """
-    expected = _expected_acts_schema()
+    try:
+        expected = _expected_acts_schema()
+    except sqlite3.DatabaseError as error:
+        raise SchemaRefusal(
+            "the verifier's SQLite runtime cannot construct the expected acts database "
+            "schema; this package requires FTS5 support before its product identity can "
+            "be checked"
+        ) from error
     try:
         actual = {
             name: (kind, table, sql)
@@ -3963,7 +3993,7 @@ def _verify_source_references(sources: list[dict[str, Any]], root) -> None:
             raise SchemaRefusal("a package source row has an untyped terminal reason")
         if outcome == "sealed" and reason:
             raise SchemaRefusal("a sealed package source page carries a refusal reason")
-        if outcome == "refused" and not reason:
+        if outcome == "refused" and not reason.strip():
             raise SchemaRefusal("a refused package source page has no terminal reason")
         declared_path, declared_sha256 = page.get("declared_path"), page.get("declared_sha256")
         if not isinstance(declared_path, str):

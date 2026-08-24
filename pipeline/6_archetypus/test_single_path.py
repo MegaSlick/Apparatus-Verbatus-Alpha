@@ -30,6 +30,7 @@ from common.contracts.identities import artifact_id
 from common.contracts.stages import ARCHETYPUS, ATTESTATORES, PERLECTOR, RECENSOR
 from common.runtree.store import RunTree
 from common.stage import EXIT_HELD
+from common.witness_regime import pseudonym_for
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -357,6 +358,57 @@ def test_a_blinded_comparison_view_may_not_wear_a_label_the_dossier_never_carrie
     assert result.returncode == 2, result.stderr
     assert "Traceback" not in result.stderr
     assert "name no witness this dossier carries" in result.stderr
+
+
+def test_blinded_comparison_views_cannot_exchange_valid_witness_labels(tmp_path):
+    """Attribution is evidence even when the displayed identities are pseudonyms.
+
+    Swapping two views preserves the label set, text multiset, count, and dossier
+    digest. The Archetypus must re-derive the run-scoped chair-to-pseudonym map to
+    detect that the retained witnesses' text has been assigned to the wrong labels.
+    """
+    root = tmp_path / "runs"
+    run_through_recensor(root, "r")
+    tree = RunTree(root, "r")
+    config_digest = tree.read_run()["config_digest"]
+
+    def blind_and_swap(payload):
+        dossier = dict(payload["dossier"])
+        dossier["witness_regime"] = "blinded"
+        rows = []
+        for row in dossier["testimonia"]:
+            copied = dict(row)
+            copied["witness_label"] = pseudonym_for(
+                row["witness_label"], run_id="r", config_digest=config_digest
+            )
+            rows.append(copied)
+        dossier["testimonia"] = sorted(rows, key=lambda row: row["witness_label"])
+
+        attachment = dict(dossier["act_attachment"])
+        named_views = attachment["comparison_views"]
+        blinded_views = {
+            pseudonym_for(chair, run_id="r", config_digest=config_digest): text
+            for chair, text in named_views.items()
+        }
+        labels = sorted(blinded_views)
+        assert len(labels) >= 2, "the fixture must carry two attached page witnesses"
+        blinded_views[labels[0]], blinded_views[labels[1]] = (
+            blinded_views[labels[1]],
+            blinded_views[labels[0]],
+        )
+        attachment["comparison_views"] = blinded_views
+        dossier["act_attachment"] = attachment
+        dossier["dossier_digest"] = digest_of(
+            {key: value for key, value in dossier.items() if key != "dossier_digest"}
+        )
+        payload["dossier"] = dossier
+
+    _reseal_reading(tree, accepted_review(tree), blind_and_swap)
+    result = invoke(root, "r", "happy", "pipeline/6_archetypus/run.py")
+
+    assert result.returncode == 2, result.stderr
+    assert "Traceback" not in result.stderr
+    assert "embedded comparison views disagree with its attachment" in result.stderr
 
 
 def test_a_reading_may_not_be_accounted_to_a_page_none_of_its_regions_cites(tmp_path):
