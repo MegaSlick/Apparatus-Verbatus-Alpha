@@ -14,6 +14,7 @@ from common.native_witness import (
     unpresented_region_ids,
     validate_native_witness_geometry,
     validate_page_testimonium_payload,
+    validate_partition_disagreement,
     validate_presented_page_binding,
 )
 
@@ -368,6 +369,9 @@ def test_page_payload_closure_is_shared_with_the_consumer_and_refuses_unhashable
             "unjoined_act_attempts": [],
         }
     )
+    value["partition_disagreement"] = partition_disagreement(
+        {"artifact_id": "page-testimony", "payload": value}, []
+    )
     with pytest.raises(SchemaRefusal, match="invalid page scope facts"):
         validate_page_testimonium_payload(value)
 
@@ -454,3 +458,80 @@ def test_partition_disagreement_ties_from_the_proposal_side_too():
     assert len(disagreement["boundary_deltas"]) == 2
     assert disagreement["ambiguous_pairings"] == disagreement["boundary_deltas"]
     assert {pairing["observed_ordinal"] for pairing in disagreement["ambiguous_pairings"]} == {0, 1}
+
+
+def test_page_testimonium_keeps_partition_facts_optional_in_the_record_shape():
+    value = payload()
+    value.update(
+        {
+            "chair": "attestator_1",
+            "act_key": "page-1",
+            "attempt_ordinal": 1,
+            "regions": [],
+            "provenance": {},
+            "format_capabilities": {},
+            "witness_reported": None,
+            "content_health": {},
+            "unpresented_regions": [],
+            "scope": "page",
+            "page_ordinal": 1,
+            "page_role": "primary",
+            "unjoined_act_attempts": [],
+        }
+    )
+    assert validate_page_testimonium_payload(value) is value
+
+
+def test_partition_disagreement_is_rederived_before_its_findings_can_trigger_recovery():
+    testimony = {
+        "artifact_id": "page-testimony",
+        "payload": {
+            "presented": {"source_page_id": "page-1"},
+            "observed": [
+                {
+                    "ordinal": 0,
+                    "bounds": {"x": 0, "y": 0, "w": 10, "h": 10},
+                    "bounds_source": "native",
+                }
+            ],
+        },
+    }
+    disagreement = partition_disagreement(testimony, [])
+    validate_partition_disagreement(
+        disagreement,
+        observed=testimony["payload"]["observed"],
+        source_page_id="page-1",
+        testimonium_id="page-testimony",
+        proposal_boxes=[],
+    )
+
+    malformed = copy.deepcopy(disagreement)
+    malformed["unclaimed_observations"][0]["ordinal"] = 1
+    with pytest.raises(SchemaRefusal, match="malformed unclaimed observation"):
+        validate_partition_disagreement(
+            malformed,
+            observed=testimony["payload"]["observed"],
+            source_page_id="page-1",
+            testimonium_id="page-testimony",
+            proposal_boxes=[],
+        )
+
+    contradictory = copy.deepcopy(disagreement)
+    contradictory["observed_boxes"] = []
+    with pytest.raises(SchemaRefusal, match="contradicts its observed geometry"):
+        validate_partition_disagreement(
+            contradictory,
+            observed=testimony["payload"]["observed"],
+            source_page_id="page-1",
+            testimonium_id="page-testimony",
+            proposal_boxes=[],
+        )
+
+    with pytest.raises(SchemaRefusal, match="sealed proposals"):
+        validate_partition_disagreement(
+            disagreement,
+            observed=testimony["payload"]["observed"],
+            source_page_id="page-1",
+            testimonium_id="page-testimony",
+            proposal_boxes=[{"x": 20, "y": 20, "w": 5, "h": 5}],
+        )

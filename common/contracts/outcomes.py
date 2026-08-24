@@ -461,7 +461,7 @@ def witness_coverage(
         "health_unrecorded": health_unrecorded,
         "shortfalls": shortfalls,
         # Attachments are computed facts: page testimony counts only where its
-        # retained text aligned through Chandra's anchor into act geometry.
+        # reported geometry overlaps the act's sealed proposal geometry.
         "granularity_basis": (
             NATIVE_GRANULARITY_BASIS if attachments is not None else LEGACY_GRANULARITY_BASIS
         ),

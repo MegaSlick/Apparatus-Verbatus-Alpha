@@ -380,7 +380,9 @@ def unpresented_region_ids(
     return unpresented
 
 
-def validate_page_testimonium_payload(payload: Any) -> dict[str, Any]:
+def validate_page_testimonium_payload(
+    payload: Any, *, testimonium_id: str | None = None
+) -> dict[str, Any]:
     """Close the page-scoped native Testimonium at writer and consumer seams."""
     if not isinstance(payload, dict) or not (
         set(payload) <= PAGE_TESTIMONIUM_REQUIRED_FIELDS | PAGE_TESTIMONIUM_OPTIONAL_FIELDS
@@ -399,9 +401,16 @@ def validate_page_testimonium_payload(payload: Any) -> dict[str, Any]:
     ):
         raise SchemaRefusal("a page Testimonium has invalid page scope facts")
     validate_unpresented_regions(payload)
+    validated = validate_native_witness_geometry(payload)
     if "partition_disagreement" in payload:
-        validate_partition_disagreement(payload["partition_disagreement"])
-    return validate_native_witness_geometry(payload)
+        presented = payload["presented"]
+        validate_partition_disagreement(
+            payload["partition_disagreement"],
+            observed=payload["observed"],
+            source_page_id=presented.get("source_page_id") if presented else None,
+            testimonium_id=testimonium_id,
+        )
+    return validated
 
 
 # A declared, deliberately UNMEASURED routing rule.  Unit 10 records only the
@@ -521,6 +530,25 @@ def partition_disagreement(
         for observation in payload.get("observed", [])
         if observation.get("bounds_source") in REPORTED_BOUNDS_SOURCES
     ]
+    deltas, unobserved_proposals, ambiguous_pairings = _partition_pairing_facts(
+        proposals, observations
+    )
+    return {
+        "proposal_boxes": proposals,
+        "observed_boxes": observations,
+        "unclaimed_observations": unrouted_observations([testimonium], proposal_regions),
+        "unobserved_proposals": unobserved_proposals,
+        "boundary_deltas": deltas,
+        "ambiguous": bool(ambiguous_pairings),
+        "ambiguous_pairings": ambiguous_pairings,
+        "overlap_rule": dict(UNROUTED_OBSERVATION_OVERLAP),
+    }
+
+
+def _partition_pairing_facts(
+    proposals: list[dict[str, int]], observations: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], list[dict[str, int]], list[dict[str, Any]]]:
+    """Derive every overlap pairing and the two non-verdict summaries."""
     deltas: list[dict[str, Any]] = []
     pairing_keys: list[tuple[int, int, int, int]] = []
     observed_proposals: set[tuple[int, int, int, int]] = set()
@@ -563,24 +591,22 @@ def partition_disagreement(
         if observation_match_counts[pairing["observed_ordinal"]] > 1
         or proposal_match_counts[key] > 1
     ]
-    return {
-        "proposal_boxes": proposals,
-        "observed_boxes": observations,
-        "unclaimed_observations": unrouted_observations([testimonium], proposal_regions),
-        "unobserved_proposals": [
-            proposal
-            for proposal in proposals
-            if (proposal["x"], proposal["y"], proposal["w"], proposal["h"])
-            not in observed_proposals
-        ],
-        "boundary_deltas": deltas,
-        "ambiguous": bool(ambiguous_pairings),
-        "ambiguous_pairings": ambiguous_pairings,
-        "overlap_rule": dict(UNROUTED_OBSERVATION_OVERLAP),
-    }
+    unobserved_proposals = [
+        proposal
+        for proposal in proposals
+        if (proposal["x"], proposal["y"], proposal["w"], proposal["h"]) not in observed_proposals
+    ]
+    return deltas, unobserved_proposals, ambiguous_pairings
 
 
-def validate_partition_disagreement(value: Any) -> dict[str, Any]:
+def validate_partition_disagreement(
+    value: Any,
+    *,
+    observed: Any = None,
+    source_page_id: str | None = None,
+    testimonium_id: str | None = None,
+    proposal_boxes: list[dict[str, int]] | None = None,
+) -> dict[str, Any]:
     """Close the retained facts without converting them into a verdict."""
     required = {
         "proposal_boxes",
@@ -601,6 +627,13 @@ def validate_partition_disagreement(value: Any) -> dict[str, Any]:
             )
         for box in value[field]:
             _bounds(box, "a page Testimonium partition proposal box", page_size=None)
+    if proposal_boxes is not None and value["proposal_boxes"] != sorted(
+        proposal_boxes,
+        key=lambda box: (box["y"], box["x"], box["h"], box["w"]),
+    ):
+        raise SchemaRefusal(
+            "a page Testimonium partition disagreement contradicts the sealed proposals on its page"
+        )
     if not isinstance(value["observed_boxes"], list):
         raise SchemaRefusal(
             "a page Testimonium partition disagreement has malformed observed boxes"
@@ -620,6 +653,20 @@ def validate_partition_disagreement(value: Any) -> dict[str, Any]:
                 "a page Testimonium partition observed box is not reported geometry"
             )
         _bounds(observation["bounds"], "a page Testimonium partition observed box", page_size=None)
+    if observed is not None:
+        expected_observed = [
+            {
+                "ordinal": observation["ordinal"],
+                "bounds": dict(observation["bounds"]),
+                "bounds_source": observation["bounds_source"],
+            }
+            for observation in observed
+            if observation.get("bounds_source") in REPORTED_BOUNDS_SOURCES
+        ]
+        if value["observed_boxes"] != expected_observed:
+            raise SchemaRefusal(
+                "a page Testimonium partition disagreement contradicts its observed geometry"
+            )
     if value["overlap_rule"] != UNROUTED_OBSERVATION_OVERLAP:
         raise SchemaRefusal(
             "a page Testimonium partition disagreement changes its declared overlap rule"
@@ -633,8 +680,58 @@ def validate_partition_disagreement(value: Any) -> dict[str, Any]:
             raise SchemaRefusal(
                 "a page Testimonium partition disagreement has malformed retained facts"
             )
-    if value["ambiguous"] != bool(value["ambiguous_pairings"]):
+    expected_deltas, expected_unobserved, expected_ambiguous = _partition_pairing_facts(
+        value["proposal_boxes"], value["observed_boxes"]
+    )
+    if value["unobserved_proposals"] != expected_unobserved:
         raise SchemaRefusal(
-            "a page Testimonium partition disagreement omits its ambiguous pairings"
+            "a page Testimonium partition disagreement contradicts its unobserved proposals"
         )
+    if value["boundary_deltas"] != expected_deltas:
+        raise SchemaRefusal(
+            "a page Testimonium partition disagreement contradicts its boundary deltas"
+        )
+    if value["ambiguous_pairings"] != expected_ambiguous or value["ambiguous"] != bool(
+        expected_ambiguous
+    ):
+        raise SchemaRefusal(
+            "a page Testimonium partition disagreement contradicts its ambiguous pairings"
+        )
+    expected_unclaimed = [
+        observation
+        for observation in value["observed_boxes"]
+        if not any(
+            _overlaps(observation["bounds"], proposal) for proposal in value["proposal_boxes"]
+        )
+    ]
+    if len(value["unclaimed_observations"]) != len(expected_unclaimed):
+        raise SchemaRefusal(
+            "a page Testimonium partition disagreement contradicts its unclaimed observations"
+        )
+    for finding, observation in zip(
+        value["unclaimed_observations"], expected_unclaimed, strict=True
+    ):
+        if (
+            not isinstance(finding, dict)
+            or set(finding)
+            != {
+                "kind",
+                "testimonium_id",
+                "ordinal",
+                "source_page_id",
+                "bounds",
+                "overlap_rule",
+            }
+            or finding["kind"] != "unrouted-observation"
+            or not isinstance(finding["testimonium_id"], str)
+            or not finding["testimonium_id"]
+            or (testimonium_id is not None and finding["testimonium_id"] != testimonium_id)
+            or finding["ordinal"] != observation["ordinal"]
+            or (source_page_id is not None and finding["source_page_id"] != source_page_id)
+            or finding["bounds"] != observation["bounds"]
+            or finding["overlap_rule"] != UNROUTED_OBSERVATION_OVERLAP
+        ):
+            raise SchemaRefusal(
+                "a page Testimonium partition disagreement has a malformed unclaimed observation"
+            )
     return value

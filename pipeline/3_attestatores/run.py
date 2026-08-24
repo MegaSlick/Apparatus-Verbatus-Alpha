@@ -861,7 +861,8 @@ def page_testimonium_payload(
     page_ordinal: int,
     page_role: str,
     unjoined_act_attempts: list[dict[str, Any]],
-    partition_disagreement: dict[str, Any] | None = None,
+    partition_disagreement: dict[str, Any],
+    testimonium_id: str,
     **kwargs: Any,
 ) -> dict[str, Any]:
     """Build and refuse the closed page-scoped Testimonium shape at its writer."""
@@ -892,15 +893,16 @@ def page_testimonium_payload(
         "page_role": page_role,
         "unjoined_act_attempts": unjoined_act_attempts,
     }
-    if partition_disagreement is not None:
-        record["partition_disagreement"] = partition_disagreement
-    validate_page_testimonium_payload(record)
+    record["partition_disagreement"] = partition_disagreement
+    validate_page_testimonium_payload(record, testimonium_id=testimonium_id)
     return record
 
 
-def validate_page_testimonium_payload(payload: Any) -> dict[str, Any]:
+def validate_page_testimonium_payload(
+    payload: Any, *, testimonium_id: str | None = None
+) -> dict[str, Any]:
     """The page-record seam is closed before publication and on later reads."""
-    return validate_shared_page_testimonium_payload(payload)
+    return validate_shared_page_testimonium_payload(payload, testimonium_id=testimonium_id)
 
 
 AttemptHistory = dict[tuple[str, str], list[dict[str, Any]]]
@@ -2135,6 +2137,7 @@ def publish_page_testimonia_and_attachments(
                 page_role=page_role,
                 unjoined_act_attempts=unjoined_act_attempts,
                 partition_disagreement=disagreement,
+                testimonium_id=page_artifact_id,
                 chair=chair,
                 act_key=f"page-{page_ordinal}",
                 ordinal=ordinal,

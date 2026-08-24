@@ -625,7 +625,9 @@ def act_attachment_view(
                 subject_id=page_ids[attachment_page],
             )
             page_payload = testimonium.get("payload")
-            validate_page_testimonium_payload(page_payload)
+            validate_page_testimonium_payload(
+                page_payload, testimonium_id=testimonium["artifact_id"]
+            )
             validate_serving_provenance(
                 context,
                 page_payload["provenance"],
@@ -2200,13 +2202,10 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         for finding in unrouted:
             reported_unrouted.add((finding["testimonium_id"], finding["ordinal"]))
             # Named on stderr before this stage seals, never silently normalized
-            # into the closest act. The Recensor remains the sole stage that can
-            # spend a recovery unit -- and, today, the only stage that could
-            # consume this finding cannot yet see it: nothing retains it in the
-            # run tree. Unit 10C owns that terminus (consult §4.4's
-            # `partition_disagreement.unclaimed_observations` on the page
-            # Testimonium, which `pipeline/5_recensor/run.py::current_page_testimonia`
-            # already reads). Until then this is a report, not a routed finding.
+            # into the closest act. The Recensor independently re-derives the
+            # same finding from this observed geometry and the sealed proposal
+            # denominator, then may route it through bounded coverage recovery.
+            # It does not trust the page record's optional retained snapshot.
             print(f"non-fatal finding: {finding}", file=sys.stderr)
 
         # Which regions any witness actually saw. Ink uncovered by a recovery

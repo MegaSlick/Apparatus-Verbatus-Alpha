@@ -47,8 +47,10 @@ from common.contracts.stages import (  # noqa: E402
 )
 from common.exemplar_boundary import verify_sealed_page_pixels  # noqa: E402
 from common.native_witness import (  # noqa: E402
+    partition_disagreement,
     reported_geometry_overlaps,
     validate_page_testimonium_payload,
+    validate_partition_disagreement,
 )
 from common.perlector_audit import validate_chain  # noqa: E402
 from common.recensor_receipt import build_recensor_partition_receipt  # noqa: E402
@@ -245,6 +247,13 @@ def _proposal_geometry_by_page(context, act_id: str) -> dict[int, dict]:
     return pages
 
 
+def _merge_page_attachment_fact(previous: dict, current: dict) -> dict:
+    """Keep the page row that supplies an act-level attachment, if either does."""
+    if current["attached"] and not previous["attached"]:
+        return current
+    return previous
+
+
 def act_attachment_facts(context, act_id: str, outcomes: dict[str, str]) -> dict[str, dict]:
     """Re-derive R0's attachment record before counting the witness floor.
 
@@ -327,7 +336,10 @@ def act_attachment_facts(context, act_id: str, outcomes: dict[str, str]) -> dict
                     kind="page-testimonium",
                     subject_id=proposal_page["source_page_id"],
                 )
-                page_payload = validate_page_testimonium_payload(page_testimonium.get("payload"))
+                page_payload = validate_page_testimonium_payload(
+                    page_testimonium.get("payload"),
+                    testimonium_id=page_testimonium.get("artifact_id"),
+                )
             except ContractError as error:
                 raise FatalAccounting(
                     f"act {act_id} page witness {chair!r} has no valid page geometry: {error}"
@@ -396,6 +408,28 @@ def act_attachment_facts(context, act_id: str, outcomes: dict[str, str]) -> dict
                     f"act {act_id} page witness {chair!r} carries an unaligned record with "
                     "no usable reason; an unexplained failure is a silent loss"
                 )
+        else:
+            if entry.get("page_ordinal") is not None:
+                raise FatalAccounting(
+                    f"act {act_id} act-scoped witness {chair!r} claims a page ordinal"
+                )
+            if entry.get("alignment") is not None:
+                raise FatalAccounting(
+                    f"act {act_id} act-scoped witness {chair!r} claims page alignment evidence"
+                )
+            expected_attached = outcomes.get(chair) in WITNESS_READING_OUTCOMES
+            if entry["attached"] != expected_attached:
+                raise FatalAccounting(
+                    f"act {act_id} act-scoped attachment for chair {chair!r} disagrees with "
+                    "the current Testimonium outcome for that chair"
+                )
+            expected_basis = "presented-region" if expected_attached else "unattached"
+            if attachment_basis != expected_basis:
+                raise FatalAccounting(
+                    f"act {act_id} act-scoped attachment for chair {chair!r} names "
+                    f"{attachment_basis!r}; its {entry['attached']!r} attached fact requires "
+                    f"{expected_basis!r}"
+                )
         fact = {
             "attached": entry["attached"],
             "attachment_basis": attachment_basis,
@@ -422,7 +456,7 @@ def act_attachment_facts(context, act_id: str, outcomes: dict[str, str]) -> dict
             # whose page has no anchor cannot erase the primary page's valid
             # attachment; all page references remain separately checked by the
             # content denominator below.
-            facts[chair]["attached"] = facts[chair]["attached"] or fact["attached"]
+            facts[chair] = _merge_page_attachment_fact(facts[chair], fact)
             continue
         facts[chair] = fact
     return facts
@@ -1335,6 +1369,7 @@ def testimony_content_findings(context) -> dict[int, dict]:
     # the proposal seal and re-verifies its self-hash on every call, and this stage
     # never writes to the Designator's seal while it runs.
     acts_by_page: dict[int, list[dict]] = {}
+    proposal_regions_by_page: dict[int, list[dict]] = {}
     for act in expected_acts(context):
         found_page = False
         for region in artifacts_for(context, DESIGNATOR, "region", act["act_id"]):
@@ -1348,6 +1383,12 @@ def testimony_content_findings(context) -> dict[int, dict]:
             page_acts = acts_by_page.setdefault(ordinal, [])
             if act not in page_acts:
                 page_acts.append(act)
+            bounds = transform.get("bounds")
+            if not isinstance(bounds, dict):
+                raise FatalAccounting(
+                    f"Designator proposal region of {act['act_id']} has no page-pixel bounds"
+                )
+            proposal_regions_by_page.setdefault(ordinal, []).append(region)
             found_page = True
         # Unit-level consumers can supply only the proposal denominator, before
         # a Designator-region fixture exists. That is still one known primary
@@ -1388,17 +1429,34 @@ def testimony_content_findings(context) -> dict[int, dict]:
     findings: dict[int, dict] = {}
     for (ordinal, chair), record in page_testimonia.items():
         payload = _payload(record, f"page Testimonium {record['artifact_id']}")
+        presented = payload.get("presented")
         disagreement = payload.get("partition_disagreement")
         if disagreement is not None:
-            unclaimed = (
-                disagreement.get("unclaimed_observations")
-                if isinstance(disagreement, dict)
-                else None
-            )
-            if not isinstance(unclaimed, list):
-                raise FatalAccounting(
-                    "page Testimonium has no retained unclaimed-observation partition facts"
+            try:
+                validate_partition_disagreement(
+                    disagreement,
+                    observed=payload.get("observed"),
+                    source_page_id=(
+                        presented.get("source_page_id") if isinstance(presented, dict) else None
+                    ),
+                    testimonium_id=record["artifact_id"],
                 )
+            except ContractError as error:
+                raise FatalAccounting(
+                    f"page Testimonium {record['artifact_id']} has false partition facts: {error}"
+                ) from error
+        observed = payload.get("observed")
+        if isinstance(presented, dict) and presented and isinstance(observed, list):
+            # Coverage is computed from what the witness saw and the current
+            # sealed proposal denominator. The optional retained partition is
+            # audit evidence, not an input whose omission or older denominator
+            # may suppress a present finding.
+            unclaimed = partition_disagreement(record, proposal_regions_by_page.get(ordinal, []))[
+                "unclaimed_observations"
+            ]
+        else:
+            unclaimed = []
+        if disagreement is not None or unclaimed:
             finding = findings.setdefault(
                 ordinal,
                 {"by_chair": {}, "shortfall": False},
@@ -1492,6 +1550,18 @@ def testimony_content_findings(context) -> dict[int, dict]:
         }
         finding["shortfall"] = finding["shortfall"] or bool(uncovered["count"])
     return findings
+
+
+def recovery_request_reason(*, declared_crop: bool, unclaimed_observation: bool) -> str:
+    """Name every coverage cause that triggered one fallback-recrop request."""
+    causes = []
+    if declared_crop:
+        causes.append("the crop may be incomplete")
+    if unclaimed_observation:
+        causes.append("a page witness reported ink outside every sealed proposal")
+    if not causes:
+        raise FatalAccounting("a fallback-recrop request has no recorded coverage cause")
+    return f"{' and '.join(causes)}; an expanded recrop is requested"
 
 
 NO_PAGE_CONSERVATION = {
@@ -1942,11 +2012,9 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     "act_key": act_key,
                     "attempt_ordinal": ordinal,
                     "recovery_kind": FALLBACK_RECROP,
-                    "reason": (
-                        "a page witness reported ink outside every sealed proposal; an expanded "
-                        "recrop is requested"
-                        if content_coverage.get("unclaimed_observations")
-                        else "the crop may be incomplete; an expanded recrop is requested"
+                    "reason": recovery_request_reason(
+                        declared_crop=act_key in scenario["recover_acts"],
+                        unclaimed_observation=bool(content_coverage.get("unclaimed_observations")),
                     ),
                     "budget_allowed": budget["allowed"],
                     "budget_used": used_total,

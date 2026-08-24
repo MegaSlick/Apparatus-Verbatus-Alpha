@@ -96,6 +96,13 @@ def test_the_real_recovery_request_names_fallback_recrop(tmp_path):
     assert len(requests) == 2
     assert {request["payload"]["act_key"] for request in requests} == {"a1", "a2"}
     assert {request["payload"]["recovery_kind"] for request in requests} == {FALLBACK_RECROP}
+    by_act_request = {request["payload"]["act_key"]: request for request in requests}
+    assert "the crop may be incomplete" in by_act_request["a1"]["payload"]["reason"]
+    assert (
+        "a page witness reported ink outside every sealed proposal"
+        in by_act_request["a1"]["payload"]["reason"]
+    )
+    assert "the crop may be incomplete" not in by_act_request["a2"]["payload"]["reason"]
 
     reviews = [
         tree.read_artifact(RECENSOR, "review", entry["artifact_id"])

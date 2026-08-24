@@ -17,6 +17,7 @@ from common.contracts.identities import artifact_id, region_id
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR
 from common.exemplar_boundary import verify_exemplar_crop_lineage
 from common.imaging import crop_png, dimensions
+from common.native_witness import partition_disagreement
 from common.runtree.store import RunTree
 from common.stage import load_fixture
 
@@ -677,6 +678,22 @@ def test_a_recovery_crop_cannot_retroactively_attach_a_page_witness(real_region,
             record["payload"]["observed"] = [
                 {"ordinal": 0, "bounds": dict(reported), "bounds_source": "native", "span": None}
             ]
+            proposal_boxes = record["payload"]["partition_disagreement"]["proposal_boxes"]
+            partition_proposals = [
+                {
+                    "payload": {
+                        "origin": "proposal",
+                        "transform": {
+                            "source_page_id": record["payload"]["presented"]["source_page_id"],
+                            "bounds": box,
+                        },
+                    }
+                }
+                for box in proposal_boxes
+            ]
+            record["payload"]["partition_disagreement"] = partition_disagreement(
+                record, partition_proposals
+            )
         return record
 
     monkeypatch.setattr(context.tree, "read_artifact_reference", marginal_page_geometry)

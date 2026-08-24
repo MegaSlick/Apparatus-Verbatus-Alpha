@@ -777,7 +777,10 @@ HAPPY_RUN_TREE_DIGEST = "a7285a4743e365f78f3ad2dde1dc8a56756d20237e71bc9a250cce7
 # left `receipt_ref: None` beside a `presented` block claiming pixels were shown.
 # One `receipt_ref` field on attestator_3's page-2 record; no new file, no count
 # or exit change (97/3), and happy is untouched at the digest above.
-REVIEW_RUN_TREE_DIGEST = "95f68ea20d140eca53a723d70cfece0632fbfe2ceff4d8558da803dfdb69938a"
+# Phase-2 review correction: a1's single request now names both coverage causes
+# that actually triggered it (the declared incomplete crop and the unclaimed
+# witness observation), instead of silently reporting only the latter.
+REVIEW_RUN_TREE_DIGEST = "c17f1634dfba1eb723d3600fecec872076915e6bd31df688dd0cde0549b539d8"
 
 
 def orchestrate(

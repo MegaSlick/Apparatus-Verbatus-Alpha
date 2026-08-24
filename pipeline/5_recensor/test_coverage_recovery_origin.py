@@ -45,6 +45,7 @@ from common.contracts.envelope import build_envelope
 from common.contracts.errors import FatalAccounting
 from common.contracts.identities import artifact_id, attempt_id
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, RECENSOR
+from common.native_witness import partition_disagreement
 from common.recovery import FALLBACK_RECROP
 from common.runtree.store import RunTree
 
@@ -343,6 +344,22 @@ def test_observation_inside_only_a_recovery_crop_stays_unattached_in_floor_accou
                     "span": None,
                 }
             ]
+            proposal_boxes = record["payload"]["partition_disagreement"]["proposal_boxes"]
+            partition_proposals = [
+                {
+                    "payload": {
+                        "origin": "proposal",
+                        "transform": {
+                            "source_page_id": record["payload"]["presented"]["source_page_id"],
+                            "bounds": box,
+                        },
+                    }
+                }
+                for box in proposal_boxes
+            ]
+            record["payload"]["partition_disagreement"] = partition_disagreement(
+                record, partition_proposals
+            )
         return record
 
     monkeypatch.setattr(context.tree, "read_artifact", recovery_only_attachment)

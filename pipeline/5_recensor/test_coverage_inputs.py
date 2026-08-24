@@ -208,6 +208,53 @@ def test_a_non_reading_page_testimonium_still_has_no_content_to_compare():
     assert RUN.testimony_content_findings(context) == {}
 
 
+def test_missing_retained_partition_cannot_suppress_a_rederived_coverage_finding(monkeypatch):
+    page = _page_testimonium(outcome="read", reported="ink")
+    page["payload"].update(
+        {
+            "presented": {"source_page_id": "page-1"},
+            "observed": [
+                {
+                    "ordinal": 0,
+                    "bounds": {"x": 50, "y": 50, "w": 10, "h": 10},
+                    "bounds_source": "native",
+                }
+            ],
+        }
+    )
+    context = _context(page)
+    context.tree.records["attachment-1"] = _attachment(context, end=3)
+    monkeypatch.setattr(
+        RUN,
+        "expected_acts",
+        lambda unused: [{"act_id": "act-1", "act_key": "a1", "page_ordinal": 1}],
+    )
+    proposal = {
+        "payload": {
+            "origin": "proposal",
+            "transform": {
+                "source_page_id": "page-1",
+                "source_page_ordinal": 1,
+                "bounds": {"x": 0, "y": 0, "w": 10, "h": 10},
+            },
+        }
+    }
+    monkeypatch.setattr(RUN, "artifacts_for", lambda *unused: [proposal])
+
+    finding = RUN.testimony_content_findings(context)[1]
+
+    assert finding["unclaimed_observations"] == [
+        {
+            "kind": "unrouted-observation",
+            "testimonium_id": "page-witness-1",
+            "ordinal": 0,
+            "source_page_id": "page-1",
+            "bounds": {"x": 50, "y": 50, "w": 10, "h": 10},
+            "overlap_rule": {"rule": "positive-area", "status": "unmeasured"},
+        }
+    ]
+
+
 def test_an_attached_page_witness_requires_its_current_page_testimonium(monkeypatch):
     context = _context()
     context.tree.records["attachment-1"] = _attachment(context, end=5)

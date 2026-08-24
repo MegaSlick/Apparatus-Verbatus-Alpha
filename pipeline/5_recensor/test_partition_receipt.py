@@ -14,6 +14,7 @@ import pytest
 from common.contracts.errors import FatalAccounting, SchemaRefusal
 from common.contracts.outcomes import INTERIM_GRANULARITY_BASIS, NATIVE_GRANULARITY_BASIS
 from common.contracts.stages import ATTESTATORES, RECENSOR
+from common.native_witness import partition_disagreement
 from common.runtree.store import RunTree
 from common.stage import stage_parser
 
@@ -152,12 +153,78 @@ def test_recensor_rederives_page_attachment_over_the_sealed_proposal_both_ways(
                         "span": None,
                     }
                 ]
+                proposal_boxes = record["payload"]["partition_disagreement"]["proposal_boxes"]
+                partition_proposals = [
+                    {
+                        "payload": {
+                            "origin": "proposal",
+                            "transform": {
+                                "source_page_id": record["payload"]["presented"]["source_page_id"],
+                                "bounds": box,
+                            },
+                        }
+                    }
+                    for box in proposal_boxes
+                ]
+                record["payload"]["partition_disagreement"] = partition_disagreement(
+                    record, partition_proposals
+                )
             return record
 
         monkeypatch.setattr(context.tree, "read_artifact_reference", forged_geometry)
 
     with pytest.raises(FatalAccounting, match="reported geometry against the sealed proposal"):
         recensor.validate_chair_coverage(context, act["act_id"], context.witness_floor)
+
+
+@pytest.mark.parametrize("drift", ["stored-false", "wrong-basis"])
+def test_recensor_rederives_act_scoped_attachment_instead_of_trusting_its_label(
+    tmp_path, monkeypatch, drift
+):
+    root = tmp_path / "runs"
+    through_perlector(root, "act-attachment-drift", "happy")
+    recensor = _load_recensor()
+    context = recensor.open_context(_recensor_args(root, "act-attachment-drift"), RECENSOR)
+    act = next(act for act in recensor.expected_acts(context) if act["act_key"] == "a1")
+    original = context.tree.read_artifact
+
+    def forged_attachment(stage, kind, artifact_id):
+        record = original(stage, kind, artifact_id)
+        if (
+            stage == ATTESTATORES
+            and kind == "act-attachment"
+            and record["subject_id"] == act["act_id"]
+        ):
+            record = copy.deepcopy(record)
+            row = next(row for row in record["payload"]["attachments"] if not row["page_witness"])
+            assert row["attached"] is True
+            if drift == "stored-false":
+                row["attached"] = False
+                row["attachment_basis"] = "unattached"
+                row["span"] = None
+            else:
+                row["attachment_basis"] = "anchor-line"
+        return record
+
+    monkeypatch.setattr(context.tree, "read_artifact", forged_attachment)
+    with pytest.raises(FatalAccounting, match="act-scoped attachment"):
+        recensor.validate_chair_coverage(context, act["act_id"], context.witness_floor)
+
+
+def test_page_attachment_merge_keeps_the_contributing_page_that_attached():
+    recensor = _load_recensor()
+    unattached = {
+        "attached": False,
+        "attachment_basis": "unattached",
+        "anchor_basis": None,
+    }
+    attached = {
+        "attached": True,
+        "attachment_basis": "geometric-overlap",
+        "anchor_basis": "act-anchor",
+    }
+    assert recensor._merge_page_attachment_fact(unattached, attached) is attached
+    assert recensor._merge_page_attachment_fact(attached, unattached) is attached
 
 
 def test_recovery_replaces_the_current_partition_snapshot_without_erasing_history(tmp_path):
