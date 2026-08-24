@@ -1277,6 +1277,13 @@ def validate_tallied_testimonium(
         if regions is None:
             regions = proposed_regions(context, act["act_id"])
             regions_by_act[act["act_id"]] = regions
+        identity = context.registry.config.chairs[chair]
+        if isinstance(identity, ChairIdentity):
+            witness_adapters.validate_adapter_presentation(
+                identity.witness_adapter,
+                presentation_for_region(regions[0]),
+                payload["presented"],
+            )
         if payload["regions"] != region_references(regions) or record[
             "inputs"
         ] != testimonium_inputs(context, regions, payload["presented"]):
@@ -1708,8 +1715,12 @@ def publish_attempt(
     # frames' readings of one act stays Unit 19's job.
     presented = presentation_for_region(regions[0]) if attempted else {}
     if attempted and isinstance(resolved, ChairIdentity):
+        source_presentation = presented
         presented = witness_adapters.resolve_runnable_adapter(resolved.witness_adapter).present(
-            context, presented
+            context, source_presentation
+        )
+        witness_adapters.validate_adapter_presentation(
+            resolved.witness_adapter, source_presentation, presented
         )
     unpresented_regions = unpresented_region_ids(presented, regions) if attempted else []
     if not presented:
@@ -2092,9 +2103,13 @@ def publish_page_testimonia_and_attachments(
             resolved = context.registry.resolve(chair)
             presented = presentation_for_page(context, page_ordinal) if attempted_page else {}
             if attempted_page and isinstance(resolved, ChairIdentity):
+                source_presentation = presented
                 presented = witness_adapters.resolve_runnable_adapter(
                     resolved.witness_adapter
-                ).present(context, presented)
+                ).present(context, source_presentation)
+                witness_adapters.validate_adapter_presentation(
+                    resolved.witness_adapter, source_presentation, presented
+                )
             page_attempt = attempt_id(page_subject, f"read:{chair}", ordinal)
             roles = {
                 "primary" if act["page_ordinal"] == page_ordinal else "continuation"

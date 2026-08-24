@@ -13,7 +13,7 @@ from typing import Any, Final
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import SchemaRefusal
 from common.corpus_register import _refuse_preference
-from common.imaging import crop_png, dimensions, resize_png_lanczos
+from common.imaging import MAX_PIXELS, crop_png, dimensions, resize_png_lanczos
 
 PRESENTATION_KINDS: Final = frozenset({"page", "region", "adapter-crop"})
 # `native`  — geometry the witness itself reported.
@@ -165,6 +165,10 @@ def validate_presented(value: Any, *, page_size: tuple[int, int] | None = None) 
             )
         ):
             raise SchemaRefusal("a resized adapter-crop resize dimensions are invalid")
+        if resize["target_width_px"] * resize["target_height_px"] > MAX_PIXELS:
+            raise SchemaRefusal(
+                "a resized adapter-crop target exceeds the executable image pixel bound"
+            )
         bounds = transform["bounds"]
         if resize["source_width_px"] != bounds["w"] or resize["source_height_px"] != bounds["h"]:
             raise SchemaRefusal("a resized adapter-crop resize dimensions are invalid")

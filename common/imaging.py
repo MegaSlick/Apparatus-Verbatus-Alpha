@@ -63,13 +63,11 @@ MAX_PIXELS = 100_000_000
 Image.MAX_IMAGE_PIXELS = MAX_PIXELS
 
 
-def _refuse_past_pixel_bound(width: int, height: int) -> None:
-    """The one place `MAX_PIXELS` is enforced against a pair of dimensions —
-    four call sites (the native path, both Pillow-fallback decode paths, and
-    the CMYK/mode-conversion crop) needed the identical check and message."""
+def _refuse_past_pixel_bound(width: int, height: int, what: str = "page") -> None:
+    """The one bound shared by native/Pillow decode paths and resize targets."""
     if width * height > MAX_PIXELS:
         raise ValueError(
-            f"a {width}x{height} page is past this pipeline's {MAX_PIXELS}-pixel bound"
+            f"a {width}x{height} {what} is past this pipeline's {MAX_PIXELS}-pixel bound"
         )
 
 
@@ -432,14 +430,15 @@ def crop_png(png_bytes: bytes, bounds: Bounds) -> bytes:
 # https://github.com/python-pillow/Pillow/blob/12.3.0/src/PIL/Image.py#L2404-L2405
 # https://github.com/python-pillow/Pillow/blob/12.3.0/LICENSE
 # (`if self.mode in ("1", "P"): resample = Resampling.NEAREST`). Promoted to
-# the mode beside them before the call so the resampler that runs is the
+# a sample-preserving mode before the call so the resampler that runs is the
 # resampler the caller's sealed transform names. Only `1` actually arrives:
 # the door seals a bilevel raster as mode `1` on purpose (`_PNG_IDENTITY_MODES` in
 # `pipeline/1_exemplar/image_formats.py`), which is the ordinary CCITT-G4
 # register scan, while `P` is written out as RGB by `_encode_crop_deterministic`
-# and so never reaches a crop.  `P` is carried here anyway because this helper
-# is public and the substitution is Pillow's, not this call site's.
-_LANCZOS_PROMOTIONS: Final = {"1": "L", "P": "RGB"}
+# and so never reaches a crop. `P` is handled dynamically because its palette
+# may carry alpha; this helper is public and the substitution is Pillow's, not
+# this call site's.
+_LANCZOS_PROMOTIONS: Final = {"1": "L"}
 
 
 def resize_png_lanczos(png_bytes: bytes, width: int, height: int) -> bytes:
@@ -475,12 +474,24 @@ def resize_png_lanczos(png_bytes: bytes, width: int, height: int) -> bytes:
         or height <= 0
     ):
         raise ValueError("resize dimensions must be positive integers")
+    # The source bound protects decoding; the target needs its own check before
+    # Pillow allocates it. A sealed resize recipe is untrusted input on read-back,
+    # and positive integers alone otherwise admit an arbitrarily large image.
+    _refuse_past_pixel_bound(width, height, "resize target")
     try:
         with Image.open(BytesIO(png_bytes)) as image:
             _refuse_past_pixel_bound(image.width, image.height)
             image.load()
             source = image
             promotion = _LANCZOS_PROMOTIONS.get(image.mode)
+            if image.mode == "P":
+                # A palette's transparency can live either in image metadata or
+                # in an RGBA palette. RGB would make LANCZOS run but silently
+                # discard those samples before it did, changing the evidence.
+                keeps_alpha = "transparency" in image.info or "A" in getattr(
+                    image.palette, "mode", "RGB"
+                )
+                promotion = "RGBA" if keeps_alpha else "RGB"
             if promotion is not None and (image.width, image.height) != (width, height):
                 source = image.convert(promotion)
             resized = source.resize((width, height), resample=Image.Resampling.LANCZOS)

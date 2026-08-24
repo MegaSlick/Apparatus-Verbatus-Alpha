@@ -529,3 +529,15 @@ def test_a_resize_dimension_is_typed_before_the_aspect_identity_reads_it():
     presented["transform"]["resize"]["target_width_px"] = "20"
     with pytest.raises(SchemaRefusal, match="resize dimensions are invalid"):
         validate_presented(presented)
+
+
+def test_a_resize_recipe_refuses_an_over_bound_target_as_its_own_schema_error():
+    """A resealed target is untrusted input. It must be refused before Pillow
+    allocates it, and as a SchemaRefusal the tally knows how to hold."""
+    presented = _resized_presentation()
+    presented["transform"]["resize"].update(
+        {"target_width_px": 200_000_002, "target_height_px": 100_000_001}
+    )
+
+    with pytest.raises(SchemaRefusal, match="target exceeds.*pixel bound"):
+        validate_presented(presented)

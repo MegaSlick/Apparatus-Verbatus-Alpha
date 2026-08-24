@@ -112,9 +112,10 @@ def _dai_present(context: Any, presentation: dict[str, Any]) -> dict[str, Any]:
     """Cut and resize DAI's act view from its sealed source page.
 
     The input is the Designator proposal presentation, not pixels the adapter
-    independently detected.  DAI is act-scoped; its detector/crop step is the
-    proposal it was assigned, and its own presentation is an ``adapter-crop``
-    so the complete crop→resize recipe remains executable in sealed-page space.
+    independently detected. DAI is act-scoped; this implementation does not run
+    its detector and begins its crop step from the proposal it was assigned. Its
+    presentation is an ``adapter-crop`` so the complete crop→resize recipe
+    remains executable in sealed-page space.
     """
     validate_presented(presentation)
     if presentation["kind"] != "region":
@@ -188,6 +189,56 @@ def _dai_observe(presentation: dict[str, Any], native_payload: Any) -> list[dict
             else None,
         }
     ]
+
+
+def validate_adapter_presentation(
+    name: object, source: dict[str, Any], presented: dict[str, Any]
+) -> None:
+    """Re-derive the exact presentation recipe an adapter can produce.
+
+    Digest re-derivation proves that ``presented`` came from the sealed page,
+    but not that this configured adapter could have produced that crop and
+    target. Both facts are needed when an immutable Testimonium is tallied back.
+    """
+    resolved = resolve_witness_adapter_name(name)
+    validate_presented(source)
+    validate_presented(presented)
+    if resolved == "churro.v1":
+        if presented != source:
+            raise SchemaRefusal("Churro presentation differs from the exact image it was given")
+        return
+    if source["kind"] != "region":
+        raise SchemaRefusal("DAI accepts an act proposal region, not a page presentation")
+    bounds = source["transform"]["bounds"]
+    target_width, target_height = feeding._dai_dimensions(bounds["w"], bounds["h"])
+    transform: dict[str, Any] = {
+        "operation": "crop",
+        "source_page_id": source["source_page_id"],
+        "source_page_ordinal": source["source_page_ordinal"],
+        "bounds": dict(bounds),
+    }
+    if (target_width, target_height) != (bounds["w"], bounds["h"]):
+        transform = {
+            **transform,
+            "operation": "crop-resize-preserve-aspect",
+            "resize": {
+                "resampler": "pillow-lanczos",
+                "dimension_rounding": "floor",
+                "source_width_px": bounds["w"],
+                "source_height_px": bounds["h"],
+                "target_width_px": target_width,
+                "target_height_px": target_height,
+            },
+        }
+    if (
+        presented["kind"] != "adapter-crop"
+        or presented["source_page_id"] != source["source_page_id"]
+        or presented["source_page_ordinal"] != source["source_page_ordinal"]
+        or presented["transform"] != transform
+    ):
+        raise SchemaRefusal(
+            "DAI adapter-crop does not match its assigned proposal and sealed resize ceilings"
+        )
 
 
 RUNNABLE_ADAPTERS: Final[dict[str, RunnableAdapter]] = {

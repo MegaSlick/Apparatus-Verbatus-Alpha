@@ -1,5 +1,6 @@
 """The native callables remain a private Attestatores sibling module."""
 
+import copy
 import dataclasses
 import importlib.util
 import sys
@@ -127,6 +128,46 @@ def test_dai_crop_resize_is_a_rederivable_adapter_crop_and_preserves_uncertainty
         "start": 0,
         "end": len(response),
     }
+
+
+def test_dai_readback_refuses_an_aspect_valid_size_its_ceiling_recipe_cannot_produce():
+    """Page re-derivation alone accepts any aspect-valid target whose digest
+    matches; the tally must also prove DAI's largest-fit recipe chose it."""
+    page = encode_grayscale_png_deterministic(3_000, 2, [bytearray(3_000), bytearray(3_000)])
+    context = _DaiContext(page)
+    source = _dai_region(3_000, 2)
+    adapters = _load_local_adapters()
+    presented = adapters.resolve_runnable_adapter("dai.v1").present(context, source)
+    adapters.validate_adapter_presentation("dai.v1", source, presented)
+
+    forged = copy.deepcopy(presented)
+    forged["transform"]["resize"]["target_width_px"] = 1_499
+    # Both 1500x1 and 1499x1 satisfy the recorded floor-aspect identity, but
+    # only the former is the largest view under DAI's sealed ceilings.
+    with pytest.raises(SchemaRefusal, match="assigned proposal and sealed resize ceilings"):
+        adapters.validate_adapter_presentation("dai.v1", source, forged)
+
+
+def test_dai_readback_refuses_a_same_page_crop_other_than_its_assigned_proposal():
+    """A different crop can re-derive perfectly from the same sealed page; its
+    valid digest does not make it the proposal this witness was assigned."""
+    page = encode_grayscale_png_deterministic(3_000, 2, [bytearray(3_000), bytearray(3_000)])
+    context = _DaiContext(page)
+    source = _dai_region(3_000, 2)
+    adapters = _load_local_adapters()
+    forged = adapters.resolve_runnable_adapter("dai.v1").present(
+        context, _dai_region(2_999, 2, x=1)
+    )
+    validate_presented_page_binding(
+        forged,
+        page_ordinal=1,
+        page_image_path="1_exemplar/page-1.png",
+        page_sha256=digest_bytes(page),
+        page_size=(3_000, 2),
+        page_bytes=page,
+    )
+    with pytest.raises(SchemaRefusal, match="assigned proposal and sealed resize ceilings"):
+        adapters.validate_adapter_presentation("dai.v1", source, forged)
 
 
 def test_the_registry_binds_the_native_intake_contract_seams():

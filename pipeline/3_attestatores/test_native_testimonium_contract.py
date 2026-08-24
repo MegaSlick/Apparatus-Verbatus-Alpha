@@ -136,6 +136,35 @@ def test_a_page_witness_with_one_failed_and_one_unread_act_is_still_attempted():
     assert attestatores.page_witness_attempted(acts, "attestator_1", attempts_by_pair) is True
 
 
+def test_dai_uncertainty_tokens_reach_a_closed_testimonium_verbatim():
+    """Exercise parse -> observe -> Testimonium, not merely the parser in
+    isolation: the definition of done names the retained record as the end."""
+    adapter = attestatores.witness_adapters.resolve_runnable_adapter("dai.v1")
+    raw = "[UNCERTAIN]  ſ [CROSSED_OUT]".encode("utf-8")
+    parsed = adapter.parse(raw)
+    presented = _base()["presented"]
+    observed = adapter.observe(presented, parsed)
+
+    record = attestatores.testimonium_payload(
+        chair="attestator_2",
+        act_key="a1",
+        ordinal=1,
+        regions=[],
+        provenance={},
+        format_capabilities=attestatores.DEFAULT_FORMAT_CAPABILITIES,
+        native_payload=parsed,
+        witness_reported=None,
+        health=attestatores.content_health(parsed, completed=True),
+        presented=presented,
+        observed=observed,
+        outcome="read",
+    )
+
+    assert record["payload"] == raw.decode("utf-8")
+    assert record["reported"] == record["payload"]
+    assert record["observed"][0]["span"] == {"start": 0, "end": len(record["payload"])}
+
+
 class _Context:
     def __init__(self, tree):
         self.tree = tree

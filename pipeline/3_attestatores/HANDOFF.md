@@ -217,7 +217,10 @@ unfinished choices in this contract:
   carries its own published specimen evidence.
 * **Unit 13 (DAI)** adds DAI's exact registry rows and extends the closed
   transform for its adapter-owned crop/resize so the shown pixels remain
-  reproducible. DAI publishes no native layout channel here: its honest
+  reproducible. The landed adapter begins from its assigned Designator proposal;
+  it does not execute DAI's own detector, so it does not satisfy the staged
+  pipeline's separate native-detector requirement. DAI publishes no native
+  layout channel here: its honest
   `bounds_source="presented"` fallback is excluded from routing and coverage,
   while the separate secondary proposer remains Unit 9's chair and is not this
   adapter's native channel. Its carried prompts and nine generation values are

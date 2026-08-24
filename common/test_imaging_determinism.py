@@ -630,3 +630,35 @@ def test_a_bilevel_crop_that_needs_no_resize_is_still_returned_untouched():
     crop = crop_png(bilevel_page(), {"x": 0, "y": 0, "w": 40, "h": 24})
 
     assert resize_png_lanczos(crop, 40, 24) == crop
+
+
+def test_a_palette_resize_preserves_transparency_while_making_lanczos_run():
+    """Pillow silently forces NEAREST for palette images, but promoting a
+    transparent palette to RGB would repair the filter by deleting alpha."""
+    image = Image.new("P", (4, 4))
+    image.putpalette([255, 0, 0, 0, 255, 0] + [0, 0, 0] * 254)
+    image.putdata([0, 1, 0, 1] * 4)
+    image.info["transparency"] = 0
+    encoded = BytesIO()
+    image.save(encoded, format="PNG")
+
+    resized = resize_png_lanczos(encoded.getvalue(), 2, 2)
+
+    with Image.open(BytesIO(resized)) as reread:
+        assert reread.mode == "RGBA"
+        assert min(reread.getchannel("A").getextrema()) < 255
+
+
+def test_a_resize_target_is_bounded_before_pillow_can_allocate_it(monkeypatch):
+    crop = crop_png(grayscale_page(20, 12), {"x": 0, "y": 0, "w": 20, "h": 12})
+    called = False
+
+    def resize_was_reached(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("Pillow reached an over-bound target")
+
+    monkeypatch.setattr(Image.Image, "resize", resize_was_reached)
+    with pytest.raises(ValueError, match="resize target.*pixel bound"):
+        resize_png_lanczos(crop, 100_000_001, 1)
+    assert called is False
