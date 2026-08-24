@@ -217,6 +217,8 @@ class _Reading:
         # head can restore the predecessor it grew from without the register
         # carrying a second, editable copy of "what the members are now".
         self.membership_chain: dict[str, list[tuple[str, frozenset[str]]]] = {}
+        self.membership_links: set[str] = set()
+        self.retracted_membership_links: set[str] = set()
 
 
 def validate_register_bytes(data: bytes) -> dict[str, Any]:
@@ -499,12 +501,12 @@ def _retract_membership(row: dict[str, Any], reading: _Reading) -> None:
         None,
     )
     if page is None:
-        retracted_deeper = any(
-            digest == target
-            for chain in reading.membership_chain.values()
-            for digest, _members in chain
-        )
-        if retracted_deeper:
+        if target in reading.retracted_membership_links:
+            raise SchemaRefusal(
+                f"retraction names membership link {target!r}, which was already retracted; "
+                "a retraction that corrects nothing is not a correction"
+            )
+        if target in reading.membership_links:
             raise SchemaRefusal(
                 f"retraction names membership link {target!r}, which is not the current head "
                 "of its page's chain; every successor contains the captures it declared, so "
@@ -517,6 +519,7 @@ def _retract_membership(row: dict[str, Any], reading: _Reading) -> None:
         )
     chain = reading.membership_chain[page]
     chain.pop()
+    reading.retracted_membership_links.add(target)
     if chain:
         reading.membership_head[page] = chain[-1]
     else:
@@ -563,3 +566,4 @@ def _validate_membership(row: dict[str, Any], reading: _Reading) -> None:
             )
     reading.membership_head[page] = (digest_of(row), members)
     reading.membership_chain.setdefault(page, []).append((digest_of(row), members))
+    reading.membership_links.add(digest_of(row))

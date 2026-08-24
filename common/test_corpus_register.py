@@ -720,7 +720,7 @@ def test_membership_grows_again_from_the_link_that_survived_a_retraction():
         )
 
 
-def test_retracting_one_link_twice_is_refused_and_a_fresh_act_may_reappend_its_members():
+def test_retracting_one_link_twice_names_that_it_was_already_retracted():
     """The withdrawn record stays evidence but is neither a head nor reusable identity."""
     first = _membership(["a" * 64, "b" * 64])
     withdrawal = _retraction(f"membership:{digest_of(first)}")
@@ -735,8 +735,13 @@ def test_retracting_one_link_twice_is_refused_and_a_fresh_act_may_reappend_its_m
             ],
         }
     )
-    with pytest.raises(SchemaRefusal, match="a retraction that corrects nothing"):
+    with pytest.raises(SchemaRefusal, match="already retracted"):
         validate_register_bytes(twice)
+
+
+def test_a_fresh_act_may_reappend_the_members_of_a_retracted_link():
+    first = _membership(["a" * 64, "b" * 64])
+    withdrawal = _retraction(f"membership:{digest_of(first)}")
 
     # Reasserting the same members is a new operator act, not resurrection of the
     # withdrawn immutable link, so its appending-run identity makes a new record.

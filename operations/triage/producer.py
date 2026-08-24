@@ -92,19 +92,39 @@ class ProducedTriage:
 
 def routes_to_review(row: Mapping[str, Any], path: str | Path) -> bool:
     """Apply the one triage-mode configuration without changing a decision row."""
+    if not isinstance(row, Mapping):
+        raise ProducerRefusal("producer review routing requires a decision-row mapping")
+    try:
+        mode = row["mode"]
+        confidence = row["confidence"]
+    except KeyError as error:
+        raise ProducerRefusal("producer review routing row has no mode or confidence") from error
+    if mode not in {"manual", "semi", "auto"}:
+        raise ProducerRefusal("producer review routing row has an undeclared triage mode")
+    if (
+        not isinstance(confidence, int)
+        or isinstance(confidence, bool)
+        or confidence not in range(5)
+    ):
+        raise ProducerRefusal("producer review routing row has confidence outside [0, 4]")
     try:
         policy = tomllib.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
         raise ProducerRefusal("producer triage modes configuration could not be read") from error
-    try:
-        threshold = policy[row["mode"]]["review_at_or_below_confidence"]
-    except (KeyError, TypeError) as error:
-        raise ProducerRefusal(
-            "producer triage modes configuration has the wrong closed schema"
-        ) from error
-    if not isinstance(threshold, int) or isinstance(threshold, bool) or not 0 <= threshold <= 4:
+    if not isinstance(policy, dict) or set(policy) != {"manual", "semi", "auto"}:
         raise ProducerRefusal("producer triage modes configuration has the wrong closed schema")
-    return row["confidence"] <= threshold
+    for declared_mode in ("manual", "semi", "auto"):
+        declared = policy[declared_mode]
+        if not isinstance(declared, dict) or set(declared) != {"review_at_or_below_confidence"}:
+            raise ProducerRefusal("producer triage modes configuration has the wrong closed schema")
+        threshold = declared["review_at_or_below_confidence"]
+        if (
+            not isinstance(threshold, int)
+            or isinstance(threshold, bool)
+            or threshold not in range(5)
+        ):
+            raise ProducerRefusal("producer triage modes configuration has the wrong closed schema")
+    return confidence <= policy[mode]["review_at_or_below_confidence"]
 
 
 def _plain_string(value: Any, what: str) -> str:
@@ -117,8 +137,8 @@ def _digest_list(value: Any, what: str, *, minimum: int = 1) -> list[str]:
     if (
         not isinstance(value, list)
         or len(value) < minimum
-        or value != sorted(set(value))
         or not all(is_sha256(item) for item in value)
+        or value != sorted(set(value))
     ):
         raise ProducerRefusal(f"{what} must be sorted unique source-frame SHA-256 digests")
     return value
@@ -135,8 +155,8 @@ def _manifest_pair(value: Any, what: str, frame_digests: set[str]) -> tuple[str,
         not isinstance(value, list)
         or len(value) != 2
         or value[0] == value[1]
-        or value != sorted(value)
         or not all(is_sha256(item) for item in value)
+        or value != sorted(value)
         or not set(value) <= frame_digests
     ):
         raise ProducerRefusal(
@@ -214,12 +234,23 @@ def _verify_transcribed_row(
 ) -> dict[str, Any]:
     """Accept a geometry transcription only after binding it to this master.
 
-    The real ScanTailor project shape is unavailable in this chamber.  This accepts a
-    caller-provided *already transcribed* row only when its native bytes, dimensions,
-    and non-synthetic geometry all close against one submitted path.  It is the safe
-    producer boundary until a real project replaces the fixture parser.
+    The real ScanTailor project shape is unavailable in this chamber. This accepts a
+    caller-provided structural row — currently either fixture transcription or an
+    explicit human proposal — only when its native bytes, dimensions, and geometry
+    all close against one submitted path. It is the safe producer boundary until a
+    real project replaces the fixture parser.
     """
-    checked = triage_manifest.validate_row(dict(row))
+    if not isinstance(row, Mapping):
+        raise ProducerRefusal(
+            "manual refusal invalid-transcription: submitted geometry is not a decision-row mapping"
+        )
+    try:
+        checked = triage_manifest.validate_row(dict(row))
+    except (SchemaRefusal, TypeError, ValueError) as error:
+        raise ProducerRefusal(
+            "manual refusal invalid-transcription: submitted geometry is not a valid closed "
+            "decision row"
+        ) from error
     if checked["source_frame_sha256"] != digest:
         raise ProducerRefusal(
             "manual refusal digest-bytes-mismatch: transcription names other bytes"
@@ -282,6 +313,15 @@ def _evidenced_pairs(
         raise ProducerRefusal(
             "manual refusal evidence-not-instrumented: the supplied evidence manifest is "
             f"not a closed {EVIDENCE_MANIFEST_SCHEMA} record"
+        )
+    emitted_record_count = _nonnegative_int(
+        evidence_manifest.get("emitted_evidence_records"),
+        "evidence manifest emitted_evidence_records",
+    )
+    if not is_sha256(evidence_manifest.get("emitted_pairs_sha256")):
+        raise ProducerRefusal(
+            "manual refusal evidence-not-instrumented: the evidence manifest has no valid "
+            "emitted-pair accounting digest"
         )
     if (
         evidence_manifest.get("instrument_config_sha256")
@@ -378,9 +418,9 @@ def _evidenced_pairs(
     # `emitted_pairs_sha256` is a digest over the *sorted list* of emitted pairs, so it
     # closes multiplicity as well as membership: a duplicated record cannot stand in for
     # a dropped one, and a padded record cannot hide behind a matching count.
-    if len(pairs) != evidence_manifest.get("emitted_evidence_records") or digest_of(
-        sorted(pairs)
-    ) != evidence_manifest.get("emitted_pairs_sha256"):
+    if len(pairs) != emitted_record_count or digest_of(sorted(pairs)) != evidence_manifest.get(
+        "emitted_pairs_sha256"
+    ):
         raise ProducerRefusal(
             "manual refusal evidence-not-instrumented: the supplied candidate evidence "
             "records do not reconcile with the evidence manifest's own accounting of "
@@ -472,6 +512,9 @@ def _confirmation_cluster_ids(
         raise ProducerRefusal("confirmation clusters must be a list")
     result: dict[str, tuple[list[str], list[dict[str, Any]]]] = {}
     used_members: set[str] = set()
+    used_pages: set[str] = set()
+    if not clusters:
+        raise ProducerRefusal("confirmation names no cluster; nothing can be confirmed")
     for cluster in clusters:
         if not isinstance(cluster, dict) or set(cluster) != {"pages", "evidence_pairs"}:
             raise ProducerRefusal(
@@ -497,6 +540,11 @@ def _confirmation_cluster_ids(
             page_members = _digest_list(page["member_frame_sha256"], "confirmation page members")
             members.update(page_members)
             identity = physical_page_id(confirmation["corpus_id"], volume, designation)
+            if identity in identities:
+                raise ProducerRefusal(
+                    "confirmation cluster repeats a physical page designation; each page must "
+                    "be declared exactly once"
+                )
             identities.append(identity)
             page_records.append({"physical_page_id": identity, "members": page_members, **page})
         if not members <= submitted:
@@ -521,8 +569,8 @@ def _confirmation_cluster_ids(
             if (
                 not isinstance(pair, list)
                 or len(pair) != 2
-                or pair != sorted(pair)
                 or not all(is_sha256(v) for v in pair)
+                or pair != sorted(pair)
             ):
                 raise ProducerRefusal("confirmation evidence pair must be a sorted digest pair")
             canonical = (pair[0], pair[1])
@@ -543,7 +591,12 @@ def _confirmation_cluster_ids(
         cluster_id = "rsc_" + digest_of(sorted(identities))
         if cluster_id in result or used_members & members:
             raise ProducerRefusal("confirmation clusters overlap; a frame cannot be assigned twice")
+        if used_pages & set(identities):
+            raise ProducerRefusal(
+                "confirmation clusters overlap; a physical page cannot be assigned twice"
+            )
         used_members.update(members)
+        used_pages.update(identities)
         result[cluster_id] = (sorted(members), page_records)
     _refuse_preference(confirmation)
     return result
@@ -571,6 +624,20 @@ def produce(
         or max_pages_per_shard < 1
     ):
         raise ProducerRefusal("producer max_pages_per_shard must be a positive integer")
+    if (
+        not isinstance(frames, Sequence)
+        or isinstance(frames, (str, bytes))
+        or not all(
+            isinstance(frame, SubmittedFrame)
+            and isinstance(frame.path, str)
+            and bool(frame.path.strip())
+            and isinstance(frame.data, bytes)
+            for frame in frames
+        )
+    ):
+        raise ProducerRefusal(
+            "manual refusal coverage: every submission must be a named frame with immutable bytes"
+        )
     digests = [digest_bytes(frame.data) for frame in frames]
     if len(set(digests)) != len(digests):
         raise ProducerRefusal(
@@ -587,7 +654,12 @@ def produce(
     rows: list[dict[str, Any]] = []
     by_digest: dict[str, dict[str, Any]] = {}
     supplied_paths = {frame.path for frame in frames}
-    transcribed_rows_by_path = transcribed_rows_by_path or {}
+    if transcribed_rows_by_path is None:
+        transcribed_rows_by_path = {}
+    elif not isinstance(transcribed_rows_by_path, Mapping):
+        raise ProducerRefusal(
+            "manual refusal coverage: transcribed rows must be a path-to-row mapping"
+        )
     if set(transcribed_rows_by_path) - supplied_paths:
         raise ProducerRefusal(
             "manual refusal coverage: transcription has a row without a submitted frame"
@@ -703,7 +775,13 @@ def load_confirmation(path: str | Path) -> dict[str, Any]:
         value = json.loads(raw.decode("utf-8"))
     except (OSError, UnicodeDecodeError, ValueError) as error:
         raise ProducerRefusal("confirmation file could not be read") from error
-    if canonical_bytes(value) != raw:
+    try:
+        canonical = canonical_bytes(value)
+    except TypeError as error:
+        raise ProducerRefusal(
+            "confirmation file cannot be represented as canonical JSON"
+        ) from error
+    if canonical != raw:
         raise ProducerRefusal("confirmation file must be canonical JSON")
     if not isinstance(value, dict) or value.get("schema") != CONFIRMATION_SCHEMA:
         raise ProducerRefusal("confirmation file has an unknown schema")
@@ -728,14 +806,16 @@ def append_confirmation_to_register(
     only after this succeeds; without a designation, `produce` has refused before this
     function can touch either destination.
 
-    A retry that observes the *current* register digest and finds every one of this
-    confirmation's memberships already recorded (the register write of a prior,
+    A retry that observes the *current* register digest and finds each of this
+    confirmation's memberships recorded exactly (the register write of a prior,
     interrupted commit succeeded before its manifest/cluster documents were durably
     published) is not a fresh append: it returns that current digest unchanged so the
     caller can go on to (re)publish the Door documents, rather than being refused
     forever by a commit that can never again find "new" membership to add. A caller
     whose expected digest disagrees with the register's actual current bytes still
-    gets the ordinary concurrent-write refusal.
+    gets the ordinary concurrent-write refusal. A confirmation that omits a member
+    from the current head is stale, not idempotent, and is refused before it can
+    regress the Door documents.
     """
     confirmed = _confirmation_cluster_ids(
         confirmation,
@@ -750,6 +830,11 @@ def append_confirmation_to_register(
         current_bytes = Path(register_path).read_bytes()
     except FileNotFoundError:
         current_bytes = empty_register()
+    except OSError as error:
+        raise ProducerRefusal(
+            "corpus register could not be read; no confirmation append was written. "
+            "Restore readable register bytes and retry against their digest."
+        ) from error
     prior = validate_register_bytes(current_bytes)
     existing_pages = {
         record["physical_page_id"]
@@ -780,8 +865,15 @@ def append_confirmation_to_register(
                 )
                 existing_pages.add(page_id)
             predecessor, prior_members = heads.get(page_id, (None, set()))
-            members = sorted(prior_members | set(page["members"]))
-            if set(members) == prior_members:
+            requested_members = set(page["members"])
+            if not prior_members <= requested_members:
+                raise ProducerRefusal(
+                    "manual refusal stale-confirmation-membership: confirmation omits a capture "
+                    f"already retained for physical page {page_id}; no register append was "
+                    "written. Rebuild the confirmation from the current membership head."
+                )
+            members = sorted(requested_members)
+            if requested_members == prior_members:
                 continue
             membership = {
                 "kind": "membership",
@@ -825,23 +917,26 @@ def commit_confirmed_production(
     transcribed_rows_by_path: Mapping[str, Mapping[str, Any]] | None = None,
     max_pages_per_shard: int = 1000,
 ) -> tuple[ProducedTriage, str]:
-    """Commit confirmation in its required order: register, then Door documents.
+    """Retain authority, append the register, then publish Door documents.
 
-    All manifest and cluster validation happens before the register append. The register
-    itself has optimistic concurrency plus an atomic replacement; only a successful
-    append permits the two prevalidated Door documents to become visible. A caller can
-    therefore never publish a cluster row without first recording its physical-page
-    declarations and membership links.
+    All manifest and cluster validation happens before any write. The immutable authority
+    record is published before the corpus-lifetime register change, so a confirmation can
+    never be committed and then lose the evidence that authorized it. The register itself
+    has optimistic concurrency plus an atomic replacement; only a successful append permits
+    the two prevalidated Door documents to become visible. If the append is refused, the
+    retained authority is an honest record of the attempted confirmation, not a claim that
+    the register changed.
 
-    The confirmation is republished verbatim to ``authority_path`` before either Door
-    document, and that ordering is the point of it. A cluster record is a corpus-lifetime
+    The confirmation is published verbatim and immutably to ``authority_path`` before the
+    register and either Door document, and that ordering is the point of it. A cluster record is a corpus-lifetime
     assertion about which frames show one physical page, and the only thing that
     authorized it is the confirmation: its `authority`, the instrument configuration it
     reviewed, and the evidence manifest it traced to. Validating that record and then
     discarding it would leave the register's `appending_run` as the sole surviving trace
     of who claimed a permanent write — GOVERNANCE 2's "nothing is lost silently" applied
     to the pipeline's own decisions, not only to its readings. Writing it first means no
-    published cluster can ever be found without the authority that made it.
+    published cluster can ever be found without the authority that made it. Reusing the
+    path for byte-identical retry is allowed; different bytes are refused without overwrite.
 
     A retry after a crash between the register append and the document writes converges:
     `append_confirmation_to_register` recognizes its memberships are already recorded and
@@ -861,6 +956,20 @@ def commit_confirmed_production(
     )
     if not produced.clusters:
         raise ProducerRefusal("confirmation names no cluster; no manifest documents were written")
+    try:
+        destinations = {
+            "register": Path(register_path),
+            "authority": Path(authority_path),
+            "manifest": Path(manifest_path),
+            "clusters": Path(clusters_path),
+        }
+    except TypeError as error:
+        raise ProducerRefusal(
+            "confirmed triage destination is not a filesystem path; nothing was written. "
+            "Supply one distinct path for each record role."
+        ) from error
+    _refuse_aliased_destinations(**destinations)
+    _publish_immutable_canonical(Path(authority_path), confirmation)
     successor_digest = append_confirmation_to_register(
         confirmation,
         produced,
@@ -870,7 +979,6 @@ def commit_confirmed_production(
         register_path=register_path,
         expected_register_digest=expected_register_digest,
     )
-    _atomic_write_canonical(Path(authority_path), confirmation)
     _atomic_write_canonical(Path(manifest_path), produced.manifest)
     _atomic_write_canonical(Path(clusters_path), produced.clusters)
     return produced, successor_digest
@@ -879,11 +987,12 @@ def commit_confirmed_production(
 def _atomic_write_canonical(path: Path, value: Mapping[str, Any]) -> None:
     """Publish one complete Door document, never a partially written JSON file."""
     data = canonical_bytes(value)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.tmp-", dir=path.parent)
-    temporary = Path(temporary_name)
+    temporary: Path | None = None
     published = False
     try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.tmp-", dir=path.parent)
+        temporary = Path(temporary_name)
         with os.fdopen(descriptor, "wb") as handle:
             handle.write(data)
             handle.flush()
@@ -899,4 +1008,84 @@ def _atomic_write_canonical(path: Path, value: Mapping[str, Any]) -> None:
         state = "was published but is not proven durable" if published else "was not published"
         raise ProducerRefusal(f"confirmed triage document {path} {state}") from error
     finally:
-        temporary.unlink(missing_ok=True)
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def _refuse_aliased_destinations(**paths: Path) -> None:
+    """Refuse two commit roles resolving to one file before any role is written."""
+    resolved: dict[Path, str] = {}
+    for role, path in paths.items():
+        try:
+            target = path.resolve(strict=False)
+        except (OSError, RuntimeError) as error:
+            raise ProducerRefusal(
+                "confirmed triage destination could not be resolved; nothing was written. "
+                "Repair the named path and retry."
+            ) from error
+        prior = resolved.get(target)
+        if prior is not None:
+            raise ProducerRefusal(
+                f"confirmed triage destinations for {prior} and {role} resolve to {target}; "
+                "nothing was written. Give every record role its own path."
+            )
+        resolved[target] = role
+    existing = [(role, path) for role, path in paths.items() if path.exists()]
+    for index, (role, path) in enumerate(existing):
+        for other_role, other_path in existing[index + 1 :]:
+            try:
+                same = os.path.samefile(path, other_path)
+            except OSError as error:
+                raise ProducerRefusal(
+                    "confirmed triage destination identity could not be verified; nothing was "
+                    "written. Restore readable destination paths and retry."
+                ) from error
+            if same:
+                raise ProducerRefusal(
+                    f"confirmed triage destinations for {role} and {other_role} name one file; "
+                    "nothing was written. Give every record role its own path."
+                )
+
+
+def _publish_immutable_canonical(path: Path, value: Mapping[str, Any]) -> None:
+    """Create one immutable evidence name, accepting only a byte-identical retry."""
+    data = canonical_bytes(value)
+    temporary: Path | None = None
+    published = False
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.tmp-", dir=path.parent)
+        temporary = Path(temporary_name)
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            try:
+                existing = path.read_bytes()
+            except OSError as error:
+                raise ProducerRefusal(
+                    f"confirmation authority path {path} already exists but cannot be verified; "
+                    "nothing was overwritten. Choose a new readable authority path."
+                ) from error
+            if existing != data:
+                raise ProducerRefusal(
+                    f"confirmation authority path {path} already contains different immutable "
+                    "evidence; nothing was overwritten. Choose a new authority path."
+                ) from None
+        published = True
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    except ProducerRefusal:
+        raise
+    except OSError as error:
+        state = "was published but is not proven durable" if published else "was not published"
+        raise ProducerRefusal(f"confirmation authority record {path} {state}") from error
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)

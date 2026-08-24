@@ -14,6 +14,7 @@ from common.contracts.errors import IncompatibleReuse, SchemaRefusal
 from common.contracts.identities import physical_page_id
 from common.corpus_register import append_records, members_of, register_digest
 from operations.triage import instrument
+from operations.triage import producer as producer_module
 from operations.triage.producer import (
     CONFIRMATION_SCHEMA,
     ProducerRefusal,
@@ -108,6 +109,23 @@ def test_modes_keep_rows_byte_identical_and_only_change_routing(tmp_path: Path):
     assert routes_to_review({**probe, "mode": "manual"}, local)
     assert routes_to_review({**probe, "mode": "semi"}, local)
     assert not routes_to_review({**probe, "mode": "auto"}, local)
+
+
+def test_review_routing_refuses_an_incomplete_row_and_an_open_configuration(tmp_path: Path):
+    config = tmp_path / "triage_modes.toml"
+    config.write_text(
+        "[manual]\nreview_at_or_below_confidence = 4\n"
+        "[semi]\nreview_at_or_below_confidence = 4\n"
+        "[auto]\nreview_at_or_below_confidence = 4\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ProducerRefusal, match="no mode or confidence"):
+        routes_to_review({"mode": "auto"}, config)
+    config.write_text(
+        config.read_text(encoding="utf-8") + "\n[extra]\nvalue = 1\n", encoding="utf-8"
+    )
+    with pytest.raises(ProducerRefusal, match="wrong closed schema"):
+        routes_to_review({"mode": "auto", "confidence": 0}, config)
 
 
 def test_shipped_modes_route_every_produced_row_to_review():
@@ -247,8 +265,12 @@ def test_cluster_member_and_span_refusals_are_named():
 
 
 def test_confirmation_refuses_a_pair_the_instrument_never_evidenced():
-    frames = [frame("63"), frame("64")]
+    frames = [frame("63"), frame("64"), frame("65", size=(80, 48))]
     confirmed, recipe, manifest, evidence = confirmation(frames)
+    # Unequal dimensions make this a named instrument refusal, not an emitted
+    # evidence record. Keep the genuine manifest and all genuine emitted records;
+    # only the confirmation attempts to promote the refused pair.
+    confirmed["clusters"][0]["evidence_pairs"] = [manifest["dimension_refused_pairs"][0]]
     with pytest.raises(ProducerRefusal, match="manual refusal evidence-not-instrumented"):
         produce(
             frames,
@@ -257,7 +279,24 @@ def test_confirmation_refuses_a_pair_the_instrument_never_evidenced():
             confirmation=confirmed,
             instrument_recipe=recipe,
             evidence_manifest=manifest,
-            evidence_records=[],
+            evidence_records=evidence,
+        )
+
+
+def test_confirmation_accounting_refuses_boolean_record_count():
+    frames = [frame("63"), frame("64")]
+    confirmed, recipe, manifest, evidence = confirmation(frames)
+    malformed = {**manifest, "emitted_evidence_records": True}
+    confirmed = {**confirmed, "evidence_manifest_sha256": digest_of(malformed)}
+    with pytest.raises(ProducerRefusal, match="must be a non-negative integer"):
+        produce(
+            frames,
+            corpus_id="synthetic",
+            mode="auto",
+            confirmation=confirmed,
+            instrument_recipe=recipe,
+            evidence_manifest=malformed,
+            evidence_records=evidence,
         )
 
 
@@ -336,6 +375,82 @@ def test_confirmation_requires_evidence_when_a_confirmation_is_given():
         produce(frames, corpus_id="synthetic", mode="auto", confirmation=confirmed)
 
 
+def test_confirmation_refuses_an_empty_cluster_list_and_malformed_member_types():
+    frames = [frame("63"), frame("64")]
+    confirmed, recipe, manifest, evidence = confirmation(frames)
+    empty = {**confirmed, "clusters": []}
+    with pytest.raises(ProducerRefusal, match="names no cluster"):
+        produce(
+            frames,
+            corpus_id="synthetic",
+            mode="auto",
+            confirmation=empty,
+            instrument_recipe=recipe,
+            evidence_manifest=manifest,
+            evidence_records=evidence,
+        )
+    malformed = json.loads(json.dumps(confirmed))
+    malformed["clusters"][0]["pages"][0]["member_frame_sha256"][-1] = 7
+    with pytest.raises(ProducerRefusal, match="sorted unique source-frame"):
+        produce(
+            frames,
+            corpus_id="synthetic",
+            mode="auto",
+            confirmation=malformed,
+            instrument_recipe=recipe,
+            evidence_manifest=manifest,
+            evidence_records=evidence,
+        )
+
+
+def test_a_physical_page_designation_may_appear_in_only_one_confirmation_cluster():
+    frames = [frame(str(index)) for index in range(4)]
+    confirmed, recipe, manifest, evidence = confirmation(frames)
+    digests = sorted(digest_bytes(item.data) for item in frames)
+    confirmed["clusters"] = [
+        {
+            "pages": [
+                {
+                    "volume_id": "v1",
+                    "designation": "shared-page",
+                    "member_frame_sha256": digests[:2],
+                },
+                {
+                    "volume_id": "v1",
+                    "designation": "left-neighbour",
+                    "member_frame_sha256": [digests[0]],
+                },
+            ],
+            "evidence_pairs": [digests[:2]],
+        },
+        {
+            "pages": [
+                {
+                    "volume_id": "v1",
+                    "designation": "shared-page",
+                    "member_frame_sha256": digests[2:],
+                },
+                {
+                    "volume_id": "v1",
+                    "designation": "right-neighbour",
+                    "member_frame_sha256": [digests[3]],
+                },
+            ],
+            "evidence_pairs": [digests[2:]],
+        },
+    ]
+    with pytest.raises(ProducerRefusal, match="physical page cannot be assigned twice"):
+        produce(
+            frames,
+            corpus_id="synthetic",
+            mode="auto",
+            confirmation=confirmed,
+            instrument_recipe=recipe,
+            evidence_manifest=manifest,
+            evidence_records=evidence,
+        )
+
+
 def test_confirmation_writes_memberships_then_stable_cluster_without_a_preference(tmp_path: Path):
     frames = [frame("63"), frame("64"), frame("65")]
     confirmed, recipe, manifest, evidence = confirmation(frames)
@@ -379,6 +494,15 @@ def test_confirmation_writes_memberships_then_stable_cluster_without_a_preferenc
     extended = frames + [fourth]
     confirmed2, recipe2, manifest2, evidence2 = confirmation(extended)
     confirmed2["appending_run"] = "triage-pass-synthetic-2"
+    # The helper chooses the lexically last digest for the right page. Digest order
+    # can change when a frame is added, but membership may only grow; carry the
+    # earlier right-page capture into this genuinely extending confirmation.
+    confirmed2["clusters"][0]["pages"][1]["member_frame_sha256"] = sorted(
+        set(
+            confirmed2["clusters"][0]["pages"][1]["member_frame_sha256"]
+            + right["member_frame_sha256"]
+        )
+    )
     produced2 = produce(
         extended,
         corpus_id="synthetic",
@@ -400,13 +524,13 @@ def test_confirmation_writes_memberships_then_stable_cluster_without_a_preferenc
     )
 
 
-def test_no_designation_refuses_before_any_register_write(tmp_path: Path):
+def test_no_designation_refuses_before_any_confirmation_output_is_written(tmp_path: Path):
     frames = [frame("63"), frame("64")]
     confirmed, recipe, manifest, evidence = confirmation(frames, include_second_page=False)
     confirmed["clusters"][0]["pages"] = []
     register = tmp_path / "register.json"
     with pytest.raises(ProducerRefusal, match="no physical-page designation"):
-        produce(
+        commit_confirmed_production(
             frames,
             corpus_id="synthetic",
             mode="auto",
@@ -414,11 +538,16 @@ def test_no_designation_refuses_before_any_register_write(tmp_path: Path):
             instrument_recipe=recipe,
             evidence_manifest=manifest,
             evidence_records=evidence,
+            register_path=register,
+            manifest_path=tmp_path / "manifest.json",
+            clusters_path=tmp_path / "clusters.json",
+            authority_path=tmp_path / "authority.json",
         )
     assert not register.exists()
+    assert sorted(tmp_path.iterdir()) == []
 
 
-def test_confirmed_production_publishes_door_documents_only_after_register_append(tmp_path: Path):
+def test_confirmed_production_publishes_register_and_all_bound_documents(tmp_path: Path):
     frames = [frame("63"), frame("64")]
     confirmed, recipe, manifest, evidence = confirmation(frames)
     produced, successor = commit_confirmed_production(
@@ -444,6 +573,147 @@ def test_confirmed_production_publishes_door_documents_only_after_register_appen
     published = json.loads((tmp_path / "triage-confirmation.json").read_text(encoding="utf-8"))
     assert published == confirmed
     assert published["authority"] == confirmed["authority"]
+
+
+def test_confirmation_authority_is_retained_before_a_register_append_is_attempted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    frames = [frame("63"), frame("64")]
+    confirmed, recipe, manifest, evidence = confirmation(frames)
+    authority_path = tmp_path / "authority.json"
+
+    def refused_append(*args, **kwargs):
+        assert authority_path.read_bytes() == canonical_bytes(confirmed)
+        raise IncompatibleReuse("synthetic concurrent register append")
+
+    monkeypatch.setattr(producer_module, "append_confirmation_to_register", refused_append)
+    with pytest.raises(IncompatibleReuse, match="synthetic concurrent"):
+        commit_confirmed_production(
+            frames,
+            corpus_id="synthetic",
+            mode="auto",
+            confirmation=confirmed,
+            instrument_recipe=recipe,
+            evidence_manifest=manifest,
+            evidence_records=evidence,
+            register_path=tmp_path / "register.json",
+            manifest_path=tmp_path / "manifest.json",
+            clusters_path=tmp_path / "clusters.json",
+            authority_path=authority_path,
+        )
+    assert authority_path.read_bytes() == canonical_bytes(confirmed)
+    assert not (tmp_path / "manifest.json").exists()
+    assert not (tmp_path / "clusters.json").exists()
+
+
+def test_authority_path_refuses_different_confirmation_bytes_without_overwrite(tmp_path: Path):
+    frames = [frame("63"), frame("64")]
+    confirmed, recipe, manifest, evidence = confirmation(frames)
+    register_path = tmp_path / "register.json"
+    manifest_path = tmp_path / "manifest.json"
+    clusters_path = tmp_path / "clusters.json"
+    authority_path = tmp_path / "authority.json"
+    produced, head = commit_confirmed_production(
+        frames,
+        corpus_id="synthetic",
+        mode="auto",
+        confirmation=confirmed,
+        instrument_recipe=recipe,
+        evidence_manifest=manifest,
+        evidence_records=evidence,
+        register_path=register_path,
+        manifest_path=manifest_path,
+        clusters_path=clusters_path,
+        authority_path=authority_path,
+    )
+    original_authority = authority_path.read_bytes()
+    changed = {**confirmed, "appending_run": "another-confirmation-act"}
+    with pytest.raises(ProducerRefusal, match="different immutable evidence"):
+        commit_confirmed_production(
+            frames,
+            corpus_id="synthetic",
+            mode="auto",
+            confirmation=changed,
+            instrument_recipe=recipe,
+            evidence_manifest=manifest,
+            evidence_records=evidence,
+            register_path=register_path,
+            expected_register_digest=head,
+            manifest_path=manifest_path,
+            clusters_path=clusters_path,
+            authority_path=authority_path,
+        )
+    assert authority_path.read_bytes() == original_authority
+    assert register_digest(register_path.read_bytes()) == head
+    assert manifest_path.read_bytes() == canonical_bytes(produced.manifest)
+    assert clusters_path.read_bytes() == canonical_bytes(produced.clusters)
+
+
+def test_confirmed_commit_refuses_aliased_destinations_before_any_write(tmp_path: Path):
+    frames = [frame("63"), frame("64")]
+    confirmed, recipe, evidence_manifest, evidence = confirmation(frames)
+    shared = tmp_path / "shared.json"
+    with pytest.raises(ProducerRefusal, match="authority and manifest"):
+        commit_confirmed_production(
+            frames,
+            corpus_id="synthetic",
+            mode="auto",
+            confirmation=confirmed,
+            instrument_recipe=recipe,
+            evidence_manifest=evidence_manifest,
+            evidence_records=evidence,
+            register_path=tmp_path / "register.json",
+            manifest_path=shared,
+            clusters_path=tmp_path / "clusters.json",
+            authority_path=shared,
+        )
+    assert sorted(tmp_path.iterdir()) == []
+
+
+def test_subset_confirmation_cannot_regress_a_grown_membership_or_door_cluster(tmp_path: Path):
+    frames = [frame("63"), frame("64"), frame("65")]
+    confirmed, recipe, manifest, evidence = confirmation(frames)
+    register_path = tmp_path / "register.json"
+    manifest_path = tmp_path / "manifest.json"
+    clusters_path = tmp_path / "clusters.json"
+    produced, head = commit_confirmed_production(
+        frames,
+        corpus_id="synthetic",
+        mode="auto",
+        confirmation=confirmed,
+        instrument_recipe=recipe,
+        evidence_manifest=manifest,
+        evidence_records=evidence,
+        register_path=register_path,
+        manifest_path=manifest_path,
+        clusters_path=clusters_path,
+        authority_path=tmp_path / "authority-1.json",
+    )
+    prior_register = register_path.read_bytes()
+    prior_manifest = manifest_path.read_bytes()
+    prior_clusters = clusters_path.read_bytes()
+
+    subset_frames = frames[:2]
+    subset, subset_recipe, subset_manifest, subset_evidence = confirmation(subset_frames)
+    subset["appending_run"] = "stale-subset"
+    with pytest.raises(ProducerRefusal, match="stale-confirmation-membership"):
+        commit_confirmed_production(
+            subset_frames,
+            corpus_id="synthetic",
+            mode="auto",
+            confirmation=subset,
+            instrument_recipe=subset_recipe,
+            evidence_manifest=subset_manifest,
+            evidence_records=subset_evidence,
+            register_path=register_path,
+            expected_register_digest=head,
+            manifest_path=manifest_path,
+            clusters_path=clusters_path,
+            authority_path=tmp_path / "authority-stale.json",
+        )
+    assert register_path.read_bytes() == prior_register
+    assert manifest_path.read_bytes() == prior_manifest == canonical_bytes(produced.manifest)
+    assert clusters_path.read_bytes() == prior_clusters == canonical_bytes(produced.clusters)
 
 
 def test_crash_between_register_and_door_documents_converges_on_retry(tmp_path: Path):
@@ -578,10 +848,11 @@ def test_retraction_and_confirmation_append_never_silently_resurrect_stale_membe
     assert members_of(register_path.read_bytes(), page_id) == []
 
     reconfirmed = {**confirmed, "appending_run": "triage-pass-synthetic-2"}
+    reconfirmed_authority = tmp_path / "triage-confirmation-2.json"
     republished, final_head = commit_confirmed_production(
         confirmation=reconfirmed,
         expected_register_digest=corrected_head,
-        **arguments,
+        **{**arguments, "authority_path": reconfirmed_authority},
     )
     assert final_head != corrected_head
     assert set(members_of(register_path.read_bytes(), page_id)) == set(
@@ -589,4 +860,5 @@ def test_retraction_and_confirmation_append_never_silently_resurrect_stale_membe
     )
     assert manifest_path.read_bytes() == canonical_bytes(republished.manifest)
     assert clusters_path.read_bytes() == canonical_bytes(republished.clusters)
-    assert authority_path.read_bytes() == canonical_bytes(reconfirmed)
+    assert authority_path.read_bytes() == canonical_bytes(confirmed)
+    assert reconfirmed_authority.read_bytes() == canonical_bytes(reconfirmed)

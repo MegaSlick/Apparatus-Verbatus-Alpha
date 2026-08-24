@@ -231,7 +231,9 @@ output. `commit_confirmed_production`'s retry is idempotent across the register/
 document boundary: a caller that re-reads the register's true current digest after a
 crash between the register append and the Door-document writes converges on
 republishing the same documents rather than being refused forever by a commit that can
-never again find "new" membership to add; a caller that never re-reads still gets the
+never again find "new" membership to add. This is exact-state idempotence, not rollback:
+a confirmation that omits any capture in the current membership head is refused before
+Door documents can regress to the subset. A caller that never re-reads still gets the
 ordinary concurrent-write refusal.
 
 `operations.triage.reconcile` consumes only closed
@@ -240,14 +242,23 @@ independent seat agrees. Numeric observations are retained as `[min, max]` inter
 only if their spread is within the smallest declared tolerance; it never computes a
 mean. For every disagreement — including a fact only some seats reported at all — the act
 coverage denominator is the sorted union of every seat's act enumeration, and a
-missing-fact record names which seats reported. Consensus gates what the fixture asserts,
-never what counts as present. Act geometry travels as `boxes`: per-mille integer
+missing-fact record retains both the reporting seats and each reported fact in full.
+Different act enumerations remain a disagreement with every seat's list even while their
+union stays in the coverage denominator. Act identifiers are contiguous positional names
+(`act-001`, `act-002`, …) assigned in top-to-bottom reading order, breaking equal-top ties
+left-to-right, so independent files do not silently give unrelated regions the same
+arbitrary key. Consensus gates what the fixture asserts, never what counts as present. Act
+geometry travels as `boxes`: per-mille integer
 `{x0, y0, x1, y1}` rectangles keyed by an act the same seat enumerated, refused outside
 0..1000 and refused as floats, reconciled per coordinate within the separately declared
 `box_tolerance_permille`. An act nobody localized stays in the denominator without an
 interval. It writes the two canonical, replayable documents
-`triage-structural-expected.v1` and `triage-structural-disagreements.v1`; a host runs
-the actual image-reading seats separately, never this producer.
+`triage-structural-expected.v2` and `triage-structural-disagreements.v2`. Both carry the
+same `verdicts_sha256` over their ordered validated inputs and the same
+`reconciliation_sha256` over the complete derived pair before that shared field is inserted.
+A crash between the two separate pathname replacements therefore leaves a detectably mixed
+pair even when two reconciler revisions process the same inputs. A host runs the actual
+image-reading seats separately, never this producer.
 
 ### What a confirmation is authority for, and what binds it (Unit 6B audit)
 
@@ -281,11 +292,13 @@ documented:
    refused to compare, or never selected, cannot be confirmed.
 2. A confirmation cannot reach past its submission. Members must be submitted frames and
    must appear among the frames the instrument pass actually saw.
-3. The confirmation itself is retained. `commit_confirmed_production` republishes it
-   verbatim to `authority_path` *before* either Door document, so a published cluster can
-   never be found without the authority that made it. Republishing it is a record, not a
-   second act: replayed against the same submission it asserts exactly what it already
-   asserted, and against any other submission the two bindings above refuse it.
+3. The confirmation itself is retained. `commit_confirmed_production` creates its
+   `authority_path` immutably *before* the register append and either Door document, so a
+   published cluster or membership can never be found without the authority that made it.
+   A byte-identical retry may reuse that path; different bytes are refused and require a
+   new path, so a later confirmation cannot overwrite the earlier act. If the register
+   append is then refused, the authority remains as evidence of the attempted confirmation
+   and makes no claim that the register changed.
 
 **Unit 21 replaces the placement, not the schema.** A console act should supply the same
 closed `triage-re-shoot-confirmation.v1` object with `authority.kind = "human"` and a
@@ -310,16 +323,18 @@ rather than an edit, and both homes have one:
   (GOVERNANCE 4), and `members_of` stops returning it (GOVERNANCE 2).
 - **Door documents.** `manifest.json` and `clusters.json` are republished wholesale, not
   appended to, so the correction there is a producer pass without the wrong confirmation.
-  The retained `authority_path` document is what tells a later reader which confirmation
-  the withdrawn membership came from.
+  Each confirmation has its own retained authority document; together with the register's
+  `appending_run`, these tell a later reader which confirmation the withdrawn membership
+  came from.
 
 Every later confirmation append reads the register's *replayed* membership heads, never the
 last historical membership record: a retracted link remains in history but is not current.
 The optimistic register digest refuses a confirmation writer that raced a retraction before
 it can republish Door documents. Replaying the exact withdrawn confirmation act is also
 refused because it would repeat the same immutable membership identity; placing a fresh
-confirmation with a new `appending_run` may reassert the same members and republishes both
-homes together. Thus a retraction remains visible even while the wholesale Door-document
+confirmation with a new `appending_run` and authority path may reassert the same members
+and republishes both homes together. Thus a retraction remains visible even while the
+wholesale Door-document
 correction is pending, and no confirmation retry can silently make the manifest assert a
 membership that replay of the register does not.
 

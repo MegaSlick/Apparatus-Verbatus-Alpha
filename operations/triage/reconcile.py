@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from pathlib import Path
 from typing import Any, Final, Mapping, Sequence
 
-from common.contracts.canonical import canonical_bytes
+from common.contracts.canonical import canonical_bytes, digest_of
 from common.contracts.errors import SchemaRefusal
 from common.corpus_register import _refuse_preference
 
 VERDICT_SCHEMA: Final = "triage-structural-verdict.v1"
-EXPECTED_SCHEMA: Final = "triage-structural-expected.v1"
-DISAGREEMENTS_SCHEMA: Final = "triage-structural-disagreements.v1"
+EXPECTED_SCHEMA: Final = "triage-structural-expected.v2"
+DISAGREEMENTS_SCHEMA: Final = "triage-structural-disagreements.v2"
 
 
 class ReconciliationRefusal(SchemaRefusal):
@@ -68,9 +70,13 @@ def validate_verdict(value: Any) -> dict[str, Any]:
     _text(seat["revision"], "verdict seat revision")
     for field in ("numeric_tolerance", "box_tolerance_permille"):
         tolerance = value[field]
-        if not isinstance(tolerance, int) or isinstance(tolerance, bool) or tolerance < 0:
+        if (
+            not isinstance(tolerance, int)
+            or isinstance(tolerance, bool)
+            or not 0 <= tolerance <= 1000
+        ):
             raise ReconciliationRefusal(
-                f"structural verdict {field} must be a non-negative integer"
+                f"structural verdict {field} must be a per-mille integer from 0 through 1000"
             )
     if not isinstance(value["facts"], dict) or not value["facts"]:
         raise ReconciliationRefusal("structural verdict facts must be a non-empty mapping")
@@ -106,13 +112,13 @@ def validate_verdict(value: Any) -> dict[str, Any]:
             for key, item in fact["numeric"].items()
         ):
             raise ReconciliationRefusal("structural numeric facts must be integer measurements")
-        if (
-            not isinstance(fact["acts"], list)
-            or fact["acts"] != sorted(set(fact["acts"]))
-            or not all(isinstance(item, str) and item for item in fact["acts"])
-        ):
+        acts = fact["acts"]
+        if not isinstance(acts, list) or acts != [
+            f"act-{index:03d}" for index in range(1, len(acts) + 1)
+        ]:
             raise ReconciliationRefusal(
-                "structural acts must be sorted unique non-blank identifiers"
+                "structural acts must be contiguous positional identifiers act-001, act-002, "
+                "and so on in the seat prompt's declared reading order"
             )
         if not isinstance(fact["boxes"], dict):
             raise ReconciliationRefusal("structural boxes must be a mapping from act to rectangle")
@@ -131,7 +137,12 @@ def validate_verdict(value: Any) -> dict[str, Any]:
 
 def reconcile(verdicts: Sequence[Mapping[str, Any]]) -> tuple[dict[str, Any], dict[str, Any]]:
     """Unanimously assert categoricals, interval numerics and boxes, union act coverage."""
-    checked = [validate_verdict(dict(verdict)) for verdict in verdicts]
+    try:
+        checked = [validate_verdict(dict(verdict)) for verdict in verdicts]
+    except (TypeError, ValueError) as error:
+        raise ReconciliationRefusal(
+            "structural verdict input is not a verdict mapping; nothing was reconciled"
+        ) from error
     if len(checked) < 2:
         raise ReconciliationRefusal("reconciler requires two or more independent verdicts")
     # Independence is keyed on the *resolved* seat — identity and revision together.
@@ -146,6 +157,7 @@ def reconcile(verdicts: Sequence[Mapping[str, Any]]) -> tuple[dict[str, Any], di
     identities = [(item["seat"]["identity"], item["seat"]["revision"]) for item in checked]
     if len(set(identities)) != len(identities):
         raise ReconciliationRefusal("reconciler verdicts repeat a seat identity and revision")
+    verdicts_sha256 = digest_of(checked)
     all_fact_ids = sorted(set().union(*(set(item["facts"]) for item in checked)))
     expected_facts: dict[str, Any] = {}
     disagreements: dict[str, Any] = {}
@@ -171,6 +183,10 @@ def reconcile(verdicts: Sequence[Mapping[str, Any]]) -> tuple[dict[str, Any], di
                 if reported
                 else [],
                 "reported_by": [seat for seat, _fact in reported],
+                # A missing fact is itself a disagreement. Retaining only the seats'
+                # names and act union would silently discard every categorical,
+                # numeric, and geometric observation the reporting seats supplied.
+                "per_seat": [{"seat": seat, "value": fact} for seat, fact in reported],
                 "seats": [item["seat"] for item in checked],
             }
             continue
@@ -179,6 +195,12 @@ def reconcile(verdicts: Sequence[Mapping[str, Any]]) -> tuple[dict[str, Any], di
         categorical: dict[str, str] = {}
         numeric: dict[str, list[int]] = {}
         failed: list[str] = []
+        act_lists = [item["acts"] for item in facts]
+        if any(acts != act_lists[0] for acts in act_lists[1:]):
+            # The union remains the coverage denominator: disagreement may never
+            # erase an act one seat saw. It is still disagreement, and omitting it
+            # from this record would make the union look unanimous.
+            failed.append("acts")
         categorical_keys = set().union(*(set(item["categorical"]) for item in facts))
         for key in sorted(categorical_keys):
             values = [item["categorical"].get(key) for item in facts]
@@ -228,6 +250,8 @@ def reconcile(verdicts: Sequence[Mapping[str, Any]]) -> tuple[dict[str, Any], di
                     return fact["categorical"].get(name)
                 if kind == "numeric":
                     return fact["numeric"].get(name)
+                if kind == "acts":
+                    return fact["acts"]
                 return fact["boxes"].get(name)
 
             disagreements[fact_id] = {
@@ -251,14 +275,19 @@ def reconcile(verdicts: Sequence[Mapping[str, Any]]) -> tuple[dict[str, Any], di
         }
     expected = {
         "schema": EXPECTED_SCHEMA,
+        "verdicts_sha256": verdicts_sha256,
         "seats": [item["seat"] for item in checked],
         "facts": expected_facts,
     }
     disagreement = {
         "schema": DISAGREEMENTS_SCHEMA,
+        "verdicts_sha256": verdicts_sha256,
         "seats": [item["seat"] for item in checked],
         "facts": disagreements,
     }
+    reconciliation_sha256 = digest_of({"expected": expected, "disagreements": disagreement})
+    expected["reconciliation_sha256"] = reconciliation_sha256
+    disagreement["reconciliation_sha256"] = reconciliation_sha256
     _refuse_preference(expected)
     _refuse_preference(disagreement)
     return expected, disagreement
@@ -267,11 +296,86 @@ def reconcile(verdicts: Sequence[Mapping[str, Any]]) -> tuple[dict[str, Any], di
 def reconcile_files(
     paths: Sequence[str | Path], expected_path: str | Path, disagreements_path: str | Path
 ) -> None:
-    """Replay checked-in verdict bytes into canonical expected/disagreement files."""
+    """Replay verdicts into distinct, atomically published derived documents."""
     try:
-        verdicts = [json.loads(Path(path).read_text(encoding="utf-8")) for path in paths]
+        source_paths = [Path(path) for path in paths]
+        expected = Path(expected_path)
+        disagreements = Path(disagreements_path)
+    except TypeError as error:
+        raise ReconciliationRefusal("structural reconciliation paths are malformed") from error
+    _refuse_path_aliases(source_paths, expected, disagreements)
+    try:
+        verdicts = [json.loads(path.read_text(encoding="utf-8")) for path in source_paths]
     except (OSError, ValueError) as error:
         raise ReconciliationRefusal("structural verdict file could not be read") from error
-    expected, disagreements = reconcile(verdicts)
-    Path(expected_path).write_bytes(canonical_bytes(expected))
-    Path(disagreements_path).write_bytes(canonical_bytes(disagreements))
+    expected_value, disagreement_value = reconcile(verdicts)
+    # Publish the disagreement record first. A failure before the expected record
+    # lands cannot expose new positive assertions without their dissent document.
+    _atomic_write(disagreements, canonical_bytes(disagreement_value))
+    _atomic_write(expected, canonical_bytes(expected_value))
+
+
+def _refuse_path_aliases(sources: Sequence[Path], expected: Path, disagreements: Path) -> None:
+    """Keep derived outputs distinct from each other and immutable source verdicts."""
+    labelled = [(f"source verdict {index}", path) for index, path in enumerate(sources)] + [
+        ("expected output", expected),
+        ("disagreements output", disagreements),
+    ]
+    resolved: dict[Path, str] = {}
+    for role, path in labelled:
+        try:
+            target = path.resolve(strict=False)
+        except (OSError, RuntimeError) as error:
+            raise ReconciliationRefusal(
+                "structural reconciliation path could not be resolved; nothing was written. "
+                "Repair the named path and retry."
+            ) from error
+        prior = resolved.get(target)
+        if prior is not None:
+            raise ReconciliationRefusal(
+                f"structural reconciliation paths for {prior} and {role} resolve to one file; "
+                "nothing was written. Give each input and output its own path."
+            )
+        resolved[target] = role
+    existing = [(role, path) for role, path in labelled if path.exists()]
+    for index, (role, path) in enumerate(existing):
+        for other_role, other_path in existing[index + 1 :]:
+            try:
+                same = os.path.samefile(path, other_path)
+            except OSError as error:
+                raise ReconciliationRefusal(
+                    "structural reconciliation path identity could not be verified; nothing was "
+                    "written. Restore readable paths and retry."
+                ) from error
+            if same:
+                raise ReconciliationRefusal(
+                    f"structural reconciliation paths for {role} and {other_role} name one file; "
+                    "nothing was written. Give each input and output its own path."
+                )
+
+
+def _atomic_write(path: Path, data: bytes) -> None:
+    """Replace one derived document with complete durable bytes, never a torn file."""
+    temporary: Path | None = None
+    replaced = False
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.tmp-", dir=path.parent)
+        temporary = Path(temporary_name)
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        replaced = True
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    except OSError as error:
+        state = "was replaced but is not proven durable" if replaced else "was not replaced"
+        raise ReconciliationRefusal(f"structural reconciliation output {path} {state}") from error
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)

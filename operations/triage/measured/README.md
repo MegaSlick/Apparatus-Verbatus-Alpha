@@ -43,8 +43,9 @@ costs a second disclosure-bearing round of external calls.
 > expected relationship between frames. For each proxy report: how many pages it shows,
 > and where their boundary falls (`boundary_x_per_mille`); whether a loose document is
 > present, and if so its side, its signed rotation in millidegrees, and its face as exactly one of `written-side-up`, `written-side-down`, or `indeterminate`;
-> every act you can see, each with an opaque positional identifier such as `act-001` (never
-> an act name or ink text), and for each act you can localize, its bounding
+> every act you can see, numbered contiguously as `act-001`, `act-002`, and so on in
+> top-to-bottom order (break equal-top ties left-to-right; never use an act name or ink
+> text), and for each act you can localize, its bounding
 > box as `{x0, y0, x1, y1}` per-mille; which other supplied filenames, if any, show the
 > same physical opening; and anything on the proxy you cannot account for. Enumerate an
 > act even when you cannot localize it — the enumeration is the coverage denominator and
@@ -56,8 +57,9 @@ Return exactly this JSON shape, with one `facts` entry for every supplied review
 `review-proxy-sha256:<lowercase digest>` as the fact key. Keep all categorical keys present;
 use `none` when no loose document or unaccountable structural material is seen. Add one
 `same_opening_<full source filename>` key with value `yes` or `no` for *each other* supplied
-frame, so absence cannot be mistaken for disagreement. Sort `acts` and use only those same
-opaque act identifiers as `boxes` keys. When a proxy shows only one page, omit
+frame, so absence cannot be mistaken for disagreement. Keep `acts` in that declared
+contiguous order and use only those same opaque act identifiers as `boxes` keys. When a
+proxy shows only one page, omit
 `boundary_x_per_mille` from `numeric` rather than inventing a boundary.
 
 ```json
@@ -114,8 +116,14 @@ and the reconciled JSON are tracked).
 Boundary positions and every act box fell outside the declared tolerances (25 / 30
 per-mille); `loose_document_face` and rotation disagreed largely by VOCABULARY —
 the enum was not closed at pass time (fixed for future passes: written-side-up /
-written-side-down / indeterminate / none). Nothing here was resolved by preference;
-every seat's value is recorded per failed fact.
+written-side-down / indeterminate / none). Nothing here was resolved by preference.
+This first pass also predates the reconciler correction that records differing act lists as
+their own disagreement and the now-closed positional numbering rule. The private seat files
+remain the evidence needed to replay that correction; the tracked union denominators must
+not be read as a claim that the seats enumerated the same acts. Its tracked outputs remain
+historical v1 documents; current v2 outputs also bind both halves to the same validated
+verdict set with `verdicts_sha256` and to the same complete derived pair with
+`reconciliation_sha256`.
 
 ## Consequence for the plan
 
