@@ -2361,7 +2361,7 @@ def open_context(
             "may not run against an unsealed configuration"
         )
     verify_predecessor_seal(tree, stage)
-    _refuse_halted_run(tree, stage, args.hard_failure_config)
+    refuse_halted_run(tree, stage, args.hard_failure_config)
     return StageContext(
         tree=tree,
         run=run,
@@ -2381,7 +2381,7 @@ def open_context(
     )
 
 
-def _refuse_halted_run(tree: RunTree, stage: str, hard_failure_config_path: str | Path) -> None:
+def refuse_halted_run(tree: RunTree, stage: str, hard_failure_config_path: str | Path) -> None:
     """Apply the run-level cap before a directly invoked stage can write.
 
     The orchestrator checkpoints after completed members.  A stage program is
@@ -2400,15 +2400,12 @@ def _refuse_halted_run(tree: RunTree, stage: str, hard_failure_config_path: str 
     require_sealed_config(
         run_sealed_config_digests(tree.read_run()), "hard-failure", policy["config_sha256"]
     )
-    try:
-        tally = tally_hard_failures(tree, policy)
-    except ContractError:
-        # The tally intentionally walks every producer.  A deliberately damaged
-        # upstream record must still reach the stage-specific boundary that owns
-        # its named refusal; treating that unrelated structural refusal as a cap
-        # result would both mask it and make direct entry depend on walk order.
-        # No stage has written yet, and its normal preflight remains fail-closed.
-        return
+    # An unreadable tally record is a failed measurement, not permission to
+    # enter. Input-byte consistency belongs to each stage's consumer boundary,
+    # though: recursively checking every tally artifact here can intercept
+    # unrelated lineage damage before the owning boundary names it. The tally
+    # still validates every record whose outcome and subject it measures.
+    tally = tally_hard_failures(tree, policy, verify_inputs=False)
     if tally["breached"]:
         raise RunHalted(
             f"{stage} refuses to start: {tally['count']} hard failure(s) exceed the run-level "

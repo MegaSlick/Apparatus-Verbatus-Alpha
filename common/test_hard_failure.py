@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from common.contracts.canonical import digest_bytes
 from common.contracts.envelope import build_envelope
 from common.contracts.errors import ContractError
 from common.contracts.identities import artifact_id
@@ -43,7 +44,18 @@ def make_run(tmp_path, run_id="r1"):
     )
 
 
-def publish(tree, *, stage, kind, subject, outcome, adapter_revision, attempt=None, **payload):
+def publish(
+    tree,
+    *,
+    stage,
+    kind,
+    subject,
+    outcome,
+    adapter_revision,
+    attempt=None,
+    inputs=None,
+    **payload,
+):
     envelope = build_envelope(
         run_id=tree.run_id,
         artifact_id=artifact_id(stage, kind, subject, attempt),
@@ -53,7 +65,7 @@ def publish(tree, *, stage, kind, subject, outcome, adapter_revision, attempt=No
         outcome=outcome,
         config_digest=CONFIG_DIGEST,
         adapter_revision=adapter_revision,
-        inputs=[],
+        inputs=inputs or [],
         payload=payload or {"x": 1},
         attempt=attempt,
     )
@@ -211,6 +223,38 @@ def test_one_hard_failure_is_a_fluke_and_does_not_breach(tmp_path):
     tally = tally_hard_failures(tree, policy)
     assert tally["count"] == 1
     assert tally["breached"] is False
+
+
+def test_a_record_only_tally_leaves_stale_lineage_to_its_consumer_boundary(tmp_path):
+    """Direct entry must measure readable failure records without stealing a
+    stage's more specific diagnosis of changed upstream bytes."""
+    tree = make_run(tmp_path)
+    source = tree.resolve("source/input.bin")
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"sealed input")
+    publish(
+        tree,
+        stage=PERLECTOR,
+        kind="perlectio",
+        subject="act_0000000000000001",
+        outcome="failed",
+        adapter_revision="fake-perlector-v0",
+        inputs=[
+            {
+                "relative_path": str(source.relative_to(tree.root)),
+                "sha256": digest_bytes(source.read_bytes()),
+            }
+        ],
+    )
+    source.write_bytes(b"changed input")
+    policy = load_hard_failure_policy(DEFAULT_HARD_FAILURE_CONFIG_PATH)
+
+    with pytest.raises(ContractError, match="bytes changed under a sealed reference"):
+        tally_hard_failures(tree, policy)
+
+    tally = tally_hard_failures(tree, policy, verify_inputs=False)
+    assert tally["count"] == 1
+    assert tally["subjects"] == ["perlector:act_0000000000000001"]
 
 
 def test_instrument_arm_failures_are_visible_but_do_not_spend_the_ruled_cap(tmp_path):

@@ -56,6 +56,7 @@ from common.stage import (  # noqa: E402
     StageContext,
     adapter_recipe_for,
     open_context,
+    refuse_halted_run,
     run_stage,
     stage_parser,
 )
@@ -314,6 +315,7 @@ def _open(args, registry_factory) -> StageContext:
     mode = parse_ingress_record(run.get("ingress"))
     if mode != REAL_INGRESS:
         return open_context(args, EXEMPLAR, registry_factory=registry_factory)
+    refuse_halted_run(tree, EXEMPLAR, args.hard_failure_config)
     return StageContext(
         tree=tree,
         run=run,

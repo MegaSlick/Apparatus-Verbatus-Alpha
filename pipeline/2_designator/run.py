@@ -90,6 +90,7 @@ from common.stage import (  # noqa: E402
     fallback_page_act_key,
     fixture_serving_details,
     open_context,
+    refuse_halted_run,
     run_stage,
     stage_parser,
     validate_serving_provenance,
@@ -2134,6 +2135,7 @@ def _open(args, registry_factory) -> tuple[object, bool]:
     mode = parse_ingress_record(run.get("ingress"))
     if mode != REAL_INGRESS:
         return open_context(args, DESIGNATOR, registry_factory=registry_factory), False
+    refuse_halted_run(tree, DESIGNATOR, args.hard_failure_config)
     return (
         StageContext(
             tree=tree,

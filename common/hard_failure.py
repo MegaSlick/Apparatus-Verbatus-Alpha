@@ -161,7 +161,9 @@ def load_hard_failure_policy(path: str | Path = DEFAULT_HARD_FAILURE_CONFIG_PATH
     }
 
 
-def tally_hard_failures(tree, policy: dict[str, Any]) -> dict[str, Any]:
+def tally_hard_failures(
+    tree, policy: dict[str, Any], *, verify_inputs: bool = True
+) -> dict[str, Any]:
     """Recompute the run's hard-failure tally from the sealed partition on disk.
 
     Counted as `(stage, subject_id)` pairs, not as raw artifact counts: an act
@@ -169,11 +171,14 @@ def tally_hard_failures(tree, policy: dict[str, Any]) -> dict[str, Any]:
     incident (the event happened; recovering the coverage does not erase that
     it happened), while a stage retrying the identical failing outcome twice
     for the same subject is one incident, not two. The manifest a stage's own
-    `build_manifest` derives is already fully verified evidence -- every entry
-    comes from an artifact that passed its envelope, run-binding, path, and
-    input checks on the way into that manifest -- so reading its `outcome` and
-    `subject_id` fields directly does not trust anything this pipeline has not
-    already checked once.
+    `build_manifest` derives is verified evidence -- every entry comes from an
+    artifact that passed its envelope, run-binding, and path checks on the way
+    into that manifest -- so reading its `outcome` and `subject_id` fields
+    directly does not trust unchecked tally data. Callers that own a whole-run
+    boundary also verify each artifact's input bytes. A directly invoked stage
+    disables that recursive check: its own consumer boundary must diagnose
+    stale lineage, while the cap remains responsible for whether its tally
+    records can be read.
     """
     # One manifest per stage, however many kinds the policy names on it. Building
     # a manifest revalidates every artifact of that stage and re-verifies every
@@ -187,7 +192,7 @@ def tally_hard_failures(tree, policy: dict[str, Any]) -> dict[str, Any]:
 
     def artifacts(stage: str) -> list[dict[str, Any]]:
         if stage not in manifests:
-            manifests[stage] = tree.build_manifest(stage)["artifacts"]
+            manifests[stage] = tree.build_manifest(stage, verify_inputs=verify_inputs)["artifacts"]
         return manifests[stage]
 
     def reason_of(stage: str, entry: dict[str, Any]) -> str | None:

@@ -29,7 +29,7 @@ import pytest
 from common.contracts.canonical import canonical_bytes, self_hash
 from common.contracts.envelope import build_envelope
 from common.contracts.identities import artifact_id
-from common.contracts.stages import ARCHETYPUS, ARMARIUM, PERLECTOR, RECENSOR
+from common.contracts.stages import ARCHETYPUS, ARMARIUM, DOOR, PERLECTOR, RECENSOR
 from common.runtree.store import RunTree
 from common.stage import _stage_seal_payload, latest_attempt
 
@@ -258,6 +258,91 @@ def test_a_direct_stage_refuses_a_halted_run_before_it_writes(tmp_path):
     assert result.returncode == 4
     assert "RunHalted" in result.stderr
     assert "recensor refuses to start" in result.stderr
+    assert not has_any_artifact(tree, RECENSOR)
+
+
+def test_the_direct_door_also_refuses_a_halted_run_without_replaying_bytes(tmp_path):
+    """The first sequence member does not use ``open_context`` but shares its gate."""
+    root = tmp_path / "runs"
+    for program in (
+        "pipeline/1_exemplar/door.py",
+        "pipeline/1_exemplar/run.py",
+        "pipeline/2_designator/run.py",
+        "pipeline/3_attestatores/run.py",
+        "pipeline/4_perlector/run.py",
+    ):
+        invoke_stage(root, "r", "truncated-reading", program)
+    tree = RunTree(root, "r")
+    forge_perlector_failure(tree, "fake-hard-failure-subject-1")
+    forge_perlector_failure(tree, "fake-hard-failure-subject-2")
+    forge_perlector_failure(tree, "fake-hard-failure-subject-3")
+    before = {
+        str(path.relative_to(root)): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "pipeline/1_exemplar/door.py"),
+            "--run-root",
+            str(root),
+            "--run-id",
+            "r",
+            "--scenario",
+            "truncated-reading",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 4
+    assert "door refuses to start" in result.stderr
+    after = {
+        str(path.relative_to(root)): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+    assert after == before
+
+
+def test_an_unmeasurable_direct_entry_cap_refuses_instead_of_writing(tmp_path):
+    """A damaged tally is a failed measurement, never an implicit zero count."""
+    root = tmp_path / "runs"
+    for program in (
+        "pipeline/1_exemplar/door.py",
+        "pipeline/1_exemplar/run.py",
+        "pipeline/2_designator/run.py",
+        "pipeline/3_attestatores/run.py",
+        "pipeline/4_perlector/run.py",
+    ):
+        invoke_stage(root, "r", "happy", program)
+    tree = RunTree(root, "r")
+    admission = next(
+        entry for entry in tree.build_manifest(DOOR)["artifacts"] if entry["kind"] == "admission"
+    )
+    tree.resolve(admission["relative_path"]).write_bytes(b"not an artifact")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "pipeline/5_recensor/run.py"),
+            "--run-root",
+            str(root),
+            "--run-id",
+            "r",
+            "--scenario",
+            "happy",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 2
+    assert "could not be read as an artifact" in result.stderr
     assert not has_any_artifact(tree, RECENSOR)
 
 
