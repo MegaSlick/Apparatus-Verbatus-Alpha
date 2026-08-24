@@ -2167,7 +2167,7 @@ def test_mac_wrapper_refuses_an_empty_project_root(
     assert "Traceback" not in completed.stderr
 
 
-def _checkout_entries() -> set[str]:
+def _checkout_root_entry_names() -> set[str]:
     """Every direct child of the checkout, by name.
 
     Deliberately one level deep and names only. Reading the whole tree would
@@ -2180,8 +2180,10 @@ def _checkout_entries() -> set[str]:
     return {entry.name for entry in ROOT.iterdir()}
 
 
-def test_the_operator_writes_nothing_into_the_checkout(tmp_path: Path) -> None:
-    """The whole flow, and the rehearsal, leave the project folder alone.
+def test_operator_state_and_rehearsal_scratch_stay_out_of_the_checkout_root(
+    tmp_path: Path,
+) -> None:
+    """The whole flow and rehearsal create no state or scratch entry at the root.
 
     The state root and the dry-run scratch directory were both moved out of the
     checkout so records survive a `git clean` and so a rehearsal cannot leave
@@ -2192,7 +2194,7 @@ def test_the_operator_writes_nothing_into_the_checkout(tmp_path: Path) -> None:
     lands here rather than in a temporary folder.
     """
 
-    before = _checkout_entries()
+    before = _checkout_root_entry_names()
     surface = _surface(tmp_path)
     spend = _spend_policy(tmp_path)
     source, manifest = _manifest(tmp_path)
@@ -2208,7 +2210,7 @@ def test_the_operator_writes_nothing_into_the_checkout(tmp_path: Path) -> None:
     make_transcript(tmp_path / "rehearsal.txt")
 
     assert surface.workspace == ROOT
-    assert _checkout_entries() == before
+    assert _checkout_root_entry_names() == before
     assert not (ROOT / ".verbatus").exists()
 
 
@@ -2239,6 +2241,29 @@ def test_the_rehearsal_scratch_folder_is_never_created_inside_the_checkout(
     assert created
     for scratch in created:
         assert ROOT not in scratch.resolve().parents
+
+
+def test_a_tmpdir_inside_the_checkout_cannot_put_rehearsal_scratch_back_there(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """TemporaryDirectory honours TMPDIR, so the placement must be checked."""
+
+    configured = ROOT / "operator-temporary-files"
+    monkeypatch.setattr(dry_run.tempfile, "gettempdir", lambda: str(configured))
+    real = dry_run.tempfile.TemporaryDirectory
+    created: list[Path] = []
+
+    def recording(*args, **kwargs):
+        handle = real(*args, **kwargs)
+        created.append(Path(handle.name))
+        return handle
+
+    monkeypatch.setattr(dry_run.tempfile, "TemporaryDirectory", recording)
+
+    dry_run.make_transcript(tmp_path / "rehearsal.txt")
+
+    assert created
+    assert all(ROOT not in scratch.resolve().parents for scratch in created)
 
 
 def test_scripted_dry_run_is_a_readable_six_word_acceptance_artifact(tmp_path: Path) -> None:
@@ -2473,6 +2498,16 @@ def test_upload_receipt_retains_manifest_identity_but_no_local_paths(tmp_path: P
     serialized = json.dumps(receipt)
     assert str(source.resolve()) not in serialized
     assert str(manifest.resolve()) not in serialized
+
+
+def test_status_contract_says_it_reads_receipts_without_reopening_manifests() -> None:
+    help_text = cli.build_parser().format_help()
+    overview = (ROOT / "operations" / "README.md").read_text()
+
+    assert "read saved receipts only; it never contacts a provider" in help_text
+    assert "reads saved receipts only" in overview
+    assert "never reopens local submission files" in overview
+    assert "reads saved receipts and sealed submission records" not in overview
 
 
 def test_default_operator_state_root_is_outside_the_workspace(tmp_path: Path) -> None:

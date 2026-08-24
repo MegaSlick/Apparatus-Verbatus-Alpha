@@ -179,9 +179,7 @@ def build_parser() -> PlainParser:
         "--pod-id", help="the recorded fixture pod id, if you want to repeat it explicitly"
     )
 
-    verbs.add_parser(
-        "status", help="read saved receipts and manifests only; it never contacts a provider"
-    )
+    verbs.add_parser("status", help="read saved receipts only; it never contacts a provider")
     return parser
 
 

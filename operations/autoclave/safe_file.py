@@ -73,14 +73,53 @@ def open_regular(path: Path, flags: int, mode: int = 0o600):
 def source_is_in_drawer(source: Path, destination: Path) -> bool:
     """Return whether SOURCE is beneath the agent-writable destination drawer.
 
-    This is lexical on purpose. Resolving SOURCE would follow the final symlink
-    before the helper has a chance to refuse it. ``abspath`` still collapses
-    ``..`` components, so an alias cannot escape this classification that way.
+    This classification is lexical on purpose. Resolving SOURCE would follow
+    symlinks before the helper has a chance to refuse them. ``abspath`` still
+    collapses ``..`` components; ``open_regular_beneath`` then refuses symlinks
+    in every remaining path component while opening beneath the drawer.
     """
 
     source_absolute = Path(os.path.abspath(source))
     drawer_absolute = Path(os.path.abspath(destination.parent))
     return source_absolute == drawer_absolute or drawer_absolute in source_absolute.parents
+
+
+def open_regular_beneath(path: Path, root: Path, flags: int):
+    """Open PATH beneath ROOT without following any component through a symlink."""
+
+    root_absolute = Path(os.path.abspath(root))
+    path_absolute = Path(os.path.abspath(path))
+    try:
+        relative = path_absolute.relative_to(root_absolute)
+    except ValueError as error:
+        raise OSError(f"{path} is outside the required drawer {root}") from error
+    if not relative.parts:
+        raise OSError(f"{path} is the drawer itself, not a regular file")
+
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        directory = os.open(root_absolute, directory_flags)
+        try:
+            for component in relative.parts[:-1]:
+                child = os.open(component, directory_flags, dir_fd=directory)
+                os.close(directory)
+                directory = child
+            descriptor = os.open(
+                relative.parts[-1],
+                flags | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
+                dir_fd=directory,
+            )
+        finally:
+            os.close(directory)
+    except OSError as error:
+        raise OSError(f"cannot safely open {path} beneath {root}: {error}") from error
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise OSError(f"{path} is not a regular file")
+        return os.fdopen(descriptor, "rb" if flags == os.O_RDONLY else "wb")
+    except BaseException:
+        os.close(descriptor)
+        raise
 
 
 def main() -> int:
@@ -112,7 +151,7 @@ def main() -> int:
         if command == "write" and len(sys.argv) == 4:
             destination = Path(sys.argv[3])
             source_open = (
-                open_regular(source, os.O_RDONLY)
+                open_regular_beneath(source, destination.parent, os.O_RDONLY)
                 if source_is_in_drawer(source, destination)
                 else open(source, "rb")
             )

@@ -2408,6 +2408,35 @@ class TestTheUntrustedDrawer:
         assert not destination.exists()
         assert "SENTINEL-CONTENTS" not in result.stdout + result.stderr
 
+    def test_an_agent_writable_brief_source_cannot_traverse_a_symlinked_directory(self, tmp_path):
+        """`O_NOFOLLOW` on only the final component does not contain the drawer.
+
+        Every component beneath the drawer is agent-writable. Following a
+        symlinked parent there would still copy a host file even though the
+        final source name is an ordinary regular file.
+        """
+
+        drawer = tmp_path / "drawer"
+        drawer.mkdir()
+        host_only = tmp_path / "host-only"
+        host_only.mkdir()
+        (host_only / "victim.md").write_text("SENTINEL-CONTENTS\n")
+        (drawer / "alias").symlink_to(host_only, target_is_directory=True)
+        source = drawer / "alias" / "victim.md"
+        destination = drawer / "brief.md"
+
+        result = subprocess.run(
+            ["python3", str(SAFE_FILE), "write", str(source), str(destination)],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+
+        assert result.returncode != 0
+        assert not destination.exists()
+        assert str(source) in result.stderr
+        assert "SENTINEL-CONTENTS" not in result.stdout + result.stderr
+
     @pytest.mark.parametrize("shape", ["directory", "fifo"])
     def test_the_helper_refuses_anything_that_is_not_a_regular_file(self, tmp_path, shape):
         """Directly, because `S_ISREG` and `O_NONBLOCK` are each removable on their

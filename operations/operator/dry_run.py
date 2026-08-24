@@ -28,6 +28,24 @@ ROOT = Path(__file__).resolve().parents[2]
 START = datetime(2026, 8, 9, 12, 0, tzinfo=UTC)
 
 
+def _scratch_root() -> Path:
+    """Return a temporary root that is provably outside the checkout."""
+
+    checkout = ROOT.resolve()
+    configured = Path(tempfile.gettempdir()).resolve()
+    if configured != checkout and checkout not in configured.parents:
+        return configured
+
+    # tempfile honours TMPDIR/TEMP/TMP, any of which may point into the
+    # checkout. Use the POSIX system temporary directory only for that case;
+    # if the checkout itself contains it, refuse rather than make the promise
+    # false. This operator already supports POSIX only (cli.py uses pwd).
+    fallback = Path("/tmp").resolve()
+    if fallback == checkout or checkout in fallback.parents:
+        raise RuntimeError("no temporary directory outside the checkout is available")
+    return fallback
+
+
 def make_transcript(output: str | Path) -> Path:
     """Run all six words, one intentional refusal, and read-only status."""
 
@@ -39,7 +57,9 @@ def make_transcript(output: str | Path) -> Path:
         "",
     ]
     # This rehearsal has no reason to leave a scratch directory in the checkout.
-    with tempfile.TemporaryDirectory(prefix="verbatus-dry-run-") as temporary_name:
+    with tempfile.TemporaryDirectory(
+        prefix="verbatus-dry-run-", dir=_scratch_root()
+    ) as temporary_name:
         temporary = Path(temporary_name)
         workspace = temporary / "workspace"
         config = workspace / "config"

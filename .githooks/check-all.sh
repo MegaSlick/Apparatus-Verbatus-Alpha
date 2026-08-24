@@ -14,6 +14,17 @@ elif [ "$#" -ne 0 ]; then
   exit 2
 fi
 
+# The gate defines its Python and uv environment. Inherited overrides can
+# remove assertions, inject import roots or pytest plugins, redirect uv to a
+# different environment, or turn its exact sync inexact while every command
+# below still names the checkout-local interpreter.
+unset PYTHONHOME PYTHONOPTIMIZE PYTHONPATH PYTEST_ADDOPTS PYTEST_PLUGINS
+unset UV_CONFIG_FILE UV_INEXACT UV_PYTHON
+PYTHONNOUSERSITE=1
+PYTHONSAFEPATH=1
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
+export PYTHONNOUSERSITE PYTHONSAFEPATH PYTEST_DISABLE_PLUGIN_AUTOLOAD
+
 chamber_environment_followup() {
   [ -f /opt/autoclave/CLAUDE.md ] || return 0
   echo "check-all: this chamber image cannot construct the required checkout-local .venv." >&2
@@ -25,17 +36,13 @@ chamber_environment_followup() {
 # fall back to PATH's python: its installed packages are not evidence about the
 # frozen environment the project actually declares.
 #
-# What follows proves identity (the interpreter that runs pytest below is this
-# exact binary, not a PATH shadow), not currency: it does not run `uv lock
-# --check` or `uv sync --frozen` itself, so a `.venv` that predates a lockfile
-# change still passes here. CI is the source of truth for that (D:C1) — it
-# runs both commands fresh in the same job, right before this script. A
-# network-dependent freshness check does not belong ahead of pytest in the
-# *local* gate: that ordering mistake is exactly what moved pip_audit to the
-# end of this file below, and an offline developer would hit it again here.
-# `uv sync --frozen ...` (named in the message below) is how a developer
-# brings a stale `.venv` back in sync; nothing here does it for them.
+# First prove identity (the interpreter that runs pytest below is this exact
+# environment, not a PATH shadow), then make uv prove currency from its local
+# cache. A gate that checks only `sys.prefix` accepts an old but well-formed
+# `.venv` after uv.lock changes and silently runs the wrong versions.
 frozen_python="$root/.venv/bin/python"
+UV_PROJECT_ENVIRONMENT="$root/.venv"
+export UV_PROJECT_ENVIRONMENT
 [ -x "$frozen_python" ] || {
   echo "check-all: frozen interpreter is missing at $frozen_python; run 'uv sync --frozen --group test --group audit'" >&2
   chamber_environment_followup
@@ -56,6 +63,39 @@ frozen_python="$root/.venv/bin/python"
 [ "$("$frozen_python" -c 'import os, sys; print(os.path.realpath(sys.prefix))')" \
   = "$(CDPATH='' cd -- "$root/.venv" && pwd -P)" ] || {
   echo "check-all: $frozen_python does not import from the frozen environment at $root/.venv; run 'uv sync --frozen --group test --group audit'" >&2
+  chamber_environment_followup
+  exit 1
+}
+
+# `uv sync` is exact by default: it reconciles the selected groups to uv.lock
+# and removes undeclared packages. `--offline` keeps this verification from
+# turning the checks before the final advisory audit into network-dependent
+# steps. A stale environment is repaired when every needed artifact is already
+# cached; otherwise the refusal names the online recovery command.
+command -v uv >/dev/null 2>&1 || {
+  echo "check-all: the frozen environment cannot be verified because uv is missing from PATH" >&2
+  echo "check-all: recovery: install pinned uv==0.12.1, then run 'uv sync --frozen --group test --group audit'" >&2
+  chamber_environment_followup
+  exit 1
+}
+uv_version=$(uv --version 2>/dev/null) || {
+  echo "check-all: uv is on PATH but could not report its version, so the frozen environment is unverified" >&2
+  echo "check-all: recovery: install pinned uv==0.12.1, then run 'uv sync --frozen --group test --group audit'" >&2
+  chamber_environment_followup
+  exit 1
+}
+case "$uv_version" in
+  "uv 0.12.1"|"uv 0.12.1 "*) : ;;
+  *)
+    echo "check-all: the frozen environment cannot be verified with $uv_version; this gate requires uv 0.12.1" >&2
+    echo "check-all: recovery: install pinned uv==0.12.1, then run 'uv sync --frozen --group test --group audit'" >&2
+    chamber_environment_followup
+    exit 1
+    ;;
+esac
+uv sync --frozen --offline --group test --group audit --no-config || {
+  echo "check-all: uv could not reconcile $root/.venv to uv.lock from the local cache" >&2
+  echo "check-all: recovery: run 'uv sync --frozen --group test --group audit' with network access, then retry" >&2
   chamber_environment_followup
   exit 1
 }

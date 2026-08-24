@@ -180,6 +180,7 @@ def test_the_audit_runs_in_the_gate_and_fails_closed():
     assert '"$frozen_python" -m pip_audit --strict --no-deps --disable-pip' in gate
     assert '--requirement "$audit_inventory"' in gate
     assert "import os, sys; print(os.path.realpath(sys.prefix))" in gate
+    assert "uv sync --frozen --offline --group test --group audit --no-config" in gate
     # Not swallowed: `set -eu` is in force, and nothing rescues a non-zero exit.
     assert "set -eu" in gate
     for rescue in ("|| true", "|| :", "continue-on-error", "set +e"):
@@ -232,10 +233,11 @@ def gate_repo(tmp_path):
     return repo
 
 
-def run_gate(repo):
+def run_gate(repo, *, env=None):
     return subprocess.run(
         ["sh", ".githooks/check-all.sh"],
         cwd=repo,
+        env=env,
         capture_output=True,
         text=True,
         timeout=60,
@@ -294,6 +296,83 @@ def test_the_gate_refuses_a_venv_python_that_is_really_paths_python(tmp_path):
 
     assert result.returncode == 1
     assert "does not import from the frozen environment" in result.stderr
+
+
+def test_the_gate_refuses_when_uv_cannot_verify_the_venv_against_the_lock(tmp_path):
+    """A correctly located but stale environment cannot reach the check tools."""
+
+    repo = gate_repo(tmp_path)
+    subprocess.run(
+        [sys.executable, "-m", "venv", "--without-pip", str(repo / ".venv")],
+        check=True,
+        timeout=60,
+    )
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    calls = tmp_path / "uv-calls"
+    uv = fake_bin / "uv"
+    uv.write_text(
+        "#!/bin/sh\n"
+        "if [ \"${1:-}\" = --version ]; then echo 'uv 0.12.1 (fixture-platform)'; exit 0; fi\n"
+        'printf \'%s|%s\\n\' "$UV_PROJECT_ENVIRONMENT" "${UV_INEXACT-unset}" > "$UV_CALLS"\n'
+        'printf \'%s\\n\' "$*" >> "$UV_CALLS"\n'
+        "exit 1\n"
+    )
+    uv.chmod(0o755)
+    environment = {
+        **os.environ,
+        "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+        "UV_CALLS": str(calls),
+        "UV_INEXACT": "1",
+        "UV_PROJECT_ENVIRONMENT": str(tmp_path / "wrong-environment"),
+    }
+
+    result = run_gate(repo, env=environment)
+
+    assert result.returncode == 1
+    assert calls.read_text().splitlines() == [
+        f"{repo / '.venv'}|unset",
+        "sync --frozen --offline --group test --group audit --no-config",
+    ]
+    assert "could not reconcile" in result.stderr
+    assert "with network access, then retry" in result.stderr
+    assert "check-static.sh" not in result.stderr
+
+
+def test_the_gate_does_not_import_from_an_inherited_pythonpath(tmp_path):
+    """A caller cannot add packages to the environment the gate claims is frozen."""
+
+    repo = gate_repo(tmp_path)
+    subprocess.run(
+        [sys.executable, "-m", "venv", "--without-pip", str(repo / ".venv")],
+        check=True,
+        timeout=60,
+    )
+    injected = tmp_path / "injected"
+    injected.mkdir()
+    marker = tmp_path / "sitecustomize-ran"
+    (injected / "sitecustomize.py").write_text(
+        "import os\nfrom pathlib import Path\nPath(os.environ['ATTACK_MARKER']).touch()\n"
+    )
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    uv = fake_bin / "uv"
+    uv.write_text(
+        "#!/bin/sh\nif [ \"${1:-}\" = --version ]; then echo 'uv 0.12.1'; exit 0; fi\nexit 0\n"
+    )
+    uv.chmod(0o755)
+    (repo / ".githooks" / "check-static.sh").write_text("#!/bin/sh\nexit 1\n")
+    environment = {
+        **os.environ,
+        "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+        "PYTHONPATH": str(injected),
+        "ATTACK_MARKER": str(marker),
+    }
+
+    result = run_gate(repo, env=environment)
+
+    assert result.returncode == 1
+    assert not marker.exists()
 
 
 @pytest.fixture
