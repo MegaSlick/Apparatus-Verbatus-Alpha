@@ -67,6 +67,7 @@ from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
     EXIT_HELD,
     EXIT_RUN_HALTED,
+    RUN_MODES,
     WITNESS_CONTEXT_REGIMES,
     current_recovery_request,
     latest_attempt,
@@ -97,8 +98,6 @@ SEQUENCE = (
 
 STAGE_PROGRAMS = {name: program for name, program in SEQUENCE if program is not None}
 SEQUENCE_NAMES = tuple(name for name, _program in SEQUENCE)
-RUN_MODES = ("manual", "semi", "auto")
-
 # Named here rather than imported from `operations.submit.gate`, because this
 # module imports only `common/` (see the module docstring) and the Door is the
 # one place the gate itself is loaded. The two spellings are held together by
