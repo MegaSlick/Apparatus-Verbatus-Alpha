@@ -31,9 +31,8 @@ ROOT = Path(__file__).resolve().parents[2]
 
 # Every orchestrator flag whose value is read as a file this run seals by digest,
 # minus the declared `--models-config` exception above.
-# `test_no_flag_naming_a_sealed_path_escapes_this_suite` fails when a new flag
-# naming a sealed path is added to the orchestrator without a decision here:
-# cover it or declare it.
+# `test_no_config_or_policy_flag_escapes_this_suite` fails when a new flag with
+# either guarded suffix is added without a decision here: cover it or declare it.
 SEALED_CONFIG_FLAGS = (
     "--pdf-render-config",
     "--designator-padding-config",
@@ -53,8 +52,9 @@ DECLARED_RELATIVE_CONFIG_FLAGS = ("--models-config",)
 
 # Sealed-config paths with no string default at all, because the orchestrator
 # resolves them against the *caller's* cwd and a relative default resolved that
-# way would name a file beside the caller. `None` means "the repository's own",
-# filled in by `resolve_caller_paths`, and is checked there instead of here.
+# way would name a file beside the caller. On real ingress, `None` means "the
+# repository's own", filled in by `resolve_caller_paths`; on fixture ingress it
+# stays absent. The resolved real default is checked there instead of here.
 RESOLVED_AT_BOUNDARY_FLAGS = ("--data-gate-policy",)
 
 # The suffixes that mark an orchestrator flag as naming a file the run seals by
@@ -86,8 +86,9 @@ def _orchestrator_defaults() -> dict[str, object]:
     that could drift from it.
 
     **Every option, whatever its default's type.** Filtering to string defaults
-    here is what hid `--data-gate-policy` from `test_no_flag_naming_a_sealed_path
-    _escapes_this_suite`: a flag with `default=None` was invisible to the check
+    here is what hid `--data-gate-policy` from
+    `test_no_config_or_policy_flag_escapes_this_suite`: a flag with
+    `default=None` was invisible to the check
     that decides which flags need a decision, so a sealed path could opt out of
     this suite by carrying no string default — which is also the shape a flag has
     while it is being fixed. The string filter belongs to the flags that are
@@ -125,9 +126,9 @@ def _orchestrator_string_defaults() -> dict[str, str]:
     }
 
 
-def test_no_flag_naming_a_sealed_path_escapes_this_suite():
+def test_no_config_or_policy_flag_escapes_this_suite():
     """The tuples above are hand-maintained; this derives the ground truth from
-    the real parser so a new flag naming a file the run seals cannot land silently
+    the real parser so a new `-config` or `-policy` flag cannot land silently
     uncovered -- it must join the sealed tuple, be declared a deliberate relative
     exception with its reason, or be declared resolved at the orchestration
     boundary."""
@@ -140,20 +141,15 @@ def test_no_flag_naming_a_sealed_path_escapes_this_suite():
         - set(RESOLVED_AT_BOUNDARY_FLAGS)
     )
     assert not uncovered, (
-        f"the orchestrator declares flag(s) {uncovered} naming a sealed path that this suite "
+        f"the orchestrator declares config/policy flag(s) {uncovered} that this suite "
         "neither checks nor declares as a deliberate exception; a relative default there "
         "would break every run that does not start at the repository root"
     )
 
 
 @pytest.mark.parametrize("flag", RESOLVED_AT_BOUNDARY_FLAGS)
-def test_every_boundary_resolved_flag_has_no_relative_default_to_resolve_late(flag):
-    """Declared `None`, and made absolute by `resolve_caller_paths`, from any cwd.
-
-    The two halves have to hold together: a string default here would be resolved
-    against the caller's cwd by that same function, which is the defect; and a
-    `None` that nothing filled in would reach the Door as the literal `"None"`.
-    """
+def test_every_boundary_resolved_flag_declares_no_relative_parser_default(flag):
+    """A string default here would be resolved against the caller's cwd."""
     defaults = _orchestrator_defaults()
     assert flag in defaults, f"{flag} is no longer an orchestrator flag"
     assert defaults[flag] is None, (

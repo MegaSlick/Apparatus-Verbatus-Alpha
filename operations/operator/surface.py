@@ -655,6 +655,18 @@ class OperatorSurface:
     ) -> RunOutcome:
         """Drive the actual orchestrator, with resumable evidence."""
 
+        if submission_folder is None:
+            if submission_manifest is not None:
+                raise OperatorError(
+                    ErrorCode.INVALID_COMMAND,
+                    detail=("--submission-manifest is meaningful only with --submission-folder"),
+                )
+            if data_gate_policy is not None:
+                raise OperatorError(
+                    ErrorCode.INVALID_COMMAND,
+                    detail="--data-gate-policy is meaningful only with --submission-folder",
+                )
+
         run_root = self.state_root / "runs"
         ingress_mode = "real" if submission_folder is not None else "synthetic-fixture"
         prior_state = self._prior_run_state(run_id)
@@ -664,7 +676,7 @@ class OperatorSurface:
                 "This rehearsal uses declared synthetic pages, not an uploaded real submission."
             )
         else:
-            self._present_real_submission_work(run_id, prior_state, submission_manifest)
+            self._present_real_submission_work(run_id, prior_state)
             self.present("This run sends the recorded real submission to the Door's data gate.")
         if self.faults.laptop_crash:
             self.faults.laptop_crash = False
@@ -1331,9 +1343,7 @@ class OperatorSurface:
         self.present(self._run_opening(run_id, prior_state, f"Checking {', '.join(pages)}."))
         self.present(f"Working next: {', '.join(acts)}.")
 
-    def _present_real_submission_work(
-        self, run_id: str, prior_state: str | None, submission_manifest: str | Path | None
-    ) -> None:
+    def _present_real_submission_work(self, run_id: str, prior_state: str | None) -> None:
         """Say what a *real* run is about to work on, which the fixture never says.
 
         The declared fixture's page and act names belong to the synthetic
@@ -1344,31 +1354,21 @@ class OperatorSurface:
         this failure — a placeholder shown without comment reads as the real
         list. GOVERNANCE 10: what is said is what was measured.
 
-        The submitted filename ledger is the only thing here that knows the real
-        extent, so the count comes from it. A **count**, never the names: the
-        data-handling policy's `logging_rule` allows terminal output counts and
-        the private report location and no more, and these names are real
-        material's.
-
-        A ledger that cannot be read is not refused here. The Door is the gate
-        and refuses it by name a moment later with the whole policy in hand;
-        duplicating that judgement on this screen would make the surface a
-        second, weaker gate that could disagree with the real one.
+        The submitted filename ledger is the extent authority, but this surface
+        does not open it. The Door first checks that the ledger is inside an
+        approved storage root and then parses and seals that exact read. Opening
+        it here would read real metadata before the gate and could present a
+        count from bytes replaced before the Door's later read.
         """
 
-        extent = "Its extent is named by the submitted filename ledger."
-        if submission_manifest is not None:
-            try:
-                ledger = submission_door.load_manifest(Path(submission_manifest))
-                count = len(ledger["files"])
-            except Exception:
-                extent = (
-                    "The submitted filename ledger could not be read here; the Door checks "
-                    "it against the data-handling policy and refuses by name if it is bad."
-                )
-            else:
-                extent = f"The submitted filename ledger declares {count} file(s)."
-        self.present(self._run_opening(run_id, prior_state, extent))
+        self.present(
+            self._run_opening(
+                run_id,
+                prior_state,
+                "Its extent is recorded by the submitted filename ledger, which the Door "
+                "checks against the data-handling policy.",
+            )
+        )
 
     def _run_opening(self, run_id: str, prior_state: str | None, extent: str) -> str:
         """The started/resuming sentence, with whatever names this run's extent."""
@@ -2039,7 +2039,7 @@ def _real_ingress_argv(
     fault-drill invocation each forward these three flags; a second, separately
     written copy is exactly how the two could drift apart.
 
-    **Every path is resolved here, against the operator's own cwd.** Both call
+    **Every path is made absolute here, against the operator's own cwd.** Both call
     sites launch their child with `cwd=self.workspace`, which is the checkout and
     need not be where the operator is standing — `--workspace` names it
     explicitly. A relative `--submission-folder` handed on unresolved is
@@ -2050,8 +2050,11 @@ def _real_ingress_argv(
     (`pipeline/orchestrator/run.py:resolve_caller_paths`), one layer up, and the
     operator boundary is where the operator's cwd is still known.
 
-    Resolving also makes every value absolute, so a submitted path beginning
-    with a dash can no longer reach a child's argv looking like an option.
+    `absolute()`, not `resolve()`: the Door's data-handling gate refuses a
+    submitted folder or ledger that is itself a symlink. Dereferencing it here
+    would erase the redirect before the enforcing boundary could inspect it.
+    Making the value absolute also means a submitted path beginning with a dash
+    can no longer reach a child's argv looking like an option.
     """
     argv: list[str] = []
     for flag, value in (
@@ -2060,7 +2063,7 @@ def _real_ingress_argv(
         ("--data-gate-policy", data_gate_policy),
     ):
         if value is not None:
-            argv.extend((flag, str(Path(value).resolve())))
+            argv.extend((flag, str(Path(value).absolute())))
     return argv
 
 

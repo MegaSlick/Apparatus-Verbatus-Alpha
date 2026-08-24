@@ -111,8 +111,26 @@ _CALLER_RELATIVE_PATHS = (
 )
 
 
+def require_coherent_ingress_options(args: argparse.Namespace) -> None:
+    """Refuse real-ingress controls when no real submission was named."""
+
+    if args.submission_folder is not None:
+        return
+    if args.submission_manifest is not None:
+        raise ContractError(
+            "a submission filename ledger is meaningful only with a real submission folder; "
+            "the walking skeleton's declared synthetic pages are not gated input "
+            "(--submission-manifest was supplied without --submission-folder)"
+        )
+    if args.data_gate_policy is not None:
+        raise ContractError(
+            "--data-gate-policy is meaningful only with --submission-folder; the synthetic "
+            "fixture route does not evaluate the real-input storage policy"
+        )
+
+
 def resolve_caller_paths(args: argparse.Namespace) -> argparse.Namespace:
-    """Resolve every caller-relative path once, at the orchestration boundary.
+    """Make every caller-relative path absolute at the orchestration boundary.
 
     Children run with `cwd=ROOT` (`invoke`'s `subprocess.run`) while the caller
     may be anywhere, so a path resolved late — inside a stage, after that `cwd`
@@ -120,23 +138,30 @@ def resolve_caller_paths(args: argparse.Namespace) -> argparse.Namespace:
     who typed it. Resolving here means the Door, every later stage, and this
     process's own checkpoints name one run tree and one set of real inputs.
 
+    This deliberately does not resolve symlinks.  The Door's data-handling gate
+    refuses a submitted folder or manifest that is itself a symlink; resolving
+    one here would erase the fact that the caller supplied a redirect before
+    the enforcing boundary could inspect it.
+
     A named function rather than a run of statements inside `main`: a partial
     invocation entry point that builds its own `Namespace` and calls `invoke`
     directly needs this, and `require_resolved_caller_paths` refuses the argv
-    rather than letting one that skipped it resolve against the wrong root.
+    rather than letting one that skipped it become absolute against the wrong
+    root.
     """
-    args.run_root = Path(args.run_root).resolve()
+    args.run_root = Path(args.run_root).absolute()
     for attribute in ("submission_folder", "submission_manifest"):
         value = getattr(args, attribute)
         if value is not None:
-            setattr(args, attribute, Path(value).resolve())
-    # `None` here means "the repository's own approved policy", which is what a
-    # relative string default could not mean: it would be resolved against the
-    # caller's cwd like the paths above and name a policy beside them instead.
-    if args.data_gate_policy is None:
+            setattr(args, attribute, Path(value).absolute())
+    # On real ingress, `None` means "the repository's own approved policy",
+    # which is what a relative string default could not mean: it would be made
+    # absolute against the caller's cwd like the paths above and name a policy
+    # beside them instead. On fixture ingress it stays absent.
+    if args.data_gate_policy is None and args.submission_folder is not None:
         args.data_gate_policy = DEFAULT_DATA_GATE_POLICY_PATH
-    else:
-        args.data_gate_policy = Path(args.data_gate_policy).resolve()
+    elif args.data_gate_policy is not None:
+        args.data_gate_policy = Path(args.data_gate_policy).absolute()
     return args
 
 
@@ -164,6 +189,7 @@ def require_resolved_caller_paths(args: argparse.Namespace) -> None:
 
 def invoke(program: str, args: argparse.Namespace, **extra) -> int:
     """Run one stage as a program and return its exit code."""
+    require_coherent_ingress_options(args)
     require_resolved_caller_paths(args)
     command = [
         sys.executable,
@@ -201,7 +227,8 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
             command += ["--submission-folder", str(args.submission_folder)]
         if args.submission_manifest is not None:
             command += ["--submission-manifest", str(args.submission_manifest)]
-        command += ["--data-gate-policy", str(args.data_gate_policy)]
+        if args.data_gate_policy is not None:
+            command += ["--data-gate-policy", str(args.data_gate_policy)]
     if args.pdf_target_dpi is not None:
         command += ["--pdf-target-dpi", str(args.pdf_target_dpi)]
     command += [
@@ -277,7 +304,9 @@ def main() -> int:
     # the *caller's* cwd like the other real-ingress paths. A relative default
     # resolved that way would name a path beside the caller instead of the
     # repository's own approved policy. `None` here means "use the repository's
-    # own default", filled in by `resolve_caller_paths` once parsing is done.
+    # own default", filled in by `resolve_caller_paths` on the real route once
+    # parsing is done. The fixture route leaves it absent rather than forwarding
+    # a real-only control that the Door would ignore.
     parser.add_argument("--data-gate-policy", default=None)
     # The fixture declares which scenarios exist; `scenario_for` refuses an
     # undeclared name once the fixture is loaded, so there is no second list here
@@ -387,6 +416,7 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    require_coherent_ingress_options(args)
     resolve_caller_paths(args)
 
     # Prove the algebra total before anything runs. A stage added later without a

@@ -30,6 +30,7 @@ from operations.pod.models import (
 from operations.pod.shutdown import CloseReport, VerifiedShutdown
 from operations.pod.spend import load_spend_policy
 from operations.submit import gate
+from operations.submit import submit as submission_door
 from operations.submit.submit import build_manifest, walk_folder
 
 from . import cli, dry_run, entry, notify_bridge
@@ -1330,6 +1331,21 @@ def test_cli_run_carries_real_ingress_options_to_the_operator_surface(
     assert observed["data_gate_policy"] == policy
 
 
+@pytest.mark.parametrize("orphan", ["submission_manifest", "data_gate_policy"])
+def test_run_refuses_a_real_ingress_control_without_a_submission_folder(
+    tmp_path: Path, orphan: str
+) -> None:
+    surface, observed = _recording_surface(tmp_path, faults=Faults(laptop_crash=True))
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.run(run_id="orphan-real-option", **{orphan: tmp_path / "value"})
+
+    assert refusal.value.code is ErrorCode.INVALID_COMMAND
+    assert f"--{orphan.replace('_', '-')}" in str(refusal.value.detail)
+    assert "--submission-folder" in str(refusal.value.detail)
+    assert not observed, "the fault drill launched the Door before validating its option shape"
+
+
 def _recording_surface(
     tmp_path: Path, *, faults: Faults | None = None, output: list[str] | None = None
 ) -> tuple[OperatorSurface, list[tuple[list[str], Path | None]]]:
@@ -1363,7 +1379,7 @@ def _argv_value(command: list[str], flag: str) -> str:
     return command[command.index(flag) + 1]
 
 
-def test_real_ingress_paths_are_resolved_against_the_operators_own_cwd(
+def test_real_ingress_paths_are_made_absolute_against_the_operators_own_cwd(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The operator's shell decides what a relative submitted path means.
@@ -1400,6 +1416,26 @@ def test_real_ingress_paths_are_resolved_against_the_operators_own_cwd(
         elsewhere / "approved" / "submission-ledger.json"
     )
     assert _argv_value(command, "--data-gate-policy") == str(elsewhere / "data-gate-policy.json")
+
+
+def test_real_ingress_absolutization_preserves_a_symlink_for_the_doors_gate(
+    tmp_path: Path,
+) -> None:
+    """The operator must not erase a redirect before the Door inspects it."""
+
+    approved = tmp_path / "approved"
+    actual = approved / "actual-pages"
+    actual.mkdir(parents=True)
+    submitted_link = approved / "submitted-link"
+    submitted_link.symlink_to(actual, target_is_directory=True)
+    surface, observed = _recording_surface(tmp_path)
+
+    with pytest.raises(OperatorError):
+        surface.run(run_id="symlink-real", submission_folder=submitted_link)
+
+    command, _cwd = observed[0]
+    assert Path(_argv_value(command, "--submission-folder")) == submitted_link
+    assert Path(_argv_value(command, "--submission-folder")).is_symlink()
 
 
 def test_the_laptop_crash_drill_still_carries_real_ingress_to_the_door(tmp_path: Path) -> None:
@@ -1503,7 +1539,7 @@ def test_a_real_run_is_never_narrated_with_the_declared_fixtures_pages(tmp_path:
         assert not any(name in line for line in messages), (
             f"a real run was narrated with the declared fixture's {name!r}"
         )
-    assert any("declares 2 file(s)" in line for line in messages)
+    assert any("extent is recorded by the submitted filename ledger" in line for line in messages)
     for name in ("page-1.png", "page-2.png"):
         assert not any(name in line for line in messages), (
             "a submitted filename reached the terminal; the policy's logging rule allows "
@@ -1511,25 +1547,27 @@ def test_a_real_run_is_never_narrated_with_the_declared_fixtures_pages(tmp_path:
         )
 
 
-def test_an_unreadable_ledger_leaves_the_refusal_to_the_door(tmp_path: Path) -> None:
-    """The surface narrates; the Door is the gate, and only one of them refuses.
-
-    Refusing here on a ledger this screen could not parse would make the surface
-    a second gate — one holding no policy, able to disagree with the real one.
-    It says so plainly and lets the run reach the Door, which refuses by name.
-    """
+def test_the_operator_does_not_read_the_ledger_before_the_door(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Door checks storage policy before any operator-path ledger read."""
 
     folder = tmp_path / "approved" / "submitted-pages"
     folder.mkdir(parents=True)
     manifest = tmp_path / "approved" / "submission-ledger.json"
     manifest.write_text("{not canonical json", encoding="utf-8")
+    monkeypatch.setattr(
+        submission_door,
+        "load_manifest",
+        lambda _path: pytest.fail("the operator read the ledger before the Door's gate"),
+    )
     messages: list[str] = []
     surface, observed = _recording_surface(tmp_path, output=messages)
 
     with pytest.raises(OperatorError):
         surface.run(run_id="bad-ledger", submission_folder=folder, submission_manifest=manifest)
 
-    assert any("could not be read here" in line for line in messages)
+    assert any("Door checks against the data-handling policy" in line for line in messages)
     assert observed, "the run never reached the Door, which is the only thing that can refuse it"
 
 

@@ -727,7 +727,7 @@ def test_orchestrator_carries_a_real_submission_to_the_door_end_to_end(tmp_path)
     ), "the caller's policy must differ from the default, or the check above proves nothing"
 
 
-def test_orchestrator_keeps_the_doors_manifest_without_folder_refusal(tmp_path):
+def test_orchestrator_preserves_the_manifest_without_folder_refusal(tmp_path):
     approved, _source, manifest, policy = _real_submission(tmp_path)
     result = orchestrate(
         approved / "runs",
@@ -742,6 +742,19 @@ def test_orchestrator_keeps_the_doors_manifest_without_folder_refusal(tmp_path):
         "submission filename ledger is meaningful only with a real submission folder"
         in result.stderr
     )
+
+
+def test_orchestrator_refuses_a_data_gate_policy_without_a_real_folder(tmp_path):
+    result = orchestrate(
+        tmp_path / "runs",
+        "policy-without-folder",
+        "happy",
+        data_gate_policy=tmp_path / "policy-that-must-not-be-ignored.json",
+    )
+
+    assert result.returncode != 0
+    assert "--data-gate-policy is meaningful only with --submission-folder" in result.stderr
+    assert not (tmp_path / "runs" / "policy-without-folder" / "run.json").exists()
 
 
 # Every flag by which a path to submitted material can reach a stage's argv.
@@ -789,7 +802,7 @@ def _orchestrator_namespace_fields(tmp_path: Path) -> dict:
         draft_fed=True,
         submission_folder=None,
         submission_manifest=None,
-        data_gate_policy=gate.DEFAULT_POLICY_PATH,
+        data_gate_policy=None,
     )
 
 
@@ -805,13 +818,15 @@ def test_real_ingress_changes_only_the_doors_argv(monkeypatch, tmp_path):
 
     monkeypatch.setattr(orchestrator.subprocess, "run", record)
     base = _orchestrator_namespace_fields(tmp_path)
-    fixture_args = Namespace(**base)
-    real_args = Namespace(
-        **{
-            **base,
-            "submission_folder": tmp_path / "approved" / "source",
-            "submission_manifest": tmp_path / "approved" / "ledger.json",
-        }
+    fixture_args = orchestrator.resolve_caller_paths(Namespace(**base))
+    real_args = orchestrator.resolve_caller_paths(
+        Namespace(
+            **{
+                **base,
+                "submission_folder": tmp_path / "approved" / "source",
+                "submission_manifest": tmp_path / "approved" / "ledger.json",
+            }
+        )
     )
 
     for _name, program in orchestrator.SEQUENCE:
@@ -825,6 +840,7 @@ def test_real_ingress_changes_only_the_doors_argv(monkeypatch, tmp_path):
     assert "--submission-folder" in observed[0]
     assert "--submission-manifest" in observed[0]
     assert "--data-gate-policy" in observed[0]
+    assert not REAL_INGRESS_FLAGS.intersection(fixture_commands[0])
 
     # The equality above is a *relative* claim: the real run's later stages match
     # the fixture run's. It stays true if a change gives every stage a real-ingress
@@ -869,7 +885,10 @@ def test_invoke_refuses_a_caller_relative_path_instead_of_resolving_it_late(monk
         ("submission_manifest", "--submission-manifest", Path("approved/ledger.json")),
         ("data_gate_policy", "--data-gate-policy", Path("policy.json")),
     ):
-        args = Namespace(**{**base, attribute: value})
+        overrides = {attribute: value}
+        if attribute in {"submission_manifest", "data_gate_policy"}:
+            overrides["submission_folder"] = tmp_path / "approved" / "source"
+        args = Namespace(**{**base, **overrides})
         with pytest.raises(ContractError) as refusal:
             orchestrator.invoke(orchestrator.STAGE_PROGRAMS["door"], args)
         assert flag in str(refusal.value)
@@ -894,7 +913,13 @@ def test_orchestrator_default_data_gate_policy_is_the_gates_own(tmp_path):
     orchestrator = _orchestrator_module("orchestrator_default_policy")
     assert orchestrator.DEFAULT_DATA_GATE_POLICY_PATH == gate.DEFAULT_POLICY_PATH
     resolved = orchestrator.resolve_caller_paths(
-        Namespace(**{**_orchestrator_namespace_fields(tmp_path), "data_gate_policy": None})
+        Namespace(
+            **{
+                **_orchestrator_namespace_fields(tmp_path),
+                "submission_folder": tmp_path / "approved" / "source",
+                "data_gate_policy": None,
+            }
+        )
     )
     assert resolved.data_gate_policy == gate.DEFAULT_POLICY_PATH
     assert resolved.data_gate_policy.is_file()
@@ -1014,6 +1039,27 @@ def test_relative_submission_folder_from_outside_the_repository_finds_the_real_f
     run_tree_root = outside / "approved-storage" / "runs"
     assert RunTree(run_tree_root, "relative-real-ingress").read_run()["ingress"] == {"mode": "real"}
     assert not (ROOT / "runs" / "relative-real-ingress").exists()
+
+
+def test_orchestrator_preserves_a_submitted_folder_symlink_for_the_doors_gate(tmp_path: Path):
+    """Making caller paths absolute must not silently dereference real ingress."""
+
+    approved, source, manifest, policy = _real_submission(tmp_path)
+    submitted_link = approved / "submitted-link"
+    submitted_link.symlink_to(source, target_is_directory=True)
+
+    result = orchestrate(
+        approved / "runs",
+        "symlink-refusal",
+        "happy",
+        submission_folder=submitted_link,
+        submission_manifest=manifest,
+        data_gate_policy=policy,
+    )
+
+    assert result.returncode != 0
+    assert "submitted folder is a symlink" in result.stderr
+    assert not (approved / "runs" / "symlink-refusal" / "run.json").exists()
 
 
 def invoke_stage(
