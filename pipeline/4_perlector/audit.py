@@ -187,7 +187,8 @@ def flags_once_per_page(semi_finals: list[dict[str, Any]]) -> dict[str, list[dic
         ):
             raise SchemaRefusal(
                 "two audit semi-finals for one act state different text, testimony or "
-                "crop containment"
+                "crop containment; page order would decide which facts are measured; rebuild "
+                "the page rows from one sealed Perlectio"
             )
     output: dict[str, list[dict[str, Any]]] = {row["act_id"]: [] for row in semi_finals}
     # The act-local classes, once per act, in the acts' first-seen order.

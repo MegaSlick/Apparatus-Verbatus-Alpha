@@ -626,6 +626,18 @@ def test_omitting_an_intermediate_sibling_can_invent_an_adjacency_flag():
     assert "date-sequence" in {flag["class"] for flag in shortened["a3"]}
 
 
+def test_audit_page_set_keeps_the_act_primary_first_when_continuation_ordinal_is_lower():
+    """Source ordinal orders pages, not an act's primary-first reading basis."""
+    perlector = _perlector()
+    bases = [
+        {"source_page_ordinal": 2, "source_page_id": "primary-page"},
+        {"source_page_ordinal": 1, "source_page_id": "earlier-continuation"},
+        {"source_page_ordinal": 2, "source_page_id": "primary-page"},
+    ]
+
+    assert perlector.audit_page_ids(bases) == ["primary-page", "earlier-continuation"]
+
+
 def test_recovery_sibling_context_is_sealed_and_never_republished(tmp_path):
     result = _run(tmp_path / "runs", scenario="review")
     assert result.returncode == 3, result.stderr
@@ -1135,3 +1147,23 @@ def test_shared_chain_refuses_a_page_set_forged_back_to_the_primary_page(tmp_pat
 
     with pytest.raises(SchemaRefusal, match="page set.*sealed region basis"):
         audit.validate_chain(ForgedTree(), forged_final, final["subject_id"])
+
+
+def test_shared_chain_keeps_primary_first_when_a_continuation_page_ordinal_is_lower(tmp_path):
+    """The independent audit verifier must use sealed region order too."""
+    result = _run(tmp_path / "runs")
+    assert result.returncode == 0, result.stderr
+    tree = RunTree(tmp_path / "runs", "r")
+    final = next(
+        record
+        for record in _records(tree, "perlectio")
+        if len({region["source_page_id"] for region in record["payload"]["basis"]["regions"]}) == 2
+    )
+    reversed_ordinals = copy.deepcopy(final)
+    primary, continuation = reversed_ordinals["payload"]["basis"]["regions"][:2]
+    primary["source_page_ordinal"] = 2
+    continuation["source_page_ordinal"] = 1
+
+    # The primary-first audit record remains valid. Sorting these pages by
+    # source ordinal would reverse them and falsely reject the sealed chain.
+    audit.validate_chain(tree, reversed_ordinals, final["subject_id"])

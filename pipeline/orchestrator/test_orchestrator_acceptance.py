@@ -634,8 +634,14 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # a2's audit draft and finding carry two `testimony-diff` flags rather than four,
 # and its sealed re-proof plan two rows rather than four. A deliberate record
 # change; counts and exits again held at 67/0 and 74/3, re-measured the same way.
-HAPPY_RUN_TREE_DIGEST = "402cbff8087f80b88011cd517fc838d4e38cba2afec36e46dc3c4aa0fd3108ec"
-REVIEW_RUN_TREE_DIGEST = "d0f6c7a9df545cf602640d5622fa1a6a3b53f01321edf7fd912dc324e8136578"
+#
+# Re-pinned in the formal review: `page_witness_count` again counts distinct
+# chairs rather than the new `(chair, page)` attachment rows. The continuation
+# dossier therefore reports the two witnesses the run configured, not four
+# witnesses invented by its two-page span. Counts and exits held at 67/0 and
+# 74/3; both digests reproduced in two independent run roots.
+HAPPY_RUN_TREE_DIGEST = "e01ed928c008f367960c73703aa434ddd7dc423fd1e0aafcdf772d9fb948443c"
+REVIEW_RUN_TREE_DIGEST = "3521e5ddd78d348ef8f346d821f26a4b2bbabe4f71db1d01bc84888d8e880dcc"
 
 
 def orchestrate(
@@ -2383,6 +2389,22 @@ def test_a_continuation_has_page_scoped_testimony_and_audit_on_its_far_page(happ
         page_identity(load_fixture(str(ROOT / "proof")), 1),
         page_identity(load_fixture(str(ROOT / "proof")), 2),
     ]
+
+
+def test_a_continuation_counts_page_witness_chairs_not_page_pairs(happy_run):
+    """The dossier roster count cannot grow when the same chairs span two pages."""
+    _, tree = happy_run
+    reading = next(
+        tree.read_artifact(PERLECTOR, "perlectio", entry["artifact_id"])
+        for entry in tree.build_manifest(PERLECTOR)["artifacts"]
+        if entry["kind"] == "perlectio"
+        and tree.read_artifact(PERLECTOR, "perlectio", entry["artifact_id"])["payload"]["act_key"]
+        == "a2"
+    )
+
+    attachment = reading["payload"]["dossier"]["act_attachment"]
+    assert attachment["page_witness_count"] == 2
+    assert len(attachment["comparison_views"]) == 2
 
 
 def test_a_recrop_of_a_continuation_act_keeps_its_far_page_in_the_evidence(

@@ -278,9 +278,14 @@ def act_attachment_view(
     ]
     if len(pairs) != len(set(pairs)) or set(pairs) != expected_pairs:
         raise FatalAccounting(
-            f"act {act_id} attachments do not cover every contributing page/witness pair"
+            f"act {act_id} attachments do not cover every contributing page/witness pair; "
+            "its witness denominator is duplicated or incomplete; rebuild the attachment "
+            "from the sealed regions and configured chairs"
         )
-    page_witness_count = 0
+    # Attachment accounting is per (chair, page), but this dossier field names
+    # witnesses. Count a chair once even when its evidence spans several pages;
+    # otherwise the reader is told a two-chair roster contains four witnesses.
+    page_witness_chairs: set[str] = set()
     comparison_views: dict[str, str] = {}
     for attachment in attachments:
         if (
@@ -388,7 +393,9 @@ def act_attachment_view(
         if attachment["page_witness"]:
             if attachment_page not in page_ids:
                 raise SchemaRefusal(
-                    f"act {act_id} page attachment names a page outside its regions"
+                    f"act {act_id} page attachment names page {attachment_page!r} outside its "
+                    "regions; it claims evidence the Perlector did not read; restore the "
+                    "attachment's contributing page"
                 )
             testimonium = context.tree.read_artifact_reference(
                 reference,
@@ -438,7 +445,21 @@ def act_attachment_view(
             ):
                 raise SchemaRefusal(
                     f"act {act_id} page Testimonium for chair {chair!r} carries a page_role "
-                    f"{role!r} its own primary-page fact contradicts"
+                    f"{role!r} its own primary-page fact contradicts; the page relationship "
+                    "is false; rebuild the page Testimonium from the attachment denominator"
+                )
+            if not is_act_primary_page and (
+                attachment["attached"]
+                or attachment["alignment"]
+                != {
+                    "status": "unaligned",
+                    "reason": "continuation-page-no-act-anchor",
+                }
+            ):
+                raise SchemaRefusal(
+                    f"act {act_id} continuation-page attachment for chair {chair!r} claims "
+                    "an act anchor; this compatibility record has no page-specific anchor; "
+                    "retain it as continuation-page-no-act-anchor"
                 )
             current_unjoined = [row for row in unjoined if row["act_id"] == act_id]
             if len(current_unjoined) > 1:
@@ -512,7 +533,7 @@ def act_attachment_view(
                 # mapping would validate while leaving the operator no
                 # statement of why comparison failed.
                 raise SchemaRefusal("an unattached page witness has no explicit unaligned result")
-            page_witness_count += 1
+            page_witness_chairs.add(chair)
         else:
             if attachment_page is not None:
                 raise SchemaRefusal("an act-scoped witness carries a page ordinal")
@@ -532,7 +553,7 @@ def act_attachment_view(
         "reference": context.artifact_ref(ATTESTATORES, "act-attachment", record["artifact_id"]),
         # A blinded dossier may show that page evidence exists, but not the
         # chair names embedded in its retained attachment artifact.
-        "page_witness_count": page_witness_count,
+        "page_witness_count": len(page_witness_chairs),
         # Stated exactly, because the count above was chosen to disclose an
         # aggregate and this does not: `comparison_views` is keyed per chair,
         # relabeled through `witness_label` in `dossier.build_dossier`, and
@@ -1299,11 +1320,13 @@ def _audit_semi_final(
 
 
 def audit_page_ids(bases: list[dict[str, Any]]) -> list[str]:
-    """The complete, stable page denominator for one act's page audit."""
-    by_ordinal = {basis["source_page_ordinal"]: basis["source_page_id"] for basis in bases}
-    page_ids = [by_ordinal[ordinal] for ordinal in sorted(by_ordinal)]
+    """The complete, primary-first page denominator for one act's page audit."""
+    page_ids = list(dict.fromkeys(basis["source_page_id"] for basis in bases))
     if not page_ids:
-        raise FatalAccounting("Perlectio has no source pages for its audit")
+        raise FatalAccounting(
+            "a Perlectio has no source pages for its audit; no page comparison can be "
+            "measured; restore its verified region basis before running Pass C"
+        )
     return page_ids
 
 
@@ -1370,8 +1393,9 @@ def _sealed_sibling_semi_finals(
             # missing middle row can remove its own comparison or create a new
             # adjacency between its former neighbours.
             raise FatalAccounting(
-                f"act {act_id} shares this page with the recovered act but has no Perlectio "
-                "at all; the page audit may not be computed over a row that is missing"
+                f"act {act_id} has no Perlectio, so recovery cannot determine whether it "
+                "shares a contributing page; the page denominator is unknown; restore its "
+                "retained Perlectio before recomputing the audit"
             )
         reading = latest_attempt(
             records, f"sealed sibling Perlectio for {act_id}", operation="perlegere"

@@ -293,18 +293,37 @@ def validate_audit_request(payload: Any) -> dict[str, Any]:
 
 
 def _validate_common(value: dict[str, Any], *, text_length: int) -> None:
-    if (
-        not isinstance(value["act_key"], str)
-        or not value["act_key"]
-        or not isinstance(value["page_id"], str)
-        or not value["page_id"]
-        or not isinstance(value["page_ids"], list)
-        or not value["page_ids"]
-        or any(not isinstance(page_id, str) or not page_id for page_id in value["page_ids"])
-        or len(value["page_ids"]) != len(set(value["page_ids"]))
-        or value["page_id"] != value["page_ids"][0]
-    ):
-        raise SchemaRefusal("an audit record has no act or page identity")
+    if not isinstance(value["act_key"], str) or not value["act_key"]:
+        raise SchemaRefusal(
+            "an audit record has no non-empty act identity; the finding cannot be bound "
+            "to an act; restore the act_key before publishing it"
+        )
+    if not isinstance(value["page_id"], str) or not value["page_id"]:
+        raise SchemaRefusal(
+            "an audit record has no non-empty primary page identity; its page evidence "
+            "cannot be reconciled; restore page_id before publishing it"
+        )
+    page_ids = value["page_ids"]
+    if not isinstance(page_ids, list) or not page_ids:
+        raise SchemaRefusal(
+            "an audit record has no non-empty contributing-page list; page evidence would "
+            "disappear from the audit; restore page_ids before publishing it"
+        )
+    if any(not isinstance(page_id, str) or not page_id for page_id in page_ids):
+        raise SchemaRefusal(
+            "an audit record carries an unusable contributing-page identity; its page "
+            "denominator cannot be addressed; replace it with non-empty page ids"
+        )
+    if len(page_ids) != len(set(page_ids)):
+        raise SchemaRefusal(
+            "an audit record repeats a contributing page identity; duplicate evidence would "
+            "distort the denominator; retain each page exactly once"
+        )
+    if value["page_id"] != page_ids[0]:
+        raise SchemaRefusal(
+            "an audit record's primary page is not first in its contributing-page list; the "
+            "scalar and page set disagree; restore the primary-first page order"
+        )
     if (
         not isinstance(value["attempt_ordinal"], int)
         or isinstance(value["attempt_ordinal"], bool)
@@ -503,13 +522,18 @@ def validate_chain(tree, reading: dict[str, Any], act_id: str) -> dict[str, Any]
         raise SchemaRefusal(f"audit draft and finding for {act_id} restate different frozen facts")
     basis = payload.get("basis")
     if not isinstance(basis, dict):
-        raise SchemaRefusal(f"reading of {act_id} has no object basis for its completed reading")
+        raise SchemaRefusal(
+            f"reading of {act_id} has no object basis; its completed reading cannot be "
+            "reconciled to evidence; restore the sealed basis before consuming it"
+        )
     regions = basis.get("regions")
     if not isinstance(regions, list) or not regions:
         raise SchemaRefusal(
-            f"reading of {act_id} has no non-empty region basis for its completed reading"
+            f"reading of {act_id} has no non-empty region basis; its completed text names "
+            "no ink; restore the contributing region records before consuming it"
         )
     pages_by_ordinal: dict[int, str] = {}
+    basis_page_ids: list[str] = []
     for region in regions:
         ordinal = region.get("source_page_ordinal") if isinstance(region, dict) else None
         page_id = region.get("source_page_id") if isinstance(region, dict) else None
@@ -521,13 +545,20 @@ def validate_chain(tree, reading: dict[str, Any], act_id: str) -> dict[str, Any]
             or (ordinal in pages_by_ordinal and pages_by_ordinal[ordinal] != page_id)
         ):
             raise SchemaRefusal(
-                f"reading of {act_id} has an unusable source page in its region basis"
+                f"reading of {act_id} has an unusable source page in its region basis; the "
+                "audit page set cannot be derived; restore one page id per integer ordinal"
             )
         pages_by_ordinal[ordinal] = page_id
-    basis_page_ids = [pages_by_ordinal[ordinal] for ordinal in sorted(pages_by_ordinal)]
+        # Region order is the sealed act order: the primary proposal region is
+        # first, followed by continuation and recovery regions. Source-page
+        # ordinal is a page identity, not act reading order; a continuation may
+        # legitimately be on an earlier-numbered page than the act's primary.
+        if page_id not in basis_page_ids:
+            basis_page_ids.append(page_id)
     if draft_payload["page_ids"] != basis_page_ids:
         raise SchemaRefusal(
-            f"audit page set for {act_id} disagrees with the reading's sealed region basis"
+            f"audit page set for {act_id} disagrees with the reading's sealed region basis; "
+            "the finding omits or invents page evidence; rebuild it from the sealed regions"
         )
     if draft_payload["act_key"] != payload.get("act_key") or draft_payload[
         "attempt_ordinal"

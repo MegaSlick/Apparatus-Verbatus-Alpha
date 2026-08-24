@@ -764,6 +764,61 @@ def test_perlector_refuses_a_page_role_its_own_ordinal_contradicts(tmp_path):
     assert "page_role" in result.stderr and "contradicts" in result.stderr
 
 
+def test_perlector_refuses_a_forged_continuation_page_act_anchor(tmp_path):
+    """The compatibility attachment has no page-specific continuation anchor."""
+    root = tmp_path / "runs"
+    tree = _through_attestatores(root, "forged-continuation-anchor")
+    entry = next(
+        row
+        for row in tree.build_manifest(ATTESTATORES)["artifacts"]
+        if row["kind"] == "act-attachment"
+        and len(
+            {
+                attachment.get("page_ordinal")
+                for attachment in tree.read_artifact(
+                    ATTESTATORES, "act-attachment", row["artifact_id"]
+                )["payload"]["attachments"]
+                if attachment.get("page_witness")
+            }
+        )
+        == 2
+    )
+    path = tree.resolve(entry["relative_path"])
+    record = tree.read_artifact(ATTESTATORES, "act-attachment", entry["artifact_id"])
+    primary = next(
+        row
+        for row in record["payload"]["attachments"]
+        if row.get("page_witness") and row.get("page_ordinal") == 1
+    )
+    continuation = next(
+        row
+        for row in record["payload"]["attachments"]
+        if row.get("page_witness")
+        and row.get("page_ordinal") == 2
+        and row["chair"] == primary["chair"]
+    )
+    assert primary["attached"] is True
+    assert continuation["alignment"] == {
+        "status": "unaligned",
+        "reason": "continuation-page-no-act-anchor",
+    }
+    continuation["attached"] = True
+    continuation["alignment"] = primary["alignment"]
+    continuation["span"] = primary["span"]
+    _reseal(path, record)
+
+    result = invoke_stage(
+        root,
+        "forged-continuation-anchor",
+        "happy",
+        "pipeline/4_perlector/run.py",
+    )
+
+    assert result.returncode != 0
+    assert "continuation-page attachment" in result.stderr
+    assert "has no page-specific anchor" in result.stderr
+
+
 def test_the_recensor_refuses_a_page_role_only_the_whole_page_disproves(tmp_path):
     """`mixed` is the label one act can never contradict, so a later stage must.
 

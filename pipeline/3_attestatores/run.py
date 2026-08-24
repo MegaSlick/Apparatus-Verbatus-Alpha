@@ -690,7 +690,8 @@ def page_testimonium_payload(
     }
     if unknown := sorted(set(kwargs) - writer_fields):
         raise SchemaRefusal(
-            f"a page Testimonium writer received unknown field(s) {unknown}; its payload is closed"
+            f"a page Testimonium writer received unknown field(s) {unknown}; its closed "
+            "payload cannot account for them; remove the fields before publication"
         )
     record = {
         **testimonium_payload(**kwargs),
@@ -704,21 +705,36 @@ def page_testimonium_payload(
 
 
 def validate_page_testimonium_payload(payload: Any) -> dict[str, Any]:
-    """The page-record seam is closed before publication and on later reads."""
-    if not isinstance(payload, dict) or not (
-        set(payload) <= PAGE_TESTIMONIUM_FIELDS | PAGE_TESTIMONIUM_OPTIONAL_FIELDS
+    """Refuse the closed page-record shape before this stage publishes it."""
+    if not isinstance(payload, dict):
+        raise SchemaRefusal(
+            "a page Testimonium payload is not an object; its fields cannot be verified; "
+            "publish the closed object shape instead"
+        )
+    if unexpected := sorted(
+        set(payload) - PAGE_TESTIMONIUM_FIELDS - PAGE_TESTIMONIUM_OPTIONAL_FIELDS
     ):
-        raise SchemaRefusal("a page Testimonium is not its closed schema")
+        raise SchemaRefusal(
+            f"a page Testimonium carries unknown field(s) {unexpected}; its closed schema "
+            "cannot account for them; remove the fields before publication"
+        )
     if missing := sorted(PAGE_TESTIMONIUM_FIELDS - set(payload)):
-        raise SchemaRefusal(f"a page Testimonium lacks required field(s) {missing}")
+        raise SchemaRefusal(
+            f"a page Testimonium lacks required field(s) {missing}; its evidence record is "
+            "incomplete; restore the fields before publication"
+        )
     if (
         payload["scope"] != "page"
         or not isinstance(payload["page_ordinal"], int)
         or isinstance(payload["page_ordinal"], bool)
+        or not isinstance(payload["page_role"], str)
         or payload["page_role"] not in PAGE_ROLES
         or not isinstance(payload["unjoined_act_attempts"], list)
     ):
-        raise SchemaRefusal("a page Testimonium has invalid page scope facts")
+        raise SchemaRefusal(
+            "a page Testimonium has invalid page-scope facts; its page evidence cannot be "
+            "placed or interpreted; correct the scope, ordinal, role, and unjoined list"
+        )
     return payload
 
 
@@ -1800,7 +1816,8 @@ def publish_page_testimonia_and_attachments(
                 if refusal is None:
                     raise FatalAccounting(
                         f"act {act['act_id']} has neither verified proposal regions nor a "
-                        "recorded crop refusal"
+                        "recorded crop refusal; its page denominator is unknowable; restore "
+                        "the Designator region or refusal evidence"
                     )
                 contributing_pages = [act["page_ordinal"]]
                 if act["has_continuation"]:
@@ -1808,7 +1825,8 @@ def publish_page_testimonia_and_attachments(
                     if continuation is None:
                         raise FatalAccounting(
                             f"act {act['act_id']} claims a continuation but the sealed fixture "
-                            "names none"
+                            "names none; its far-page evidence cannot be addressed; correct the "
+                            "proposal seal or fixture continuation declaration"
                         )
                     contributing_pages.append(continuation["page_ordinal"])
                 contributing_pages.sort()

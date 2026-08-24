@@ -213,6 +213,7 @@ def act_attachment_facts(context, act_id: str) -> dict[str, dict]:
     if not isinstance(entries, list):
         raise FatalAccounting(f"act {act_id} has malformed derived act-attachment payload")
     facts: dict[str, dict] = {}
+    seen_pairs: set[tuple[str, int | None]] = set()
     for entry in entries:
         if not isinstance(entry, dict) or not isinstance(entry.get("chair"), str):
             raise FatalAccounting(f"act {act_id} has malformed derived act-attachment entry")
@@ -236,6 +237,25 @@ def act_attachment_facts(context, act_id: str) -> dict[str, dict]:
                 f"act {act_id} attachment entry for chair {chair!r} carries no boolean "
                 "page_witness flag; its scope decides which consistency check applies"
             )
+        page_ordinal = entry.get("page_ordinal")
+        if page_witness:
+            if not isinstance(page_ordinal, int) or isinstance(page_ordinal, bool):
+                raise FatalAccounting(
+                    f"act {act_id} page witness {chair!r} has no integer page ordinal; its "
+                    "attachment cannot be placed; restore the contributing page identity"
+                )
+        elif page_ordinal is not None:
+            raise FatalAccounting(
+                f"act {act_id} act-scoped witness {chair!r} carries page ordinal "
+                f"{page_ordinal!r}; its scope is contradictory; restore null page_ordinal"
+            )
+        pair = (chair, page_ordinal)
+        if pair in seen_pairs:
+            raise FatalAccounting(
+                f"act {act_id} repeats attachment pair {pair!r}; its page evidence is "
+                "ambiguous; retain exactly one row per chair and contributing page"
+            )
+        seen_pairs.add(pair)
         if page_witness:
             alignment = entry.get("alignment")
             if not isinstance(alignment, dict) or alignment.get("status") not in {
@@ -301,12 +321,30 @@ def act_attachment_facts(context, act_id: str) -> dict[str, dict]:
         if chair in facts:
             if not (page_witness and facts[chair]["page_witness"]):
                 raise FatalAccounting(f"act {act_id} has ambiguous derived act-attachment facts")
+            if facts[chair]["content_health"] != fact["content_health"]:
+                raise FatalAccounting(
+                    f"act {act_id} page witness {chair!r} restates different content health "
+                    "across its pages; one act attempt cannot have two health records; "
+                    "restore the attempt's single recorded health"
+                )
             # A page witness has one attachment for every contributing page.
             # Its act-level floor remains the one act attempt, so a continuation
             # whose page has no anchor cannot erase the primary page's valid
             # attachment; all page references remain separately checked by the
             # content denominator below.
             facts[chair]["attached"] = facts[chair]["attached"] or fact["attached"]
+            if fact["anchor_basis"] is not None and (
+                facts[chair]["anchor_basis"] is None
+                or fact["anchor_basis"] == "act-line-not-located"
+            ):
+                # Only an attached row carries a basis. Preserve it whichever
+                # contributing page sorts first; otherwise an earlier-page
+                # continuation leaves the later primary alignment looking as
+                # though it had no checked geometry. A located-line failure is
+                # deliberately sticky if future page-specific attachments give
+                # one chair several aligned page rows: terminal blank cannot
+                # discard the one page whose geometry did not reconcile.
+                facts[chair]["anchor_basis"] = fact["anchor_basis"]
             continue
         facts[chair] = fact
     return facts
@@ -1162,36 +1200,59 @@ def reconcile_page_roles(
     """
     primary_page = {act["act_id"]: act["page_ordinal"] for act in expected_acts(context)}
     contributors: dict[int, set[str]] = {}
+    expected_page_records: set[tuple[int, str]] = set()
     for act_id, attachment in attachments.items():
         rows = _payload(attachment, f"attachment for {act_id}").get("attachments")
         if not isinstance(rows, list):
-            raise FatalAccounting(f"attachment for {act_id} has no rows")
+            raise FatalAccounting(
+                f"attachment for {act_id} has no row list; its page contributors cannot be "
+                "reconciled; restore the closed attachment payload"
+            )
         for row in rows:
             if not isinstance(row, dict) or not row.get("page_witness"):
                 continue
             ordinal = row.get("page_ordinal")
             if not isinstance(ordinal, int) or isinstance(ordinal, bool):
                 raise FatalAccounting(
-                    f"act {act_id} page-witness attachment carries no integer page ordinal"
+                    f"act {act_id} page-witness attachment carries no integer page ordinal; "
+                    "its page Testimonium cannot be addressed; restore the contributing page"
                 )
             if act_id not in primary_page:
                 raise FatalAccounting(
                     f"act {act_id} carries a page-witness attachment but the proposal seal "
-                    "names no such act"
+                    "names no such act; the page evidence has no sealed owner; restore the "
+                    "proposal partition or remove the foreign attachment"
                 )
+            chair = row.get("chair")
+            if not isinstance(chair, str) or not chair:
+                raise FatalAccounting(
+                    f"act {act_id} page-witness attachment has no chair identity; its page "
+                    "Testimonium cannot be reconciled; restore the configured chair name"
+                )
+            expected_page_records.add((ordinal, chair))
             contributors.setdefault(ordinal, set()).add(
                 "primary" if primary_page[act_id] == ordinal else "continuation"
             )
+    actual_page_records = set(page_testimonia)
+    missing = sorted(expected_page_records - actual_page_records)
+    orphaned = sorted(actual_page_records - expected_page_records)
+    if missing or orphaned:
+        raise FatalAccounting(
+            "page-witness attachments and current page Testimonia disagree: "
+            f"missing page/chair record(s) {missing}, orphaned record(s) {orphaned}; page "
+            "evidence cannot be reconciled; restore the retained Attestatores records"
+        )
     for (ordinal, chair), record in page_testimonia.items():
         payload = _payload(record, f"page Testimonium {record['artifact_id']}")
         roles = contributors.get(ordinal)
         if not roles:
-            # No act's attachment reaches this page, so there is no denominator
-            # to derive a role from and nothing here to refuse. That is not a
-            # silent pass: the content-coverage loop below reads the same page
-            # record and finds every character of it uncovered, which is a
-            # visible shortfall routed to review.
-            continue
+            # The pair-set reconciliation above makes this unreachable, but
+            # keep the local guard so a future caller cannot turn an orphaned
+            # record into an unowned finding no act review will publish.
+            raise FatalAccounting(
+                f"page {ordinal}'s Testimonium for chair {chair!r} has no attached act; its "
+                "finding would have no review owner; restore the page attachment denominator"
+            )
         # `next(iter(...))`, never `set.pop()`: `roles` is the shared set held in
         # `contributors`, and popping it would empty the page's own denominator
         # for the second chair that reads it.
@@ -1200,7 +1261,7 @@ def reconcile_page_roles(
             raise FatalAccounting(
                 f"page {ordinal}'s Testimonium for chair {chair!r} claims page_role "
                 f"{payload.get('page_role')!r}; the acts attached to that page make it "
-                f"{expected!r}"
+                f"{expected!r}; rebuild the page record from those retained attachments"
             )
 
 
@@ -1214,7 +1275,6 @@ def testimony_content_findings(context) -> dict[int, dict]:
     """
     attachments = current_act_attachments(context)
     page_testimonia = current_page_testimonia(context)
-    reconcile_page_roles(context, attachments, page_testimonia)
     # Read and validated once, not once per page witness: `expected_acts` re-reads
     # the proposal seal and re-verifies its self-hash on every call, and this stage
     # never writes to the Designator's seal while it runs.
@@ -1228,7 +1288,10 @@ def testimony_content_findings(context) -> dict[int, dict]:
                 continue
             ordinal = transform.get("source_page_ordinal")
             if not isinstance(ordinal, int) or isinstance(ordinal, bool):
-                raise FatalAccounting(f"Designator region of {act['act_id']} has no page ordinal")
+                raise FatalAccounting(
+                    f"Designator region of {act['act_id']} has no integer page ordinal; its "
+                    "page testimony cannot be grouped; restore the region's sealed transform"
+                )
             page_acts = acts_by_page.setdefault(ordinal, [])
             if act not in page_acts:
                 page_acts.append(act)
@@ -1251,7 +1314,6 @@ def testimony_content_findings(context) -> dict[int, dict]:
                 if (
                     not isinstance(row, dict)
                     or not row.get("page_witness")
-                    or not row.get("attached")
                     # Indexed, not defaulted: `reconcile_page_roles` above has
                     # already proved every page-witness row carries an integer
                     # page ordinal. A default of `ordinal` read "absent means
@@ -1266,9 +1328,14 @@ def testimony_content_findings(context) -> dict[int, dict]:
                     ATTESTATORES, "page-testimonium", page_testimonium["artifact_id"]
                 ):
                     raise FatalAccounting(
-                        f"act {act['act_id']} attached page witness {chair!r} references no "
-                        "current page Testimonium"
+                        f"act {act['act_id']} page witness {chair!r} on page {ordinal} "
+                        "references no current page Testimonium; retained evidence is missing "
+                        "or stale; restore the referenced Attestatores record"
                     )
+    # Reference every page row first, so a missing record names the act whose
+    # evidence was lost. The whole-page role reconciliation then catches the
+    # converse orphan (a page record no act owns) before any finding is built.
+    reconcile_page_roles(context, attachments, page_testimonia)
     findings: dict[int, dict] = {}
     for (ordinal, chair), record in page_testimonia.items():
         payload = _payload(record, f"page Testimonium {record['artifact_id']}")

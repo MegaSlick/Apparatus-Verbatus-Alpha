@@ -63,6 +63,22 @@ def invoke_stage(
     return subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
 
 
+def test_page_testimonium_role_with_an_unhashable_value_is_a_named_refusal():
+    """Malformed JSON-shaped input must not escape as a set-membership TypeError."""
+    payload = {field: None for field in attestatores.PAGE_TESTIMONIUM_FIELDS}
+    payload.update(
+        {
+            "scope": "page",
+            "page_ordinal": 1,
+            "page_role": [],
+            "unjoined_act_attempts": [],
+        }
+    )
+
+    with pytest.raises(SchemaRefusal, match="invalid page-scope facts.*cannot be placed"):
+        attestatores.validate_page_testimonium_payload(payload)
+
+
 def run_to_designator(
     tmp_path: Path,
     scenario: str,
