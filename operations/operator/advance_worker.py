@@ -1,4 +1,4 @@
-"""The separately executed, append-only advance decision worker."""
+"""Only this confined process may append an advance decision record."""
 
 from __future__ import annotations
 
@@ -39,7 +39,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             reason=reason,
             expected_digest=expected_digest,
         )
-    except (ContractError, OSError, ValueError, json.JSONDecodeError) as error:
+    except (ContractError, OSError, ValueError) as error:
         print(str(error), file=sys.stderr)
         return 2
     print(json.dumps(reference.to_record(), sort_keys=True))

@@ -1,4 +1,4 @@
-"""Read-only run-tree projection for the first operator console increment."""
+"""Project sealed run-tree evidence into a read-only operator shape."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from common.contracts.identities import artifact_id
 from common.contracts.stages import ARMARIUM, STAGES
 from common.runtree.store import RunTree
 
-from .advance import stored_boundary, verify_sealed_boundary
+from .advance import ADVANCE_SUBJECT_PREFIX, stored_boundary, verify_sealed_boundary
 from .errors import ErrorCode, OperatorError
 
 
@@ -95,10 +95,11 @@ class ReadOnlyRun:
                 pages,
                 acts,
                 _review_items(tree, payload),
-                _advance_records(tree, _boundary_states(boundaries)),
+                _advance_records(
+                    tree,
+                    {row["stage"]: row for row in boundaries if row.get("seal_present")},
+                ),
             )
-        except OperatorError:
-            raise
         except (ContractError, KeyError, OSError, TypeError, ValueError) as error:
             raise OperatorError(
                 ErrorCode.CONSOLE_TREE_UNREADABLE,
@@ -213,15 +214,6 @@ def _act_row(tree: RunTree, row: Any) -> dict[str, Any]:
     }
 
 
-ADVANCE_SUBJECT_PREFIX = "stage-boundary:"
-
-
-def _boundary_states(boundaries: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    """The present, valid-or-invalid state of each stored stage seal."""
-
-    return {row["stage"]: row for row in boundaries if row.get("seal_present")}
-
-
 def _advance_records(
     tree: RunTree, boundaries: dict[str, dict[str, Any]]
 ) -> tuple[dict[str, Any], ...]:
@@ -256,7 +248,7 @@ def _advance_records(
                 detail=f"receipt {relative_path} is not valid JSON",
             ) from error
         if not isinstance(decoded, dict) or decoded.get("schema") != "approval-record.v0":
-            continue  # not an approval record; some other receipt kind
+            continue
         record = validate_approval_record(decoded)
         if record["action"] != "advance":
             continue
@@ -354,8 +346,6 @@ def _review_items(tree: RunTree, payload: dict[str, Any]) -> tuple[dict[str, Any
             return tuple(
                 json.loads(line) for line in archive.read("review-items.jsonl").splitlines()
             )
-    except OperatorError:
-        raise
     except (OSError, ValueError, zipfile.BadZipFile) as error:
         raise OperatorError(
             ErrorCode.CONSOLE_TREE_UNREADABLE, detail="review-items.jsonl could not be read"

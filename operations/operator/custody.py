@@ -51,8 +51,6 @@ from operations.pod.models import _looks_like_credential_field
 
 from .errors import ErrorCode, OperatorError
 
-# --- The environment that crosses the boundary ---------------------------------------
-
 _WRITE_RIGHTS: Final = (
     "write-file,remove-dir,remove-file,make-char,make-dir,make-reg,make-sock,"
     "make-fifo,make-block,refer,truncate"
@@ -203,8 +201,6 @@ def require_no_provider_credentials(environment: dict[str, str] | None = None) -
         )
 
 
-# --- The per-platform confinement backends -------------------------------------------
-
 # ``setpriv`` exits with this code when it establishes no privilege change at
 # all -- including "Landlock is not supported"/"is supported but currently
 # disabled" on a kernel without it -- and therefore never execs the wrapped
@@ -257,7 +253,7 @@ class Confinement:
 
     def command(self, command: Sequence[str], *, writable: Path | None = None) -> list[str]:
         """Wrap `command` so the OS denies every write except below `writable`."""
-        raise NotImplementedError  # pragma: no cover - every backend overrides
+        raise NotImplementedError  # pragma: no cover
 
     def launcher_failure(self, completed: subprocess.CompletedProcess) -> str | None:
         """Name the boundary failure when the launcher never ran its target.
@@ -270,7 +266,7 @@ class Confinement:
 
     def enforcement(self) -> str:
         """Plain language for what this backend does and does not enforce."""
-        raise NotImplementedError  # pragma: no cover - every backend overrides
+        raise NotImplementedError  # pragma: no cover
 
 
 class LandlockConfinement(Confinement):
@@ -502,10 +498,7 @@ def _diagnostic(completed: subprocess.CompletedProcess) -> str:
     return (completed.stderr or completed.stdout or "").strip() or "no diagnostic"
 
 
-# --- Proving the boundary before trusting it ------------------------------------------
-
-# Runs inside the confinement and reports what the OS actually did. Its answer
-# has to distinguish three outcomes that an exit code alone cannot: mutation
+# The probe must distinguish three outcomes that an exit code alone cannot: mutation
 # and delegation were refused (the boundary holds), either succeeded (the
 # boundary is incomplete), and nothing ran at all (the launcher failed). Only the first is a
 # pass, so a launcher that silently declines to confine cannot be mistaken for
@@ -665,7 +658,7 @@ def _seccomp_filter_bytes() -> bytes:
     if machine == "x86_64":
         # An x32-ABI syscall reports AUDIT_ARCH_X86_64 with nr | 0x40000000, so
         # every exact-number comparison below would miss it and fall through to
-        # ALLOW — the security review's F1. Kill the whole x32 range instead of
+        # ALLOW. Kill the whole x32 range instead of
         # translating the table: nothing this worker runs is an x32 binary.
         instructions.extend(
             (
@@ -686,7 +679,7 @@ def _seccomp_filter_bytes() -> bytes:
 
 @contextmanager
 def _delegation_boundary(backend: Confinement) -> Iterator[None]:
-    """Keep one Linux seccomp filter file alive across probe and real exec."""
+    """The filter path must remain live across both the probe and real exec."""
 
     if not isinstance(backend, LandlockConfinement):
         yield
@@ -775,6 +768,6 @@ def run_confined(
 
 
 def landlock_command(command: Sequence[str], *, writable: Path | None = None) -> list[str]:
-    """The Linux backend's command, kept as a name for tests that target it directly."""
+    """Tests pin this compatibility name as part of the Linux boundary surface."""
 
     return LandlockConfinement().command(command, writable=writable)

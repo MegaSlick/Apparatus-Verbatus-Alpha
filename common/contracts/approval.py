@@ -35,7 +35,7 @@ from .errors import ApprovalRefusal
 # artifact naming anyone else is refused by the schema rather than by convention.
 APPROVER: Final = "Tyrel"
 
-# ``advance`` is deliberately distinct from ``other``.  It is the one operator
+# ``advance`` is deliberately distinct from ``other``. It is the one operator
 # decision that can move a staged run forward, and readers must be able to find
 # it without treating a free-text label as authority.
 ACTIONS: Final = ("advance", "exclusion", "salvage-promotion", "other")
@@ -162,9 +162,8 @@ def build_approval_record(
             "an approval must name the lowercase sha256 of the exact policy or target version "
             "it approved, or it goes on approving something that changed underneath it"
         )
-    # The last asymmetry between this and the validator. The validator refuses a
-    # blank or non-string timestamp; this did not check it at all, so a caller
-    # could seal `timestamp="   "` here and no reader would ever accept it back.
+    # Builder and validator must reject the same timestamps; otherwise this
+    # function could seal a record that no reader would accept back.
     if not isinstance(timestamp, str) or not timestamp.strip():
         raise ApprovalRefusal(
             "an approval with no timestamp cannot be reviewed later; when it was given "
@@ -207,13 +206,8 @@ def validate_approval_record(record: Any) -> dict[str, Any]:
         )
     ):
         raise ApprovalRefusal("approval record names no subjects")
-    # The validator is the gate for records read off disk, so it has to be at
-    # least as strict as the builder. It was not: the builder refuses an empty
-    # reason or target version, and this only checked that the keys existed — so a
-    # record written by hand or by another tool could pass with both blank, and
-    # its self-hash would verify happily, because a hash covers whatever bytes
-    # were sealed rather than whether they meant anything. The exact-version
-    # binding this module exists for would then name no target at all.
+    # A self-hash proves only that bytes are unchanged; records read from disk
+    # must also satisfy the builder's non-blank reason and target constraints.
     for field in ("reason", "timestamp"):
         value = record[field]
         if not isinstance(value, str) or not value.strip():

@@ -1,9 +1,7 @@
 """A local, read-only JSON console process.
 
-The initial console deliberately has no provider, subprocess, approval-builder,
-or run-tree-writer import.  It renders a review projection to stdout so a local
-web wrapper can consume the same shape later without expanding this process's
-authority today.
+It has no provider, subprocess, approval-builder, or run-tree-writer import.
+It accepts only an already-checked projection, never a path or writer capability.
 """
 
 from __future__ import annotations

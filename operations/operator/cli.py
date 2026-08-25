@@ -289,7 +289,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 reason=args.reason,
                 workspace=workspace,
             )
-        else:  # argparse owns this list, but an explicit branch prevents a silent no-op.
+        # Parser choices must never become a silent no-op if dispatch drifts.
+        else:
             raise OperatorError(
                 ErrorCode.INVALID_COMMAND, detail="the requested word has no action"
             )
@@ -299,7 +300,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     except KeyboardInterrupt:
         _print(OperatorError(ErrorCode.INTERRUPTED).render())
         return 2
-    except Exception as error:  # the only route raw implementation failures take to the operator
+    # Raw implementation failures must reach the same three-part operator contract.
+    except Exception as error:
         wrapped = OperatorError(ErrorCode.UNEXPECTED, detail=str(error))
         _print(wrapped.render())
         return 2

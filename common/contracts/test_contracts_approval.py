@@ -37,9 +37,6 @@ def approval(*, action="exclusion", target=None, timestamp="2026-08-04T12:00:00Z
     )
 
 
-# --- data-gate is gone as an action, not merely disused ---------------------------
-
-
 def test_data_gate_is_not_an_approvable_action():
     """Real input no longer needs a per-run approval, and this action no longer
     exists to claim one against. `exclusion` and `salvage-promotion` remain —
@@ -48,9 +45,6 @@ def test_data_gate_is_not_an_approvable_action():
     assert set(ACTIONS) == {"advance", "exclusion", "salvage-promotion", "other"}
     with pytest.raises(ApprovalRefusal, match="not one of"):
         approval(action="data-gate")
-
-
-# --- The record's shape: builder and validator agree exactly ---------------------
 
 
 @pytest.mark.parametrize("timestamp", ["", "   ", None, 20260804])
@@ -128,9 +122,6 @@ def test_a_record_missing_a_required_field_is_refused():
         validate_approval_record(record)
 
 
-# --- The closed ingress record: fixture or real, and nothing else ----------------
-
-
 def test_synthetic_fixture_ingress_round_trips():
     assert parse_ingress_record(synthetic_fixture_ingress_record()) == SYNTHETIC_FIXTURE_INGRESS
 
@@ -140,9 +131,7 @@ def test_real_ingress_round_trips():
 
 
 def test_real_ingress_carries_no_approval_evidence():
-    """A real run's ingress used to also carry a data-gate policy hash and an
-    approval reference. Neither exists any more: it is just which route created
-    the run."""
+    """Real ingress names only its route; it carries no approval or policy authority."""
     assert real_ingress_record() == {"mode": "real"}
 
 
@@ -159,9 +148,6 @@ def test_an_ingress_record_with_extra_fields_is_refused():
 def test_a_non_dict_ingress_record_is_refused():
     with pytest.raises(ApprovalRefusal, match="closed fixture-or-real record"):
         parse_ingress_record("real")
-
-
-# --- Who may mint an approval: GOVERNANCE's "no agent stands in for him" ---------
 
 
 # The three places the approval builder and writer may legitimately appear: the

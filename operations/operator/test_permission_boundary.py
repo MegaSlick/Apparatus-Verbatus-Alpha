@@ -1,4 +1,4 @@
-"""Acceptance tests for the read/trigger/one-record operator boundary."""
+"""The operator boundary may read sealed evidence and append only one record shape."""
 
 from __future__ import annotations
 
@@ -206,15 +206,10 @@ def test_advance_worker_is_external_and_binds_the_current_seal_digest(tmp_path: 
     assert "run_confined" in inspect.getsource(advance.trigger_advance)
 
 
-# The macOS Seatbelt profile is `deny default` with a global `file-read*`, so the
-# confined worker may read anything and load the extension modules `common.stage`
-# already pulls in at import — but not `ctypes`, whose libffi trampolines this
-# repository measured aborting a confined child (`custody._launcher_environment_hidden`
-# imports it inside a Linux-only branch for exactly that reason). Seal verification
-# reaches `common.stage._decode_environment`, and `import pypdfium2` there is a
-# `ctypes` import. A chamber cannot run Seatbelt, so these two tests reproduce the
-# *dependency* rather than the denial: they make the denied names unimportable and
-# ask which side of the worker boundary still works.
+# Seatbelt grants file reads but denies the executable libffi trampolines that
+# `ctypes` needs. Seal verification reaches `common.stage._decode_environment`,
+# whose `pypdfium2` import reaches `ctypes`; a Linux chamber cannot exercise
+# Seatbelt itself, so these tests reproduce that dependency boundary.
 _DENIED_UNDER_SEATBELT = ("ctypes", "_ctypes", "pypdfium2")
 
 _BLOCKED_IMPORT_PRELUDE = """
@@ -238,7 +233,7 @@ sys.meta_path.insert(0, _Denied())
 def _without_seatbelt_denied_imports(
     body: str, *arguments: str, stdin: str = ""
 ) -> subprocess.CompletedProcess:
-    """Run `body` in a fresh interpreter where the Seatbelt-denied names cannot import."""
+    """Chambers emulate only the import dependency that native Seatbelt denies."""
 
     source = _BLOCKED_IMPORT_PRELUDE.format(denied=_DENIED_UNDER_SEATBELT) + body
     return subprocess.run(
@@ -302,7 +297,7 @@ def test_the_confined_worker_completes_an_advance_without_the_imports_seatbelt_d
 def test_a_boundary_that_stopped_verifying_is_refused_before_the_worker_is_launched(
     tmp_path, monkeypatch
 ):
-    """The review's property, asserted where it now lives: in the parent.
+    """Invalid evidence must refuse in the parent before writable worker launch.
 
     Deleting a witnessed artifact leaves the stage-seal's own bytes untouched,
     so the reviewed digest still matches and the digest equality both sides
@@ -358,7 +353,7 @@ def test_console_process_cannot_import_writers_or_keep_provider_credentials(tmp_
     }
 
     if sys.platform != "linux":
-        return  # The platform-neutral assertions above still run on the macOS native gate.
+        return
     target = tmp_path / "evidence-mutation.txt"
     blocked = subprocess.run(
         custody.landlock_command(
@@ -383,9 +378,6 @@ def test_console_rejects_actual_process_arguments(monkeypatch):
 
     with pytest.raises(SystemExit, match="already-checked projection"):
         console.main()
-
-
-# --- The platform seam: Landlock is Linux-only; production is Tyrel's macOS host. -----
 
 
 def test_landlock_probe_absent_refuses_loudly_before_any_subprocess_runs(tmp_path, monkeypatch):
@@ -422,7 +414,7 @@ def test_landlock_probe_absent_refuses_loudly_before_any_subprocess_runs(tmp_pat
 
 
 class _StubConfinement(custody.Confinement):
-    """A backend that runs `command` however the test needs, and names itself."""
+    """Tests must exercise the production seam without requiring host confinement."""
 
     name = "stub confinement"
     platform = "stub"
@@ -488,7 +480,7 @@ def test_a_backend_that_does_not_actually_deny_writes_refuses_before_the_console
     a console that looks identical to a confined one.
     """
     run_root, run_id = _make_run(tmp_path)
-    _use_backend(monkeypatch, _StubConfinement(lambda command: command))  # no confinement at all
+    _use_backend(monkeypatch, _StubConfinement(lambda command: command))
 
     with pytest.raises(OperatorError) as review_error:
         cli._review_in_custody(run_root, run_id, ROOT)
@@ -508,15 +500,11 @@ def test_a_backend_that_does_not_actually_deny_writes_refuses_before_the_console
     assert "did not refuse both" in advance_error.value.detail
 
 
-# --- One seam, one backend per platform, and absence that says so. --------------------
-
-
 def test_the_platform_probe_picks_a_backend_and_never_leaves_one_silently_absent(monkeypatch):
     """Every platform gets an answer, and "none" is an answer that refuses."""
     assert isinstance(custody.confinement("linux"), custody.LandlockConfinement)
     assert isinstance(custody.confinement("darwin"), custody.SeatbeltConfinement)
 
-    # Stubbed in both directions: the probe follows the host it is told about.
     monkeypatch.setattr(custody.sys, "platform", "darwin")
     assert isinstance(custody.confinement(), custody.SeatbeltConfinement)
     monkeypatch.setattr(custody.sys, "platform", "linux")
@@ -528,7 +516,6 @@ def test_the_platform_probe_picks_a_backend_and_never_leaves_one_silently_absent
         orphan.command(["/bin/true"])
     assert excinfo.value.code == ErrorCode.CONSOLE_CUSTODY_REFUSED
     detail = excinfo.value.detail
-    # Says exactly what is and is not enforced, rather than only that it failed.
     assert "'win32'" in detail
     assert "no provider credential" in detail and "NOT enforced" in detail
 
@@ -548,7 +535,7 @@ def test_the_macos_backend_states_the_same_contract_landlock_does(tmp_path):
     assert "(deny network*)" in closed
     assert "mach-lookup" not in closed
     assert "process-fork" not in closed
-    assert "subpath" not in closed  # no allowance at all for the renderer
+    assert "subpath" not in closed
 
     writable = tmp_path / "runs" / "r1" / "receipts" / "sha256"
     writable.mkdir(parents=True)
@@ -576,8 +563,6 @@ def test_the_macos_backend_refuses_a_path_it_cannot_name_safely(tmp_path):
     quoted.mkdir()
     assert f'(subpath "{tmp_path.resolve()}/a\\"b")' in backend.profile(quoted)
 
-    # Not created on disk: no filesystem needs to accept this name for the
-    # profile builder to have to refuse it.
     hostile = tmp_path / 'x\n(allow file-write* (literal "y"))'
     with pytest.raises(OperatorError) as excinfo:
         backend.profile(hostile)
@@ -623,7 +608,7 @@ def test_probe_and_real_launch_pin_one_launcher_binary(monkeypatch):
 
 @pytest.mark.skipif(sys.platform == "darwin", reason="a native macOS host has sandbox-exec")
 def test_a_host_without_sandbox_exec_refuses_and_names_what_is_unenforced():
-    """Not stubbed: this Linux chamber genuinely has no ``sandbox-exec``."""
+    """An actual host without ``sandbox-exec`` must refuse and name the gap."""
     with pytest.raises(OperatorError) as excinfo:
         custody.confinement("darwin").command([sys.executable, "-c", "pass"])
     assert excinfo.value.code == ErrorCode.CONSOLE_CUSTODY_REFUSED
@@ -751,7 +736,6 @@ def test_no_caller_can_nominate_the_tree_the_confined_child_imports_from(tmp_pat
     assert Path(command[5]) == ROOT
     assert Path(command[5]) != other.resolve()
     assert str(other) not in command
-    # `workspace` is not an ignored parameter here; it is not a parameter.
     assert "workspace" not in inspect.signature(custody.python_module_command).parameters
 
 
@@ -852,9 +836,6 @@ def test_require_no_provider_credentials_refuses_on_the_same_marker_shapes():
     with pytest.raises(OperatorError) as excinfo:
         custody.require_no_provider_credentials({"OPENAI_API_KEY": "x", "SAFE": "yes"})
     assert excinfo.value.code == ErrorCode.CONSOLE_CUSTODY_REFUSED
-
-
-# --- The advance record: both layers of the two-layer claim, and its visibility. ------
 
 
 def test_review_marks_invalid_and_advance_refuses_when_a_sealed_inventory_lost_evidence(tmp_path):
@@ -981,7 +962,7 @@ def test_verify_advance_detects_a_boundary_that_changed_after_it_was_advanced(tm
         workspace=ROOT,
         expected_digest=_boundary_digest(run_root, run_id),
     )
-    advance.verify_advance(tree, "armarium", reference)  # still names the advanced boundary
+    advance.verify_advance(tree, "armarium", reference)
 
     seal, _ = advance.sealed_boundary(tree, "armarium")
     record = tree.read_artifact("armarium", "stage-seal", seal["artifact_id"])
@@ -1158,9 +1139,6 @@ def test_confirmed_digest_changed_before_worker_launch_is_refused_without_a_reco
     assert {path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")} == before
 
 
-# --- The trigger: a hostile run tree can lie to a person, never to evidence. -----------
-
-
 def test_a_path_traversal_image_reference_in_the_run_tree_is_refused_not_read(tmp_path):
     """A poisoned Armarium export cannot make the console read outside the run tree."""
     run_root, run_id = _make_run(tmp_path)
@@ -1213,17 +1191,9 @@ def test_hostile_projection_content_reaches_the_terminal_only_as_inert_escaped_t
     assert "pwned" in out
 
 
-# --- The advance action's authority shape: 0D's doctrine, in operations/. -------------
-
-# The one module under `operations/operator/` that may reach the approval
-# builder or the run tree's approval writer. 0D's own boundary test
-# (`common/contracts/test_contracts_approval.py`) scans `pipeline/` and
-# `common/` and deliberately stops there — the console is neither, and the
-# whole point of Unit 4 is that a *person* acting through operations/ may
-# append one record. Widening that test to `operations/` would only have
-# forced an exemption for this file into a governed contract module. The
-# boundary that actually matters here is narrower and belongs here: the
-# console may build exactly the advance record and nothing else.
+# Producer code under `pipeline/` and `common/` may never mint its own approval.
+# The operator package has one narrower exception for recording a human advance:
+# only this module may reach the builder or writer, and only for that action.
 APPROVAL_MINTING_OPERATOR_MODULES = frozenset({"operations/operator/advance.py"})
 
 OPERATOR_PACKAGE = Path(__file__).resolve().parent
@@ -1317,9 +1287,6 @@ def test_an_advance_naming_a_stage_that_is_not_one_writes_nothing(tmp_path):
         advance.record_advance(tree, "../../etc", reason="reviewed")
 
     assert {path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")} == before
-
-
-# --- The custody walk: what a hostile or awkward run tree can and cannot do. ----------
 
 
 def test_a_symlink_inside_the_run_tree_pointing_outside_it_is_refused_not_followed(tmp_path):

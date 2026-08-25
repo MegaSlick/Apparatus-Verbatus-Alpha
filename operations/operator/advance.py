@@ -28,21 +28,23 @@ from .custody import (
 from .errors import ErrorCode, OperatorError
 
 ADVANCE_ACTION = "advance"
+ADVANCE_SUBJECT_PREFIX = "stage-boundary:"
 UTC = timezone.utc
 
 
 def advance_subject(stage: str) -> str:
-    """Return the closed subject name for one stage completion boundary."""
+    """Subjects are derived only from the closed stage list, never caller text."""
 
     if stage not in STAGES:
         raise ApprovalRefusal(f"advance names unknown stage {stage!r}; no boundary was advanced")
-    return f"stage-boundary:{stage}"
+    return f"{ADVANCE_SUBJECT_PREFIX}{stage}"
 
 
 def verify_sealed_boundary(tree: RunTree, stage: str) -> None:
     """Verify that one stored seal still witnesses the evidence now on disk."""
 
-    advance_subject(stage)  # refuses an unknown stage before anything is read
+    # Unknown stages must refuse before a caller can observe any run-tree state.
+    advance_subject(stage)
     if stage == ARMARIUM:
         verify_final_seal(tree)
         return
@@ -241,8 +243,7 @@ def trigger_advance(
     # while the child resolves the same string against `workspace`, so a
     # relative path sends the permitted directory and the tree the worker
     # opens to two different places — the boundary would then guard a tree
-    # nobody wrote to. (Same defect class the rebuild plan names for the
-    # orchestrator's own `--run-root`.)
+    # nobody wrote to.
     root = Path(run_root).resolve()
     tree = RunTree(root, run_id)
     # **This is the boundary's verification, and it happens here because the
@@ -267,8 +268,7 @@ def trigger_advance(
                 "advance to whatever boundary happens to be current"
             ),
         )
-    checked_digest = expected_digest
-    if checked_digest != current_digest:
+    if expected_digest != current_digest:
         raise OperatorError(
             ErrorCode.ADVANCE_REFUSED,
             detail=(
@@ -287,7 +287,7 @@ def trigger_advance(
     # granted. `validate_run_id` has already refused anything but
     # `[a-z0-9._-]`, and `root` is absolute, so neither value can be read by
     # the child's parser as an option.
-    request = json.dumps({"stage": stage, "reason": reason, "expected_digest": checked_digest})
+    request = json.dumps({"stage": stage, "reason": reason, "expected_digest": expected_digest})
     command = python_module_command(
         "operations.operator.advance_worker",
         "--run-root",
@@ -316,7 +316,7 @@ def trigger_advance(
         if (
             record["action"] != ADVANCE_ACTION
             or record["subject_ids"] != [advance_subject(stage)]
-            or record["target_version_hash"] != checked_digest
+            or record["target_version_hash"] != expected_digest
             or record["reason"] != reason
         ):
             raise ApprovalRefusal("the advance worker returned a different decision record")
