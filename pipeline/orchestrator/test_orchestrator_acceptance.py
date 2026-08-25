@@ -913,7 +913,46 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # placement seal): both sides above measured trees missing the other's
 # change; the value below is measured on THIS tree, twice, independent
 # roots, rid "r", via this module's own helpers.
-HAPPY_RUN_TREE_DIGEST = "95e20da2de4f1fc8939b0973287ba25cb889c0f3238794fcc622d9e325d93c79"
+# Unit 19B Sonnet audit round 2: consult §3.2 step 7 and §7 forbidden shape 19
+# named `page_id = page_ids[0]` a representative-singular picker shape and
+# required its removal from the audit draft/finding payload; it is now gone
+# from `common/perlector_audit.py`'s closed field sets, so the byte this
+# digest covers shrinks by that one key on every act's audit chain. No file
+# count or exit changes (happy 97/0, review 106/3). Measured twice in
+# independent temporary roots at canonical run id "r" through this module's
+# own `orchestrate` and `semantic_snapshot_digest` helpers.
+# Unit 19B build round 3: `run.py`'s main loop now reads every logical act
+# through `combined.run_logical_passes`, fed by `logical_reading.py`'s own
+# physical-act partition (`build_run_partition`, `common/physical_act_partition.py`)
+# and cross-capture autopsia (`act_autopsia`, `common/cross_capture_autopsia.py`)
+# rather than one `build_reader_dossier` call per pass. The partition is one
+# run-level artifact, sealed once and published as its own content-addressed
+# blob under the Perlector's own stage (consult §9.1's Designator ownership is
+# a recorded deviation, not a silent relocation -- see `logical_reading.py`'s
+# module docstring) -- one new file per run, not per act. Every act's
+# published dossier also carries the new `logical_act_id` and
+# `cross_capture_autopsia` fields, and every stored payload carries the new
+# `autopsia` field, moving the digest again on every existing file. No test
+# scenario in this fixture registers a physical page, so every act still
+# resolves as `image-local-singleton` and no reading, flag, or recovery
+# decision changes: exits stay 0 (happy) and 3 (review); file counts move by
+# exactly the one new partition blob, 97 -> 98 (happy) and 106 -> 107
+# (review). Measured twice in independent temporary roots at canonical run id
+# "r" through this module's own `orchestrate` and `semantic_snapshot_digest`
+# helpers.
+# Unit 19B Opus audit: the lectio-prior and lectio-nuda dossiers no longer
+# carry `witness_covered` on their region rows. `build_dossier` omits that key
+# entirely when it is handed no testimonia, and the pre-19B path built each
+# unprimed pass with `testimonia=[]`; the combined path builds one dossier with
+# witnesses and strips it per arm, and the strip stopped at `testimonia` --
+# leaving the unprimed instrument holding a witness-derived fact about every
+# region, which is the same defect an earlier pre-push review round already
+# removed once (see the `witness_covered` note further up this comment block).
+# Only the lectio-prior/nuda payloads move; file counts and exits are
+# unchanged (happy 98/0, review 107/3). Measured twice in independent
+# temporary roots at canonical run id "r" through this module's own
+# `orchestrate` and `semantic_snapshot_digest` helpers.
+HAPPY_RUN_TREE_DIGEST = "edd471b1d09807324f1756d17f19ba3356be3570809bc9d54b611fcd664164aa"
 # Review only, once more in the same seat: a page witness invoked on every act
 # and unusable on all of them now records the serving moment that produced it
 # (`provenance_for(..., attempted=attempted_page)`), where the `reading` gate
@@ -975,7 +1014,25 @@ HAPPY_RUN_TREE_DIGEST = "95e20da2de4f1fc8939b0973287ba25cb889c0f3238794fcc622d9e
 # placement seal): both sides above measured trees missing the other's
 # change; the value below is measured on THIS tree, twice, independent
 # roots, rid "r", via this module's own helpers.
-REVIEW_RUN_TREE_DIGEST = "8da6af3cb73b253dfe84f9ebb9792bcaadb9911c9c55e3014669ecf828f790b2"
+# Unit 19B Sonnet audit round 2: same `page_id` removal as the happy digest
+# above. Review's own recovery/audit chains lose the same one key per act;
+# no file count or exit change (106 files, exit 3). Measured twice in
+# independent temporary roots at canonical run id "r" through this module's
+# own `orchestrate` and `semantic_snapshot_digest` helpers.
+# Unit 19B build round 3: same combined cross-capture wiring as the happy
+# digest above (see that comment for the mechanism). Review's own recovery
+# and audit chains gain the same `logical_act_id`/`cross_capture_autopsia`/
+# `autopsia` fields, and the run gains the same one new partition blob; exit
+# stays 3 and file count moves 106 -> 107. Measured twice in independent
+# temporary roots at canonical run id "r" through this module's own
+# `orchestrate` and `semantic_snapshot_digest` helpers.
+# Unit 19B Opus audit: same `witness_covered` removal from the unprimed
+# dossiers as the happy digest above. Review publishes a lectio-prior for
+# every act it reads, including the recovered ones, so the same one key leaves
+# each of them; file count stays 107 and the exit stays 3. Measured twice in
+# independent temporary roots at canonical run id "r" through this module's
+# own `orchestrate` and `semantic_snapshot_digest` helpers.
+REVIEW_RUN_TREE_DIGEST = "7964828990392a4c3e62011ced6e433651ebd21b41c98c698960ccd91e71c8b1"
 
 
 def orchestrate(
@@ -4729,7 +4786,9 @@ def test_repeating_the_identical_command_leaves_every_byte_unchanged(tmp_path):
     # the happy walking skeleton; repeatability still compares every byte.
     # Unit 12 adds four more files: one content-addressed raw Churro response
     # per (page, chair), retained before the XML is parsed at all.
-    assert len(before) == 97
+    # Unit 19B build round 3 adds one more: the run's own sealed physical-act
+    # partition blob (see the HAPPY_RUN_TREE_DIGEST comment above).
+    assert len(before) == 98
     assert semantic_snapshot_digest(root) == HAPPY_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "happy").returncode == 0
     after = snapshot(root)
@@ -4778,8 +4837,9 @@ def test_repeating_the_review_scenario_also_changes_nothing(tmp_path):
     # recovery loop; its append-only invariant is unchanged. Unit 14B Sonnet
     # audit: 106, not 118 -- the ink-confirmation gate (consult §4.5) removes
     # the second recovery round a2's unconfirmed witness box used to spend
-    # (see the REVIEW_RUN_TREE_DIGEST comment above).
-    assert len(before) == 106
+    # (see the REVIEW_RUN_TREE_DIGEST comment above). Unit 19B build round 3
+    # adds one more: the same sealed physical-act partition blob happy gains.
+    assert len(before) == 107
     assert semantic_snapshot_digest(root) == REVIEW_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "review").returncode == 3
     assert snapshot(root) == before

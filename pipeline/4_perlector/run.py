@@ -37,7 +37,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import annotations  # noqa: E402
 import audit  # noqa: E402
+import combined  # noqa: E402
 import dossier as dossier_module  # noqa: E402
+import logical_reading  # noqa: E402
 import nuda  # noqa: E402
 import prompts  # noqa: E402
 import protocol  # noqa: E402
@@ -64,6 +66,10 @@ from common.contracts.errors import (  # noqa: E402
 from common.contracts.identities import artifact_id, perlector_attempt_id  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR, PERLECTOR  # noqa: E402
 from common.corpus_register import refuse_preference  # noqa: E402
+from common.cross_capture_autopsia import (  # noqa: E402
+    atomic_delivered_pixels,
+    over_capacity_reason,
+)
 from common.exemplar_boundary import verify_exemplar_crop_lineage  # noqa: E402
 from common.imaging import dimensions  # noqa: E402
 from common.native_witness import (  # noqa: E402
@@ -1389,12 +1395,23 @@ def validate_reading_payload(
         "testimonia",
         "dossier_digest",
     }
-    if not isinstance(reading_dossier, dict) or set(reading_dossier) not in (
-        dossier_fields,
-        dossier_fields | {"act_attachment"},
-        dossier_fields | {"prior_draft", "prior_draft_view"},
-        dossier_fields | {"act_attachment", "prior_draft", "prior_draft_view"},
-    ):
+    # Unit 19B: a reading built through the combined cross-capture path also
+    # carries its logical identity and the complete capture presentation it was
+    # read from. The pair travels together or not at all -- never one naming a
+    # logical act with no presentation behind it, and never the reverse.
+    _dossier_optional_variants = (
+        set(),
+        {"act_attachment"},
+        {"prior_draft", "prior_draft_view"},
+        {"act_attachment", "prior_draft", "prior_draft_view"},
+    )
+    _cross_capture_fields = {"logical_act_id", "cross_capture_autopsia"}
+    _allowed_dossier_shapes = tuple(
+        dossier_fields | variant | extra
+        for variant in _dossier_optional_variants
+        for extra in (set(), _cross_capture_fields)
+    )
+    if not isinstance(reading_dossier, dict) or set(reading_dossier) not in _allowed_dossier_shapes:
         raise SchemaRefusal("a Perlector reading carries no closed dossier record")
     if reading_dossier["act_key"] != payload["act_key"]:
         raise SchemaRefusal("a Perlector reading disagrees with its dossier's act key")
@@ -1832,7 +1849,10 @@ def _sealed_sibling_semi_finals(
         draft_payload = chain["draft"]["payload"]
         finding_payload = chain["finding"]["payload"]
         expected_page = expected[order_by_id[act_id]]["page_id"]
-        if draft_payload["page_id"] != expected_page or finding_payload["page_id"] != expected_page:
+        if (
+            expected_page not in draft_payload["page_ids"]
+            or expected_page not in finding_payload["page_ids"]
+        ):
             raise FatalAccounting(
                 f"sealed sibling Perlectio for {act_id} does not reconcile with its audit chain"
             )
@@ -1927,6 +1947,31 @@ def _page_flags(
     return audit.flags_once_per_page(frozen)
 
 
+def _reseal_dossier(dossier: dict[str, Any]) -> dict[str, Any]:
+    """Recompute a dossier's digest over its complete, final field set.
+
+    `build_dossier` seals `dossier_digest` over whatever it was given at
+    construction. The combined cross-capture path (`combined.py`,
+    `cross_capture_autopsia.assemble_reader_input`) adds `logical_act_id` and
+    `cross_capture_autopsia` -- and, for the establishing pass, `prior_draft`
+    and `prior_draft_view` -- to an already-sealed dossier, so the digest that
+    dossier carries out of that path no longer covers everything in it. This
+    reproduces `build_dossier`'s own convention (digest of every field except
+    `dossier_digest` itself) over the dossier's actual final content, which is
+    exactly what `validate_reading_payload` checks a published dossier against.
+    """
+    body = {key: value for key, value in dossier.items() if key != "dossier_digest"}
+    # `build_dossier` sweeps for preference-bearing keys immediately before it
+    # seals, so that the guard standing over GOVERNANCE 3 runs on the production
+    # path and not only in the tests. The combined path adds fields *after* that
+    # sweep, so the sweep no longer covered the bytes actually published. It runs
+    # again here, over the dossier's real final content, for the same reason it
+    # runs there: a preference field sealed into the digest is already in the
+    # record by the time anyone could object.
+    dossier_module.assert_no_order_bearing_field(body)
+    return {**body, "dossier_digest": digest_of(body)}
+
+
 def _publish_lectio_nuda(
     context,
     *,
@@ -1934,11 +1979,11 @@ def _publish_lectio_nuda(
     act_id: str,
     ordinal: int,
     chair: ChairIdentity,
+    dossier: dict[str, Any],
+    result: dict[str, Any],
     bases: list[dict],
     page_renders: list[dict],
-    reader: FixtureReader,
     region_pixels: int,
-    witness_context_table: dict,
     protocol_config: dict[str, str],
     protocol_sha256: str,
     approval_ref: ApprovalRecordBinding,
@@ -1951,19 +1996,14 @@ def _publish_lectio_nuda(
     that queries `kind == "perlectio"`, and outside the identity space
     `latest_attempt`'s `attempt_id` derivation binds to `perlegere` readings,
     so nothing can ever conflate a nuda attempt with an establishing one.
+
+    `dossier` and `result` are already the delivered dossier and reader result
+    from `combined.run_logical_passes` -- the reader call itself, and the
+    complete atomic capture presentation it was called with, live there, one
+    logical act at a time, never once per capture here (consult §3.1, §7.9).
     """
-    nuda_dossier, delivered_pixels = dossier_module.build_reader_dossier(
-        context,
-        act_id=act_id,
-        act_key=act["act_key"],
-        regions=bases,
-        testimonia=[],
-        regime=context.witness_context,
-        page_renders=page_renders,
-        witness_context=witness_context_table,
-    )
+    nuda_dossier = _reseal_dossier(dossier)
     prompt = prompts.prompt_evidence(chair, nuda_dossier, protocol_config, protocol_sha256)
-    result = reader.read(nuda_dossier, pass_kind="lectio-nuda", delivered_pixels=delivered_pixels)
     truncation_record = truncation.classify(
         result["text"], region_pixels=region_pixels, stop_reason=result["stop_reason"]
     )
@@ -2014,27 +2054,24 @@ def _publish_lectio_prior(
     act_id,
     ordinal,
     chair,
+    dossier: dict[str, Any],
+    result: dict[str, Any],
     bases,
     page_renders,
-    reader,
     region_pixels,
-    witness_context_table,
     protocol_config,
     protocol_sha256,
 ) -> dict:
-    """Pass A is universal and un-fed; it is a retained draft, never a Perlectio."""
-    prior_dossier, delivered_pixels = dossier_module.build_reader_dossier(
-        context,
-        act_id=act_id,
-        act_key=act["act_key"],
-        regions=bases,
-        testimonia=[],
-        regime=context.witness_context,
-        page_renders=page_renders,
-        witness_context=witness_context_table,
-    )
+    """Pass A is universal and un-fed; it is a retained draft, never a Perlectio.
+
+    `dossier`/`result` are the already-delivered lectio-prior dossier and
+    reader result from `combined.run_logical_passes`; this is called from
+    inside that one logical-act call, as its `publish_prior` hook, so the
+    establishing pass below can embed this artifact's real reference rather
+    than a bare draft string.
+    """
+    prior_dossier = _reseal_dossier(dossier)
     prompt = prompts.prompt_evidence(chair, prior_dossier, protocol_config, protocol_sha256)
-    result = reader.read(prior_dossier, pass_kind="lectio-prior", delivered_pixels=delivered_pixels)
     truncation_record = truncation.classify(
         result["text"], region_pixels=region_pixels, stop_reason=result["stop_reason"]
     )
@@ -2090,33 +2127,20 @@ def _publish_primed_without_prior(
     act_id,
     ordinal,
     chair,
+    dossier: dict[str, Any],
+    result: dict[str, Any],
     bases,
     page_renders,
-    reader,
     region_pixels,
     testimonia,
     attachment_view,
-    witness_context_table,
     protocol_config,
     protocol_sha256,
     approval_ref: ApprovalRecordBinding,
 ) -> None:
     """The sampled control sees witnesses but never the Pass-A draft."""
-    control_dossier, delivered_pixels = dossier_module.build_reader_dossier(
-        context,
-        act_id=act_id,
-        act_key=act["act_key"],
-        regions=bases,
-        testimonia=testimonia,
-        regime=context.witness_context,
-        page_renders=page_renders,
-        witness_context=witness_context_table,
-        act_attachment=attachment_view,
-    )
+    control_dossier = _reseal_dossier(dossier)
     prompt = prompts.prompt_evidence(chair, control_dossier, protocol_config, protocol_sha256)
-    result = reader.read(
-        control_dossier, pass_kind="primed-without-prior", delivered_pixels=delivered_pixels
-    )
     truncation_record = truncation.classify(
         result["text"], region_pixels=region_pixels, stop_reason=result["stop_reason"]
     )
@@ -2239,6 +2263,17 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         raise ContractError(f"asked to read {args.act}, which the proposal seal does not name")
     preflight_testimonia_denominator(context, wanted)
 
+    # Unit 19B: the total local-to-logical denominator, built once against the
+    # complete proposal seal (consult §2.1.7) -- not only `wanted`, which a
+    # recovery invocation may have narrowed to one act. Every act this loop
+    # reads resolves its `logical_act_id` from this same partition, and every
+    # establishing call below reads the complete registered capture set for
+    # that logical act, never one capture read alone and reconciled later.
+    partition, partition_ref = logical_reading.build_run_partition(context, expected)
+    max_images = protocol_config.get("max_images")
+    if not isinstance(max_images, int) or isinstance(max_images, bool):
+        max_images = None
+
     read = 0
     acknowledged = 0
     pending: list[dict[str, Any]] = []
@@ -2357,72 +2392,51 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         region_pixels = _region_pixels(bases)
         page_renders = _page_renders_for(context, bases)
 
-        # The unprimed instrument, sampled by the run's own predeclared design
-        # (`nuda_per_mille`, fixed before the run). Ahead of the establishing
-        # pass in this loop, but the two are independent artifacts; nothing
-        # about the nuda reading feeds the primed one or vice versa.
-        if nuda.is_nuda_sampled(
-            act_id, run_id=context.tree.run_id, nuda_per_mille=context.nuda_per_mille
-        ):
-            _publish_lectio_nuda(
-                context,
-                act=act,
-                act_id=act_id,
-                ordinal=ordinal,
-                chair=chair,
-                bases=bases,
-                page_renders=page_renders,
-                reader=reader,
-                region_pixels=region_pixels,
-                witness_context_table=witness_context_table,
-                protocol_config=protocol_config,
-                protocol_sha256=protocol_sha256,
-                approval_ref=nuda_approval,
-            )
-
-        prior = _publish_lectio_prior(
+        # Unit 19B: this act's logical identity and its complete cross-capture
+        # presentation, resolved from the run's one physical-act partition.
+        # Every registered capture the run.py loop will show a reader is
+        # named here, before any reader call -- a missing one refuses through
+        # `build_autopsia_from_run`'s `cluster-member-absent`, never silently.
+        logical_act_id = logical_reading.logical_act_id_for(partition, act_id)
+        autopsia = logical_reading.act_autopsia(
             context,
+            logical_act_id=logical_act_id,
+            partition_ref=partition_ref,
             act=act,
-            act_id=act_id,
-            ordinal=ordinal,
-            chair=chair,
             bases=bases,
             page_renders=page_renders,
-            reader=reader,
-            region_pixels=region_pixels,
-            witness_context_table=witness_context_table,
-            protocol_config=protocol_config,
-            protocol_sha256=protocol_sha256,
         )
-
-        frame_membership = context.run["corpus_frame_membership"]
-        if protocol.is_control_sampled(
-            act_id,
-            frame_digest=frame_membership["frame_digest"],
-            page_digest=frame_membership["page_digest"],
-            seed=frame_membership["seed"],
-            per_mille=context.perlector_instrument_per_mille,
-        ):
-            _publish_primed_without_prior(
-                context,
-                act=act,
-                act_id=act_id,
-                ordinal=ordinal,
-                chair=chair,
-                bases=bases,
-                page_renders=page_renders,
-                reader=reader,
-                region_pixels=region_pixels,
-                testimonia=testimonia,
-                attachment_view=attachment_view,
-                witness_context_table=witness_context_table,
-                protocol_config=protocol_config,
-                protocol_sha256=protocol_sha256,
-                approval_ref=instrument_approval,
+        # Consult §3.1: a presentation the sealed serving recipe cannot take in
+        # one request is a named finding and a not-run Perlectio for this
+        # logical act -- asked here, before the dossier is built and before any
+        # arm is called, so the reader is genuinely never invoked. Routing it
+        # this way rather than letting the transport's own refusal escape keeps
+        # one over-capacity cluster from taking every other act's reading down
+        # with it: a stage that exits fatal here reads nothing at all, and
+        # GOALS 1 counts a missed act as the worse loss. Chunking the views
+        # remains unreachable either way.
+        capacity_finding = over_capacity_reason(autopsia, max_images)
+        if capacity_finding is not None:
+            payload = {
+                "act_key": act["act_key"],
+                "attempt_ordinal": ordinal,
+                "reason": capacity_finding,
+                "basis": {"regions": [], "testimonia": []},
+                "dissent": [],
+                "provenance": provenance_for(context, chair, attempted=False),
+            }
+            validate_not_run_payload(payload, fields=_NOT_RUN_ABSENT_FIELDS)
+            context.publish(
+                kind="perlectio",
+                subject_id=act_id,
+                outcome="not-run",
+                attempt=perlector_attempt_id(act_id, "perlegere", ordinal),
+                payload=payload,
             )
+            acknowledged += 1
+            continue
 
-        # The establishing read: every testimonium in the dossier, verbatim.
-        primed_dossier, delivered_pixels = dossier_module.build_reader_dossier(
+        base_dossier = dossier_module.build_dossier(
             context,
             act_id=act_id,
             act_key=act["act_key"],
@@ -2432,16 +2446,123 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             page_renders=page_renders,
             witness_context=witness_context_table,
             act_attachment=attachment_view,
-            prior_draft=prior,
-            prior_draft_view="fed" if context.draft_fed else "withheld",
         )
-        # Built before the reader is called, from the dossier the reader is
-        # about to be shown, so what is recorded is the prompt this reading was
-        # produced through rather than one reconstructed afterwards.
+
+        # The unprimed instrument, sampled by the run's own predeclared design
+        # (`nuda_per_mille`, fixed before the run) -- an independent artifact
+        # from the establishing pass, decided once per logical act rather than
+        # once per capture, exactly as the control sample below is.
+        nuda_sampled = nuda.is_nuda_sampled(
+            act_id, run_id=context.tree.run_id, nuda_per_mille=context.nuda_per_mille
+        )
+        frame_membership = context.run["corpus_frame_membership"]
+        control_sampled = protocol.is_control_sampled(
+            act_id,
+            frame_digest=frame_membership["frame_digest"],
+            page_digest=frame_membership["page_digest"],
+            seed=frame_membership["seed"],
+            per_mille=context.perlector_instrument_per_mille,
+        )
+
+        def _publish_prior_and_get_draft(
+            prior_dossier,
+            prior_result,
+            *,
+            _act=act,
+            _act_id=act_id,
+            _ordinal=ordinal,
+            _bases=bases,
+            _page_renders=page_renders,
+            _region_pixels=region_pixels,
+        ):
+            # Called synchronously inside `combined.run_logical_passes`,
+            # immediately after its lectio-prior call and before it assembles
+            # the establishing pass -- so this closure always runs within the
+            # same loop iteration whose `act`/`act_id` it captures, and that
+            # pass can embed this artifact's real reference instead of a bare
+            # draft string with nothing to point at. Bound as defaults (never
+            # read from the enclosing scope at call time) so a static loop-
+            # variable check cannot mistake this synchronous call for a
+            # deferred one closing over next iteration's values.
+            return _publish_lectio_prior(
+                context,
+                act=_act,
+                act_id=_act_id,
+                ordinal=_ordinal,
+                chair=chair,
+                dossier=prior_dossier,
+                result=prior_result,
+                bases=_bases,
+                page_renders=_page_renders,
+                region_pixels=_region_pixels,
+                protocol_config=protocol_config,
+                protocol_sha256=protocol_sha256,
+            )
+
+        # One combined call for every requested arm of this logical act
+        # (consult §3.1, §3.2): the complete registered capture set is
+        # delivered once per arm in a single atomic reader invocation, never
+        # once per capture with the results reconciled afterward -- the
+        # forbidden shape this call path makes structurally unreachable.
+        passes = combined.run_logical_passes(
+            reader,
+            autopsia=autopsia,
+            dossier=base_dossier,
+            read_bytes=context.tree.read_bytes,
+            protocol_config=protocol_config,
+            nuda_sampled=nuda_sampled,
+            control_sampled=control_sampled,
+            draft_fed=context.draft_fed,
+            publish_prior=_publish_prior_and_get_draft,
+        )
+
+        if nuda_sampled:
+            _publish_lectio_nuda(
+                context,
+                act=act,
+                act_id=act_id,
+                ordinal=ordinal,
+                chair=chair,
+                dossier=passes["lectio-nuda"]["dossier"],
+                result=passes["lectio-nuda"]["result"],
+                bases=bases,
+                page_renders=page_renders,
+                region_pixels=region_pixels,
+                protocol_config=protocol_config,
+                protocol_sha256=protocol_sha256,
+                approval_ref=nuda_approval,
+            )
+
+        if control_sampled:
+            _publish_primed_without_prior(
+                context,
+                act=act,
+                act_id=act_id,
+                ordinal=ordinal,
+                chair=chair,
+                dossier=passes["primed-without-prior"]["dossier"],
+                result=passes["primed-without-prior"]["result"],
+                bases=bases,
+                page_renders=page_renders,
+                region_pixels=region_pixels,
+                testimonia=testimonia,
+                attachment_view=attachment_view,
+                protocol_config=protocol_config,
+                protocol_sha256=protocol_sha256,
+                approval_ref=instrument_approval,
+            )
+
+        # The establishing read: every testimonium in the dossier, verbatim,
+        # and every registered capture of this logical act delivered in the
+        # one atomic call above (consult §3.2 step 6) -- never one capture's
+        # reading chosen or merged with another's.
+        primed_dossier = _reseal_dossier(passes["perlectio"]["dossier"])
+        result = passes["perlectio"]["result"]
+        prior = primed_dossier["prior_draft"]
+        # The prompt is reproduced from the dossier the reader was actually
+        # shown, so what is recorded is the prompt this reading was produced
+        # through rather than one reconstructed afterwards.
         prompt = prompts.prompt_evidence(chair, primed_dossier, protocol_config, protocol_sha256)
-        result = reader.read(
-            primed_dossier, pass_kind="perlectio", delivered_pixels=delivered_pixels
-        )
 
         # The scenario's declared engine behaviour stands in for a real
         # engine's own report and, when present, decides `reading` and
@@ -2527,6 +2648,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "testimonia": testimonia,
                 "attachment_view": attachment_view,
                 "prior": prior,
+                "autopsia": autopsia,
                 "inputs": _reading_image_inputs(context, bases, page_renders)
                 + list(testimonium_references.values())
                 + [attachment_view["reference"], prior["reference"]],
@@ -2559,25 +2681,15 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         protocol_sha256=protocol_sha256,
     )
     policy_record = audit.policy_record(audit_policy, audit_sha256)
-    # One page's renders at a time: flags are common (the fixture flags every
-    # act), so the re-proof rebuild below runs for most acts on a real run.
-    # Page renders are the expensive half and are per PAGE, not per act;
-    # `pending` walks acts in declared order, so a single-slot cache keyed by
-    # the act's page set removes the repeated render work while keeping peak
-    # memory bounded to one page -- the same bound the no-hoarding comment
-    # below defends.
-    render_cache: dict[str, Any] = {}
     for row in pending:
         payload = row["payload"]
         act_id = row["act_id"]
         flags = page_flags[act_id]
         page_ids = audit_page_ids(row["bases"])
-        page_id = page_ids[0]
         draft_payload = {
             "act_key": row["act"]["act_key"],
             "attempt_ordinal": payload["attempt_ordinal"],
             "semi_final_text": payload["text"],
-            "page_id": page_id,
             "page_ids": page_ids,
             "round_cap": audit_policy["round_cap"],
             "policy": policy_record,
@@ -2614,27 +2726,15 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             # no flag result can reopen this page's frozen calculation.
             #
             # The pixels are rebuilt here, for this act alone, from the same
-            # sealed artifacts the Pass-B dossier was built from -- the
-            # rebuilt dossier is discarded, and the double-run byte-identity
-            # acceptance tests hold the determinism this relies on.
-            page_key = tuple(basis["source_page_id"] for basis in row["bases"])
-            if render_cache.get("key") != page_key:
-                render_cache = {
-                    "key": page_key,
-                    "renders": _page_renders_for(context, row["bases"]),
-                }
-            _, reproof_pixels = dossier_module.build_reader_dossier(
-                context,
-                act_id=act_id,
-                act_key=row["act"]["act_key"],
-                regions=row["bases"],
-                testimonia=row["testimonia"],
-                regime=context.witness_context,
-                page_renders=render_cache["renders"],
-                witness_context=witness_context_table,
-                act_attachment=row["attachment_view"],
-                prior_draft=row["prior"],
-                prior_draft_view="fed" if context.draft_fed else "withheld",
+            # sealed cross-capture presentation the establishing pass read --
+            # every registered capture again, through the one atomic transport
+            # constructor (consult §3.2 step 7: "a reproof ... again receives
+            # the complete combined presentation; it is one bounded audit
+            # round, not a frame re-roll"). The rebuilt pixels are discarded
+            # after this call, and the double-run byte-identity acceptance
+            # tests hold the determinism this relies on.
+            reproof_pixels = atomic_delivered_pixels(
+                row["autopsia"], read_bytes=context.tree.read_bytes, max_images=max_images
             )
             # Ordering constraint: `payload["text"]` and `payload["dossier"]`
             # are read here, BEFORE the re-proof result overwrites the final
@@ -2768,7 +2868,6 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         finding_payload = {
             "act_key": row["act"]["act_key"],
             "attempt_ordinal": payload["attempt_ordinal"],
-            "page_id": page_id,
             "page_ids": page_ids,
             "round_cap": audit_policy["round_cap"],
             "policy": policy_record,

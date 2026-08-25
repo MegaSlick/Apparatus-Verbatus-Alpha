@@ -36,6 +36,26 @@ _TEXTUAL_FIELDS: Final = frozenset(
 )
 
 
+def source_ledger_from_run(run: dict[str, Any]) -> set[str]:
+    """Derive the capture ledger from the sealed RunTree source manifest.
+
+    This is deliberately not inferred from local proposals: a capture that the
+    Designator missed is still a required member of a registered physical page.
+    The run authority is the only complete production denominator available to
+    19B, and duplicate source rows (for split derivatives) collapse only after
+    their digest has been independently validated.
+    """
+    rows = run.get("source_manifest") if isinstance(run, dict) else None
+    if not isinstance(rows, list) or not rows:
+        raise SchemaRefusal("physical-act partition: run has no sealed source manifest")
+    ledger: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            raise SchemaRefusal("physical-act partition: source manifest row is not an object")
+        ledger.add(_sha(row.get("sha256"), "source manifest sha256"))
+    return ledger
+
+
 def _refuse_preference(value: Any) -> None:
     refuse_preference(value, what="physical-act partition")
 

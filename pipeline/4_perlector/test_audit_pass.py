@@ -1162,7 +1162,6 @@ def test_shared_chain_refuses_draft_finding_restatement_drift(tmp_path):
         subject_id=final["subject_id"],
     )
     drifted_finding = copy.deepcopy(finding)
-    drifted_finding["payload"]["page_id"] = "pg_drifted"
     drifted_finding["payload"]["page_ids"] = ["pg_drifted"]
     audit.validate_finding(drifted_finding["payload"], text=final["payload"]["text"])
 
@@ -1203,8 +1202,8 @@ def test_shared_chain_refuses_a_page_set_forged_back_to_the_primary_page(tmp_pat
     )
     forged_draft = copy.deepcopy(draft)
     forged_finding = copy.deepcopy(finding)
-    primary_page = forged_draft["payload"]["page_id"]
     assert len(forged_draft["payload"]["page_ids"]) == 2
+    primary_page = forged_draft["payload"]["page_ids"][0]
     forged_draft["payload"]["page_ids"] = [primary_page]
     forged_finding["payload"]["page_ids"] = [primary_page]
     forged_final = copy.deepcopy(final)

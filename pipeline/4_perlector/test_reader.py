@@ -139,11 +139,22 @@ def test_an_unnamed_pass_kind_is_refused_rather_than_served_as_the_establishing_
 
 
 def test_every_pass_kind_the_producer_uses_is_in_the_closed_vocabulary():
-    """`run.py` passes these four literals; the set is not a wider net than the
-    producer needs, and no producer call site sits outside it."""
-    producer_calls = set(
-        re.findall(r"pass_kind=\"([^\"]+)\"", (Path(__file__).parent / "run.py").read_text())
-    )
+    """`run.py` and `combined.py` together pass these five literals; the set is
+    not a wider net than the producer needs, and no producer call site sits
+    outside it.
+
+    Unit 19B moved the lectio-nuda, lectio-prior, primed-without-prior and
+    perlectio invocations into `combined.run_logical_passes` -- the one place
+    that makes every arm read the complete cross-capture presentation in one
+    atomic call -- so the producer this pin reads from is now the pair, not
+    `run.py` alone. `audit-reproof` is unmoved: the re-proof stays a single,
+    separately-triggered call in `run.py` itself.
+    """
+    producer_calls = set()
+    for name in ("run.py", "combined.py"):
+        producer_calls |= set(
+            re.findall(r"pass_kind=\"([^\"]+)\"", (Path(__file__).parent / name).read_text())
+        )
     assert producer_calls == set(reader_module.PASS_KINDS)
 
 

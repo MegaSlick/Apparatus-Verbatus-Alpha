@@ -1,0 +1,36 @@
+{
+  "schema": "unit19b-two-capture-leaf-cluster-fixture.v1",
+  "physical_page": {
+    "corpus_id": "unit19b-fixture",
+    "volume_id": "leaf-cluster",
+    "designation": "19B"
+  },
+  "removed_source_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "established_text": "Le dix-neuf aout, acte commun aux deux captures.",
+  "captures": [
+    {
+      "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "page_id": "pg_1111111111111111",
+      "page_ordinal": 1,
+      "act_key": "capture-a-act",
+      "bounds": {"x": 8, "y": 12, "w": 80, "h": 24},
+      "alignment_ref": "geometry:unit19b:a-b",
+      "crop_path": "fixture/capture-a-act.png",
+      "crop_bytes": "Le dix-neuf aout, acte commun aux deux captures. [capture a]",
+      "page_path": "fixture/capture-a-page.png",
+      "page_bytes": "Page context A: Le dix-neuf aout, acte commun aux deux captures."
+    },
+    {
+      "source_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "page_id": "pg_2222222222222222",
+      "page_ordinal": 1,
+      "act_key": "capture-b-act",
+      "bounds": {"x": 10, "y": 11, "w": 80, "h": 24},
+      "alignment_ref": "geometry:unit19b:a-b",
+      "crop_path": "fixture/capture-b-act.png",
+      "crop_bytes": "Le dix-neuf aout, acte commun aux deux captures. [capture b]",
+      "page_path": "fixture/capture-b-page.png",
+      "page_bytes": "Page context B: Le dix-neuf aout, acte commun aux deux captures."
+    }
+  ]
+}
