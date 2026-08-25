@@ -153,11 +153,7 @@ def test_a_symlink_cannot_walk_material_into_an_approved_root(tmp_path, policy):
 
 
 def test_containment_is_judged_by_filesystem_identity_not_spelling(tmp_path):
-    """`same_or_inside` answers by device and inode, so a case-variant spelling of
-    a folder on a case-insensitive filesystem (APFS's default) is still that
-    folder. The textual `is_relative_to` it replaced said `/approved/Masters` was
-    outside `/approved/masters`, and the console wrote produced records into the
-    submitted folder through exactly that gap."""
+    """Case variants must remain contained when text comparison disagrees."""
     source = tmp_path / "masters"
     source.mkdir()
     sibling = tmp_path / "ready"
@@ -168,7 +164,6 @@ def test_containment_is_judged_by_filesystem_identity_not_spelling(tmp_path):
     assert not gate.same_or_inside(source, sibling / "not-yet-written.json")
     assert not gate.same_or_inside(tmp_path / "never-made", source)
     variant = tmp_path / "Masters"
-    if variant.is_dir():  # case-insensitive filesystem: the spellings are one folder
+    if variant.is_dir():  # Only case-insensitive filesystems make these names identical.
         assert gate.same_or_inside(source, variant / "ready")
-        # the defeated check, kept as the reason this helper exists
         assert not (variant / "ready").is_relative_to(source)

@@ -185,13 +185,7 @@ def test_ingest_commit_failure_shows_the_workers_own_reason_not_a_raw_json_dict(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ):
-    """A mid-commit failure ("uncertain") must show its reason as plainly as a refusal.
-
-    Only `status == "refusal"` used to be unwrapped to its `reason` field; an
-    `"uncertain"` reply (the commit child failing partway through its writes) fell
-    through to the generic branch and showed the raw `{"reason": ..., "status": ...}`
-    JSON text as the saved detail instead.
-    """
+    """An uncertain commit may follow writes, so its reason must remain actionable."""
     source, output, policy, _approved = _inputs(tmp_path)
     output.chmod(0o500)
     try:
@@ -325,10 +319,8 @@ def test_ingest_accepts_a_valid_confirmation_file_and_retains_its_authority(
     assert ready["confirmed_cluster_count"] == 1
     assert ready["confirmation_file_retained"] is True
 
-    # The preview shows the membership itself, not only the confirmation's
-    # digest: the digest pins bytes from preview to commit, but only the shown
-    # designations and member prefixes let the operator notice a confirmation
-    # rewritten before the preview ever ran (security review F3).
+    # A digest binds preview to commit, but visible designations and member prefixes
+    # are what let the operator approve the confirmation's actual membership.
     [membership] = preview_summary["confirmed_clusters"]
     assert membership.startswith("volume-1 opening-1: ")
     assert pair[0][:12] in membership and pair[1][:12] in membership
@@ -507,16 +499,7 @@ def test_ingest_refuses_an_output_folder_inside_the_submitted_folder(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ):
-    """A ready folder written inside the submission is one the Door will refuse.
-
-    `door.real_submission` refuses a ledger or triage document that lives inside
-    the folder it inventories, because its next inventory counts those produced
-    records as submitted sources. Nothing here checked the same thing, so the
-    console wrote fifteen immutable records into the submitted folder, reported
-    "What the Door will see: 3 submitted file(s)", and produced a folder the Door
-    then rejected outright — the summary claiming an admission that could not
-    happen, with the submitted folder permanently polluted on the way.
-    """
+    """The Door inventories the source, so ingest output inside it is inadmissible."""
     source, _output, policy, _approved = _inputs(tmp_path)
     inside = source / "ready"
     inside.mkdir()
@@ -555,11 +538,7 @@ def test_a_case_variant_spelling_cannot_place_the_output_inside_the_submission(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ):
-    """On default (case-insensitive) APFS, `approved/Masters/ready` names a folder
-    inside `approved/masters` while comparing unequal as text. The containment
-    check is by filesystem identity, so the spelling does not matter; a textual
-    check let exactly this argv pollute the submitted folder (security review F1).
-    """
+    """Case variants on default APFS must not bypass identity containment."""
     source, _output, policy, approved = _inputs(tmp_path)
     variant = approved / "Masters"
     if not variant.is_dir():
@@ -596,15 +575,7 @@ def test_ingest_commit_refuses_when_the_instrument_settings_changed_after_the_pr
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """The third read the written bytes depend on, and the one that was unpinned.
-
-    Every proxy, every candidate verdict, the sealed recipe, and which
-    candidate-evidence files exist at all are computed from the triage instrument
-    configuration, which the commit launch re-reads from disk exactly as it
-    re-reads the ledger and the confirmation. A confirmation-free pass has no
-    other binding to it, so without this pin the commit could write a different
-    plan than the one printed.
-    """
+    """Instrument bytes determine proxies, verdicts, recipes, and evidence names."""
     source, output, policy, _approved = _inputs(tmp_path)
     previewed = ingest_worker._prepare(_request(source, output, policy, operation="preview"))
     preview_summary = ingest_worker._summary(previewed)
@@ -654,15 +625,7 @@ def test_ingest_names_every_undecodable_file_by_position_and_digest(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ):
-    """One stray file used to refuse the whole folder while naming no file at all.
-
-    A `.DS_Store` beside real masters is the ordinary case, not an adversarial
-    one. The refusal was true and unactionable — "triage proxy source bytes could
-    not be decoded" — while the error copy told the operator to "correct that
-    exact input". Positions and digest prefixes are what the data-handling
-    policy's logging rule leaves available: declared filenames stay in the sealed
-    manifest, terminal output carries counts and digests.
-    """
+    """Refusals must identify bad frames without leaking sealed filenames."""
     source, output, policy, _approved = _inputs(tmp_path)
     stray = source / ".DS_Store"
     stray.write_bytes(b"\x00\x01Bud1 not an image")
@@ -719,14 +682,7 @@ def test_ingest_refuses_a_submitted_file_larger_than_the_retained_byte_ceiling(
 
 
 def test_the_console_shows_the_ledger_digest_the_run_tree_will_carry(tmp_path: Path):
-    """One ledger, one number. The console used to show a digest matching nothing.
-
-    Every admitted page in the eventual run tree carries
-    `ledger_sha256 = manifest["self_hash"]`. The console printed
-    `digest_of(manifest)` instead — a different, equally real digest of the same
-    object, under the same word "ledger" — so an operator comparing their receipt
-    against the run their submission became would find no match anywhere (GOALS 5).
-    """
+    """The displayed ledger identity must be the self-hash every page carries."""
     source, output, policy, _approved = _inputs(tmp_path)
     previewed = ingest_worker._prepare(_request(source, output, policy, operation="preview"))
     summary = ingest_worker._summary(previewed)
@@ -747,19 +703,10 @@ def test_the_ready_folder_is_admitted_by_the_real_door_exactly_as_the_console_cl
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ):
-    """The console's "What the Door will see" line, checked against the Door.
+    """Reconcile the console's admission claim against the real Door output.
 
-    Nothing proved that the ready folder this unit produces is consumable at all:
-    the console asserted an admission and no test ever handed the result to
-    `door.real_submission`. This drives the whole seam on the synthetic fixture —
-    ledger, triage decision manifest, clusters and producer recipe — and
-    reconciles the printed claim against the run tree that comes out.
-
-    The Door is loaded here by a deliberate, visible, single-purpose
-    `import_module` — the same mechanism and the same justification
-    `pipeline/test_stage_import_boundaries.py` records for a cross-boundary
-    check. The claim under test belongs to the console, so the test belongs to
-    the console's suite; the Door is only read from.
+    Dynamic import is required because the Door's package segment starts with a
+    digit; this cross-boundary test reads it without moving the claim from this suite.
     """
     door = importlib.import_module("pipeline.1_exemplar.door")
     from common.runtree.store import RunTree
@@ -833,14 +780,7 @@ def test_a_failed_preview_never_tells_the_operator_records_may_have_been_written
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ):
-    """The preview child has no write allowance, so its failure copy must say so.
-
-    `INGEST_UNRESOLVED` is written for the commit case: it tells the operator that
-    immutable records may exist and not to reuse the output folder. Applied
-    unchanged to a preview failure it asserts records that provably cannot exist —
-    the preview is launched with `writable=None` — and costs a person a perfectly
-    good empty folder they were instructed to preserve (GOVERNANCE 10).
-    """
+    """A no-write preview cannot use commit's possibly-partial recovery text."""
     source, output, policy, _approved = _inputs(tmp_path)
 
     monkeypatch.setattr(
@@ -951,15 +891,10 @@ def test_the_committed_folder_holds_exactly_the_files_the_preview_listed(
     with_confirmation: bool,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """ "The following immutable files will be written only now" has to be the write.
+    """Preview and commit file sets must match, including the persistent lock.
 
-    A plan that is *nearly* the write is the same defect as a plan that is stale:
-    the operator approved a list of names, and the list has to be the one they
-    approved. The confirmed branch really did produce one more file than it
-    listed — `common/corpus_register`'s persistent `.corpus-register.json.lock`
-    sibling — so this is checked as set equality on both branches rather than as
-    a subset on one. The console route delegates to the real custody launcher;
-    neither worker is replaced by an in-process call or stub.
+    The console route uses the real custody launcher so no in-process stub can hide
+    a file created by the confined worker.
     """
     source, output, policy, _approved = _inputs(tmp_path)
     confirmation_path: Path | None = None
@@ -1038,7 +973,5 @@ def test_the_committed_folder_holds_exactly_the_files_the_preview_listed(
     assert launches == [None, output.resolve()]
     assert sorted(planned) == sorted(path.name for path in output.iterdir())
     assert len(planned) == len(set(planned))
-    # This fixture emits three candidate-evidence records. The earlier audit
-    # report's "16 files" count omitted two of them; measuring the real folder
-    # establishes the actual totals instead of carrying that prose tally forward.
+    # Three candidate-evidence records make the exact branch totals 15 and 18.
     assert len(planned) == (18 if with_confirmation else 15)

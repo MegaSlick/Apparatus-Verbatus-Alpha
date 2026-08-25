@@ -21,8 +21,6 @@ re-derives every value from disk and only compares.
 
 from __future__ import annotations
 
-import contextlib
-import io
 import json
 import sys
 from dataclasses import dataclass
@@ -62,7 +60,6 @@ _MAX_LISTED_REFUSALS = 10
 
 @dataclass(frozen=True)
 class PreparedIngest:
-    source: Path
     output_dir: Path
     manifest: dict[str, Any]
     frames: tuple[producer.SubmittedFrame, ...]
@@ -135,15 +132,8 @@ def _prepare(request: Mapping[str, Any]) -> PreparedIngest:
     if gate.same_or_inside(source, output_dir):
         # Filesystem identity, not spelling: a case-variant path on default
         # (case-insensitive) APFS defeats a textual `is_relative_to` here.
-        # The Door refuses a ledger or triage document that lives inside the folder
-        # it inventories, in these words, because its next inventory would count
-        # these produced records as submitted sources
-        # (`pipeline/1_exemplar/door.py::real_submission`). Without the same rule
-        # here the console cheerfully wrote fifteen immutable records into the
-        # submitted folder, printed "What the Door will see", and handed over a
-        # ready folder the Door then refused outright — the summary claiming an
-        # admission that could not happen, and the submitted folder polluted with
-        # produced evidence that a re-run would then have to inventory.
+        # The Door inventories the entire submitted folder, so an ingest output
+        # inside it would become a submitted source and make the ready folder unusable.
         raise ValueError(
             "the ingest output folder cannot live inside the submitted folder; otherwise the "
             "next inventory includes these produced records as submitted sources and the Door "
@@ -164,28 +154,9 @@ def _prepare(request: Mapping[str, Any]) -> PreparedIngest:
         if request["confirmation_file"] is None
         else producer.load_confirmation(Path(request["confirmation_file"]))
     )
-    # The preview and commit are two independent worker launches, each reading
-    # from disk fresh. Without a pin, an input could change in the window between
-    # the printed preview and the write, and the write would silently commit
-    # different bytes than the ones shown and (for a confirmation) validated on
-    # screen — the write boundary this unit exists to hold. Commit is refused,
-    # before anything is touched further, unless what it just read digests
-    # identically to what the preview showed.
-    #
-    # Four mutable reads decide what is authorized and written, so four digests
-    # are pinned. The submitted ledger and confirmation were the obvious two;
-    # the triage instrument configuration was the third left open. Every
-    # proxy, every candidate verdict, the sealed recipe, and — through the
-    # selected pairs — *which* candidate-evidence files exist at all are computed
-    # from it, and the commit launch re-reads it from disk exactly as it re-reads
-    # the other inputs. The caller-selected data-handling policy decides whether
-    # the source and destination are approved locations, and the preview explicitly
-    # reports that check; allowing its bytes to move would let commit proceed under
-    # an authority different from the one shown. A confirmed pass would have caught
-    # an instrument change indirectly (the confirmation names its digest), but the
-    # confirmation-free pass, which has no other binding, would have written a
-    # different plan than the one printed. Corpus id and mode travel inside this
-    # request, so they are identical across the two launches by construction.
+    # These four reads determine authorization, generated evidence, and written
+    # records. Commit may only compare their freshly derived digests with preview's;
+    # the supplied digests never skip validation or authorize another write.
     if request["operation"] == "commit":
         for expected, observed, changed in (
             (
@@ -223,19 +194,14 @@ def _prepare(request: Mapping[str, Any]) -> PreparedIngest:
         evidence_manifest=evidence_manifest if confirmation is not None else None,
         evidence_records=evidence if confirmation is not None else None,
     )
-    # `produce` deliberately permits a confirmation-free pass and so also has
-    # to represent an empty `clusters` list while it validates the file shape.
-    # The committing Unit 6B seam rightly refuses that list: a supplied
-    # confirmation is an authority for a corpus-register append, and an empty
-    # authority is not a harmless no-op that may leave pre-confirmation files
-    # behind. Refuse it here, before this worker is given write rights, with the
-    # exact producer wording the later seam uses.
+    # A supplied confirmation authorizes a corpus-register append; an empty one
+    # must be refused before this worker receives write rights, using the later
+    # commit seam's exact refusal text.
     if confirmation is not None and not produced.clusters:
         raise producer.ProducerRefusal(
             "confirmation names no cluster; no manifest documents were written"
         )
     return PreparedIngest(
-        source=source,
         output_dir=output_dir,
         manifest=manifest,
         frames=frames,
@@ -250,23 +216,10 @@ def _prepare(request: Mapping[str, Any]) -> PreparedIngest:
 
 
 def _frames(source: Path, manifest: Mapping[str, Any]) -> tuple[producer.SubmittedFrame, ...]:
-    """Reopen every ledgered file, bounded, through the anchored no-follow seam.
+    """Reopen ledgered files through the bounded, anchored no-follow seam.
 
-    This is the only production reader that feeds a real operator-chosen folder
-    into the triage producer, and the producer's API takes whole frames: it
-    digests, decodes and re-verifies `SubmittedFrame.data`, so the bytes are held
-    in memory whether this function bounds them or not. What the bound changes is
-    the failure. An unbounded `read()` over a folder of 600 dpi masters — an
-    ordinary scanned volume, not an attack — ends as an OOM kill of the confined
-    child, which returns no JSON at all and reaches the operator as "ingest did
-    not return a checked ready-folder record" with an empty detail. That is a
-    result lost behind an unreadable failure (GOVERNANCE 2).
-
-    `inventory.MAX_SUBMITTED_BYTES` is the bound, not a number chosen here: it is
-    this repository's declared ceiling on *retained* submitted bytes, and its own
-    docstring reserves it for "any caller that asks this reader to retain
-    content", which is exactly what this is. `submit.py` records why a second
-    hand-kept copy of a limit is the wrong answer.
+    The producer retains whole frames, so this uses the inventory module's one
+    retained-byte ceiling; exceeding it must be a refusal, never an OOM with no result.
     """
 
     frames = []
@@ -307,21 +260,10 @@ def _proxies(
     manifest: Mapping[str, Any],
     config: instrument.InstrumentConfig,
 ) -> tuple[instrument.ProxySet, ...]:
-    """Build every proxy, and name every frame that could not be decoded.
+    """Build every proxy, or identify every undecodable frame without paths.
 
-    All-or-nothing is the right semantics here and is kept: the candidate evidence
-    is computed over the *set* of frames, so preparing a triage pass over some
-    subset would write a ledger and an evidence manifest that disagree about what
-    the corpus is. What was wrong was the report. One stray `.DS_Store`, `Thumbs.db`
-    or PDF refused the entire folder with "triage proxy source bytes could not be
-    decoded" — true, and naming neither how many files failed nor which, while the
-    error copy told the operator to "correct that exact input".
-
-    The identification is a position and a digest prefix, never a path: the
-    data-handling policy's logging rule keeps declared filenames in the sealed
-    manifest and the private refusal report, and allows terminal output counts,
-    digests and locations. The ledger is sorted by path, so a position is
-    something a person can find in a sorted listing.
+    Candidate evidence covers the full frame set, so partial proxy production is
+    invalid. Terminal policy permits ledger positions and digest prefixes, not names.
     """
 
     proxies: list[instrument.ProxySet] = []
@@ -348,13 +290,7 @@ def _proxies(
 
 
 def _paths(prepared: PreparedIngest) -> list[str]:
-    """Every name the commit will create, complete — the promise the preview makes.
-
-    `test_the_committed_folder_holds_exactly_the_files_the_preview_listed` holds
-    this to the folder that actually results, on both branches, because a plan
-    that is *nearly* the write is the same defect as a plan that is stale: the
-    operator approved a list, and the list has to be the one they approved.
-    """
+    """Every name commit creates; preview approval requires exact set equality."""
 
     values = [
         "submission-manifest.json",
@@ -404,14 +340,10 @@ def _summary(prepared: PreparedIngest) -> dict[str, Any]:
     ]
     return {
         "submission_files": len(prepared.manifest["files"]),
-        # The pin's own value: the digest of the whole canonical ledger, including
-        # its self-hash field. Never shown — see `submission_ledger_self_hash`.
+        # Commit pins the canonical ledger including its self-hash field.
         "submission_manifest_sha256": digest_of(prepared.manifest),
-        # What the operator is shown and what `ingest-ready.json` records. The Door
-        # binds `ledger_sha256 = manifest["self_hash"]` into every admitted page, so
-        # the self-hash is the value that actually travels; printing the canonical
-        # digest under the word "ledger" gave the operator a number that matches
-        # nothing in the run their submission later becomes (GOALS 5).
+        # The Door binds the self-hash into every admitted page, so this is the
+        # ledger identity shown to the operator and recorded in `ingest-ready.json`.
         "submission_ledger_self_hash": prepared.manifest["self_hash"],
         "confirmation_sha256": None
         if prepared.confirmation is None
@@ -507,12 +439,8 @@ def _write(path: Path, record: Mapping[str, Any]) -> None:
 
 
 def _write_bytes(path: Path, data: bytes) -> None:
-    # `submit._atomic_create` is the established immutable create-or-identical
-    # seam. The output folder was required empty in the no-write preview, so an
-    # existing result is always an interruption/concurrent-writer alarm, never
-    # silently replaced evidence.
-    with contextlib.redirect_stdout(io.StringIO()):
-        submit._atomic_create(path, data)
+    # This seam may reuse identical bytes but never replaces different evidence.
+    submit._atomic_create(path, data)
 
 
 def _reply(value: Mapping[str, Any]) -> None:

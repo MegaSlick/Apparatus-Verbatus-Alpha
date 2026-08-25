@@ -57,14 +57,8 @@ def ingest_in_custody(
     preview = _call_worker(request, "preview", writable=None, workspace=workspace)
     preview_summary = _summary(preview, ErrorCode.INGEST_PREVIEW_UNRESOLVED)
     _print_preview(preview_summary, printer)
-    # Preview and commit are separate confined launches, so the commit worker
-    # re-reads the source folder, confirmation file, triage instrument configuration,
-    # and caller-selected data-handling policy rather than reusing the preview's
-    # own reads. Corpus id, mode, and the policy path travel in this request and are
-    # therefore identical by construction; the mutable bytes behind the paths are
-    # not. Pin all four
-    # to exactly what was just shown and validated: the commit worker refuses
-    # rather than write different bytes than these if any of them moved.
+    # The second confined launch re-reads four mutable inputs. Pin their bytes to
+    # the preview; corpus id, mode, and paths already stay identical in this request.
     commit_request = {
         **request,
         "expected_submission_manifest_sha256": preview_summary["submission_manifest_sha256"],
@@ -128,10 +122,8 @@ def _call_worker(
         if response is not None and response.get("status") == "refusal":
             raise OperatorError(ErrorCode.INGEST_REFUSED, detail=str(response.get("reason", "")))
         if response is not None and response.get("status") == "uncertain":
-            # The commit child failed partway through its writes: the worker already
-            # extracted its own reason for `main()`'s `{"status": "uncertain", ...}`
-            # reply, and showing the raw JSON dict here instead would bury that reason
-            # in braces and quoting the operator does not need to parse.
+            # Preserve the worker's actionable reason; raw protocol JSON would
+            # obscure a failure that may have happened after immutable writes began.
             raise OperatorError(unresolved, detail=str(response.get("reason", "")))
         detail = (
             completed.stderr or completed.stdout or "the confined ingest worker returned no result"

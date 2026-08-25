@@ -259,7 +259,7 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
     ErrorCode.INGEST_REFUSED: ErrorCopy(
         "The submission could not be prepared for the Door.",
         "No folder was called ready to submit, and no pod was started or billed.",
-        "Read the refusal reason below, correct that exact input or confirmation file, then run `verbatus ingest` again; this is safe.",
+        "Read the refusal reason below, correct the named source, output folder, policy, instrument setting, or confirmation, then run `verbatus ingest` again; this is safe.",
     ),
     ErrorCode.INGEST_PREVIEW_UNRESOLVED: ErrorCopy(
         "Ingest could not show you the plan it was going to write.",
