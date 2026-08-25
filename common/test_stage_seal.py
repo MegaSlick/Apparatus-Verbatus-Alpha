@@ -123,8 +123,7 @@ def test_a_deleted_latest_seal_is_refused_although_its_ordinals_stay_contiguous(
 
     The earlier seal would otherwise answer for a boundary it never witnessed,
     and the next pass would mint the vacated ordinal a second time over a
-    different inventory. Found in audit (Opus, Unit 1A): the guard compared
-    "some seal survives" instead of "every named seal survives".
+    different inventory.
     """
     tree, run, registry, bindings = _two_sealed_passes(tmp_path)
     tree.resolve(tree.artifact_path(ATTESTATORES, "stage-seal", _seal_ids(tree)[2])).unlink()

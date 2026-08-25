@@ -12,7 +12,7 @@ from common.stage import _stage_seal_payload, latest_attempt
 ROOT = Path(__file__).resolve().parent
 
 
-def _rebind_stage_seal(tree, stage: str, *, rewrite_manifest: bool = True) -> None:
+def rebind_stage_seal_artifact(tree, stage: str, *, rewrite_manifest: bool = True) -> None:
     """Carry a deliberate semantic forgery through its producer's completion seal.
 
     A stage seal witnesses the producer's whole boundary, so any test that
@@ -42,7 +42,6 @@ def _rebind_stage_seal(tree, stage: str, *, rewrite_manifest: bool = True) -> No
         stage,
         payload["attempt_ordinal"],
         seal["attempt_id"],
-        payload["decode_environment_artifact_id"],
     )
     seal["self_hash"] = self_hash(seal)
     tree.resolve(tree.artifact_path(stage, "stage-seal", seal["artifact_id"])).write_bytes(
@@ -54,15 +53,8 @@ def _rebind_stage_seal(tree, stage: str, *, rewrite_manifest: bool = True) -> No
 
 @pytest.fixture
 def rebind_stage_seal():
-    """The shared spelling of the helper three stage directories each copied.
-
-    Offered here so a new call site does not add a fifth copy. The copies in
-    `pipeline/6_archetypus/reseal_chain.py` and the two stage test modules are
-    left where they are on purpose: they predate this fixture, they are covered
-    by the suite as written, and churning an audit candidate's tests for a
-    maintainability-only gain is the wrong trade this late in a review chain.
-    """
-    return _rebind_stage_seal
+    """Expose coherent test forgeries without putting test support in stage code."""
+    return rebind_stage_seal_artifact
 
 
 @pytest.fixture

@@ -26,7 +26,7 @@ from common.perlector_audit import (
 )
 from common.recovery import FALLBACK_RECROP
 from common.runtree.store import RunTree
-from common.stage import _stage_seal_payload, latest_attempt
+from conftest import rebind_stage_seal_artifact as rebind_stage_seal
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -67,29 +67,6 @@ def records(tree: RunTree, stage: str, kind: str, act_id: str | None = None) -> 
         for entry in tree.build_manifest(stage)["artifacts"]
         if entry["kind"] == kind and (act_id is None or entry["subject_id"] == act_id)
     ]
-
-
-def rebind_stage_seal(tree: RunTree, stage: str) -> None:
-    """Keep semantic-forgery tests behind the new producer boundary."""
-    seals = [
-        tree.read_artifact(stage, "stage-seal", entry["artifact_id"])
-        for entry in tree.build_manifest(stage, verify_inputs=False)["artifacts"]
-        if entry["kind"] == "stage-seal"
-    ]
-    seal = latest_attempt(seals, f"{stage} stage seal", operation="seal")
-    payload = seal["payload"]
-    seal["payload"] = _stage_seal_payload(
-        tree,
-        stage,
-        payload["attempt_ordinal"],
-        seal["attempt_id"],
-        payload["decode_environment_artifact_id"],
-    )
-    seal["self_hash"] = self_hash(seal)
-    tree.resolve(tree.artifact_path(stage, "stage-seal", seal["artifact_id"])).write_bytes(
-        canonical_bytes(seal)
-    )
-    tree.write_manifest(stage)
 
 
 def test_an_unrequested_second_perlectio_is_refused_before_recensor_publishes(tmp_path):

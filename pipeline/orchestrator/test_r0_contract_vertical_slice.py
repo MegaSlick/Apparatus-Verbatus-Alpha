@@ -32,12 +32,11 @@ from common.contracts.stages import ATTESTATORES, PERLECTOR
 from common.fixture_identity import act_identity, page_identity
 from common.runtree.store import RECENSOR_PARTITION_RECEIPT_FILE, RunTree
 from common.stage import (
-    _stage_seal_payload,
     act_by_key,
-    latest_attempt,
     load_fixture,
     run_config_bindings,
 )
+from conftest import rebind_stage_seal_artifact as _rebind_stage_seal
 
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
@@ -662,29 +661,6 @@ def _reread(root: Path, run_id: str, scenario: str, act_id: str, chair: str):
         capture_output=True,
         text=True,
     )
-
-
-def _rebind_stage_seal(tree: RunTree, stage: str) -> None:
-    """Keep a deliberate semantic forgery coherent through its producer seal."""
-    seals = [
-        tree.read_artifact(stage, "stage-seal", entry["artifact_id"])
-        for entry in tree.build_manifest(stage, verify_inputs=False)["artifacts"]
-        if entry["kind"] == "stage-seal"
-    ]
-    seal = latest_attempt(seals, f"{stage} stage seal", operation="seal")
-    payload = seal["payload"]
-    seal["payload"] = _stage_seal_payload(
-        tree,
-        stage,
-        payload["attempt_ordinal"],
-        seal["attempt_id"],
-        payload["decode_environment_artifact_id"],
-    )
-    seal["self_hash"] = self_hash(seal)
-    tree.resolve(tree.artifact_path(stage, "stage-seal", seal["artifact_id"])).write_bytes(
-        canonical_bytes(seal)
-    )
-    tree.write_manifest(stage)
 
 
 def _reseal(tree: RunTree, path: Path, record: dict) -> None:

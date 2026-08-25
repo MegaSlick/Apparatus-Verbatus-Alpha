@@ -53,48 +53,18 @@ from common.stage import (
     EXIT_FATAL,
     EXIT_HELD,
     _decode_environment,
-    _stage_seal_payload,
     _validate_decode_environment,
-    latest_attempt,
     load_fixture,
     open_context,
     run_config_bindings,
     stage_parser,
     verify_predecessor_seal,
 )
+from conftest import rebind_stage_seal_artifact as rebind_stage_seal
 
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
 FIXTURE = "synthetic-two-page-v0"
-
-
-def rebind_stage_seal(tree: RunTree, stage: str) -> None:
-    """Model a coherent compromised producer for downstream schema tests.
-
-    Tests aimed at completion-boundary corruption leave the seal unchanged and
-    assert its early refusal.  Tests below that target a later semantic guard
-    instead explicitly carry their synthetic producer rewrite through that
-    producer's manifest and seal.
-    """
-    seals = [
-        tree.read_artifact(stage, "stage-seal", entry["artifact_id"])
-        for entry in tree.build_manifest(stage, verify_inputs=False)["artifacts"]
-        if entry["kind"] == "stage-seal"
-    ]
-    seal = latest_attempt(seals, f"{stage} stage seal", operation="seal")
-    payload = seal["payload"]
-    seal["payload"] = _stage_seal_payload(
-        tree,
-        stage,
-        payload["attempt_ordinal"],
-        seal["attempt_id"],
-        payload["decode_environment_artifact_id"],
-    )
-    seal["self_hash"] = self_hash(seal)
-    tree.resolve(tree.artifact_path(stage, "stage-seal", seal["artifact_id"])).write_bytes(
-        canonical_bytes(seal)
-    )
-    tree.write_manifest(stage)
 
 
 def _load_recensor():

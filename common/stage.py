@@ -458,26 +458,21 @@ class StageContext:
             raise SchemaRefusal(f"{self.stage} completion boundary is already sealed")
         records = _stage_records(self.tree, self.stage, "stage-seal")
         _refuse_deleted_seal(self.tree, self.stage, {record["artifact_id"] for record in records})
-        ordinal = (
-            1
-            if not records
-            else latest_attempt(records, f"{self.stage} stage seal", operation="seal")["payload"][
-                "attempt_ordinal"
-            ]
-            + 1
+        prior = (
+            latest_attempt(records, f"{self.stage} stage seal", operation="seal")
+            if records
+            else None
         )
+        ordinal = 1 if prior is None else prior["payload"]["attempt_ordinal"] + 1
         attempt = attempt_id(self.stage, "seal", ordinal)
-        decode_id = artifact_id(self.stage, "decode-environment", self.stage, attempt)
         # A restart that did not change any stage-owned evidence reuses the
         # previous witnessed statement instead of manufacturing a new attempt.
-        if records:
-            prior = latest_attempt(records, f"{self.stage} stage seal", operation="seal")
+        if prior is not None:
             if prior["payload"] == _stage_seal_payload(
                 self.tree,
                 self.stage,
                 prior["payload"]["attempt_ordinal"],
                 prior["attempt_id"],
-                prior["payload"]["decode_environment_artifact_id"],
             ):
                 self.sealed = True
                 return PublishResult(
@@ -494,7 +489,7 @@ class StageContext:
         )
         # Decode environment is excluded from the deterministic inventory, so
         # it is safe to publish before the seal and does not create a fixpoint.
-        payload = _stage_seal_payload(self.tree, self.stage, ordinal, attempt, decode_id)
+        payload = _stage_seal_payload(self.tree, self.stage, ordinal, attempt)
         result = self.publish(
             kind="stage-seal",
             subject_id=self.stage,
@@ -653,7 +648,6 @@ class StageContext:
 
 _SEAL_EXCLUDED_KINDS: Final = frozenset({"stage-seal", "decode-environment"})
 _DECODE_PATHS: Final = frozenset({"project-png", "pillow", "pdfium", "none"})
-_PIXEL_STAGES: Final = frozenset({"door", "exemplar", "designator", "perlector", "recensor"})
 _DECODER_NAMES: Final = frozenset({"pillow", "jpeg-codec", "pillow-heif", "libheif", "pdfium"})
 _DECODE_ENVIRONMENT_FIELDS: Final = frozenset(
     {"decoders", "platform", "machine", "decode_paths_used", "produced_pixels"}
@@ -684,10 +678,8 @@ def _refuse_deleted_seal(tree: RunTree, stage: str, present: set[str]) -> None:
     1..N, so removing the *latest* of several leaves a prefix `latest_attempt`
     reads as whole: the earlier statement then answers for a boundary it never
     witnessed, and the ordinal the deletion vacated is minted a second time over
-    a different inventory — the ordinal-reuse defect the Attestatores already
-    closed once with a second trigger. Refusing only total deletion caught the
-    single case where nothing is left to answer in the deleted seal's place and
-    missed every case where something is.
+    a different inventory. Refusing only total deletion misses every case where
+    an earlier seal remains to answer in the deleted seal's place.
 
     `present` is passed in rather than walked here: both callers have already
     built the seal records they are about to reason about, and a second walk of
@@ -759,7 +751,7 @@ def _decode_environment(stage: str) -> dict[str, Any]:
         "platform": platform.system(),
         "machine": platform.machine(),
         "decode_paths_used": sorted(paths),
-        "produced_pixels": stage in _PIXEL_STAGES,
+        "produced_pixels": paths != {"none"},
     }
 
 
@@ -796,13 +788,7 @@ def _validate_decode_environment(value: Any, owner: str) -> dict[str, Any]:
     return value
 
 
-def _inventory_digest(value: Any) -> str:
-    return digest_of(value)
-
-
-def _stage_seal_payload(
-    tree: RunTree, stage: str, ordinal: int, attempt: str, decode_environment_artifact_id: str
-) -> dict[str, Any]:
+def _stage_seal_payload(tree: RunTree, stage: str, ordinal: int, attempt: str) -> dict[str, Any]:
     manifest = tree.build_manifest(stage, verify_inputs=False)
     artifacts = [
         entry for entry in manifest["artifacts"] if entry["kind"] not in _SEAL_EXCLUDED_KINDS
@@ -819,6 +805,7 @@ def _stage_seal_payload(
     for entry in artifacts:
         key = (entry["kind"], entry["outcome"])
         census[key] = census.get(key, 0) + 1
+    decode_environment_artifact_id = artifact_id(stage, "decode-environment", stage, attempt)
     decode_environment_path = tree.artifact_path(
         stage, "decode-environment", decode_environment_artifact_id
     )
@@ -835,8 +822,8 @@ def _stage_seal_payload(
         "attempt_id": attempt,
         "config_digest": tree.read_run()["config_digest"],
         "register_digest": tree.read_run()["register_digest"],
-        "artifact_inventory": _inventory_digest(artifacts),
-        "blob_inventory": _inventory_digest(blobs),
+        "artifact_inventory": digest_of(artifacts),
+        "blob_inventory": digest_of(blobs),
         "census": [
             {"kind": kind, "outcome": outcome, "count": count}
             for (kind, outcome), count in sorted(census.items())
@@ -901,7 +888,6 @@ def verify_predecessor_seal(tree: RunTree, stage: str) -> None:
         predecessor,
         payload.get("attempt_ordinal"),
         seal["attempt_id"],
-        expected_id,
     )
     if payload != expected:
         raise SchemaRefusal(
@@ -924,9 +910,9 @@ def _decode_difference(previous: dict[str, Any], current: dict[str, Any]) -> lis
     """Every field difference the binding consult requires reported by name.
 
     The two role fields predictably differ at some boundaries, but omitting them
-    made a self-consistent forged record observationally invisible and departed
-    from the consult's field-by-field contract. Reporting is not refusal:
-    Unit 17 alone decides whether any valid difference becomes fatal.
+    would make a self-consistent forged record observationally invisible.
+    Reporting is not refusal: Unit 17 alone decides whether any valid difference
+    becomes fatal.
     """
     changes = []
     previous_decoders = {row["name"]: row["version"] for row in previous["decoders"]}

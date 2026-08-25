@@ -381,23 +381,18 @@ def test_the_exemplar_refuses_a_run_the_door_never_wrote(tmp_path):
     )
     result = run_exemplar(tmp_path / "runs")
     assert result.returncode != 0
-    # A door that never ran left no boundary to prove, and that is now the first
-    # thing the Exemplar checks. Its own "no admissions to seal" refusal moved
-    # out of reach from here, so the test below reaches it the only way still
-    # open: a door that did seal, over nothing.
+    # A missing Door boundary must refuse before Exemplar examines admissions;
+    # the next test uses a coherent empty boundary to reach the admission check.
     assert "predecessor door has no stage-seal" in result.stderr
 
 
 def test_the_exemplar_refuses_a_sealed_door_boundary_that_admitted_nothing(
     tmp_path, rebind_stage_seal
 ):
-    """`run.py`'s "no admissions to seal" branch, which lost its only test.
+    """A coherent empty Door boundary must reach the admission refusal.
 
-    A door that never ran is now stopped one check earlier, at its absent
-    completion seal, so this reaches the branch by leaving the boundary coherent
-    and emptying what it witnesses. Sealing nothing quietly is the failure the
-    branch exists for, and it must not become untested because a stronger check
-    grew in front of the older one. Found in audit (Opus, Unit 1A).
+    A missing boundary stops at the earlier completion-seal refusal, so it cannot
+    exercise this distinct check.
     """
     tree, _ = build_door_run(tmp_path / "runs")
     admissions = [

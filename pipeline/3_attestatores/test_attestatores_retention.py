@@ -219,11 +219,9 @@ def test_a_whole_pass_resolves_designator_inputs_once_per_act_not_once_per_chair
     )
 
     assert attestatores.main() == 0
-    # History index, prior-seal lookup, the post-environment seal inventory,
-    # final manifest, and independent tally. The former sixth walk eagerly built
-    # and discarded a first-pass seal payload before its decode-environment
-    # existed; binding those bytes into the seal made that non-validation walk
-    # invalid and removed it without weakening any published boundary check.
+    # Exactly five scans are required: history index, prior-seal deletion check,
+    # post-environment seal inventory, final manifest, and independent tally. A
+    # pre-environment inventory cannot validate a seal that binds environment bytes.
     assert attestatores_manifest_calls == 5
     assert attempt_calls == 6  # one per act/chair, never re-resolved for publication
 
@@ -1213,11 +1211,8 @@ def test_one_refused_crop_records_its_chairs_and_leaves_the_other_act_intact(
     """Spec 07's isolation rule: one unreadable crop never kills the folder.
 
     The Designator seals the crop it actually wrote, so a crop a real detector
-    cut badly reaches the Attestatores *inside* a coherent boundary. That is the
-    state this rule is about, and it is the state the rebind models — without
-    it the test proves the seal refusal above instead, which is how this
-    property came to be unproven anywhere when the seal landed. Found in audit
-    (Opus, Unit 1A).
+    cut badly reaches the Attestatores *inside* a coherent boundary. The rebind
+    models that state; without it the test exercises the corruption refusal above.
     """
     run_root, tree = run_to_designator(tmp_path, "happy")
     entry = next(

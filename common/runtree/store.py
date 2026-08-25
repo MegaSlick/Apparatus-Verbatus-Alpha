@@ -347,9 +347,8 @@ class RunTree:
         # Door and Exemplar share their evidence directory, but their manifests
         # are producer inventories. Giving Door a stage-qualified filename
         # preserves both inventories, which matters when either one names a
-        # completion seal that later disappears. One shared manifest let the
-        # Exemplar erase the Door's deletion trigger before a resumed Door or
-        # Exemplar could consult it.
+        # completion seal that later disappears. A shared manifest would let an
+        # Exemplar write erase the Door's deletion trigger.
         filename = DOOR_MANIFEST_FILE if stage == DOOR else MANIFEST_FILE
         return f"{writing_directory(stage)}/{filename}"
 

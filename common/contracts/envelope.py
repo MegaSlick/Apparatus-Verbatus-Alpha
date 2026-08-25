@@ -191,9 +191,8 @@ def validate_envelope(envelope: Any) -> dict[str, Any]:
         outcome == BOUNDARY_OUTCOMES["decode-environment"]
         or (outcome == BOUNDARY_OUTCOMES["stage-seal"] and stage != EXEMPLAR)
     ):
-        # ``sealed`` predates completion seals as Exemplar's ordinary success
-        # outcome. Every other occurrence, and every ``recorded`` occurrence,
-        # was introduced solely for the two boundary kinds above.
+        # ``sealed`` is also Exemplar's ordinary success outcome. At every other
+        # stage it is boundary-only, as ``recorded`` is at every stage.
         raise SchemaRefusal(
             f"ordinary {stage} artifact {envelope['kind']!r} cannot carry boundary "
             f"outcome {outcome!r}"

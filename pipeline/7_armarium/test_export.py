@@ -20,7 +20,7 @@ from common.contracts.errors import FatalAccounting
 from common.contracts.identities import artifact_id
 from common.contracts.stages import ARCHETYPUS, ARMARIUM, PERLECTOR, RECENSOR
 from common.runtree.store import RunTree
-from common.stage import _stage_seal_payload, latest_attempt
+from conftest import rebind_stage_seal_artifact as _rebind_stage_seal
 
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
@@ -76,34 +76,6 @@ def _export(tree: RunTree) -> dict:
         "export",
         artifact_id(ARMARIUM, "export", "export", None),
     )
-
-
-def _rebind_stage_seal(tree: RunTree, stage: str) -> None:
-    """Carry a deliberate semantic forgery through its producer boundary.
-
-    These cases exercise Armarium's degradation rules, rather than the earlier
-    stage-seal corruption refusal.  They therefore model a compromised producer
-    that has also written a coherent completion statement.
-    """
-    seals = [
-        tree.read_artifact(stage, "stage-seal", entry["artifact_id"])
-        for entry in tree.build_manifest(stage, verify_inputs=False)["artifacts"]
-        if entry["kind"] == "stage-seal"
-    ]
-    seal = latest_attempt(seals, f"{stage} stage seal", operation="seal")
-    payload = seal["payload"]
-    seal["payload"] = _stage_seal_payload(
-        tree,
-        stage,
-        payload["attempt_ordinal"],
-        seal["attempt_id"],
-        payload["decode_environment_artifact_id"],
-    )
-    seal["self_hash"] = self_hash(seal)
-    tree.resolve(tree.artifact_path(stage, "stage-seal", seal["artifact_id"])).write_bytes(
-        canonical_bytes(seal)
-    )
-    tree.write_manifest(stage)
 
 
 def test_armarium_seals_a_self_verifying_product_bundle(tmp_path):
