@@ -13,12 +13,17 @@ production stage calls this module; absence is never interpreted as visibility.
 
 from __future__ import annotations
 
+import unicodedata
 from collections import defaultdict
 from typing import Any, Final
 
 from common.contracts.canonical import self_hash, verify_self_hash
 from common.contracts.errors import IncompatibleReuse, SchemaRefusal
-from common.contracts.identities import physical_act_component_designation, physical_act_id
+from common.contracts.identities import (
+    is_well_formed,
+    physical_act_component_designation,
+    physical_act_id,
+)
 from common.corpus_register import (
     append_records,
     members_of,
@@ -86,10 +91,35 @@ def _act(row: Any) -> dict[str, Any]:
         isinstance(row[name], str) and row[name] for name in ("act_id", "act_key", "page_id")
     ):
         raise SchemaRefusal("physical-act partition: local act lacks immutable identity lineage")
-    if not row["act_id"].startswith("act_") or not row["page_id"].startswith("pg_"):
-        raise SchemaRefusal("physical-act partition: local act identities are malformed")
-    if not isinstance(row["page_ordinal"], int) or isinstance(row["page_ordinal"], bool):
-        raise SchemaRefusal("physical-act partition: local act page ordinal is invalid")
+    if (
+        not is_well_formed(row["act_id"])
+        or not row["act_id"].startswith("act_")
+        or not is_well_formed(row["page_id"])
+        or not row["page_id"].startswith("pg_")
+    ):
+        raise SchemaRefusal(
+            "physical-act partition: local act_id or page_id is not a recognized derived "
+            "identity; the partition is refused because free-form or normalization-variant "
+            "keys cannot enter the proposal denominator"
+        )
+    if (
+        not row["act_key"].isprintable()
+        or unicodedata.normalize("NFC", row["act_key"]) != row["act_key"]
+    ):
+        raise SchemaRefusal(
+            "physical-act partition: local act key is not printable NFC; the partition is "
+            "refused because normalization variants cannot be separate denominator keys"
+        )
+    if (
+        not isinstance(row["page_ordinal"], int)
+        or isinstance(row["page_ordinal"], bool)
+        or row["page_ordinal"] < 0
+    ):
+        raise SchemaRefusal(
+            "physical-act partition: local act page ordinal is negative, boolean, or not an "
+            "integer; the partition is refused because source-page attribution must be a "
+            "non-negative manifest index"
+        )
     _sha(row["source_sha256"], "local act source_sha256")
     if (
         not isinstance(row["proposal_refs"], list)
@@ -109,8 +139,17 @@ def _alignment(row: Any) -> dict[str, Any]:
         raise SchemaRefusal("physical-act partition: capture alignment must use its closed shape")
     if not all(isinstance(row[name], str) and row[name] for name in required):
         raise SchemaRefusal("physical-act partition: capture alignment is incomplete")
-    if not row["page_id"].startswith("pg_") or not row["physical_page_id"].startswith("ppg_"):
-        raise SchemaRefusal("physical-act partition: capture alignment names malformed identities")
+    if (
+        not is_well_formed(row["page_id"])
+        or not row["page_id"].startswith("pg_")
+        or not is_well_formed(row["physical_page_id"])
+        or not row["physical_page_id"].startswith("ppg_")
+    ):
+        raise SchemaRefusal(
+            "physical-act partition: capture alignment page_id or physical_page_id is not a "
+            "recognized derived identity; the alignment is refused because a free-form key "
+            "cannot attach capture evidence to a page"
+        )
     _sha(row["source_sha256"], "capture alignment source_sha256")
     return row
 
@@ -213,6 +252,11 @@ def build_physical_act_partition(
     acts = [_act(dict(row)) for row in local_acts]
     if len({row["act_id"] for row in acts}) != len(acts):
         raise SchemaRefusal("physical-act partition: a local act occurs more than once")
+    if len({row["act_key"] for row in acts}) != len(acts):
+        raise SchemaRefusal(
+            "physical-act partition: a local act key occurs more than once; the partition is "
+            "refused because two proposal rows cannot share one export key"
+        )
     alignments = [_alignment(dict(row)) for row in capture_alignments]
     by_page = {row["page_id"]: row for row in alignments}
     if len(by_page) != len(alignments):
@@ -424,6 +468,7 @@ def validate_physical_act_partition(payload: dict[str, Any]) -> dict[str, Any]:
     }
     reconstructed: list[dict[str, str]] = []
     published: set[str] = set()
+    published_member_keys: set[str] = set()
     for group in groups:
         if not isinstance(group, dict) or set(group) != group_fields:
             raise SchemaRefusal("physical-act partition: logical act row is not closed")
@@ -456,6 +501,13 @@ def validate_physical_act_partition(payload: dict[str, Any]) -> dict[str, Any]:
             raise SchemaRefusal(
                 "physical-act partition: one logical act has two local acts from one capture"
             )
+        member_keys = {member["act_key"] for member in parsed_members}
+        if len(member_keys) != len(parsed_members) or member_keys & published_member_keys:
+            raise SchemaRefusal(
+                "physical-act partition: a local act key occurs in more than one proposal "
+                "row; the partition is refused because member accounting must be one-to-one"
+            )
+        published_member_keys.update(member_keys)
 
         components = group["physical_page_components"]
         if not isinstance(components, list):
@@ -471,13 +523,17 @@ def validate_physical_act_partition(payload: dict[str, Any]) -> dict[str, Any]:
             page = component["physical_page_id"]
             required_captures = component["required_capture_sha256s"]
             if (
-                not isinstance(page, str)
+                not is_well_formed(page)
                 or not page.startswith("ppg_")
                 or not isinstance(required_captures, list)
                 or not required_captures
                 or required_captures != sorted(set(required_captures))
             ):
-                raise SchemaRefusal("physical-act partition: physical page component is malformed")
+                raise SchemaRefusal(
+                    "physical-act partition: physical-page component has a malformed identity "
+                    "or required-capture set; the partition is refused because its capture "
+                    "denominator must be a non-empty canonical set"
+                )
             for source in required_captures:
                 _sha(source, "required capture source_sha256")
                 component_pairs.add((page, source))
@@ -508,19 +564,21 @@ def validate_physical_act_partition(payload: dict[str, Any]) -> dict[str, Any]:
             page_ids = presentation["page_ids"]
             local_ids = presentation["local_act_ids"]
             projected = presentation["projected_view_refs"]
-            if not isinstance(page, str) or not page.startswith("ppg_"):
+            if not is_well_formed(page) or not page.startswith("ppg_"):
                 raise SchemaRefusal(
-                    "physical-act partition: capture presentation physical page is malformed"
+                    "physical-act partition: capture presentation physical_page_id is not a "
+                    "recognized derived identity; the partition is refused because capture "
+                    "evidence cannot attach to a free-form page key"
                 )
             _sha(source, "capture presentation source_sha256")
             if (
                 not isinstance(page_ids, list)
                 or not page_ids
                 or page_ids != sorted(set(page_ids))
-                or not all(isinstance(item, str) and item.startswith("pg_") for item in page_ids)
+                or not all(is_well_formed(item) and item.startswith("pg_") for item in page_ids)
                 or not isinstance(local_ids, list)
                 or local_ids != sorted(set(local_ids))
-                or not all(isinstance(item, str) and item.startswith("act_") for item in local_ids)
+                or not all(is_well_formed(item) and item.startswith("act_") for item in local_ids)
                 or not isinstance(presentation["alignment_ref"], str)
                 or not presentation["alignment_ref"]
                 or not isinstance(projected, list)
@@ -557,6 +615,7 @@ def validate_physical_act_partition(payload: dict[str, Any]) -> dict[str, Any]:
         elif scope == "physical-act":
             if (
                 physical != logical
+                or not is_well_formed(logical)
                 or not logical.startswith("pac_")
                 or not components
                 or presentation_pairs != component_pairs

@@ -8,6 +8,7 @@ its views into capture-local readings and reconcile those strings afterwards.
 from __future__ import annotations
 
 import copy
+import unicodedata
 from typing import Any, Callable, Final
 
 from common.contracts.canonical import digest_bytes, digest_of
@@ -97,6 +98,17 @@ def _view(row: Any) -> dict[str, Any]:
         for field in ("view_id", "physical_page_id", "alignment_ref")
     ):
         raise SchemaRefusal("cross-capture autopsia: view has incomplete immutable identity")
+    if (
+        not row["view_id"].isprintable()
+        or unicodedata.normalize("NFC", row["view_id"]) != row["view_id"]
+        or not row["physical_page_id"].isprintable()
+        or unicodedata.normalize("NFC", row["physical_page_id"]) != row["physical_page_id"]
+    ):
+        raise SchemaRefusal(
+            "cross-capture autopsia: a view or physical-page key is not printable NFC; the "
+            "presentation is refused because normalization variants cannot name different "
+            "evidence"
+        )
     source = _sha(row["source_sha256"], "view source_sha256")
     page_ids = row["page_ids"]
     local_ids = row["local_act_ids"]
@@ -133,6 +145,14 @@ def build_autopsia(
     """Seal one complete, canonical capture presentation for one logical act."""
     if not isinstance(logical_act_id, str) or not logical_act_id:
         raise SchemaRefusal("cross-capture autopsia: logical_act_id is required")
+    if (
+        not logical_act_id.isprintable()
+        or unicodedata.normalize("NFC", logical_act_id) != logical_act_id
+    ):
+        raise SchemaRefusal(
+            "cross-capture autopsia: logical_act_id is not printable NFC; the presentation "
+            "is refused because normalization variants cannot name different logical acts"
+        )
     _reject_preference({"logical_act_id": logical_act_id, "views": views})
     required = sorted({_sha(item, "required capture sha256") for item in required_capture_sha256s})
     if not required:
