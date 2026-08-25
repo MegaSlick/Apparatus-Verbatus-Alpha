@@ -72,6 +72,7 @@ from .shutdown import VerifiedShutdown
 from .spend import (
     CHALLENGE_BYTES,
     CONFIRMATION_PREFIX,
+    SpendAssessment,
     SpendPolicy,
     confirmation_phrase,
     mint_challenge,
@@ -1240,6 +1241,108 @@ def test_a_corrupted_or_out_of_range_spend_alert_stamp_never_crashes_the_preview
     result = pod_runtime.preview_create(request(clock))
     assert result.state is LaunchState.PREVIEW
     assert len(warnings) == 4
+
+
+def test_an_oversized_spend_alert_stamp_cannot_silence_the_low_balance_page(
+    tmp_path: Path,
+) -> None:
+    """A stamp too long to parse must send, not be lost behind a raised parse error.
+
+    ``_load_spend_alert_state`` promises that corrupt evidence reverts to
+    sending, but it read the whole file and handed it to ``int``, which refuses a
+    decimal string past ``sys.int_max_str_digits`` with a ``ValueError`` rather
+    than answering.  That escaped the loader, so every later gate for this action
+    and subject recorded a delivery failure instead of paging: one file, written
+    once, silences the low-balance warning permanently.  The stamp is written
+    into the same directory a paid run writes leases into, so its size is
+    untrusted exactly as its content is.
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+    provider.set_account_balance("60.00")
+    warnings: list[str] = []
+
+    def delivering_notifier(message: str) -> NotifyOutcome:
+        warnings.append(message)
+        return NotifyOutcome(True, True, "delivered")
+
+    pod_runtime = runtime(provider, clock, tmp_path, notifier=delivering_notifier)
+    pod_runtime.preview_create(request(clock))
+    assert len(warnings) == 1
+
+    stamp = pod_runtime._spend_alert_stamp_path("create", "pod-runtime-test")
+    stamp.write_text("9" * 5000, encoding="utf-8")
+
+    result = pod_runtime.preview_create(request(clock))
+
+    assert result.state is LaunchState.PREVIEW
+    assert len(warnings) == 2
+    assert result.preview is not None
+    assert result.preview.assessment.alert_notifications == ("Phone notification: sent.",)
+
+
+def test_an_unreadable_lease_refuses_the_paid_gate_instead_of_raising(tmp_path: Path) -> None:
+    """Unknown remaining liability is a named refusal, never an escaping OSError.
+
+    ``Path.is_symlink`` re-raises a permission error rather than answering
+    ``False``, so a lease directory the process may list but not stat threw
+    straight out of ``create`` -- past the ``_SpendGateLockFailure`` catch, past
+    every refusal state, and out of the operator surface as a bare traceback.
+    Failing closed under its own name is the whole point of the reserved-
+    liability read.
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+    leases = tmp_path / "leases"
+    leases.mkdir()
+    (leases / ("c" * 32 + ".json")).write_text("{}", encoding="utf-8")
+    pod_runtime = runtime(provider, clock, leases)
+    leases.chmod(0o600)  # listable, not statable: the lease cannot be read or ruled out
+    try:
+        result = pod_runtime.create(request(clock), confirmation=CREATE_CONFIRMATION)
+    finally:
+        leases.chmod(0o700)
+
+    assert result.state is LaunchState.REFUSED_BALANCE_UNOBSERVABLE
+    assert "could not be read" in result.detail
+    assert not any(verb == "create" for verb, _ in provider.calls)
+
+
+def test_a_post_create_assessment_fault_still_closes_the_billing_pod(tmp_path: Path) -> None:
+    """A pod exists by this line; an escaping exception would leave it billing.
+
+    The re-assessment after POST is the last money gate, and its refusal path
+    closes the pod.  A fault *inside* it had no path at all: the exception left
+    ``create`` with no close attempted, no close report, and no result state for
+    the operator to act on -- the one shape this runtime exists to prevent.
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+    pod_runtime = runtime(provider, clock, tmp_path)
+    unfaulted = pod_runtime._assess
+    assessments = itertools.count()
+
+    def flaky(*args: object, **kwargs: object) -> SpendAssessment:
+        if next(assessments) >= 2:  # the two previews pass; the post-create read does not
+            raise PermissionError("lease directory became unstatable after the pod existed")
+        return unfaulted(*args, **kwargs)  # type: ignore[arg-type]
+
+    pod_runtime._assess = flaky  # type: ignore[method-assign]
+
+    result = pod_runtime.create(request(clock), confirmation=CREATE_CONFIRMATION)
+
+    assert result.state is LaunchState.REFUSED_BALANCE_UNOBSERVABLE
+    assert result.record is not None
+    assert "could not be completed" in result.detail
+    assert result.close_report is not None
+    assert "could not be completed" in result.close_report.reason
+    assert provider.terminate_calls == [result.record.pod_id]
+    # A refusal report never carries a phrase that would authorize anything.
+    assert result.preview is not None
+    assert result.preview.to_record()["confirmation_phrase"] is None
 
 
 def test_a_balance_exactly_at_the_hard_floor_refuses(tmp_path: Path) -> None:

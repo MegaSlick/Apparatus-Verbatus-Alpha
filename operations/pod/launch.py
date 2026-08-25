@@ -129,6 +129,17 @@ flapping source, not proof of recovery.  Two safe observations re-arm the edge
 without waiting out the delivery debounce, so a genuinely new drop is not lost.
 """
 
+MAX_SPEND_ALERT_STATE_BYTES: Final = 4096
+"""How much of a debounce stamp is read before it is called corrupt.
+
+The stamp this package writes is about sixty bytes.  It is read back from a
+directory a paid run writes to, so its size is untrusted input like its content:
+without a bound, one oversized file is read into memory at every spend gate, and
+one *long* file defeats the corrupt-reverts-to-sending rule outright, because
+``int`` refuses a decimal string past ``sys.int_max_str_digits`` with a
+``ValueError`` rather than a value.  A stamp that cannot be believed must send.
+"""
+
 
 class _SpendGateLockFailure(OSError):
     """The reservation lock could not be acquired before a paid action."""
@@ -734,14 +745,22 @@ class PodRuntime:
         total = Decimal("0")
         try:
             paths = sorted(self.lease_root.glob("*.json"))
-        except OSError as error:
+        except Exception as error:
             return total, f"the lease directory could not be listed: {error}"
         for path in paths:
             if exclude is not None and path == exclude:
                 continue
-            if path.is_symlink():
-                return total, f"lease {path} is a symlink"
+            # The link test is inside the same guard as the read.  `is_symlink`
+            # re-raises a permission error rather than answering False, and an
+            # unreadable lease directory therefore used to throw out of the paid
+            # gate instead of refusing through it -- past `create`'s own
+            # `_SpendGateLockFailure` catch, and past the post-create
+            # re-assessment that closes a pod it will not authorize.  Whatever
+            # stops this file being read leaves the remaining liability unknown,
+            # which is one answer with one name.
             try:
+                if path.is_symlink():
+                    return total, f"lease {path} is a symlink"
                 lease = LeaseStore(path).load()
             except Exception as error:
                 return total, f"lease {path} could not be read: {error}"
@@ -921,20 +940,34 @@ class PodRuntime:
         try:
             if path.is_symlink() or (path.exists() and not path.is_file()):
                 return None
-            text = path.read_text(encoding="utf-8").strip()
-        except (OSError, UnicodeDecodeError):
+            with path.open("rb") as handle:
+                blob = handle.read(MAX_SPEND_ALERT_STATE_BYTES + 1)
+        except OSError:
+            return None
+        if len(blob) > MAX_SPEND_ALERT_STATE_BYTES:
+            return None
+        try:
+            text = blob.decode("utf-8").strip()
+        except UnicodeDecodeError:
             return None
         # Existing state files may contain only the original Unix timestamp.
         if re.fullmatch(r"-?\d+", text):
+            try:
+                legacy = int(text)
+            except ValueError:
+                # `sys.int_max_str_digits` is an interpreter setting, not this
+                # module's to assume, so the bound above is not the only reason
+                # a digit string can refuse to become a number.
+                return None
             raw: object = {
-                "delivered_at": int(text),
+                "delivered_at": legacy,
                 "active": True,
                 "safe_observations": 0,
             }
         else:
             try:
                 raw = json.loads(text)
-            except (json.JSONDecodeError, UnicodeDecodeError):
+            except ValueError:
                 return None
         if not isinstance(raw, dict) or set(raw) != {
             "delivered_at",
@@ -1278,15 +1311,50 @@ class PodRuntime:
         provider returns afterwards is the one that bills.
         """
 
-        assessment = self._record_spend_notifications(
-            self._assess(
-                record.estimate,
-                request.hard_deadline,
-                exclude_lease=store.path,
-            ),
-            action,
-            record.pod_id if action == "adopt" else preview.subject,
-        )
+        subject = record.pod_id if action == "adopt" else preview.subject
+        try:
+            assessment = self._record_spend_notifications(
+                self._assess(
+                    record.estimate,
+                    request.hard_deadline,
+                    exclude_lease=store.path,
+                ),
+                action,
+                subject,
+            )
+        except Exception as error:
+            # Everything this assessment touches already fails closed with a
+            # named reason, so nothing here is expected to raise.  But a pod is
+            # billing by this line, and an escaping exception is the one outcome
+            # that leaves it running with no close attempted and no result to
+            # read.  An assessment that could not be completed is exactly the
+            # balance-safety fact that could not be established.
+            close, detail = self._close_and_record(
+                record=record,
+                reason=f"{action} post-create spend assessment could not be completed: {error}",
+                store=store,
+                owner_token=owner_token,
+                situation=(
+                    "created pod's post-create spend assessment could not be completed "
+                    f"({type(error).__name__}: {error})"
+                ),
+            )
+            # The pre-create assessment, carried without its challenge: it is the
+            # last one that actually ran, and the state and detail say plainly
+            # that the one after the pod existed did not.
+            unassessed = PaidActionPreview(preview.action, preview.subject, preview.assessment)
+            return (
+                LaunchResult(
+                    LaunchState.REFUSED_BALANCE_UNOBSERVABLE,
+                    unassessed,
+                    record=record,
+                    lease_path=store.path,
+                    owner_token=owner_token,
+                    detail=detail,
+                    close_report=close,
+                ),
+                unassessed,
+            )
         actual_preview = PaidActionPreview(preview.action, preview.subject, assessment)
         if assessment.allowed:
             return None, actual_preview
