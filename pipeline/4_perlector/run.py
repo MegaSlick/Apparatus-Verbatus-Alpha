@@ -707,12 +707,8 @@ def act_attachment_view(
                 if basis["source_page_ordinal"] == attachment_page
                 and basis["region_id"] in proposal_region_ids
             ]
-            # A native page capture is independent of the act-scoped
-            # compatibility response, so the latter cannot launder a failed
-            # page response into attached testimony. The legacy synthetic page
-            # join is the opposite: its page outcome aggregates several acts,
-            # and this act's own outcome remains the only honest gate for its
-            # attachment.
+            # Native page and compatibility act outcomes are independent; legacy
+            # page joins instead derive their outcome from the act attempts.
             attachment_outcome = (
                 testimonium["outcome"]
                 if native_capture is not None

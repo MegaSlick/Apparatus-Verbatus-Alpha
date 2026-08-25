@@ -675,19 +675,12 @@ _NATIVE_CAPTURE_PARSE_STATES: Final = frozenset({"not-requested", "pending", "pa
 _CHURRO_CAPTURE_FINDING_KINDS: Final = frozenset(
     {"post-hoc-repetition", "post-hoc-repetition-uninspected"}
 )
-_CHURRO_COMPLETE_STOP_REASONS: Final = frozenset({"eos", "stop"})
 _CHURRO_CUTOFF_STOP_REASONS: Final = frozenset({"length", "max_new_tokens"})
+_CHURRO_STOP_REASONS: Final = frozenset({"eos", "stop"}) | _CHURRO_CUTOFF_STOP_REASONS
 
 
 def validate_native_capture(value: Any) -> dict[str, Any]:
-    """Close the retained native-witness model view, not merely its outer keys.
-
-    The raw response is content-addressed and immutable in its own blob
-    (`raw_response_ref`); this closes the shape of what was derived and
-    retained *about* it, at the same granularity every other field of this
-    schema is closed at -- an outer key set matching is not, on its own,
-    evidence that a resealed record still carries this stage's own facts.
-    """
+    """Close the derived model view; raw response bytes remain in its referenced blob."""
     if not isinstance(value, dict) or set(value) != _NATIVE_CAPTURE_FIELDS:
         raise SchemaRefusal(
             "a page Testimonium native capture is not its retained model-view schema"
@@ -746,8 +739,7 @@ def validate_native_capture(value: Any) -> dict[str, Any]:
             "a page Testimonium native capture claims a parse failure with no reason"
         )
     if value["adapter"] == "churro.v1":
-        allowed_stops = _CHURRO_COMPLETE_STOP_REASONS | _CHURRO_CUTOFF_STOP_REASONS
-        if value["transport_stop_reason"] not in allowed_stops:
+        if value["transport_stop_reason"] not in _CHURRO_STOP_REASONS:
             raise SchemaRefusal(
                 "a Churro page capture has an unknown transport stop reason "
                 f"{value['transport_stop_reason']!r}"
@@ -799,13 +791,11 @@ def validate_native_capture(value: Any) -> dict[str, Any]:
                     "a Churro page capture repetition finding does not name the inspected view"
                 )
         repeated = any(finding["kind"] == "post-hoc-repetition" for finding in findings)
-        expected_stop = (
-            "partial-parse-failed"
-            if state == "failed"
-            else "partial-post-hoc-repetition-detected"
-            if repeated
-            else value["transport_stop_reason"]
-        )
+        expected_stop = value["transport_stop_reason"]
+        if state == "failed":
+            expected_stop = "partial-parse-failed"
+        elif repeated:
+            expected_stop = "partial-post-hoc-repetition-detected"
         if value["stop_reason"] != expected_stop:
             raise SchemaRefusal(
                 "a Churro page capture stop reason disagrees with its parse and findings"

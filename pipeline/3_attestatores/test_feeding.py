@@ -255,20 +255,7 @@ def test_repetition_detection_observes_only_bytes_already_captured(monkeypatch):
 
 
 def test_repetition_is_detected_in_a_COMPLETE_churro_response_envelope_and_all():
-    """The detector must fire on the shape it exists for: a whole, well-formed reply.
-
-    It did not. `detect_repetition` compares windows at the tail of what it is
-    given, and a complete Churro response ends `</output>` -- nine bytes that sit
-    inside every tail window and make each one differ from the window before it.
-    Shown the raw bytes, the detector returned None for a page consisting of one
-    clause repeated six times, and returned `repeats=5` for the same page cut off
-    before its closing tag. An instrument that reports a runaway only when the
-    runaway was ALSO truncated is reporting the truncation (GOVERNANCE 10).
-
-    Every test of this before mocked the detector or fed it bare bytes with no
-    envelope, which is why it stayed green. This one goes through
-    `retain_model_view` with the real detector and a real response.
-    """
+    """The XML envelope must not hide repetition in an otherwise complete response."""
     tree = _Tree()
     clause = "the same clause repeated over and over. "
     raw = f"<output>{clause * 6}</output>".encode()
@@ -287,31 +274,19 @@ def test_repetition_is_detected_in_a_COMPLETE_churro_response_envelope_and_all()
         {
             "kind": "post-hoc-repetition",
             "unit_characters": len(clause),
-            # Five, not six: the detector normalises whitespace and strips, so
-            # the sixth clause's trailing space is gone and the tail carries
-            # five whole windows. Counting is the R3 suite's business; what is
-            # pinned here is that it counts at all.
+            # Normalization strips the final space, leaving five complete windows.
             "repeats": 5,
             "inspected": "parsed-text",
         }
     ]
     assert record["stop_reason"] == "partial-post-hoc-repetition-detected"
-    # Post-capture and powerless over the capture, exactly as before: the blob
-    # is the untouched response, closing tag and all.
     assert tree.blobs[record["raw_response_ref"]["relative_path"]] == raw
-    # And the raw bytes on their own really are undetectable -- the fact that
-    # made this a defect rather than a preference.
+    # The closing tag makes raw tail windows unequal.
     assert detect_repetition(raw) is None
 
 
 def test_an_unparseable_capture_is_still_inspected_for_repetition_on_its_raw_bytes():
-    """No transcription to read, so the raw capture is what gets inspected.
-
-    A response that ran away and was cut before it could close is the likeliest
-    real instance of both faults at once. Both are recorded: the parse refusal
-    keeps the stop reason (it is the more actionable fact) and the repetition
-    survives in `findings`, where a finding belongs.
-    """
+    """Without parsed text, repetition remains an independent raw-byte finding."""
     tree = _Tree()
     clause = "the same clause repeated over and over. "
     raw = f"<output>{clause * 6}".encode()
@@ -411,11 +386,7 @@ def test_churro_page_capture_keeps_repetition_finding_after_raw_capture(monkeypa
 
 
 def test_churro_page_capture_of_malformed_xml_keeps_raw_bytes_and_is_unrecordable():
-    """A response that reached this boundary but does not parse is a captured,
-    unrecordable channel -- not the no-channel-at-all shape `dead`/`not-run`
-    carry. It must stay distinguishable from those on `content_health.recordable`
-    alone, because that is the field a later reader checks to learn whether a
-    chair was ever actually heard from."""
+    """A received parse failure is unrecordable, not a no-response channel."""
     attestatores = _load_attestatores()
     tree = _Tree()
     raw = "<output>unterminated"
@@ -449,20 +420,7 @@ def test_churro_page_capture_of_malformed_xml_keeps_raw_bytes_and_is_unrecordabl
 
 
 def test_a_cut_off_empty_response_is_not_a_confirmed_blank_page():
-    """`genuinely-empty` is a positive claim of absence and must be earned.
-
-    A response the provider stopped at its token bound before emitting a single
-    character reported nothing because it was interrupted. Recording that as
-    "this chair read the page and found nothing on it" puts an unconfirmed blank
-    into the record on the strength of an interruption -- and at page scope that
-    outcome trivially attaches every act on the page at a zero-length span and
-    feeds the Recensor's blank corroboration. GOVERNANCE 2 refuses "complete"
-    unless everything reconciles; GOALS 1 says a missed act is worse than a
-    poorly read one, and this is how one would go missing.
-
-    A cut-off response WITH text stays `read`, truncated: partial characters are
-    evidence, and the truncation flag says how far to trust them.
-    """
+    """Interruption cannot establish absence; partial characters remain evidence."""
     attestatores = _load_attestatores()
 
     def _capture(raw: str, stop: str):
@@ -497,15 +455,13 @@ def test_a_cut_off_empty_response_is_not_a_confirmed_blank_page():
     }
     assert "not a confirmed blank page" in cut.reason
 
-    # The same empty response the provider finished normally IS a reported
-    # absence, and stays one. The distinction is the whole point.
+    # A normally completed empty response is evidence of reported absence.
     finished, _ = _capture("<output></output>", "eos")
     assert finished.outcome == "genuinely-empty"
     assert finished.native_payload == ""
     assert finished.health["recordable"] is True
     assert finished.health["truncated"] is False
 
-    # And a cut-off response that did carry text keeps it, visibly partial.
     partial, _ = _capture("<output>half an act and then</output>", "length")
     assert partial.outcome == "read"
     assert partial.native_payload == "half an act and then"
@@ -513,14 +469,7 @@ def test_a_cut_off_empty_response_is_not_a_confirmed_blank_page():
 
 
 def test_a_declared_response_no_page_chair_could_be_asked_for_is_refused():
-    """A row nothing can look up is refused by name, not skipped.
-
-    `churro_page_capture` is keyed on `(page_ordinal, chair)`. A misspelled chair
-    or an act-scoped one simply never matches, and the stage reverts to the
-    synthetic join with nothing recorded -- the capture path off, every test
-    green. An absent chair is deliberately NOT this mistake: the roster, not the
-    fixture, decides whether a chair can answer.
-    """
+    """Unreachable declarations refuse; absent occupants remain roster facts."""
     attestatores = _load_attestatores()
 
     def _context(chair: str, page_ordinal: int, chairs: dict):
@@ -562,7 +511,6 @@ def test_a_declared_response_no_page_chair_could_be_asked_for_is_refused():
             _context("attestator_1", 9, {"attestator_1": _chair("attestator_1")}),
             page_chairs,
         )
-    # The absent chair passes over quietly: well-formed declaration, no chair.
     attestatores.validate_declared_churro_page_responses(
         _context(
             "attestator_3",
@@ -661,14 +609,7 @@ def test_churro_declarations_are_checked_in_the_no_write_attempt_preflight():
 
 
 def test_one_scenarios_declared_response_is_not_another_scenarios_default():
-    """A row belonging to a different scenario is not a fallback for this one.
-
-    The lookup used to sort every non-matching row into the scenario-agnostic
-    bucket, so a `churro-native` response was served to `happy`, `review` and
-    every other scenario that declared none of its own -- and a second
-    scenario-scoped row for the same pair refused those unrelated runs rather
-    than its own. `testimony_for` has always had the right rule; this is it.
-    """
+    """Only an unscoped row is a default; other scenario rows are inaccessible."""
     attestatores = _load_attestatores()
     rows = [
         {
@@ -692,8 +633,6 @@ def test_one_scenarios_declared_response_is_not_another_scenarios_default():
     context.scenario = "churro-native"
     assert attestatores.churro_page_capture(context, 1, "attestator_1") is rows[0]
 
-    # A scenario-agnostic row IS this scenario's default, and a scenario-scoped
-    # row still overrides it -- the precedence `testimony_for` documents.
     rows.append(
         {
             "page_ordinal": 1,

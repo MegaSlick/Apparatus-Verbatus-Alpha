@@ -351,11 +351,8 @@ def act_attachment_facts(context, act_id: str, outcomes: dict[str, str]) -> dict
                         f"act {act_id} page witness {chair!r} attributes its native capture to "
                         "an adapter other than that chair's configured boundary"
                     )
-            # Native capture makes the page response independent of the
-            # act-scoped compatibility Testimonium, whose successful outcome
-            # must not turn a failed page attempt into coverage. A legacy page
-            # join instead aggregates multiple act attempts, so its per-act
-            # attachment remains gated by this act's own outcome.
+            # Native page and compatibility act outcomes are independent; legacy
+            # page joins instead derive their outcome from the act attempts.
             attachment_outcome = (
                 page_testimonium["outcome"] if native_capture is not None else outcomes.get(chair)
             )
