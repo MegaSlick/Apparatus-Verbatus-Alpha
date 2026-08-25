@@ -485,14 +485,10 @@ def verify_export_bundle(data: bytes, clean_root) -> dict[str, Any]:
 
 
 def _prepare_clean_root(root: Path) -> None:
-    """Prepare an ordinary directory for one package extraction.
+    """Permit a reusable extraction root, but no link or special-file branch.
 
-    The verifier used to accept an existing tree and then infer the extracted member
-    set with ``rglob``. That primitive does not descend linked directories, while a
-    pre-existing file link at an expected member path is followed by extraction. A
-    caller-supplied "clean" root could therefore redirect a write outside the tree.
-    Existing ordinary files remain supported because callers reuse a root after a
-    refusal; the extraction helper replaces them without following links.
+    Ordinary files may remain after a refusal; extraction replaces them atomically
+    so even a pre-existing hard link cannot redirect a write outside this tree.
     """
     try:
         if root.is_symlink():
@@ -500,8 +496,6 @@ def _prepare_clean_root(root: Path) -> None:
         root.mkdir(parents=True, exist_ok=True)
         if not root.is_dir():
             raise SchemaRefusal("the clean extraction root is not a directory")
-    except SchemaRefusal:
-        raise
     except OSError as error:
         raise SchemaRefusal("the clean extraction root cannot be prepared") from error
     _ordinary_member_names(root)
@@ -534,8 +528,6 @@ def _ordinary_member_names(root: Path) -> set[str]:
                     raise SchemaRefusal(
                         f"the clean extraction tree contains a non-regular entry at {relative!r}"
                     )
-            except SchemaRefusal:
-                raise
             except OSError as error:
                 raise SchemaRefusal(
                     f"the clean extraction entry {relative!r} cannot be inspected"
@@ -665,24 +657,11 @@ def _require_exact_fields(value: object, expected: frozenset[str], *, subject: s
 
 
 def _verify_manifest_field_closure(manifest: dict[str, Any]) -> None:
-    """Close EXPORT_MANIFEST.json against fields this build never writes.
+    """Reject unmeasured claims hidden in otherwise self-consistent JSON.
 
-    Every act row, review row and salvage row in this package is already held to an
-    exact field set, and the manifest -- the one member a recipient reads first, and
-    the only one that speaks *about* the package -- was not. A resealed manifest
-    could therefore carry an extra top-level ``verification`` block asserting checks
-    nobody ran, or a ``claims.accuracy`` entry stating a number nothing measured, and
-    every value check in this file would pass because none of them looks at a key it
-    does not expect. That is the instrument reporting an instruction rather than a
-    finding (GOVERNANCE 10), and D:A5's rule -- the exporter refuses unknown fields,
-    so the verifier must too -- applied to the document that makes the claims.
-
-    Only the blocks that are read field by field are listed here. ``canonical_text``,
-    ``retained_run_references``, ``semantic_annotations``, ``uncertainty``,
-    ``transcription_annotations``, ``aggregate``, ``aggregate_basis`` and
-    ``terminal_ledger`` are already compared as whole values against a recomputed
-    expectation, which is a closed check by construction; adding a second spelling of
-    their key sets here would be a place for the two to drift.
+    Blocks compared wholesale against recomputed values are already closed. Only
+    blocks read field by field need explicit key sets here; duplicating the other
+    shapes would create a second schema that could drift from their recomputation.
     """
     _require_exact_fields(manifest, _MANIFEST_FIELDS, subject="EXPORT_MANIFEST.json")
     run = _require_exact_fields(
@@ -731,10 +710,9 @@ def verify_projection_identity(data: bytes, clean_root) -> dict[str, str]:
     the literal differently; this compares the values and their UTF-8 hashes
     across the text bundle, SQLite literal column, and JSONL hand-off.
     """
-    root = clean_root
-    manifest = verify_export_bundle(data, root)
+    manifest = verify_export_bundle(data, clean_root)
     formats = _manifest_formats(manifest)
-    return _compare_literal_projections(root, formats)
+    return _compare_literal_projections(clean_root, formats)
 
 
 def verify_delivered_bundle(data: bytes, clean_root) -> dict[str, Any]:
@@ -1565,20 +1543,11 @@ def _verify_retained_references(value: Any) -> None:
 
 
 def _verify_evidence_refs(evidence_refs: Any, *, subject: str) -> None:
-    """Require at least one evidence reference, and require each to cite something.
+    """Require each act to retain its Recensor review and only real citations.
 
-    ``_verify_retained_references`` only refuses a citation that lies about its
-    availability -- it has no opinion on a dict that makes no citation at all,
-    because most of what it walks (``provenance: {"chair": ...}`` and the like)
-    is legitimately not a reference. ``evidence_refs`` is different: the field
-    exists to be a list of citations, and an entry with no ``run_relative_path``
-    at all -- ``{}``, or a note with no path -- passed every check above while
-    citing nothing, which is exactly the evidence-corrupting gap D:B7 names.
-
-    Production always supplies the Recensor review reference, including for an act
-    that produced no established reading. An empty list therefore does not mean
-    "there was no evidence"; it means the terminal projection dropped the one
-    citation every act is guaranteed to have.
+    The generic retained-reference walk permits non-reference dictionaries. This
+    field is narrower: every entry must name a retained-run path, and production
+    guarantees at least the review reference even when no reading was established.
     """
     if not isinstance(evidence_refs, list) or not evidence_refs:
         raise SchemaRefusal(
@@ -2079,12 +2048,8 @@ def _text_bundle_literals(root) -> dict[str, tuple]:
 
 _STORED_ACTS_TABLES: Final = ("acts", "act_search", "export_metadata")
 _SQLITE_PRODUCT_TABLES: Final = (*_STORED_ACTS_TABLES, "acts_fts")
-# The one statement that creates an acts database.  The writer executes it and the
-# verifier re-executes it into an empty database to learn what a package's own
-# `sqlite_master` must look like, so the two cannot drift about the shape of the
-# product: a schema check written out by hand beside the writer is a second
-# spelling of this text, and second spellings are how `acts_fts` came to be
-# checked for existence but never for what it indexes.
+# Writer and verifier share this DDL so the schema check includes FTS bindings,
+# shadow tables, and implicit indexes without maintaining a second schema spelling.
 _ACTS_DATABASE_DDL: Final = """
                 CREATE TABLE export_metadata (
                     key TEXT PRIMARY KEY NOT NULL,
@@ -2128,13 +2093,7 @@ _ACTS_DATABASE_DDL: Final = """
 
 @lru_cache(maxsize=1)
 def _expected_acts_schema() -> dict[str, tuple[str, str, str | None]]:
-    """What `sqlite_master` looks like after this build's DDL, and nothing else.
-
-    Built by running the DDL rather than written down, so it includes whatever
-    shadow tables and implicit indexes *this* SQLite creates for the FTS5
-    declaration -- which is the part a hand-written expectation would get wrong
-    the first time SQLite changed it.
-    """
+    """Derive this SQLite runtime's complete schema from the writer's DDL."""
     connection = sqlite3.connect(":memory:")
     try:
         connection.executescript(_ACTS_DATABASE_DDL)
@@ -2149,20 +2108,11 @@ def _expected_acts_schema() -> dict[str, tuple[str, str, str | None]]:
 
 
 def _verify_acts_schema(connection: sqlite3.Connection) -> None:
-    """Require the delivered database to be exactly the object graph the writer wrote.
+    """Require the exact object graph and FTS content binding the writer declares.
 
-    Checking that ``acts_fts`` exists and is a table says nothing about *what it
-    indexes*. FTS5 records its ``content=`` binding in the declaration itself, so
-    a resealed package can drop ``acts_fts`` and recreate it over a decoy table it
-    also adds: every digest matches, ``act_search`` still holds the true folds,
-    the index is perfectly consistent with the content table it now names, and a
-    recipient's full-text search returns the decoy's text for real act rowids.
-    An integrity check cannot see that, because from inside FTS5 nothing is wrong.
-
-    So the four declared objects must carry byte-identical ``sql``, and no object
-    may exist that this build's own DDL does not create. The tolerated remainder
-    (FTS5's shadow tables, SQLite's implicit unique indexes) is whatever the
-    reference database grew, never an allowance written down here.
+    FTS integrity alone cannot detect an index consistently repointed at a decoy
+    content table. Exact declarations close that gap; the runtime-derived schema
+    also closes shadow tables and implicit indexes without hard-coding them.
     """
     try:
         expected = _expected_acts_schema()
@@ -2303,11 +2253,8 @@ def _jsonl_literals(path) -> dict[str, tuple]:
     for line in _package_lines(path, "acts JSONL"):
         if not line:
             continue
-        # `_jsonl_act_records` has always reached this member first and refuses an
-        # unparseable row there. This reader is entitled to no such assumption: a
-        # bare `json.loads` here would turn a caller reordering two checks into a
-        # `JSONDecodeError` escaping a verifier whose whole contract is a named
-        # refusal.
+        # This reader is independently callable, so malformed JSON must remain a
+        # named package refusal regardless of validation order.
         try:
             record = json.loads(line)
         except json.JSONDecodeError as error:
@@ -3111,12 +3058,8 @@ def _act_citation_sources(sources: dict[str, list[dict[str, Any]]]) -> dict[str,
         if not isinstance(record.get("evidence"), dict):
             raise SchemaRefusal("a source act-citation has no witness evidence")
         _verify_retained_references(record["evidence"])
-        # The source graph is a *delivered member*, and it is the one carrier of an
-        # act's evidence citations that every package has regardless of which
-        # products it selected. Checking the decoy only where the three product
-        # readers run left a package built with `formats = ["text-bundle"]` shipping
-        # `sources.json` citations that cite nothing at all, verified -- the exact
-        # gap D:B7 names, surviving in the member none of those readers open.
+        # sources.json is the only evidence-citation carrier common to every format
+        # selection, including a text-bundle-only package.
         _verify_evidence_refs(
             record["evidence"].get("evidence_refs"), subject="a source act-citation"
         )
@@ -3574,28 +3517,12 @@ def _verify_exact_delivered_citations(
 
 
 def _verify_fts_index_integrity(path: Path) -> None:
-    """Compare the delivered full-text index against the rows it claims to index.
+    """Verify every FTS term in both directions against ``act_search``.
 
-    ``acts_fts`` is external-content FTS5: its index and ``act_search`` are kept in
-    agreement by convention, never by a constraint, so a resealed package can empty
-    it (``INSERT INTO acts_fts(acts_fts) VALUES ('delete-all')``), append terms the
-    acts never carried, or index a rowid that exists in no table at all, while every
-    digest, every column and the whole ``act_search`` projection stay intact.
-
-    A ``MATCH`` probe per row -- what this check was -- is one-directional. It proves
-    a fold's terms are *present* and says nothing about what else is in the index, so
-    a poisoned row and an injected ghost act both passed it; and it cannot ask
-    anything at all of a row whose fold tokenizes to nothing, which made a real act
-    whose text folds to no unicode61 token fail a check about a defect it did not
-    have. FTS5's own ``integrity-check`` with the external-content argument answers
-    the whole question in one statement: every indexed term, in both directions,
-    against the content table this verifier has already recomputed from the literal.
-
-    It runs against a private copy because the command is issued as a write, and the
-    extracted tree is what a recipient keeps beside the archive -- a verifier does
-    not touch the thing it is verifying. ``_verify_acts_schema`` is what makes the
-    answer mean anything: it is the check that proves ``acts_fts`` still indexes
-    ``act_search`` and not some table a resealer added.
+    External-content FTS5 does not constrain its index to the content table, and a
+    per-row MATCH probe cannot detect extra terms, ghost rowids, or tokenless rows.
+    SQLite's integrity command covers the whole index but writes through its handle,
+    so it must run on a private copy rather than mutate the delivered member.
     """
     with tempfile.TemporaryDirectory(prefix="armarium-fts-") as directory:
         writable = Path(directory) / "acts.sqlite"

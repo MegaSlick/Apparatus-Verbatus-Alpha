@@ -656,7 +656,6 @@ def test_an_evidence_reference_list_may_not_be_empty(tmp_path):
 
 
 def test_delivered_gate_refuses_retired_fields_on_an_act_v2_row(tmp_path):
-    """The verifier closes v2 as tightly as its producer already does."""
     bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
     members = _members(bundle.data)
     rows = [json.loads(line) for line in members["acts.jsonl"].decode("utf-8").splitlines()]
@@ -732,7 +731,6 @@ def test_delivered_gate_requires_the_fts5_index_to_actually_carry_the_fold(tmp_p
 
 
 def _resealed_acts_database(tmp_path, mutate, *, name="resealed.sqlite"):
-    """A package whose acts database was edited after sealing and re-inventoried."""
     bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
     members = _members(bundle.data)
     database = tmp_path / name
@@ -861,7 +859,6 @@ def test_an_established_reading_that_folds_to_no_search_token_still_publishes(tm
 
 
 def _resealed_manifest(mutate):
-    """A package whose manifest was edited after sealing and re-self-hashed."""
     bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
     members = _members(bundle.data)
     manifest = json.loads(members[EXPORT_MANIFEST_NAME])
@@ -921,15 +918,7 @@ def _resealed_manifest(mutate):
     ],
 )
 def test_a_resealed_manifest_may_not_carry_a_field_this_build_never_writes(mutate, tmp_path):
-    """D:A5 applied to the document that speaks about the package.
-
-    Every act row, review row and salvage row is already held to an exact field
-    set. The manifest -- the first member a recipient reads, and the only one that
-    makes claims *about* the others -- was read key by key, so a resealed manifest
-    could carry an audit result nothing performed or a verification report nobody
-    produced and pass every value check in the file. A claim is not a goal
-    (GOVERNANCE 10), and this is the gate that keeps them apart.
-    """
+    """The package's claims document cannot carry a field nothing measured."""
     with pytest.raises(
         SchemaRefusal,
         match="unrecognized field set|not this build's fixed claim|display claim",
@@ -959,15 +948,7 @@ def test_a_manifest_run_binding_requires_string_identities(field, tmp_path):
 
 
 def test_a_source_graph_evidence_ref_that_cites_nothing_is_refused_in_every_format_set(tmp_path):
-    """The decoy check has to live where every package carries the citation.
-
-    `sources.json` travels in every package regardless of the format selection,
-    and it is the only carrier of a delivered act's evidence citations when
-    neither JSONL nor the acts database is selected. Checked only in the three
-    product readers, a `formats = ["text-bundle"]` package shipped citations that
-    cite nothing at all and verified -- the D:B7 gap surviving in the member none
-    of those readers open.
-    """
+    """sources.json is the citation carrier shared by every format selection."""
     projection = _projection()
     decoyed = {**projection.acts[0], "evidence_refs": [{"note": "evidence exists somewhere"}]}
 
@@ -981,14 +962,7 @@ def test_a_source_graph_evidence_ref_that_cites_nothing_is_refused_in_every_form
 
 @pytest.mark.parametrize("member", ["review-items.jsonl", "acts.jsonl"])
 def test_an_evidence_ref_that_cites_nothing_is_refused(member, tmp_path):
-    """`evidence_refs` may be empty, but an entry inside it may not be a decoy.
-
-    `_verify_retained_references` only refuses a citation that lies about its
-    availability; it has no opinion on a dict that makes no citation at all,
-    because most of what it walks legitimately is not a reference. An entry
-    with no path -- `{}`, or a free-text note -- passed every prior check
-    while citing nothing, which defeats the point of requiring the field.
-    """
+    """Every entry in the required evidence list must cite a retained-run path."""
     bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
     members = _members(bundle.data)
     rows = [json.loads(line) for line in members[member].decode("utf-8").splitlines()]
@@ -1001,7 +975,6 @@ def test_an_evidence_ref_that_cites_nothing_is_refused(member, tmp_path):
 
 
 def test_an_acts_database_evidence_ref_that_cites_nothing_is_refused(tmp_path):
-    """The same decoy evidence ref, resealed straight into the SQLite column."""
     bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
     members = _members(bundle.data)
     database = tmp_path / "decoyed.sqlite"

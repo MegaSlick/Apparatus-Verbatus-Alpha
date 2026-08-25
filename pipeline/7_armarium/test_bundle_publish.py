@@ -86,12 +86,7 @@ def review_run(tmp_path_factory):
 
 
 def _reseal_export_bundle(tree: RunTree, mutate) -> None:
-    """Rebuild the package, blob address, and export envelope after ``mutate``.
-
-    This is the package-editor threat model at the real publication boundary. The
-    callback receives the member map and decoded package manifest; every package
-    digest and both self-hashes are then refreshed around whatever it changed.
-    """
+    """Keep all seals coherent so tests reach the publisher's semantic checks."""
     export_path = tree.resolve(
         tree.artifact_path(
             ARMARIUM,
@@ -433,11 +428,8 @@ def test_a_cleanup_failure_names_the_leftover_staging_directory(
         "replace",
         lambda _src, _dst: (_ for _ in ()).throw(OSError("simulated rename failure")),
     )
-    # Fail only the staging-directory removal at the publish gate. The patched
-    # attribute is the module-global shutil.rmtree, which newer Pythons' tempfile
-    # also delegates TemporaryDirectory cleanup to (with onexc=), so an
-    # unconditional stub would break verify's own scratch cleanup before
-    # os.replace is ever reached.
+    # tempfile shares this module's rmtree, so an unconditional patch would fail
+    # verifier scratch cleanup before the publication cleanup under test.
     real_rmtree = bundle_module.shutil.rmtree
 
     def failing_staging_rmtree(path, *args, **kwargs):

@@ -177,22 +177,11 @@ def _reference_key(reference: dict) -> tuple[str, str]:
 def _verify_comparison_views(
     context, act_id: str, derived: dict[str, str], embedded: dict, dossier: dict
 ) -> None:
-    """Hold the embedded page-witness views to the retained page Testimonia they slice.
+    """Bind every displayed witness label to its retained Testimonium slice.
 
-    The views are keyed by *witness label*, not by chair
-    (`pipeline/4_perlector/dossier.py::build_dossier`): under `named` the label is
-    the chair itself, and under `blinded` it is a run-scoped pseudonym, because a
-    real chair name in the one object every reader sees is precisely what blinding
-    exists to withhold. Comparing the re-derived chair-keyed mapping straight
-    against the embedded one therefore held only under `named` and refused every
-    blinded run at this stage -- a whole configured run mode dead at the
-    establishing constructor.
-
-    The label rule lives in ``common`` because both the Perlector producer and this
-    independent downstream verifier need it. Thus named and blinded regimes receive
-    the same strict check: same labels and same text, witness by witness. Comparing
-    only a blinded multiset would let two authentic views exchange pseudonyms while
-    preserving every count and every byte of text, corrupting attribution silently.
+    The dossier keys views by chair under ``named`` and by a run-scoped pseudonym
+    under ``blinded``. Comparing only the text multiset would let two authentic
+    slices exchange pseudonyms and silently corrupt their attribution.
     """
     if not isinstance(embedded, dict):
         raise SchemaRefusal(f"act {act_id} embedded comparison views are not a mapping")
@@ -243,7 +232,12 @@ def _verify_comparison_views(
 def _verify_act_attachment_view(
     context, act_id: str, page_id: str, regions: list[dict], dossier: dict
 ) -> None:
-    """Re-derive the page-witness facts a Perlectio embeds from its attachment."""
+    """Re-derive a Perlectio's page-witness facts from retained evidence.
+
+    ``page_id`` is the act roster's attachment subject. Basis regions may span
+    pages, so their first entry cannot supply that identity, but at least one basis
+    region must cite it.
+    """
     attachment_view = dossier.get("act_attachment")
     if (
         not isinstance(attachment_view, dict)
@@ -264,20 +258,8 @@ def _verify_act_attachment_view(
     attachments = payload.get("attachments") if isinstance(payload, dict) else None
     if not isinstance(attachments, list):
         raise SchemaRefusal(f"act {act_id} referenced act-attachment has no attachment list")
-    # The act's own page identity, from the roster the run is accounted against --
-    # the same value the producer reads every page Testimonium under
-    # (`pipeline/4_perlector/run.py::act_attachment_view`, `subject_id=act["page_id"]`).
-    # This was `regions[0]["source_page_id"]`, which is a different fact: an act's
-    # basis regions legitimately span more than one source page in this pipeline's
-    # own fixtures, so the first region was an arbitrary pick that agreed with the
-    # producer only by sort order. Re-deriving the subject from the record under
-    # audit also asks the record to nominate the evidence it is checked against.
     if not isinstance(page_id, str) or not page_id:
         raise SchemaRefusal(f"act {act_id} has no source page for attachment verification")
-    # ...and the record does not get to be about a page its own reading never read.
-    # The Archetypus record carries `page_id` and `regions` side by side and nothing
-    # reconciled them, so a resealed record could name one page and cite crops from
-    # another.
     if page_id not in {region.get("source_page_id") for region in regions}:
         raise SchemaRefusal(
             f"act {act_id} is accounted to page {page_id!r}, which none of its basis regions "
