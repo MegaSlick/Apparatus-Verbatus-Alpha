@@ -117,6 +117,10 @@ DEFAULT_SERVING_RECIPES_CONFIG_PATH = (
 DEFAULT_POD_PLACEMENT_CONFIG_PATH = (
     Path(__file__).resolve().parents[1] / "config" / "pod_placement.toml"
 )
+DEFAULT_TRIAGE_MODES_CONFIG_PATH = (
+    Path(__file__).resolve().parents[1] / "config" / "triage_modes.toml"
+)
+
 # The witness outcomes that mean a chair actually served, and therefore that a
 # serving receipt exists for the reading. Named once, here, because both halves
 # of the handoff need it and they must not drift: the Attestatores decides
@@ -985,12 +989,12 @@ def run_config_bindings(
     corpus_frame_policy, corpus_frame_config_digest = load_corpus_frame_policy(
         corpus_frame_config_path
     )
-    triage_modes_config_path = Path(__file__).resolve().parents[1] / "config" / "triage_modes.toml"
     try:
-        triage_modes_config_digest = digest_bytes(triage_modes_config_path.read_bytes())
+        triage_modes_config_digest = digest_bytes(DEFAULT_TRIAGE_MODES_CONFIG_PATH.read_bytes())
     except OSError as error:
         raise ContractError(
-            f"the triage modes configuration binding at {triage_modes_config_path} could not be read"
+            "the triage modes configuration binding at "
+            f"{DEFAULT_TRIAGE_MODES_CONFIG_PATH} could not be read"
         ) from error
     armarium_formats_digest, armarium_formats = bind_armarium_formats(armarium_formats_config_path)
     try:
@@ -1155,9 +1159,9 @@ def require_triage_modes(
     sealed_config_digests: Mapping[str, str],
     path: str | Path | None = None,
 ) -> None:
-    """Point-of-use recheck for the pre-door pipeline-wide mode vocabulary."""
+    """Refuse mode schema or bytes that differ from the run's sealed vocabulary."""
     if path is None:
-        path = Path(__file__).resolve().parents[1] / "config" / "triage_modes.toml"
+        path = DEFAULT_TRIAGE_MODES_CONFIG_PATH
     try:
         raw = Path(path).read_bytes()
     except OSError as error:

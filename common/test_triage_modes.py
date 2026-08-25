@@ -53,9 +53,8 @@ def test_triage_modes_refuse_an_unsealed_or_non_vocabulary_config(tmp_path):
 
 
 def test_the_sealed_file_declares_exactly_the_shared_mode_vocabulary():
-    # Three spellings of one triple — this file's sections, the manifest schema's
-    # closed check, and the point-of-use recheck — is the drift the shared
-    # constant exists to stop. Pin the config to it so they cannot part.
+    # The raw config, manifest schema, and point-of-use check must not acquire
+    # independent mode vocabularies.
     root = Path(__file__).resolve().parents[1]
     declared = tomllib.loads((root / "config/triage_modes.toml").read_text(encoding="utf-8"))
     assert tuple(declared) == TRIAGE_MODES

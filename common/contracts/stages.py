@@ -91,10 +91,6 @@ def stage_directory(stage: str) -> str:
         ) from None
 
 
-# The operating-mode vocabulary a person selects per pre-door batch. Named here
-# for the same reason the stage names are: three spellings of one triple —
-# `config/triage_modes.toml`'s section names, the manifest schema's closed check,
-# and the sealed config's point-of-use recheck — is exactly the drift this module
-# exists to prevent. Unit 1's driver joins this name rather than declaring a
-# fourth.
+# The config sections, manifest schema, and every future driver must import this
+# vocabulary rather than maintain independent spellings that can drift.
 TRIAGE_MODES: Final = ("manual", "semi", "auto")

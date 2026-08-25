@@ -1,5 +1,3 @@
-"""Contract tests for pre-door triage, including the ScanTailor fixture seam."""
-
 import time
 from copy import deepcopy
 from pathlib import Path
@@ -36,14 +34,12 @@ PART_CONVENTIONS = (
 )
 
 
-def make_part(region, crop_box, rotation_millidegrees, *, colour_mode="keep", **conventions):
-    """Test convenience; the production constructor requires an explicit colour decision."""
+def make_part(region, crop_box, rotation_millidegrees, *, colour_mode="keep"):
     return contract_make_part(
         region,
         crop_box,
         rotation_millidegrees,
         colour_mode=colour_mode,
-        **conventions,
     )
 
 
@@ -73,25 +69,21 @@ def manifest(records, *, corpus_id=CORPUS_ID):
     return {"schema": MANIFEST_SCHEMA, "corpus_id": corpus_id, "records": records}
 
 
-def fixture_part(
-    *, region=b"0,0,10,8", crop=b"0,0,10,8", rotation=b"0", conventions=PART_CONVENTIONS
-):
+def fixture_part(*, region=b"0,0,10,8", crop=b"0,0,10,8", conventions=PART_CONVENTIONS):
     return (
         b'<part region="'
         + region
         + b'" crop="'
         + crop
-        + b'" rotation_millidegrees="'
-        + rotation
-        + b'"'
+        + b'" rotation_millidegrees="0"'
         + conventions
         + b" />"
     )
 
 
-def transcribe(project_bytes, mode="manual", human_override=False):
+def transcribe(project_bytes):
     return transcribe_scantailor_project(
-        project_bytes, corpus_id=CORPUS_ID, mode=mode, human_override=human_override
+        project_bytes, corpus_id=CORPUS_ID, mode="manual", human_override=False
     )
 
 
@@ -107,15 +99,11 @@ def project(pages: bytes, shape=b"unverified-fixture-v0", version=b"6.0"):
     )
 
 
-def page(parts: bytes, width=b"10", height=b"8"):
+def page(parts: bytes):
     return (
         b'<page source_frame_sha256="'
         + DIGEST_A.encode()
-        + b'" width="'
-        + width
-        + b'" height="'
-        + height
-        + b'" confidence="0" operation_order="region-crop-rotate">'
+        + b'" width="10" height="8" confidence="0" operation_order="region-crop-rotate">'
         + parts
         + b"</page>"
     )

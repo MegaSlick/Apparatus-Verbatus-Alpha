@@ -22,8 +22,8 @@ geometry defaults hidden in this manifest.
 from __future__ import annotations
 
 import xml.etree.ElementTree as ET
-from collections.abc import Mapping as MappingABC
-from typing import Any, Final, Mapping
+from collections.abc import Mapping
+from typing import Any, Final
 
 from common.contracts.canonical import canonical_bytes, digest_bytes, is_sha256
 from common.contracts.errors import SchemaRefusal
@@ -98,29 +98,20 @@ def _rectangle(
         raise SchemaRefusal(f"{what} lies outside {inside}")
 
 
-def _disjoint(one: Mapping[str, int], other: Mapping[str, int]) -> bool:
-    return (
-        one["x"] + one["w"] <= other["x"]
-        or other["x"] + other["w"] <= one["x"]
-        or one["y"] + one["h"] <= other["y"]
-        or other["y"] + other["h"] <= one["y"]
-    )
-
-
-def _rotation(value: Any, what: str) -> None:
+def _rotation(value: Any) -> None:
     if not isinstance(value, dict) or set(value) != _ROTATION_FIELDS:
         raise SchemaRefusal(
-            f"{what} must be a closed rotation_millidegrees/direction/origin/canvas record"
+            "triage rotation must be a closed rotation_millidegrees/direction/origin/canvas record"
         )
     angle = value["rotation_millidegrees"]
     if not _plain_int(angle) or not -180_000 <= angle <= 180_000:
-        raise SchemaRefusal(f"{what} must be an integer in [-180000, 180000] millidegrees")
+        raise SchemaRefusal("triage rotation must be an integer in [-180000, 180000] millidegrees")
     if value["direction"] != "clockwise":
-        raise SchemaRefusal(f"{what} direction must be clockwise")
+        raise SchemaRefusal("triage rotation direction must be clockwise")
     if value["origin"] != "crop-centre":
-        raise SchemaRefusal(f"{what} origin must be the crop-centre")
+        raise SchemaRefusal("triage rotation origin must be the crop-centre")
     if value["canvas"] != "expand":
-        raise SchemaRefusal(f"{what} canvas must expand so rotation clips no cropped pixel")
+        raise SchemaRefusal("triage rotation canvas must expand so rotation clips no cropped pixel")
 
 
 def _row_digest(row: Mapping[str, Any]) -> str:
@@ -162,7 +153,7 @@ def _validate_split(split: Any, frame: Mapping[str, int]) -> None:
             "its own split part",
             space="part",
         )
-        _rotation(part["rotation"], "triage rotation")
+        _rotation(part["rotation"])
         if part["colour_mode"] not in COLOUR_MODES:
             raise SchemaRefusal("triage part colour_mode is not declared")
         regions.append(part["region"])
@@ -174,7 +165,12 @@ def _validate_split(split: Any, frame: Mapping[str, int]) -> None:
     # set is ruled to run past 2,000 frames.
     for index, region in enumerate(regions):
         for other in regions[index + 1 :]:
-            if not _disjoint(region, other):
+            if not (
+                region["x"] + region["w"] <= other["x"]
+                or other["x"] + other["w"] <= region["x"]
+                or region["y"] + region["h"] <= other["y"]
+                or other["y"] + other["h"] <= region["y"]
+            ):
                 raise SchemaRefusal(
                     "triage split parts overlap, so they do not partition the frame"
                 )
@@ -203,7 +199,7 @@ def _validate_actor(actor: Any) -> None:
 
 
 def validate_row(row: Any) -> dict[str, Any]:
-    """Validate one submitted-frame decision and return its canonical dictionary."""
+    """Return a row only when its closed fields and derived digest agree."""
     if not isinstance(row, dict) or set(row) != _ROW_FIELDS:
         raise SchemaRefusal(
             "triage row must use the closed decision-manifest schema (no winner field)"
@@ -336,7 +332,7 @@ def validate_manifest(
             "triage manifest names re-shoot clusters, so it cannot be validated without "
             "their corpus-scoped cluster records"
         )
-    if clusters is not None and not isinstance(clusters, MappingABC):
+    if clusters is not None and not isinstance(clusters, Mapping):
         raise SchemaRefusal("triage cluster records must be supplied as a mapping by cluster id")
     checked: dict[str, Mapping[str, Any]] = {}
     for cluster_id, record in (clusters or {}).items():
@@ -383,9 +379,10 @@ def derivative_page_backlink(row: Mapping[str, Any], part_index: int) -> dict[st
 
 def _fixture_rectangle(text: str, what: str) -> dict[str, int]:
     try:
-        return dict(zip(("x", "y", "w", "h"), (int(part) for part in text.split(",")), strict=True))
+        x, y, width, height = (int(part) for part in text.split(","))
     except ValueError as error:
         raise SchemaRefusal(f"ScanTailor fixture {what} geometry is malformed") from error
+    return {"x": x, "y": y, "w": width, "h": height}
 
 
 def transcribe_scantailor_project(
@@ -414,11 +411,11 @@ def transcribe_scantailor_project(
         root = ET.fromstring(project_bytes, parser=parser)
     except ET.ParseError as error:
         raise SchemaRefusal("ScanTailor project fixture is not XML") from error
-    if root.tag != "scantailor-project" or set(root.attrib) != {"shape", "version"}:
-        raise SchemaRefusal(
-            "ScanTailor project shape is unverified; only the documented fixture seam is accepted"
-        )
-    if root.attrib["shape"] != "unverified-fixture-v0":
+    if (
+        root.tag != "scantailor-project"
+        or set(root.attrib) != {"shape", "version"}
+        or root.attrib["shape"] != "unverified-fixture-v0"
+    ):
         raise SchemaRefusal(
             "ScanTailor project shape is unverified; only the documented fixture seam is accepted"
         )
