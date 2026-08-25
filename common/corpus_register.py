@@ -564,6 +564,8 @@ def _validate_membership(row: dict[str, Any], reading: _Reading) -> None:
                 f"membership record for {page!r} does not add a capture to its predecessor; "
                 "membership grows, and a capture already declared is never withdrawn"
             )
-    reading.membership_head[page] = (digest_of(row), members)
-    reading.membership_chain.setdefault(page, []).append((digest_of(row), members))
-    reading.membership_links.add(digest_of(row))
+    membership_digest = digest_of(row)
+    link = (membership_digest, members)
+    reading.membership_head[page] = link
+    reading.membership_chain.setdefault(page, []).append(link)
+    reading.membership_links.add(membership_digest)

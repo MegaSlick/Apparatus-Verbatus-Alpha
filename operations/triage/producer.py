@@ -133,17 +133,6 @@ def _plain_string(value: Any, what: str) -> str:
     return value
 
 
-def _digest_list(value: Any, what: str, *, minimum: int = 1) -> list[str]:
-    if (
-        not isinstance(value, list)
-        or len(value) < minimum
-        or not all(is_sha256(item) for item in value)
-        or value != sorted(set(value))
-    ):
-        raise ProducerRefusal(f"{what} must be sorted unique source-frame SHA-256 digests")
-    return value
-
-
 def _nonnegative_int(value: Any, what: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value < 0:
         raise ProducerRefusal(f"{what} must be a non-negative integer")
@@ -232,13 +221,11 @@ def _whole_frame_row(
 def _verify_transcribed_row(
     row: Mapping[str, Any], frame: SubmittedFrame, digest: str, triage_mode: str
 ) -> dict[str, Any]:
-    """Accept a geometry transcription only after binding it to this master.
+    """Bind a caller-provided geometry transcription to its submitted master.
 
-    The real ScanTailor project shape is unavailable in this chamber. This accepts a
-    caller-provided structural row — currently either fixture transcription or an
-    explicit human proposal — only when its native bytes, dimensions, and geometry
-    all close against one submitted path. It is the safe producer boundary until a
-    real project replaces the fixture parser.
+    Fixture transcriptions and human proposals enter through the same boundary. A
+    structurally valid row is insufficient by itself: its digest, decoded dimensions,
+    triage declaration, and colour handling must also agree with the submitted bytes.
     """
     if not isinstance(row, Mapping):
         raise ProducerRefusal(
@@ -282,8 +269,7 @@ def _evidenced_pairs(
     own, well-formed strings a caller could simply invent; nothing upstream of this call
     reads the instrument's real output. This binds both digests to the supplied evidence
     manifest and per-pair candidate records, so a confirmation naming a pair the
-    instrument never compared is refused rather than silently trusted (HANDOFF.md, "Unit
-    6B producer and confirmation contract").
+    instrument never compared is refused rather than silently trusted.
 
     Matching each record's declared instrument configuration is necessary and *not*
     sufficient: the configuration digest is public in the manifest, so a caller who
@@ -537,7 +523,16 @@ def _confirmation_cluster_ids(
                 raise ProducerRefusal("confirmation physical page must be a closed declaration")
             volume = _plain_string(page["volume_id"], "confirmation volume_id")
             designation = _plain_string(page["designation"], "confirmation designation")
-            page_members = _digest_list(page["member_frame_sha256"], "confirmation page members")
+            page_members = page["member_frame_sha256"]
+            if (
+                not isinstance(page_members, list)
+                or not page_members
+                or not all(is_sha256(item) for item in page_members)
+                or page_members != sorted(set(page_members))
+            ):
+                raise ProducerRefusal(
+                    "confirmation page members must be sorted unique source-frame SHA-256 digests"
+                )
             members.update(page_members)
             identity = physical_page_id(confirmation["corpus_id"], volume, designation)
             if identity in identities:
@@ -927,16 +922,12 @@ def commit_confirmed_production(
     retained authority is an honest record of the attempted confirmation, not a claim that
     the register changed.
 
-    The confirmation is published verbatim and immutably to ``authority_path`` before the
-    register and either Door document, and that ordering is the point of it. A cluster record is a corpus-lifetime
-    assertion about which frames show one physical page, and the only thing that
-    authorized it is the confirmation: its `authority`, the instrument configuration it
-    reviewed, and the evidence manifest it traced to. Validating that record and then
-    discarding it would leave the register's `appending_run` as the sole surviving trace
-    of who claimed a permanent write — GOVERNANCE 2's "nothing is lost silently" applied
-    to the pipeline's own decisions, not only to its readings. Writing it first means no
-    published cluster can ever be found without the authority that made it. Reusing the
-    path for byte-identical retry is allowed; different bytes are refused without overwrite.
+    A cluster is a corpus-lifetime assertion about which frames show one physical page.
+    Its confirmation therefore remains verbatim at ``authority_path``: ``appending_run``
+    alone cannot preserve the authority, instrument configuration, and evidence manifest
+    behind the assertion. Publishing authority first ensures no register membership or
+    Door cluster can appear without it. A byte-identical retry may reuse the path;
+    different bytes are refused without overwrite.
 
     A retry after a crash between the register append and the document writes converges:
     `append_confirmation_to_register` recognizes its memberships are already recorded and
@@ -969,18 +960,18 @@ def commit_confirmed_production(
             "Supply one distinct path for each record role."
         ) from error
     _refuse_aliased_destinations(**destinations)
-    _publish_immutable_canonical(Path(authority_path), confirmation)
+    _publish_immutable_canonical(destinations["authority"], confirmation)
     successor_digest = append_confirmation_to_register(
         confirmation,
         produced,
         instrument_recipe=instrument_recipe,
         evidence_manifest=evidence_manifest,
         evidence_records=evidence_records,
-        register_path=register_path,
+        register_path=destinations["register"],
         expected_register_digest=expected_register_digest,
     )
-    _atomic_write_canonical(Path(manifest_path), produced.manifest)
-    _atomic_write_canonical(Path(clusters_path), produced.clusters)
+    _atomic_write_canonical(destinations["manifest"], produced.manifest)
+    _atomic_write_canonical(destinations["clusters"], produced.clusters)
     return produced, successor_digest
 
 

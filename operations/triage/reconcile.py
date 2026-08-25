@@ -158,6 +158,10 @@ def reconcile(verdicts: Sequence[Mapping[str, Any]]) -> tuple[dict[str, Any], di
     if len(set(identities)) != len(identities):
         raise ReconciliationRefusal("reconciler verdicts repeat a seat identity and revision")
     verdicts_sha256 = digest_of(checked)
+    # An assertion has to fit every seat's declared tolerance, so the narrowest
+    # declaration governs the shared numeric and geometric intervals.
+    numeric_tolerance = min(item["numeric_tolerance"] for item in checked)
+    box_tolerance = min(item["box_tolerance_permille"] for item in checked)
     all_fact_ids = sorted(set().union(*(set(item["facts"]) for item in checked)))
     expected_facts: dict[str, Any] = {}
     disagreements: dict[str, Any] = {}
@@ -168,6 +172,7 @@ def reconcile(verdicts: Sequence[Mapping[str, Any]]) -> tuple[dict[str, Any], di
             for item, fact in zip(checked, present, strict=True)
             if fact is not None
         ]
+        facts = [fact for _seat, fact in reported]
         if len(reported) != len(checked):
             # The union of what *any* seat saw is the coverage denominator, and this
             # is the branch where it matters most: a frame only one seat reported on
@@ -190,13 +195,11 @@ def reconcile(verdicts: Sequence[Mapping[str, Any]]) -> tuple[dict[str, Any], di
                 "seats": [item["seat"] for item in checked],
             }
             continue
-        facts = [item for item in present if item is not None]
         union_acts = sorted(set().union(*(set(item["acts"]) for item in facts)))
         categorical: dict[str, str] = {}
         numeric: dict[str, list[int]] = {}
         failed: list[str] = []
-        act_lists = [item["acts"] for item in facts]
-        if any(acts != act_lists[0] for acts in act_lists[1:]):
+        if any(item["acts"] != facts[0]["acts"] for item in facts[1:]):
             # The union remains the coverage denominator: disagreement may never
             # erase an act one seat saw. It is still disagreement, and omitting it
             # from this record would make the union look unanimous.
@@ -209,10 +212,9 @@ def reconcile(verdicts: Sequence[Mapping[str, Any]]) -> tuple[dict[str, Any], di
             else:
                 categorical[key] = values[0]
         numeric_keys = set().union(*(set(item["numeric"]) for item in facts))
-        tolerance = min(item["numeric_tolerance"] for item in checked)
         for key in sorted(numeric_keys):
             values = [item["numeric"].get(key) for item in facts]
-            if None in values or max(values) - min(values) > tolerance:
+            if None in values or max(values) - min(values) > numeric_tolerance:
                 failed.append(f"numeric:{key}")
             else:
                 numeric[key] = [min(values), max(values)]
@@ -220,7 +222,6 @@ def reconcile(verdicts: Sequence[Mapping[str, Any]]) -> tuple[dict[str, Any], di
         # every seat that reported this fact has to have localized it, and the spread
         # has to sit inside the smallest declared box tolerance. An act nobody boxed
         # stays in the denominator with no interval — enumerated, not located.
-        box_tolerance = min(item["box_tolerance_permille"] for item in checked)
         boxes: dict[str, dict[str, list[int]]] = {}
         for act_id in union_acts:
             supplied = [item["boxes"].get(act_id) for item in facts]

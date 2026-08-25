@@ -489,7 +489,7 @@ def test_confirmation_writes_memberships_then_stable_cluster_without_a_preferenc
         )
     ) == set(right["member_frame_sha256"])
     assert left_id["cluster_id"] == cluster_id
-    # A fourth capture grows the membership chain but derives the same page-based id.
+    # Cluster identity is page-based, so adding a capture must not change it.
     fourth = frame("66")
     extended = frames + [fourth]
     confirmed2, recipe2, manifest2, evidence2 = confirmation(extended)
@@ -737,8 +737,6 @@ def test_crash_between_register_and_door_documents_converges_on_retry(tmp_path: 
         clusters_path=clusters_path,
         authority_path=authority_path,
     )
-    # Simulate a crash after the register append but before the Door documents were
-    # durably published: the register already advanced, the documents never landed.
     manifest_path.unlink()
     clusters_path.unlink()
     authority_path.unlink()
