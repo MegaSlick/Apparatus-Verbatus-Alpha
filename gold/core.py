@@ -11,7 +11,8 @@ from __future__ import annotations
 import errno
 import json
 import os
-import tempfile
+import secrets
+import stat
 import unicodedata
 from pathlib import Path
 from typing import Any
@@ -57,6 +58,12 @@ REGION_KINDS = frozenset({"act", "non-act-text", "occlusion", "true-blank"})
 # These errors mean atomic publication by hard link is unavailable; other OS errors
 # retain their native diagnostics because they do not establish that constraint.
 _NO_HARD_LINKS = frozenset({errno.EPERM, errno.EOPNOTSUPP, errno.ENOSYS})
+# Gold inputs are records and short human transcriptions, never image payloads. A
+# 64 MiB ceiling is deliberately generous for a 1,000-page frame while keeping a
+# special file or hostile JSON document from turning one validation into an
+# unbounded read. The descriptor read below enforces it even if a file grows after
+# it is opened.
+_MAX_INPUT_BYTES = 64 * 1024 * 1024
 
 
 def _refuse(condition: bool, message: str) -> None:
@@ -97,7 +104,70 @@ def _refuse_json_float(literal: str) -> Any:
     )
 
 
-def read_json(path: str | Path) -> Any:
+def _read_regular_bytes(
+    path: str | Path,
+    kind: str,
+    *,
+    directory_descriptor: int | None = None,
+    display_path: str | Path | None = None,
+) -> bytes:
+    """Read one bounded regular file without following its final component.
+
+    Validation is about the bytes in the named evidence file, not whatever a
+    symlink, FIFO, or concurrent pathname replacement chooses to supply. Opening
+    once with ``O_NOFOLLOW`` and reading through that descriptor closes the
+    check/use gap; comparing descriptor metadata before and after the bounded read
+    refuses an in-place rewrite rather than parsing a torn record.
+    """
+    shown = display_path if display_path is not None else path
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    if no_follow is None:
+        raise SchemaRefusal(f"safe {kind} reads require O_NOFOLLOW support; {shown} was not read")
+    flags = os.O_RDONLY | no_follow | getattr(os, "O_NONBLOCK", 0)
+    try:
+        descriptor = os.open(path, flags, dir_fd=directory_descriptor)
+    except OSError as error:
+        raise SchemaRefusal(
+            f"{shown} is not a readable regular {kind} file without following links"
+        ) from error
+    try:
+        before = os.fstat(descriptor)
+        _refuse(not stat.S_ISREG(before.st_mode), f"{shown} is not a regular {kind} file")
+        _refuse(
+            before.st_size > _MAX_INPUT_BYTES,
+            f"{shown} exceeds the {_MAX_INPUT_BYTES}-byte gold {kind} input limit",
+        )
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            data = stream.read(_MAX_INPUT_BYTES + 1)
+        after = os.fstat(descriptor)
+    except BaseException:
+        try:
+            os.close(descriptor)
+        except OSError:
+            # Preserve the input refusal or read failure; close is cleanup and
+            # must not replace the reason the evidence was rejected.
+            pass
+        raise
+    else:
+        os.close(descriptor)
+    _refuse(
+        len(data) > _MAX_INPUT_BYTES,
+        f"{shown} exceeds the {_MAX_INPUT_BYTES}-byte gold {kind} input limit",
+    )
+    _refuse(
+        (before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+        != (after.st_size, after.st_mtime_ns, after.st_ctime_ns),
+        f"{shown} changed while its {kind} bytes were being read; no mixed version was accepted",
+    )
+    return data
+
+
+def read_json(
+    path: str | Path,
+    *,
+    directory_descriptor: int | None = None,
+    display_path: str | Path | None = None,
+) -> Any:
     """Read one JSON file, refusing unreadable or malformed input by name.
 
     Public so every caller — this module's own frame loader and the CLI's
@@ -112,14 +182,21 @@ def read_json(path: str | Path) -> Any:
     refusal naming it. The depth it fires at is the scanner's own and is not
     pinned here.
     """
+    shown = display_path if display_path is not None else path
+    raw = _read_regular_bytes(
+        path,
+        "JSON",
+        directory_descriptor=directory_descriptor,
+        display_path=shown,
+    )
     try:
         return json.loads(
-            Path(path).read_text(encoding="utf-8"),
+            raw.decode("utf-8"),
             parse_float=_refuse_json_float,
             parse_constant=_refuse_json_float,
         )
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError, RecursionError) as error:
-        raise SchemaRefusal(f"{path} is not readable JSON") from error
+    except (UnicodeDecodeError, ValueError, RecursionError) as error:
+        raise SchemaRefusal(f"{shown} is not readable JSON") from error
 
 
 def read_transcription_text(path: str | Path) -> str:
@@ -132,8 +209,8 @@ def read_transcription_text(path: str | Path) -> str:
     than tidied away where nobody would see it.
     """
     try:
-        text = Path(path).read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as error:
+        text = _read_regular_bytes(path, "UTF-8 text").decode("utf-8")
+    except UnicodeDecodeError as error:
         raise SchemaRefusal(f"{path} is not readable UTF-8 text") from error
     return text[:-1] if text.endswith("\n") else text
 
@@ -480,8 +557,18 @@ def validate_sampling_draw(record: Any, run_path: str | Path | None = None) -> d
     _refuse(not isinstance(raw_catalog, list), "sampling draw catalog is not a list")
     source = []
     for row in raw_catalog:
-        _refuse(not isinstance(row, dict), "sampling draw catalog row is not an object")
-        source.append({"ordinal": row.get("ordinal"), "sha256": row.get("sha256")})
+        _refuse(
+            not isinstance(row, dict)
+            or set(row) != {"ordinal", "sha256", "stratum", "width", "height"},
+            "sampling draw catalog row has the wrong closed schema",
+        )
+        ordinal, page_sha = row["ordinal"], row["sha256"]
+        _refuse(
+            not isinstance(ordinal, int) or isinstance(ordinal, bool),
+            "sampling draw catalog ordinal is not an integer",
+        )
+        _sha(page_sha, "sampling draw catalog sha256")
+        source.append({"ordinal": ordinal, "sha256": page_sha})
     source.sort(key=lambda page: page["ordinal"] if isinstance(page["ordinal"], int) else -1)
     catalog = _catalog(raw_catalog, source)
     page_digest = digest_bytes(canonical_bytes(source))
@@ -1551,7 +1638,77 @@ def validate_corpus(records: Any, run_path: str | Path | None = None) -> list[di
     return validated
 
 
-def write_append_only(path: str | Path, record: dict[str, Any]) -> Path:
+def _open_directory_no_follow(path: Path) -> int:
+    """Open the named directory once, refusing a final symlink."""
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    directory = getattr(os, "O_DIRECTORY", None)
+    if no_follow is None or directory is None:
+        raise SchemaRefusal("safe gold publication requires O_NOFOLLOW and O_DIRECTORY support")
+    try:
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | no_follow | directory | getattr(os, "O_NONBLOCK", 0),
+        )
+    except OSError as error:
+        raise SchemaRefusal(
+            f"the gold output directory {path} could not be opened without following links"
+        ) from error
+    try:
+        details = os.fstat(descriptor)
+    except OSError:
+        os.close(descriptor)
+        raise
+    if not stat.S_ISDIR(details.st_mode):
+        os.close(descriptor)
+        raise SchemaRefusal(f"the gold output directory {path} is not a directory")
+    return descriptor
+
+
+def _portable_name(name: str) -> str:
+    """The spelling identity used by default case-insensitive APFS."""
+    return unicodedata.normalize("NFC", name).casefold()
+
+
+def _read_existing_at(directory_descriptor: int, name: str, maximum: int) -> bytes:
+    """Read an existing publication without following a planted target link."""
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    if no_follow is None:
+        raise OSError(errno.ENOTSUP, "O_NOFOLLOW is unavailable")
+    descriptor = os.open(
+        name,
+        os.O_RDONLY | no_follow | getattr(os, "O_NONBLOCK", 0),
+        dir_fd=directory_descriptor,
+    )
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise OSError(errno.EINVAL, "existing target is not a regular file")
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            data = stream.read(maximum + 1)
+        after = os.fstat(descriptor)
+        if (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        ):
+            raise OSError(errno.EBUSY, "existing target changed while it was read")
+    except BaseException:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+        raise
+    else:
+        os.close(descriptor)
+    return data
+
+
+def write_append_only(
+    path: str | Path,
+    record: dict[str, Any],
+    *,
+    directory_descriptor: int | None = None,
+) -> Path:
     """Atomically create a record. Identical bytes are reuse; different bytes refuse.
 
     A sample draw writes several files and must be resumable after interruption.
@@ -1559,44 +1716,148 @@ def write_append_only(path: str | Path, record: dict[str, Any]) -> Path:
     name is `IncompatibleReuse`, and the existing file is never touched.
     """
     target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
+    _refuse(target.name in {"", ".", ".."}, f"gold artifact path {target} has no file name")
     data = canonical_bytes(record) + b"\n"
-    descriptor, temporary = tempfile.mkstemp(prefix=".gold-", dir=target.parent)
+    owns_directory = directory_descriptor is None
+    if owns_directory:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        directory_descriptor = _open_directory_no_follow(target.parent)
+    assert directory_descriptor is not None
     try:
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(data)
-            stream.flush()
-            os.fsync(stream.fileno())
-    except BaseException:
-        Path(temporary).unlink(missing_ok=True)
-        raise
-    try:
-        # `link` is create-if-absent: a reader sees either no record or completed
-        # immutable bytes, never a partially written target.
-        os.link(temporary, target)
-    except FileExistsError as error:
+        opened = os.fstat(directory_descriptor)
+        _refuse(
+            not stat.S_ISDIR(opened.st_mode),
+            f"the descriptor for gold output {target.parent} is not a directory",
+        )
+        if not owns_directory:
+            try:
+                named = os.stat(target.parent, follow_symlinks=False)
+            except OSError as error:
+                raise SchemaRefusal(
+                    f"the locked gold-record directory {target.parent} no longer names the "
+                    "directory whose lock is held; no redirected path was used"
+                ) from error
+            _refuse(
+                not stat.S_ISDIR(named.st_mode)
+                or (named.st_dev, named.st_ino) != (opened.st_dev, opened.st_ino),
+                f"the locked gold-record directory {target.parent} was replaced after it "
+                "was locked; no redirected path was used",
+            )
+        portable = _portable_name(target.name)
         try:
-            existing = target.read_bytes()
-        except OSError as read_error:
-            raise IncompatibleReuse(
-                f"gold artifact {target} appeared while it was being written and could "
-                "not be read back; the existing file was not replaced"
-            ) from read_error
-        if existing != data:
-            raise IncompatibleReuse(
-                f"gold artifact {target} already holds different bytes; gold records are "
-                "immutable, so one name may not describe two records, and the existing "
-                "file was not touched"
-            ) from error
-    except OSError as error:
-        if error.errno in _NO_HARD_LINKS:
+            existing_names = os.listdir(directory_descriptor)
+        except OSError as error:
             raise SchemaRefusal(
-                f"the gold output root at {target.parent} is on a filesystem that "
-                f"refuses hard links ({error.strerror}); gold records are published by "
-                "atomic link so a partly written file can never take its final name, "
-                "and the output root has to be on a filesystem that supports it"
+                f"the gold output directory {target.parent} could not be listed through "
+                "the descriptor used for publication; no record was written"
             ) from error
+        collision = next(
+            (
+                name
+                for name in existing_names
+                if name != target.name and _portable_name(name) == portable
+            ),
+            None,
+        )
+        _refuse(
+            collision is not None,
+            f"gold artifact {target} collides by case or Unicode normalization with an "
+            "existing name; the corpus must have one portable spelling per record",
+        )
+
+        no_follow = getattr(os, "O_NOFOLLOW", None)
+        if no_follow is None:
+            raise SchemaRefusal("safe gold publication requires O_NOFOLLOW support")
+        temporary = ""
+        temporary_descriptor: int | None = None
+        for _attempt in range(100):
+            candidate = f".gold-{secrets.token_hex(16)}"
+            try:
+                temporary_descriptor = os.open(
+                    candidate,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | no_follow,
+                    0o600,
+                    dir_fd=directory_descriptor,
+                )
+            except FileExistsError:
+                continue
+            temporary = candidate
+            break
+        if temporary_descriptor is None:
+            raise SchemaRefusal(
+                f"the gold output directory {target.parent} could not allocate a unique "
+                "temporary name after 100 attempts"
+            )
+        try:
+            with os.fdopen(temporary_descriptor, "wb") as stream:
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
+        except BaseException:
+            try:
+                os.unlink(temporary, dir_fd=directory_descriptor)
+            except OSError:
+                # A cleanup failure must not replace the write/refusal that caused
+                # this path. The unpredictable dot-file is not published evidence.
+                pass
+            raise
+
+        try:
+            try:
+                # Both names are resolved relative to the directory inode the caller
+                # locked (or this function opened), never by rewalking its spelling.
+                os.link(
+                    temporary,
+                    target.name,
+                    src_dir_fd=directory_descriptor,
+                    dst_dir_fd=directory_descriptor,
+                    follow_symlinks=False,
+                )
+            except FileExistsError as error:
+                try:
+                    existing = _read_existing_at(directory_descriptor, target.name, len(data))
+                except OSError as read_error:
+                    raise IncompatibleReuse(
+                        f"gold artifact {target} appeared while it was being written and is "
+                        "not a readable regular non-symlink file; the existing entry was "
+                        "not replaced"
+                    ) from read_error
+                if existing != data:
+                    raise IncompatibleReuse(
+                        f"gold artifact {target} already holds different bytes; gold records "
+                        "are immutable, so one name may not describe two records, and the "
+                        "existing file was not touched"
+                    ) from error
+            except OSError as error:
+                if error.errno in _NO_HARD_LINKS:
+                    raise SchemaRefusal(
+                        f"the gold output root at {target.parent} is on a filesystem that "
+                        f"refuses hard links ({error.strerror}); gold records are published by "
+                        "atomic link so a partly written file can never take its final name, "
+                        "and the output root has to be on a filesystem that supports it"
+                    ) from error
+                raise
+            os.fsync(directory_descriptor)
+        except BaseException:
+            try:
+                os.unlink(temporary, dir_fd=directory_descriptor)
+            except OSError:
+                # Preserve the security refusal or publication failure. A cleanup
+                # error must not turn it into an unrelated generic exception.
+                pass
+            raise
+        else:
+            os.unlink(temporary, dir_fd=directory_descriptor)
+            os.fsync(directory_descriptor)
+    except BaseException:
+        if owns_directory:
+            try:
+                os.close(directory_descriptor)
+            except OSError:
+                # As above, a close failure cannot mask a security refusal.
+                pass
         raise
-    finally:
-        Path(temporary).unlink(missing_ok=True)
+    else:
+        if owns_directory:
+            os.close(directory_descriptor)
     return target

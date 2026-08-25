@@ -5,8 +5,11 @@ from __future__ import annotations
 import argparse
 import fcntl
 import os
+import stat
 import sys
+import unicodedata
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
@@ -30,16 +33,99 @@ from .core import (
 )
 
 
-def _records_in(directory: str | Path) -> list[dict[str, object]]:
-    """Read in filename order so the first collection refusal is reproducible."""
-    root = Path(directory)
-    if not root.is_dir():
-        raise SchemaRefusal(f"{directory} is not a directory of gold records")
-    return [read_json(path) for path in sorted(root.glob("*.json"))]
+@dataclass(frozen=True)
+class _CorpusDirectory:
+    """One opened directory inode, optionally carrying its publication lock."""
+
+    path: Path
+    descriptor: int
+
+
+def _open_corpus_directory(root: Path) -> int:
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    directory = getattr(os, "O_DIRECTORY", None)
+    if no_follow is None or directory is None:
+        raise SchemaRefusal(
+            "safe gold-directory access requires O_NOFOLLOW and O_DIRECTORY support"
+        )
+    try:
+        descriptor = os.open(
+            root,
+            os.O_RDONLY | no_follow | directory | getattr(os, "O_NONBLOCK", 0),
+        )
+    except OSError as error:
+        raise SchemaRefusal(
+            f"{root} is not a directory of gold records that can be opened without following links"
+        ) from error
+    try:
+        details = os.fstat(descriptor)
+    except OSError:
+        os.close(descriptor)
+        raise
+    if not stat.S_ISDIR(details.st_mode):
+        os.close(descriptor)
+        raise SchemaRefusal(f"{root} is not a directory of gold records")
+    return descriptor
+
+
+def _portable_name(name: str) -> str:
+    return unicodedata.normalize("NFC", name).casefold()
+
+
+def _records_in(directory: str | Path | _CorpusDirectory) -> list[dict[str, object]]:
+    """Read regular, non-symlink records from one directory inode in stable order."""
+    if isinstance(directory, _CorpusDirectory):
+        corpus = directory
+        owns_descriptor = False
+    else:
+        root = Path(directory)
+        corpus = _CorpusDirectory(root, _open_corpus_directory(root))
+        owns_descriptor = True
+    try:
+        try:
+            names = [
+                name
+                for name in os.listdir(corpus.descriptor)
+                if _portable_name(name).endswith(".json")
+            ]
+        except OSError as error:
+            raise SchemaRefusal(
+                f"the gold-record directory {corpus.path} could not be listed through its "
+                "opened directory descriptor"
+            ) from error
+        seen: dict[str, str] = {}
+        for name in names:
+            portable = _portable_name(name)
+            prior = seen.setdefault(portable, name)
+            if prior != name:
+                raise SchemaRefusal(
+                    f"the gold-record directory {corpus.path} contains names that collide "
+                    "by case or Unicode normalization; it is not portable to default APFS"
+                )
+        records = [
+            read_json(
+                name,
+                directory_descriptor=corpus.descriptor,
+                display_path=corpus.path / name,
+            )
+            for name in sorted(names)
+        ]
+    except BaseException:
+        if owns_descriptor:
+            try:
+                os.close(corpus.descriptor)
+            except OSError:
+                # Preserve the refusal that stopped collection validation.
+                pass
+        raise
+    else:
+        if owns_descriptor:
+            os.close(corpus.descriptor)
+    return records
 
 
 @contextmanager
-def _locked_corpus(directory: str | Path) -> Iterator[Path]:
+def _locked_corpus(directory: str | Path) -> Iterator[_CorpusDirectory]:
     """Serialize validation and publication for one gold-record directory.
 
     A collection rule cannot be enforced by checking before an unlocked write:
@@ -50,7 +136,7 @@ def _locked_corpus(directory: str | Path) -> Iterator[Path]:
     root = Path(directory)
     try:
         root.mkdir(parents=True, exist_ok=True)
-        descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+        descriptor = _open_corpus_directory(root)
     except OSError as error:
         raise SchemaRefusal(
             f"the gold-record directory {root} could not be opened for a publication "
@@ -61,7 +147,10 @@ def _locked_corpus(directory: str | Path) -> Iterator[Path]:
     try:
         fcntl.flock(descriptor, fcntl.LOCK_EX)
     except OSError as error:
-        os.close(descriptor)
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
         raise SchemaRefusal(
             f"the gold-record directory {root} could not acquire its publication lock. "
             "Another writer therefore cannot be excluded, so publishing could create "
@@ -69,10 +158,32 @@ def _locked_corpus(directory: str | Path) -> Iterator[Path]:
             "advisory locks and retry; no gold record was written"
         ) from error
     try:
-        yield root
-    finally:
-        # Closing the descriptor releases `flock` even when the protected operation
-        # raises, without risking a second unlock error masking the real refusal.
+        opened = os.fstat(descriptor)
+        try:
+            named = os.stat(root, follow_symlinks=False)
+        except OSError as error:
+            raise SchemaRefusal(
+                f"the gold-record directory {root} changed while its publication lock was "
+                "being acquired; no redirected path was used"
+            ) from error
+        if not stat.S_ISDIR(named.st_mode) or (named.st_dev, named.st_ino) != (
+            opened.st_dev,
+            opened.st_ino,
+        ):
+            raise SchemaRefusal(
+                f"the gold-record directory {root} was replaced while its publication lock "
+                "was being acquired; no redirected path was used"
+            )
+        yield _CorpusDirectory(root, descriptor)
+    except BaseException:
+        try:
+            os.close(descriptor)
+        except OSError:
+            # Closing releases `flock`; if cleanup itself fails, preserve the
+            # security refusal that already stopped publication.
+            pass
+        raise
+    else:
         os.close(descriptor)
 
 
@@ -134,14 +245,22 @@ def main(argv: list[str] | None = None) -> int:
             # interrupted run then leaves a draw whose members are partly missing --
             # which verify-sampling refuses by name -- never orphan samples with no
             # membership record to check them against.
-            write_append_only(output / f"draw-{draw['self_hash']}.json", draw)
+            write_append_only(
+                output.path / f"draw-{draw['self_hash']}.json",
+                draw,
+                directory_descriptor=output.descriptor,
+            )
             for record in selected:
-                write_append_only(output / f"{record['sample_digest']}.json", record)
+                write_append_only(
+                    output.path / f"{record['sample_digest']}.json",
+                    record,
+                    directory_descriptor=output.descriptor,
+                )
     elif args.command == "ingest-manual":
         record = ingest_manual_pick(args.run, read_json(args.pick))
         output = Path(args.output)
-        with _locked_corpus(output.parent):
-            existing = _records_in(output.parent)
+        with _locked_corpus(output.parent) as corpus:
+            existing = _records_in(corpus)
             # A stratum is a collection fact, not a property R0 can derive from one
             # pick. Reconcile the destination corpus before publishing so a second
             # spelling of the same page is refused rather than counted twice -- any
@@ -149,37 +268,35 @@ def main(argv: list[str] | None = None) -> int:
             # `sample_digest` binds `selection_basis` and a restated wording alone
             # mints a second individually valid sample of one hand-picked page.
             validate_corpus([*existing, record], args.run)
-            write_append_only(output, record)
+            write_append_only(output, record, directory_descriptor=corpus.descriptor)
     elif args.command == "bind-instrument":
-        write_append_only(
-            args.output,
-            bind_instrument(
-                read_json(args.sample), args.act_identity, args.protocol_digest, args.run
-            ),
+        output = Path(args.output)
+        record = bind_instrument(
+            read_json(args.sample), args.act_identity, args.protocol_digest, args.run
         )
+        with _locked_corpus(output.parent) as corpus:
+            write_append_only(output, record, directory_descriptor=corpus.descriptor)
     elif args.command == "transcribe":
-        write_append_only(
-            args.output,
-            transcribe(
-                read_json(args.sample),
-                args.act_identity,
-                args.transcriber,
-                read_transcription_text(args.text_file),
-                args.run,
-            ),
+        output = Path(args.output)
+        record = transcribe(
+            read_json(args.sample),
+            args.act_identity,
+            args.transcriber,
+            read_transcription_text(args.text_file),
+            args.run,
         )
+        with _locked_corpus(output.parent) as corpus:
+            write_append_only(output, record, directory_descriptor=corpus.descriptor)
     elif args.command == "adjudicate":
-        write_append_only(
-            args.output,
-            adjudicate(
-                read_json(args.first),
-                read_json(args.second),
-                adjudicator=args.adjudicator,
-                text=(
-                    read_transcription_text(args.text_file) if args.text_file is not None else None
-                ),
-            ),
+        output = Path(args.output)
+        record = adjudicate(
+            read_json(args.first),
+            read_json(args.second),
+            adjudicator=args.adjudicator,
+            text=(read_transcription_text(args.text_file) if args.text_file is not None else None),
         )
+        with _locked_corpus(output.parent) as corpus:
+            write_append_only(output, record, directory_descriptor=corpus.descriptor)
     elif args.command == "verify-sampling":
         if (args.catalog is None) != (args.plan is None):
             raise SchemaRefusal("--catalog and --plan must be supplied together")

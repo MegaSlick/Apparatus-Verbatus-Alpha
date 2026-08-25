@@ -189,6 +189,16 @@ narrow exception because it enumerates seeded pages, and a surviving transcripti
 is another because it requires its adjudication. A successful collection check must
 not be cited as proof that every page act was ever recorded.
 
+Every file this CLI reads must be a regular file at most 64 MiB. The reader opens
+the file once without following its final path component, bounds the descriptor
+read, and refuses if the file changes while those bytes are read. A symlink,
+FIFO, oversized JSON document or transcription, and a decimal integer too large
+for the interpreter are therefore named input refusals rather than redirects,
+unbounded reads, blocking opens, or tracebacks. Corpus directories and their
+`*.json` entries follow the same no-link rule. Two record names that compare equal
+after Unicode normalization and case-folding are refused even on a case-sensitive
+filesystem, because they would collapse to one pathname on default APFS.
+
 Gold is therefore drawn **per corpus frame**: one run's sealed manifest is the
 frame, and R0 shards a corpus at its sealed shard limit, so a corpus split across
 shards is sampled shard by shard and its records are validated shard by shard.
@@ -205,5 +215,10 @@ Every writer creates its file atomically, so a partly written record can never
 take its final name.  Republishing byte-identical content is reuse — `sample`
 writes one file per page, and an interrupted draw has to be finishable by the same
 command — while different bytes under a name already taken are refused and the
-existing file is left untouched.  A filesystem that refuses hard links is a named
-refusal, not a bare traceback.
+existing file is left untouched. Publication uses the inode of the directory that
+was opened and locked, and compares device/inode identity before using a caller's
+locked descriptor, so replacing its pathname cannot redirect a checked write.
+Temporary names are unpredictable, existing targets are read as regular files
+without following links, and both the published link and temporary-name removal
+are directory-synced before success returns. A filesystem that refuses hard links
+is a named refusal, not a bare traceback.

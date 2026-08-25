@@ -28,6 +28,7 @@ from gold.core import (
     build_sample,
     build_sampling_draw,
     ingest_manual_pick,
+    read_json,
     read_transcription_text,
     sample_stratified,
     set_for_page,
@@ -335,6 +336,24 @@ def test_a_tampered_sampling_seed_is_refused_as_an_edited_run_authority(tmp_path
     path.write_text(json.dumps(edited), encoding="utf-8")
     with pytest.raises(SchemaRefusal, match="seed diverges from its derivation"):
         sample_stratified(path, rows, plan_for(frame, rows))
+
+
+def test_sampling_draw_refuses_unhashable_catalog_identity_fields_by_name(tmp_path):
+    """The retained catalog is untrusted record input. Its identity fields must be
+    checked before they become tuple members in a set; JSON arrays and objects are
+    legal values but unhashable Python objects, and used to escape as TypeError."""
+    path, frame, pages = run_file(tmp_path)
+    rows = catalog(pages)
+    draw, _selected = build_sampling_draw(path, rows, plan_for(frame, rows))
+    for field, value, message in (
+        ("ordinal", [], "catalog ordinal is not an integer"),
+        ("sha256", {}, "catalog sha256 is not a lowercase sha256"),
+    ):
+        forged = json.loads(json.dumps(draw))
+        forged["catalog"][0][field] = value
+        forged["self_hash"] = self_hash(forged)
+        with pytest.raises(SchemaRefusal, match=message):
+            validate_sampling_draw(forged)
 
 
 def test_a_directory_whose_draw_record_vanished_refuses_without_the_full_replay(tmp_path):
@@ -887,12 +906,91 @@ def test_append_only_writer_reuses_identical_bytes_and_refuses_different_ones(tm
 def test_append_only_writer_names_a_no_hard_link_filesystem(tmp_path, monkeypatch):
     import gold.core as core_module
 
-    def refuse_link(_source, _target):
+    def refuse_link(*_arguments, **_keywords):
         raise OSError(errno.EPERM, "Operation not permitted")
 
-    monkeypatch.setattr(core_module.os, "link", refuse_link)
-    with pytest.raises(SchemaRefusal, match="refuses hard links"):
-        write_append_only(tmp_path / "records" / "one.json", {"example": "evidence"})
+    def refuse_cleanup(*_arguments, **_keywords):
+        raise OSError(errno.EACCES, "cleanup denied")
+
+    # A failed best-effort cleanup must not mask the security refusal that stopped
+    # publication. Restore unlink before pytest removes the deliberately stranded
+    # unpredictable temporary.
+    with monkeypatch.context() as patch:
+        patch.setattr(core_module.os, "link", refuse_link)
+        patch.setattr(core_module.os, "unlink", refuse_cleanup)
+        with pytest.raises(SchemaRefusal, match="refuses hard links"):
+            write_append_only(tmp_path / "records" / "one.json", {"example": "evidence"})
+
+
+def test_append_only_writer_syncs_the_published_directory(tmp_path, monkeypatch):
+    import gold.core as core_module
+
+    real_fsync = core_module.os.fsync
+    directory_syncs = 0
+
+    def observe_fsync(descriptor):
+        nonlocal directory_syncs
+        if stat.S_ISDIR(core_module.os.fstat(descriptor).st_mode):
+            directory_syncs += 1
+        return real_fsync(descriptor)
+
+    import stat
+
+    monkeypatch.setattr(core_module.os, "fsync", observe_fsync)
+    write_append_only(tmp_path / "records" / "one.json", {"example": "evidence"})
+    assert directory_syncs == 2
+
+
+def test_append_only_writer_refuses_symlink_and_portable_name_collisions(tmp_path):
+    """An existing symlink is not byte-identical reuse: its target can change after
+    the comparison. Names that default APFS identifies as one name are likewise one
+    publication slot even when this Linux test filesystem can store both."""
+    records = tmp_path / "records"
+    records.mkdir()
+    outside = tmp_path / "outside.json"
+    outside.write_bytes(canonical_bytes({"example": "evidence"}) + b"\n")
+    redirected = records / "redirected.json"
+    redirected.symlink_to(outside)
+
+    with pytest.raises(IncompatibleReuse, match="regular non-symlink"):
+        write_append_only(redirected, {"example": "evidence"})
+    assert redirected.is_symlink()
+    assert outside.read_bytes() == canonical_bytes({"example": "evidence"}) + b"\n"
+
+    write_append_only(records / "Evidence.json", {"example": "first"})
+    with pytest.raises(SchemaRefusal, match="collides by case or Unicode normalization"):
+        write_append_only(records / "evidence.json", {"example": "second"})
+    assert not (records / "evidence.json").exists()
+
+
+def test_corpus_directory_refuses_links_case_collisions_and_inode_replacement(tmp_path):
+    real = tmp_path / "real"
+    real.mkdir()
+    redirected = tmp_path / "redirected"
+    redirected.symlink_to(real, target_is_directory=True)
+    with pytest.raises(SchemaRefusal, match="without following links"):
+        with cli._locked_corpus(redirected):
+            raise AssertionError("a symlinked corpus directory must never be locked")
+
+    (real / "One.json").write_text("{}", encoding="utf-8")
+    (real / "one.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(SchemaRefusal, match="not portable to default APFS"):
+        cli._records_in(real)
+
+    corpus_path = tmp_path / "corpus"
+    corpus_path.mkdir()
+    moved = tmp_path / "moved"
+    with cli._locked_corpus(corpus_path) as corpus:
+        corpus_path.rename(moved)
+        corpus_path.mkdir()
+        with pytest.raises(SchemaRefusal, match="replaced after it was locked"):
+            write_append_only(
+                corpus_path / "one.json",
+                {"example": "evidence"},
+                directory_descriptor=corpus.descriptor,
+            )
+    assert not list(corpus_path.iterdir())
+    assert not list(moved.iterdir())
 
 
 def _forge_sample_outside_authority(sample):
@@ -1724,6 +1822,33 @@ def test_a_float_in_a_gold_file_is_a_named_refusal_not_a_traceback(tmp_path):
         spelled.write_text('{"quota": %s}' % literal, encoding="utf-8")
         with pytest.raises(SchemaRefusal, match="carries integers, not the float"):
             cli.main(["validate", str(spelled)])
+
+
+def test_gold_inputs_are_bounded_regular_files_and_never_follow_symlinks(tmp_path, monkeypatch):
+    import gold.core as core_module
+
+    real = tmp_path / "real.json"
+    real.write_text("{}", encoding="utf-8")
+    redirected = tmp_path / "redirected.json"
+    redirected.symlink_to(real)
+    with pytest.raises(SchemaRefusal, match="without following links"):
+        read_json(redirected)
+
+    monkeypatch.setattr(core_module, "_MAX_INPUT_BYTES", 8)
+    oversized = tmp_path / "oversized.json"
+    oversized.write_text('{"value":1}', encoding="utf-8")
+    with pytest.raises(SchemaRefusal, match="8-byte gold JSON input limit"):
+        read_json(oversized)
+
+
+def test_an_oversized_integer_literal_is_a_named_refusal_not_a_traceback(tmp_path):
+    """CPython bounds decimal-to-int conversion. A literal beyond that bound raises
+    ValueError rather than JSONDecodeError, but it is still untrusted JSON input and
+    must reach the operator as the same security refusal."""
+    record = tmp_path / "huge-integer.json"
+    record.write_text('{"ordinal":' + "9" * 5000 + "}", encoding="utf-8")
+    with pytest.raises(SchemaRefusal, match="not readable JSON"):
+        read_json(record)
 
 
 def test_a_deeply_nested_gold_file_is_a_named_refusal_not_a_traceback(tmp_path):
