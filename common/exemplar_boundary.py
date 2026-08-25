@@ -112,9 +112,7 @@ def verify_sealed_page_pixels(
     if blob_ref != {"relative_path": blob_path, "sha256": source_digest}:
         raise ContractError("a sealed Exemplar page's pixel input is not content-addressed")
 
-    blob = _read_checked(tree, blob_ref, "the sealed Exemplar pixel blob")
-    if digest_bytes(blob) != source_digest:  # defensive: `_read_checked` already proves this.
-        raise ContractError("the sealed Exemplar pixel blob has an unexpected digest")
+    _read_checked(tree, blob_ref, "the sealed Exemplar pixel blob")
 
     admission_data = _read_checked(tree, refs[admission_path], "the sealed Door admission")
     try:
@@ -769,11 +767,10 @@ def _is_triage_derivative(rendered: Any) -> bool:
 def _validate_embedded_triage_row(row: Any) -> None:
     """Validate the provenance fields the common boundary must not take on trust.
 
-    Geometry is checked executable below against every recorded operation and the
-    master itself. This closes the rest of Unit 5's row at the boundary without a
-    forbidden ``common`` -> numbered-pipeline import: mode, actor, override,
-    confidence, cluster identity, and the row/split/part field sets all have one
-    accepted shape here too.
+    Geometry is checked executable against every recorded operation and the master
+    itself. The common boundary cannot import the numbered triage pipeline, so it
+    must also close mode, actor, override, confidence, cluster identity, and every
+    row/split/part field set here.
     """
     required = {
         "corpus_id",
@@ -883,7 +880,7 @@ def _verify_triage_derivative(
     parent: dict[str, Any],
     sealed_bytes: bytes,
 ) -> None:
-    """Re-derive a split page from the master and its closed Unit 5 decision."""
+    """A split page is valid only when its closed decision re-derives its bytes."""
     contract_fields = {
         "renderer",
         "renderer_version",
@@ -948,23 +945,20 @@ def _verify_triage_derivative(
     ):
         raise ContractError("a sealed derivative page's manifest row digest does not bind its row")
     expected_backlink = {
-        "corpus_id": row.get("corpus_id"),
-        "source_frame_sha256": row.get("source_frame_sha256"),
+        "corpus_id": row["corpus_id"],
+        "source_frame_sha256": row["source_frame_sha256"],
         "triage_manifest_row_sha256": row_digest,
         "triage_part_index": backlink.get("triage_part_index"),
     }
-    if backlink != expected_backlink or row.get("source_frame_sha256") != parent["sha256"]:
+    if backlink != expected_backlink or row["source_frame_sha256"] != parent["sha256"]:
         raise ContractError(
             "a sealed derivative page's manifest back-link does not name its master"
         )
     part_index = backlink["triage_part_index"]
-    split = row.get("split")
+    split = row["split"]
     if (
         not isinstance(part_index, int)
         or isinstance(part_index, bool)
-        or not isinstance(split, dict)
-        or split.get("operation_order") != "region-crop-rotate"
-        or not isinstance(split.get("parts"), list)
         or not 0 <= part_index < len(split["parts"])
         or derivative["parent_frame_sha256"] != parent["sha256"]
         or derivative["parent_frame_page_index"] != parent["source_frame_index"]
@@ -982,8 +976,6 @@ def _verify_triage_derivative(
         raise ContractError(
             "a sealed derivative page's transform vocabulary does not match its manifest part"
         )
-    for operation in derivative["operations"]:
-        _validate_exemplar_transform(operation)
     try:
         expected_bytes, geometry = render_triage_derivative(
             parent_bytes, page_index=parent["source_frame_index"], part=part
@@ -1011,16 +1003,12 @@ def _verify_triage_derivative(
         raise ContractError(
             "a sealed derivative page's renderer record does not describe its re-derived pixels"
         )
-    # The one check `pipeline/0_triage/HANDOFF.md` says this manifest cannot make
-    # for itself, re-made here on the sealed record rather than trusted from the
-    # Door. Unit 5 proves the parts partition the row's *declared* frame exactly;
-    # only this comparison ties that declaration to the master actually sealed
-    # beside them. Without it a row declaring a frame narrower than its master
-    # re-derives perfectly while the rest of the master reaches no page at all.
-    frame = row.get("frame")
-    if not isinstance(frame, dict) or (geometry["source_width"], geometry["source_height"]) != (
-        frame.get("width"),
-        frame.get("height"),
+    # The row validator proves coverage only against the row's declared frame;
+    # equality with the decoded master is what prevents undeclared source pixels.
+    frame = row["frame"]
+    if (geometry["source_width"], geometry["source_height"]) != (
+        frame["width"],
+        frame["height"],
     ):
         raise ContractError(
             "a sealed derivative page's manifest row declares a frame that is not the size "
@@ -1047,7 +1035,7 @@ def _renderer_drift(contract: dict[str, Any]) -> str:
     try:
         running = imaging_library_versions()
         recorded = {field: contract[field] for field in fields}
-    except (KeyError, TypeError, OSError, ImportError):  # pragma: no cover - defensive only
+    except (KeyError, TypeError, OSError, ImportError):
         return ""
     drifted = {
         name: (recorded[name], running[name])

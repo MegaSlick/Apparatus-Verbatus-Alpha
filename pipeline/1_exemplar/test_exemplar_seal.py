@@ -137,7 +137,7 @@ def build_door_run(
 
 
 def test_triage_spread_fans_out_to_sealed_derivative_pages_with_rederived_lineage(tmp_path):
-    """Unit 7: one JPEG master yields two adjacent, independently reproducible pages."""
+    """Every split part must seal independently while retaining one shared master."""
     from common.exemplar_boundary import verify_sealed_page_pixels
 
     output = BytesIO()

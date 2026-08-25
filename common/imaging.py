@@ -688,10 +688,9 @@ def encode_image_deterministic(image: Image.Image) -> bytes:
     derivative pages on another host.  This is deliberately the same encoder
     used by :func:`crop_png`.
     """
-    rendered = image.copy()
-    if rendered.mode not in ENCODER_LOSSLESS_MODES:
-        rendered = _to_display_mode(rendered)
-    return _encode_crop_deterministic(rendered)
+    if image.mode not in ENCODER_LOSSLESS_MODES:
+        image = _to_display_mode(image)
+    return _encode_crop_deterministic(image)
 
 
 def imaging_library_versions() -> dict[str, str]:
@@ -702,8 +701,6 @@ def imaging_library_versions() -> dict[str, str]:
     and registered at module load so Pillow can open HEIF-family evidence; this
     function owns only the version record shared by those two callers.
     """
-    import pillow_heif
-
     return {
         "renderer": "Pillow",
         "renderer_version": Image.__version__,
@@ -736,12 +733,12 @@ def render_triage_derivative(
     page_index: int,
     part: dict,
 ) -> tuple[bytes, dict[str, int | str | list[str]]]:
-    """Apply Unit 5's closed part-local geometry and encode a sealed PNG.
+    """Apply closed part-local triage geometry and encode a sealed PNG.
 
-    The caller has already validated the Unit 5 row.  Keeping the operation
-    here nevertheless makes the exact order executable at both the Door and
-    the Exemplar boundary: frame-region split, part-local crop, clockwise
-    expanded rotation, then the part's colour conversion.
+    The caller has already validated the triage row. Keeping the operation here
+    makes its exact order executable at both the Door and Exemplar boundary:
+    frame-region split, part-local crop, clockwise expanded rotation, then the
+    part's colour conversion.
 
     The returned record describes the master and the bytes that were actually
     written — the master's own mode and bands, its full frame size, and the mode
@@ -760,12 +757,8 @@ def render_triage_derivative(
             source_bands = list(image.getbands())
             source_width, source_height = image.width, image.height
             if colour_mode == "keep" and source_mode not in ENCODER_LOSSLESS_MODES:
-                # `keep` is Unit 5 declaring that no colour conversion happens.
-                # This encoder cannot honour that for a high-precision or
-                # non-RGB-class master: `_to_display_mode` would crush `I;16`
-                # samples to 8 bits under a record claiming nothing converted.
-                # Refused by name, with the remedy in the message, rather than
-                # degrading evidence quietly (GOVERNANCE 2, GOVERNANCE 4).
+                # `keep` forbids the sample or colour-class conversion this PNG
+                # encoder would otherwise perform for an unsupported mode.
                 raise ValueError(
                     f"a master in mode {source_mode!r} cannot be sealed under colour_mode "
                     "'keep': the deterministic PNG encoder would convert it. Declare the "
@@ -788,9 +781,8 @@ def render_triage_derivative(
                     crop_box["y"] + crop_box["h"],
                 )
             )
-            # Pillow's positive degrees are counter-clockwise.  Unit 5 records
-            # clockwise millidegrees, so the sign inversion is part of the
-            # sealed implementation rather than an implicit convention.
+            # Pillow's positive degrees are counter-clockwise, while the sealed
+            # recipe records clockwise millidegrees.
             rotated = cropped.rotate(
                 -rotation["rotation_millidegrees"] / 1000,
                 resample=Image.Resampling.BICUBIC,
@@ -798,26 +790,22 @@ def render_triage_derivative(
             )
             if colour_mode == "keep":
                 rendered = rotated
-            elif colour_mode == "grayscale":
-                try:
-                    rendered = rotated.convert("L")
-                except ValueError:
-                    # Pillow exposes a direct LAB -> RGB conversion but refuses
-                    # LAB -> L.  An explicitly declared grayscale conversion is
-                    # still executable through that owned conversion path; the
-                    # two-hop fallback is part of the sealed apply recipe below,
-                    # not an implicit decoder choice.
-                    rendered = rotated.convert("RGB").convert("L")
-                rendered = _without_colour_profile(rendered)
-            elif colour_mode == "rgb":
-                rendered = _without_colour_profile(rotated.convert("RGB"))
-            elif colour_mode == "bitonal":
+            elif colour_mode in {"grayscale", "bitonal"}:
                 try:
                     grayscale = rotated.convert("L")
                 except ValueError:
+                    # Pillow refuses LAB -> L but provides LAB -> RGB -> L; the
+                    # sealed apply recipe explicitly permits this two-hop path.
                     grayscale = rotated.convert("RGB").convert("L")
-                rendered = _without_colour_profile(grayscale.convert("1", dither=Image.Dither.NONE))
-            else:  # The Unit 5 schema normally makes this unreachable.
+                rendered = (
+                    grayscale
+                    if colour_mode == "grayscale"
+                    else grayscale.convert("1", dither=Image.Dither.NONE)
+                )
+                rendered = _without_colour_profile(rendered)
+            elif colour_mode == "rgb":
+                rendered = _without_colour_profile(rotated.convert("RGB"))
+            else:
                 raise ValueError(f"undeclared triage colour mode {colour_mode!r}")
             encoded = encode_image_deterministic(rendered)
             return encoded, {

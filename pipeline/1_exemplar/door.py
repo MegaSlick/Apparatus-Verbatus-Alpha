@@ -115,7 +115,7 @@ from operations.submit import submit as submission_ledger  # noqa: E402
 
 
 class SourceEntry(NamedTuple):
-    """One raster, container page, or triage part in the post-fan-out census."""
+    """One submitted frame may own several rows in the post-fan-out census."""
 
     ordinal: int
     declared_path: str
@@ -232,7 +232,7 @@ def declared_digests(fixture: dict, scenario: str) -> dict[int, str]:
 def load_triage_decisions(
     manifest_path: str | Path, clusters_path: str | Path | None = None
 ) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]], dict[str, str]]:
-    """Read Unit 5's closed decision manifest without inventing another shape.
+    """Read the closed triage decision manifest without inventing another shape.
 
     The third return value is the byte digest of each document read, for the same
     reason `_real_bindings` digests every configuration it acts on: geometry that
@@ -268,19 +268,12 @@ def load_triage_decisions(
             f"the triage decision manifest is invalid ({error}); no run was created because "
             "its page geometry cannot be trusted; correct the named manifest violation and retry"
         ) from error
-    rows: dict[str, dict[str, Any]] = {}
-    for row in checked["records"]:
-        digest = row["source_frame_sha256"]
-        if digest in rows:
-            raise ContractError(
-                "the triage decision manifest names one submitted frame more than once"
-            )
-        rows[digest] = row
+    rows = {row["source_frame_sha256"]: row for row in checked["records"]}
     return rows, dict(clusters or {}), digests
 
 
 def _read_triage_document(path: str | Path, label: str) -> tuple[bytes, Any]:
-    """Read one private triage JSON document once with actionable refusal copy."""
+    """Return the same bytes parsed, so digest and decisions cannot straddle a rewrite."""
     try:
         data = Path(path).read_bytes()
     except OSError as error:
@@ -385,8 +378,7 @@ def decide(
         rendered_from = {
             "container_format": "triage-split-raster",
             "container_sha256": whole_digest,
-            # It is the index inside the operation which divided the submitted
-            # frame, just as a TIFF index is inside its container.
+            # This index selects a split part, not a page in the submitted raster.
             "container_page_index": source.container_page_index,
             "render_contract": {
                 **contract,
@@ -515,7 +507,7 @@ def expand_sources(
     triage_rows: Mapping[str, dict[str, Any]] | None = None,
     triage_clusters: Mapping[str, dict[str, Any]] | None = None,
 ) -> list[SourceEntry]:
-    """Expand source containers and Unit 5 split decisions to stable ordinals.
+    """Expand source containers and triage split decisions to stable ordinals.
 
     Counting inspects only enough to learn a page count; it does not produce page
     pixels.  Any source that cannot be read or counted still receives one ordinal,
@@ -573,16 +565,9 @@ def expand_sources(
             declared_sha256: str | None = declared_sha256,
             declared_size: int | None = declared_size,
             ledger_sha256: str | None = ledger_sha256,
-            triage_row: dict[str, Any] | None = None,
+            bound_triage_row: dict[str, Any] | None = triage_row,
             triage_part_index: int | None = None,
-            source_frame_index: int | None = None,
         ) -> None:
-            """One fanned-out or standalone row for this loop iteration's source.
-
-            The row-invariant fields are bound as default arguments, evaluated once
-            at definition time, rather than left as loop-variable closures a later
-            iteration's reassignment could change from under a still-live reference.
-            """
             nonlocal ordinal
             ordinal += 1
             sources.append(
@@ -594,27 +579,25 @@ def expand_sources(
                     declared_size,
                     ledger_sha256,
                     detected_format,
-                    triage_row,
+                    bound_triage_row,
                     triage_part_index,
-                    source_frame_index,
+                    0 if bound_triage_row is not None else None,
                 )
             )
 
         def append_refused_source(
             detected_format: str | None,
-            triage_row: dict[str, Any] | None = triage_row,
+            bound_triage_row: dict[str, Any] | None = triage_row,
         ) -> None:
             """Keep the manifest's declared post-split denominator on early failure."""
-            if triage_row is None:
+            if bound_triage_row is None:
                 append(None, detected_format)
                 return
-            for part_index in range(len(triage_row["split"]["parts"])):
+            for part_index in range(len(bound_triage_row["split"]["parts"])):
                 append(
                     part_index,
                     detected_format,
-                    triage_row=triage_row,
                     triage_part_index=part_index,
-                    source_frame_index=0,
                 )
 
         data: bytes | None = None
@@ -676,9 +659,7 @@ def expand_sources(
                 append(
                     part_index,
                     detected,
-                    triage_row=triage_row,
                     triage_part_index=part_index,
-                    source_frame_index=0,
                 )
             continue
         try:
@@ -714,10 +695,8 @@ def expand_sources(
         for cluster_id in named_clusters:
             record = triage_clusters.get(cluster_id)
             if not isinstance(record, dict) or "member_frame_sha256" not in record:
-                # `validate_manifest` refuses an unresolved cluster reference, so a
-                # manifest that came through `load_triage_decisions` cannot reach
-                # here. A caller assembling rows itself can, and a bare KeyError
-                # would escape every `except ContractError` above this one.
+                # Direct callers can bypass manifest validation; they still need a
+                # named contract refusal rather than a bare missing-key exception.
                 raise ContractError(
                     "a submitted frame names a re-shoot cluster with no supplied cluster record; "
                     "no source expansion was returned because the cluster cannot be reconciled; "
@@ -751,13 +730,9 @@ def content_aware_shards(
     source-manifest shard *before* creating each RunTree.  Cutting after a run
     exists would change its immutable denominator.
 
-    ``max_shards`` has no default. It used to be 3 — the number Montebello
-    happens to need at a 1,000-page cap — which would have refused a legitimate
-    fourth shard on a larger corpus by an invented limit nobody ruled. The page
-    cap is the sealed policy (`config/corpus_frame.toml`, checked at
-    `require_corpus_frame_shard`); how many shards a corpus divides into is a
-    consequence of it, not a second ceiling. A caller that genuinely has one
-    passes it.
+    The page cap is sealed policy (`config/corpus_frame.toml`, checked at
+    `require_corpus_frame_shard`); shard count is a consequence, not an implicit
+    second ceiling. A caller with its own ceiling must pass ``max_shards``.
     """
     if (
         not isinstance(max_pages_per_shard, int)
@@ -802,8 +777,7 @@ def content_aware_shards(
         if cluster_id is not None:
             clusters.setdefault(cluster_id, []).append(source.ordinal)
     for ordinals in clusters.values():
-        for ordinal in range(min(ordinals), max(ordinals)):
-            blocked.add(ordinal)
+        blocked.update(range(min(ordinals), max(ordinals)))
     shards: list[list[SourceEntry]] = []
     start = 0
     while start < len(ordered):
@@ -1100,17 +1074,12 @@ def process_sources(
             if decision.rendered_from is not None:
                 extra["rendered_from"] = decision.rendered_from
             if source.triage_row is not None:
-                # The untouched master is independently content-addressed.  The
-                # PNG derivative never replaces it, and later provenance checks
-                # can re-apply the recorded geometry to these exact bytes.
+                # The master must remain addressable independently so the sealed
+                # derivative can be re-applied from its exact source bytes.
                 assert data is not None
-                parent_digest, parent = tree.put_blob(DOOR, data)
-                if parent_digest != actual_digest:
-                    raise ContractError(
-                        "the Door stored different bytes under the submitted frame digest"
-                    )
+                _, parent = tree.put_blob(DOOR, data)
                 extra["parent_frame"] = {
-                    "sha256": parent_digest,
+                    "sha256": actual_digest,
                     "stored_at": parent.relative_path,
                     "source_frame_index": source.source_frame_index or 0,
                 }
@@ -1168,11 +1137,8 @@ def _publish(
         ):
             raise ContractError("a triage admission has no declared split-part identity")
         backlink = triage_manifest.derivative_page_backlink(row, source.triage_part_index)
-        # This compact link is carried on refused as well as admitted outcomes.
-        # The derivative contract carries the complete row for successful pages;
-        # a failed page has no derivative, and without this sibling link its
-        # re-shoot membership disappeared from the cluster report precisely when
-        # an operator most needed to see that the cluster was incomplete.
+        # A refused page has no derivative contract, so it needs this sibling link
+        # for its re-shoot membership to remain reportable.
         payload["triage_link"] = {
             "schema": "door-triage-admission-link.v0",
             **backlink,
@@ -1332,7 +1298,7 @@ def publish_duplicate_report(context: StageContext) -> str | None:
 
 
 def publish_cluster_report(context: StageContext) -> str | None:
-    """Carry Unit 5's corpus-scoped re-shoot links into the sealed run.
+    """Carry corpus-scoped re-shoot links into the sealed run.
 
     Unlike a duplicate report, this never calls one member canonical: every
     submitted member remains an admission and the record makes that fact visible
@@ -2033,15 +1999,8 @@ def _real_bindings(
                 "designator_padding_config_sha256": designator_padding_config_sha256,
                 "designator_geometry_config_sha256": designator_geometry_config_sha256,
                 "alignment_config_sha256": alignment_config_sha256,
-                # Unit 5's decisions are geometry that shaped these pixels, so
-                # they are bound like any other fact that did. A triage pass re-run
-                # between two attempts at one run id changes these digests, and
-                # `RunTree.create` then refuses the reuse by name instead of the
-                # swap being caught only where a changed row happens to reach an
-                # already-published admission. Empty for a submission with no
-                # split decisions, so an ordinary run binds that absence
-                # explicitly. The bumped Door implementation revision already
-                # makes this version a different run authority from its predecessor.
+                # Triage documents shape sealed pixels and must therefore be
+                # run-bound; the empty mapping explicitly binds their absence.
                 "triage_document_digests": dict(sorted((triage_document_digests or {}).items())),
                 "corpus_frame_policy": corpus_frame_policy,
                 "corpus_frame_config_sha256": corpus_frame_config_sha256,

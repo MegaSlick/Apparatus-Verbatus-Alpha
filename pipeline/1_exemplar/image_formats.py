@@ -1378,9 +1378,6 @@ def raster_renderer_recipe() -> dict[str, Any]:
     after it has published a blob.
     """
     return {
-        # Named once in `common/imaging.py`, because the Exemplar boundary reports
-        # drift against these same numbers and two spellings of them could
-        # disagree.
         **imaging_library_versions(),
         "output": {
             "codec": "png-or-tiff",
@@ -1421,11 +1418,8 @@ def render_raster_page(
             raise unsupported(
                 f"{decoded.format}: the installed decoder could not apply the triage page geometry ({error})"
             ) from error
-        # The master's own mode and bands, exactly as the whole-page branch below
-        # records them. Constants here ("triage-part", []) erased the one fact a
-        # later reader needs to judge whether the sealed page carries the master's
-        # samples, and the output mode was read from the image on the way into the
-        # encoder rather than from the bytes that came out of it.
+        # Provenance names the decoded master mode and the encoded PNG mode; they
+        # may differ even when a palette expansion preserves every rendered pixel.
         source_mode = output_geometry["source_mode"]
         encoded_mode = output_geometry["color_mode"]
         return (

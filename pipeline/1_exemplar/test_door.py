@@ -2491,7 +2491,7 @@ def test_the_fixture_run_authority_records_every_digest_its_stages_will_ask_for(
     assert {"pdf-render", "recovery"} <= set(run["sealed_config_digests"])
 
 
-# --- Unit 7 audit (Opus seat) -------------------------------------------------
+# --- Split-page provenance and refusal contracts ------------------------------
 
 
 def test_a_master_this_encoder_would_convert_is_a_named_page_refusal(tmp_path):
@@ -2548,13 +2548,11 @@ def test_a_master_this_encoder_would_convert_is_a_named_page_refusal(tmp_path):
 
 
 def test_a_split_derivative_records_its_master_mode_and_the_mode_it_was_sealed_in():
-    """`source_mode: "triage-part"` and `source_bands: []` were constants.
+    """The record must retain decoded master mode and bands, not placeholders.
 
-    The whole-page branch records the master's real Pillow mode and bands; the
-    split branch recorded placeholders and then reported the *pre-encode* mode
-    as the output. A reader could therefore not tell from a sealed page whether
-    its samples survived. Both halves are now read from the master and from the
-    encoded bytes.
+    The whole-page and split branches share this provenance constraint. A palette
+    master is the lossless case where the decoded mode differs from the PNG mode:
+    the deterministic encoder expands P to RGB pixel-for-pixel.
     """
     output = BytesIO()
     Image.new("RGB", (6, 4), (10, 20, 30)).save(output, format="PNG")
@@ -2675,10 +2673,8 @@ def test_a_re_run_triage_manifest_is_a_different_run_wearing_an_old_id(tmp_path)
 def test_content_aware_shards_impose_no_shard_ceiling_of_their_own():
     """The sealed page cap is the policy; the shard count is its consequence.
 
-    `max_shards` defaulted to 3 — Montebello's number at a 1,000-page cap — which
-    would have refused a legitimate fourth shard on a larger corpus by a limit
-    nobody ruled (GOVERNANCE 9 reserves the cap itself to Tyrel). A caller with a
-    real ceiling still passes one.
+    An implicit count ceiling would refuse a valid larger corpus independently of
+    the sealed page cap. A caller with an external ceiling must pass it explicitly.
     """
     sources = [
         SourceEntry(index, f"{index:03d}.jpg", f"{index:03d}".zfill(64)) for index in range(1, 9)
@@ -2710,10 +2706,9 @@ def test_a_re_shoot_cluster_that_would_straddle_the_submitted_shard_is_refused(t
     """The seam a *production* run can actually place is the operator's folder cut.
 
     Nothing in the tree partitions a corpus into shards; `content_aware_shards`
-    plans seams for the caller Unit 8 will build, and a split pair cannot straddle
-    a folder cut because both halves come out of one file. A cluster can, and this
-    is where that is refused by name — the door's own enforcement of Unit 7's
-    "a seam is never placed inside a cluster", ahead of any planner being wired.
+    only plans seams for its caller, and a split pair cannot straddle a folder cut
+    because both halves come from one file. A cluster can, so source expansion must
+    refuse an incomplete cluster independently of whether the planner was used.
     """
     first, second = png(4, 3), png(4, 3, rows=(b"\x00" + b"\x63" * 4) * 3)
     first_digest, second_digest = digest_bytes(first), digest_bytes(second)
@@ -2748,8 +2743,6 @@ def test_a_re_shoot_cluster_that_would_straddle_the_submitted_shard_is_refused(t
         "member_frame_sha256": [first_digest, second_digest],
         "split_count": 1,
     }
-    # Only the first member is in this submitted folder: the operator cut the
-    # corpus between two shots of one opening.
     with pytest.raises(ContractError, match="would cross this submitted shard") as crossing:
         door.expand_sources(
             [{"relative_path": "a.png", "sha256": first_digest}],

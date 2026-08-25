@@ -643,7 +643,7 @@ def _is_triage_derivative(contract: Any) -> bool:
 def _verify_derivative_admission(
     payload: dict[str, Any], source: dict[str, Any], contract: dict[str, Any], tree: RunTree
 ) -> tuple[dict[str, str], dict[str, Any], bytes]:
-    """Check and read the parent before a derivative page can become sealed."""
+    """Sealing must re-read digest-checked master bytes, not trust the Door's earlier read."""
     parent = payload.get("parent_frame")
     derivative = contract.get("derivative_page")
     if (

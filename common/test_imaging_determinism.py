@@ -425,7 +425,7 @@ def test_bytes_after_the_end_marker_are_not_an_image_only_png():
     assert not carries_only_image_chunks(b"not a png at all")
 
 
-# --- The split-derivative render's own honesty (Unit 7 audit, Opus seat) -------
+# --- Split derivatives report the samples they actually seal ------------------
 
 
 def _tiff_master(mode: str, size: tuple[int, int] = (6, 4)) -> bytes:
@@ -454,21 +454,17 @@ def _part(width: int, height: int, colour_mode: str) -> dict:
 
 
 def test_keep_refuses_a_master_this_encoder_would_have_to_convert():
-    """`colour_mode: "keep"` is Unit 5 declaring that no conversion happens.
+    """`colour_mode: "keep"` declares that no conversion happens.
 
-    A 16-bit master reached `_to_display_mode` and was sealed as 8-bit `L` — a
-    real loss of ink detail, under a record that still named the source mode. The
-    whole-page fan-out path treats exactly these modes as worth a codec change
-    (`image_formats._HIGH_PRECISION_TIFF_MODES`), so silently crushing them here
-    was a degradation this path chose and no one recorded. Refused by name, with
-    the remedy — declare the conversion — in the message.
+    A 16-bit master cannot satisfy it through an 8-bit PNG conversion. The
+    whole-page path changes codec to retain those samples, while a triage part
+    must either declare its conversion or refuse it by name.
     """
     master = _tiff_master("I;16")
     with pytest.raises(ValueError, match="cannot be sealed under colour_mode 'keep'"):
         render_triage_derivative(master, page_index=0, part=_part(6, 4, "keep"))
 
-    # The same master with the conversion *declared* is admitted, because then
-    # the conversion is a recorded decision rather than an encoder side effect.
+    # An explicit conversion makes the sample change part of the sealed decision.
     _rendered, geometry = render_triage_derivative(
         master, page_index=0, part=_part(6, 4, "grayscale")
     )
@@ -480,8 +476,8 @@ def test_the_render_record_names_the_mode_the_sealed_bytes_are_actually_in():
     """Reported from the encoded PNG's own header, not from the pre-encode image.
 
     A palette master is the case with no loss and a mode change anyway: the
-    encoder expands `P` to true colour pixel-for-pixel, so a record built from
-    the image handed *to* the encoder would say `P` about bytes that are `RGB`.
+    encoder expands `P` to true colour pixel-for-pixel, so the record must name
+    the encoded `RGB` mode rather than the input `P` mode.
     """
     palette = Image.new("P", (6, 4))
     palette.putpalette([(index * 3) % 256 for index in range(768)])

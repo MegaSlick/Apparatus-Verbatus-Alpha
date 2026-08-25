@@ -317,7 +317,7 @@ def test_a_crop_that_is_not_an_image_at_all_refuses_as_that(cropped):
         verify_exemplar_crop_lineage(tree, run, restated(tree, region, b"not a png at all"))
 
 
-# --- Unit 7's extended transform vocabulary is closed on values, not only shape --
+# --- Transform values are closed as well as their record shapes ----------------
 
 
 def _valid_split_transform():
@@ -387,15 +387,8 @@ def test_a_deskew_rotation_outside_its_closed_recipe_is_refused(field, value):
 
 
 # --- The master a sealed derivative page claims to account for ----------------
-#
-# `_verify_triage_derivative` re-derives a split page from its sealed master, so
-# the *pixels* are proven. Whether the row's parts account for that whole master
-# is a different question, and it is the one `pipeline/0_triage/HANDOFF.md` says
-# the manifest cannot settle for itself: `_validate_split` proves the parts
-# partition the row's own **declared** frame, and only a comparison against the
-# master ties that declaration to reality. The construction below is what that
-# gap looks like when nobody is tampering at all — a perfectly valid Unit 5 row
-# whose declared frame is smaller than the photograph it names.
+# A row can partition its declared frame while under-declaring the decoded master;
+# re-derivation alone proves the output pixels but cannot detect the omitted area.
 
 
 def _rows_digest(row):
@@ -506,9 +499,9 @@ def test_a_derivative_page_whose_row_under_declares_its_master_is_refused():
     """The right half of this master reaches no page, and every other check passes.
 
     One part, covering the declared 4x4 frame exactly, cut from an 8x4 master.
-    Unit 5 validates the row; the backlink names the master; the recorded
-    transform re-derives the sealed bytes exactly. Only the frame comparison
-    notices that half the photograph was never accounted for.
+    The row validates, the backlink names the master, and the recorded transform
+    re-derives the sealed bytes exactly. Only the frame comparison notices that
+    half the photograph was never accounted for.
     """
     from common.exemplar_boundary import _verify_triage_derivative
 
