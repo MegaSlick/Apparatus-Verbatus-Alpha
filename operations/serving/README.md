@@ -247,21 +247,17 @@ the resolved identity and revision, the
 a response whose `model` is not the exact served alias, so this is per-answer and
 not per-connection state), the response digest that binds the receipt to the one
 request just made, and `sha256(witness)` — never the witness, the prompt, or the
-answer text. Nothing in this package logs, and vLLM request logging is forced
-off, so the witness leaves the process only as that digest.
+answer text. The durable smoke record therefore carries only the witness digest.
 
-**Whose job the witness is.** Nothing here generates one, and that is not an
-omission: the witness proves a page read only because someone rendered it into
-the page's pixels, so entropy, lifetime and rotation belong to whoever authors
-the fixture. The caller draws it from a CSPRNG over the URL-safe ASCII token
-alphabet. This callable refuses only what could not do the job whatever its
-origin — a value under 32 characters, a blank one, whitespace, non-visible or
-non-token characters, and one that occurs in the prompt. It cannot measure
-entropy, and does not pretend to. A weak or reused witness can be guessed or
-memorized and can therefore make the smoke falsely green without a page read;
-the caller contract is a precondition of the claim, not a property inferred from
-the supplied string. Entropy and rotation remain the fixture author's
-responsibility and are named open rather than reported closed.
+**Whose job the witness is.** The witness proves a page read only because the
+fixture author rendered it into the page's pixels, so that author owns its
+entropy, lifetime, and rotation. The caller draws it from a CSPRNG over the
+URL-safe ASCII token alphabet. This callable refuses only values that cannot do
+the job whatever their origin: fewer than 32 characters, blank values,
+whitespace, non-token characters, or a value present in the prompt. It cannot
+measure how a supplied string was generated. A weak or reused witness can be
+guessed or memorized and make the smoke falsely green without a page read;
+entropy and rotation are preconditions supplied by the fixture author.
 
 The request declares `image/png` and the sealed request bytes are checked
 against the PNG signature, because nothing else on this path inspects them for

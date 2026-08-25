@@ -1,38 +1,22 @@
 """The production golden-page vision smoke callable.
 
-The serving lifecycle proves that a completed request contains the exact local
-fixture bytes.  This callable adds the semantic half of that proof: it asks the
-chair for a page witness which is deliberately not present in the prompt, then
-requires the exact witness known to be printed on the golden page.
+The lifecycle proves that a request carried the exact fixture bytes; the
+page-only witness proves that the chair read those bytes.  The fixture author
+must draw a fresh witness from a CSPRNG over the URL-safe ASCII token alphabet
+whenever the page is rendered.  Generation quality cannot be inferred from the
+supplied value, so a weak or reused witness can make the smoke falsely green.
 
-**What the witness is, and whose job it is.**  Nothing here generates one, and
-that is not an omission.  The witness only proves a page read because someone
-rendered it into that page's pixels, so its entropy source, its lifetime and its
-rotation belong to whoever authors the golden fixture; this callable can only
-refuse a value that could not do the job whatever its origin.  The contract for
-that caller: draw it from a CSPRNG over the URL-safe ASCII token alphabet, mint a new one
-whenever the page is re-rendered, and never carry one across fixtures.  This
-callable cannot infer how a supplied string was generated.  A weak or
-reused witness can be guessed or memorized and therefore can make the smoke
-falsely green without a page read; the caller contract is a precondition of the
-claim, not a property this class pretends to measure.
-
-**One call at a time.**  :class:`~.manager.ServiceHandle` records its last
-fixture request on itself and :class:`~.preflight.ServingSmokeReader`
-corroborates the returned receipt against that record after this callable
-returns, so a handle carries one smoke call at a time.  Two concurrent calls on
-one handle would cross those records.  Nothing reaches this seam concurrently
-today — ``ServingManager.start`` refuses a second start while a handle is active,
-and ``PreflightRunner`` reads its chairs in sequence — so the precondition is
-stated rather than locked: a lock inside the handle would not make the reader's
-read-after-write atomic anyway, and adding one would advertise a concurrency
-this seam does not support.
+One handle supports one smoke call at a time.  The handle stores its latest
+fixture request and :class:`~.preflight.ServingSmokeReader` corroborates that
+state after this call returns; concurrent calls would cross those records.
+``ServingManager.start`` and ``PreflightRunner`` currently enforce sequential
+use outside this class.
 """
 
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -45,10 +29,8 @@ from .manager import AdapterCalibration, ServiceHandle, _active_chat_image_bytes
 _WITNESS_PREFIX = "PAGE-WITNESS: "
 _MINIMUM_WITNESS_LENGTH = 32
 _FIXTURE_MIME_TYPE = "image/png"
-# Restated rather than imported: `common.imaging` owns the project's PNG codec
-# but registers Pillow and libheif openers at import time, and this package has
-# no other reason to pull an image stack into a serving request.
-# `pipeline/1_exemplar/image_formats.py` restates it for its own layer already.
+# Importing the project's image codec registers Pillow and libheif openers;
+# signature validation at this boundary does not require those global side effects.
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
@@ -74,10 +56,9 @@ class VisionSmokeCall:
                 "golden-page witness must be a non-blank string of at least "
                 f"{_MINIMUM_WITNESS_LENGTH} characters"
             )
-        # A page witness is a token, not prose.  Whitespace makes its visible
-        # boundary ambiguous, and line-breaking whitespace contradicts the one
-        # output line the prompt requires.  Refuse that fixture-authoring defect
-        # before it can be blamed on a chair as `smoke-output-invalid`.
+        # Whitespace makes a token's visible boundary ambiguous and can violate
+        # the one-line output contract; reject it before chair inference so a
+        # fixture defect cannot be reported as `smoke-output-invalid`.
         if any(character.isspace() for character in self.page_witness):
             raise ValueError(
                 "golden-page witness must contain no whitespace: it is a visible token "
@@ -90,10 +71,8 @@ class VisionSmokeCall:
                 "golden-page witness must use only visible URL-safe ASCII letters, digits, "
                 "hyphen, or underscore"
             )
-        # The class contract above is that the witness never reaches the model
-        # in text.  `prompt` is a constant today, so this holds by inspection —
-        # which is exactly why it is worth asserting: an edit or a subclass that
-        # interpolated the witness would leave every other check here passing.
+        # A subclass can override `prompt`; keep the page-only claim enforced at
+        # construction even though the base prompt is constant.
         if self.page_witness in self.prompt:
             raise ValueError(
                 "golden-page witness occurs in the smoke prompt, so a text-only answer "
@@ -119,9 +98,11 @@ class VisionSmokeCall:
         fixture: Path,
         placement: PlacementTier,
     ) -> SmokeResult:
-        """Submit one fixture-bound vision request and return measurable smoke facts."""
+        """Send the sealed PNG through the fixture-bound handle, never a plain request."""
 
-        del placement  # Placement is selected and checked by ServingSmokeReader.
+        # The SmokeCall protocol supplies placement; ServingSmokeReader checks it
+        # before constructing the owned handle passed here.
+        del placement
         if not isinstance(handle, ServiceHandle):
             raise ServingConfigurationError(
                 "vision smoke requires a ServiceHandle started by ServingManager"
@@ -131,27 +112,34 @@ class VisionSmokeCall:
                 "vision smoke handle identity differs from the resolved chair identity"
             )
 
-        calibration = AdapterCalibration.from_image_fixture(
+        payload = AdapterCalibration.from_image_fixture(
             fixture=fixture,
             prompt=self.prompt,
             mime_type=_FIXTURE_MIME_TYPE,
-        )
-        payload = calibration.request_payload()
-        _require_declared_format(payload, fixture)
+        ).request_payload()
+        # Inspect the sealed payload, not the path: reopening the fixture could
+        # validate replacement bytes rather than the snapshot about to be sent.
+        if not _active_chat_image_bytes(payload, label="golden-page request").startswith(
+            _PNG_SIGNATURE
+        ):
+            raise ServingConfigurationError(
+                f"golden-page fixture {fixture.name} is not a PNG, but the vision smoke request "
+                f"declares {_FIXTURE_MIME_TYPE}; supply a PNG page, or a smoke callable that "
+                "declares the format it actually sends"
+            )
         answer = handle.request_fixture_image("chat-completions", payload, fixture=fixture)
 
-        expected = _WITNESS_PREFIX + self.page_witness
         shape_valid = len(answer.outputs) == 1
         # Keep this independent of shape: multiple parsed choices are still
         # nonempty, even though they fail the one-output and exact-format rules.
         # `parse_openai_answer` already refuses a blank choice, so a blank
         # answer never reaches this line — it arrives at the runner as
         # `smoke-read-failed`, earlier and louder.
-        nonempty = bool(answer.outputs) and all(bool(output.strip()) for output in answer.outputs)
+        nonempty = bool(answer.outputs) and all(output.strip() for output in answer.outputs)
         # The prompt asks for exactly one line.  Stripping here would silently
         # accept surrounding spaces or extra blank lines and report them as
         # format-valid, a broader claim than the output rule actually measured.
-        format_valid = shape_valid and answer.outputs[0] == expected
+        format_valid = answer.outputs == (_WITNESS_PREFIX + self.page_witness,)
         samples = self.utilization()
         if not isinstance(samples, tuple) or not all(
             isinstance(sample, UtilizationSample) for sample in samples
@@ -173,25 +161,4 @@ class VisionSmokeCall:
                 "page_witness_matches": format_valid,
             },
             utilization=samples,
-        )
-
-
-def _require_declared_format(payload: Mapping[str, object], fixture: Path) -> None:
-    """Refuse a sealed request whose bytes are not the format it declares.
-
-    The request travels as ``data:image/png;base64,...``.  Nothing else on this
-    path inspects those bytes for format.  Inspect the sealed payload rather
-    than reopening ``fixture``: the latter would validate a different snapshot
-    if the path changed after ``AdapterCalibration`` read it.  The manager then
-    independently requires these payload bytes to match the local fixture and
-    the reader's pre-launch digest.  The signature is what the declaration is
-    about; the filename suffix is not.
-    """
-
-    image_bytes = _active_chat_image_bytes(payload, label="golden-page request")
-    if not image_bytes.startswith(_PNG_SIGNATURE):
-        raise ServingConfigurationError(
-            f"golden-page fixture {fixture.name} is not a PNG, but the vision smoke request "
-            f"declares {_FIXTURE_MIME_TYPE}; supply a PNG page, or a smoke callable that "
-            "declares the format it actually sends"
         )

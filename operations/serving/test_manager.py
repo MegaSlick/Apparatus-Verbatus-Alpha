@@ -695,7 +695,7 @@ PAGE_WITNESS = "h6GMQDVxeNmr7RYvT82PqWkJz3BLaF9C"
 
 
 def write_golden_page(fixture: Path) -> bytes:
-    """Write a decodable PNG whose visible page pixels carry the witness."""
+    """Keep the witness in decodable pixels, never only in a prompt or filename."""
 
     page = Image.new("L", (640, 96), color="white")
     ImageDraw.Draw(page).text(
@@ -3725,7 +3725,7 @@ def test_vision_smoke_call_refuses_a_utilization_sampler_that_is_not_callable() 
 def test_vision_smoke_call_refuses_a_golden_page_that_is_not_the_declared_format(
     tmp_path: Path,
 ) -> None:
-    """The request declares ``image/png``; nothing else on this path checks the bytes."""
+    """No other layer verifies that encoded bytes match the declared PNG media type."""
 
     chair = identity("reader", "reader-v1")
     manager, _, _, launcher, _, _ = manager_for(
