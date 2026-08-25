@@ -64,6 +64,7 @@ from common.contracts.errors import (  # noqa: E402
 from common.contracts.identities import artifact_id, perlector_attempt_id  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR, PERLECTOR  # noqa: E402
 from common.corpus_register import refuse_preference  # noqa: E402
+from common.decoding import load_decoding_policy  # noqa: E402
 from common.exemplar_boundary import verify_exemplar_crop_lineage  # noqa: E402
 from common.imaging import dimensions  # noqa: E402
 from common.native_witness import (  # noqa: E402
@@ -2202,6 +2203,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     """
     args = stage_parser(__doc__.splitlines()[0]).parse_args()
     context = open_context(args, PERLECTOR, registry_factory=registry_factory)
+    _decoding_policy, decoding_sha256 = load_decoding_policy(args.decoding_config)
+    context.require_sealed_config("decoding", decoding_sha256)
     reader = FixtureReader(context.fixture, context.scenario)
     witness_context_table = dossier_module.load_witness_context(
         Path(context.witness_context_config_path)
@@ -2875,6 +2878,30 @@ def _next_attempt(context, act_id: str, regions: list[dict]) -> int:
     only at the next stage, by which time this Perlectio was already immutable and
     the retry had nowhere to go. Refused before any model call or publication now
     (Sol-S5).
+
+    **A crashed pass resumes here; it does not append here.** Unit 2 asks what a
+    Perlector pass interrupted mid-stage does about the acts it already read, and
+    the answer is: nothing. Probing this act's identities and landing on the first
+    free one was tried and is wrong, because this ordinal is not free-floating —
+    `recovery_region_count` is re-derived by the Recensor, the Archetypus and the
+    Armarium, each of which requires an act's reading count to equal its recovery
+    crop count plus one. A resumed pass that appended a second reading for an act
+    with no recrop therefore sealed its own boundary, reported success, and left
+    the run dead one stage later on `act ... carries 2 Perlectio attempt(s) for 0
+    recovery crop(s)`. `witness_bound_reading_acts` states the same rule from the
+    Attestatores side: a reading is made only by a crop, and new ink after a
+    reading routes through a Recensor recovery request, which mints a region and
+    moves this number.
+
+    So a resume recomputes the same ordinal and republishes. Every chair that
+    exists today is deterministic, so that republication is byte-identical and
+    the RunTree reuses it. `ARCHITECTURE.md`'s vLLM caveat says a future real
+    chair need not be bit-identical, and there the republication is refused
+    (`IncompatibleReuse`) rather than allowed to overwrite immutable evidence:
+    loud, nothing written, nothing lost. The forward path from that refusal is
+    the one the design already has — a Recensor recovery request — and it is
+    deliberately not a second reading minted here, because a reading nobody
+    requested is what GOVERNANCE 11 refuses and what all three consumers reject.
     """
     return recovery_region_count(act_id, regions) + 1
 

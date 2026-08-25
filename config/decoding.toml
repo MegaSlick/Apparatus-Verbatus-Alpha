@@ -1,0 +1,11 @@
+# These exact bytes are sealed into every run's decoding provenance.
+schema = "decoding.v1"
+
+[reading_of_record]
+temperature = 0
+
+[variance_experiment]
+# A labelled experiment: every pass has its own identity; it is never a retry.
+label = "variance.v1"
+seed = 20260820
+passes = 2

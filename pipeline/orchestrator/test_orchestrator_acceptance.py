@@ -909,11 +909,18 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # denominator than its writer counted on). The two producers are now held to
 # the same count. Counts and exits unchanged (happy 97/0, review 106/3); both
 # re-measured twice in independent roots at run id "r".
-# Union re-pin (host, Unit 14B joins the composed tree with Unit 17's
-# placement seal): both sides above measured trees missing the other's
-# change; the value below is measured on THIS tree, twice, independent
-# roots, rid "r", via this module's own helpers.
-HAPPY_RUN_TREE_DIGEST = "95e20da2de4f1fc8939b0973287ba25cb889c0f3238794fcc622d9e325d93c79"
+# Unit 2 re-pin: `config/decoding.toml` is sealed into every run's
+# `config_digest`, so both scenario trees legally move without gaining an
+# artifact. Happy remains 97 files and exit 0. The value below was measured
+# twice in independent roots, rid "r", via this module's `orchestrate` and
+# `semantic_snapshot_digest` helpers.
+# Re-measured unchanged at Unit 2's audit seat, after the whole-pass resume
+# reverted to one shared ordinal and the Perlector's reading ordinal went back
+# to its crop-history derivation. Neither revert touches an orchestrated tree:
+# on a clean run there is no prior attempt for either derivation to diverge
+# over, which is a measurement here and not an inference -- twice more, in two
+# further independent roots at rid "r", through the same two helpers.
+HAPPY_RUN_TREE_DIGEST = "9ea726ce77456db782e5cb916ca3da143504ec9227657a63cb23498289dc1a76"
 # Review only, once more in the same seat: a page witness invoked on every act
 # and unusable on all of them now records the serving moment that produced it
 # (`provenance_for(..., attempted=attempted_page)`), where the `reading` gate
@@ -971,11 +978,11 @@ HAPPY_RUN_TREE_DIGEST = "95e20da2de4f1fc8939b0973287ba25cb889c0f3238794fcc622d9e
 # witness pointer at all -- and review stays at 106 files, exit 3. Measured
 # twice in independent temporary roots at canonical run id "r" through this
 # module's own `orchestrate` and `semantic_snapshot_digest` helpers.
-# Union re-pin (host, Unit 14B joins the composed tree with Unit 17's
-# placement seal): both sides above measured trees missing the other's
-# change; the value below is measured on THIS tree, twice, independent
-# roots, rid "r", via this module's own helpers.
-REVIEW_RUN_TREE_DIGEST = "8da6af3cb73b253dfe84f9ebb9792bcaadb9911c9c55e3014669ecf828f790b2"
+# Unit 2 re-pin: see the happy entry above. `decoding.toml` changes this
+# run's sealed `config_digest`, not its artifact count or exit: review remains
+# 106 files / exit 3. Measured twice in independent roots, rid "r", through
+# this module's own helpers.
+REVIEW_RUN_TREE_DIGEST = "ff1092656c69ffd33d3aa64014e7451566245cdf099117264350379d190b5dc2"
 
 
 def orchestrate(
