@@ -27,7 +27,7 @@ ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
 
 
-def _make_run(tmp_path: Path) -> tuple[Path, str]:
+def _make_run(tmp_path: Path, *, scenario: str = "happy") -> tuple[Path, str]:
     run_root = tmp_path / "runs"
     completed = subprocess.run(
         [
@@ -36,7 +36,7 @@ def _make_run(tmp_path: Path) -> tuple[Path, str]:
             "--fixture",
             "synthetic-two-page-v0",
             "--scenario",
-            "happy",
+            scenario,
             "--run-id",
             "reviewed",
             "--run-root",
@@ -47,7 +47,7 @@ def _make_run(tmp_path: Path) -> tuple[Path, str]:
         text=True,
         check=False,
     )
-    assert completed.returncode == 0, completed.stderr
+    assert completed.returncode == (3 if scenario == "review" else 0), completed.stderr
     return run_root, "reviewed"
 
 
@@ -62,7 +62,7 @@ def _armarium_digest(run_root: Path, run_id: str) -> str:
     return advance.sealed_boundary(RunTree(run_root, run_id), "armarium")[1]
 
 
-def test_read_surface_projects_seals_census_pages_crops_and_optional_review_shape(tmp_path: Path):
+def test_read_surface_walks_stage_records_seals_census_pages_crops_and_review_rows(tmp_path: Path):
     run_root, run_id = _make_run(tmp_path)
 
     projected = review.ReadOnlyRun(run_root, run_id).projection()
@@ -80,14 +80,78 @@ def test_read_surface_projects_seals_census_pages_crops_and_optional_review_shap
     }
     assert all(row["sealed"] and len(row["seal_digest"]) == 64 for row in projected.boundaries)
     assert all("census" in row for row in projected.boundaries)
+    assert len(projected.stage_records) > len(projected.boundaries)
+    tree = RunTree(run_root, run_id)
+    assert all(
+        row["stage"] == row["record"]["stage"]
+        and row["artifact_id"] == row["record"]["artifact_id"]
+        and row["kind"] == row["record"]["kind"]
+        and row["subject_id"] == row["record"]["subject_id"]
+        and row["outcome"] == row["record"]["outcome"]
+        and row["record_ref"]["sha256"]
+        == digest_bytes(tree.read_bytes(row["record_ref"]["relative_path"]))
+        for row in projected.stage_records
+    )
     assert len(projected.pages) == 2
     assert all(
-        row["image_data_url"].startswith("data:image/png;base64,") for row in projected.pages
+        row["image_path"].startswith("1_exemplar/blobs/sha256/")
+        and "image_data_url" not in row
+        and row["record_ref"]["relative_path"].startswith("7_armarium/artifacts/export/")
+        for row in projected.pages
     )
-    assert all(act["crops"] for act in projected.acts)
+    assert all(
+        act["crops"]
+        and all(
+            crop["image_path"].startswith("2_designator/blobs/sha256/") for crop in act["crops"]
+        )
+        and "image_data_url" not in act["crops"][0]
+        and act["record_ref"]["relative_path"].startswith("7_armarium/artifacts/export/")
+        for act in projected.acts
+    )
     # A complete fixture produces no review rows, but the shape remains visible
     # when Armarium includes it rather than being inferred from an empty outcome.
     assert projected.review_items in (None, ())
+
+
+def test_held_armarium_review_rows_keep_their_bundle_and_export_record_trace(tmp_path: Path):
+    run_root, run_id = _make_run(tmp_path, scenario="review")
+
+    projected = review.ReadOnlyRun(run_root, run_id).projection()
+
+    assert projected.review_items
+    for item in projected.review_items:
+        assert item["bundle_path"].startswith("7_armarium/blobs/sha256/")
+        assert item["member"] == "review-items.jsonl"
+        assert item["line"] > 0
+        assert item["record_ref"]["relative_path"].startswith("7_armarium/artifacts/export/")
+        assert isinstance(item["row"], dict)
+
+
+def test_review_child_receives_no_write_right_even_when_the_parent_reads_every_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review is evidence walking only; unlike advance it never mints a write path."""
+    run_root, run_id = _make_run(tmp_path)
+    seen: dict[str, object] = {}
+
+    class Backend:
+        def launcher_failure(self, completed):
+            return None
+
+    class Completed:
+        returncode = 0
+        stdout = "{}"
+        stderr = ""
+
+    def confined(command, *, writable, cwd, input_text):
+        seen.update(command=command, writable=writable, cwd=cwd, input_text=input_text)
+        return Backend(), Completed()
+
+    monkeypatch.setattr(cli, "run_confined", confined)
+    cli._review_in_custody(run_root, run_id, ROOT)
+
+    assert seen["writable"] is None
+    assert '"stage_records"' in str(seen["input_text"])
 
 
 def test_unsealed_boundary_is_refused_before_an_advance_record_is_written(tmp_path: Path):
@@ -893,6 +957,7 @@ def test_hostile_projection_content_reaches_the_terminal_only_as_inert_escaped_t
     """
     hostile = ReviewProjection(
         run_id="hostile",
+        stage_records=(),
         boundaries=(),
         pages=(),
         acts=({"act_id": "a1", "act_key": "x\x1b[2Jwiped", "category": "baptism", "crops": []},),
@@ -1129,3 +1194,208 @@ def test_an_advance_whose_boundary_later_changed_is_named_stale_where_a_person_r
     assert len(stale) == 1  # still shown, never dropped
     assert stale[0]["boundary_current"] is False
     assert "changed after this advance was recorded" in stale[0]["boundary_note"]
+
+
+def _second_armarium_seal(tree: RunTree) -> str:
+    """Append a well-formed second completion seal for the Armarium boundary.
+
+    A resealed stage is what makes "which seal is current" a question at all,
+    and no fixture scenario produces one. The forgery is deliberately *honest*
+    at every layer the readers check — `attempt_id` re-derives from
+    (subject, "seal", 2), `artifact_id` derives from that attempt, the payload
+    ordinal agrees, and the ordinals stay the contiguous run 1..2 — because a
+    seal that failed any of those would be refused by `latest_attempt` before
+    the display question this test is about could be reached.
+    """
+    from common.contracts.identities import attempt_id
+
+    rows = [
+        row
+        for row in tree.build_manifest(ARMARIUM, verify_inputs=False)["artifacts"]
+        if row["kind"] == "stage-seal"
+    ]
+    assert len(rows) == 1, "the fixture is expected to seal the Armarium exactly once"
+    first = tree.read_artifact(ARMARIUM, "stage-seal", rows[0]["artifact_id"])
+    attempt = attempt_id(first["subject_id"], "seal", 2)
+    second = json.loads(json.dumps(first))
+    second["attempt_id"] = attempt
+    second["artifact_id"] = artifact_id(ARMARIUM, "stage-seal", first["subject_id"], attempt)
+    second["payload"] = {**second["payload"], "attempt_id": attempt, "attempt_ordinal": 2}
+    second["self_hash"] = self_hash(second)
+    path = tree.resolve(tree.artifact_path(ARMARIUM, "stage-seal", second["artifact_id"]))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(canonical_bytes(second))
+    return second["artifact_id"]
+
+
+def test_a_resealed_boundary_shows_every_seal_and_names_exactly_one_as_current(tmp_path: Path):
+    """ "Current" is a label on a visible list, never a filter that hides the rest.
+
+    `latest_attempt` derives which seal a boundary presently names. That
+    derivation is the console's to *report*, not to act on: an operator looking
+    at a resealed stage needs to see that it was sealed twice and what each
+    census claimed, because the earlier seal is the evidence that the boundary
+    moved at all. Showing only the derived winner would be a picker wearing a
+    tidier face (hard rule 8), and it would lose the superseded attempt exactly
+    as GOVERNANCE 2 forbids.
+    """
+    run_root, run_id = _make_run(tmp_path)
+    tree = RunTree(run_root, run_id)
+    superseded = review.ReadOnlyRun(run_root, run_id).projection()
+    before = next(row for row in superseded.boundaries if row["stage"] == ARMARIUM)
+    assert [seal["artifact_id"] for seal in before["seals"]] == [before["seal_artifact_id"]]
+    assert before["seals"][0]["current"] is True
+    assert before["seal_record_ref"] == before["seals"][0]["record_ref"]
+
+    resealed = _second_armarium_seal(tree)
+
+    row = next(
+        candidate
+        for candidate in review.ReadOnlyRun(run_root, run_id).projection().boundaries
+        if candidate["stage"] == ARMARIUM
+    )
+    assert row["seal_artifact_id"] == resealed, "the later attempt is the one the boundary names"
+    assert {seal["artifact_id"] for seal in row["seals"]} == {
+        resealed,
+        before["seal_artifact_id"],
+    }, "the superseded seal is still on the surface a person reads"
+    assert [seal["current"] for seal in row["seals"]].count(True) == 1
+    assert next(seal for seal in row["seals"] if seal["current"])["artifact_id"] == resealed
+    assert all("census" in seal for seal in row["seals"])
+    # Each seal carries its own address, so the two are separable in the record
+    # rather than two rows sharing one trace back to the current one.
+    assert row["seal_record_ref"]["sha256"] != before["seal_record_ref"]["sha256"]
+    assert len({seal["record_ref"]["sha256"] for seal in row["seals"]}) == 2
+    for seal in row["seals"]:
+        assert seal["record_ref"]["sha256"] == digest_bytes(
+            tree.read_bytes(seal["record_ref"]["relative_path"])
+        )
+
+
+def test_a_boundary_that_moved_under_two_advances_names_each_one_separately(tmp_path: Path):
+    """One record binds the seal that is there now; the other binds the one before it.
+
+    Two advances of one stage, with a reseal between them, is the case where a
+    single "advanced: yes" would be both true and false at once. Each record
+    keeps its own verdict, and the stale one is still listed.
+    """
+    run_root, run_id = _make_run(tmp_path)
+    tree = RunTree(run_root, run_id)
+    early = advance.trigger_advance(
+        run_root,
+        run_id,
+        ARMARIUM,
+        reason="advanced before the boundary was resealed",
+        workspace=ROOT,
+        expected_digest=_armarium_digest(run_root, run_id),
+    )
+    _second_armarium_seal(tree)
+    late = advance.trigger_advance(
+        run_root,
+        run_id,
+        ARMARIUM,
+        reason="advanced again against the reseal",
+        workspace=ROOT,
+        expected_digest=_armarium_digest(run_root, run_id),
+    )
+    assert early.relative_path != late.relative_path
+
+    records = review.ReadOnlyRun(run_root, run_id).projection().advance_records
+    verdicts = {record["relative_path"]: record for record in records}
+    assert set(verdicts) == {early.relative_path, late.relative_path}
+    assert verdicts[late.relative_path]["boundary_current"] is True
+    assert verdicts[late.relative_path]["boundary_note"] is None
+    assert verdicts[early.relative_path]["boundary_current"] is False
+    assert (
+        "changed after this advance was recorded" in verdicts[early.relative_path]["boundary_note"]
+    )
+    assert all(record["boundary_stage"] == ARMARIUM for record in records)
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    ["page", "crop", "bundle", "record"],
+    ids=["page-image", "act-crop", "review-bundle", "stage-record"],
+)
+def test_tampered_evidence_is_refused_naming_the_file_whose_bytes_moved(
+    tmp_path: Path, evidence: str
+):
+    """A refusal that names nothing is not the "named evidence problem" it prescribes.
+
+    Every one of these already refused — the digest checks under `read_artifact`
+    see to that — but the console's catch-all replaced the sentence identifying
+    the file with a category, and the only copy of that sentence lived in a
+    `__cause__` no operator renders. The person told to "repair the named
+    evidence problem" was handed no name (GOVERNANCE 2), while a false receipt
+    filename and a stale advance on the same surface both say precisely which
+    file they mean.
+    """
+    run_root, run_id = _make_run(tmp_path, scenario="review")
+    tree = RunTree(run_root, run_id)
+    projected = review.ReadOnlyRun(run_root, run_id).projection()
+    if evidence == "page":
+        relative = projected.pages[0]["image_path"]
+    elif evidence == "crop":
+        relative = next(act for act in projected.acts if act["crops"])["crops"][0]["image_path"]
+    elif evidence == "bundle":
+        assert projected.review_items
+        relative = projected.review_items[0]["bundle_path"]
+    else:
+        relative = next(
+            row["record_ref"]["relative_path"]
+            for row in projected.stage_records
+            if row["kind"] == "stage-seal"
+        )
+    target = tree.resolve(relative)
+    if evidence == "record":
+        # A record is sealed by its own `self_hash` over canonical content, so
+        # appending bytes to it is not a tamper at all — the meaning is
+        # identical and the projection honestly recomputes the new digest.
+        # Move a field instead, which is the change a reader must never absorb.
+        record = json.loads(target.read_bytes().decode("utf-8"))
+        record["payload"] = {**record["payload"], "census": []}
+        target.write_bytes(canonical_bytes(record))
+    else:
+        target.write_bytes(target.read_bytes() + b"\n")
+
+    with pytest.raises(OperatorError) as raised:
+        review.ReadOnlyRun(run_root, run_id).projection()
+
+    assert raised.value.code is ErrorCode.CONSOLE_TREE_UNREADABLE
+    assert relative in raised.value.detail, "the refusal must name the file whose bytes moved"
+    assert relative in raised.value.render(), "and it must survive the render a person reads"
+
+
+def test_opening_a_run_for_review_changes_no_byte_and_no_timestamp_in_the_tree(tmp_path: Path):
+    """The parent side of the boundary is unconfined, so its no-write is a claim.
+
+    `_review_in_custody` proves the *child* holds no write right, and the
+    kernel enforces that. The projection itself runs in the ordinary operator
+    process with full authority over the tree, one letter away from
+    `write_manifest`, and nothing checked that walking a run left it alone. So
+    this measures the tree rather than trusting the call sites: every file's
+    bytes, size and mtime, and the set of paths, before and after.
+    """
+    run_root, run_id = _make_run(tmp_path, scenario="review")
+    root = run_root / run_id
+
+    def census() -> dict[str, object]:
+        seen: dict[str, object] = {}
+        for path in sorted(root.rglob("*")):
+            key = str(path.relative_to(root))
+            if path.is_dir():
+                seen[key + "/"] = "directory"
+            else:
+                status = path.stat()
+                seen[key] = (digest_bytes(path.read_bytes()), status.st_size, status.st_mtime_ns)
+        return seen
+
+    before = census()
+    assert before, "the fixture run must have written a tree to walk"
+
+    projected = review.ReadOnlyRun(run_root, run_id).projection()
+    assert projected.stage_records and projected.boundaries
+
+    after = census()
+    assert set(after) == set(before), "reviewing a run created or removed a path"
+    assert after == before, "reviewing a run rewrote evidence it was only meant to read"

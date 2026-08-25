@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import io
 import json
 import zipfile
@@ -26,6 +25,7 @@ class ReviewProjection:
     """Only display values and immutable byte references; never a writable tree."""
 
     run_id: str
+    stage_records: tuple[dict[str, Any], ...]
     boundaries: tuple[dict[str, Any], ...]
     pages: tuple[dict[str, Any], ...]
     acts: tuple[dict[str, Any], ...]
@@ -45,51 +45,100 @@ class ReadOnlyRun:
         tree = self._tree
         try:
             boundaries: list[dict[str, Any]] = []
+            stage_records: list[dict[str, Any]] = []
             for stage in STAGES:
                 manifest = tree.build_manifest(stage, verify_inputs=False)
-                seals = [
-                    tree.read_artifact(stage, "stage-seal", row["artifact_id"])
-                    for row in manifest["artifacts"]
-                    if row["kind"] == "stage-seal"
-                ]
+                records = [_record_row(tree, stage, row) for row in manifest["artifacts"]]
+                stage_records.extend(records)
+                seals = [row for row in records if row["kind"] == "stage-seal"]
                 if not seals:
                     boundaries.append({"stage": stage, "sealed": False, "census": []})
                     continue
-                seal = latest_attempt(seals, f"{stage} stage seal", operation="seal")
-                path = tree.artifact_path(stage, "stage-seal", seal["artifact_id"])
+                current = latest_attempt(
+                    [row["record"] for row in seals], f"{stage} stage seal", operation="seal"
+                )
+                seal = next(row for row in seals if row["artifact_id"] == current["artifact_id"])
                 boundaries.append(
                     {
                         "stage": stage,
                         "sealed": True,
                         "seal_artifact_id": seal["artifact_id"],
-                        "seal_digest": digest_bytes(tree.read_bytes(path)),
-                        "census": seal["payload"]["census"],
+                        "seal_digest": seal["record_ref"]["sha256"],
+                        "census": seal["record"]["payload"]["census"],
+                        "seal_record_ref": seal["record_ref"],
+                        # Every completion seal remains visible.  `current` describes
+                        # the seal that the boundary presently names; it does not
+                        # suppress an earlier attempt or decide what an operator does.
+                        "seals": tuple(
+                            {
+                                "artifact_id": candidate["artifact_id"],
+                                "census": candidate["record"]["payload"]["census"],
+                                "current": candidate["artifact_id"] == seal["artifact_id"],
+                                "record_ref": candidate["record_ref"],
+                            }
+                            for candidate in seals
+                        ),
                     }
                 )
-            payload = _armarium_payload(tree)
-            pages = tuple(_image_row(tree, row) for row in payload.get("pages", []))
+            payload, export_ref = _armarium_payload(tree)
+            pages = tuple(_image_row(tree, row, export_ref) for row in payload.get("pages", []))
             acts = tuple(
-                _act_row(tree, row)
+                _act_row(tree, row, export_ref)
                 for row in (*payload.get("delivered", []), *payload.get("non_delivered", []))
             )
             return ReviewProjection(
                 tree.run_id,
+                tuple(stage_records),
                 tuple(boundaries),
                 pages,
                 acts,
-                _review_items(tree, payload),
+                _review_items(tree, payload, export_ref),
                 _advance_records(tree, _sealed_digests(boundaries)),
             )
         except OperatorError:
             raise
         except (ContractError, KeyError, OSError, TypeError, ValueError) as error:
+            # The refusal that fired already names the evidence — which blob's
+            # bytes moved under a sealed reference, which record failed its own
+            # hash. Replacing it with a category left the operator holding a
+            # message whose own next step says "repair the *named* evidence
+            # problem" while naming nothing, and every other refusal on this
+            # surface (a false content-addressed receipt name, a stale advance)
+            # says exactly which file it means. A diagnostic that exists only in
+            # a `__cause__` nobody renders has been lost (GOVERNANCE 2).
             raise OperatorError(
                 ErrorCode.CONSOLE_TREE_UNREADABLE,
-                detail="a stage boundary or immutable image reference could not be read",
+                detail=(
+                    "a stage boundary or immutable image reference could not be read: "
+                    f"{type(error).__name__}: {error}"
+                ),
             ) from error
 
 
-def _armarium_payload(tree: RunTree) -> dict[str, Any]:
+def _record_row(tree: RunTree, stage: str, manifest_row: dict[str, Any]) -> dict[str, Any]:
+    """One complete, validated stage record with its immutable address.
+
+    The projection is deliberately a walk of evidence rather than a summary that
+    silently chooses which outcome to expose.  The reference is the trace for
+    every copied header and the complete record is available to the renderer.
+    """
+
+    record = tree.read_artifact(stage, manifest_row["kind"], manifest_row["artifact_id"])
+    return {
+        "stage": stage,
+        "artifact_id": record["artifact_id"],
+        "kind": record["kind"],
+        "subject_id": record["subject_id"],
+        "outcome": record["outcome"],
+        "record_ref": {
+            "relative_path": manifest_row["relative_path"],
+            "sha256": manifest_row["sha256"],
+        },
+        "record": record,
+    }
+
+
+def _armarium_payload(tree: RunTree) -> tuple[dict[str, Any], dict[str, str]]:
     try:
         record = tree.read_artifact(
             ARMARIUM, "export", artifact_id(ARMARIUM, "export", "export", None)
@@ -98,7 +147,7 @@ def _armarium_payload(tree: RunTree) -> dict[str, Any]:
     except (KeyError, OSError, TypeError, ValueError) as error:
         raise OperatorError(
             ErrorCode.CONSOLE_TREE_UNREADABLE,
-            detail="the Armarium export record could not be read",
+            detail=f"the Armarium export record could not be read: {type(error).__name__}: {error}",
         ) from error
     if not isinstance(payload, dict):
         raise OperatorError(
@@ -109,10 +158,18 @@ def _armarium_payload(tree: RunTree) -> dict[str, Any]:
             raise OperatorError(
                 ErrorCode.CONSOLE_TREE_UNREADABLE, detail=f"the Armarium {name} value is not a list"
             )
-    return payload
+    return (
+        payload,
+        {
+            "relative_path": tree.artifact_path(ARMARIUM, "export", record["artifact_id"]),
+            "sha256": digest_bytes(
+                tree.read_bytes(tree.artifact_path(ARMARIUM, "export", record["artifact_id"]))
+            ),
+        },
+    )
 
 
-def _image_row(tree: RunTree, row: Any) -> dict[str, Any]:
+def _image_row(tree: RunTree, row: Any, export_ref: dict[str, str]) -> dict[str, Any]:
     if not isinstance(row, dict) or not isinstance(row.get("image_path"), str):
         raise OperatorError(
             ErrorCode.CONSOLE_TREE_UNREADABLE, detail="a page has no immutable image path"
@@ -122,12 +179,13 @@ def _image_row(tree: RunTree, row: Any) -> dict[str, Any]:
         "ordinal": row.get("ordinal"),
         "page_id": row.get("page_id"),
         "outcome": row.get("outcome"),
+        "image_path": row["image_path"],
         "image_sha256": digest_bytes(data),
-        "image_data_url": "data:image/png;base64," + base64.b64encode(data).decode("ascii"),
+        "record_ref": export_ref,
     }
 
 
-def _act_row(tree: RunTree, row: Any) -> dict[str, Any]:
+def _act_row(tree: RunTree, row: Any, export_ref: dict[str, str]) -> dict[str, Any]:
     if not isinstance(row, dict):
         raise OperatorError(
             ErrorCode.CONSOLE_TREE_UNREADABLE, detail="an Armarium act is not an object"
@@ -143,8 +201,8 @@ def _act_row(tree: RunTree, row: Any) -> dict[str, Any]:
             {
                 "ordinal": region.get("source_page_ordinal"),
                 "region_id": region.get("region_id"),
+                "image_path": region["image_path"],
                 "image_sha256": digest_bytes(data),
-                "image_data_url": "data:image/png;base64," + base64.b64encode(data).decode("ascii"),
             }
         )
     return {
@@ -152,6 +210,8 @@ def _act_row(tree: RunTree, row: Any) -> dict[str, Any]:
         "act_key": row.get("act_key"),
         "category": row.get("category"),
         "crops": crops,
+        "row": row,
+        "record_ref": export_ref,
     }
 
 
@@ -259,7 +319,9 @@ def _still_binds(record: dict[str, Any], sealed: dict[str, str]) -> dict[str, An
     return {"boundary_stage": stage, "boundary_current": True, "boundary_note": None}
 
 
-def _review_items(tree: RunTree, payload: dict[str, Any]) -> tuple[dict[str, Any], ...] | None:
+def _review_items(
+    tree: RunTree, payload: dict[str, Any], export_ref: dict[str, str]
+) -> tuple[dict[str, Any], ...] | None:
     bundle = payload.get("bundle")
     reference = bundle.get("reference") if isinstance(bundle, dict) else None
     path = reference.get("relative_path") if isinstance(reference, dict) else None
@@ -270,9 +332,22 @@ def _review_items(tree: RunTree, payload: dict[str, Any]) -> tuple[dict[str, Any
             if "review-items.jsonl" not in archive.namelist():
                 return None
             return tuple(
-                json.loads(line) for line in archive.read("review-items.jsonl").splitlines()
+                {
+                    "row": json.loads(line),
+                    "record_ref": export_ref,
+                    "bundle_path": path,
+                    "member": "review-items.jsonl",
+                    "line": number,
+                }
+                for number, line in enumerate(
+                    archive.read("review-items.jsonl").splitlines(), start=1
+                )
             )
     except (OSError, ValueError, zipfile.BadZipFile) as error:
         raise OperatorError(
-            ErrorCode.CONSOLE_TREE_UNREADABLE, detail="review-items.jsonl could not be read"
+            ErrorCode.CONSOLE_TREE_UNREADABLE,
+            detail=(
+                f"review-items.jsonl could not be read from bundle {path}: "
+                f"{type(error).__name__}: {error}"
+            ),
         ) from error
