@@ -177,7 +177,6 @@ class RunTree:
         config_digest: str,
         adapter_recipes: dict[str, str],
         witness_chairs: list[str],
-        corpus_frame_membership: dict[str, str] | None = None,
         register_bytes: bytes | None = None,
         ingress: dict[str, Any] | None = None,
         render_settings: dict[str, Any] | None = None,
@@ -221,14 +220,13 @@ class RunTree:
                 "ordinal names one page, so a repeat leaves the run unable to say "
                 "how many pages it was given"
             )
-        # `is None`, not falsy: an explicitly supplied empty mapping is a claim
-        # about the frame and must reach the validator to be refused, never be
-        # silently replaced by the derived default.
-        membership = (
-            _default_corpus_frame_membership(source_manifest)
-            if corpus_frame_membership is None
-            else corpus_frame_membership
-        )
+        # Derived here and nowhere else. `create` used to accept a caller-supplied
+        # `corpus_frame_membership` that was only shape-checked, so a caller could
+        # seal a frame its own pages do not produce -- two shards holding different
+        # pages could name one membership, which is precisely the collapse this
+        # binding exists to prevent, reached through the side door instead of the
+        # front one. Nothing passed it; the parameter is gone rather than guarded.
+        membership = _default_corpus_frame_membership(source_manifest)
         _validate_corpus_frame_membership(membership)
         authority = {
             "schema": SCHEMA_LABEL,
@@ -1336,20 +1334,37 @@ def _is_sha256(value: Any) -> bool:
 def _default_corpus_frame_membership(source_manifest: list[dict[str, Any]]) -> dict[str, str]:
     """Bind even direct RunTree callers to the one frame they supplied.
 
-    A row's declared sha256 is optional here BY the Door's own contract:
-    `SourceEntry.declared_sha256` defaults to None, admission is legal without
-    it, and the door computes digests itself (duplicate accounting groups on
-    the computed digest for exactly that reason). Refusing None here was tried
-    and broke that contract in CI. The residual weakness is real and recorded:
-    two undigested page sets with the same ordinals produce identical
-    membership digests, so the honest close is binding the door's COMPUTED
-    digests into membership -- a recorded-bytes change, parked as a follow-up,
-    not a silent refusal that contradicts the admission contract.
+    ``computed_sha256`` is the digest whoever opened the source took over the
+    bytes it read; ``sha256`` is what was *declared* about them.  Membership
+    binds the first where it exists, because a declaration is not evidence at
+    the moment a frame seals: the Door does not check a submitted filename
+    ledger against the bytes until ``process_sources``, which runs after this,
+    so a ledger declaring one digest for two genuinely different pages would
+    otherwise seal two shards into a single membership and the later refusal
+    would not unseal it.
+
+    The fallback to ``sha256`` is for the two honest cases that have no
+    computed digest: a direct RunTree caller constructing synthetic evidence,
+    which is responsible for the digest it supplies, and a source whose bytes
+    could not be read at all -- that page keeps its ordinal so the run's
+    denominator stays honest, and it is refused by name downstream before it
+    can become a reading.  A page with neither digest can make no membership
+    claim of any kind, so creation refuses before writing a run.
+
+    `gold/core._frame_from_run` re-derives this record from the same field with
+    the same fallback.  The two are one frame identity computed twice, and they
+    must not drift: deriving them from different fields both refuses honest
+    runs and lets a frame forged over the declarations pass the rederivation.
     """
-    pages = [
-        {"ordinal": page.get("ordinal"), "sha256": page.get("sha256")}
-        for page in sorted(source_manifest, key=lambda page: page.get("ordinal", 0))
-    ]
+    pages = []
+    for page in sorted(source_manifest, key=lambda page: page.get("ordinal", 0)):
+        computed = page.get("computed_sha256", page.get("sha256"))
+        if not _is_sha256(computed):
+            raise SchemaRefusal(
+                "corpus frame membership needs an inspected or declared sha256 for "
+                "every source page"
+            )
+        pages.append({"ordinal": page.get("ordinal"), "sha256": computed})
     page_digest = digest_bytes(canonical_bytes(pages))
     return {
         "frame_digest": digest_bytes(canonical_bytes({"pages": pages})),

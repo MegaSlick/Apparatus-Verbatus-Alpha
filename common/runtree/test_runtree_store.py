@@ -40,6 +40,7 @@ from common.runtree.store import (
     RECEIPTS_DIR,
     RUN_FILE,
     RunTree,
+    _default_corpus_frame_membership,
 )
 
 PAGE_BYTES = b"synthetic page one"
@@ -294,6 +295,101 @@ def test_a_well_formed_manifest_of_several_pages_is_still_accepted(tmp_path):
     ]
     tree = make_run(tmp_path, source_manifest=fine)
     assert [page["ordinal"] for page in tree.read_run()["source_manifest"]] == [1, 2]
+
+
+def test_door_computed_page_digests_distinguish_shards_with_the_same_ordinals(tmp_path):
+    """Membership is about inspected bytes, not an ordinal-shaped page set."""
+    first = make_run(
+        tmp_path / "first",
+        source_manifest=[
+            {
+                "relative_path": "first.png",
+                "sha256": "a" * 64,
+                "computed_sha256": "b" * 64,
+                "ordinal": 1,
+            }
+        ],
+    )
+    second = make_run(
+        tmp_path / "second",
+        source_manifest=[
+            {
+                "relative_path": "second.png",
+                "sha256": "a" * 64,
+                "computed_sha256": "c" * 64,
+                "ordinal": 1,
+            }
+        ],
+    )
+    assert (
+        first.read_run()["corpus_frame_membership"] != second.read_run()["corpus_frame_membership"]
+    )
+
+
+def test_door_computed_page_digests_agree_for_the_same_bytes_at_the_same_ordinal(tmp_path):
+    """The other direction: honest agreement must still be reachable.
+
+    A membership digest that always differed across run trees -- salted by the run
+    id, the declared path, or anything else incidental -- would be exactly as
+    dishonest as one that never differed: two shards that really did inspect the
+    same page bytes at the same ordinal must read as the same membership, or the
+    digest is not describing content at all.
+    """
+    first = make_run(
+        tmp_path / "first",
+        run_id="shard-one",
+        source_manifest=[
+            {
+                "relative_path": "first.png",
+                "sha256": "a" * 64,
+                "computed_sha256": "b" * 64,
+                "ordinal": 1,
+            }
+        ],
+    )
+    second = make_run(
+        tmp_path / "second",
+        run_id="shard-two",
+        source_manifest=[
+            {
+                "relative_path": "second.png",
+                "sha256": "a" * 64,
+                "computed_sha256": "b" * 64,
+                "ordinal": 1,
+            }
+        ],
+    )
+    assert (
+        first.read_run()["corpus_frame_membership"] == second.read_run()["corpus_frame_membership"]
+    )
+
+
+def test_membership_refuses_a_page_with_no_digest_of_any_kind(tmp_path):
+    with pytest.raises(SchemaRefusal, match="inspected or declared sha256"):
+        make_run(tmp_path, source_manifest=[{"relative_path": "page.png", "ordinal": 1}])
+
+
+def test_a_caller_cannot_name_a_frame_its_own_pages_do_not_derive(tmp_path):
+    """The frame is derived, never asserted. There is no parameter for asserting it.
+
+    `create` used to take a `corpus_frame_membership` that was only shape-checked,
+    so a caller could seal any well-formed triple over any pages -- two shards
+    holding different pages could name one membership through that parameter while
+    the derivation this unit exists to harden ran on neither. Nothing passed it,
+    so it is gone rather than guarded, and this pins the removal: the keyword is
+    refused, and what lands in `run.json` is what the pages produce.
+    """
+    with pytest.raises(TypeError):
+        make_run(
+            tmp_path / "asserted",
+            corpus_frame_membership={
+                "frame_digest": "d" * 64,
+                "page_digest": "e" * 64,
+                "seed": "f" * 64,
+            },
+        )
+    tree = make_run(tmp_path / "derived")
+    assert tree.read_run()["corpus_frame_membership"] == _default_corpus_frame_membership(SOURCE)
 
 
 def test_reusing_a_run_id_with_changed_config_is_refused(tmp_path):

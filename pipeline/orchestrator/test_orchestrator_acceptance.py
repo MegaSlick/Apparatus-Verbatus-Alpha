@@ -50,6 +50,7 @@ from common.contracts.stages import (
 )
 from common.contracts.uncertainty import from_perlectio
 from common.fixture_identity import page_identity
+from common.hard_failure import load_hard_failure_policy, tally_hard_failures
 from common.imaging import PNG_SIGNATURE, decode_grayscale_png
 from common.runtree.store import RunTree
 from common.stage import (
@@ -913,7 +914,16 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # placement seal): both sides above measured trees missing the other's
 # change; the value below is measured on THIS tree, twice, independent
 # roots, rid "r", via this module's own helpers.
-HAPPY_RUN_TREE_DIGEST = "95e20da2de4f1fc8939b0973287ba25cb889c0f3238794fcc622d9e325d93c79"
+# Unit 8 re-pin: the Door's computed per-page membership digests now bind the
+# inspected source bytes into sealed run authority, rather than permitting two
+# genuinely different page sets that share ordinals to name one membership.  The
+# per-shard cap's explanatory comment is likewise sealed configuration, so its
+# clarified wording also enters `config_digest` and run authority.  These are
+# both intended semantic consequences of Unit 8's named deliverable.  Happy
+# (97 files, exit 0) and review (106 files, exit 3) were each measured twice,
+# in independent temporary roots, at canonical run id "r", through this
+# module's own `orchestrate` and `semantic_snapshot_digest` helpers.
+HAPPY_RUN_TREE_DIGEST = "ddf24054bbd744cb14898f3f031dec96fb8421df76f376056e2866d4c2408aaa"
 # Review only, once more in the same seat: a page witness invoked on every act
 # and unusable on all of them now records the serving moment that produced it
 # (`provenance_for(..., attempted=attempted_page)`), where the `reading` gate
@@ -975,7 +985,7 @@ HAPPY_RUN_TREE_DIGEST = "95e20da2de4f1fc8939b0973287ba25cb889c0f3238794fcc622d9e
 # placement seal): both sides above measured trees missing the other's
 # change; the value below is measured on THIS tree, twice, independent
 # roots, rid "r", via this module's own helpers.
-REVIEW_RUN_TREE_DIGEST = "8da6af3cb73b253dfe84f9ebb9792bcaadb9911c9c55e3014669ecf828f790b2"
+REVIEW_RUN_TREE_DIGEST = "af0428089b3cad35f6dcbbff93795bf7305a78d8dacc948e51a81b58c150ad45"
 
 
 def orchestrate(
@@ -4836,6 +4846,63 @@ def test_an_interrupted_run_resumes_without_rewriting_what_survived(tmp_path):
     for path, digest in survivors.items():
         assert resumed[path] == digest, f"{path} was rewritten on resume"
     assert resumed == complete
+
+
+def test_a_run_interrupted_at_every_boundary_resumes_to_the_same_tree_and_tally(tmp_path):
+    """Charge the wall a shard dies against, at every place it can die.
+
+    `test_an_interrupted_run_resumes_without_rewriting_what_survived` interrupts
+    the happy path once, by deleting whole stage directories. This drives the
+    *review* scenario -- the one carrying held units and a bounded recovery loop,
+    which is what a cross-shard straddle produces today (the Designator holds an
+    act whose continuation page is not in this run, `exemplar-continuation-not-
+    sealed`) -- and it stops the run at every boundary in turn rather than one.
+
+    Two things must hold at each of them. The finished tree is byte-identical to
+    the uninterrupted one, so no hold is lost and no recovery round is spent
+    twice. And Tyrel's hard-failure tally is identical, because it is recomputed
+    from disk as `(stage, subject_id)` incidents: a shard interrupted five times
+    must not drift five failures closer to a halt nobody's evidence justifies.
+    """
+    policy = load_hard_failure_policy(ROOT / "config" / "hard_failure.toml")
+
+    reference_root = tmp_path / "reference"
+    assert orchestrate(reference_root, "r", "review").returncode == 3
+    reference = snapshot(reference_root)
+    reference_tally = tally_hard_failures(RunTree(reference_root, "r"), policy)
+
+    for stop_at in ("door", "exemplar", INK_MAP, "designator", ATTESTATORES, "perlector"):
+        root = tmp_path / f"stopped-at-{stop_at}"
+        partial = subprocess.run(
+            [
+                sys.executable,
+                str(ORCHESTRATOR),
+                "--fixture",
+                FIXTURE,
+                "--scenario",
+                "review",
+                "--run-id",
+                "r",
+                "--run-root",
+                str(root),
+                "--from",
+                "door",
+                "--to",
+                stop_at,
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+        assert partial.returncode == 0, partial.stderr
+        survivors = snapshot(root)
+        assert survivors, f"stopping at {stop_at} wrote nothing to resume from"
+        assert len(survivors) < len(reference)
+
+        assert orchestrate(root, "r", "review").returncode == 3
+        resumed = snapshot(root)
+        assert resumed == reference, f"resuming after {stop_at} did not land on the same tree"
+        assert tally_hard_failures(RunTree(root, "r"), policy) == reference_tally
 
 
 # --- 5. The review scenario preserves the whole history ------------------------

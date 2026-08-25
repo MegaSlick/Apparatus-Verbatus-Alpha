@@ -129,6 +129,70 @@ class SourceEntry(NamedTuple):
     triage_row: dict[str, Any] | None = None
     triage_part_index: int | None = None
     source_frame_index: int | None = None
+    # The digest `expand_sources` computed over the bytes it actually read for
+    # this source file, as against `declared_sha256`, which is what the
+    # submitted filename ledger claimed about them. `None` where there were no
+    # bytes to hash -- an unreadable or over-sized source, or a streamed PDF
+    # container, which is hashed once only and after this run seals. Those pages
+    # keep their ordinals and are refused by name in `process_sources`; see
+    # `_membership_sha256`.
+    computed_sha256: str | None = None
+
+
+def _membership_sha256(source: SourceEntry) -> str | None:
+    """The digest one page binds into shard membership.
+
+    Two things have to be true of it at once, and neither was true of
+    `declared_sha256`, which is what this bound before.
+
+    **It must be a digest somebody computed, not one somebody claimed.** The
+    filename ledger is untrusted -- `real_submission` says so where it reads it
+    -- and its declaration is not checked against the bytes until
+    `process_sources`, which runs *after* `RunTree.create` has already sealed
+    the frame. A ledger that declares one digest for two genuinely different
+    pages therefore sealed two shards into one membership, and the mismatch it
+    was refused for afterwards did not unseal anything. `expand_sources` already
+    reads every byte-backed source into memory to sniff and count it, so that
+    digest is free and available at seal time; `computed_sha256` is it, and it
+    covers every raster, every triage split part and every raster container.
+
+    **It must tell apart two pages of one container.** A page fanned out from a
+    PDF or multi-page TIFF shares its container's whole-file digest with every
+    other page `expand_sources` fans out of that file, so the container digest
+    alone gives them all one membership despite genuinely different page
+    content (`test_pdf_and_multipage_tiff_fan_out_and_seal_lossless_page_blobs`
+    proves the rendered pages' own digests differ). The page's decoded pixels
+    are not computed until `process_sources` either, so they cannot be the
+    binding; composing the container's inspected digest with this page's index
+    inside it is what is knowable at seal time and still separates them.
+
+    Two kinds of source still fall back to the declaration, and both do so
+    rather than refusing the whole run -- each keeps its ordinal so the run's
+    denominator stays honest, and each is refused by name at `process_sources`
+    before it can become a reading:
+
+    * one whose bytes could not be read, or were over the size ceiling, so
+      there is nothing to hash;
+    * a **streamed PDF container**, which is deliberately hashed once only,
+      from the descriptor PDFium renders, and that open happens after this
+      frame seals. Two shards each taking ordinal 1 from a PDF whose untrusted
+      ledger declares the same digest for genuinely different files therefore
+      still seal one membership. `process_sources` refuses both by name when
+      the bytes disagree with the declaration, so no reading escapes; what is
+      not closed is the frame identity itself. Closing it needs either a second
+      full pass over a file that may be gigabytes or a digest carried out of
+      `process_sources` back into a frame that has already sealed, and neither
+      is this seat's to choose alone -- it is recorded for the next.
+    """
+    inspected = source.computed_sha256 or source.declared_sha256
+    if inspected is None or source.container_page_index is None:
+        return inspected
+    return digest_of(
+        {
+            "container_sha256": inspected,
+            "container_page_index": source.container_page_index,
+        }
+    )
 
 
 class _Decision(NamedTuple):
@@ -553,12 +617,17 @@ def expand_sources(
             triage_row: dict[str, Any] | None = None,
             triage_part_index: int | None = None,
             source_frame_index: int | None = None,
+            computed_sha256: str | None = None,
         ) -> None:
             """One fanned-out or standalone row for this loop iteration's source.
 
             The row-invariant fields are bound as default arguments, evaluated once
             at definition time, rather than left as loop-variable closures a later
             iteration's reassignment could change from under a still-live reference.
+
+            `computed_sha256` is deliberately NOT one of them: it is not known when
+            this function is defined, only after the bytes below have been read, so
+            every call site passes the digest it has (or none, having read nothing).
             """
             nonlocal ordinal
             ordinal += 1
@@ -574,16 +643,18 @@ def expand_sources(
                     triage_row,
                     triage_part_index,
                     source_frame_index,
+                    computed_sha256,
                 )
             )
 
         def append_refused_source(
             detected_format: str | None,
             triage_row: dict[str, Any] | None = triage_row,
+            computed_sha256: str | None = None,
         ) -> None:
             """Keep the manifest's declared post-split denominator on early failure."""
             if triage_row is None:
-                append(None, detected_format)
+                append(None, detected_format, computed_sha256=computed_sha256)
                 return
             for part_index in range(len(triage_row["split"]["parts"])):
                 append(
@@ -592,9 +663,15 @@ def expand_sources(
                     triage_row=triage_row,
                     triage_part_index=part_index,
                     source_frame_index=0,
+                    computed_sha256=computed_sha256,
                 )
 
         data: bytes | None = None
+        # The digest of the bytes this pass actually read, or None where it could
+        # read none. `_membership_sha256` binds this rather than the ledger's
+        # declaration, so a ledger cannot name two different pages into one shard
+        # membership before `process_sources` gets to refuse the declaration.
+        computed: str | None = None
         try:
             if open_source is not None:
                 # A real source is classified from the same descriptor-relative
@@ -603,6 +680,18 @@ def expand_sources(
                 with open_source(path) as opened_source:
                     detected = _sniff_source_stream(opened_source.handle)
                     opened_source.assert_unchanged(expected_sha256=declared_sha256)
+                    # Deliberately no digest here. A streamed PDF container is
+                    # hashed exactly once, from the descriptor PDFium then renders
+                    # (`test_the_pdf_pdfium_renders_is_the_descriptor_the_digest_
+                    # was_taken_from`), and that open happens in `process_sources`,
+                    # after this frame seals. Hashing it a second time here would
+                    # cost a full extra pass over a file that may be gigabytes and
+                    # would take the membership digest from a different open than
+                    # the pixels -- reopening the replacement window that test
+                    # exists to keep shut. The residual is named in
+                    # `_membership_sha256`: a streamed container's membership rests
+                    # on its ledger declaration, which `process_sources` refuses by
+                    # name if the bytes disagree.
             else:
                 # A caller with no anchored opener supplies bytes directly; there is
                 # no second, path-based way to classify a source (the door hands
@@ -624,6 +713,12 @@ def expand_sources(
         if data is not None and len(data) > MAX_SOURCE_BYTES:
             append_refused_source(detected)
             continue
+        if data is not None:
+            # Only below the over-size guard: `read_bytes` deliberately reads one
+            # byte past the ceiling, so above it these bytes are a prefix and their
+            # digest would name something that was never a source. Below it they
+            # are the whole file.
+            computed = digest_bytes(data)
         if triage_rows is not None:
             assert triage_row is not None
             if data is None or detected == "pdf":
@@ -637,7 +732,7 @@ def expand_sources(
                 # manifest already declares how many pages this frame contributes.
                 # Retain one refused ordinal per part so the immutable denominator
                 # and configured post-split cap do not undercount a broken frame.
-                append_refused_source(detected)
+                append_refused_source(detected, computed_sha256=computed)
                 continue
             if frame_count != 1:
                 raise ContractError(
@@ -650,6 +745,7 @@ def expand_sources(
                     triage_row=triage_row,
                     triage_part_index=part_index,
                     source_frame_index=0,
+                    computed_sha256=computed,
                 )
             continue
         try:
@@ -663,19 +759,19 @@ def expand_sources(
                 )
         except (pdf_render.PdfRefusal, FormatRefusal, inventory.SubmissionInputError, OSError):
             if route != admission.RENDER_PAGES:
-                append(None, detected)
+                append(None, detected, computed_sha256=computed)
                 continue
-            append(0, detected)
+            append(0, detected, computed_sha256=computed)
             continue
         # PDF/TIFF are declared page containers even when there is one page. For
         # every other decoder-backed image, a reported multi-frame source is also
         # fanned out. Retaining an animation as one raster would silently drop all
         # but frame zero downstream; one-frame rasters retain their original bytes.
         if route != admission.RENDER_PAGES and page_count == 1:
-            append(None, detected)
+            append(None, detected, computed_sha256=computed)
             continue
         for page_index in range(page_count):
-            append(page_index, detected)
+            append(page_index, detected, computed_sha256=computed)
     if triage_rows is not None and triage_clusters is not None:
         submitted = {row["sha256"] for row in files}
         named_clusters = {
@@ -1554,6 +1650,10 @@ def fixture_submission(args, registry) -> int:
             {
                 "relative_path": page["path"],
                 "sha256": declared[page["ordinal"]],
+                # The fixture declaration's digest is checked against these
+                # bytes by the Door.  Bind that computed page-set identity
+                # separately so shard membership never collapses to ordinals.
+                "computed_sha256": page["sha256"],
                 "ordinal": page["ordinal"],
             }
             for page in pages
@@ -1758,6 +1858,13 @@ def real_submission(args, registry) -> int:
             {
                 "relative_path": source.declared_path,
                 "sha256": source.declared_sha256,
+                # Not `declared_sha256`: the filename ledger read above is
+                # untrusted and is not checked against the bytes until
+                # `process_sources`, which is after this run authority seals.
+                # `_membership_sha256` binds the digest `expand_sources`
+                # computed over the bytes it read, composed with this page's
+                # index where the source was a container.
+                "computed_sha256": _membership_sha256(source),
                 "ordinal": source.ordinal,
                 "bytes": source.declared_size,
                 "ledger_sha256": source.ledger_sha256,

@@ -25,6 +25,7 @@ from gold.core import (
     build_sample,
     build_sampling_draw,
     ingest_manual_pick,
+    load_run_frame,
     read_transcription_text,
     sample_stratified,
     set_for_page,
@@ -1698,3 +1699,88 @@ def test_unhashable_enum_spellings_are_named_refusals_not_type_errors(tmp_path):
     layout["self_hash"] = self_hash(layout)
     with pytest.raises(SchemaRefusal, match="region kind is not recognized"):
         validate_layout(layout)
+
+
+def test_the_gold_frame_is_derived_from_the_field_the_run_authority_binds(tmp_path):
+    """One frame identity, computed twice, from the same field both times.
+
+    Unit 8 moved shard membership onto the Door's `computed_sha256`, which for a
+    page fanned out of a PDF or multi-page TIFF is *not* its `sha256` -- that one
+    is the container's whole-file declaration, shared by every page of the file.
+    This rederivation kept reading `sha256`, and the divergence cut both ways: a
+    real container-sourced run was refused as a forgery ("R0 frame seed diverges
+    from its derivation over the run's own pages") though nothing was forged, and
+    a frame actually forged over the declarations would have passed while the
+    run's own inspected bytes said otherwise. Both directions are pinned here.
+    """
+    from common.contracts.canonical import digest_of
+    from common.runtree.store import RunTree
+
+    container = _sha("a")
+
+    def page(index: int) -> dict:
+        return {
+            "relative_path": "register.pdf",
+            "sha256": container,
+            "computed_sha256": digest_of(
+                {"container_sha256": container, "container_page_index": index}
+            ),
+            "ordinal": index + 1,
+        }
+
+    common = dict(
+        config_digest=_sha("c"),
+        adapter_recipes={"designator": "fake-designator-v0"},
+        witness_chairs=["attestator_1"],
+    )
+    tree = RunTree.create(tmp_path / "runs", "r1", source_manifest=[page(0), page(1)], **common)
+    frame, source = load_run_frame(tmp_path / "runs" / "r1" / "run.json")
+
+    # Accepted, and it is the sealed record rather than a second opinion about it.
+    assert frame == tree.read_run()["corpus_frame_membership"]
+    assert [row["sha256"] for row in source] == [
+        page(0)["computed_sha256"],
+        page(1)["computed_sha256"],
+    ]
+
+    # And the two container pages are genuinely separated: a run holding only
+    # page 0 twice-over would be a different frame, not the same one.
+    single = RunTree.create(tmp_path / "single", "r1", source_manifest=[page(0)], **common)
+    assert single.read_run()["corpus_frame_membership"] != frame
+
+
+def test_two_runs_agreeing_only_on_their_declarations_are_two_frames(tmp_path):
+    """A shared declaration must not unify two shards that inspected different bytes.
+
+    `validate_corpus` refuses records from two different corpus frames rather than
+    combining them, so a false frame *equality* is the dangerous direction: it
+    would let one draw silently span two shards. The declaration is the value an
+    untrusted ledger controls; the inspected digest is not.
+    """
+    from common.runtree.store import RunTree
+
+    common = dict(
+        config_digest=_sha("c"),
+        adapter_recipes={"designator": "fake-designator-v0"},
+        witness_chairs=["attestator_1"],
+    )
+
+    def frame_of(root: str, computed: str) -> dict:
+        RunTree.create(
+            tmp_path / root,
+            "r1",
+            source_manifest=[
+                {
+                    "relative_path": "page.png",
+                    "sha256": _sha("a"),
+                    "computed_sha256": computed,
+                    "ordinal": 1,
+                }
+            ],
+            **common,
+        )
+        return load_run_frame(tmp_path / root / "r1" / "run.json")[0]
+
+    assert frame_of("shard-one", _sha("b")) != frame_of("shard-two", _sha("d"))
+    # The other direction, or the digest would not be describing content at all.
+    assert frame_of("shard-three", _sha("b")) == frame_of("shard-four", _sha("b"))

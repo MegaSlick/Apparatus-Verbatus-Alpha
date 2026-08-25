@@ -3,7 +3,13 @@
 `python -m gold.cli sample --run RUN.json --catalog catalog.json --plan plan.json
 --output-dir records/` creates a stratified, page-only human-gold sample.  The
 catalog has one `{ordinal, sha256, stratum, width, height}` row for every R0 source
-page; the plan carries a quota for both `calibration` and `locked-acceptance` for **every**
+page.  A row's `sha256` is the digest that page binds into the run's
+`corpus_frame_membership` -- the Door's `computed_sha256` where it inspected the
+bytes, the submitted declaration only where it could not -- which for a raster is
+the page's own digest and for a page fanned out of a container is that container's
+digest composed with the page's index inside it.  One frame identity means one
+field, and this is the field `common/runtree/store` seals; the catalog is checked
+against it.  The plan carries a quota for both `calibration` and `locked-acceptance` for **every**
 stratum the catalog declares.  A stratum the plan does not name would drop out of
 gold without saying so, so an unnamed one is refused; quota `0` is how a stratum
 is deliberately left unsampled, and it stays visible in the plan file.  Each

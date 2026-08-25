@@ -176,8 +176,9 @@ def truncated_animated_gif() -> bytes:
     return data[: descriptors[1] + 9]
 
 
-def open_door(tmp_path, sources, *, run_id="r1", ingress=None):
+def open_door(tmp_path, sources, *, run_id="r1", ingress=None, computed_digests=None):
     """A real tree/context writing the door's own artifacts."""
+    computed_digests = computed_digests or {}
     tree = RunTree.create(
         tmp_path / "runs",
         run_id,
@@ -186,6 +187,11 @@ def open_door(tmp_path, sources, *, run_id="r1", ingress=None):
                 "relative_path": source.declared_path,
                 "sha256": source.declared_sha256,
                 "ordinal": source.ordinal,
+                **(
+                    {"computed_sha256": computed_digests[source.ordinal]}
+                    if source.ordinal in computed_digests
+                    else {}
+                ),
                 **({"bytes": source.declared_size} if source.declared_size is not None else {}),
                 **(
                     {"ledger_sha256": source.ledger_sha256}
@@ -476,6 +482,67 @@ def test_pdf_and_multipage_tiff_fan_out_and_seal_lossless_page_blobs(tmp_path):
         assert validate_png(tree.read_bytes(payload["stored_at"])).format == "png"
 
 
+def test_container_pages_bind_membership_to_container_and_index_not_the_shared_file_hash(
+    tmp_path,
+):
+    """Two pages fanned from one PDF must not seal identical shard membership.
+
+    `real_submission` seals `RunTree.create`'s `source_manifest` before any page is
+    decoded -- `process_sources` renders pixels afterward -- so a container-derived
+    page's own content digest is not yet known at the moment membership binds. Before
+    this fix, `computed_sha256` reused the container's whole-file `declared_sha256`
+    for every page fanned out of it, so a shard sealing ordinal 1 from this PDF's page
+    0 and a shard sealing ordinal 1 from the SAME PDF's page 1 produced identical
+    membership despite genuinely different page bytes -- the exact collapse Unit 8
+    exists to close (`test_pdf_and_multipage_tiff_fan_out_and_seal_lossless_page_blobs`
+    already shows the two pages' own rendered digests differ from each other).
+    """
+    pdf = two_page_pdf()
+    sources = expand_sources(
+        [{"relative_path": "scan.pdf", "sha256": digest_bytes(pdf), "bytes": len(pdf)}],
+        reader({"scan.pdf": pdf}),
+        POLICY,
+    )
+    assert len(sources) == 2
+    page_zero, page_one = sources
+    assert page_zero.declared_sha256 == page_one.declared_sha256
+    assert page_zero.container_page_index != page_one.container_page_index
+
+    membership_zero = door._membership_sha256(page_zero)
+    membership_one = door._membership_sha256(page_one)
+    assert membership_zero != membership_one
+    assert membership_zero != page_zero.declared_sha256
+    assert membership_one != page_one.declared_sha256
+
+    def source_manifest_for(source):
+        return [
+            {
+                "relative_path": source.declared_path,
+                "sha256": source.declared_sha256,
+                "computed_sha256": door._membership_sha256(source),
+                "ordinal": 1,
+                "bytes": source.declared_size,
+            }
+        ]
+
+    common_kwargs = dict(
+        config_digest="c" * 64,
+        adapter_recipes=RECIPES,
+        witness_chairs=CHAIRS,
+        ingress=synthetic_fixture_ingress_record(),
+    )
+    shard_a = RunTree.create(
+        tmp_path / "shard-a", "r1", source_manifest=source_manifest_for(page_zero), **common_kwargs
+    )
+    shard_b = RunTree.create(
+        tmp_path / "shard-b", "r1", source_manifest=source_manifest_for(page_one), **common_kwargs
+    )
+    assert (
+        shard_a.read_run()["corpus_frame_membership"]
+        != shard_b.read_run()["corpus_frame_membership"]
+    )
+
+
 def test_a_directoryless_classic_tiff_keeps_its_ordinal_and_is_named_corrupt(tmp_path):
     """The offset-0 TIFF gap: a real file must never vanish from the census.
 
@@ -668,7 +735,11 @@ def test_a_source_with_no_declared_digest_still_reaches_a_duplicate_report(tmp_p
         SourceEntry(2, "undeclared-b.png", None),
         SourceEntry(3, "distinct.png", None),
     ]
-    tree, context = open_door(tmp_path, sources)
+    tree, context = open_door(
+        tmp_path,
+        sources,
+        computed_digests={1: digest_bytes(data), 2: digest_bytes(data), 3: digest_bytes(other)},
+    )
     assert (
         process_sources(
             context,
@@ -3657,3 +3728,92 @@ def test_a_door_with_the_pre_repair_missing_binding_refuses_before_it_expands_ge
         )
     assert expanded == []
     assert not (run_root / "pre-repair").exists()
+
+
+def test_a_lying_ledger_cannot_seal_two_different_rasters_into_one_membership(tmp_path):
+    """Membership binds the digest the Door took, not the one it was handed.
+
+    The submitted filename ledger is untrusted -- `real_submission` says so where
+    it reads it -- and the Door does not check a declaration against the bytes
+    until `process_sources`, which runs *after* `RunTree.create` has sealed the
+    frame. So a ledger declaring one digest over two genuinely different pages
+    used to seal two shards into a single `corpus_frame_membership`, and the
+    digest-mismatch refusals that followed did not unseal anything: two
+    complementary halves of a corpus would have read as one frame to every
+    corpus-scoped reader (`gold.core.validate_corpus` refuses records from two
+    frames but will happily combine two records that claim the same one).
+
+    `expand_sources` already reads every byte-backed source to sniff and count
+    it, so the honest digest is free and is taken there.
+    """
+    first, second = png(6, 4), png(8, 5)
+    assert first != second
+    lie = digest_bytes(b"a digest neither page has")
+
+    def membership_for(data: bytes) -> str | None:
+        (source,) = expand_sources(
+            [{"relative_path": "page.png", "sha256": lie, "bytes": len(data)}],
+            reader({"page.png": data}),
+            POLICY,
+        )
+        assert source.declared_sha256 == lie, "the declaration is retained as evidence"
+        assert source.computed_sha256 == digest_bytes(data)
+        return door._membership_sha256(source)
+
+    assert membership_for(first) != membership_for(second)
+    assert membership_for(first) == digest_bytes(first)
+    # The same bytes under the same lie are still the same page, or the digest
+    # would be describing the run and not the content.
+    assert membership_for(first) == membership_for(png(6, 4))
+
+
+def test_a_source_with_no_declaration_still_makes_an_honest_membership_claim(tmp_path):
+    """An undeclared source is legal at the door and must not cost the whole run.
+
+    `SourceEntry.declared_sha256` defaults to None and admission is legal without
+    it. When membership bound the declaration, an undeclared page had no digest
+    at all, and `RunTree.create` refuses a page with none -- so one page arriving
+    without a ledger row would have refused every page beside it. The Door's own
+    digest is what it always had; binding that restores the contract.
+    """
+    data = png(6, 4)
+    (source,) = expand_sources(
+        [{"relative_path": "undeclared.png", "sha256": None}],
+        reader({"undeclared.png": data}),
+        POLICY,
+    )
+    assert source.declared_sha256 is None
+    assert door._membership_sha256(source) == digest_bytes(data)
+
+    tree = RunTree.create(
+        tmp_path / "runs",
+        "r1",
+        source_manifest=[
+            {
+                "relative_path": source.declared_path,
+                "sha256": source.declared_sha256,
+                "computed_sha256": door._membership_sha256(source),
+                "ordinal": source.ordinal,
+            }
+        ],
+        config_digest="c" * 64,
+        adapter_recipes=RECIPES,
+        witness_chairs=CHAIRS,
+        ingress=synthetic_fixture_ingress_record(),
+    )
+    assert tree.read_run()["corpus_frame_membership"]["page_digest"]
+
+
+def test_a_source_too_large_to_read_binds_no_digest_it_never_took(tmp_path):
+    """`read_bytes` reads one byte past the ceiling, so an over-sized source's
+    bytes are a prefix. Hashing them would name something that was never a
+    source; that page keeps its ordinal and falls back to its declaration, which
+    `process_sources` refuses by name."""
+    declared = digest_bytes(b"whatever the ledger says")
+    (source,) = expand_sources(
+        [{"relative_path": "huge.png", "sha256": declared, "bytes": MAX_SOURCE_BYTES + 1}],
+        reader({"huge.png": png(6, 4)}),
+        POLICY,
+    )
+    assert source.computed_sha256 is None
+    assert door._membership_sha256(source) == declared
