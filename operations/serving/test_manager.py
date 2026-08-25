@@ -44,6 +44,7 @@ from operations.pod.preflight import (
     load_placement_table,
 )
 
+from . import smoke as smoke_module
 from .assembly import (
     _load_bound_configuration,
     assemble_serving_preflight_callback,
@@ -3688,11 +3689,11 @@ def test_vision_smoke_call_refuses_ambiguous_whitespace_in_a_witness_token(
         VisionSmokeCall(witness)
 
 
-@pytest.mark.parametrize("witness", ["short", " " * 40, 1234, None])
-def test_vision_smoke_call_refuses_a_non_string_blank_or_too_short_witness(
+@pytest.mark.parametrize("witness", ["short", " " * 40, "a" * 129, 1234, None])
+def test_vision_smoke_call_refuses_a_non_string_blank_or_out_of_bounds_witness(
     witness: object,
 ) -> None:
-    with pytest.raises(ValueError, match="non-blank string"):
+    with pytest.raises(ValueError, match="non-blank string between 32 and 128"):
         VisionSmokeCall(witness)  # type: ignore[arg-type]
 
 
@@ -3722,10 +3723,18 @@ def test_vision_smoke_call_refuses_a_utilization_sampler_that_is_not_callable() 
         VisionSmokeCall(PAGE_WITNESS, utilization=())  # type: ignore[arg-type]
 
 
-def test_vision_smoke_call_refuses_a_golden_page_that_is_not_the_declared_format(
+@pytest.mark.parametrize(
+    "fixture_bytes",
+    [
+        b"\xff\xd8\xff\xe0not a png at all",
+        b"\x89PNG\r\n\x1a\nnot a complete png",
+    ],
+)
+def test_vision_smoke_call_refuses_bytes_that_are_not_a_complete_decodable_png(
     tmp_path: Path,
+    fixture_bytes: bytes,
 ) -> None:
-    """No other layer verifies that encoded bytes match the declared PNG media type."""
+    """A signature alone must not send corrupt bytes under an image/png declaration."""
 
     chair = identity("reader", "reader-v1")
     manager, _, _, launcher, _, _ = manager_for(
@@ -3739,11 +3748,69 @@ def test_vision_smoke_call_refuses_a_golden_page_that_is_not_the_declared_format
         model_ids=("reader-api",),
         outputs={"reader-api": f"PAGE-WITNESS: {PAGE_WITNESS}"},
     )
-    fixture = tmp_path / "golden-page.png"
-    fixture.write_bytes(b"\xff\xd8\xff\xe0not a png at all")
+    fixture = tmp_path / f"{PAGE_WITNESS}.png"
+    fixture.write_bytes(fixture_bytes)
     handle = manager.start(chair, TIER)
 
-    with pytest.raises(ServingConfigurationError, match="is not a PNG"):
+    with pytest.raises(ServingConfigurationError) as caught:
+        vision_smoke()(handle, chair, fixture, smoke_placement())
+
+    assert "PNG" in str(caught.value)
+    assert PAGE_WITNESS not in str(caught.value)
+    assert handle.fixture_requests_completed == 0
+    handle.stop()
+    assert launcher.processes[0].terminate_calls == 1
+
+
+def test_vision_smoke_call_refuses_png_geometry_past_the_measured_placement(
+    tmp_path: Path,
+) -> None:
+    chair = identity("reader", "reader-v1")
+    manager, _, _, launcher, _, _ = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+        ),
+        model_ids=("reader-api",),
+        outputs={"reader-api": f"PAGE-WITNESS: {PAGE_WITNESS}"},
+    )
+    fixture = tmp_path / "oversized-golden-page.png"
+    Image.new("L", (2_000, 2_000), color="white").save(fixture, format="PNG")
+    handle = manager.start(chair, TIER)
+
+    with pytest.raises(ServingConfigurationError, match="past the measured placement"):
+        vision_smoke()(handle, chair, fixture, smoke_placement())
+
+    assert handle.fixture_requests_completed == 0
+    handle.stop()
+    assert launcher.processes[0].terminate_calls == 1
+
+
+def test_vision_smoke_call_bounds_encoded_png_bytes_before_dispatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    chair = identity("reader", "reader-v1")
+    manager, _, _, launcher, _, _ = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+        ),
+        model_ids=("reader-api",),
+        outputs={"reader-api": f"PAGE-WITNESS: {PAGE_WITNESS}"},
+    )
+    fixture = tmp_path / "golden-page.png"
+    fixture_bytes = write_golden_page(fixture)
+    handle = manager.start(chair, TIER)
+    monkeypatch.setattr(smoke_module, "_MAXIMUM_PNG_BYTES", len(fixture_bytes) - 1)
+
+    with pytest.raises(ServingConfigurationError, match="byte smoke request bound"):
         vision_smoke()(handle, chair, fixture, smoke_placement())
 
     assert handle.fixture_requests_completed == 0
@@ -3786,7 +3853,7 @@ def test_vision_smoke_call_checks_the_format_of_the_sealed_request_snapshot(
         staticmethod(lambda **unused: stale_calibration),
     )
 
-    with pytest.raises(ServingConfigurationError, match="is not a PNG"):
+    with pytest.raises(ServingConfigurationError, match="are not a PNG"):
         call(handle, chair, fixture, smoke_placement())
 
     assert handle.requests_completed == 0
@@ -3813,6 +3880,32 @@ def test_vision_smoke_call_refuses_an_untyped_utilization_sample_tuple(tmp_path:
     call = VisionSmokeCall(PAGE_WITNESS, utilization=lambda: ("71",))  # type: ignore[arg-type]
 
     with pytest.raises(ServingConfigurationError, match="tuple of UtilizationSample values"):
+        call(handle, chair, fixture, smoke_placement())
+
+    handle.stop()
+    assert launcher.processes[0].terminate_calls == 1
+
+
+def test_vision_smoke_call_bounds_utilization_evidence_for_one_request(tmp_path: Path) -> None:
+    chair = identity("reader", "reader-v1")
+    manager, _, _, launcher, _, _ = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+        ),
+        model_ids=("reader-api",),
+        outputs={"reader-api": f"PAGE-WITNESS: {PAGE_WITNESS}"},
+    )
+    fixture = tmp_path / "golden-page.png"
+    write_golden_page(fixture)
+    handle = manager.start(chair, TIER)
+    sample = UtilizationSample("71", "31")
+    call = VisionSmokeCall(PAGE_WITNESS, utilization=lambda: (sample,) * 1_025)
+
+    with pytest.raises(ServingConfigurationError, match="more than 1024 samples"):
         call(handle, chair, fixture, smoke_placement())
 
     handle.stop()

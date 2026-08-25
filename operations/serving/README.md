@@ -253,19 +253,24 @@ answer text. The durable smoke record therefore carries only the witness digest.
 fixture author rendered it into the page's pixels, so that author owns its
 entropy, lifetime, and rotation. The caller draws it from a CSPRNG over the
 URL-safe ASCII token alphabet. This callable refuses only values that cannot do
-the job whatever their origin: fewer than 32 characters, blank values,
+the job whatever their origin: outside the 32-to-128-character bound, blank values,
 whitespace, non-token characters, or a value present in the prompt. It cannot
 measure how a supplied string was generated. A weak or reused witness can be
 guessed or memorized and make the smoke falsely green without a page read;
 entropy and rotation are preconditions supplied by the fixture author.
 
-The request declares `image/png` and the sealed request bytes are checked
-against the PNG signature, because nothing else on this path inspects them for
-format — `AdapterCalibration` binds their digest and `ServingSmokeReader`
-re-hashes the local fixture, and `PreflightRunner` takes any `Path`. Checking
+The request declares `image/png` and the sealed request bytes are checked as a
+complete, decodable PNG under the measured placement's pixel bound, because
+nothing else on this path inspects them for format — `AdapterCalibration` binds
+their digest and `ServingSmokeReader` re-hashes the local fixture, and
+`PreflightRunner` takes any `Path`. Checking
 the request snapshot matters: reopening the path could validate replacement
 bytes after the request was assembled. A non-PNG golden page is refused by name
 rather than travelling under a declaration the bytes do not support.
+
+The callable accepts at most 1,024 typed utilization samples for its one request.
+That is far beyond the ordinary instrument's needs while keeping a broken sampler
+from amplifying one smoke result into an unbounded durable record.
 
 `SmokeResult.nonempty` reports the parsed outputs independently of
 `shape_valid`: multiple nonempty choices fail shape and format without falsely
