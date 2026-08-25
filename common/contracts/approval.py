@@ -114,13 +114,21 @@ def build_approval_record(
     timestamp: str,
 ) -> dict[str, Any]:
     """Build a well-formed approval record, self-hash included."""
+    if type(action) is not str:
+        raise ApprovalRefusal(
+            "an approval action is not an exact string from the closed vocabulary"
+        )
     if action not in ACTIONS:
         raise ApprovalRefusal(f"action {action!r} is not one of {list(ACTIONS)}")
-    if not subject_ids or any(
-        not isinstance(subject, str) or not subject.strip() for subject in subject_ids
+    if (
+        type(subject_ids) is not list
+        or not subject_ids
+        or any(type(subject) is not str or not subject.strip() for subject in subject_ids)
     ):
         raise ApprovalRefusal("an approval that names no subject approves nothing")
-    if not reason or not reason.strip():
+    if len(subject_ids) != len(set(subject_ids)):
+        raise ApprovalRefusal("an approval may name each subject only once")
+    if type(reason) is not str or not reason.strip():
         raise ApprovalRefusal(
             "an approval with no reason is unreviewable later; the reason is the "
             "part a reader six weeks out actually needs"
@@ -133,7 +141,7 @@ def build_approval_record(
     # The last asymmetry between this and the validator. The validator refuses a
     # blank or non-string timestamp; this did not check it at all, so a caller
     # could seal `timestamp="   "` here and no reader would ever accept it back.
-    if not isinstance(timestamp, str) or not timestamp.strip():
+    if type(timestamp) is not str or not timestamp.strip():
         raise ApprovalRefusal(
             "an approval with no timestamp cannot be reviewed later; when it was given "
             "is half of what makes it checkable against the version it approved"
@@ -158,23 +166,33 @@ def validate_approval_record(record: Any) -> dict[str, Any]:
     missing = [field for field in _REQUIRED if field not in record]
     if missing:
         raise ApprovalRefusal(f"approval record is missing {missing}")
-    if record.get("schema") != "approval-record.v0":
-        raise ApprovalRefusal(f"approval record has schema {record.get('schema')!r}")
-    if record["approver"] != APPROVER:
+    schema = record.get("schema")
+    if type(schema) is not str:
+        raise ApprovalRefusal("approval record schema is not an exact string")
+    if schema != "approval-record.v0":
+        raise ApprovalRefusal(f"approval record has schema {schema!r}")
+    approver = record["approver"]
+    if type(approver) is not str:
+        raise ApprovalRefusal("approval record approver is not an exact string")
+    if approver != APPROVER:
         raise ApprovalRefusal(
-            f"approval record names approver {record['approver']!r}; only "
+            f"approval record names approver {approver!r}; only "
             f"{APPROVER} approves, and no agent stands in for him"
         )
-    if record["action"] not in ACTIONS:
-        raise ApprovalRefusal(f"approval record has action {record['action']!r}")
+    action = record["action"]
+    if type(action) is not str:
+        raise ApprovalRefusal("approval record action is not an exact string")
+    if action not in ACTIONS:
+        raise ApprovalRefusal(f"approval record has action {action!r}")
+    subjects = record["subject_ids"]
     if (
-        not isinstance(record["subject_ids"], list)
-        or not record["subject_ids"]
-        or any(
-            not isinstance(subject, str) or not subject.strip() for subject in record["subject_ids"]
-        )
+        type(subjects) is not list
+        or not subjects
+        or any(type(subject) is not str or not subject.strip() for subject in subjects)
     ):
         raise ApprovalRefusal("approval record names no subjects")
+    if len(subjects) != len(set(subjects)):
+        raise ApprovalRefusal("approval record names a subject more than once")
     # The validator is the gate for records read off disk, so it has to be at
     # least as strict as the builder. It was not: the builder refuses an empty
     # reason or target version, and this only checked that the keys existed — so a
@@ -184,7 +202,7 @@ def validate_approval_record(record: Any) -> dict[str, Any]:
     # binding this module exists for would then name no target at all.
     for field in ("reason", "timestamp"):
         value = record[field]
-        if not isinstance(value, str) or not value.strip():
+        if type(value) is not str or not value.strip():
             raise ApprovalRefusal(
                 f"approval record field {field!r} is empty or not a string; an "
                 "approval that does not say what it approved, why, or when is "
@@ -210,7 +228,7 @@ def validate_approval_record(record: Any) -> dict[str, Any]:
 
 def _is_sha256(value: Any) -> bool:
     return (
-        isinstance(value, str)
+        type(value) is str
         and len(value) == 64
         and all(character in "0123456789abcdef" for character in value)
     )

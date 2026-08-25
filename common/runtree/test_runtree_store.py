@@ -857,6 +857,38 @@ def test_a_manifest_describes_what_the_tree_actually_holds(tmp_path):
     assert manifest["blobs"] == [digest_bytes(b"a crop")]
 
 
+def test_a_manifest_metadata_and_digest_come_from_one_byte_snapshot(tmp_path, monkeypatch):
+    """A replacement at the read seam may not splice two artifacts into one row."""
+    tree = make_run(tmp_path)
+    published = tree.publish_artifact(make_envelope(outcome="proposed"))
+    artifact_path = tree.resolve(published.relative_path)
+    replacement = canonical_bytes(make_envelope(outcome="held"))
+    real_read_bytes = Path.read_bytes
+
+    def read_replacement(path):
+        if path == artifact_path:
+            return replacement
+        return real_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", read_replacement)
+    row = tree.build_manifest(DESIGNATOR)["artifacts"][0]
+
+    assert row["outcome"] == "held"
+    assert row["sha256"] == digest_bytes(replacement)
+
+
+def test_a_manifest_refuses_an_artifact_symlink_that_leaves_the_run_tree(tmp_path):
+    tree = make_run(tmp_path)
+    published = tree.publish_artifact(make_envelope())
+    artifact_path = tree.resolve(published.relative_path)
+    outside = tmp_path / "outside-artifact.json"
+    artifact_path.replace(outside)
+    artifact_path.symlink_to(outside)
+
+    with pytest.raises(SchemaRefusal, match="outside the run tree"):
+        tree.build_manifest(DESIGNATOR)
+
+
 def test_a_deleted_manifest_rebuilds_identically(tmp_path):
     """A manifest is a rebuildable inventory, never the only evidence that
     something happened."""

@@ -286,6 +286,43 @@ def test_an_approval_must_name_what_it_approved():
             build_approval_record(**kwargs)
 
 
+def test_the_approval_builder_does_not_split_one_string_into_character_subjects():
+    with pytest.raises(ApprovalRefusal, match="names no subject"):
+        build_approval_record(
+            subject_ids="act_0123456789abcdef",
+            action="exclusion",
+            reason="because",
+            target_version_hash="d" * 64,
+            timestamp="2026-07-30T23:40:00Z",
+        )
+
+
+def test_duplicate_approval_subjects_are_refused_on_write_and_read():
+    kwargs = {
+        "subject_ids": ["act_0123456789abcdef", "act_0123456789abcdef"],
+        "action": "exclusion",
+        "reason": "because",
+        "target_version_hash": "d" * 64,
+        "timestamp": "2026-07-30T23:40:00Z",
+    }
+    with pytest.raises(ApprovalRefusal, match="only once"):
+        build_approval_record(**kwargs)
+
+    record = sound_approval()
+    record["subject_ids"] *= 2
+    record["self_hash"] = self_hash(record)
+    with pytest.raises(ApprovalRefusal, match="more than once"):
+        validate_approval_record(record)
+
+
+def test_a_huge_non_string_action_reaches_a_printable_approval_refusal():
+    record = sound_approval()
+    record["action"] = 10**5000
+    with pytest.raises(ApprovalRefusal, match="action is not an exact string") as caught:
+        validate_approval_record(record)
+    str(caught.value).encode("utf-8")
+
+
 def test_an_unknown_action_is_refused():
     with pytest.raises(ApprovalRefusal):
         build_approval_record(

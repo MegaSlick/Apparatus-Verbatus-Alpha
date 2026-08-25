@@ -149,6 +149,24 @@ def test_a_well_formed_zero_width_gap_validates():
     assert annotations.validate_gaps(gaps, "abcxyz") == gaps
 
 
+@pytest.mark.parametrize(
+    "position",
+    [
+        pytest.param(10**5000, id="huge-int"),
+        pytest.param([], id="unhashable-list"),
+        pytest.param(_UnhashableString("internal"), id="unhashable-string-subclass"),
+        pytest.param(_HostileReprString("sideways"), id="hostile-repr-string-subclass"),
+    ],
+)
+def test_a_noncanonical_gap_position_reaches_a_printable_refusal(position):
+    with pytest.raises(SchemaRefusal, match="position has type") as caught:
+        annotations.validate_gaps(
+            [{"position": position, "start": 1, "end": 1, "witness_evidence": []}],
+            "abc",
+        )
+    str(caught.value).encode("utf-8")
+
+
 def test_the_firewall_refuses_a_fake_seat_that_fills_a_gap_from_testimony():
     """The attack this schema exists to catch: a "helpful" reader copies a
     witness's exact reported string into the gap's own span inside `text`,

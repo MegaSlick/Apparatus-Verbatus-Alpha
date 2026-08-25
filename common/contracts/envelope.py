@@ -77,6 +77,10 @@ def build_envelope(
     that writes an artifact nobody can read has already lost the work, and finding
     out at the consumer means the evidence of what went wrong is a stage away.
     """
+    # Validate before sorting: ``dict.get`` and key comparison are uses of the
+    # references, and malformed producer input belongs at the same named schema
+    # boundary as a malformed record read from disk.
+    validate_input_refs(inputs)
     envelope: dict[str, Any] = {
         "schema": SCHEMA_LABEL,
         "run_id": run_id,
@@ -217,18 +221,23 @@ def validate_input_refs(inputs: Any) -> None:
     # be counted twice in the inputs, which is the double-count this refusal exists
     # to prevent.
     seen: dict[str, str] = {}
+    portable_spellings: dict[str, str] = {}
     for ref in inputs:
-        if not isinstance(ref, dict):
+        if type(ref) is not dict:
             raise SchemaRefusal("an input reference is not an object")
         path, sha = ref.get("relative_path"), ref.get("sha256")
-        if not isinstance(path, str) or not path:
+        if type(path) is not str or not path:
             raise SchemaRefusal("an input reference has no relative_path")
-        if path.startswith("/") or ".." in path.split("/"):
+        if "\0" in path:
+            raise SchemaRefusal("an input reference relative_path contains a NUL byte")
+        segments = path.split("/")
+        if any(segment in ("", ".", "..") for segment in segments):
             raise SchemaRefusal(
-                f"input reference {path!r} escapes the run tree; references are "
-                "relative to the run root so a tree stays movable and verifiable"
+                f"input reference {path!r} is not a canonical run-relative path; empty, "
+                "current-directory, and parent-directory segments are refused so one file "
+                "has one accounting name"
             )
-        if not isinstance(sha, str) or len(sha) != 64 or not _is_hex(sha):
+        if type(sha) is not str or len(sha) != 64 or not _is_hex(sha):
             raise SchemaRefusal(f"input reference {path!r} has no sha256 digest")
         if path in seen:
             conflict = (
@@ -238,7 +247,15 @@ def validate_input_refs(inputs: Any) -> None:
                 else ""
             )
             raise SchemaRefusal(f"input reference {path!r} is listed twice{conflict}")
+        portable = path.casefold()
+        if portable in portable_spellings:
+            raise SchemaRefusal(
+                f"input references {portable_spellings[portable]!r} and {path!r} collide on "
+                "a case-insensitive filesystem; one physical file may not acquire two "
+                "accounting names"
+            )
         seen[path] = sha
+        portable_spellings[portable] = path
 
 
 def verify_input_bytes(ref: dict[str, str], data: bytes) -> None:

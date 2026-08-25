@@ -273,20 +273,9 @@ def act_attachment_view(context, act: dict[str, Any], testimonia: list[dict]) ->
         or not isinstance(attachments, list)
     ):
         raise SchemaRefusal("an act-attachment record has no attachment list")
-    configured = set(context.witness_chairs)
-    chairs = [
-        attachment.get("chair") if isinstance(attachment, dict) else None
-        for attachment in attachments
-    ]
-    if len(chairs) != len(set(chairs)) or set(chairs) != configured:
-        raise FatalAccounting(
-            f"act {act_id} attachment chairs do not equal this run's configured witnesses"
-        )
-    # This run-global declaration must fail before per-attachment diagnostics
-    # can misattribute its malformation to a chair record.
-    declared_page_chairs = declared_page_witness_chairs(context)
-    page_witness_count = 0
-    comparison_views: dict[str, str] = {}
+    # Validate every row before set construction. An attachment is untrusted
+    # stage evidence; an unhashable chair value must reach this named schema
+    # refusal rather than escaping from duplicate accounting as ``TypeError``.
     for attachment in attachments:
         if (
             not isinstance(attachment, dict)
@@ -300,12 +289,24 @@ def act_attachment_view(context, act: dict[str, Any], testimonia: list[dict]) ->
                 "alignment",
                 "span",
             }
-            or not isinstance(attachment.get("chair"), str)
+            or type(attachment.get("chair")) is not str
             or not isinstance(attachment.get("page_witness"), bool)
             or not isinstance(attachment.get("attached"), bool)
             or not isinstance(attachment.get("content_health"), dict)
         ):
             raise SchemaRefusal("an act-attachment record has a malformed attachment")
+    configured = set(context.witness_chairs)
+    chairs = [attachment["chair"] for attachment in attachments]
+    if len(chairs) != len(set(chairs)) or set(chairs) != configured:
+        raise FatalAccounting(
+            f"act {act_id} attachment chairs do not equal this run's configured witnesses"
+        )
+    # This run-global declaration must fail before per-attachment diagnostics
+    # can misattribute its malformation to a chair record.
+    declared_page_chairs = declared_page_witness_chairs(context)
+    page_witness_count = 0
+    comparison_views: dict[str, str] = {}
+    for attachment in attachments:
         span = attachment["span"]
         characters = attachment["content_health"].get("characters")
         if attachment["attached"] and not attachment["page_witness"]:

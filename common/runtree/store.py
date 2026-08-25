@@ -762,9 +762,16 @@ class RunTree:
         artifacts_root = stage_root / ARTIFACTS_DIR
         if artifacts_root.exists():
             for path in sorted(artifacts_root.rglob("*.json")):
-                record = validate_envelope(_read_json(path))
-                self._verify_artifact_run(record)
                 relative_path = str(path.relative_to(self.root))
+                # Resolve every enumerated file through the same containment gate
+                # as direct reads, then parse and digest one byte snapshot. Reading
+                # the JSON first and the digest later let a replacement between
+                # those operations publish metadata for one artifact with the
+                # digest of another.
+                resolved_path = self.resolve(relative_path)
+                data = resolved_path.read_bytes()
+                record = validate_envelope(_decode_json_bytes(resolved_path, data))
+                self._verify_artifact_run(record)
                 self._verify_artifact_path(relative_path, record)
                 # Door and Exemplar deliberately share one physical directory:
                 # a Door admission is part of what Exemplar must account for.
@@ -780,7 +787,7 @@ class RunTree:
                         "subject_id": record["subject_id"],
                         "outcome": record["outcome"],
                         "relative_path": relative_path,
-                        "sha256": digest_bytes(path.read_bytes()),
+                        "sha256": digest_bytes(data),
                     }
                 )
         blobs_root = stage_root / BLOBS_DIR
@@ -1065,6 +1072,14 @@ def _read_json(path: Path) -> Any:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError, RecursionError) as error:
+        raise SchemaRefusal(f"{path} could not be read as an artifact: {error}") from error
+
+
+def _decode_json_bytes(path: Path, data: bytes) -> Any:
+    """Decode an already-read artifact snapshot under the store's named refusal."""
+    try:
+        return json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError) as error:
         raise SchemaRefusal(f"{path} could not be read as an artifact: {error}") from error
 
 

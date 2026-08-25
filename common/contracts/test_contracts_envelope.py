@@ -289,6 +289,56 @@ def test_a_reference_escaping_the_run_tree_is_refused():
             validate_envelope(sound_envelope(inputs=[{"relative_path": bad, "sha256": "a" * 64}]))
 
 
+@pytest.mark.parametrize(
+    "alias",
+    (
+        "1_exemplar//blobs/page-1",
+        "1_exemplar/./blobs/page-1",
+        "1_exemplar/blobs/page-1/",
+    ),
+)
+def test_a_noncanonical_path_alias_is_refused(alias):
+    """One physical input must have one spelling in duplicate accounting."""
+    with pytest.raises(SchemaRefusal, match="canonical run-relative path"):
+        validate_envelope(sound_envelope(inputs=[{"relative_path": alias, "sha256": "a" * 64}]))
+
+
+def test_a_nul_path_is_refused_before_it_reaches_the_filesystem():
+    with pytest.raises(SchemaRefusal, match="NUL byte"):
+        validate_envelope(
+            sound_envelope(inputs=[{"relative_path": "proof/page\0-1.png", "sha256": "a" * 64}])
+        )
+
+
+def test_case_variant_input_paths_cannot_split_accounting_on_default_apfs():
+    with pytest.raises(SchemaRefusal, match="case-insensitive filesystem"):
+        validate_envelope(
+            sound_envelope(
+                inputs=[
+                    {"relative_path": "proof/Page-1.png", "sha256": "a" * 64},
+                    {"relative_path": "proof/page-1.png", "sha256": "a" * 64},
+                ]
+            )
+        )
+
+
+def test_build_refuses_a_malformed_input_before_sorting_uses_it():
+    """Output validation must precede ``dict.get`` in the stable-order sort."""
+    with pytest.raises(SchemaRefusal, match="input reference is not an object"):
+        build_envelope(
+            run_id="r1",
+            artifact_id=artifact_id("designator", "proposal", "pg_0123456789abcdef"),
+            subject_id="pg_0123456789abcdef",
+            stage="designator",
+            kind="proposal",
+            outcome="proposed",
+            config_digest="c" * 64,
+            adapter_revision="fake-designator-v0",
+            inputs=[["not", "a", "reference"]],
+            payload={},
+        )
+
+
 def test_bytes_that_do_not_match_the_sealed_reference_are_refused():
     verify_input_bytes(PAGE_REF, PAGE_BYTES)
     with pytest.raises(SchemaRefusal) as caught:

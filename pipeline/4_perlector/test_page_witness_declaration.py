@@ -119,3 +119,40 @@ def test_hostile_but_encodable_chair_strings_are_refused_printably(chair):
     with pytest.raises(SchemaRefusal) as caught:
         perlector.declared_page_witness_chairs(_context([chair]))
     str(caught.value).encode("utf-8")
+
+
+def test_an_unhashable_attachment_chair_is_refused_before_duplicate_accounting(monkeypatch):
+    attachment = {
+        "chair": [],
+        "page_witness": False,
+        "testimonium_ref": {},
+        "attached": False,
+        "content_health": {},
+        "alignment": None,
+        "span": None,
+    }
+    record = {
+        "payload": {
+            "act_key": "a1",
+            "attempt_ordinal": 1,
+            "attachments": [attachment],
+        }
+    }
+    tree = SimpleNamespace(
+        build_manifest=lambda stage: {
+            "artifacts": [
+                {"kind": "act-attachment", "subject_id": "act_0123456789abcdef", "artifact_id": "x"}
+            ]
+        },
+        read_artifact=lambda stage, kind, artifact_id: record,
+    )
+    context = _context([], chairs=("attestator_1",))
+    context.tree = tree
+    monkeypatch.setattr(perlector, "latest_attempt", lambda records, label, operation: records[0])
+
+    with pytest.raises(SchemaRefusal, match="malformed attachment"):
+        perlector.act_attachment_view(
+            context,
+            {"act_id": "act_0123456789abcdef", "act_key": "a1"},
+            [{"payload": {"chair": "attestator_1"}}],
+        )

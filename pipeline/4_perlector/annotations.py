@@ -101,6 +101,11 @@ def validate_gaps(gaps: Any, text: str) -> list[dict]:
         if not isinstance(gap, dict) or set(gap) != _GAP_FIELDS:
             raise SchemaRefusal(f"gaps[{index}] is not the closed gap schema")
         position = gap.get("position")
+        if type(position) is not str:
+            raise SchemaRefusal(
+                f"gaps[{index}] position has type {type(position).__name__!a}, not an exact "
+                f"string position from {sorted(GAP_POSITIONS)}"
+            )
         if position not in GAP_POSITIONS:
             raise SchemaRefusal(
                 f"gaps[{index}] position {position!r} is not one of {sorted(GAP_POSITIONS)}"
