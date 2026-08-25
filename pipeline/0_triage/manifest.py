@@ -32,9 +32,8 @@ MANIFEST_SCHEMA: Final = "triage-decision-manifest-v1"
 CLUSTER_SCHEMA: Final = "triage-re-shoot-cluster-v1"
 CONFIDENCE_ORDINALS: Final = range(0, 5)
 COLOUR_MODES: Final = ("keep", "grayscale", "rgb", "bitonal")
-# Unit 6A repair to the Unit 5 landed contract: a deterministic offline producer
-# is neither a person, a model, nor ScanTailor. Like a model/ScanTailor actor it
-# must carry a non-blank resolved identity and revision; only a human has no revision.
+# A deterministic offline producer is a distinct provenance role because it makes no
+# model call. Like other non-human actors, it carries a resolved identity and revision.
 ACTOR_KINDS: Final = ("human", "model", "scantailor", "producer")
 SCANTAILOR_IDENTITY: Final = "ScanTailor Advanced"
 SPLIT_OPERATION_ORDER: Final = "region-crop-rotate"

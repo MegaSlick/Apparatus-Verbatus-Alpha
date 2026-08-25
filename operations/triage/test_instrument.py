@@ -139,13 +139,7 @@ def test_complementary_shape_is_flagged_but_never_asserted_as_a_link():
 
 
 def test_a_pair_at_exactly_tau_link_is_still_only_recorded_candidate_evidence():
-    """Adversarial construction (Unit 6A audit, angle 1): a pair engineered to sit
-    exactly on the declared ``link_agreement_per_mille`` boundary must still come
-    back as a closed candidate-evidence record with a ``verdict`` field and
-    nothing that could be mistaken for an asserted link, cluster id, or manifest
-    row — the boundary is where a link-shaped shortcut would be most tempting to
-    take, so it is exactly where the no-link property must be checked.
-    """
+    """At the threshold, evidence remains a candidate record with no link shape."""
     config = instrument.load_config()
     grid_cells = config.grid_columns * config.grid_rows
     agree_target = -(-config.link_agreement_per_mille * grid_cells // 1000)  # ceil(9/10 * cells)
@@ -179,9 +173,7 @@ def test_a_pair_at_exactly_tau_link_is_still_only_recorded_candidate_evidence():
         evidence["agreeing_cells"] * 1000
         >= config.link_agreement_per_mille * evidence["overlapping_cells"]
     )
-    # Spelled out rather than read from the constant under test: this is the
-    # adversarial boundary, so the field set is checked against a list a reader
-    # can see, not against the module's own idea of what it emits.
+    # An independent literal prevents EVIDENCE_FIELDS from hiding link-shaped output.
     assert set(evidence) == {
         "schema",
         "instrument_config_sha256",
@@ -309,15 +301,8 @@ def test_two_tier_cost_at_the_real_corpus_order_of_magnitude_is_explicit():
     assert len(selection.pairs) == 14_322
 
 
-# --- Unit 6A audit (Opus, seat 3), angle 1: the signature's blindness map -------------
-#
-# The consult's §3.1 argument — complementary frames share no signal — cuts both ways.
-# These four synthetic register cases are the converse: frames that share *too much*
-# signal.  A parish register is a printed ruled form, so its blank space, its rules,
-# and its column geometry are identical across every opening of the book; only the ink
-# differs.  The cases below are constructed from that fact and their recorded numbers
-# are what the instrument actually produced, not what it ought to produce.  They are
-# pinned so a later seat that tunes a threshold sees at once which of them moved.
+# Printed form geometry is shared across different openings, so threshold changes must
+# preserve visibility into cases where the signature sees too much common structure.
 
 
 def ruled_form() -> Image.Image:
@@ -344,7 +329,7 @@ def entry_block(image: Image.Image, box: tuple[int, int, int, int], ink: int) ->
 def handwriting(image: Image.Image, seed: int) -> Image.Image:
     """Short thin strokes along each ruled row: one printed form, different ink.
 
-    Deterministic rather than random so the pinned numbers below are reproducible.
+    The deterministic seed keeps the pinned measurements reproducible.
     """
     draw = ImageDraw.Draw(image)
     for row in range(18):
@@ -368,14 +353,10 @@ def verdict_for(left: Image.Image, right: Image.Image, config) -> dict:
 
 
 def test_two_different_blank_frames_of_one_ruled_form_are_recorded_near_duplicate():
-    """The false near-duplicate the corpus guarantees, and the field that catches it.
+    """Different blank ruled frames are indistinguishable at this signature grid.
 
-    A reel of parish registers is full of blank and near-blank ruled frames.  Two of
-    them are two *different* frames of the book, and the 64×48 mean+ink signature
-    cannot tell them apart from one frame shot twice: the record is identical in every
-    field.  No deterministic pixel method at this grid can do better — which is why the
-    instrument must not let the verdict be read as identity.  Every emitted record
-    carries the named reason, and the sealed recipe carries the blindness statement.
+    The verdict therefore needs a record-local reason that prevents agreement from
+    being interpreted as page identity.
     """
     config = instrument.load_config()
     evidence = verdict_for(ruled_form(), ruled_form(), config)
@@ -383,8 +364,6 @@ def test_two_different_blank_frames_of_one_ruled_form_are_recorded_near_duplicat
     assert evidence["agreeing_cells"] == evidence["overlapping_cells"] == 3072
     assert evidence["disagreeing_component_count"] == 0
     assert evidence["ink_count_distance_per_mille"] == 0
-    # Identical to the record for one frame compared with itself: the instrument is
-    # blind here, and says so in the record rather than in a comment.
     assert evidence["thresholds"]["near_duplicate_reason"] == instrument.NEAR_DUPLICATE_REASON
     assert evidence["thresholds"]["near_duplicate_reason"] != "identity"
     assert "link" not in evidence and "cluster_id" not in evidence
@@ -412,10 +391,8 @@ def test_ink_magnitude_separates_a_written_page_from_the_same_blank_form():
 def test_two_different_openings_with_co_located_ink_agree_in_every_cell():
     """Same printed form, same layout of entries, different openings → near-duplicate.
 
-    This is the register case in its sharpest form: the pages differ in *what* is
-    written, not in where.  Agreement is total, the ink distance is zero, and nothing
-    deterministic at this grid separates them.  The instrument's obligation is to
-    record a candidate and refuse to assert a link — never to be right here.
+    The pages differ in what is written, not where. Nothing at this grid separates
+    them, so the instrument may record a candidate but never assert a link.
     """
     config = instrument.load_config()
     one = entry_block(ruled_form(), (60, 60, 708, 150), ink=40)
@@ -427,19 +404,16 @@ def test_two_different_openings_with_co_located_ink_agree_in_every_cell():
 
 
 def test_different_openings_of_one_form_with_ordinary_handwriting_are_unrelated():
-    """The saving grace, recorded so a later threshold change cannot lose it silently.
+    """The component gate separates scattered handwriting despite high agreement.
 
-    Ordinary handwriting scatters its disagreement across many small components, and
-    the ≤2-component condition — not the agreement threshold, which this pair clears —
-    is what keeps two different written openings out of near-duplicate.  Loosening the
-    component condition without measuring would turn this row of the map red.
+    The pair clears the agreement threshold, so loosening the component condition
+    without measurement would admit different written openings as near-duplicates.
     """
     config = instrument.load_config()
     evidence = verdict_for(handwriting(ruled_form(), 2), handwriting(ruled_form(), 9), config)
     assert evidence["verdict"] == "unrelated"
     assert evidence["disagreeing_component_count"] == 125
     assert evidence["agreeing_cells"] == 2928
-    # Agreement alone would have admitted it; the component condition is load-bearing.
     assert (
         evidence["agreeing_cells"] * 1000
         >= config.link_agreement_per_mille * evidence["overlapping_cells"]
@@ -561,7 +535,7 @@ def test_persisted_evidence_cannot_drop_its_reason_or_unmeasured_status():
 
 
 def test_evidence_carries_the_configuration_digest_that_produced_it():
-    """The join a Unit 6B confirmation needs: which instrument said this.
+    """Evidence and its sealed recipe join through the configuration digest.
 
     The threshold snapshot is a copy, not an identity — two configurations can share
     every threshold and differ in grid, proxy edge, or candidate window.  Without the
@@ -576,9 +550,6 @@ def test_evidence_carries_the_configuration_digest_that_produced_it():
         == instrument.producer_recipe(config)["instrument_config_sha256"]
     )
     assert tuple(evidence) == instrument.EVIDENCE_FIELDS
-
-
-# --- Unit 6A audit (Opus, seat 3), angle 5: evidence-record conservation --------------
 
 
 def frames(*sizes: tuple[int, int]) -> list:
@@ -605,7 +576,7 @@ def test_every_selected_pair_yields_exactly_one_evidence_record():
     proxies = frames(*[(256, 192)] * 5)
     evidence, manifest = instrument.candidate_evidence(proxies, config)
     cost = manifest["candidate_cost"]
-    assert len(evidence) == cost["unique_candidate_pairs"] == 10  # every pair, W=12 > 5
+    assert len(evidence) == cost["unique_candidate_pairs"] == 10
     assert manifest["emitted_evidence_records"] == 10
     assert cost["dimension_refused_pairs"] == 0
     assert manifest["frame_count"] == 5
@@ -685,8 +656,7 @@ def test_a_pair_refused_for_unequal_dimensions_is_named_not_dropped():
 
     Three reels need not share frame dimensions, and the pair the window reached but
     could not compare is exactly the fact an operator needs in order to know that a
-    reel boundary, not the corpus, bounded the instrument's reach.  The first build
-    skipped such a pair inside the selector, where it left no trace at all.
+    reel boundary, not the corpus, bounded the instrument's reach.
     """
     config = instrument.load_config()
     proxies = frames((256, 192), (256, 192), (320, 192))
@@ -698,7 +668,6 @@ def test_a_pair_refused_for_unequal_dimensions_is_named_not_dropped():
         [proxies[0].source_frame_sha256, proxies[2].source_frame_sha256],
         [proxies[1].source_frame_sha256, proxies[2].source_frame_sha256],
     ]
-    # The window reached all three pairs; none of them vanished.
     assert (
         manifest["candidate_cost"]["submission_window_pairs"]
         == manifest["candidate_cost"]["unique_candidate_pairs"]
@@ -749,10 +718,6 @@ def test_an_ink_count_is_within_cell_contrast_and_not_an_amount_of_ink():
     evidence = instrument.compare_signatures(blank.signature, solid.signature, config)
     assert evidence["ink_count_total_left"] == evidence["ink_count_total_right"] == 0
     assert evidence["ink_count_distance_per_mille"] == 0
-    # The mean field, not the ink count, is what separates them, and every cell
-    # disagrees in one component — the complementary shape. The flag is honest here:
-    # a frame this far from its neighbour is one a human should look at. What must
-    # not happen is a reader taking the two zero totals for "neither page has ink".
     assert evidence["verdict"] == "complementary-candidate"
     assert evidence["agreeing_cells"] == 0
     assert evidence["disagreeing_component_count"] == 1
@@ -782,9 +747,8 @@ def test_a_swapped_evidence_record_is_refused_even_though_the_count_is_right():
 def test_repeated_frame_identity_cannot_turn_one_digest_pair_into_many_records():
     """Index uniqueness is not evidence-identity uniqueness.
 
-    Three proxy entries carrying one digest used to emit three records for the
-    same digest pair and report all three as unique candidates. A pass must name
-    each submitted master once before pair conservation can mean what it says.
+    A pass must name each submitted master once before pair conservation can
+    distinguish multiple index pairs from multiple evidence identities.
     """
     config = instrument.load_config()
     proxies = [

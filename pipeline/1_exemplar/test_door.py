@@ -807,7 +807,7 @@ def test_expansion_ordinals_are_stable_by_filename_and_page_index():
 
 
 def test_triage_producer_recipe_is_the_third_bound_document_path(tmp_path):
-    """The pre-door recipe is parsed once and its document digest reaches the run."""
+    """Validated recipe bytes supply the digest that the Door later binds."""
     from operations.triage.instrument import load_config, producer_recipe
 
     data = png(4, 3)
@@ -858,8 +858,7 @@ def test_triage_producer_recipe_is_the_third_bound_document_path(tmp_path):
 
 
 def test_a_missing_triage_producer_recipe_path_is_a_named_read_refusal(tmp_path):
-    """Angle 4 (Unit 6A audit): the third document path must refuse by name,
-    not silently proceed as though no recipe had been asked for."""
+    """A requested recipe path must refuse by name when it cannot be read."""
     manifest_path = tmp_path / "manifest.json"
     manifest_path.write_text(
         json.dumps(
@@ -887,8 +886,7 @@ def test_a_non_json_triage_producer_recipe_names_its_exact_parse_failure(tmp_pat
 
 
 def test_a_malformed_triage_producer_recipe_is_refused_by_name(tmp_path):
-    """A recipe document that fails Unit 6A's own closed-schema check must refuse
-    with that specific reason, not merely fail to parse."""
+    """A recipe that fails its closed schema names validation, not JSON parsing."""
     manifest_path = tmp_path / "manifest.json"
     manifest_path.write_text(
         json.dumps(
@@ -3091,20 +3089,11 @@ def test_an_undecodable_split_frame_keeps_every_declared_page_ordinal(tmp_path):
     assert all(record["outcome"] == "refused" for record in records.values())
 
 
-# --- Unit 6A audit (Opus, seat 3), angle 3: the door-side repairs under replay --------
-
-
 def test_the_door_seals_the_same_triage_modes_file_its_point_of_use_check_reads(tmp_path):
-    """One file, two independent spellings — pinned by behaviour, not by inspection.
+    """Binding and point-of-use checks must resolve the same triage-modes bytes.
 
-    `_real_bindings` seals `ROOT / "config" / "triage_modes.toml"` and
-    `require_triage_modes` defaults to a path spelled from `common/stage.py`. They are
-    the same file today and nothing but this test says they must stay so; if they ever
-    parted, the door would seal one file and prove the other, and the check would pass
-    or fail for a reason unrelated to the bytes that governed the run. The drift half
-    then shows the sealed digest is genuinely the one compared: an edited copy is
-    refused, and the refusal names both digests so an operator can tell a changed file
-    from a run that sealed the wrong one.
+    The paths are independently spelled in the Door and shared stage module; drift
+    would otherwise compare a run against bytes that did not govern it.
     """
 
     class Models:
@@ -3129,7 +3118,6 @@ def test_the_door_seals_the_same_triage_modes_file_its_point_of_use_check_reads(
         triage_document_digests={"triage-decision-manifest": "c" * 64},
         **_sealed_binding_digests(),
     )
-    # The door's own sealed map satisfies the check at its default path.
     require_triage_modes(bindings["sealed_config_digests"])
     edited = tmp_path / "triage_modes.toml"
     edited.write_text(
@@ -3145,13 +3133,10 @@ def test_the_door_seals_the_same_triage_modes_file_its_point_of_use_check_reads(
 
 
 def test_a_run_sealed_before_the_repair_is_refused_by_name_not_by_key_error():
-    """Adversarial replay: the run authority a pre-repair door wrote.
+    """A run authority missing the modes seal names the binding fault.
 
-    Until this unit, `_real_bindings` sealed no `triage-modes` digest, so a run created
-    by that door records a `sealed_config_digests` map without the name. Reaching the
-    new point-of-use check with such a map must produce the refusal that points at the
-    binding step — the fault is that the run never sealed the policy, not that the file
-    moved — and must not raise a bare `KeyError` that no operator can act on.
+    Missing bindings and changed files require distinct operator actions, so this
+    path must not collapse into a bare KeyError or the drift refusal.
     """
     pre_repair_authority = {
         "sealed_config_digests": {
@@ -3169,8 +3154,6 @@ def test_a_run_sealed_before_the_repair_is_refused_by_name_not_by_key_error():
     assert "triage-modes" not in sealed
     with pytest.raises(ContractError, match="sealed no digest for the triage modes") as refusal:
         require_triage_modes(sealed)
-    # Named as a binding-step fault, not as a changed file: the two are different
-    # repairs and the message is the only thing that tells an operator which.
     assert "changed between run binding" not in str(refusal.value)
 
 
@@ -3204,8 +3187,9 @@ def test_a_triage_producer_recipe_without_its_manifest_is_refused_at_the_real_do
         )
 
 
-def _triage_documents(folder, ledger, corpus_id="parish-a"):
-    """A one-row Unit 5 manifest for a submitted 4x3 PNG, plus Unit 6A's recipe."""
+def _triage_documents(folder, ledger):
+    """A one-row triage manifest for a submitted 4x3 PNG, plus its recipe."""
+    corpus_id = "parish-a"
     source_digest = ledger["files"][0]["sha256"]
     row = door.triage_manifest.make_row(
         corpus_id=corpus_id,
@@ -3246,14 +3230,10 @@ def _triage_documents(folder, ledger, corpus_id="parish-a"):
 def test_the_real_door_seals_and_proves_triage_modes_on_a_run_that_carries_geometry(
     tmp_path, monkeypatch
 ):
-    """The §4.7(a) repair at a real point of use, end to end.
+    """A real submission proves the modes seal before triage geometry is used.
 
-    Triage manifests arrive only on the real path, so before this unit the sealing
-    family's `require_triage_modes` could never succeed anywhere: the fixture path bound
-    the name and never used it, and the real path used the vocabulary and never bound it.
-    Proving the repair needs a real submission that actually carries triage geometry —
-    an ordering assertion over the source text cannot show that the check runs, only
-    that it is written above the line it guards.
+    Triage manifests arrive only on the real path, so source-order inspection cannot
+    prove that the check executes over geometry-bearing input.
     """
     approved, source, _policy, policy_path, ledger_path, ledger = _approved_submission(
         tmp_path, {"FS-1234.png": png(4, 3)}
@@ -3283,24 +3263,18 @@ def test_the_real_door_seals_and_proves_triage_modes_on_a_run_that_carries_geome
         (Path(door.ROOT) / "config" / "triage_modes.toml").read_bytes()
     )
     require_triage_modes(sealed)
-    # The recipe reached this run's identity through `config_digest` and nothing else:
-    # `triage_document_digests` is hashed into it (door.py:2002) but never recorded by
-    # name the way `sealed_config_digests` is. A later reader can therefore verify a
-    # claimed recipe and cannot learn which one governed the run. Recorded as a finding
-    # for the unit that owns the run authority's shape; see /out/report.md.
+    # The fixed run-authority shape binds recipe bytes only through config_digest and
+    # intentionally exposes no triage_document_digests field.
     assert "triage_document_digests" not in run
 
 
 def test_a_door_with_the_pre_repair_missing_binding_refuses_before_it_expands_geometry(
     tmp_path, monkeypatch
 ):
-    """Inject the pre-repair missing seal at the real point of use.
+    """A missing modes seal refuses before triage rows can shape any source.
 
-    This is a counterfactual execution through today's Door, not an execution of the old
-    function body: today's binding map is stripped of the named seal that historical
-    inspection shows was absent. Handed triage geometry, it must refuse by name — the
-    fault is that nothing sealed the policy, not that the file changed — and it must
-    refuse *before* the rows shape any source.
+    Stripping the current binding provides the invalid authority without reproducing
+    an obsolete Door implementation.
     """
     approved, source, _policy, policy_path, ledger_path, ledger = _approved_submission(
         tmp_path, {"FS-1234.png": png(4, 3)}

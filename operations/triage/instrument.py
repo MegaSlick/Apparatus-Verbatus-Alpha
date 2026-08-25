@@ -426,7 +426,7 @@ def build_proxies_from_bytes(data: bytes, config: InstrumentConfig) -> ProxySet:
 
 
 def producer_recipe(config: InstrumentConfig) -> dict[str, Any]:
-    """The sealed recipe document Unit 6B writes beside its manifest output."""
+    """Return the sealed recipe written beside the downstream manifest output."""
     record = {
         "schema": RECIPE_SCHEMA,
         "instrument_config_sha256": config.source_sha256,
@@ -806,7 +806,7 @@ def _ink_overlap(
 
 
 def validate_candidate_evidence(record: Any, config: InstrumentConfig) -> dict[str, Any]:
-    """Validate the complete record a Unit 6B confirmation is allowed to consume."""
+    """Validate the complete record the confirmation interface may consume."""
     if not isinstance(record, dict) or set(record) != set(EVIDENCE_FIELDS):
         raise InstrumentRefusal("candidate evidence has the wrong closed field set")
     if record.get("schema") != EVIDENCE_SCHEMA:
@@ -953,9 +953,8 @@ def compare_signatures(
             choices.append(
                 (agreeing, len(pairs), -abs(offset_x) - abs(offset_y), -offset_y, -offset_x, pairs)
             )
-    _agreeing, overlapping, _distance, neg_y, neg_x, pairs = max(choices)
+    agreeing, overlapping, _distance, neg_y, neg_x, pairs = max(choices)
     offset_x, offset_y = -neg_x, -neg_y
-    agreeing = sum(agrees for agrees, _x, _y in pairs)
     components, largest = _components((x, y) for agrees, x, y in pairs if not agrees)
     largest_share = largest * 1000 // overlapping
     verdict = _verdict_for_metrics(
@@ -968,7 +967,7 @@ def compare_signatures(
     ink_left, ink_right, ink_disparity = _ink_overlap(left, right, offset_x, offset_y, config)
     record = {
         "schema": EVIDENCE_SCHEMA,
-        # The join to the sealed recipe.  Without it a confirmation in Unit 6B could
+        # The join to the sealed recipe. Without it a confirmation could
         # not say which instrument produced the evidence it acted on: the threshold
         # snapshot below is a copy, not an identity, and two configurations can share
         # thresholds while differing in grid, proxy edge, or candidate rule.
@@ -1000,8 +999,8 @@ def _coarse_passes(left: SignatureGrid, right: SignatureGrid, config: Instrument
     Dimensions are deliberately not consulted here.  The coarse grid is 4x4 for any
     frame size, so a mismatched pair can still be scored, and scoring it is what lets
     the caller tell "the prefilter did not like this pair" apart from "the prefilter
-    wanted this pair and the equal-dimension precondition refused it".  Folding the
-    two together, as the first build did, made the second case leave no trace.
+    wanted this pair and the equal-dimension precondition refused it". Folding the
+    two together would make the second case leave no trace.
     """
     agreeing = sum(
         abs(one.mean_intensity - two.mean_intensity) <= config.global_prefilter_mean_tolerance
@@ -1164,6 +1163,4 @@ def candidate_evidence(
         compare_signatures(proxies[left].signature, proxies[right].signature, config)
         for left, right in selection.pairs
     ]
-    for record in evidence:
-        _refuse_preference(record)
     return evidence, evidence_manifest(proxies, selection, evidence, config)

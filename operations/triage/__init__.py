@@ -1,5 +1,5 @@
 """Offline, deterministic triage evidence tools.
 
-This package deliberately has no model client or decision-manifest writer.  Unit 6B
-consumes its recorded candidate evidence and performs the separately-authorized confirmation.
+Candidate production has no model client or decision-manifest writer; confirmation
+consumes the recorded evidence through a separate interface.
 """

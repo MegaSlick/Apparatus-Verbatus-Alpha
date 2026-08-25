@@ -1733,8 +1733,7 @@ def real_submission(args, registry) -> int:
         perlector_audit_config_path=args.perlector_audit_config,
         draft_fed=args.draft_fed,
     )
-    # Triage rows carry the shared mode vocabulary. This is the real Door's
-    # first use of it, before those rows expand master-frame geometry.
+    # The modes seal must be proved before triage rows can shape master-frame geometry.
     if triage_rows is not None:
         require_triage_modes(bindings["sealed_config_digests"])
     sources = expand_sources(
