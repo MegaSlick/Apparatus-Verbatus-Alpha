@@ -40,6 +40,13 @@ IMAGE="${IMAGE_NAME}:${IMAGE_TAG}"
 # belonging to something else on this machine.
 PREFIX="verbatus-ac"
 
+# Agent-controlled bytes cross into the host only through bounded helper calls.
+# Four MiB leaves ample room for prompts and reports; a collection bundle may
+# carry repository history, so its ceiling is deliberately larger but finite.
+MAX_BRIEF_BYTES=4194304
+MAX_REPORT_BYTES=4194304
+MAX_COLLECTION_BUNDLE_BYTES=536870912
+
 # The repository root, resolved from this script rather than the caller's cwd,
 # so every command works from anywhere.
 REPO_ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
@@ -1233,7 +1240,7 @@ cmd_dispatch() {
     # a sentence, where the helper says only that it refused.
     brief_in="$(outdir_of "$task")/brief.md"
     [ -L "$brief_in" ] && die "brief slot ${brief_in} is a symlink — refusing to write through it"
-    python3 "$SAFE_FILE" write "$brief" "$brief_in" ||
+    python3 "$SAFE_FILE" write "$brief" "$brief_in" "$MAX_BRIEF_BYTES" ||
         die "brief copy from ${brief} to ${brief_in} was refused — the source or slot is not a safe regular file reachable without an agent-controlled symlink"
 
     note "dispatching ${vendor} into '${task}'"
@@ -1439,7 +1446,8 @@ cmd_collect() {
     bundle_snapshot=$(mktemp "${snapshot_dir}/autoclave-bundle.${task}.XXXXXX") ||
         die "could not create a host-owned bundle snapshot; nothing was fetched"
     LIFECYCLE_SNAPSHOT="$bundle_snapshot"
-    if ! python3 "$SAFE_FILE" read "$bundle_out" > "$bundle_snapshot"; then
+    if ! python3 "$SAFE_FILE" read "$bundle_out" \
+        "$MAX_COLLECTION_BUNDLE_BYTES" > "$bundle_snapshot"; then
         die "could not safely snapshot bundle slot ${bundle_out}; nothing was fetched"
     fi
     if ! git -C "$REPO_ROOT" bundle verify "$bundle_snapshot" >/dev/null 2>&1; then
@@ -1612,7 +1620,8 @@ cmd_report() {
     # says no whatever happens.
     [ -L "$report" ] && die "report at ${report} is a symlink — refusing to read through it"
     [ -f "$report" ] || die "no report at ${report}"
-    python3 "$SAFE_FILE" read "$report" || die "no safe regular report at ${report}"
+    python3 "$SAFE_FILE" read "$report" "$MAX_REPORT_BYTES" ||
+        die "no safe regular report at ${report}"
 }
 
 cmd_list() {

@@ -20,12 +20,13 @@ from __future__ import annotations
 
 import os
 import re
-import shutil
 import stat
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+COPY_BLOCK_BYTES = 1024 * 1024
 
 
 def worktree_path_for_ref(root: Path, ref: str) -> Path | None:
@@ -141,6 +142,30 @@ def open_write_source(source: Path, drawer: Path):
         raise
 
 
+def byte_limit(value: str) -> int:
+    """Parse the launcher's bounded decimal byte limits without integer surprises."""
+
+    if re.fullmatch(r"[1-9][0-9]{0,9}", value) is None:
+        raise OSError("the byte limit is not a positive bounded decimal integer")
+    return int(value)
+
+
+def copy_bounded(reading, writing, limit: int) -> None:
+    """Copy at most ``limit`` bytes and refuse a file that changes size while read."""
+
+    expected = os.fstat(reading.fileno()).st_size
+    if expected > limit:
+        raise OSError(f"input is larger than the {limit}-byte limit")
+    copied = 0
+    while block := reading.read(min(COPY_BLOCK_BYTES, limit - copied + 1)):
+        if copied + len(block) > limit:
+            raise OSError(f"input grew beyond the {limit}-byte limit while being read")
+        writing.write(block)
+        copied += len(block)
+    if copied != expected:
+        raise OSError("input changed size while being read")
+
+
 def main() -> int:
     """Move untrusted bytes, or inspect worktree occupancy without flattening paths.
 
@@ -163,25 +188,27 @@ def main() -> int:
     try:
         command = sys.argv[1]
         source = Path(sys.argv[2])
-        if command == "read" and len(sys.argv) == 3:
+        if command == "read" and len(sys.argv) == 4:
+            limit = byte_limit(sys.argv[3])
             with open_regular(source, os.O_RDONLY) as reading:
-                shutil.copyfileobj(reading, sys.stdout.buffer)
+                copy_bounded(reading, sys.stdout.buffer, limit)
             return 0
-        if command == "write" and len(sys.argv) == 4:
+        if command == "write" and len(sys.argv) == 5:
+            limit = byte_limit(sys.argv[4])
             destination = Path(sys.argv[3])
-            with (
-                open_write_source(source, destination.parent) as reading,
-                open_regular(destination, os.O_WRONLY | os.O_CREAT) as writing,
-            ):
-                # The launcher prints the drawer's brief path, so using that path as
-                # the next dispatch input is an ordinary workflow. Opening it again
-                # with O_TRUNC would empty the inode underneath the already-open read
-                # descriptor. Compare the opened objects, not their path spellings;
-                # aliases and hard links are the same case.
-                if os.path.samestat(os.fstat(reading.fileno()), os.fstat(writing.fileno())):
-                    return 0
-                os.ftruncate(writing.fileno(), 0)
-                shutil.copyfileobj(reading, writing)
+            with open_write_source(source, destination.parent) as reading:
+                if os.fstat(reading.fileno()).st_size > limit:
+                    raise OSError(f"input is larger than the {limit}-byte limit")
+                with open_regular(destination, os.O_WRONLY | os.O_CREAT) as writing:
+                    # The launcher prints the drawer's brief path, so using that path as
+                    # the next dispatch input is an ordinary workflow. Opening it again
+                    # with O_TRUNC would empty the inode underneath the already-open read
+                    # descriptor. Compare the opened objects, not their path spellings;
+                    # aliases and hard links are the same case.
+                    if os.path.samestat(os.fstat(reading.fileno()), os.fstat(writing.fileno())):
+                        return 0
+                    os.ftruncate(writing.fileno(), 0)
+                    copy_bounded(reading, writing, limit)
             return 0
         if command == "bundle" and len(sys.argv) == 4:
             with open_regular(source, os.O_WRONLY | os.O_CREAT | os.O_TRUNC) as writing:
@@ -258,7 +285,8 @@ def main() -> int:
         print(f"safe-file: {failure}", file=sys.stderr)
         return 1
     print(
-        "usage: safe_file.py read SLOT | write SOURCE SLOT | bundle SLOT REF | "
+        "usage: safe_file.py read SLOT MAX_BYTES | write SOURCE SLOT MAX_BYTES | "
+        "bundle SLOT REF | "
         "retain SOURCE DESTINATION | "
         "bundle-tip BUNDLE REF EXPECTED | "
         "worktree ROOT REF occupied|tree",
