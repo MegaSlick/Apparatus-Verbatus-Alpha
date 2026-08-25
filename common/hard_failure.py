@@ -36,7 +36,7 @@ RULED_THRESHOLD: Final = 2
 # A policy is a small operator declaration, not a corpus payload. Bound both the
 # bytes parsed and the entries that each drive a pass over stage evidence, so a
 # caller-selected file cannot turn one checkpoint into unbounded memory or
-# policy-length-times-corpus work. The shipped policy is under 2 KiB and ten
+# policy-length-times-corpus work. The shipped policy is under 8 KiB and six
 # entries; these ceilings leave ample configuration headroom without making the
 # boundary nominal.
 MAX_HARD_FAILURE_CONFIG_BYTES: Final = 1 << 20
