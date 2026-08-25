@@ -749,20 +749,13 @@ class RunTree:
         entries: list[dict[str, Any]] = []
         artifacts_root = self._inventory_directory(stage, ARTIFACTS_DIR)
         if artifacts_root is not None:
-            # Walked whole before any of it is read, so that a refusal about the
-            # shape of the tree -- a cycle, an alias, a directory that cannot be
-            # listed -- is what the caller hears, rather than whichever content
-            # mismatch downstream of it happened to be reached first. Not sorted:
-            # the walk emits in the order `sorted(rglob("*.json"))` did, and says so.
+            # Validate the whole walk before reading bytes so structural failures
+            # cannot be hidden by an earlier artifact-content failure.
             members = list(self._walk_artifact_json(artifacts_root))
-            for relative_path, _walked_path in members:
+            for relative_path in members:
                 # One filesystem read supplies both the record that is verified
-                # and the digest published beside its fields.  Reading once to
-                # validate and again to hash allowed a concurrent replacement to
-                # pair metadata from one valid envelope with the digest of another.
-                # Re-resolve after the whole walk has been collected too: the path
-                # could have been replaced since the walk checked it, and reading
-                # the stale Path would follow a new link without containment.
+                # and its digest. Re-resolving here also closes the replacement
+                # window opened by collecting the complete walk first.
                 path = self.resolve(relative_path)
                 lexical = self.root / relative_path
                 if path != lexical or lexical.is_symlink():
@@ -807,27 +800,10 @@ class RunTree:
         }
 
     def _inventory_directory(self, stage: str, subdirectory: str) -> Path | None:
-        """The one containment-checked way into a stage's derived inventory directory.
+        """Return an unredirected inventory directory, or ``None`` if it is absent.
 
-        Both of a manifest's inventories used to be reached by joining a name onto
-        the stage root and asking `exists()`. Neither the join nor `exists()` says
-        anything about *what* is at the end of it, and every wrong answer was the
-        quiet kind. A stage's `artifacts` directory replaced by a symlink to an
-        empty directory outside the run root produced a well-formed, entirely empty
-        manifest -- the same silent loss that was already refused one level down at
-        the `kind` directory, surviving one level up because the containment check
-        was applied to the walk's entries and never to the root it started from. A
-        symlink to an outside directory that *did* hold artifacts refused, but named
-        the child rather than the redirection that was the real fault. Replaced by a
-        regular file, the same path raised `NotADirectoryError` out of the walk with
-        nothing naming the path that caused it.
-
-        A run tree's inventory directories are directories this store made. Asked for
-        one, this returns it only when it is exactly that: inside the tree, not
-        redirected through a link, and a directory. Absent stays absent -- a stage
-        that has published nothing has no directory and an empty inventory is the
-        honest answer -- but absent now means nothing is there, rather than that
-        something unreadable is.
+        Every existing ancestor must be a plain directory; otherwise a broken
+        parent could make evidence below it look like an honestly empty inventory.
         """
         relative = f"{writing_directory(stage)}/{subdirectory}"
         lexical = self.root / relative
@@ -865,67 +841,15 @@ class RunTree:
                 )
         return resolved
 
-    def _walk_artifact_json(self, directory: Path) -> Iterator[tuple[str, Path]]:
-        """Walk `directory` by hand, refusing on every step rather than only at the leaves.
+    def _walk_artifact_json(self, directory: Path) -> Iterator[str]:
+        """Yield artifact paths while refusing every uninspectable tree entry.
 
-        `rglob` skips descending into a symlinked subdirectory by default: a
-        `kind` directory swapped for a symlink to elsewhere would simply vanish
-        from an `rglob` walk instead of tripping `resolve`'s containment check,
-        and the missing artifacts would read as an honestly empty producer
-        rather than a refusal. Walking with `iterdir` and resolving every entry
-        -- file or directory, real or symlinked -- before deciding whether to
-        trust or descend into it closes that gap: nothing can be skipped into
-        invisibility, only accepted or refused.
-
-        What that costs is that every hostile shape `rglob` absorbed silently now
-        arrives here, and each one has to leave by a named exit:
-
-        `walked` and `ancestors`. Entering symlinked directories makes a symlink
-        cycle reachable, and an in-tree cycle resolves inside the root on every
-        step, so containment alone would walk it forever. `walked` maps every real
-        directory this walk has entered to the path it was entered by, which
-        refuses a cycle *and* refuses aliasing -- two paths in one manifest naming
-        one directory, which enters one artifact twice or, when the aliased
-        directory holds no artifacts, enters nothing and says nothing. `ancestors`
-        is carried beside it only to tell the two apart: a link back into the path
-        currently being walked is a cycle, one into a directory already finished is
-        an alias, and an operator reading the refusal should be told which.
-
-        An explicit stack of directory iterators, not recursion. `rglob` walks a
-        deep tree iteratively; the recursive version of this walk raised
-        `RecursionError` at a depth `rglob` handled, which traded one opaque
-        failure for another on a walk whose whole point is that nothing leaves it
-        unnamed.
-
-        Directory listing and entry type. A directory that cannot be listed
-        (permissions, or a type that changed under the walk) and an entry that is
-        neither a directory nor a regular file are both refused by name. The second
-        is not pedantry: a FIFO named `<something>.json` under a `kind` directory
-        made `_read_json` block on `open` until a writer appeared, which is the one
-        outcome worse than a refusal, because nothing is reported at all.
-
-        `.json` by name, not by `suffix`. `Path(".json").suffix` is empty while
-        `rglob("*.json")` matched that name, so a file called exactly `.json`
-        reached the old walk and was refused for not occupying its derived path,
-        and matching on `suffix` would drop it without a word instead.
-
-        **Artifact-file emission order is the order `sorted(rglob("*.json"))`
-        produced**, so the caller needs no sort of its own. Entries within a
-        directory are taken in name order and a subdirectory is finished before
-        its next sibling begins, which is lexicographic order on the path's
-        components -- and components are what `Path` compares, where a flat string
-        comparison would disagree wherever one directory name is a prefix of
-        another (`kind-b/a.json` sorts before `kind/a.json` as a string, because
-        `-` is below `/`). `rglob` also yielded a directory whose name ended in
-        `.json`, and the old caller then tried to parse the directory as a file.
-        A direct child of `artifacts/` is a kind directory, and this walk descends
-        it because `publish_artifact` permits a kind ending in `.json`. Below that
-        level, however, such a directory occupies the name of artifact bytes and
-        is refused: descending an empty replacement for `<artifact-id>.json`
-        would erase that artifact from the manifest. No digest rests on the
-        traversal order today, since `build_manifest` re-sorts its entries by
-        artifact id; matching the old file order still avoids an incidental
-        change for ordinary trees.
+        The walk is iterative so filesystem depth cannot exhaust Python's call
+        stack. Its component-wise order matches ``sorted(rglob("*.json"))``;
+        ``endswith`` preserves that glob's match for a file named exactly ``.json``.
+        A ``.json`` directory is legal only at the kind level, where store-created
+        kinds may carry that suffix. Special files are rejected before opening
+        because reading a FIFO would block indefinitely.
         """
         start = directory.resolve()
         walked: dict[Path, str] = {start: str(directory.relative_to(self.root))}
@@ -977,7 +901,7 @@ class RunTree:
                         f"{relative_path!r} is neither a directory nor a regular file, "
                         "so it cannot be read as an artifact"
                     )
-                yield relative_path, resolved
+                yield relative_path
 
     def _listing(self, directory: Path) -> list[Path]:
         """One directory's entries in name order, or a refusal naming the directory.
@@ -995,33 +919,11 @@ class RunTree:
             ) from error
 
     def _walk_blobs(self, directory: Path) -> Iterator[str]:
-        """The content-addressed blobs this stage actually holds, in name order.
+        """Yield addressable regular blobs in name order.
 
-        The blob inventory was the one leg of a manifest that read a directory and
-        checked nothing it found there. A `<digest>` entry that was really a
-        symlink to a file outside the run root was listed as this stage's blob:
-        the manifest -- itself hashed evidence -- vouched for bytes the tree does
-        not hold, cannot keep from changing, and that no read route can reach,
-        since `read_bytes` resolves the same path and refuses it. The same leg
-        listed a directory or a FIFO left under `blobs/sha256` as though it were
-        stored bytes. Both are refused here, by name, under the containment every
-        other read route in this module already used.
-
-        The shape filter is the blob-side twin of the artifact walk's `*.json`.
-        `put_blob` is the only writer and `blob_path` refuses any name that is not
-        a lowercase sha256 at both ends, so a differently named file cannot be
-        addressed as a blob by any route, and listing it as one puts a claim in
-        hashed evidence that nothing can honour. It also keeps the store's own
-        residue out of the inventory: `_write_temporary` writes `.<name>.tmp-*`
-        beside its target, and a process killed between the write and the link
-        leaves one there -- which used to enter the manifest as a blob and break
-        "delete it and it comes back identical" over a file that was never part of
-        what the run produced.
-
-        Verifying that each blob's bytes still hash to its name is deliberately
-        not done here. A manifest is rebuilt often and blobs are page images and
-        crops; the digest is checked where a blob is actually consumed, against
-        the reference that names it (`common/stage.py`).
+        Non-digest names include same-directory publication residue and are not
+        inventory members. Blob contents are verified when consumed rather than
+        during every manifest rebuild because they may be full page images.
         """
         for entry in self._listing(directory):
             relative_path = str(entry.relative_to(self.root))
