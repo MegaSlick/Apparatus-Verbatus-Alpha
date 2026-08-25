@@ -36,6 +36,11 @@ COLOUR_MODES: Final = ("keep", "grayscale", "rgb", "bitonal")
 ACTOR_KINDS: Final = ("human", "model", "scantailor")
 SCANTAILOR_IDENTITY: Final = "ScanTailor Advanced"
 SPLIT_OPERATION_ORDER: Final = "region-crop-rotate"
+MAX_MANIFEST_ROWS: Final = 1_000
+MAX_CLUSTER_RECORDS: Final = 1_000
+MAX_CLUSTER_MEMBERS: Final = 4_096
+MAX_SPLIT_PARTS: Final = 64
+MAX_SCANTAILOR_PROJECT_BYTES: Final = 4 * 1024 * 1024
 
 _ROW_FIELDS: Final = {
     "corpus_id",
@@ -115,6 +120,15 @@ def _rotation(value: Any) -> None:
 
 
 def _row_digest(row: Mapping[str, Any]) -> str:
+    split = row.get("split")
+    if (
+        isinstance(split, dict)
+        and isinstance(split.get("parts"), list)
+        and len(split["parts"]) > MAX_SPLIT_PARTS
+    ):
+        # ``make_row`` derives the digest before full validation. Refuse this
+        # quadratic-work input before canonical serialization copies it.
+        raise SchemaRefusal(f"triage split exceeds the {MAX_SPLIT_PARTS}-part limit")
     payload = {key: value for key, value in row.items() if key != "manifest_row_sha256"}
     try:
         return digest_bytes(canonical_bytes(payload))
@@ -137,6 +151,8 @@ def _validate_split(split: Any, frame: Mapping[str, int]) -> None:
         raise SchemaRefusal("triage split must be a non-empty closed operation_order/parts record")
     if split["operation_order"] != SPLIT_OPERATION_ORDER:
         raise SchemaRefusal(f"triage split operation_order must be {SPLIT_OPERATION_ORDER}")
+    if len(split["parts"]) > MAX_SPLIT_PARTS:
+        raise SchemaRefusal(f"triage split exceeds the {MAX_SPLIT_PARTS}-part limit")
     whole = {"x": 0, "y": 0, "w": frame["width"], "h": frame["height"]}
     regions = []
     for part in split["parts"]:
@@ -290,6 +306,8 @@ def validate_cluster_record(record: Any) -> dict[str, Any]:
     ):
         raise SchemaRefusal("triage cluster record needs non-blank corpus_id and cluster_id")
     members = record["member_frame_sha256"]
+    if isinstance(members, list) and len(members) > MAX_CLUSTER_MEMBERS:
+        raise SchemaRefusal(f"triage cluster record exceeds the {MAX_CLUSTER_MEMBERS}-member limit")
     if (
         not isinstance(members, list)
         or len(members) < 2
@@ -321,6 +339,8 @@ def validate_manifest(
         or not isinstance(manifest["records"], list)
     ):
         raise SchemaRefusal("triage manifest must be the closed schema/corpus_id/records record")
+    if len(manifest["records"]) > MAX_MANIFEST_ROWS:
+        raise SchemaRefusal(f"triage manifest exceeds the {MAX_MANIFEST_ROWS}-row shard limit")
     rows = [validate_row(row) for row in manifest["records"]]
     if any(row["corpus_id"] != manifest["corpus_id"] for row in rows):
         raise SchemaRefusal("triage manifest contains a row from a different corpus")
@@ -334,6 +354,10 @@ def validate_manifest(
         )
     if clusters is not None and not isinstance(clusters, Mapping):
         raise SchemaRefusal("triage cluster records must be supplied as a mapping by cluster id")
+    if clusters is not None and len(clusters) > MAX_CLUSTER_RECORDS:
+        raise SchemaRefusal(
+            f"triage cluster mapping exceeds the {MAX_CLUSTER_RECORDS}-record limit"
+        )
     checked: dict[str, Mapping[str, Any]] = {}
     for cluster_id, record in (clusters or {}).items():
         checked[cluster_id] = validate_cluster_record(record)
@@ -359,8 +383,10 @@ def validate_manifest(
 
 def verify_submitted_frame(row: Mapping[str, Any], submitted_bytes: bytes) -> None:
     """Door-side seam: refuse bytes not named by this pre-door row."""
-    validate_row(dict(row))
-    if digest_bytes(submitted_bytes) != row["source_frame_sha256"]:
+    if not isinstance(submitted_bytes, bytes):
+        raise SchemaRefusal("triage submitted frame must be bytes")
+    checked = validate_row(dict(row))
+    if digest_bytes(submitted_bytes) != checked["source_frame_sha256"]:
         raise SchemaRefusal("triage row source frame digest does not match submitted bytes")
 
 
@@ -406,6 +432,13 @@ def transcribe_scantailor_project(
     produced, which is precisely what the "distinguishable by actor alone"
     requirement is for.
     """
+    if not isinstance(project_bytes, bytes):
+        raise SchemaRefusal("ScanTailor project fixture must be bytes")
+    if len(project_bytes) > MAX_SCANTAILOR_PROJECT_BYTES:
+        raise SchemaRefusal(
+            "ScanTailor project fixture exceeds the "
+            f"{MAX_SCANTAILOR_PROJECT_BYTES}-byte parsing limit"
+        )
     try:
         parser = ET.XMLParser(target=_ClosedFixtureTreeBuilder())
         root = ET.fromstring(project_bytes, parser=parser)

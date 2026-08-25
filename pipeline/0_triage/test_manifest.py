@@ -1,4 +1,5 @@
 import time
+from collections.abc import Mapping
 from copy import deepcopy
 from pathlib import Path
 
@@ -6,10 +7,16 @@ import pytest
 from manifest import (
     CLUSTER_SCHEMA,
     MANIFEST_SCHEMA,
+    MAX_CLUSTER_MEMBERS,
+    MAX_CLUSTER_RECORDS,
+    MAX_MANIFEST_ROWS,
+    MAX_SCANTAILOR_PROJECT_BYTES,
+    MAX_SPLIT_PARTS,
     derivative_page_backlink,
     make_row,
     make_split,
     transcribe_scantailor_project,
+    validate_cluster_record,
     validate_manifest,
     verify_submitted_frame,
 )
@@ -535,6 +542,71 @@ def test_digest_must_match_submitted_bytes():
         verify_submitted_frame(bound, b"other frame")
 
 
+class _DigestSwitchingRow(Mapping):
+    """Expose one digest while copied and another if the source is read again."""
+
+    def __init__(self, source, replacement_digest):
+        self.source = source
+        self.replacement_digest = replacement_digest
+        self.digest_reads = 0
+
+    def __getitem__(self, key):
+        if key == "source_frame_sha256":
+            self.digest_reads += 1
+            if self.digest_reads > 1:
+                return self.replacement_digest
+        return self.source[key]
+
+    def __iter__(self):
+        return iter(self.source)
+
+    def __len__(self):
+        return len(self.source)
+
+
+def test_submitted_frame_uses_the_digest_from_the_validated_snapshot():
+    original = b"original frame"
+    replacement = b"replacement frame"
+    switching = _DigestSwitchingRow(
+        row(source_frame_sha256=digest_bytes(original)), digest_bytes(replacement)
+    )
+    with pytest.raises(ContractError, match="does not match submitted bytes"):
+        verify_submitted_frame(switching, replacement)
+    assert switching.digest_reads == 1
+
+
+def test_submitted_frame_refuses_a_non_bytes_boundary_value():
+    with pytest.raises(SchemaRefusal, match="must be bytes"):
+        verify_submitted_frame(row(), "not bytes")
+
+
+def test_contract_counts_are_bounded_before_their_work_can_amplify():
+    too_many_parts = [
+        make_part({"x": index, "y": 0, "w": 1, "h": 1}, {"x": 0, "y": 0, "w": 1, "h": 1}, 0)
+        for index in range(MAX_SPLIT_PARTS + 1)
+    ]
+    with pytest.raises(SchemaRefusal, match=f"{MAX_SPLIT_PARTS}-part limit"):
+        row(
+            frame={"width": MAX_SPLIT_PARTS + 1, "height": 1},
+            split=make_split(too_many_parts),
+        )
+
+    one = row()
+    with pytest.raises(SchemaRefusal, match=f"{MAX_MANIFEST_ROWS}-row shard limit"):
+        validate_manifest(manifest([one] * (MAX_MANIFEST_ROWS + 1)))
+
+    members = [f"{index:064x}" for index in range(MAX_CLUSTER_MEMBERS + 1)]
+    with pytest.raises(SchemaRefusal, match=f"{MAX_CLUSTER_MEMBERS}-member limit"):
+        validate_cluster_record(cluster(members))
+
+    records = {
+        f"cluster-{index}": cluster([DIGEST_A, DIGEST_B], cluster_id=f"cluster-{index}")
+        for index in range(MAX_CLUSTER_RECORDS + 1)
+    }
+    with pytest.raises(SchemaRefusal, match=f"{MAX_CLUSTER_RECORDS}-record limit"):
+        validate_manifest(manifest([]), records)
+
+
 def test_scantailor_transcription_reads_every_part_of_its_geometry():
     transcribed = transcribe(FIXTURE.read_bytes())[0]
     assert transcribed["split"] == {
@@ -596,6 +668,13 @@ def test_scantailor_refuses_a_project_that_records_no_version():
 def test_scantailor_refuses_non_xml_bytes():
     with pytest.raises(ContractError, match="not XML"):
         transcribe(b"not xml")
+
+
+def test_scantailor_parser_refuses_unbounded_or_non_bytes_input_before_parsing():
+    with pytest.raises(SchemaRefusal, match="parsing limit"):
+        transcribe(b" " * (MAX_SCANTAILOR_PROJECT_BYTES + 1))
+    with pytest.raises(SchemaRefusal, match="must be bytes"):
+        transcribe("<scantailor-project />")
 
 
 def test_scantailor_refuses_an_unrecognized_project_shape():

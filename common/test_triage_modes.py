@@ -7,7 +7,12 @@ from common.chairs.registry import ChairRegistry
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError
 from common.contracts.stages import TRIAGE_MODES
-from common.stage import load_fixture, require_triage_modes, run_config_bindings
+from common.stage import (
+    MAX_TRIAGE_MODES_CONFIG_BYTES,
+    load_fixture,
+    require_triage_modes,
+    run_config_bindings,
+)
 
 
 def test_triage_modes_are_sealed_and_rechecked_at_point_of_use(tmp_path):
@@ -27,6 +32,26 @@ def test_triage_modes_are_sealed_and_rechecked_at_point_of_use(tmp_path):
     # the fact that decides which.
     assert sealed["triage-modes"] in str(refusal.value)
     assert digest_bytes(config.read_bytes()) in str(refusal.value)
+
+
+def test_malformed_replacement_cannot_mask_the_sealed_digest_refusal(tmp_path):
+    config = tmp_path / "triage_modes.toml"
+    original = b"[manual]\nreview_at_or_below_confidence = 4\n"
+    config.write_bytes(original)
+    sealed = {"triage-modes": digest_bytes(original)}
+    replacement = b"[manual\n"
+    config.write_bytes(replacement)
+    with pytest.raises(ContractError, match="changed between run binding") as refusal:
+        require_triage_modes(sealed, config)
+    assert sealed["triage-modes"] in str(refusal.value)
+    assert digest_bytes(replacement) in str(refusal.value)
+
+
+def test_triage_config_read_is_bounded_before_digest_or_toml_work(tmp_path):
+    config = tmp_path / "triage_modes.toml"
+    config.write_bytes(b"x" * (MAX_TRIAGE_MODES_CONFIG_BYTES + 1))
+    with pytest.raises(ContractError, match=f"{MAX_TRIAGE_MODES_CONFIG_BYTES}-byte limit"):
+        require_triage_modes({"triage-modes": "0" * 64}, config)
 
 
 def test_triage_modes_are_bound_at_run_creation():

@@ -57,6 +57,12 @@ recorders catch (`pipeline/7_armarium/run.py`, `pipeline/3_attestatores/run.py`,
 `common/exemplar_boundary.py`). A refusal raised as the bare `ContractError` base
 would escape all of them.
 
+Work at the untrusted contract edge is bounded before it amplifies: a shard holds
+at most 1,000 manifest rows and accepts at most 1,000 supplied cluster records, one
+re-shoot cluster holds at most 4,096 member digests, and one frame holds at most 64
+physical split parts. The last bound caps the split validator's pairwise overlap
+proof; exceeding any bound is an explicit refusal, never a partial manifest.
+
 ## What a consumer must still do
 
 Derivative pages must carry `derivative_page_backlink(row, part_index)`. The link
@@ -98,15 +104,14 @@ processable.
 **UNVERIFIED FORMAT GAP — DO NOT TREAT THIS AS A REAL SCANTAILOR IMPORTER.**
 `transcribe_scantailor_project` accepts only the checked-in XML fixture shape
 `scantailor-project shape="unverified-fixture-v0"`. It is a defended parsing seam,
-not a claim about ScanTailor Advanced's real project-file format. No real project file
-was available offline, so closing this gap here was impossible under the inherited Q2
-ruling. Every decision field — operation order, coordinate spaces, each part's region,
-local crop, rotation direction, origin, canvas rule, colour mode and deskew angle — is
-read from the fixture's own attributes; none is synthesized or defaulted. Empty
-projects are refused. If real
-projects do not carry per-page geometry — including split geometry specifically —
-Unit 6 must change the transcription source explicitly; it must not synthesize
-geometry.
+bounded to 4 MiB before XML parsing, not a claim about ScanTailor Advanced's real
+project-file format. No real project file was available offline, so closing this gap
+here was impossible under the inherited Q2 ruling. Every decision field — operation
+order, coordinate spaces, each part's region, local crop, rotation direction, origin,
+canvas rule, colour mode and deskew angle — is read from the fixture's own attributes;
+none is synthesized or defaulted. Empty projects are refused. If real projects do not
+carry per-page geometry — including split geometry specifically — Unit 6 must change
+the transcription source explicitly; it must not synthesize geometry.
 
 The seam builds the actor itself from the project's recorded `version`, and refuses a
 project that records none. A caller supplies the known corpus, batch mode and override

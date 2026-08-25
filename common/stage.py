@@ -120,6 +120,23 @@ DEFAULT_POD_PLACEMENT_CONFIG_PATH = (
 DEFAULT_TRIAGE_MODES_CONFIG_PATH = (
     Path(__file__).resolve().parents[1] / "config" / "triage_modes.toml"
 )
+MAX_TRIAGE_MODES_CONFIG_BYTES: Final = 64 * 1024
+
+
+def _read_triage_modes_config(path: str | Path) -> bytes:
+    """Read one bounded config body through the descriptor that supplied it."""
+    try:
+        with Path(path).open("rb") as handle:
+            raw = handle.read(MAX_TRIAGE_MODES_CONFIG_BYTES + 1)
+    except OSError as error:
+        raise ContractError(f"triage modes configuration at {path} could not be read") from error
+    if len(raw) > MAX_TRIAGE_MODES_CONFIG_BYTES:
+        raise ContractError(
+            "triage modes configuration at "
+            f"{path} exceeds the {MAX_TRIAGE_MODES_CONFIG_BYTES}-byte limit"
+        )
+    return raw
+
 
 # The witness outcomes that mean a chair actually served, and therefore that a
 # serving receipt exists for the reading. Named once, here, because both halves
@@ -989,13 +1006,9 @@ def run_config_bindings(
     corpus_frame_policy, corpus_frame_config_digest = load_corpus_frame_policy(
         corpus_frame_config_path
     )
-    try:
-        triage_modes_config_digest = digest_bytes(DEFAULT_TRIAGE_MODES_CONFIG_PATH.read_bytes())
-    except OSError as error:
-        raise ContractError(
-            "the triage modes configuration binding at "
-            f"{DEFAULT_TRIAGE_MODES_CONFIG_PATH} could not be read"
-        ) from error
+    triage_modes_config_digest = digest_bytes(
+        _read_triage_modes_config(DEFAULT_TRIAGE_MODES_CONFIG_PATH)
+    )
     armarium_formats_digest, armarium_formats = bind_armarium_formats(armarium_formats_config_path)
     try:
         serving_recipes_config_digest = digest_bytes(Path(serving_recipes_config_path).read_bytes())
@@ -1162,10 +1175,19 @@ def require_triage_modes(
     """Refuse mode schema or bytes that differ from the run's sealed vocabulary."""
     if path is None:
         path = DEFAULT_TRIAGE_MODES_CONFIG_PATH
-    try:
-        raw = Path(path).read_bytes()
-    except OSError as error:
-        raise ContractError(f"triage modes configuration at {path} could not be read") from error
+    raw = _read_triage_modes_config(path)
+    bound = sealed_config_digests.get("triage-modes")
+    if bound is None:
+        raise ContractError("this run sealed no digest for the triage modes configuration")
+    observed = digest_bytes(raw)
+    if bound != observed:
+        # Check the binding before parsing. A malformed replacement is still
+        # first and foremost bytes this run never sealed, and must not mask that
+        # security refusal behind a TOML diagnostic.
+        raise ContractError(
+            "the triage modes configuration changed between run binding and its "
+            f"point-of-use check: this run sealed {bound}, and {path} now hashes to {observed}"
+        )
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError as error:
@@ -1183,19 +1205,6 @@ def require_triage_modes(
         for policy in record.values()
     ):
         raise ContractError("triage modes configuration has the wrong closed schema")
-    bound = sealed_config_digests.get("triage-modes")
-    if bound is None:
-        raise ContractError("this run sealed no digest for the triage modes configuration")
-    observed = digest_bytes(raw)
-    if bound != observed:
-        # Naming both digests is what lets an operator tell a config edit apart
-        # from a run that sealed the wrong file: the message alone is otherwise
-        # indistinguishable between the two, and the sealed digest is the fact
-        # that decides which.
-        raise ContractError(
-            "the triage modes configuration changed between run binding and its "
-            f"point-of-use check: this run sealed {bound}, and {path} now hashes to {observed}"
-        )
 
 
 # The roles the pipeline addresses by name, beside the Attestator witnesses.
