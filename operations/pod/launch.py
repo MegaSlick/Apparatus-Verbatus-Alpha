@@ -48,7 +48,7 @@ from .spend import (
 )
 
 
-def _phraseless(preview: PaidActionPreview | None) -> PaidActionPreview | None:
+def phraseless(preview: PaidActionPreview | None) -> PaidActionPreview | None:
     """The same preview with its challenge withheld.
 
     A refused confirmation is printed and logged, and the challenge it carries
@@ -60,11 +60,75 @@ def _phraseless(preview: PaidActionPreview | None) -> PaidActionPreview | None:
     On the returned preview the `confirmation_phrase` property raises rather
     than returning a string; callers rendering a refusal read `to_record()`,
     which shows the phrase as absent instead.
+
+    Public because the operator surface writes durable receipts of the same
+    previews and is bound by the same policy. A helper that was private here
+    while the rule it enforces applied there is how the phrase ended up in a
+    receipt.
     """
 
     if preview is None or preview.challenge is None:
         return preview
     return PaidActionPreview(preview.action, preview.subject, preview.assessment)
+
+
+def price_move_note(reviewed: SpendAssessment, actual: SpendAssessment) -> str:
+    """Say when the pod that now exists does not bill at the price that was confirmed.
+
+    The confirmation binds the reviewed price, and `create` refuses outright when
+    the price has already moved by the time the challenge is claimed. It cannot
+    bind what the provider charges *after* that: the pod is created in between,
+    and only the configured hourly ceiling bounds the difference. That window is
+    the honest limit of this gate, so a launch that lands on the far side of it
+    names the fact rather than reporting a price nobody agreed to underneath a
+    clean status -- GOVERNANCE 2, and GOVERNANCE 10 on claiming only what was
+    actually measured.
+
+    Public for the same reason `phraseless` is: the operator surface writes the
+    record a person reads, and a rule that only holds inside this module is a
+    rule the surface silently does not keep.
+    """
+
+    if (
+        actual.estimate.pod_hourly_usd == reviewed.estimate.pod_hourly_usd
+        and actual.estimate.volume_hourly_usd == reviewed.estimate.volume_hourly_usd
+    ):
+        return ""
+    return (
+        f"; the created pod bills at ${actual.estimate.pod_hourly_usd}/hr plus "
+        f"${actual.estimate.volume_hourly_usd}/hr volume, not the "
+        f"${reviewed.estimate.pod_hourly_usd}/hr plus "
+        f"${reviewed.estimate.volume_hourly_usd}/hr volume that was confirmed: the price "
+        "moved after the confirmation was claimed, and stayed inside the configured ceiling"
+    )
+
+
+def _open_lease_found(observed: str) -> str:
+    """A paid action here is open, and this one is refused until it is closed."""
+
+    return (
+        "a paid action is already armed in this lease root and no verified close is "
+        f"recorded for it: {observed}; at most one pod may be live at a time, so this one "
+        "is refused -- close the open one and confirm its verified close first; no paid "
+        "action occurred"
+    )
+
+
+def _unproven_lease_root(observed: str) -> str:
+    """The same refusal, saying only what was actually established.
+
+    Nothing here observed an open paid action; what it observed is that it could
+    not rule one out. GOVERNANCE 10 makes that a different sentence, and an
+    operator who is told a pod is running when the real fault is an unreadable
+    file will go looking for the wrong thing.
+    """
+
+    return (
+        "this lease root could not be proved clear of an open paid action: "
+        f"{observed}; a pod that cannot be ruled out is treated as live, so this one is "
+        "refused -- repair or account for the named lease evidence first; no paid action "
+        "occurred"
+    )
 
 
 def _spend_refusal_state(assessment: SpendAssessment) -> LaunchState:
@@ -142,6 +206,7 @@ class LaunchState(StrEnum):
     REFUSED_CEILING = "refused-ceiling"
     REFUSED_BALANCE_FLOOR = "refused-balance-floor"
     REFUSED_BALANCE_UNOBSERVABLE = "refused-balance-unobservable"
+    REFUSED_ACTIVE_LEASE = "refused-active-lease"
     REFUSED_CONFIRMATION = "refused-confirmation"
     PROVIDER_FAILURE = "provider-failure"
     LEASE_FAILURE = "lease-failure"
@@ -207,6 +272,18 @@ class LaunchResult:
         return self.state in {LaunchState.CREATED_GUARDED, LaunchState.ADOPTED_GUARDED}
 
 
+@dataclass(frozen=True, slots=True)
+class _OutstandingChallenge:
+    """One issued preview: what it authorizes, not merely that it exists."""
+
+    challenge: str
+    hard_deadline: datetime
+    request_digest: str
+
+    def matches_deadline(self, hard_deadline: datetime) -> bool:
+        return self.hard_deadline == hard_deadline
+
+
 class PodRuntime:
     """The local controller.  It cannot make a paid action without an explicit call."""
 
@@ -254,11 +331,12 @@ class PodRuntime:
         )
         self.notifier = notifier
         # Outstanding preview challenges, keyed by (action, subject), each holding the
-        # challenge and the hard deadline it was assessed against. In-memory and
-        # per-process on purpose: a challenge that outlived the run would be exactly the
-        # replayable credential this gate exists to refuse. The lock makes claiming one
-        # atomic, so overlapping callers cannot both spend the same confirmation.
-        self._outstanding: dict[tuple[str, str], tuple[str, datetime]] = {}
+        # challenge, the hard deadline it was assessed against, and the digest of the
+        # exact request that was reviewed. In-memory and per-process on purpose: a
+        # challenge that outlived the run would be exactly the replayable credential
+        # this gate exists to refuse. The lock makes claiming one atomic, so overlapping
+        # callers cannot both spend the same confirmation.
+        self._outstanding: dict[tuple[str, str], _OutstandingChallenge] = {}
         self._challenge_lock = threading.Lock()
 
     def preview_create(self, request: PodCreateRequest, *, mint: bool = True) -> LaunchResult:
@@ -289,7 +367,14 @@ class PodRuntime:
             estimate = self.provider.estimate(request)
         except Exception as error:
             return LaunchResult(LaunchState.PROVIDER_FAILURE, detail=f"estimate failed: {error}")
-        return self._preview("create", request.name, estimate, request.hard_deadline, mint=mint)
+        return self._preview(
+            "create",
+            request.name,
+            estimate,
+            request.hard_deadline,
+            request.reviewed_digest(),
+            mint=mint,
+        )
 
     def create(self, request: PodCreateRequest, *, confirmation: str | None) -> LaunchResult:
         """Serialize the shared lease-root assessment through durable reservation."""
@@ -322,8 +407,18 @@ class PodRuntime:
             # carries a phrase whose challenge is still spendable.
             return LaunchResult(
                 _spend_refusal_state(preview_result.preview.assessment),
-                _phraseless(preview_result.preview),
+                phraseless(preview_result.preview),
                 detail="; ".join(preview_result.preview.assessment.reasons),
+            )
+        # After the ceilings, before the challenge is consumed: a refusal here leaves
+        # the preview spendable, so an operator who closes the open pod can confirm the
+        # phrase they were already shown, and no existing refusal loses its precedence.
+        open_lease = self._open_lease_refusal()
+        if open_lease is not None:
+            return LaunchResult(
+                LaunchState.REFUSED_ACTIVE_LEASE,
+                phraseless(preview_result.preview),
+                detail=open_lease,
             )
         # Nothing outstanding: there is no phrase to build, so say so before trying.
         # This is an early exit, not the guard -- `_claim_challenge` re-reads under the
@@ -335,19 +430,20 @@ class PodRuntime:
                     "create",
                     request.name,
                     request.hard_deadline,
+                    request.reviewed_digest(),
                     preview_result.preview.confirmation_phrase,
                     confirmation,
                 )
             except SpendRefusal as error:
                 return LaunchResult(
                     LaunchState.REFUSED_CONFIRMATION,
-                    _phraseless(preview_result.preview),
+                    phraseless(preview_result.preview),
                     detail=str(error),
                 )
         if not claimed:
             return LaunchResult(
                 LaunchState.REFUSED_CONFIRMATION,
-                _phraseless(preview_result.preview),
+                phraseless(preview_result.preview),
                 detail=(
                     "no preview in this run issued a challenge for this create at this "
                     "hard deadline; run the preview and confirm the phrase it prints; "
@@ -478,6 +574,9 @@ class PodRuntime:
             owner_token=owner_token,
             preview=actual_preview,
             success_state=LaunchState.CREATED_GUARDED,
+            price_note=price_move_note(
+                preview_result.preview.assessment, actual_preview.assessment
+            ),
         )
 
     def preview_adopt(
@@ -516,7 +615,12 @@ class PodRuntime:
                 detail="adopted pod does not prove the requested on-demand image/template/volume/timer contract",
             )
         result = self._preview(
-            "adopt", record.pod_id, record.estimate, expected.hard_deadline, mint=mint
+            "adopt",
+            record.pod_id,
+            record.estimate,
+            expected.hard_deadline,
+            expected.reviewed_digest(),
+            mint=mint,
         )
         return LaunchResult(result.state, result.preview, record=record, detail=result.detail)
 
@@ -566,9 +670,19 @@ class PodRuntime:
             # refusal report.
             return LaunchResult(
                 _spend_refusal_state(preview_result.preview.assessment),
-                _phraseless(preview_result.preview),
+                phraseless(preview_result.preview),
                 record=preview_result.record,
                 detail="; ".join(preview_result.preview.assessment.reasons),
+            )
+        # The same single-live-pod refusal as `create`, in the same place: adoption is
+        # the other way a second pod becomes this laptop's liability.
+        open_lease = self._open_lease_refusal()
+        if open_lease is not None:
+            return LaunchResult(
+                LaunchState.REFUSED_ACTIVE_LEASE,
+                phraseless(preview_result.preview),
+                record=preview_result.record,
+                detail=open_lease,
             )
         # Same early exit as `create`, for the same reason.
         claimed = preview_result.preview.challenge is not None
@@ -578,20 +692,21 @@ class PodRuntime:
                     "adopt",
                     preview_result.record.pod_id,
                     expected.hard_deadline,
+                    expected.reviewed_digest(),
                     preview_result.preview.confirmation_phrase,
                     confirmation,
                 )
             except SpendRefusal as error:
                 return LaunchResult(
                     LaunchState.REFUSED_CONFIRMATION,
-                    _phraseless(preview_result.preview),
+                    phraseless(preview_result.preview),
                     record=preview_result.record,
                     detail=str(error),
                 )
         if not claimed:
             return LaunchResult(
                 LaunchState.REFUSED_CONFIRMATION,
-                _phraseless(preview_result.preview),
+                phraseless(preview_result.preview),
                 record=preview_result.record,
                 detail=(
                     "no preview in this run issued a challenge for this adoption at this "
@@ -696,6 +811,12 @@ class PodRuntime:
         Holding this lease-root lock until the new lease exists ensures the next
         create/adopt assessment sees this action's maximum remaining liability.
         A process crash releases the OS lock while leaving the pending lease behind.
+
+        It carries the single-live-pod invariant too. `_open_lease_refusal` runs
+        inside this section, so between one caller reading the leases and writing
+        its own, no second caller can read them: whoever loses the lock sees the
+        winner's armed lease and refuses, rather than creating a second billing
+        pod behind a descriptor pointer that can only name one of them.
         """
 
         # The lock is a sibling of the lease directory.  That lets an invalid
@@ -746,6 +867,48 @@ class PodRuntime:
             )
         return total, None
 
+    def _open_lease_refusal(self) -> str | None:
+        """Name any other locally armed paid action that has no verified close yet.
+
+        This is the single-live-pod invariant, read where it can actually hold:
+        inside `_spend_gate_lock`, before this action arms a lease of its own, so
+        every lease it finds belongs to someone else and there is nothing to
+        exclude. `_reserved_liability` scans the same evidence for the money
+        ceiling, and totalling it answers a different question -- two
+        individually affordable pods clear every ceiling and still leave two pods
+        billing behind one descriptor pointer that can only name one of them.
+        That is the harm GOVERNANCE 8 and CLAUDE.md hard rule 2 exist to prevent,
+        and the durable lock that already serializes assessment is what turns the
+        check from a descriptor-timing race into a lock-covered fact.
+
+        A lease that cannot be read refuses rather than being skipped, and says
+        the weaker thing it actually knows: not that a pod is billing, but that
+        this root could not be proved clear of one. `_reserved_liability` reaches
+        the same files first today and refuses them at the balance floor, so that
+        branch is the fail-closed half of a check whose primary reader is
+        elsewhere -- kept because it costs nothing and because a later reordering
+        of these gates must not be able to open the hole again.
+
+        Returns the refusal detail, or ``None`` when nothing here is open.
+        """
+
+        try:
+            paths = sorted(self.lease_root.glob("*.json"))
+        except OSError as error:
+            return _unproven_lease_root(f"the lease directory could not be listed: {error}")
+        for path in paths:
+            if path.is_symlink():
+                return _unproven_lease_root(f"lease {path} is a symlink")
+            try:
+                lease = LeaseStore(path).load()
+            except Exception as error:
+                return _unproven_lease_root(f"lease {path} could not be read: {error}")
+            if lease is None or lease.phase == "closed-verified":
+                continue
+            named = "" if lease.pod_id is None else f" for pod {lease.pod_id}"
+            return _open_lease_found(f"lease {path} is {lease.phase}{named}")
+        return None
+
     def _assess(
         self,
         estimate: PodEstimate,
@@ -778,6 +941,7 @@ class PodRuntime:
         subject: str,
         estimate: PodEstimate,
         hard_deadline: datetime,
+        request_digest: str,
         *,
         mint: bool,
     ) -> LaunchResult:
@@ -786,6 +950,9 @@ class PodRuntime:
         ``mint`` is the whole gate. A human-facing preview mints a fresh challenge and
         displays it. The re-assessment inside ``create``/``adopt`` passes ``False``, so it
         can only confirm against a challenge some earlier preview actually issued.
+
+        ``request_digest`` is the reviewed request's own digest, recorded with the
+        challenge here and checked again by ``_claim_challenge`` under the lock.
         """
 
         assessment = self._record_spend_notifications(
@@ -797,16 +964,26 @@ class PodRuntime:
             if not challenge:
                 raise ValueError("challenge factory returned no challenge")
             with self._challenge_lock:
-                self._outstanding[key] = (challenge, hard_deadline)
+                self._outstanding[key] = _OutstandingChallenge(
+                    challenge, hard_deadline, request_digest
+                )
         else:
             # The deadline is part of what was authorized, not merely part of what was
             # displayed. The phrase names the action, subject and both hourly rates, none
             # of which changes with lifetime -- so without this a ten-minute preview's
             # phrase would confirm a create running to the configured ceiling. The
             # ceiling still bounds the exposure; the operator's consent did not cover it.
+            #
+            # The rest of the request is checked in `_claim_challenge`, not here: that
+            # divergence has its own refusal to name, and the check that decides belongs
+            # under the same lock that consumes the challenge.
             with self._challenge_lock:
                 held = self._outstanding.get(key)
-            challenge = held[0] if held is not None and held[1] == hard_deadline else None
+            challenge = (
+                held.challenge
+                if held is not None and held.matches_deadline(hard_deadline)
+                else None
+            )
         return LaunchResult(
             LaunchState.PREVIEW, PaidActionPreview(action, subject, assessment, challenge)
         )
@@ -1004,7 +1181,13 @@ class PodRuntime:
             return None, f"{type(error).__name__}: {error}"
 
     def _claim_challenge(
-        self, action: str, subject: str, hard_deadline: datetime, expected: str, typed: str | None
+        self,
+        action: str,
+        subject: str,
+        hard_deadline: datetime,
+        request_digest: str,
+        expected: str,
+        typed: str | None,
     ) -> bool:
         """Verify and consume one challenge as a single atomic step.
 
@@ -1016,16 +1199,27 @@ class PodRuntime:
         Everything that decides the outcome happens under the lock, and the entry is
         removed before this returns, so exactly one caller can ever win a given
         challenge. A wrong phrase raises without consuming: a typo must not burn the
-        preview, and holding the lock makes that safe.
+        preview, and holding the lock makes that safe. A request that diverges from the
+        reviewed one raises without consuming for the same reason -- the preview the
+        operator was actually shown is still theirs to confirm.
 
         Returns ``False`` when no challenge matches this action, subject and deadline.
-        Raises ``SpendRefusal`` when one exists but the typed phrase does not match it.
+        Raises ``SpendRefusal`` when one exists but the request or the typed phrase does
+        not match it.
         """
 
         with self._challenge_lock:
             held = self._outstanding.get((action, subject))
-            if held is None or held[1] != hard_deadline:
+            if held is None or not held.matches_deadline(hard_deadline):
                 return False
+            if held.request_digest != request_digest:
+                raise SpendRefusal(
+                    "typed confirmation authorizes a different request than this one: the "
+                    "phrase names only the action, the subject and the two hourly rates, "
+                    "and the rest of the request changed after the preview that issued "
+                    "this challenge -- preview the request you mean and type its phrase; "
+                    "no paid action occurred"
+                )
             require_confirmation(typed, expected)
             del self._outstanding[(action, subject)]
             return True
@@ -1093,6 +1287,7 @@ class PodRuntime:
         owner_token: str,
         preview: PaidActionPreview,
         success_state: LaunchState,
+        price_note: str = "",
     ) -> LaunchResult:
         """Persist both controller acknowledgements or immediately close non-green."""
 
@@ -1148,6 +1343,7 @@ class PodRuntime:
                     detail=(
                         "pod passed shutdown, ceiling, confirmation, exact runtime-contract, "
                         "lease, laptop-supervisor, and pod-timer acknowledgement gates"
+                        f"{price_note}"
                     ),
                     controller_arming=arming,
                 )

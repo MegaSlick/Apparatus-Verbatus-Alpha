@@ -10,12 +10,14 @@ from __future__ import annotations
 import json
 import math
 import re
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, fields, replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from enum import StrEnum
 from pathlib import PurePosixPath
 from typing import Mapping
+
+from common.contracts.canonical import canonical_bytes, digest_bytes
 
 UTC = timezone.utc
 
@@ -208,6 +210,45 @@ class PodCreateRequest:
         """Return a non-creating exact-token lookup request for crash reconciliation."""
 
         return replace(self, recovery_only=True)
+
+    def reviewed_digest(self) -> str:
+        """The digest of every field of this request, exactly as it was reviewed.
+
+        The typed confirmation phrase names only the action, the subject and the
+        two hourly rates, so on its own it authorizes any request that happens to
+        share those.  This digest is what the spend gate binds a preview's
+        challenge to, so the pod that bills is the pod that was reviewed.
+
+        Enumerated from ``dataclasses.fields`` rather than a written-out list:
+        a field this digest forgot would be a field the operator's authorization
+        silently does not cover, and a field added later would be forgotten by
+        default.  An unforeseen field type refuses loudly here rather than
+        reaching the digest as a repr nobody can reproduce.
+        """
+
+        return digest_bytes(
+            canonical_bytes(
+                {entry.name: _digestable(getattr(self, entry.name)) for entry in fields(self)}
+            )
+        )
+
+
+def _digestable(value: object) -> object:
+    """The canonical-serializable form of one request field."""
+
+    if value is None or isinstance(value, (bool, int, str)):
+        return value
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, Mapping):
+        return {str(key): _digestable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_digestable(item) for item in value]
+    raise ValueError(
+        f"pod request field of type {type(value).__name__} has no reviewed digest form"
+    )
 
 
 _SHELL_INTERPRETERS = frozenset({"sh", "bash", "zsh", "dash", "ksh"})

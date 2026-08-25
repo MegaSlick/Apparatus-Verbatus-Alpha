@@ -103,6 +103,20 @@ are Tyrel's to set, and the refusal is the tool working.
 It also refuses to start or adopt a second machine while one is still recorded as open.
 Run `close` for that one first.
 
+It refuses in two more cases, both of which mean a machine may be running that this tool
+cannot see:
+
+- **A launch that never came back.** If a launch reached the provider and then lost the
+  answer — the network dropped, the window was closed — no machine record was saved, but
+  the safety lease that was armed just before it is still on file. A machine may be
+  billing. `launch` refuses and names that lease; `status` shows it. The safety timers
+  keep that machine until its booked deadline, which is what they are for. Do not start
+  another one on top of it: tell Tyrel, and check the provider's own console.
+- **Two windows at once.** Only one window may be part-way through a paid launch. The
+  second is told so straight away rather than left waiting, and it spent nothing: the
+  line you typed is still good once the first window has finished and its machine is
+  closed.
+
 ## Shutting down, and what "closed" actually means
 
 In a live-capable build, `close` asks for its own separate confirmation and then does
@@ -140,6 +154,10 @@ this tool and not something you did — save the text and pass it on.
 `status` never starts, spends or changes anything. It reads records this tool already
 saved and repeats them **exactly as recorded** — it does not recalculate anything, so what
 it shows you and what is on file cannot drift apart. Run it whenever you are unsure.
+
+It also lists any **safety lease** with no verified close recorded against it, because that
+is the one place a machine can be billing without a machine record to show you. A lease it
+cannot read is listed as unreadable and never counted as closed.
 
 ## Phone notifications
 
