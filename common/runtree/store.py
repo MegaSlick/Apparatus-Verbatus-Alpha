@@ -40,6 +40,7 @@ import os
 import sys
 import tempfile
 from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Final
 
@@ -701,8 +702,9 @@ class RunTree:
 
     def read_artifact(self, stage: str, kind: str, artifact_id: str) -> dict[str, Any]:
         relative = self.artifact_path(stage, kind, artifact_id)
-        record = validate_envelope(_read_json(self.resolve(relative)))
-        self._verify_artifact_run(record)
+        with _naming(relative):
+            record = validate_envelope(_read_json(self.resolve(relative)))
+            self._verify_artifact_run(record)
         if (
             record["stage"] != stage
             or record["kind"] != kind
@@ -795,8 +797,11 @@ class RunTree:
                 # validate and again to hash allowed a concurrent replacement to
                 # pair metadata from one valid envelope with the digest of another.
                 record, artifact_bytes = _read_json_with_bytes(path)
-                record = validate_envelope(record)
-                self._verify_artifact_run(record)
+                with _naming(relative_path):
+                    record = validate_envelope(record)
+                    self._verify_artifact_run(record)
+                # Outside the wrapper on purpose: this one already names the
+                # path it is judging, and prefixing it would say it twice.
                 self._verify_artifact_path(relative_path, record)
                 # Door and Exemplar deliberately share one physical directory:
                 # a Door admission is part of what Exemplar must account for.
@@ -1296,6 +1301,31 @@ def _write_temporary(target: Path, data: bytes) -> Path:
             temporary.unlink()
         raise
     return temporary
+
+
+@contextmanager
+def _naming(relative_path: str) -> Iterator[None]:
+    """Put the offending artifact's path into a refusal that could not know it.
+
+    The envelope and identity checks are given a decoded record, so a self-hash
+    or identity failure they raise says *what* is wrong and has no way to say
+    *which file*. Every reader here does know, and a reader that drops the one
+    fact needed to find the file has made the refusal unactionable: the operator
+    console renders exactly this text under an instruction to "repair the named
+    evidence problem", and it named nothing. Blob-digest refusals on the same
+    path already carry their relative path, so this makes the two agree.
+
+    The class is preserved, not widened to `SchemaRefusal`: a caller catching
+    `IdentityRefusal` or `ApprovalRefusal` specifically must still catch it.
+    """
+
+    try:
+        yield
+    except SchemaRefusal as error:
+        message = str(error)
+        if message.startswith(f"{relative_path}: "):
+            raise
+        raise type(error)(f"{relative_path}: {message}") from error
 
 
 def _read_json_with_bytes(path: Path) -> tuple[Any, bytes]:
