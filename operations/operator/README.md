@@ -26,10 +26,9 @@ only that): see the status line above and the upload section below.
 That is deliberate, and it is why every screen says "fixture" where a real run would say
 a real thing. The first real run is a separate, separately approved step.
 
-## The nine words
+## The ten words
 
-Eight things this tool can do, in the order a normal run uses them, plus one you can run
-any time to check on things.
+Ten things this tool can do, in the order a normal run uses them.
 
 | Word | What the real run does | Real-run cost |
 |---|---|---|
@@ -42,6 +41,7 @@ any time to check on things.
 | `backup` | Copies one completed or partial volume-hosted run tree to a local synced Mac directory. | No. It uses no provider credential, stores every file by SHA-256, and verifies every reused or copied byte. |
 | `close` | Shuts the rented machine down. This build closes its fixture pod only. | A real close is what **stops** the pod cost. Always safe to run. |
 | `status` | Shows what is currently going on. | No — it only reads. It never starts, changes or spends anything. |
+| `spend show` | Shows the reviewed ceilings and hard-stop floor, then saved balance observations and notification-only alert outcomes. | No — it reads the policy and immutable local receipts only; it does not contact a provider or edit the policy. |
 
 ## `ingest`: prepare a folder before the Door
 
@@ -102,6 +102,19 @@ are Tyrel's to set, and the refusal is the tool working.
 
 It also refuses to start or adopt a second machine while one is still recorded as open.
 Run `close` for that one first.
+
+## `spend show`: inspect the reviewed guard
+
+Choose **spend** in the double-click window, or run `verbatus spend show`. It shows a
+configured policy's ceilings, hard-stop balance floor, and notification-only alert
+threshold with the policy's SHA-256 digest. It also shows every recorded preview balance,
+its source and present staleness, plus each saved notification delivery outcome with the
+immutable receipt digest that recorded it. Where a receipt saved a different number of
+alerts and delivery outcomes, the screen says the two cannot be paired and shows both
+sides unattributed rather than guessing which outcome belongs to which alert. It does not
+fetch a fresh balance and it never changes `config/spend.toml`. The deliberately
+unconfigured checked-in policy refuses through the ordinary three-part console message
+rather than inventing values.
 
 ## Shutting down, and what "closed" actually means
 

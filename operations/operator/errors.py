@@ -21,6 +21,8 @@ class ErrorCode(StrEnum):
     INVALID_COMMAND = "invalid-command"
     LIVE_PROVIDER_BLOCKED = "live-provider-blocked"
     SPEND_POLICY_REQUIRED = "spend-policy-required"
+    SPEND_POLICY_UNCONFIGURED = "spend-policy-unconfigured"
+    SPEND_POLICY_UNREADABLE = "spend-policy-unreadable"
     CONFIRMATION_REQUIRED = "confirmation-required"
     CONFIRMATION_RECORD_FAILED = "confirmation-record-failed"
     RECORD_WRITE_FAILED = "record-write-failed"
@@ -94,6 +96,16 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
         "Launch could not proceed because no reviewed spend limit is configured.",
         "Verbatus sent no new paid provider action.",
         "Set the GPU and spending limits in the reviewed policy, then run `verbatus launch` again; this is safe.",
+    ),
+    ErrorCode.SPEND_POLICY_UNCONFIGURED: ErrorCopy(
+        "The reviewed spend policy is intentionally unconfigured.",
+        "It has no approved ceilings, balance floor, or alert threshold, so Verbatus will not display it as configured.",
+        "Keep this policy unconfigured until Tyrel supplies a reviewed policy; no provider was contacted and nothing was changed.",
+    ),
+    ErrorCode.SPEND_POLICY_UNREADABLE: ErrorCopy(
+        "Verbatus could not read the reviewed spend policy.",
+        "No policy, balance observation, or alert history was presented as current, and no provider was contacted.",
+        "Preserve the saved detail and use a readable reviewed policy file; this command changes nothing.",
     ),
     ErrorCode.CONFIRMATION_REQUIRED: ErrorCopy(
         "The required typed confirmation was not received.",
