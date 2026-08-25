@@ -4499,7 +4499,7 @@ def test_each_handoff_corruption_stops_its_named_real_consumer(
 def test_each_stage_seal_corruption_stops_its_named_consumer(
     happy_run, tmp_path, producer, consumer
 ):
-    """Invoke the seven stage readers and the orchestrator's final reader itself."""
+    """Every seal has a downstream reader; Armarium's reader is the orchestrator."""
     source_root, _ = happy_run
     root = tmp_path / "runs"
     shutil.copytree(source_root, root)

@@ -14,6 +14,8 @@ from common.stage import EXIT_HELD
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
 FIXTURE = "synthetic-two-page-v0"
+# Keep this list independent of the implementation: importing the production
+# sequence would make the byte-identity test accept the same missing member.
 SEQUENCE = (
     "door",
     "exemplar",
@@ -49,7 +51,7 @@ def drive(root: Path, run_id: str, scenario: str, *selection: str) -> subprocess
 
 
 def snapshot(root: Path) -> dict[str, bytes]:
-    """The ordinary byte snapshot, deliberately not semantic normalization."""
+    """Require literal tree identity; semantic normalization would hide mode leaks."""
     return {
         str(path.relative_to(root)): path.read_bytes()
         for path in sorted(root.rglob("*"))
@@ -142,11 +144,7 @@ def test_semi_mode_stops_at_a_named_hold(tmp_path):
 
 
 def test_a_held_armarium_reports_its_terminal_reasons_under_every_mode(tmp_path):
-    """Armarium is always the last member of any selection that reaches it, so
-    the semi/manual held-shortcuts must not apply to it: doing so returned a
-    bare exit code and threw away the terminal report's named held reasons —
-    the exact thing GOVERNANCE 2 says a partial result may not lose.
-    """
+    """Armarium holds must retain the terminal report's named partial reasons."""
     automatic = tmp_path / "automatic"
     manual = tmp_path / "manual"
     semi = tmp_path / "semi"
@@ -156,7 +154,7 @@ def test_a_held_armarium_reports_its_terminal_reasons_under_every_mode(tmp_path)
     assert "run r: partial" in all_result.stdout
     assert "act a2 is held-for-review" in all_result.stdout
 
-    for stage in SEQUENCE:
+    for stage in SEQUENCE[:-1]:
         drive(manual, "r", "review", "--stage", stage)
     manual_result = drive(manual, "r", "review", "--stage", "armarium")
     assert manual_result.returncode == EXIT_HELD
@@ -171,13 +169,10 @@ def test_a_held_armarium_reports_its_terminal_reasons_under_every_mode(tmp_path)
 
 
 def test_the_orchestrator_refuses_an_armarium_boundary_its_producer_cannot_see(tmp_path):
-    """The run's last seal has no consumer stage, so the orchestrator is its reader.
+    """Only the orchestrator can read the terminal stage's own completion seal.
 
-    Chosen damage on purpose: the Armarium's `decode-environment` is NAMED by its
-    own stage-seal but excluded from the seal's inventory, so a re-invoked Armarium
-    recomputes an identical payload, reuses the prior seal, and never notices. Only
-    a reader of the Armarium's own seal can. Before this, the orchestrator read the
-    Archetypus's seal a second time here and reported `complete`, exit 0.
+    ``decode-environment`` is named by that seal but excluded from its inventory,
+    so the producer can reuse the seal after this damage and cannot diagnose it.
     """
     root = tmp_path / "runs"
     assert drive(root, "r", "happy", "--all").returncode == 0
@@ -195,13 +190,9 @@ def test_the_orchestrator_refuses_an_armarium_boundary_its_producer_cannot_see(t
 
 
 def test_an_attestatores_prework_hold_leaves_a_boundary_the_next_stage_refuses(tmp_path):
-    """The hold that writes nothing, driven end to end rather than argued for.
+    """A pre-write Attestatores hold leaves no boundary later stages may cross.
 
-    An Attestatores pass whose stored inventory no longer agrees with its evidence
-    holds BEFORE writing (`3_attestatores/run.py:2595`), so the boundary the seal
-    describes and the boundary on disk have come apart. A staged operator's next
-    move must be refused by name, with nothing written — otherwise `--from` is a
-    way to walk past a hold that `--all` stops for.
+    Otherwise ``--from`` could advance past a hold that ``--all`` stops for.
     """
     root = tmp_path / "runs"
     assert drive(root, "r", "happy", "--from", "door", "--to", "attestatores").returncode == 0
@@ -222,13 +213,12 @@ def test_an_attestatores_prework_hold_leaves_a_boundary_the_next_stage_refuses(t
 def test_every_mode_checkpoints_a_held_member_before_it_stops(monkeypatch, tmp_path):
     """A run that is both held and over the cap has two stop reasons; the cap wins.
 
-    Driven through `run_sequence` directly because the two-act fixture cannot
-    organically cross the cap mid-sequence — the same reason
-    `test_run_level_hard_failure_cap.py`'s boundary tests are driven this way.
-    Semi mode used to return its hold ahead of the recompute, so the identical
-    breach reported exit 3 where `--all` and `--stage` reported exit 4.
+    The two-act fixture cannot organically cross the cap mid-sequence, so this
+    test must inject the otherwise unreachable boundary state.
     """
-    orchestrator = _load_orchestrator()
+    spec = importlib.util.spec_from_file_location("orchestrator_run_modes", ORCHESTRATOR)
+    orchestrator = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(orchestrator)
     args = argparse.Namespace(run_root=str(tmp_path), run_id="r")
     breach = {
         "threshold": 2,
@@ -263,10 +253,3 @@ def test_every_mode_checkpoints_a_held_member_before_it_stops(monkeypatch, tmp_p
 
         monkeypatch.setattr(orchestrator, "checkpoint", lambda _args, _name, _policy: breach)
         assert orchestrator.run_sequence(args, names, mode, {}) == orchestrator.EXIT_RUN_HALTED
-
-
-def _load_orchestrator():
-    spec = importlib.util.spec_from_file_location("orchestrator_run_modes", ORCHESTRATOR)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module

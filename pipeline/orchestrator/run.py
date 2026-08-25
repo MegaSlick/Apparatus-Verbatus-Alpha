@@ -160,10 +160,8 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
     completed = subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
     if completed.stdout.strip():
         print(completed.stdout.rstrip())
-    # A completed-but-partial Door publishes its private refusal report on stderr.
-    # Forward it on the normal orchestration path so the human who ran the pipeline
-    # is told that the retained record exists.  Unexpected exits remain reported by
-    # the ContractError below, without printing their diagnostics twice.
+    # Recognized exits own their diagnostic text; unexpected-exit stderr is
+    # relayed once inside the ContractError below.
     if (
         completed.returncode in (EXIT_COMPLETE, EXIT_HELD, EXIT_RUN_HALTED)
         and completed.stderr.strip()
@@ -361,23 +359,10 @@ def main() -> int:
 
     names, mode = selected_sequence(args)
 
-    # A resumed run may already be over the cap. Recompute before re-entering
-    # any stage, not only after the first idempotent replay: "stop" bounds work,
-    # and replaying a model stage before rediscovering durable failure evidence
-    # would spend work after the run was already known to need Tyrel.
     tree = RunTree(Path(args.run_root), args.run_id)
-    # Read once, here, and held for the whole run: every `checkpoint` below takes
-    # this exact policy object rather than reopening the file, so the cap that
-    # halts the run cannot move under it mid-orchestration (S3's shape, applied to
-    # the sealing family's fourth member).
-    #
-    # The proof is a step behind the read for a reason peculiar to this policy.
-    # The threshold has to be known before the resume preflight can decide whether
-    # a resumed run may re-enter a stage at all, and on a FIRST run there is no
-    # run authority to prove it against until the Door creates one -- so the point
-    # of use is the first moment such an authority exists. On a resume that is
-    # right here, before anything is invoked; on a first run the Door seals these
-    # digests from the same bytes and every stage after it rechecks its own.
+    # Every checkpoint shares this object so the cap cannot move mid-run. A
+    # resume proves it before entry; a new run cannot prove it until Door creates
+    # the run authority, so run_sequence proves that first boundary instead.
     hard_failure_policy = load_hard_failure_policy(args.hard_failure_config)
     if tree.resolve("run.json").exists():
         require_sealed_config(
@@ -423,36 +408,20 @@ def selected_sequence(args: argparse.Namespace) -> tuple[tuple[str, ...], str]:
     return names, inferred_mode
 
 
-def _prove_door_policy(args: argparse.Namespace, hard_failure_policy: dict) -> None:
-    """Prove the first-run policy read against the authority the Door just wrote."""
-    require_sealed_config(
-        run_sealed_config_digests(RunTree(Path(args.run_root), args.run_id).read_run()),
-        "hard-failure",
-        hard_failure_policy["config_sha256"],
-    )
-
-
 def run_sequence(
     args: argparse.Namespace,
     names: tuple[str, ...],
     mode: str,
     hard_failure_policy: dict,
 ) -> int:
-    """Run one selected sequence inside the existing run identity.
-
-    All driver spellings reach this one loop.  Stage programs themselves prove
-    their predecessor's stored seal at entry; the recovery member explicitly
-    proves the Recensor boundary before dispatching its re-entry attempts.
-    """
+    """Run one contiguous selection without persisting its driver mode."""
     for name in names:
         if name == "recovery":
-            # Recovery's immediate predecessor is Recensor.  It has no stage
-            # program of its own, so borrow Archetypus's named predecessor proof
-            # rather than permit an unsealed request to dispatch a recrop.
+            # Recovery has no program whose open_context can verify Recensor;
+            # Archetypus's predecessor mapping names that required boundary.
             recovery_tree = RunTree(Path(args.run_root), args.run_id)
-            # The guard is unconditional for real invocations.  Keeping the
-            # no-tree branch inert preserves the isolated sequencing tests,
-            # whose mocked programs intentionally do not manufacture a run.
+            # Isolated sequencing tests mock every stage and intentionally have
+            # no run tree; real recovery invocations always have run.json.
             if recovery_tree.resolve("run.json").exists():
                 verify_predecessor_seal(recovery_tree, "archetypus")
             halted = drive_recovery(args, hard_failure_policy)
@@ -467,44 +436,27 @@ def run_sequence(
 
         result = invoke(STAGE_PROGRAMS[name], args)
         if result == EXIT_RUN_HALTED:
-            halted = checkpoint(args, f"{name}-entry", hard_failure_policy)
-            if halted is None:
-                raise ContractError(
-                    f"{name} returned EXIT_RUN_HALTED but its hard-failure tally is not breached"
-                )
+            halted = _entry_halt(args, name, hard_failure_policy)
             report_halt(args, halted)
             return EXIT_RUN_HALTED
         if name == "door" and result in (EXIT_COMPLETE, EXIT_HELD):
-            # On a first run the Door creates the authority.  This is the first
-            # moment the policy bytes read by the driver can be proven against it.
-            _prove_door_policy(args, hard_failure_policy)
-        # The checkpoint comes before every stop below, in every mode, because
-        # the cap is the more serious of two simultaneous stop reasons: a run that
-        # is both held and over Tyrel's cap needs fixing, not re-entry. Returning
-        # any hold ahead of the recompute reports exit 3 where the same durable
-        # tally requires exit 4, and suppresses the early-warning line at exactly
-        # two failures. This includes the Attestatores' special held exit: its
-        # outcomes do not themselves enter the cap, but a member boundary is still
-        # required to recompute the run's whole retained tally.
+            require_sealed_config(
+                run_sealed_config_digests(RunTree(Path(args.run_root), args.run_id).read_run()),
+                "hard-failure",
+                hard_failure_policy["config_sha256"],
+            )
+        # The cap and its exact-threshold warning take precedence over every
+        # held exit, including an Attestatores hold whose outcome is not counted.
         halted = checkpoint(args, name, hard_failure_policy)
         if halted is not None:
             report_halt(args, halted)
             return EXIT_RUN_HALTED
-        # A held Attestatores exit is not an ordinary partial act result. It has
-        # two shapes -- a no-write preflight hold (3_attestatores/run.py:2576,
-        # :2595, :2634) and an attempt tally that came back UNKNOWN after the pass
-        # had already sealed and written its inventory (:2658) -- and its own
-        # forwarded stderr names which. Both stop orchestration, because an
-        # unestablished witness tally is not an accounting a later member may
-        # advance past.
+        # An Attestatores hold means its attempt tally is unestablished, so no
+        # later member may advance even when the stage already sealed evidence.
         if name == ATTESTATORES and result == EXIT_HELD:
             print(f"run {args.run_id}: held; its reason is on stderr above")
             return EXIT_HELD
-        # Armarium is excluded from the stop below: it is always the last member of
-        # any selection that contains it, so there is no remaining work for an early
-        # return to protect, and skipping ahead of the tail block instead threw away
-        # the run's terminal report and its held reasons — the exact GOVERNANCE 2
-        # information a held run must not lose.
+        # Armarium is terminal; returning here would discard its named partial reasons.
         if mode in ("semi", "manual") and result == EXIT_HELD and name != "armarium":
             print(f"run {args.run_id}: {mode} mode stopped at held {name}")
             return EXIT_HELD
@@ -512,12 +464,8 @@ def run_sequence(
     if names[-1] != "armarium":
         return EXIT_COMPLETE
     tree = RunTree(Path(args.run_root), args.run_id)
-    # Armarium has no successor to open a context and prove its seal, so the
-    # orchestrator is its named consumer at the run's final boundary -- of the
-    # ARMARIUM's own statement. `verify_predecessor_seal` is keyed by consumer and
-    # would answer here with the Archetypus, which the Armarium's own entry has
-    # already proved; that left the final boundary unread by anyone. Prove it
-    # before consuming the export, in the same order as every stage consumer.
+    # Armarium has no successor, and the consumer-keyed predecessor helper would
+    # re-read Archetypus rather than Armarium's own seal.
     verify_final_seal(tree)
     export = tree.read_artifact(
         "armarium",

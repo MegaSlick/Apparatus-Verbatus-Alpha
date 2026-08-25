@@ -226,8 +226,7 @@ def test_one_hard_failure_is_a_fluke_and_does_not_breach(tmp_path):
 
 
 def test_a_record_only_tally_leaves_stale_lineage_to_its_consumer_boundary(tmp_path):
-    """Direct entry must measure readable failure records without stealing a
-    stage's more specific diagnosis of changed upstream bytes."""
+    """Record-only tallying leaves stale lineage for its consumer to diagnose."""
     tree = make_run(tmp_path)
     source = tree.resolve("source/input.bin")
     source.parent.mkdir(parents=True)

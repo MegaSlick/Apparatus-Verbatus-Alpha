@@ -863,29 +863,16 @@ def verify_predecessor_seal(tree: RunTree, stage: str) -> None:
 
 
 def verify_final_seal(tree: RunTree) -> None:
-    """Prove the Armarium's own completion boundary, which no stage consumes.
+    """Prove the Armarium boundary, whose lack of a successor leaves no stage reader.
 
-    `SEAL_PREDECESSORS` is keyed by CONSUMER, so asking it about the Armarium
-    answers with the Archetypus -- the statement the Armarium's own `open_context`
-    already proved at its entry. Reading that a second time left the run's LAST
-    boundary with no reader at all, which is the one thing the table's own comment,
-    `pipeline/7_armarium/HANDOFF.md`, and the seal battery's eighth row all say the
-    orchestrator is here to do. Measured before this existed: deleting the
-    Armarium's `decode-environment` -- a record its own stage-seal names -- left a
-    re-run reporting `complete` and exiting 0, while the identical deletion under
-    the Archetypus was refused by name at the Armarium's entry.
+    ``SEAL_PREDECESSORS`` is consumer-keyed, so asking it about Armarium would
+    re-prove the Archetypus boundary instead of reading Armarium's own seal.
     """
     _verify_stage_seal(tree, ARMARIUM, "the orchestrator", "final boundary")
 
 
 def _verify_stage_seal(tree: RunTree, producer: str, reader: str, role: str) -> None:
-    """One reading of a stored completion seal, for a consumer or the orchestrator.
-
-    Stated once because the two readers ask the identical question. A second
-    implementation for the run's final boundary would be a second definition of
-    what a seal means, and the boundary with no downstream stage is exactly the
-    one where a weaker copy would never be noticed.
-    """
+    """Keep stage consumers and the final orchestrator reader on one seal contract."""
     seals = _stage_records(tree, producer, "stage-seal")
     if not seals:
         raise SchemaRefusal(
@@ -2382,18 +2369,10 @@ def open_context(
 
 
 def refuse_halted_run(tree: RunTree, stage: str, hard_failure_config_path: str | Path) -> None:
-    """Apply the run-level cap before a directly invoked stage can write.
-
-    The orchestrator checkpoints after completed members.  A stage program is
-    also an operator-facing entry point, though, so its own entry must refuse a
-    run already over the same sealed cap instead of relying on a driver that may
-    not be present in this invocation.
-    """
+    """Apply the sealed run-level cap when no orchestrator guards stage entry."""
     sealed_digests = tree.read_run().get(SEALED_CONFIG_DIGESTS_FIELD)
-    # The stage-seal migration intentionally keeps older, hand-built contract
-    # fixtures readable so their own boundary can be tested.  A real run created
-    # by the current Door always names this policy; without that sealed name there
-    # is no honest policy instance for an entry check to apply.
+    # Hand-built stage-seal fixtures predate named policies; current Door runs
+    # always name one, and only a named digest supplies a verifiable cap here.
     if not isinstance(sealed_digests, Mapping) or "hard-failure" not in sealed_digests:
         return
     policy = load_hard_failure_policy(hard_failure_config_path)

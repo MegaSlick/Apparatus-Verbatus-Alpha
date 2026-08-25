@@ -178,7 +178,7 @@ def test_the_final_reader_uses_the_same_named_seal_set_deletion_check(tmp_path):
 
 
 def test_a_sigkill_blob_orphan_is_not_witnessed_as_published_evidence(tmp_path):
-    """Kill a real blob publication after its temp write and before its link."""
+    """SIGKILL before the atomic link leaves the temporary bytes unpublished."""
     tree, run, registry, bindings = _tree(tmp_path)
     first = _context(tree, run, registry, bindings)
     first.seal_boundary()
