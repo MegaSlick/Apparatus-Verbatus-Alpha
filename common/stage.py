@@ -13,8 +13,11 @@ declared fixture rather than by hard-coded strings scattered through seven files
 """
 
 import argparse
+import hashlib
 import json
+import os
 import platform
+import stat
 import sys
 import tomllib
 from collections.abc import Mapping
@@ -788,19 +791,25 @@ def _validate_decode_environment(value: Any, owner: str) -> dict[str, Any]:
     return value
 
 
-def _stage_seal_payload(tree: RunTree, stage: str, ordinal: int, attempt: str) -> dict[str, Any]:
-    manifest = tree.build_manifest(stage, verify_inputs=False)
+def _stage_seal_payload(
+    tree: RunTree,
+    stage: str,
+    ordinal: int,
+    attempt: str,
+    *,
+    verify_inputs: bool = True,
+    verify_blob_addresses: bool = True,
+) -> dict[str, Any]:
+    # A completion boundary is the last point at which this producer can prove
+    # every link it records still reaches the bytes it consumed.  Skipping input
+    # verification here let a changed upstream blob be sealed into a locally
+    # self-consistent inventory: the artifact bytes had not changed, only the
+    # evidence their input digest named had.
+    manifest = tree.build_manifest(stage, verify_inputs=verify_inputs)
     artifacts = [
         entry for entry in manifest["artifacts"] if entry["kind"] not in _SEAL_EXCLUDED_KINDS
     ]
-    blobs_root = tree.resolve(f"{tree.blob_path(stage, '0' * 64)}").parent
-    blobs = []
-    if blobs_root.exists():
-        for path in sorted(blobs_root.iterdir()):
-            if path.is_file():
-                blobs.append(
-                    {"name": path.name, "sha256_of_content": digest_bytes(path.read_bytes())}
-                )
+    blobs = _stage_blob_inventory(tree, stage, verify_addresses=verify_blob_addresses)
     census: dict[tuple[str, str], int] = {}
     for entry in artifacts:
         key = (entry["kind"], entry["outcome"])
@@ -831,6 +840,105 @@ def _stage_seal_payload(tree: RunTree, stage: str, ordinal: int, attempt: str) -
         "decode_environment_artifact_id": decode_environment_artifact_id,
         "decode_environment_sha256": decode_environment_sha256,
     }
+
+
+def _stage_blob_inventory(
+    tree: RunTree, stage: str, *, verify_addresses: bool = True
+) -> list[dict[str, str]]:
+    """Read canonical blob files through stable, no-follow descriptors.
+
+    Blob names are claims about their content.  The inventory therefore refuses
+    an unexpected spelling, a symlink or hard link, a name/content mismatch, and
+    a file whose identity or metadata changes while it is hashed.  Hashing the
+    descriptor in chunks also keeps a large but legitimate image from being
+    copied wholesale into memory merely to witness it.
+    """
+    if not hasattr(os, "O_NOFOLLOW"):
+        raise SchemaRefusal("this platform cannot enforce no-follow blob inventory reads")
+    blobs_root = tree.resolve(f"{tree.blob_path(stage, '0' * 64)}").parent
+    flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_DIRECTORY", 0)
+    try:
+        directory_fd = os.open(blobs_root, flags)
+    except FileNotFoundError:
+        return []
+    except OSError as error:
+        raise SchemaRefusal(
+            f"{stage} cannot seal its blob inventory without following links: {error}"
+        ) from error
+    try:
+        opened_directory = os.fstat(directory_fd)
+        named_directory = os.stat(blobs_root, follow_symlinks=False)
+        if not stat.S_ISDIR(opened_directory.st_mode) or (
+            opened_directory.st_dev,
+            opened_directory.st_ino,
+        ) != (named_directory.st_dev, named_directory.st_ino):
+            raise SchemaRefusal(f"{stage} blob inventory is not one contained directory")
+        with os.scandir(directory_fd) as entries:
+            names = sorted(entry.name for entry in entries)
+        inventory = []
+        for name in names:
+            if not is_sha256(name):
+                raise SchemaRefusal(
+                    f"{stage} blob inventory contains noncanonical content address {name!r}"
+                )
+            observed = _digest_regular_file_at(directory_fd, name, stage)
+            if verify_addresses and observed != name:
+                raise SchemaRefusal(
+                    f"{stage} blob {name!r} contains digest {observed}, not the digest in its name"
+                )
+            inventory.append({"name": name, "sha256_of_content": observed})
+        named_directory = os.stat(blobs_root, follow_symlinks=False)
+        if (opened_directory.st_dev, opened_directory.st_ino) != (
+            named_directory.st_dev,
+            named_directory.st_ino,
+        ):
+            raise SchemaRefusal(f"{stage} blob inventory directory changed while it was read")
+        return inventory
+    except OSError as error:
+        raise SchemaRefusal(
+            f"{stage} blob inventory changed or became unreadable while it was read: {error}"
+        ) from error
+    finally:
+        os.close(directory_fd)
+
+
+def _digest_regular_file_at(directory_fd: int, name: str, stage: str) -> str:
+    """Hash one directory entry without changing which inode the name denotes."""
+    try:
+        descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory_fd)
+    except OSError as error:
+        raise SchemaRefusal(
+            f"{stage} blob {name!r} is not a readable no-follow file: {error}"
+        ) from error
+    try:
+        with os.fdopen(descriptor, "rb") as handle:
+            opened = os.fstat(handle.fileno())
+            named_before = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or opened.st_nlink != 1
+                or (opened.st_dev, opened.st_ino) != (named_before.st_dev, named_before.st_ino)
+            ):
+                raise SchemaRefusal(f"{stage} blob {name!r} is not one contained regular file")
+            observed = hashlib.file_digest(handle, "sha256").hexdigest()
+            closed_over = os.fstat(handle.fileno())
+            named_after = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+    except OSError as error:
+        raise SchemaRefusal(
+            f"{stage} blob {name!r} changed or became unreadable while it was inventoried: {error}"
+        ) from error
+
+    identity = (opened.st_dev, opened.st_ino)
+    if (
+        identity != (closed_over.st_dev, closed_over.st_ino)
+        or identity != (named_after.st_dev, named_after.st_ino)
+        or not stat.S_ISREG(named_after.st_mode)
+        or closed_over.st_nlink != 1
+        or (opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns)
+        != (closed_over.st_size, closed_over.st_mtime_ns, closed_over.st_ctime_ns)
+    ):
+        raise SchemaRefusal(f"{stage} blob {name!r} changed while it was inventoried")
+    return observed
 
 
 def verify_predecessor_seal(tree: RunTree, stage: str) -> None:
@@ -883,12 +991,18 @@ def verify_predecessor_seal(tree: RunTree, stage: str) -> None:
             f"{stage} refuses {predecessor} stage-seal: its decode-environment digest "
             "differs from the witnessed bytes"
         )
-    expected = _stage_seal_payload(
-        tree,
-        predecessor,
-        payload.get("attempt_ordinal"),
-        seal["attempt_id"],
-    )
+    try:
+        expected = _stage_seal_payload(
+            tree,
+            predecessor,
+            payload.get("attempt_ordinal"),
+            seal["attempt_id"],
+        )
+    except (ContractError, OSError) as error:
+        raise SchemaRefusal(
+            f"{stage} refuses {predecessor} stage-seal: its named inventory no longer "
+            f"matches disk: {error}"
+        ) from error
     if payload != expected:
         raise SchemaRefusal(
             f"{stage} refuses {predecessor} stage-seal: its named inventory no longer matches disk"

@@ -42,6 +42,8 @@ def rebind_stage_seal_artifact(tree, stage: str, *, rewrite_manifest: bool = Tru
         stage,
         payload["attempt_ordinal"],
         seal["attempt_id"],
+        verify_inputs=rewrite_manifest,
+        verify_blob_addresses=rewrite_manifest,
     )
     seal["self_hash"] = self_hash(seal)
     tree.resolve(tree.artifact_path(stage, "stage-seal", seal["artifact_id"])).write_bytes(

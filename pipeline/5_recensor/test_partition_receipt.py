@@ -149,6 +149,41 @@ def test_a_tampered_stored_manifest_cannot_become_a_partition_receipt_denominato
         recensor.write_partition_receipt(context, context.recovery_policy)
 
 
+def test_a_refused_partition_receipt_does_not_publish_a_completion_seal(tmp_path, monkeypatch):
+    """Receipt reconciliation is part of closing, not work after the checkpoint."""
+    root = tmp_path / "runs"
+    through_perlector(root, "receipt-refusal", "happy")
+    recensor = _load_recensor()
+
+    def refuse_receipt(_context, _budget):
+        raise FatalAccounting("partition receipt refused at close")
+
+    monkeypatch.setattr(recensor, "write_partition_receipt", refuse_receipt)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "pipeline/5_recensor/run.py",
+            "--run-root",
+            str(root),
+            "--run-id",
+            "receipt-refusal",
+            "--scenario",
+            "happy",
+            "--fixture-root",
+            str(ROOT / "proof"),
+        ],
+    )
+
+    with pytest.raises(FatalAccounting, match="receipt refused at close"):
+        recensor.main()
+
+    tree = RunTree(root, "receipt-refusal")
+    assert not any(
+        entry["kind"] == "stage-seal" for entry in tree.build_manifest(RECENSOR)["artifacts"]
+    )
+
+
 def test_a_tampered_partition_receipt_is_refused_by_its_self_hash(tmp_path):
     root = tmp_path / "runs"
     through_perlector(root, "tampered", "happy")

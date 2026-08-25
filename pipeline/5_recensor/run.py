@@ -2008,11 +2008,14 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             },
         )
 
+    # The partition receipt is a refusal-capable part of closing the Recensor
+    # pass.  Its denominator requires a current stored manifest, so write that
+    # derived cache first; only a pass whose receipt succeeds may publish the
+    # completion seal, after which the final manifest includes that seal.
+    context.finish()
+    write_partition_receipt(context, budget)
     context.seal_boundary()
     context.finish()
-    # After `finish()`, so the manifest the receipt checks against disk is the
-    # one this pass just wrote rather than the previous pass's.
-    write_partition_receipt(context, budget)
     return EXIT_HELD if held else EXIT_COMPLETE
 
 

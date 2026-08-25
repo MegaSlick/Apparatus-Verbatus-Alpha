@@ -219,10 +219,11 @@ def test_a_whole_pass_resolves_designator_inputs_once_per_act_not_once_per_chair
     )
 
     assert attestatores.main() == 0
-    # Exactly five scans are required: history index, prior-seal deletion check,
-    # post-environment seal inventory, final manifest, and independent tally. A
-    # pre-environment inventory cannot validate a seal that binds environment bytes.
-    assert attestatores_manifest_calls == 5
+    # Exactly six scans are required: history index, prior-seal deletion check,
+    # the pre-close manifest the tally reconciles, the independent tally, the
+    # post-environment seal inventory, and the final manifest. The tally must run
+    # before the completion seal, while the seal must still bind environment bytes.
+    assert attestatores_manifest_calls == 6
     assert attempt_calls == 6  # one per act/chair, never re-resolved for publication
 
     act_ids = {record["subject_id"] for record in _testimonia(tree)}
@@ -1736,6 +1737,38 @@ def test_an_outer_manifest_accounting_imbalance_is_fatal_and_never_becomes_a_hol
 
     with pytest.raises(attestatores.FatalAccounting, match="outer manifest partition"):
         attestatores.attempt_tally(tree)
+
+
+def test_a_fatal_closing_tally_does_not_publish_a_completion_seal(tmp_path, monkeypatch):
+    """A fatal close cannot leave the checkpoint that only a closed pass earns."""
+    run_root, tree = run_to_designator(tmp_path, "happy")
+
+    def imbalanced(*_args, **_kwargs):
+        raise attestatores.FatalAccounting("the closing partition is broken")
+
+    monkeypatch.setattr(attestatores, "attempt_tally", imbalanced)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "pipeline/3_attestatores/run.py",
+            "--run-root",
+            str(run_root),
+            "--run-id",
+            "retention",
+            "--scenario",
+            "happy",
+            "--fixture-root",
+            str(ROOT / "proof"),
+        ],
+    )
+
+    with pytest.raises(attestatores.FatalAccounting, match="closing partition"):
+        attestatores.main()
+
+    assert not any(
+        entry["kind"] == "stage-seal" for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
+    )
 
 
 def test_main_does_not_turn_a_fatal_manifest_outcome_into_a_hold(tmp_path):

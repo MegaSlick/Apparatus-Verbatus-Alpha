@@ -2650,12 +2650,18 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     if recorded == 0:
         raise ContractError("no chair produced an outcome for any act")
 
-    context.seal_boundary()
+    # The tally is part of closing this pass and can still expose a fatal
+    # accounting imbalance.  Give it the derived inventory it reconciles, then
+    # publish the completion seal only after that refusal boundary has passed.
     context.finish()
     tally = attempt_tally(context.tree, context=context, acts=acts, chairs=context.witness_chairs)
     if tally["hold"]:
         print(f"Attestatores attempt tally UNKNOWN: {tally['reason']}", file=sys.stderr)
+        context.seal_boundary()
+        context.finish()
         return EXIT_HELD
+    context.seal_boundary()
+    context.finish()
     if isolated_crop_failure:
         # Every chair still has its explicit non-reading artifact, so retention
         # completed and later stages can make that partial state visible. This is

@@ -15,12 +15,13 @@ from pathlib import Path
 import pytest
 
 from common.chairs import ChairRegistry
-from common.contracts.canonical import canonical_bytes, self_hash
+from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.contracts.errors import FatalAccounting, SchemaRefusal
 from common.contracts.stages import (
     ARCHETYPUS,
     ARMARIUM,
     ATTESTATORES,
+    DESIGNATOR,
     DOOR,
     EXEMPLAR,
     PERLECTOR,
@@ -116,6 +117,55 @@ def test_the_census_counts_this_stage_by_kind_and_outcome_and_excludes_the_bound
         {"kind": "testimonium", "outcome": "failed", "count": 1},
         {"kind": "testimonium", "outcome": "read", "count": 2},
     ]
+
+
+def test_a_stage_cannot_seal_an_artifact_whose_input_bytes_changed(tmp_path):
+    """The inventory verifies its hash links, not only the artifact files."""
+    tree, run, registry, bindings = _tree(tmp_path)
+    _digest, source = tree.put_blob(DESIGNATOR, b"the bytes the witness consumed")
+    context = _context(tree, run, registry, bindings)
+    context.publish(
+        kind="testimonium",
+        subject_id="act-1",
+        outcome="read",
+        inputs=[context.input_ref(source.relative_path)],
+        payload={"read": "ink"},
+    )
+    tree.resolve(source.relative_path).write_bytes(b"changed after the testimony")
+
+    with pytest.raises(SchemaRefusal, match="bytes changed under"):
+        context.seal_boundary()
+    assert not _stage_records(tree, ATTESTATORES, "stage-seal")
+
+
+def test_a_stage_refuses_a_blob_whose_content_does_not_match_its_name(tmp_path):
+    """A computed blob digest must be compared with its content address."""
+    tree, run, registry, bindings = _tree(tmp_path)
+    _digest, blob = tree.put_blob(ATTESTATORES, b"original")
+    tree.resolve(blob.relative_path).write_bytes(b"different")
+
+    with pytest.raises(SchemaRefusal, match="not the digest in its name"):
+        _context(tree, run, registry, bindings).seal_boundary()
+    assert not _stage_records(tree, ATTESTATORES, "stage-seal")
+
+
+def test_a_stage_refuses_case_variant_and_symlink_blob_entries(tmp_path):
+    """The blob namespace is lowercase and never follows a planted link."""
+    tree, run, registry, bindings = _tree(tmp_path)
+    blob_root = tree.resolve(tree.blob_path(ATTESTATORES, "0" * 64)).parent
+    blob_root.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.write_bytes(b"outside the run tree")
+    link_name = digest_bytes(outside.read_bytes())
+    (blob_root / link_name).symlink_to(outside)
+
+    with pytest.raises(SchemaRefusal, match="no-follow"):
+        _context(tree, run, registry, bindings).seal_boundary()
+
+    (blob_root / link_name).unlink()
+    (blob_root / link_name.upper()).write_bytes(outside.read_bytes())
+    with pytest.raises(SchemaRefusal, match="noncanonical content address"):
+        _context(tree, run, registry, bindings).seal_boundary()
 
 
 def test_a_deleted_latest_seal_is_refused_although_its_ordinals_stay_contiguous(tmp_path):
