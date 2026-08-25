@@ -250,10 +250,10 @@ def test_row_oriented_reconciliation_matches_the_oracle_on_a_dense_wholly_unclai
 
 def test_residual_components_sharing_an_origin_are_ordered_by_ink_like_the_oracle():
     """Two disjoint residual components can share a (top, left) bounds origin,
-    and the published evidence order must remain deterministic even though Unit
-    18 removed it from identity. The retired implementation breaks that tie by
-    the sorted member pixels and never consults pixel_count, so the row-oriented
-    sort must do the same. The block is deliberately the LARGER component with the
+    and the published evidence order must remain deterministic even though it
+    does not enter identity. The oracle breaks that tie by sorted member pixels
+    and never consults pixel_count, so the row-oriented sort must do the same.
+    The block is deliberately the LARGER component with the
     lexicographically earlier ink: a count-based or insertion-order tie-break
     puts the diagonal first and diverges from the oracle."""
     width, height = 12, 12
@@ -476,9 +476,7 @@ def test_refuses_a_non_positive_claimed_rectangle():
 
 
 def test_two_residual_components_sharing_a_bounding_box_are_refused_before_either_is_minted():
-    """Since Unit 18 a residual act binds its class and its rectangle, and
-    nothing else -- the ordinal that used to separate two residuals on one page
-    was a position in a list, and a position cannot enter identity. Two
+    """A residual act binds its class and rectangle, never list position. Two
     connected components can share a bounding box, and minting both would
     account for two pieces of unclaimed ink as one act: a lost act, which GOAL 1
     puts above every other cost. Refused by name, before any hold is published.

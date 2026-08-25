@@ -102,13 +102,9 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             continue
 
         payload = admission["payload"]
-        # Identity binds the immutable origin of the bytes that were actually
-        # admitted and nothing else — the answer to audit Q12's truncated hash of
-        # a *path*, and, since Unit 18, no longer the submission ordinal: a row
-        # inserted ahead of this one must not rename the page. Derived from the
-        # admission rather than from the fixture so a real run, which has no
-        # fixture, names its pages the same way. Two rows carrying identical
-        # bytes therefore derive one identity, and are sealed as one page below.
+        # Identity binds the admitted bytes' immutable origin, never the manifest
+        # ordinal or path: inserting a row cannot rename a page, and two rows with
+        # the same origin must seal as one page citing both submissions.
         identity = page_id(_page_origin(payload), {"operation": "whole"})
         admitted_by_page.setdefault(identity, []).append(
             (ordinal, admission, admission_ref, blob_ref)

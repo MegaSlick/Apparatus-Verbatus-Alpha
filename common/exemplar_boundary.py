@@ -519,8 +519,8 @@ def _refuse_a_merged_page_no_consumer_reads_yet(records: dict[int, dict[str, Any
     Byte-identical sources submitted twice seal as one page citing both rows —
     the right answer, and the Exemplar's. Every stage behind it, though, keys
     its work by submitted ordinal and would process that page once per row,
-    minting each act twice against one `page_id`. Unit 19 owns the merged-page
-    pass; until it exists this is refused by name, here, rather than surfacing
+    minting each act twice against one `page_id`. Until consumers process merged
+    pages once per identity, this is refused by name here rather than surfacing
     downstream as "lost submitted page ordinal(s)" — which would be a lie about
     a page that was sealed, cited, and never lost at all.
     """

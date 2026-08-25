@@ -1801,16 +1801,10 @@ def _verify_residual_traces_to_conservation(
     conservation = context.tree.read_artifact_reference(
         inputs[0], stage=DESIGNATOR, kind="conservation", subject_id=page_id
     )
-    # Every step of this lookup is checked before it is taken, and all of it lands
-    # on the one named refusal below. Read straight through, a conservation record
-    # whose payload was not a mapping or whose rows were not mappings raised
-    # `AttributeError` out of an accounting check — a traceback where invariant #10
-    # promises a named fatal. (An earlier shape indexed `residual_components` by a
-    # sealed ordinal and needed a lower bound against a corrupted one; Unit 18 took
-    # the ordinal out of the hold, so the match is by the bounds identity itself
-    # binds and there is no index left to corrupt. Two components sharing one
-    # bounding box would make this match ambiguous, which is why
-    # `_publish_residual_holds` refuses them before either is minted.)
+    # Malformed payloads and rows must reach the named refusal below rather than
+    # escape as attribute errors. Bounds are the residual's identity within its
+    # class, so the Designator refuses coincident component boxes before minting;
+    # this lookup can therefore match by bounds without an ordinal tie-breaker.
     payload = conservation.get("payload")
     components = payload.get("residual_components") if isinstance(payload, Mapping) else None
     if not isinstance(components, list) or not any(

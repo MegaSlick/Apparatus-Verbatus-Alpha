@@ -1281,16 +1281,15 @@ def _publish_residual_holds(
     residual_components: list[dict],
     conservation_ref: dict[str, str],
 ) -> list[dict]:
-    """Mint one held act per conservation residual, closing HANDOFF.md's own gap.
+    """Mint one held act per conservation residual.
 
     Every residual is minted, never only the high-priority ones:
     `review_priority` orders which residual a reviewer looks at first and must
-    never decide whether a region exists in the accounting at all — spec 06's
-    own words, and `conservation.py`'s module docstring says the same of the
-    artifact this extends. `residual_components` already arrives in the
-    deterministic (top, then left) order `conservation.reconcile` produces, so
+    never decide whether a region exists in the accounting at all. The
+    `residual_components` list already arrives in the deterministic (top, then
+    left) order `conservation.reconcile` produces, so
     `index` orders the evidence and names the residual for a reviewer; it is a
-    position in a list, so since Unit 18 it stays out of identity entirely.
+    position in a list, so it stays out of identity entirely.
     What separates two residuals on one page is therefore their rectangle
     alone, and two connected components can in principle share a bounding box —
     two strokes of one cross, laid down so that neither touches the other. That

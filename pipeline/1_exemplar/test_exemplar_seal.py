@@ -469,8 +469,7 @@ def test_a_fanned_source_cannot_seal_raw_container_bytes_without_a_render_transf
 
 
 def test_a_register_that_drifted_since_run_creation_refuses_before_anything_seals(tmp_path):
-    """Unit 18 consult report, failure mode (b): a register append between two
-    stage invocations of one run must refuse by name, naming the register --
+    """A register append between two stage invocations must refuse by name --
     never be read live and silently change what a run resolves against."""
     from common.corpus_register import empty_register
 
@@ -520,11 +519,11 @@ def test_a_register_naming_the_run_creation_snapshot_is_accepted_unchanged(tmp_p
 
 
 def test_two_byte_identical_submitted_sources_seal_as_one_page_naming_both_rows(tmp_path):
-    """Unit 18 consult report: 'the same photograph submitted twice is one page' one
-    level down. Digest-primary identity means two submission rows over identical
-    bytes derive one page_id; without the merge in `run.py`'s `admitted_by_page`
-    this collides on the second `publish_artifact` call with an immutable-artifact
-    error instead of sealing."""
+    """Digest-primary identity makes identical submissions one cited page.
+
+    Two submission rows over identical bytes derive one page_id, so the
+    Exemplar must merge their citations before publishing the immutable page
+    artifact."""
     data = png(4, 3)
     tree, _ = build_door_run(tmp_path / "runs", files={"dup-a.png": data, "dup-b.png": data})
 
@@ -549,14 +548,11 @@ def test_two_byte_identical_submitted_sources_seal_as_one_page_naming_both_rows(
 
 
 def test_the_merged_page_verifies_at_the_pixel_boundary_for_each_row_it_cites(tmp_path):
-    """The producing stage is not the whole shape.
+    """A merged page verifies for every cited source row and no invented row.
 
-    `verify_sealed_page_pixels` is what the Designator, Attestatores, Perlector,
-    Recensor and Armarium all call before touching a page's pixels, and it read
-    a page as citing exactly one Door admission. A merged page cites two, so
-    every stage behind the Exemplar refused a page the Exemplar had just sealed
-    correctly -- and no test saw it, because the duplicate-source coverage
-    stopped at the Exemplar CLI.
+    Every later pixel consumer relies on this boundary, so its admission check
+    must cover the page's complete submitted-row set rather than assume exactly
+    one Door admission.
     """
     from common.exemplar_boundary import verify_sealed_page_pixels
 
@@ -580,9 +576,9 @@ def test_the_merged_page_verifies_at_the_pixel_boundary_for_each_row_it_cites(tm
 
 def test_a_merged_page_is_refused_by_name_at_the_first_stage_that_would_read_it_twice(tmp_path):
     """Every stage behind the Exemplar keys its work by submitted ordinal and
-    would mint each act on this page twice. Unit 19 owns the merged-page pass;
-    until then the seal boundary says so, rather than reporting the second row
-    as a lost page it plainly is not."""
+    would mint each act on this page twice. The seal boundary refuses until
+    consumers process merged pages by identity, rather than reporting the
+    second row as a lost page it plainly is not."""
     from common.exemplar_boundary import verify_exemplar_corpus_seal
 
     data = png(4, 3)

@@ -103,17 +103,16 @@ def _closed(value: Any, fields: set[str], what: str) -> dict[str, Any]:
     return value
 
 
-def _sha256(value: Any, what: str) -> str:
+def _sha256(value: Any, what: str) -> None:
     if (
         not isinstance(value, str)
         or len(value) != 64
         or any(character not in "0123456789abcdef" for character in value)
     ):
         raise IdentityRefusal(f"{what} must be a lowercase SHA-256 digest")
-    return value
 
 
-def _bounds(value: Any, what: str) -> dict[str, int]:
+def _bounds(value: Any, what: str) -> None:
     row = _closed(value, {"x", "y", "w", "h"}, what)
     if (
         any(not isinstance(item, int) or isinstance(item, bool) for item in row.values())
@@ -123,13 +122,11 @@ def _bounds(value: Any, what: str) -> dict[str, int]:
         or row["h"] <= 0
     ):
         raise IdentityRefusal(f"{what} must have non-negative integer x/y and positive integer w/h")
-    return row
 
 
-def _identity(value: Any, prefix: str, what: str) -> str:
+def _identity(value: Any, prefix: str, what: str) -> None:
     if not is_well_formed(value) or not value.startswith(f"{prefix}_"):
         raise IdentityRefusal(f"{what} must be a well-formed {prefix}_ identity")
-    return value
 
 
 def page_bindings(origin: Any, transform: Any) -> dict[str, Any]:
@@ -165,11 +162,9 @@ def page_bindings(origin: Any, transform: Any) -> dict[str, Any]:
         if isinstance(transform, dict) and transform.get("operation") == "whole"
         else _closed(transform, {"operation", "bounds"}, "page transform")
     )
-    if transform["operation"] == "whole":
-        pass
-    elif transform["operation"] == "split":
+    if transform["operation"] == "split":
         _bounds(transform["bounds"], "split bounds")
-    else:
+    elif transform["operation"] != "whole":
         raise IdentityRefusal("page transform operation must be 'whole' or 'split'")
     return {"origin": origin, "transform": transform}
 
@@ -215,7 +210,7 @@ def act_id(page: str, act_class: str, bounds: Any) -> str:
     return derive("act", act_bindings(page, act_class, bounds))
 
 
-def _declared_text(value: Any) -> str:
+def _declared_text(value: str) -> str:
     """The one spelling a human-typed declaration is hashed under.
 
     Every other binding in this system is a digest, an integer, or a closed
@@ -225,8 +220,6 @@ def _declared_text(value: Any) -> str:
     with nothing anywhere to reconcile the two. Normalising first turns that
     silent split into the corpus register's loud duplicate-record refusal.
     """
-    if not isinstance(value, str) or not value:
-        return value
     return unicodedata.normalize("NFC", value)
 
 

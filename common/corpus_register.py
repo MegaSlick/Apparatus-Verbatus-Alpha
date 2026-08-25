@@ -18,7 +18,7 @@ membership record removed or reordered from the middle of the register breaks
 every successor's predecessor digest. What replay cannot see is truncation of
 the newest link, because the register carries no external head; the run tree's
 `register_digest` is that anchor, and comparing a fresh register against an
-earlier run's is the cross-run check Unit 19 owns.
+earlier run's is therefore required to detect tail loss between runs.
 """
 
 import json
@@ -265,16 +265,16 @@ def members_of(data: bytes, physical_page: str) -> list[str]:
     head = reading.membership_head.get(physical_page)
     if head is None:
         return []
-    active = set(head[1]) - reading.retracted_members.get(physical_page, set())
+    active = head[1] - reading.retracted_members.get(physical_page, set())
     return sorted(active)
 
 
 def resolve_proposal(data: bytes, act_id: str) -> dict[str, str]:
     """Resolve an image-local proposal through declared correspondence.
 
-    This is intentionally lookup, not derivation: Unit 19 will infer and append
-    correspondence records.  Until then an unresolved proposal is a named
-    finding, never a silently new physical act.
+    This is intentionally lookup, not derivation: only an appended
+    correspondence record can resolve a proposal. An unresolved proposal is a
+    named finding, never a silently new physical act.
 
     A retracted correspondence is not read back. Retraction is the register's
     only correction mechanism, and a correction that the reader ignores is not
@@ -351,20 +351,18 @@ def _is_sha256(value: Any) -> bool:
     )
 
 
-def _identity(value: Any, prefix: str, what: str) -> str:
+def _identity(value: Any, prefix: str, what: str) -> None:
     if not is_well_formed(value) or not value.startswith(f"{prefix}_"):
         raise SchemaRefusal(f"{what} must be a well-formed {prefix}_ identity")
-    return value
 
 
-def _evidence(value: Any, what: str) -> list[str]:
+def _evidence(value: Any, what: str) -> None:
     if (
         not isinstance(value, list)
         or not value
         or not all(isinstance(item, str) and item for item in value)
     ):
         raise SchemaRefusal(f"{what} must name one or more evidence records")
-    return value
 
 
 def _validate_record(record: Any, reading: _Reading) -> None:

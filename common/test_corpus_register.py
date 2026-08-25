@@ -179,7 +179,7 @@ def test_declared_correspondence_resolves_two_capture_proposals_to_one_physical_
 
 
 def test_a_hard_reshoot_unions_two_captures_shared_act_into_one_physical_act():
-    """Unit 18 consult report, failure mode (a), at the register's own boundary.
+    """Two captures of one act resolve by declaration, never by hash coincidence.
 
     Capture A shows acts {1,2,3,4} of physical page P. Capture B is a re-shoot
     of the same opening: it shows only act 4 of P (at different bounds -- a
@@ -189,12 +189,9 @@ def test_a_hard_reshoot_unions_two_captures_shared_act_into_one_physical_act():
     4 into one physical act is exactly the declared correspondence this
     register exists to carry -- never a hash coincidence.
 
-    This does not extend `proof/build_fixture.py` into a real Designator-side
-    two-capture scenario (a materially larger change to a fixture every stage
-    program shares); it proves the register-level mechanism the consult's
-    failure mode names: the shared act's two image-local proposals resolve to
-    one physical act, the facing page's act stays under its own physical page,
-    and neither collides with the other's identity.
+    The shared act's two image-local proposals resolve to one physical act, the
+    facing page's act stays under its own physical page, and neither collides
+    with the other's identity.
     """
     source_a = "a" * 64
     source_b = "b" * 64
@@ -264,10 +261,8 @@ def test_a_hard_reshoot_unions_two_captures_shared_act_into_one_physical_act():
     # `resolve_proposal` is a lookup, not an inference: acts 1-3 (single-
     # capture, page P) and Q's act (single-capture, the facing page) have no
     # declared correspondence, so asking it about them names a finding rather
-    # than guessing one. Unit 18 declares this shape; deciding *whether* a
-    # single-capture act needs resolving at all -- so it is never asked in the
-    # first place, and "single-capture" never reads as "unresolved" -- is the
-    # caller-side policy Unit 19 supplies. No such caller exists yet.
+    # than guessing one. Whether a single-capture act needs resolution is a
+    # caller policy; this lookup cannot silently infer that policy.
     for solo_act in (*acts_a[:3], act_q1):
         assert resolve_proposal(register, solo_act)["outcome"] == "finding"
 

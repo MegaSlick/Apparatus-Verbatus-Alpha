@@ -10,16 +10,11 @@ from common.contracts.errors import ContractError
 from common.contracts.identities import act_id, page_id
 
 
-def page_for(fixture: dict[str, Any], ordinal: int) -> dict[str, Any]:
+def page_identity(fixture: dict[str, Any], ordinal: int) -> str:
     for page in fixture["page"]:
         if page["ordinal"] == ordinal:
-            return page
+            return page_id({"kind": "source", "sha256": page["sha256"]}, {"operation": "whole"})
     raise ContractError(f"the fixture declares no page {ordinal}")
-
-
-def page_identity(fixture: dict[str, Any], ordinal: int) -> str:
-    page = page_for(fixture, ordinal)
-    return page_id({"kind": "source", "sha256": page["sha256"]}, {"operation": "whole"})
 
 
 def act_bounds(act: dict[str, Any]) -> dict[str, int]:
