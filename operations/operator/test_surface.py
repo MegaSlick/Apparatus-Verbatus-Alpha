@@ -1349,12 +1349,7 @@ def test_run_refuses_a_real_ingress_control_without_a_submission_folder(
 def _recording_surface(
     tmp_path: Path, *, faults: Faults | None = None, output: list[str] | None = None
 ) -> tuple[OperatorSurface, list[tuple[list[str], Path | None]]]:
-    """A surface whose child launches are recorded instead of run.
-
-    The recorded child "succeeds", so the drill below reaches its own interruption
-    rather than a launch failure; the run still ends in `RUN_FAILED` afterwards,
-    because no Armarium record exists for a pipeline that never ran.
-    """
+    """Record child launches; successful stubs let crash drills reach interruption."""
 
     observed: list[tuple[list[str], Path | None]] = []
 
@@ -1382,17 +1377,7 @@ def _argv_value(command: list[str], flag: str) -> str:
 def test_real_ingress_paths_are_made_absolute_against_the_operators_own_cwd(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The operator's shell decides what a relative submitted path means.
-
-    Both child launches use `cwd=self.workspace`, and `--workspace` names a
-    checkout that need not be where the operator is standing. An unresolved
-    relative `--submission-folder` is therefore read beside the *checkout*: a
-    refusal naming a path nobody typed, or — where a same-named folder does sit
-    inside an approved storage root — the wrong material admitted as this run's
-    ink with nothing said. The orchestrator resolves its own caller-relative
-    paths for exactly this reason; by the time it does, the operator's cwd is
-    gone, so this boundary has to resolve them first.
-    """
+    """Relative input paths bind before the child changes cwd to the workspace."""
 
     elsewhere = tmp_path / "operator-home"
     elsewhere.mkdir()
@@ -1439,14 +1424,7 @@ def test_real_ingress_absolutization_preserves_a_symlink_for_the_doors_gate(
 
 
 def test_the_laptop_crash_drill_still_carries_real_ingress_to_the_door(tmp_path: Path) -> None:
-    """Fault injection is a drill of the real route, not of a fixture stand-in.
-
-    The drill runs the Door alone, through `_run_one_stage`, and that argv used
-    to be a second hand-written copy of `run()`'s. Both now share one helper —
-    which is only worth anything if something proves the drill still reaches the
-    Door carrying what a real run sends, rather than quietly rehearsing a
-    fixture run under a real submission's name.
-    """
+    """A real-route fault drill must not fall back to fixture ingress."""
 
     source = tmp_path / "approved" / "submitted-pages"
     manifest = tmp_path / "approved" / "submission-ledger.json"
@@ -1506,15 +1484,7 @@ def test_a_failed_real_run_receipt_names_real_ingress(tmp_path: Path) -> None:
 
 
 def test_a_real_run_is_never_narrated_with_the_declared_fixtures_pages(tmp_path: Path) -> None:
-    """What the operator is told a run is working on has to be that run's work.
-
-    `proof/`'s declared pages and acts belong to the synthetic walking skeleton.
-    Printed over a real submission they describe other material entirely, and
-    the operator has no way to tell — which is the whole failure this unit's
-    fixture/real seam can produce. The extent comes from the submitted filename
-    ledger instead, as a count: the data-handling policy's `logging_rule` keeps
-    real names off the terminal.
-    """
+    """Fixture names are false for real runs; policy also keeps real names off-screen."""
 
     folder = tmp_path / "approved" / "submitted-pages"
     folder.mkdir(parents=True)

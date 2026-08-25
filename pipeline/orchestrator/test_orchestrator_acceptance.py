@@ -676,8 +676,6 @@ def orchestrate(
 
 
 def _real_submission(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
-    """Build a real-shaped, self-hashed local submission under an approved root."""
-
     approved = tmp_path / "approved-storage"
     source = approved / "submitted-pages"
     source.mkdir(parents=True)
@@ -703,22 +701,13 @@ def test_orchestrator_carries_a_real_submission_to_the_door_end_to_end(tmp_path)
         data_gate_policy=policy,
     )
 
-    # Unit 3 carries the material through the Door.  The Designator correctly
-    # refuses next: real structural proposal/model work is outside this unit,
-    # so the orchestrator must not fabricate a continuation merely to make a
-    # real ingress test green.
+    # This unit ends at the Door; real Designator work remains an explicit refusal.
     assert result.returncode != 0
     assert "real structural proposal/model work is outside System 03" in result.stderr
     run_record = RunTree(approved / "runs", "real-ingress").read_run()
     assert run_record["ingress"] == {"mode": "real"}
 
-    # `ingress: real` alone says the Door took the real route. It does not say
-    # the data gate ever opened the policy this caller named, and "the argv
-    # arrived" is a claim about a command line rather than about a check that
-    # ran. The Door seals the digest of the exact policy bytes its gate parsed
-    # (`pipeline/1_exemplar/door.py:1315` proves it at the point of use), so
-    # comparing that against the caller's file on disk is the assertion that the
-    # gate evaluated *this* policy and not the repository's default.
+    # Only the sealed digest proves the gate evaluated the caller's policy.
     assert run_sealed_config_digests(run_record)["data-handling"] == digest_bytes(
         policy.read_bytes()
     )
@@ -757,15 +746,12 @@ def test_orchestrator_refuses_a_data_gate_policy_without_a_real_folder(tmp_path)
     assert not (tmp_path / "runs" / "policy-without-folder" / "run.json").exists()
 
 
-# Every flag by which a path to submitted material can reach a stage's argv.
 REAL_INGRESS_FLAGS = frozenset(
     {"--submission-folder", "--submission-manifest", "--data-gate-policy"}
 )
 
 
 def _orchestrator_module(name: str):
-    """The orchestrator loaded as a module, for the parts reachable below `main`."""
-
     path = ROOT / "pipeline" / "orchestrator" / "run.py"
     spec = importlib.util.spec_from_file_location(name, path)
     assert spec is not None and spec.loader is not None
@@ -775,8 +761,6 @@ def _orchestrator_module(name: str):
 
 
 def _orchestrator_namespace_fields(tmp_path: Path) -> dict:
-    """The fields `invoke` reads, as `main` would have them after resolution."""
-
     return dict(
         run_root=tmp_path / "runs",
         run_id="r",
@@ -842,10 +826,7 @@ def test_real_ingress_changes_only_the_doors_argv(monkeypatch, tmp_path):
     assert "--data-gate-policy" in observed[0]
     assert not REAL_INGRESS_FLAGS.intersection(fixture_commands[0])
 
-    # The equality above is a *relative* claim: the real run's later stages match
-    # the fixture run's. It stays true if a change gives every stage a real-ingress
-    # flag, because then both sides carry it — the leak this test is named for
-    # would land green. Asserted absolutely as well, on both runs.
+    # Relative equality stays green if both routes leak, so also prohibit flags absolutely.
     for commands in (observed, fixture_commands):
         for command in commands[1:]:
             leaked = REAL_INGRESS_FLAGS.intersection(command)
@@ -857,16 +838,7 @@ def test_real_ingress_changes_only_the_doors_argv(monkeypatch, tmp_path):
 
 
 def test_invoke_refuses_a_caller_relative_path_instead_of_resolving_it_late(monkeypatch, tmp_path):
-    """A caller-relative path may not reach a child that runs from somewhere else.
-
-    Resolution happens once, in `resolve_caller_paths`, and nothing re-reads it
-    afterwards — the orchestrator keeps no checkpoint file of its own, so the
-    resolved values live only in this process's `Namespace`. A partial-invocation
-    entry point that builds its own `Namespace` and calls `invoke` directly would
-    hand a stage a relative path, which the stage resolves against `ROOT` because
-    that is its `cwd`: a different run tree, or on the real route a different
-    folder of ink, with nothing said. `invoke` refuses by name instead.
-    """
+    """Direct invocation must not reinterpret caller paths under the child's cwd."""
 
     orchestrator = _orchestrator_module("orchestrator_relative_argv_guard")
     invoked: list[list[str]] = []
@@ -894,7 +866,6 @@ def test_invoke_refuses_a_caller_relative_path_instead_of_resolving_it_late(monk
         assert flag in str(refusal.value)
     assert not invoked, "a stage was launched with a caller-relative path on its argv"
 
-    # And the resolved form the real entry point produces passes.
     orchestrator.invoke(
         orchestrator.STAGE_PROGRAMS["door"],
         orchestrator.resolve_caller_paths(Namespace(**{**base, "run_root": Path("runs")})),
@@ -903,12 +874,7 @@ def test_invoke_refuses_a_caller_relative_path_instead_of_resolving_it_late(monk
 
 
 def test_orchestrator_default_data_gate_policy_is_the_gates_own(tmp_path):
-    """The orchestrator names the default policy path; the gate owns it.
-
-    `pipeline/orchestrator/run.py` imports only `common/`, so it spells this path
-    out rather than importing `operations.submit.gate`. Two spellings of one file
-    drift apart in silence unless something compares them, which is here.
-    """
+    """The common-only import boundary requires duplicate constants to reconcile."""
 
     orchestrator = _orchestrator_module("orchestrator_default_policy")
     assert orchestrator.DEFAULT_DATA_GATE_POLICY_PATH == gate.DEFAULT_POLICY_PATH
@@ -926,15 +892,7 @@ def test_orchestrator_default_data_gate_policy_is_the_gates_own(tmp_path):
 
 
 def test_resuming_a_real_run_without_its_ingress_flags_refuses(tmp_path):
-    """The fixture route may not quietly take over a run the real route created.
-
-    This is the seam the whole unit is about. The same `--run-id` and
-    `--run-root`, minus the three real-ingress flags, is what an operator types
-    when resuming from shell history that predates the real run — and it sends
-    the Door down its fixture route, over a run tree holding real ink. The run
-    authority refuses it as a different run wearing an old name; nothing is
-    rewritten and the recorded ingress still says what created the tree.
-    """
+    """A fixture route may not take over a run tree sealed as real ingress."""
 
     approved, source, manifest, policy = _real_submission(tmp_path)
     first = orchestrate(
@@ -984,15 +942,7 @@ def test_relative_run_root_from_outside_the_repository_is_one_tree(tmp_path):
 def test_relative_submission_folder_from_outside_the_repository_finds_the_real_files(
     tmp_path: Path,
 ) -> None:
-    """The same one-tree property, for real-ingress paths rather than the run root.
-
-    Every child stage runs with `cwd=ROOT` (`invoke`'s `subprocess.run`), so a
-    submission folder resolved late — at the Door, after that `cwd` switch —
-    would resolve against the repository root instead of the operator's own
-    shell. Passing it relative from a caller directory that is neither ROOT
-    nor the target proves the orchestrator resolved it once, up front, against
-    the caller's actual cwd.
-    """
+    """Real-ingress paths bind before child processes change cwd to the repository."""
     outside = tmp_path / "outside"
     outside.mkdir()
     source = outside / "approved-storage" / "submitted-pages"
@@ -1027,13 +977,7 @@ def test_relative_submission_folder_from_outside_the_repository_finds_the_real_f
 
     result = subprocess.run(command, cwd=outside, capture_output=True, text=True)
 
-    # Unit 3 stops at the Door; the Designator's real refusal is expected and is
-    # covered by test_orchestrator_carries_a_real_submission_to_the_door_end_to_end.
-    # What this test proves is narrower and upstream of that: the relative
-    # submission folder and manifest resolved to the real files it just wrote,
-    # rather than to a same-named, nonexistent path under ROOT. It deliberately
-    # leaves `--fixture-root` at its relative default too: synthetic fixture
-    # evidence is not a prerequisite for a run whose authority seals real ingress.
+    # A real route must not require its deliberately unused fixture-root default.
     assert "could not be resolved" not in result.stderr
     assert "outside every approved storage root" not in result.stderr
     run_tree_root = outside / "approved-storage" / "runs"

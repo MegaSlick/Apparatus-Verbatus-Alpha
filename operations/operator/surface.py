@@ -66,11 +66,6 @@ from .volume_s3 import S3VolumeTarget, VolumeSpec, VolumeTransferRefusal
 UTC = timezone.utc
 OPERATOR_CLOSE_PREFIX = "CLOSE"
 DEFAULT_FIXTURE = "synthetic-two-page-v0"
-# The Door's program path, named once. Two spellings of it — the fault drill's
-# call site and the guard that decides the drill forwards real ingress — is how
-# the drill could go on running while quietly stopping injecting: change one and
-# the comparison fails silently, rehearsing a fixture door under a real
-# submission's name.
 DOOR_PROGRAM = "pipeline/1_exemplar/door.py"
 # `FakeProvider.bill()` always stamps its cutoff exactly one hour **ahead** of
 # its own clock -- `fake_provider.py`'s `cutoff_at=self.now() + timedelta(hours=1)`
@@ -653,8 +648,6 @@ class OperatorSurface:
         submission_manifest: str | Path | None = None,
         data_gate_policy: str | Path | None = None,
     ) -> RunOutcome:
-        """Drive the actual orchestrator, with resumable evidence."""
-
         if submission_folder is None:
             if submission_manifest is not None:
                 raise OperatorError(
@@ -671,12 +664,37 @@ class OperatorSurface:
         ingress_mode = "real" if submission_folder is not None else "synthetic-fixture"
         prior_state = self._prior_run_state(run_id)
         if submission_folder is None:
-            self._present_declared_fixture_work(run_id, prior_state)
+            pages, acts, declared_ok = _declared_work(self.workspace)
+            if not declared_ok:
+                self.present(
+                    "The declared fixture could not be read; naming pages and acts generically."
+                )
+            extent = f"Checking {', '.join(pages)}."
+        else:
+            # The operator must not read or name real material before the Door
+            # applies its storage and logging policy.
+            extent = (
+                "Its extent is recorded by the submitted filename ledger, which the Door "
+                "checks against the data-handling policy."
+            )
+
+        if prior_state == "interrupted-recoverable":
+            opening = f"Resuming run {run_id}. {extent}"
+        elif prior_state is not None:
+            opening = (
+                f"Run {run_id} already has saved state {prior_state}; "
+                f"checking its recorded work again. {extent}"
+            )
+        else:
+            opening = f"Run started. {extent}"
+        self.present(opening)
+
+        if submission_folder is None:
+            self.present(f"Working next: {', '.join(acts)}.")
             self.present(
                 "This rehearsal uses declared synthetic pages, not an uploaded real submission."
             )
         else:
-            self._present_real_submission_work(run_id, prior_state)
             self.present("This run sends the recorded real submission to the Door's data gate.")
         if self.faults.laptop_crash:
             self.faults.laptop_crash = False
@@ -686,11 +704,10 @@ class OperatorSurface:
                 if submission_folder is not None
                 else "The fixture pages reached the Door."
             )
-            self._run_one_stage(
+            self._run_door_stage(
                 run_root,
                 run_id,
                 scenario,
-                DOOR_PROGRAM,
                 submission_folder=submission_folder,
                 submission_manifest=submission_manifest,
                 data_gate_policy=data_gate_policy,
@@ -797,10 +814,7 @@ class OperatorSurface:
                 f"Acts accounted for: {', '.join(acts)} ({expected_on_screen})."
             )
         else:
-            # Counts only, for the same two reasons the opening line gives: the
-            # declared fixture's names describe other material entirely, and the
-            # real ones are the submitted material's, which the data-handling
-            # policy's `logging_rule` keeps off this screen.
+            # The data-handling policy permits counts here, not real names.
             self.present(
                 f"Pages accounted for: {len(page_records)} total. "
                 f"Acts accounted for: {expected_on_screen}."
@@ -1332,56 +1346,6 @@ class OperatorSurface:
         state = payload.get("state")
         return state if isinstance(state, str) else None
 
-    def _present_declared_fixture_work(self, run_id: str, prior_state: str | None) -> None:
-        """Name the declared fixture's own pages and acts, for a fixture run."""
-
-        pages, acts, declared_ok = _declared_work(self.workspace)
-        if not declared_ok:
-            self.present(
-                "The declared fixture could not be read; naming pages and acts generically."
-            )
-        self.present(self._run_opening(run_id, prior_state, f"Checking {', '.join(pages)}."))
-        self.present(f"Working next: {', '.join(acts)}.")
-
-    def _present_real_submission_work(self, run_id: str, prior_state: str | None) -> None:
-        """Say what a *real* run is about to work on, which the fixture never says.
-
-        The declared fixture's page and act names belong to the synthetic
-        walking skeleton. Printed over a real submission they are a description
-        of something else entirely: an operator sending three photographs was
-        told "Checking page 1, page 2, page 3" because that is what
-        `proof/` declares, and `_declared_work`'s own docstring names exactly
-        this failure — a placeholder shown without comment reads as the real
-        list. GOVERNANCE 10: what is said is what was measured.
-
-        The submitted filename ledger is the extent authority, but this surface
-        does not open it. The Door first checks that the ledger is inside an
-        approved storage root and then parses and seals that exact read. Opening
-        it here would read real metadata before the gate and could present a
-        count from bytes replaced before the Door's later read.
-        """
-
-        self.present(
-            self._run_opening(
-                run_id,
-                prior_state,
-                "Its extent is recorded by the submitted filename ledger, which the Door "
-                "checks against the data-handling policy.",
-            )
-        )
-
-    def _run_opening(self, run_id: str, prior_state: str | None, extent: str) -> str:
-        """The started/resuming sentence, with whatever names this run's extent."""
-
-        if prior_state == "interrupted-recoverable":
-            return f"Resuming run {run_id}. {extent}"
-        if prior_state is not None:
-            return (
-                f"Run {run_id} already has saved state {prior_state}; "
-                f"checking its recorded work again. {extent}"
-            )
-        return f"Run started. {extent}"
-
     def _write_action(
         self,
         kind: str,
@@ -1422,12 +1386,11 @@ class OperatorSurface:
             for line in record_error.render().splitlines():
                 self.present(line)
 
-    def _run_one_stage(
+    def _run_door_stage(
         self,
         run_root: Path,
         run_id: str,
         scenario: str,
-        program: str,
         *,
         submission_folder: str | Path | None = None,
         submission_manifest: str | Path | None = None,
@@ -1435,7 +1398,7 @@ class OperatorSurface:
     ) -> None:
         command = [
             sys.executable,
-            str(self.workspace / program),
+            str(self.workspace / DOOR_PROGRAM),
             "--run-root",
             str(run_root),
             "--run-id",
@@ -1443,14 +1406,13 @@ class OperatorSurface:
             "--scenario",
             scenario,
         ]
-        if program == DOOR_PROGRAM:
-            command.extend(
-                _real_ingress_argv(
-                    submission_folder=submission_folder,
-                    submission_manifest=submission_manifest,
-                    data_gate_policy=data_gate_policy,
-                )
+        command.extend(
+            _real_ingress_argv(
+                submission_folder=submission_folder,
+                submission_manifest=submission_manifest,
+                data_gate_policy=data_gate_policy,
             )
+        )
         completed = self.runner(
             command, cwd=self.workspace, capture_output=True, text=True, check=False
         )
@@ -2033,29 +1995,7 @@ def _real_ingress_argv(
     submission_manifest: str | Path | None,
     data_gate_policy: str | Path | None,
 ) -> list[str]:
-    """The real-ingress argv fragment, in the one place both call sites share.
-
-    `run()`'s orchestrator invocation and `_run_one_stage()`'s single-door
-    fault-drill invocation each forward these three flags; a second, separately
-    written copy is exactly how the two could drift apart.
-
-    **Every path is made absolute here, against the operator's own cwd.** Both call
-    sites launch their child with `cwd=self.workspace`, which is the checkout and
-    need not be where the operator is standing — `--workspace` names it
-    explicitly. A relative `--submission-folder` handed on unresolved is
-    therefore read beside the *checkout*: at best a gate refusal naming a path
-    the operator never typed, at worst a same-named folder that does sit inside
-    an approved root, admitted as this run's ink. That is the same
-    caller-relative defect the orchestrator resolves at its own boundary
-    (`pipeline/orchestrator/run.py:resolve_caller_paths`), one layer up, and the
-    operator boundary is where the operator's cwd is still known.
-
-    `absolute()`, not `resolve()`: the Door's data-handling gate refuses a
-    submitted folder or ledger that is itself a symlink. Dereferencing it here
-    would erase the redirect before the enforcing boundary could inspect it.
-    Making the value absolute also means a submitted path beginning with a dash
-    can no longer reach a child's argv looking like an option.
-    """
+    """Bind paths to the operator's cwd without hiding symlinks from the Door."""
     argv: list[str] = []
     for flag, value in (
         ("--submission-folder", submission_folder),
