@@ -33,6 +33,14 @@ DEFAULT_HARD_FAILURE_CONFIG_PATH: Final = (
 # third stops. Unlike the recovery budget, the hard-failure threshold was not
 # delegated for downward tuning, so configuration cannot move it either way.
 RULED_THRESHOLD: Final = 2
+# A policy is a small operator declaration, not a corpus payload. Bound both the
+# bytes parsed and the entries that each drive a pass over stage evidence, so a
+# caller-selected file cannot turn one checkpoint into unbounded memory or
+# policy-length-times-corpus work. The shipped policy is under 2 KiB and ten
+# entries; these ceilings leave ample configuration headroom without making the
+# boundary nominal.
+MAX_HARD_FAILURE_CONFIG_BYTES: Final = 1 << 20
+MAX_HARD_FAILURE_KINDS: Final = 128
 PERLECTOR_INSTRUMENT_KINDS: Final = frozenset(
     {"lectio-nuda", "lectio-prior", "primed-without-prior"}
 )
@@ -79,9 +87,20 @@ def load_hard_failure_policy(path: str | Path = DEFAULT_HARD_FAILURE_CONFIG_PATH
     """
     path = Path(path)
     try:
-        data = path.read_bytes()
+        with path.open("rb") as policy_file:
+            data = policy_file.read(MAX_HARD_FAILURE_CONFIG_BYTES + 1)
+    except OSError as error:
+        raise ContractError(
+            f"the hard-failure configuration at {path} could not be read as a policy: {error}"
+        ) from error
+    if len(data) > MAX_HARD_FAILURE_CONFIG_BYTES:
+        raise ContractError(
+            f"the hard-failure configuration exceeds {MAX_HARD_FAILURE_CONFIG_BYTES} bytes; "
+            "a run policy is bounded metadata, not a corpus payload"
+        )
+    try:
         config = tomllib.loads(data.decode("utf-8"))
-    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
         raise ContractError(
             f"the hard-failure configuration at {path} could not be read as a policy: {error}"
         ) from error
@@ -100,6 +119,11 @@ def load_hard_failure_policy(path: str | Path = DEFAULT_HARD_FAILURE_CONFIG_PATH
     raw_kinds = config.get("kind")
     if not isinstance(raw_kinds, list) or not raw_kinds:
         raise ContractError("the hard-failure configuration names no [[kind]] entries")
+    if len(raw_kinds) > MAX_HARD_FAILURE_KINDS:
+        raise ContractError(
+            f"the hard-failure configuration names {len(raw_kinds)} [[kind]] entries, above "
+            f"the bounded maximum of {MAX_HARD_FAILURE_KINDS}"
+        )
 
     kinds: set[tuple[str, str]] = set()
     reason_kinds: set[tuple[str, str, str]] = set()

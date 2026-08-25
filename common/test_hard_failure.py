@@ -16,6 +16,8 @@ from common.contracts.identities import artifact_id
 from common.contracts.stages import ARCHETYPUS, DESIGNATOR, DOOR, PERLECTOR, RECENSOR
 from common.hard_failure import (
     DEFAULT_HARD_FAILURE_CONFIG_PATH,
+    MAX_HARD_FAILURE_CONFIG_BYTES,
+    MAX_HARD_FAILURE_KINDS,
     RULED_THRESHOLD,
     load_hard_failure_policy,
     tally_hard_failures,
@@ -183,6 +185,25 @@ def test_a_negative_threshold_is_refused(tmp_path):
 def test_an_unreadable_path_is_refused(tmp_path):
     with pytest.raises(ContractError, match="could not be read as a policy"):
         load_hard_failure_policy(tmp_path / "does-not-exist.toml")
+
+
+def test_an_oversized_policy_is_refused_before_unbounded_parsing(tmp_path):
+    path = tmp_path / "oversized.toml"
+    path.write_bytes(b"#" * (MAX_HARD_FAILURE_CONFIG_BYTES + 1))
+
+    with pytest.raises(ContractError, match="exceeds.*bytes"):
+        load_hard_failure_policy(path)
+
+
+def test_too_many_reason_scoped_kinds_cannot_amplify_each_checkpoint(tmp_path):
+    entries = "".join(
+        f'[[kind]]\nstage = "door"\noutcome = "refused"\nreason = "reason-{index}"\n'
+        for index in range(MAX_HARD_FAILURE_KINDS + 1)
+    )
+    path = write_policy(tmp_path, f"threshold = 2\n{entries}")
+
+    with pytest.raises(ContractError, match="above the bounded maximum"):
+        load_hard_failure_policy(path)
 
 
 # --- The tally: computed from disk, never from a running counter ---------------

@@ -42,7 +42,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from common.alignment import DEFAULT_ALIGNMENT_CONFIG_PATH  # noqa: E402
 from common.armarium_formats import DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH  # noqa: E402
 from common.contracts.errors import ContractError  # noqa: E402
-from common.contracts.identities import artifact_id  # noqa: E402
 from common.contracts.outcomes import ArmariumCategory, check_algebra_is_total  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, RECENSOR  # noqa: E402
 from common.hard_failure import (  # noqa: E402
@@ -102,6 +101,11 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
     """Run one stage as a program and return its exit code."""
     command = [
         sys.executable,
+        # Ignore PYTHON* startup controls and the user site for child stages.
+        # The stage scripts add the repository root themselves; accepting an
+        # operator's PYTHONPATH/sitecustomize here would execute unsealed code
+        # before the stage reached its first refusal boundary.
+        "-I",
         str(ROOT / program),
         "--run-root",
         str(args.run_root),
@@ -157,18 +161,12 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
     for key, value in extra.items():
         command += [f"--{key.replace('_', '-')}", str(value)]
 
-    completed = subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
-    if completed.stdout.strip():
-        print(completed.stdout.rstrip())
-    # Recognized exits own their diagnostic text; unexpected-exit stderr is
-    # relayed once inside the ContractError below.
-    if (
-        completed.returncode in (EXIT_COMPLETE, EXIT_HELD, EXIT_RUN_HALTED)
-        and completed.stderr.strip()
-    ):
-        print(completed.stderr.rstrip(), file=sys.stderr)
+    # Inherit the operator's streams instead of buffering a stage's unbounded
+    # stdout/stderr in the orchestrator. Each stage owns its diagnostic text,
+    # and an unexpected exit is named after that text has already been relayed.
+    completed = subprocess.run(command, cwd=ROOT)
     if completed.returncode not in (EXIT_COMPLETE, EXIT_HELD, EXIT_RUN_HALTED):
-        raise ContractError(f"{program} exited {completed.returncode}\n{completed.stderr.rstrip()}")
+        raise ContractError(f"{program} exited {completed.returncode}")
     return completed.returncode
 
 
@@ -466,12 +464,10 @@ def run_sequence(
     tree = RunTree(Path(args.run_root), args.run_id)
     # Armarium has no successor, and the consumer-keyed predecessor helper would
     # re-read Archetypus rather than Armarium's own seal.
-    verify_final_seal(tree)
-    export = tree.read_artifact(
-        "armarium",
-        "export",
-        artifact_id("armarium", "export", "export", None),
-    )
+    # The verifier returns the exact export bytes represented by the one
+    # manifest snapshot it checked. Reopening by path after verification would
+    # create a check/use window at the final reporting boundary.
+    export = verify_final_seal(tree)
     status, lines = terminal_report(export)
     print(f"run {args.run_id}: {status}")
     for line in lines:
@@ -493,9 +489,29 @@ def terminal_report(export: dict) -> tuple[str, list[str]]:
     unresolved units are on the bundle's face and this says where to read them rather
     than reporting a partial run with nothing named.
     """
-    aggregate = export["payload"]["aggregate"]
-    complete = export["outcome"] == ArmariumCategory.DELIVERED.value
-    reasons = list(aggregate["reasons"])
+    payload = export.get("payload")
+    aggregate = payload.get("aggregate") if isinstance(payload, dict) else None
+    if not isinstance(aggregate, dict):
+        raise ContractError("the Armarium export has no aggregate object for its terminal report")
+    aggregate_status = aggregate.get("status")
+    reasons_value = aggregate.get("reasons")
+    if aggregate_status not in {"complete", "partial"} or not isinstance(reasons_value, list):
+        raise ContractError("the Armarium export has a malformed aggregate status or reasons list")
+    if any(not isinstance(reason, str) or not reason for reason in reasons_value):
+        raise ContractError("the Armarium export carries a blank or non-string terminal reason")
+    outcome = export.get("outcome")
+    if outcome not in {
+        ArmariumCategory.DELIVERED.value,
+        ArmariumCategory.HELD_FOR_REVIEW.value,
+    }:
+        raise ContractError(f"the Armarium export has unsupported terminal outcome {outcome!r}")
+    complete = outcome == ArmariumCategory.DELIVERED.value
+    if complete and (aggregate_status != "complete" or reasons_value):
+        raise ContractError(
+            "the Armarium export claims delivered while its aggregate remains partial or "
+            "names unresolved reasons; the orchestrator refuses to report complete over a conflict"
+        )
+    reasons = list(reasons_value)
     if not complete and not reasons:
         reasons.append(
             "the export bundle's terminal ledger is partial while the run aggregate "

@@ -10,6 +10,7 @@ comparison's separation of the machine from the stage's own role.
 from __future__ import annotations
 
 import json
+import os
 import signal
 import subprocess
 import sys
@@ -19,14 +20,16 @@ import pytest
 
 from common.chairs import ChairRegistry
 from common.contracts.canonical import canonical_bytes, self_hash
-from common.contracts.errors import FatalAccounting, SchemaRefusal
+from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal
 from common.contracts.stages import ARMARIUM, ATTESTATORES, DOOR, EXEMPLAR, PERLECTOR
 from common.runtree.store import RunTree
 from common.stage import (
     StageContext,
+    _blob_inventory,
     _decode_environment,
     _stage_records,
     adapter_recipe_for,
+    refuse_halted_run,
     run_config_bindings,
     verify_final_seal,
     verify_predecessor_seal,
@@ -229,6 +232,117 @@ RunTree(Path(sys.argv[1]), "seal-unit").put_blob("attestatores", b"interrupted b
     assert any(
         seal["payload"]["blob_inventory"] != original["payload"]["blob_inventory"] for seal in seals
     )
+
+
+def test_a_blob_symlink_is_refused_even_when_it_looks_like_an_unpublished_temporary(tmp_path):
+    """The temporary-name exception is not permission to follow or ignore a symlink."""
+    tree, run, registry, bindings = _tree(tmp_path)
+    blobs_root = tree.resolve(tree.blob_path(ATTESTATORES, "0" * 64)).parent
+    blobs_root.mkdir(parents=True)
+    outside = tmp_path / "outside.bin"
+    outside.write_bytes(b"bytes outside the evidence directory")
+    (blobs_root / f".{('a' * 64)}.tmp-attacker").symlink_to(outside)
+
+    with pytest.raises(SchemaRefusal, match="symlink.*no-follow"):
+        _context(tree, run, registry, bindings).seal_boundary()
+
+
+def test_a_case_variant_blob_digest_is_refused_portably(tmp_path):
+    """A tree cannot acquire different names on default APFS and Linux."""
+    tree, run, registry, bindings = _tree(tmp_path)
+    blobs_root = tree.resolve(tree.blob_path(ATTESTATORES, "0" * 64)).parent
+    blobs_root.mkdir(parents=True)
+    (blobs_root / ("A" * 64)).write_bytes(b"not canonically named")
+
+    with pytest.raises(SchemaRefusal, match="non-canonical case variant"):
+        _context(tree, run, registry, bindings).seal_boundary()
+
+
+def test_blob_inventory_hashes_large_evidence_in_bounded_chunks(tmp_path, monkeypatch):
+    """A large retained blob cannot force a second full-size in-memory copy."""
+    blobs_root = tmp_path / "blobs"
+    blobs_root.mkdir()
+    (blobs_root / ("a" * 64)).write_bytes(b"x" * ((2 << 20) + 17))
+    real_fdopen = os.fdopen
+    read_sizes = []
+
+    class BoundedReader:
+        def __init__(self, descriptor, mode, *, closefd):
+            self._stream = real_fdopen(descriptor, mode, closefd=closefd)
+
+        def __enter__(self):
+            self._stream.__enter__()
+            return self
+
+        def __exit__(self, *exc_info):
+            return self._stream.__exit__(*exc_info)
+
+        def read(self, size=-1):
+            read_sizes.append(size)
+            return self._stream.read(size)
+
+    import common.stage as stage_module
+
+    monkeypatch.setattr(stage_module.os, "fdopen", BoundedReader)
+
+    assert _blob_inventory(blobs_root)[0]["name"] == "a" * 64
+    assert read_sizes and set(read_sizes) == {1 << 20}
+
+
+def test_final_seal_returns_only_the_export_from_its_verified_manifest_snapshot(
+    tmp_path, monkeypatch
+):
+    """Replacement bytes after the manifest check cannot reach terminal reporting."""
+    tree, run, registry, bindings = _tree(tmp_path)
+    context = _context(tree, run, registry, bindings, stage=ARMARIUM)
+    published = context.publish(
+        kind="export",
+        subject_id="export",
+        outcome="delivered",
+        payload={"aggregate": {"status": "complete", "reasons": []}},
+    )
+    context.seal_boundary()
+    context.finish()
+    export_path = tree.resolve(published.relative_path)
+    replacement = tree.read_artifact(
+        ARMARIUM, "export", published.relative_path.split("/")[-1][:-5]
+    )
+    replacement["payload"]["aggregate"]["status"] = "partial"
+    replacement["self_hash"] = self_hash(replacement)
+
+    original_build_manifest = tree.build_manifest
+    swapped = False
+
+    def snapshot_then_replace(stage, *, verify_inputs=True):
+        nonlocal swapped
+        manifest = original_build_manifest(stage, verify_inputs=verify_inputs)
+        if stage == ARMARIUM and not swapped:
+            swapped = True
+            export_path.write_bytes(canonical_bytes(replacement))
+        return manifest
+
+    monkeypatch.setattr(tree, "build_manifest", snapshot_then_replace)
+
+    with pytest.raises(SchemaRefusal, match="changed between its manifest snapshot and use"):
+        verify_final_seal(tree)
+
+
+def test_a_real_run_missing_the_named_hard_failure_digest_refuses_direct_entry(tmp_path):
+    """Losing the cap's proof cannot turn a real run into an uncapped legacy fixture."""
+    registry = ChairRegistry.from_toml(MODELS_CONFIG)
+    bindings = run_config_bindings(registry.config, {"fixture": "none"}, "test")
+    tree = RunTree.create(
+        tmp_path,
+        "real-missing-cap",
+        source_manifest=[],
+        config_digest=bindings["config_digest"],
+        adapter_recipes=bindings["adapter_recipes"],
+        witness_chairs=bindings["witness_chairs"],
+        ingress={"mode": "real"},
+    )
+
+    with pytest.raises(ContractError, match="seals no hard-failure configuration digest"):
+        refuse_halted_run(tree, PERLECTOR, ROOT / "config" / "hard_failure.toml")
 
 
 def test_a_seal_the_stored_inventory_never_named_is_not_a_deletion(tmp_path):

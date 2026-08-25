@@ -13,8 +13,11 @@ declared fixture rather than by hard-coded strings scattered through seven files
 """
 
 import argparse
+import hashlib
 import json
+import os
 import platform
+import stat
 import sys
 import tomllib
 from collections.abc import Mapping
@@ -32,6 +35,7 @@ from common.armarium_formats import (
 from common.chairs.models import AbsentChair, ChairIdentity, ModelsConfig, ServingDetails, is_sha256
 from common.chairs.protocol import ChairProtocol
 from common.chairs.registry import ChairRegistry
+from common.contracts.approval import REAL_INGRESS, parse_ingress_record
 from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of, verify_self_hash
 from common.contracts.envelope import build_envelope
 from common.contracts.errors import (
@@ -673,10 +677,35 @@ def _boundary_outcome(stage: str, kind: str) -> str:
     return "sealed" if kind == "stage-seal" else "recorded"
 
 
-def _stage_records(tree: RunTree, stage: str, kind: str) -> list[dict[str, Any]]:
+def _manifest_artifact(tree: RunTree, stage: str, entry: Mapping[str, Any]) -> dict[str, Any]:
+    """Read the exact artifact bytes one manifest snapshot witnessed.
+
+    ``build_manifest`` records a content digest, but a later consumer used to
+    discard it and reopen the path by identity.  A replacement between those two
+    reads was therefore valid evidence in isolation yet not the evidence the
+    manifest and completion seal had checked.  Compare the bytes represented by
+    the validated record to the snapshot digest before returning the record.
+    """
+    record = tree.read_artifact(stage, entry["kind"], entry["artifact_id"])
+    if digest_bytes(canonical_bytes(record)) != entry.get("sha256"):
+        raise SchemaRefusal(
+            f"{stage} artifact {entry.get('artifact_id')!r} changed between its manifest "
+            "snapshot and use; a completion seal cannot authorize replacement bytes"
+        )
+    return record
+
+
+def _stage_records(
+    tree: RunTree,
+    stage: str,
+    kind: str,
+    *,
+    manifest: Mapping[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    snapshot = tree.build_manifest(stage, verify_inputs=False) if manifest is None else manifest
     return [
-        tree.read_artifact(stage, kind, entry["artifact_id"])
-        for entry in tree.build_manifest(stage, verify_inputs=False)["artifacts"]
+        _manifest_artifact(tree, stage, entry)
+        for entry in snapshot["artifacts"]
         if entry["kind"] == kind
     ]
 
@@ -819,21 +848,118 @@ def _is_unpublished_blob_temporary(name: str) -> bool:
     return bool(separator and unique and is_sha256(target))
 
 
+def _blob_inventory(blobs_root: Path) -> list[dict[str, str]]:
+    """Hash regular blobs through no-follow descriptors anchored to one directory.
+
+    A completion seal is a security boundary, so checking ``Path.is_file()`` and
+    then reopening the spelling is not enough: the first call follows symlinks,
+    and the directory entry can change before the second.  The directory
+    descriptor fixes the directory being inventoried, ``O_NOFOLLOW`` refuses a
+    final symlink, and device/inode comparison proves the descriptor is the entry
+    that was inspected.  Case-fold collisions are refused explicitly so the same
+    tree has one inventory on default APFS and on a case-sensitive filesystem.
+    """
+    directory_flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_DIRECTORY", 0)
+    directory_flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        directory = os.open(blobs_root, directory_flags)
+    except OSError as error:
+        raise SchemaRefusal(
+            f"blob inventory directory cannot be opened without following: {error}"
+        ) from error
+
+    blobs: list[dict[str, str]] = []
+    folded_names: dict[str, str] = {}
+    try:
+        names = sorted(os.listdir(directory))
+        for name in names:
+            folded = name.casefold()
+            previous = folded_names.get(folded)
+            if previous is not None:
+                raise SchemaRefusal(
+                    f"blob inventory names {previous!r} and {name!r}, which collide on a "
+                    "case-insensitive filesystem"
+                )
+            folded_names[folded] = name
+            if is_sha256(folded) and name != folded:
+                raise SchemaRefusal(
+                    f"blob inventory name {name!r} is a non-canonical case variant of a sha256"
+                )
+
+            try:
+                inspected = os.stat(name, dir_fd=directory, follow_symlinks=False)
+            except OSError as error:
+                raise SchemaRefusal(
+                    f"blob inventory entry {name!r} changed while it was inspected: {error}"
+                ) from error
+            if stat.S_ISLNK(inspected.st_mode):
+                raise SchemaRefusal(
+                    f"blob inventory entry {name!r} is a symlink; evidence blobs are no-follow"
+                )
+            if not stat.S_ISREG(inspected.st_mode):
+                continue
+
+            file_flags = os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
+            file_flags |= getattr(os, "O_NOFOLLOW", 0)
+            try:
+                descriptor = os.open(name, file_flags, dir_fd=directory)
+            except OSError as error:
+                raise SchemaRefusal(
+                    f"blob inventory entry {name!r} cannot be opened without following: {error}"
+                ) from error
+            try:
+                opened = os.fstat(descriptor)
+                if not stat.S_ISREG(opened.st_mode) or (
+                    opened.st_dev,
+                    opened.st_ino,
+                ) != (inspected.st_dev, inspected.st_ino):
+                    raise SchemaRefusal(
+                        f"blob inventory entry {name!r} changed identity between check and use"
+                    )
+                if _is_unpublished_blob_temporary(name):
+                    continue
+                content_digest = hashlib.sha256()
+                with os.fdopen(descriptor, "rb", closefd=False) as stream:
+                    while chunk := stream.read(1 << 20):
+                        content_digest.update(chunk)
+                after = os.fstat(descriptor)
+                if (
+                    after.st_dev,
+                    after.st_ino,
+                    after.st_size,
+                    after.st_mtime_ns,
+                    after.st_ctime_ns,
+                ) != (
+                    opened.st_dev,
+                    opened.st_ino,
+                    opened.st_size,
+                    opened.st_mtime_ns,
+                    opened.st_ctime_ns,
+                ):
+                    raise SchemaRefusal(f"blob inventory entry {name!r} changed while hashed")
+                blobs.append({"name": name, "sha256_of_content": content_digest.hexdigest()})
+            finally:
+                os.close(descriptor)
+    finally:
+        os.close(directory)
+    return blobs
+
+
 def _stage_seal_payload(
-    tree: RunTree, stage: str, ordinal: int, attempt: str, decode_environment_artifact_id: str
+    tree: RunTree,
+    stage: str,
+    ordinal: int,
+    attempt: str,
+    decode_environment_artifact_id: str,
+    *,
+    manifest: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    manifest = tree.build_manifest(stage, verify_inputs=False)
+    manifest = tree.build_manifest(stage, verify_inputs=False) if manifest is None else manifest
     artifacts = [
         entry for entry in manifest["artifacts"] if entry["kind"] not in _SEAL_EXCLUDED_KINDS
     ]
     blobs_root = tree.resolve(f"{tree.blob_path(stage, '0' * 64)}").parent
-    blobs = []
-    if blobs_root.exists():
-        for path in sorted(blobs_root.iterdir()):
-            if path.is_file() and not _is_unpublished_blob_temporary(path.name):
-                blobs.append(
-                    {"name": path.name, "sha256_of_content": digest_bytes(path.read_bytes())}
-                )
+    blobs = _blob_inventory(blobs_root) if blobs_root.exists() else []
     census: dict[tuple[str, str], int] = {}
     for entry in artifacts:
         key = (entry["kind"], entry["outcome"])
@@ -862,18 +988,38 @@ def verify_predecessor_seal(tree: RunTree, stage: str) -> None:
     _verify_stage_seal(tree, predecessor, stage, "predecessor")
 
 
-def verify_final_seal(tree: RunTree) -> None:
+def verify_final_seal(tree: RunTree) -> dict[str, Any]:
     """Prove the Armarium boundary, whose lack of a successor leaves no stage reader.
 
     ``SEAL_PREDECESSORS`` is consumer-keyed, so asking it about Armarium would
     re-prove the Archetypus boundary instead of reading Armarium's own seal.
     """
-    _verify_stage_seal(tree, ARMARIUM, "the orchestrator", "final boundary")
+    manifest = tree.build_manifest(ARMARIUM, verify_inputs=False)
+    _verify_stage_seal(tree, ARMARIUM, "the orchestrator", "final boundary", manifest=manifest)
+    expected_id = artifact_id(ARMARIUM, "export", "export", None)
+    exports = [
+        entry
+        for entry in manifest["artifacts"]
+        if entry["kind"] == "export" and entry["artifact_id"] == expected_id
+    ]
+    if len(exports) != 1:
+        raise SchemaRefusal(
+            "the orchestrator refuses armarium final boundary: its manifest does not name "
+            "exactly one derived export artifact"
+        )
+    return _manifest_artifact(tree, ARMARIUM, exports[0])
 
 
-def _verify_stage_seal(tree: RunTree, producer: str, reader: str, role: str) -> None:
+def _verify_stage_seal(
+    tree: RunTree,
+    producer: str,
+    reader: str,
+    role: str,
+    *,
+    manifest: Mapping[str, Any] | None = None,
+) -> None:
     """Keep stage consumers and the final orchestrator reader on one seal contract."""
-    seals = _stage_records(tree, producer, "stage-seal")
+    seals = _stage_records(tree, producer, "stage-seal", manifest=manifest)
     if not seals:
         raise SchemaRefusal(
             f"{reader} refuses: {role} {producer} has no stage-seal; "
@@ -906,6 +1052,7 @@ def _verify_stage_seal(tree: RunTree, producer: str, reader: str, role: str) -> 
         payload.get("attempt_ordinal"),
         seal["attempt_id"],
         expected_id,
+        manifest=manifest,
     )
     if payload != expected:
         raise SchemaRefusal(
@@ -2370,15 +2517,21 @@ def open_context(
 
 def refuse_halted_run(tree: RunTree, stage: str, hard_failure_config_path: str | Path) -> None:
     """Apply the sealed run-level cap when no orchestrator guards stage entry."""
-    sealed_digests = tree.read_run().get(SEALED_CONFIG_DIGESTS_FIELD)
-    # Hand-built stage-seal fixtures predate named policies; current Door runs
-    # always name one, and only a named digest supplies a verifiable cap here.
+    run = tree.read_run()
+    sealed_digests = run.get(SEALED_CONFIG_DIGESTS_FIELD)
+    # Hand-built stage-seal fixtures predate named policies and carry no ingress;
+    # synthetic-ingress fixtures may also construct one narrow boundary by hand.
+    # A real run always names this policy: losing that name is a failed proof,
+    # never permission to continue without the cap.
     if not isinstance(sealed_digests, Mapping) or "hard-failure" not in sealed_digests:
+        if "ingress" in run and parse_ingress_record(run["ingress"]) == REAL_INGRESS:
+            raise ContractError(
+                f"{stage} refuses to start: this real run authority seals no hard-failure "
+                "configuration digest, so its run-level cap cannot be proven"
+            )
         return
     policy = load_hard_failure_policy(hard_failure_config_path)
-    require_sealed_config(
-        run_sealed_config_digests(tree.read_run()), "hard-failure", policy["config_sha256"]
-    )
+    require_sealed_config(run_sealed_config_digests(run), "hard-failure", policy["config_sha256"])
     # An unreadable tally record is a failed measurement, not permission to
     # enter. Input-byte consistency belongs to each stage's consumer boundary,
     # though: recursively checking every tally artifact here can intercept
