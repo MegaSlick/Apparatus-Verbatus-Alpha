@@ -1,36 +1,8 @@
-"""The coverage-triggered recovery origin, isolated from every other cause.
+"""Coverage recovery retains its origin, stays visible, and shares one cap.
 
-Unit 10C gave the Recensor a second reason to spend a bounded fallback-recrop:
-a page witness's own native observation of ink outside every sealed proposal
-(`partition_disagreement.unclaimed_observations`).  In the `review` scenario
-that stimulus arrives beside a scenario-declared recrop on a1 and a scenario
-hold on a2, so nothing observable there separates the coverage route from the
-declared one -- an assertion about the coverage origin made against `review`
-is really an assertion about whichever cause happened to fire first.
-
-The `coverage-recovery` scenario exists for that separation.  It declares
-`recover_acts = []` and `hold_acts = []` and is otherwise the reference run, so
-the witness's unclaimed observation is the ONLY thing in it that can ask for a
-recovery or hold an act.  Three facts are proven here against that path:
-
-1. With the policy's fallback-recrop allowance available, the request is made,
-   it names its origin as an observation rather than a doubt about the reading,
-   and the expanded crop the Designator cuts genuinely reaches the ink that
-   asked for it.  Recovery recovers coverage (GOVERNANCE 11).
-2. With the allowance at zero -- the policy turned off -- the act is held for
-   review, visibly, naming the spent budget; the finding survives on the page
-   Testimonium AND in the review record, and the run reports `partial`.  Nothing
-   disappears inside the loop (GOVERNANCE 2, ARCHITECTURE invariant 4).
-3. A coverage-origin request and a declared-origin request draw on ONE bounded
-   pool.  Three of them in any mixture reconcile; a fourth is refused at the
-   accounting boundary (`RULED_ABSOLUTE_CAP`, "PURE ABSOLUTE, STOP AT 3").
-
-Fact 3 is seeded directly rather than driven through a scenario, for the reason
-`test_recovery_absolute_cap.py` gives at length: `wants_recovery` grants an act
-at most one request in its lifetime (`used_total == 0`), so no scenario can
-drive one act to a second, third or fourth request through the ordinary loop.
-The arithmetic still has to hold for any caller that got there, and mixing the
-two origins is exactly the way a per-origin allowance would hide inside it.
+The scenario declares no ordinary recovery or hold, so unclaimed witness
+geometry is its only trigger. Cap tests seed records directly because the live
+route permits at most one request per act.
 """
 
 import copy
@@ -41,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from common.contracts.canonical import digest_bytes
 from common.contracts.envelope import build_envelope
 from common.contracts.errors import FatalAccounting
 from common.contracts.identities import artifact_id, attempt_id
@@ -54,10 +27,7 @@ ORCHESTRATOR = ROOT / "pipeline/orchestrator/run.py"
 FIXTURE = "synthetic-two-page-v0"
 SCENARIO = "coverage-recovery"
 
-# The origin phrase the Recensor writes when the request came from a witness's
-# unclaimed geometry, and the one it writes for a declared incomplete crop
-# (`pipeline/5_recensor/run.py`, the `reason` field of the recovery-request).
-# Both are statements about coverage; neither judges the reading.
+# Both origins describe coverage and must never become reading-quality claims.
 COVERAGE_ORIGIN = "a page witness reported ink outside every sealed proposal"
 DECLARED_ORIGIN = "the crop may be incomplete"
 
@@ -101,7 +71,6 @@ def _artifacts(tree: RunTree, stage: str, kind: str) -> list[dict]:
 
 
 def _retained_observations(tree: RunTree) -> list[dict]:
-    """Every unclaimed observation still readable on the page testimonia."""
     return [
         observation
         for record in _artifacts(tree, ATTESTATORES, "page-testimonium")
@@ -127,7 +96,7 @@ def _overlaps(left: dict, right: dict) -> bool:
 
 
 def _assert_observations_are_marginal(tree: RunTree, observations: list[dict]) -> None:
-    """Prove the declared stimulus is outside, not merely labelled unclaimed."""
+    """Stored labels are not authority; the stimulus must miss every proposal."""
     proposals = [
         region["payload"]["transform"]["bounds"]
         for region in _artifacts(tree, DESIGNATOR, "region")
@@ -148,7 +117,7 @@ def _stage_seals(tree: RunTree, stage: str) -> list[dict]:
 
 
 def test_an_unclaimed_observation_alone_spends_a_recrop_that_names_its_origin(tmp_path):
-    """(a) Budget available: the recrop happens and the record says why."""
+    """Coverage recovery must retain its origin and reach the reported ink."""
     root = tmp_path / "runs"
     result = _orchestrate(root, "r")
     assert result.returncode == 0, result.stderr
@@ -159,9 +128,7 @@ def test_an_unclaimed_observation_alone_spends_a_recrop_that_names_its_origin(tm
     _assert_observations_are_marginal(tree, retained)
     observed_bounds = [observation["bounds"] for observation in retained]
 
-    # Non-vacuity control: if the load-bearing marginal observation moves onto
-    # proposal ink, the scenario's own evidence check fails. Merely trusting the
-    # stored `unclaimed_observations` label would leave this mutation green.
+    # The retained `unclaimed` label cannot substitute for geometric proof.
     mutated = copy.deepcopy(retained)
     proposal = next(
         region
@@ -177,13 +144,9 @@ def test_an_unclaimed_observation_alone_spends_a_recrop_that_names_its_origin(tm
     for request in requests:
         payload = request["payload"]
         assert payload["recovery_kind"] == FALLBACK_RECROP
-        # The origin is named as an observation, not as a doubt about the
-        # reading: this request could not have come from the scenario, which
-        # declares no recovery at all.
         assert COVERAGE_ORIGIN in payload["reason"]
         assert DECLARED_ORIGIN not in payload["reason"]
-        # And it is named as data, not only as prose -- the observation that
-        # asked for the recrop travels inside the request that answers it.
+        # Origin geometry must travel as data, not only as refusal prose.
         carried = payload["testimony_content_coverage"]["unclaimed_observations"]
         assert carried, "the request does not carry the observation it originated in"
         for observation in carried:
@@ -191,9 +154,7 @@ def test_an_unclaimed_observation_alone_spends_a_recrop_that_names_its_origin(tm
             assert observation["bounds"] in observed_bounds
             assert observation["testimonium_id"], "the origin names no reporting Testimonium"
 
-    # Coverage, actually recovered: the expanded crop reaches the ink that asked
-    # for it.  A recovery request answered by a crop that still misses the
-    # observation would be a loop that recorded itself and recovered nothing.
+    # A recorded loop that still misses the observation has recovered nothing.
     recovery_regions = [
         region
         for region in _artifacts(tree, DESIGNATOR, "region")
@@ -206,9 +167,7 @@ def test_an_unclaimed_observation_alone_spends_a_recrop_that_names_its_origin(tm
             for region in recovery_regions
         ), f"no expanded recrop reaches the observation at {bounds}"
 
-    # The recovery crops expand from proposal ink, so the ordinary containing
-    # page observation overlaps both denominators. Attachment remains the
-    # proposal-derived fact and the recovery region adds no second basis.
+    # A later recovery region cannot add a second attachment basis.
     page_records = _artifacts(tree, ATTESTATORES, "page-testimonium")
     attachments = _artifacts(tree, ATTESTATORES, "act-attachment")
     proposals_by_act = {
@@ -243,9 +202,7 @@ def test_an_unclaimed_observation_alone_spends_a_recrop_that_names_its_origin(tm
         assert row["attached"] is True
         assert row["attachment_basis"] == "geometric-overlap"
 
-    # Receipt items and the latest Recensor seal census describe the same two
-    # accepted acts after re-entry. Every stage that re-entered has an exact
-    # contiguous seal chain; no intermediate round disappears.
+    # Every re-entry round remains present in the contiguous seal chain.
     receipt = tree.read_recensor_partition_receipt()
     assert receipt["recensor_status"] == "complete"
     assert receipt["expected_act_count"] == len(receipt["items"]) == 2
@@ -272,13 +229,7 @@ def test_an_unclaimed_observation_alone_spends_a_recrop_that_names_its_origin(tm
 def test_observation_inside_only_a_recovery_crop_stays_unattached_in_floor_accounting(
     tmp_path, monkeypatch
 ):
-    """A later crop cannot assign an earlier page observation to an act.
-
-    The marginal box is physically inside a2's expanded crop, but overlaps no
-    sealed a2 proposal. Its only honest attachment basis is `unattached`; the
-    native-granularity floor must exclude that chair as well. Including recovery
-    regions in the Recensor denominator makes this test fail at the drift alarm.
-    """
+    """A later crop cannot assign an earlier page observation to an act."""
     root = tmp_path / "runs"
     result = _orchestrate(root, "recovery-only")
     assert result.returncode == 0, result.stderr
@@ -387,12 +338,11 @@ def test_observation_inside_only_a_recovery_crop_stays_unattached_in_floor_accou
 def test_without_the_allowance_the_coverage_finding_is_held_visibly_not_lost(
     tmp_path, policy, run_id
 ):
-    """(b) Policy off: visible-but-pending, never a silent drop."""
+    """A budget-blocked coverage finding must remain visibly pending."""
     root = tmp_path / "runs"
     recovery_config = tmp_path / f"{run_id}.toml"
     recovery_config.write_text(policy, encoding="utf-8")
     result = _orchestrate(root, run_id, recovery_config=recovery_config)
-    # Partial, and it says so: a held act may never appear behind a complete run.
     assert result.returncode == 3, result.stderr
     assert f"run {run_id}: partial" in result.stdout
 
@@ -406,9 +356,7 @@ def test_without_the_allowance_the_coverage_finding_is_held_visibly_not_lost(
         if region["payload"]["origin"] == "recovery"
     ]
 
-    # The finding survives in both places it is written: on the witness's own
-    # page Testimonium, which no budget decision touches, and inside the review
-    # that held the act, which is where a reviewer will look.
+    # Budget policy cannot remove either durable home of the finding.
     assert _retained_observations(tree)
     reviews = _artifacts(tree, RECENSOR, "review")
     assert reviews
@@ -428,26 +376,19 @@ def _load_recensor():
 
 
 class _MiniContext:
-    """Just enough of `StageContext` for `recovery_state` to run against."""
-
     def __init__(self, tree: RunTree):
         self.tree = tree
 
-    def input_ref(self, relative_path: str) -> dict:
-        from common.contracts.canonical import digest_bytes
-
+    def artifact_ref(self, stage: str, kind: str, artifact_id_: str) -> dict:
+        relative_path = self.tree.artifact_path(stage, kind, artifact_id_)
         return {
             "relative_path": relative_path,
             "sha256": digest_bytes(self.tree.read_bytes(relative_path)),
         }
 
-    def artifact_ref(self, stage: str, kind: str, artifact_id_: str) -> dict:
-        return self.input_ref(self.tree.artifact_path(stage, kind, artifact_id_))
-
 
 def _seed_request(tree: RunTree, act_id: str, ordinal: int, reason: str) -> None:
-    """One recovery-request of a named origin, with the matching review
-    `recovery_state` requires beside it."""
+    """Every seeded request requires its matching append-only review."""
     perlectio_ref = {
         "relative_path": "4_perlector/artifacts/perlectio/none.json",
         "sha256": "0" * 64,
@@ -531,7 +472,7 @@ _MIXED_ORIGINS = (COVERAGE_ORIGIN, DECLARED_ORIGIN, COVERAGE_ORIGIN, DECLARED_OR
 
 
 def test_both_recovery_origins_spend_the_same_bounded_pool(tmp_path):
-    """(c) Three requests of mixed origin reconcile against one cap of 3."""
+    """Mixed origins must reconcile against one cap of three."""
     recensor = _load_recensor()
     tree = _minimal_tree(tmp_path)
     for ordinal, reason in enumerate(_MIXED_ORIGINS[: BUDGET["absolute_cap"]], start=1):
@@ -548,10 +489,10 @@ def test_both_recovery_origins_spend_the_same_bounded_pool(tmp_path):
 
 
 def test_a_fourth_request_of_either_origin_is_refused_above_the_cap(tmp_path):
-    """(c) A coverage origin buys no allowance of its own above the cap."""
+    """A coverage origin buys no allowance above the shared cap."""
     recensor = _load_recensor()
     tree = _minimal_tree(tmp_path)
-    for ordinal, reason in enumerate(_MIXED_ORIGINS, start=1):  # one past the cap
+    for ordinal, reason in enumerate(_MIXED_ORIGINS, start=1):
         _seed_request(tree, "act_1", ordinal, reason)
 
     with pytest.raises(FatalAccounting, match="above its sealed total budget"):

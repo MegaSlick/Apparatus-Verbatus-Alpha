@@ -47,8 +47,8 @@ from common.contracts.stages import (  # noqa: E402
 )
 from common.exemplar_boundary import verify_sealed_page_pixels  # noqa: E402
 from common.native_witness import (  # noqa: E402
-    partition_disagreement,
     reported_geometry_overlaps,
+    unrouted_observations,
     validate_page_testimonium_payload,
     validate_partition_disagreement,
 )
@@ -248,7 +248,7 @@ def _proposal_geometry_by_page(context, act_id: str) -> dict[int, dict]:
 
 
 def _merge_page_attachment_fact(previous: dict, current: dict) -> dict:
-    """Keep the page row that supplies an act-level attachment, if either does."""
+    """An unattached continuation may not erase another page's attachment."""
     if current["attached"] and not previous["attached"]:
         return current
     return previous
@@ -352,7 +352,7 @@ def act_attachment_facts(context, act_id: str, outcomes: dict[str, str]) -> dict
                     f"act {act_id} page witness {chair!r} points to a different page Testimonium"
                 )
             geometrically_attached = outcomes.get(chair) in WITNESS_READING_OUTCOMES and any(
-                reported_geometry_overlaps(page_payload, bounds)
+                reported_geometry_overlaps(page_payload.get("observed", []), bounds)
                 for bounds in proposal_page["bounds"]
             )
             if entry["attached"] != geometrically_attached:
@@ -1451,9 +1451,7 @@ def testimony_content_findings(context) -> dict[int, dict]:
             # sealed proposal denominator. The optional retained partition is
             # audit evidence, not an input whose omission or older denominator
             # may suppress a present finding.
-            unclaimed = partition_disagreement(record, proposal_regions_by_page.get(ordinal, []))[
-                "unclaimed_observations"
-            ]
+            unclaimed = unrouted_observations([record], proposal_regions_by_page.get(ordinal, []))
         else:
             unclaimed = []
         if disagreement is not None or unclaimed:
@@ -1462,14 +1460,8 @@ def testimony_content_findings(context) -> dict[int, dict]:
                 {"by_chair": {}, "shortfall": False},
             )
             finding.setdefault("unclaimed_observations", []).extend(copy.deepcopy(unclaimed))
-            # An observation outside every proposal is a retained coverage
-            # finding, not evidence that the page's *reported text* fell
-            # outside an attached span.  It independently asks the Recensor
-            # for bounded recovery below; turning it into this text shortfall
-            # would keep every act on the page held after that route has run,
-            # even though the finding never assigned the observation to one of
-            # them.  That would turn unknown ownership into a silent negative
-            # verdict about otherwise reconciled acts.
+            # Unclaimed geometry requests bounded recovery without becoming an
+            # act-level text shortfall; it assigns the observation to no act.
         if "reported" not in payload:
             if record.get("outcome") in WITNESS_READING_OUTCOMES:
                 raise FatalAccounting(
@@ -1553,7 +1545,7 @@ def testimony_content_findings(context) -> dict[int, dict]:
 
 
 def recovery_request_reason(*, declared_crop: bool, unclaimed_observation: bool) -> str:
-    """Name every coverage cause that triggered one fallback-recrop request."""
+    """Every triggered coverage cause must remain explicit in the request."""
     causes = []
     if declared_crop:
         causes.append("the crop may be incomplete")

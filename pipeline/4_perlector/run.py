@@ -676,21 +676,8 @@ def act_attachment_view(
             # the third mirror of the Recensor's (see `current_page_testimonia`).
             if page_testimonia_seen is not None and isinstance(page_payload, dict):
                 page_testimonia_seen[testimonium["artifact_id"]] = testimonium
-            # The SEALED PROPOSAL geometry, never every current basis region.
-            # The writer computes this attachment from `proposed_regions`
-            # (`pipeline/3_attestatores/run.py`) and cannot do otherwise: a
-            # recovery region does not exist when a witness runs, and the reread
-            # rule forbids new testimony after a reading. Re-deriving here over
-            # a recovery crop as well therefore does not check the writer, it
-            # contradicts it -- and it contradicts it in exactly the case Unit
-            # 10C exists for. A page witness reporting ink outside every
-            # proposal routes to a fallback recrop; the expanded crop then
-            # overlaps the observation the proposal missed, and the reread
-            # refused the act's own attachment record as forged. That is
-            # retrospective coverage arriving through the attachment door
-            # (consult 4.1, wall 1: a recovery crop may not become coverage
-            # after the fact), and it turned a recoverable coverage finding
-            # into a hard stage failure.
+            # A recovery crop postdates testimony and therefore cannot expand
+            # the sealed-proposal denominator used to attach that testimony.
             page_bases = [
                 basis
                 for basis in bases
@@ -700,7 +687,9 @@ def act_attachment_view(
             geometrically_attached = chair_testimonium[
                 "outcome"
             ] in WITNESS_READING_OUTCOMES and any(
-                reported_geometry_overlaps(page_payload, basis["transform"]["bounds"])
+                reported_geometry_overlaps(
+                    page_payload.get("observed", []), basis["transform"]["bounds"]
+                )
                 for basis in page_bases
             )
             if attachment["attached"] != geometrically_attached:
@@ -786,21 +775,15 @@ def act_attachment_view(
                 and isinstance(alignment, dict)
                 and alignment.get("status") == "aligned"
             ):
-                if (
-                    not isinstance(alignment, dict)
-                    or set(alignment)
-                    != {
-                        "status",
-                        "anchor_basis",
-                        "anchor_span",
-                        "witness_span",
-                        "line_geometry",
-                        "loss",
-                        "offset_maps",
-                    }
-                    or alignment.get("status") != "aligned"
-                    or span != alignment.get("witness_span")
-                ):
+                if set(alignment) != {
+                    "status",
+                    "anchor_basis",
+                    "anchor_span",
+                    "witness_span",
+                    "line_geometry",
+                    "loss",
+                    "offset_maps",
+                } or span != alignment.get("witness_span"):
                     raise SchemaRefusal("an attached page witness has no computed alignment")
                 page_text = page_payload.get("reported")
                 witness_span = alignment["witness_span"]
@@ -834,10 +817,8 @@ def act_attachment_view(
                 and isinstance(alignment, dict)
                 and alignment.get("status") == "aligned"
             ):
-                # Alignment survives as this witness's own text-span derivation,
-                # but it no longer authorizes an attachment.  An unpaired
-                # geometric report therefore keeps the alignment facts with no
-                # act span or comparison view.
+                # Text alignment survives independently but cannot authorize a
+                # geometric attachment or comparison view.
                 if span is not None:
                     raise SchemaRefusal("an unattached page witness claims a comparison span")
             elif not attachment["attached"] and (

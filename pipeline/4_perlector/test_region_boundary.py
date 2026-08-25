@@ -623,28 +623,7 @@ def test_page_testimonium_consumer_closes_payload_and_provenance(
 
 
 def test_a_recovery_crop_cannot_retroactively_attach_a_page_witness(real_region, monkeypatch):
-    """The attachment denominator is the SEALED PROPOSAL, never the current basis.
-
-    The Attestatores writer derives a page witness's attachment from
-    `proposed_regions` and cannot do otherwise: a recovery region does not exist
-    when a witness runs, and the reread rule forbids new testimony afterwards.
-    If the Perlector re-derives the same fact over every current basis region,
-    the two can only ever disagree once a recrop exists -- and they disagree in
-    exactly the case Unit 10C exists for, where a page witness reported ink no
-    proposal covered and the expanded crop went and got it. Live reproduction
-    before the fix: the coverage-recovery scenario with the containing
-    observations removed died at the Perlector's reread with "act ... page
-    attachment for chair 'attestator_1' does not derive from that witness's
-    reported geometry against the sealed proposal", turning a recoverable
-    coverage finding into a hard stage failure (GOVERNANCE 2; consult 4.1
-    wall 1, a recovery crop may not become coverage after the fact).
-
-    Here the page-2 witness is given native geometry that misses the sealed
-    continuation crop, so its recorded attachment is honestly false, and a
-    recovery basis is added over the ink it did report. Passing that recovery
-    region's id in the proposal set is the same test with the defect put back:
-    it must refuse, or this proves nothing.
-    """
+    """Recovery geometry cannot enter the earlier testimony denominator."""
     context, _ = real_region
     proposal_seal = context.tree.read_artifact(
         DESIGNATOR,
@@ -667,7 +646,7 @@ def test_a_recovery_crop_cannot_retroactively_attach_a_page_witness(real_region,
     bases = [perlector.verify_region(context, row) for row in regions]
     testimonia = perlector.testimonia_of(context, act["act_id"], proposals)
     far_side = next(basis for basis in bases if basis["source_page_ordinal"] == 2)
-    # Reported ink on the continuation page that the sealed crop does not cover.
+    # The observation must miss the sealed continuation crop.
     reported = {"x": 0, "y": 200, "w": 10, "h": 40}
     original = context.tree.read_artifact_reference
 

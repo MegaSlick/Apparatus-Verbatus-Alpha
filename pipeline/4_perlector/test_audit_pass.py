@@ -632,10 +632,8 @@ def test_recovery_sibling_context_is_sealed_and_never_republished(tmp_path):
     tree = RunTree(tmp_path / "runs", "r")
     perlector = _perlector()
     readings = _records(tree, "perlectio")
-    # Review now contains a second, policy-gated recovery for a2's unclaimed
-    # native page observation.  This test exercises a1's scenario-declared
-    # recovery and a2's cross-page sibling, so select the sealed identities
-    # rather than assuming one act can have ordinal two.
+    # More than one act may reach ordinal two; sealed act identities, not the
+    # ordinal alone, distinguish the recovery from its sibling.
     recovered = next(
         record
         for record in readings

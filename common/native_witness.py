@@ -427,12 +427,12 @@ def _overlaps(left: dict[str, int], right: dict[str, int]) -> bool:
     ) > max(left["y"], right["y"])
 
 
-def reported_geometry_overlaps(payload: dict[str, Any], bounds: dict[str, int]) -> bool:
-    """Whether one Testimonium reports positive-area geometry over ``bounds``."""
+def reported_geometry_overlaps(observed: list[dict[str, Any]], bounds: dict[str, int]) -> bool:
+    """Presentation echoes never count as reported geometric overlap."""
     return any(
         observation.get("bounds_source") in REPORTED_BOUNDS_SOURCES
         and _overlaps(observation["bounds"], bounds)
-        for observation in payload.get("observed", [])
+        for observation in observed
     )
 
 
@@ -548,10 +548,9 @@ def partition_disagreement(
 def _partition_pairing_facts(
     proposals: list[dict[str, int]], observations: list[dict[str, Any]]
 ) -> tuple[list[dict[str, Any]], list[dict[str, int]], list[dict[str, Any]]]:
-    """Derive every overlap pairing and the two non-verdict summaries."""
+    """Ambiguity is symmetric, so neither side may choose a single pairing."""
     deltas: list[dict[str, Any]] = []
     pairing_keys: list[tuple[int, int, int, int]] = []
-    observed_proposals: set[tuple[int, int, int, int]] = set()
     # A tie is a tie from either side: one observation spanning several
     # proposals, or several observations each claiming the same proposal.
     # Counting matches per proposal as well as per observation is what makes
@@ -584,7 +583,6 @@ def _partition_pairing_facts(
             }
             deltas.append(pairing)
             pairing_keys.append(key)
-            observed_proposals.add(key)
     ambiguous_pairings = [
         pairing
         for pairing, key in zip(deltas, pairing_keys, strict=True)
@@ -594,7 +592,7 @@ def _partition_pairing_facts(
     unobserved_proposals = [
         proposal
         for proposal in proposals
-        if (proposal["x"], proposal["y"], proposal["w"], proposal["h"]) not in observed_proposals
+        if (proposal["x"], proposal["y"], proposal["w"], proposal["h"]) not in proposal_match_counts
     ]
     return deltas, unobserved_proposals, ambiguous_pairings
 

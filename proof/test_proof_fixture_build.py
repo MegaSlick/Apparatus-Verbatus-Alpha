@@ -341,11 +341,7 @@ def test_the_scenarios_are_exactly_the_declared_ones(skeleton):
     # spans two pages.
     assert by_name["continuation-recovery"]["recover_acts"] == ["a2"]
     assert by_name["continuation-recovery"]["hold_acts"] == []
-    # coverage-recovery declares neither, on purpose: it is the one scenario in
-    # which a recovery request or a hold can have come from nowhere but the
-    # page witness's own unclaimed observation. A declaration added here would
-    # silently re-conflate the two origins
-    # (`pipeline/5_recensor/test_coverage_recovery_origin.py`).
+    # Any declared route here would re-conflate it with the unclaimed-geometry origin.
     assert by_name["coverage-recovery"]["recover_acts"] == []
     assert by_name["coverage-recovery"]["hold_acts"] == []
     assert [

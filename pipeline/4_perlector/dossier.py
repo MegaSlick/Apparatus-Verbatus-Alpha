@@ -252,13 +252,10 @@ def _testimonium_entry(
 
 
 def witnessed_region_ids(testimonia: list[dict], regions: list[dict[str, Any]]) -> set[str]:
-    """Basis regions wholly contained in a reading chair's reported page geometry.
+    """Coverage requires full containment by native or derived geometry.
 
-    A presentation echo is not witness geometry, and one presentation's stated
-    `unpresented_regions` cannot answer for a crop outside that image.  Another
-    real Testimonium may still cover that crop; otherwise the result remains
-    false because nobody reported the complete region, not because an unrelated
-    coordinate frame was treated as an uncovered verdict.
+    Presentation echoes do not count, and one Testimonium's unpresented crop
+    cannot override another Testimonium that actually contains it.
     """
     witnessed: set[str] = set()
     for region in regions:

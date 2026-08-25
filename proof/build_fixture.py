@@ -97,9 +97,7 @@ _PRIOR_READING_SCENARIOS = (
     "malformed-witness",
     "structured-witness",
     "malformed-capabilities",
-    # The coverage-triggered recovery origin, isolated: an ordinary run in
-    # every other respect, so nothing but the witness's unclaimed observation
-    # can request a recrop or hold an act.
+    # No declared recovery or hold may mask the geometry-triggered route.
     "coverage-recovery",
 )
 PRIOR_READINGS = tuple(
@@ -149,21 +147,14 @@ CHANDRA_ANCHORS = (
     },
 )
 
-# Native witness geometry exercises both ordinary containment and the recorded
-# disagreement path.  Page 1's two proposal crops span x 12..200 (y 15..114
-# and y 114..238); the reference rows contain both, while the review-only
-# marginal box at x 0..10 is outside each.  The latter is a deterministic
-# stimulus for the declared-but-unmeasured positive-area routing rule, never a
-# calibrated threshold or an instruction to attach it to either act.
+# Fixture geometry is deterministic stimulus for an explicitly unmeasured
+# positive-area rule; it is neither a calibrated threshold nor act assignment.
 NATIVE_OBSERVATIONS = (
-    # The reference path has two independently reported page geometries large
-    # enough to contain both proposal regions.  They exercise geometric
-    # attachment and containment without using an anchor as authority.
+    # Two independent reports must contain both page-1 proposals without
+    # treating anchor alignment as attachment authority.
     {"chair": "attestator_1", "page_ordinal": 1, "x": 12, "y": 15, "w": 188, "h": 223},
     {"chair": "attestator_3", "page_ordinal": 1, "x": 12, "y": 15, "w": 188, "h": 223},
-    # The disagreement fixture stays deliberately uncalibrated and belongs to
-    # the recovery scenario: it is reported ink outside every proposal, which
-    # the page Testimonium retains for the Recensor's bounded route.
+    # Review retains marginal ink outside every proposal for bounded recovery.
     {
         "scenario": "review",
         "chair": "attestator_1",
@@ -173,12 +164,8 @@ NATIVE_OBSERVATIONS = (
         "w": 10,
         "h": 40,
     },
-    # The same marginal box under `coverage-recovery`, whose scenario declares
-    # no recovery and no hold at all.  In `review` this stimulus arrives beside
-    # a scenario-declared recrop on a1 and a scenario hold on a2, so a coverage
-    # route and a declared one cannot be told apart from the outcome; here the
-    # witness's own unclaimed geometry is the ONLY thing that can ask for a
-    # recovery, which is what makes the origin measurable rather than inferred.
+    # This scenario declares no competing route, so only marginal geometry can
+    # cause its recovery or hold.
     {
         "scenario": "coverage-recovery",
         "chair": "attestator_1",

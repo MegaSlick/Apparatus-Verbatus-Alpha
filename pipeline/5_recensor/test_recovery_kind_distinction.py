@@ -90,9 +90,8 @@ def test_the_real_recovery_request_names_fallback_recrop(tmp_path):
         for entry in tree.build_manifest(RECENSOR)["artifacts"]
         if entry["kind"] == "recovery-request"
     ]
-    # Review retains the scenario-declared a1 request and the second request
-    # from attestator_3's unclaimed native page observation. Both are coverage
-    # recovery and must name the one implemented operation explicitly.
+    # Declared and unclaimed-geometry routes must both name the one implemented
+    # coverage operation explicitly.
     assert len(requests) == 2
     assert {request["payload"]["act_key"] for request in requests} == {"a1", "a2"}
     assert {request["payload"]["recovery_kind"] for request in requests} == {FALLBACK_RECROP}

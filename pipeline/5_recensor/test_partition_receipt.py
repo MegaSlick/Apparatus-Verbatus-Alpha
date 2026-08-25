@@ -96,14 +96,7 @@ def test_happy_recensor_pass_writes_a_complete_scoped_partition_receipt(tmp_path
 def test_recensor_rederives_page_attachment_over_the_sealed_proposal_both_ways(
     tmp_path, monkeypatch, drift
 ):
-    """Neither polarity of a forged page attachment can move the witness floor.
-
-    The writer and Perlector derive this fact from a reading outcome plus native
-    geometry against the original proposal regions.  The Recensor is the second
-    consumer of the mirror pair: accepting the stored boolean on its basis label
-    alone would let a resealed false remove a real witness, or a resealed true
-    add one, while still producing a self-consistent receipt.
-    """
+    """Neither polarity of forged page attachment may move the witness floor."""
     root = tmp_path / "runs"
     through_perlector(root, "attachment-drift", "happy")
     recensor = _load_recensor()
@@ -262,10 +255,7 @@ def test_recovery_replaces_the_current_partition_snapshot_without_erasing_histor
 
     after = tree.read_recensor_partition_receipt()
     current = next(item for item in after["items"] if item["act_key"] == "a1")
-    # The recrop is append-only evidence, and the Recensor now accepts a1 once
-    # its expanded crop resolves its own coverage.  The marginal observation is
-    # still retained separately in a2's policy-gated recovery request; it is
-    # not silently assigned to a1 merely because that act recovered first.
+    # Recovery order cannot assign a marginal observation to the first accepted act.
     assert current["review_outcome"] == "accepted"
     assert current["review_ref"] != requested["review_ref"]
     assert before["self_hash"] != after["self_hash"]

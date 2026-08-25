@@ -419,11 +419,7 @@ def test_partition_disagreement_retains_all_ambiguous_geometry_without_a_winner(
 
 
 def test_partition_disagreement_ties_from_the_proposal_side_too():
-    """Two observations claiming the same proposal is a tie, symmetric to one
-    observation claiming two proposals — the consult names both as "two
-    observations tie", and each observation here matches only one proposal on
-    its own side of the count, so a one-sided (observation-only) tie check
-    would silently miss this."""
+    """Ambiguity is symmetric when multiple observations claim one proposal."""
     testimony = {
         "artifact_id": "page-testimony",
         "payload": {

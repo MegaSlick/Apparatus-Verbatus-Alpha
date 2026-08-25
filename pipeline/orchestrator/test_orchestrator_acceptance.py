@@ -4638,10 +4638,8 @@ def test_the_witness_uncovered_caveat_names_the_region_carrying_the_new_pixels(r
 def test_the_recovery_request_and_both_reading_attempts_survive(review_run):
     _, tree = review_run
     requests = artifacts(tree, RECENSOR, "recovery-request")
-    # a1's scenario-declared crop request and a2's request for the page witness's
-    # unclaimed native observation are distinct, retained coverage decisions.
-    # The latter is not a retry for its disagreeing text: it is the Recensor's
-    # sealed fallback-recrop decision for ink outside every proposal.
+    # Unclaimed geometry is a distinct coverage decision, never a retry for
+    # disagreeing text.
     assert len(requests) == 2
     assert {request["payload"]["act_key"] for request in requests} == {"a1", "a2"}
 
@@ -4712,9 +4710,7 @@ def test_the_cross_page_act_is_witnessed_on_both_sides_of_the_break(review_run):
         for record in artifacts(tree, PERLECTOR, "perlectio")
         if record["payload"]["act_key"] == "a2"
     ]
-    # The second a2 reading is the normal execution of the second request: the
-    # disagreeing page witness observed ink outside every proposal, so the
-    # Recensor spent its threshold-gated fallback-recrop allowance for coverage.
+    # Only unclaimed geometry, never text disagreement, authorizes this second attempt.
     assert sorted(record["payload"]["attempt_ordinal"] for record in readings) == [1, 2]
     reading = max(readings, key=lambda record: record["payload"]["attempt_ordinal"])
     regions = reading["payload"]["basis"]["regions"]
@@ -4736,9 +4732,7 @@ def test_the_cross_page_act_is_witnessed_on_both_sides_of_the_break(review_run):
 def test_recovery_stayed_inside_its_budget(review_run):
     _, tree = review_run
     requests = artifacts(tree, RECENSOR, "recovery-request")
-    # The second request comes from attestator_3's retained native observation
-    # outside every sealed proposal. It is coverage recovery, not a text-quality
-    # reroll, and each request retains the exact sealed policy that capped it.
+    # Each geometry-triggered request retains the same absolute policy cap.
     assert len(requests) == 2
     assert all(request["payload"]["budget_allowed"] <= 3 for request in requests), (
         "the absolute cap is a ruling"
