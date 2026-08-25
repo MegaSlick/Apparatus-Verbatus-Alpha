@@ -1036,6 +1036,17 @@ def test_a_manifest_refuses_a_pipe_named_as_an_artifact(tmp_path):
         tree.build_manifest(DESIGNATOR)
 
 
+def test_a_manifest_refuses_a_pipe_occupying_an_artifact_kind_name(tmp_path):
+    """A non-JSON special file cannot erase the producer directory it occupies."""
+    tree = make_run(tmp_path)
+    artifacts_root = tree.resolve(f"{writing_directory(DESIGNATOR)}/{ARTIFACTS_DIR}")
+    artifacts_root.mkdir(parents=True)
+    os.mkfifo(artifacts_root / "proposal")
+
+    with pytest.raises(SchemaRefusal, match="artifact kind directory"):
+        tree.build_manifest(DESIGNATOR)
+
+
 def test_a_manifest_refuses_a_directory_it_cannot_list(tmp_path):
     """An unreadable directory cannot count as an empty part of the inventory."""
     tree = make_run(tmp_path)
@@ -1296,21 +1307,131 @@ def test_a_manifest_hashes_the_same_artifact_read_it_verified(tmp_path, monkeypa
     tree.publish_artifact(envelope)
     artifact = tree.resolve(tree.artifact_path(DESIGNATOR, "proposal", envelope["artifact_id"]))
     expected_bytes = canonical_bytes(envelope)
-    real_read_bytes = Path.read_bytes
+    artifact_identity = (artifact.stat().st_dev, artifact.stat().st_ino)
+    real_fdopen = os.fdopen
     reads = 0
 
-    def counted_read_bytes(path):
+    def counted_fdopen(descriptor, *args, **kwargs):
         nonlocal reads
-        if path == artifact:
+        opened = os.fstat(descriptor)
+        if (opened.st_dev, opened.st_ino) == artifact_identity:
             reads += 1
-        return real_read_bytes(path)
+        return real_fdopen(descriptor, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "read_bytes", counted_read_bytes)
+    monkeypatch.setattr(os, "fdopen", counted_fdopen)
 
     entry = tree.build_manifest(DESIGNATOR)["artifacts"][0]
 
     assert reads == 1
     assert entry["sha256"] == digest_bytes(expected_bytes)
+
+
+def test_a_manifest_refuses_an_artifact_replaced_by_a_link_at_open(tmp_path, monkeypatch):
+    """The no-follow open closes the lstat-to-read replacement window."""
+    tree = make_run(tmp_path)
+    envelope = make_envelope()
+    tree.publish_artifact(envelope)
+    artifact = tree.resolve(tree.artifact_path(DESIGNATOR, "proposal", envelope["artifact_id"]))
+    outside = tmp_path / "outside-at-open.json"
+    outside.write_bytes(canonical_bytes(envelope))
+    real_open = os.open
+    replaced = False
+
+    def replace_before_open(path, flags, *args, **kwargs):
+        nonlocal replaced
+        if path == artifact.name and kwargs.get("dir_fd") is not None and not replaced:
+            replaced = True
+            artifact.unlink()
+            artifact.symlink_to(outside)
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", replace_before_open)
+
+    with pytest.raises(SchemaRefusal, match="without following links"):
+        tree.build_manifest(DESIGNATOR)
+    assert replaced is True
+
+
+def test_a_manifest_refuses_an_empty_inventory_directory_replaced_during_listing(
+    tmp_path, monkeypatch
+):
+    """An opened empty directory cannot be renamed away and reported as current."""
+    tree = make_run(tmp_path)
+    artifacts_root = tree.resolve(f"{writing_directory(DESIGNATOR)}/{ARTIFACTS_DIR}")
+    artifacts_root.mkdir(parents=True)
+    original_identity = (artifacts_root.stat().st_dev, artifacts_root.stat().st_ino)
+    parked = tree.root / "parked-artifacts"
+    outside = tmp_path / "outside-empty-artifacts"
+    outside.mkdir()
+    real_scandir = os.scandir
+    replaced = False
+
+    def replace_after_listing(path):
+        nonlocal replaced
+        listing = real_scandir(path)
+        opened = os.fstat(path)
+        if (opened.st_dev, opened.st_ino) == original_identity and not replaced:
+            replaced = True
+            artifacts_root.rename(parked)
+            artifacts_root.symlink_to(outside, target_is_directory=True)
+        return listing
+
+    monkeypatch.setattr(os, "scandir", replace_after_listing)
+
+    with pytest.raises(SchemaRefusal, match="resolves outside the run tree|is a link"):
+        tree.build_manifest(DESIGNATOR)
+    assert replaced is True
+
+
+def test_a_manifest_refuses_a_run_root_replaced_after_the_tree_was_opened(tmp_path):
+    """Containment is bound to the opened run directory's device and inode."""
+    tree = make_run(tmp_path)
+    original = tmp_path / "original-r1"
+    tree.root.rename(original)
+    tree.root.mkdir()
+    (tree.root / RUN_FILE).write_bytes((original / RUN_FILE).read_bytes())
+
+    with pytest.raises(SchemaRefusal, match="device or inode changed"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_a_manifest_refuses_case_variant_inventory_names(tmp_path):
+    """A Linux-built tree must not silently collapse when moved to default APFS."""
+    tree = make_run(tmp_path)
+    artifacts_root = tree.resolve(f"{writing_directory(DESIGNATOR)}/{ARTIFACTS_DIR}")
+    artifacts_root.mkdir(parents=True)
+    lower = artifacts_root / "residue"
+    upper = artifacts_root / "RESIDUE"
+    lower.write_bytes(b"one")
+    upper.write_bytes(b"two")
+    if lower.samefile(upper):
+        pytest.skip("the filesystem itself conflates case variants")
+
+    with pytest.raises(SchemaRefusal, match="case-variant names"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_a_manifest_refuses_an_artifact_too_large_to_read_safely(tmp_path):
+    tree = make_run(tmp_path)
+    envelope = make_envelope()
+    tree.publish_artifact(envelope)
+    artifact = tree.resolve(tree.artifact_path(DESIGNATOR, "proposal", envelope["artifact_id"]))
+    os.truncate(artifact, runtree_store._MAX_MANIFEST_ARTIFACT_BYTES + 1)
+
+    with pytest.raises(SchemaRefusal, match="manifest artifact limit"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_a_manifest_refuses_an_unbounded_number_of_walk_entries(tmp_path, monkeypatch):
+    tree = make_run(tmp_path)
+    artifacts_root = tree.resolve(f"{writing_directory(DESIGNATOR)}/{ARTIFACTS_DIR}")
+    artifacts_root.mkdir(parents=True)
+    for name in ("one", "two", "three"):
+        (artifacts_root / name).write_bytes(b"publication residue")
+    monkeypatch.setattr(runtree_store, "_MAX_MANIFEST_WALK_ENTRIES", 2)
+
+    with pytest.raises(SchemaRefusal, match="entry manifest walk limit"):
+        tree.build_manifest(DESIGNATOR)
 
 
 def test_a_manifest_rechecks_containment_after_collecting_walk_members(tmp_path, monkeypatch):
