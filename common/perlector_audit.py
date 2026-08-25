@@ -58,7 +58,6 @@ _DRAFT_FIELDS: Final = frozenset(
         "act_key",
         "attempt_ordinal",
         "semi_final_text",
-        "page_id",
         "page_ids",
         "round_cap",
         "policy",
@@ -70,7 +69,6 @@ _FINDING_FIELDS: Final = frozenset(
     {
         "act_key",
         "attempt_ordinal",
-        "page_id",
         "page_ids",
         "round_cap",
         "policy",
@@ -298,13 +296,10 @@ def _validate_common(value: dict[str, Any], *, text_length: int) -> None:
     if (
         not isinstance(value["act_key"], str)
         or not value["act_key"]
-        or not isinstance(value["page_id"], str)
-        or not value["page_id"]
         or not isinstance(value["page_ids"], list)
         or not value["page_ids"]
         or any(not isinstance(page_id, str) or not page_id for page_id in value["page_ids"])
         or len(value["page_ids"]) != len(set(value["page_ids"]))
-        or value["page_id"] != value["page_ids"][0]
     ):
         raise SchemaRefusal("an audit record has no act or page identity")
     if (
@@ -508,7 +503,6 @@ def validate_chain(tree, reading: dict[str, Any], act_id: str) -> dict[str, Any]
     shared_fields = (
         "act_key",
         "attempt_ordinal",
-        "page_id",
         "page_ids",
         "round_cap",
         "policy",

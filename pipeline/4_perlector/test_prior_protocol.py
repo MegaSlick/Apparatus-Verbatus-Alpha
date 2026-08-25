@@ -746,10 +746,16 @@ def _write_protocol(tmp_path, **overrides):
         "selection_rule": protocol.SELECTION_RULE,
         "page_shared_prefix_policy": protocol.PAGE_SHARED_PREFIX_POLICY,
         "pass_b_fragment": protocol.PASS_B_FRAGMENT,
+        "max_images": 32,
     }
     fields.update(overrides)
     path = tmp_path / "perlector_protocol.toml"
-    path.write_text("\n".join(f'{key} = "{value}"' for key, value in fields.items()))
+    path.write_text(
+        "\n".join(
+            f'{key} = "{value}"' if isinstance(value, str) else f"{key} = {str(value).lower()}"
+            for key, value in fields.items()
+        )
+    )
     return path
 
 
@@ -789,6 +795,14 @@ def test_the_shipped_declaration_carries_the_pinned_neutral_form():
     repository holds it and this is the check that config agrees with it."""
     protocol_config, _sha = protocol.load(ROOT / "config" / "perlector_protocol.toml")
     assert protocol_config["pass_b_fragment"] == protocol.PASS_B_FRAGMENT
+    assert protocol_config["max_images"] == 32
+
+
+@pytest.mark.parametrize("capacity", [0, -1, True, "32"])
+def test_a_protocol_without_a_positive_integer_image_capacity_is_refused(tmp_path, capacity):
+    path = _write_protocol(tmp_path, max_images=capacity)
+    with pytest.raises(ContractError, match="closed schema"):
+        protocol.load(path)
 
 
 def test_a_blank_pass_b_fragment_is_refused(tmp_path):
@@ -812,5 +826,5 @@ def test_an_unknown_page_shared_prefix_policy_is_refused(tmp_path):
 def test_a_protocol_declaration_missing_a_field_is_refused(tmp_path):
     path = tmp_path / "perlector_protocol.toml"
     path.write_text(f'selection_rule = "{protocol.SELECTION_RULE}"')
-    with pytest.raises(ContractError, match="not its closed string schema"):
+    with pytest.raises(ContractError, match="not its closed schema"):
         protocol.load(path)
