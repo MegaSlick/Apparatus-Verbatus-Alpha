@@ -22,23 +22,15 @@ from .volume_s3 import VolumeSpec, VolumeTransferRefusal
 def _default_state_dir() -> Path:
     """Return durable operator state outside the checked-out project.
 
-    **`XDG_STATE_HOME` is honoured only when it is absolute**, which is what the
-    Base Directory specification requires of it and what this default depends
-    on. `main` resolves a *relative* `--state-dir` against the workspace, so
-    `XDG_STATE_HOME=` — an ordinary way to spell "unset", and what an empty
-    export leaves behind — made this function return the bare relative path
-    `verbatus`, and the operator's records went straight back inside the
-    checkout, silently, under a name the tool then had no reason to warn about.
-    That is the exact placement moving the default out of the checkout was for.
+    The Base Directory specification requires an absolute `XDG_STATE_HOME`;
+    accepting a relative value would put records under the workspace.
     """
 
     state_home = Path(os.environ.get("XDG_STATE_HOME", ""))
     if not state_home.is_absolute():
         home = Path.home()
-        # Path.home() honours HOME even when it is relative. Falling through
-        # with that value recreates the same checkout-relative state placement
-        # as a non-absolute XDG_STATE_HOME. The account database is the durable
-        # fallback on the POSIX systems this operator supports.
+        # Path.home() honours a relative HOME, so use the POSIX account database
+        # before accepting a checkout-relative state root.
         if not home.is_absolute():
             home = Path(pwd.getpwuid(os.getuid()).pw_dir)
         if not home.is_absolute():
@@ -50,11 +42,8 @@ def _default_state_dir() -> Path:
 def _warn_about_abandoned_state_dir(workspace: Path, state: Path) -> None:
     """Name an old in-checkout `.verbatus/` this version no longer reads by default.
 
-    The default moved outside the checkout so records survive a `git clean`,
-    but a folder left behind by an earlier version holds real receipts. Silently
-    reading nothing where they used to be would read as "no records exist" —
-    GOVERNANCE 2 requires that gap to be named, not left for the operator to
-    discover by noticing `status` came back emptier than expected.
+    An old folder may hold real receipts; omitting it would make existing records
+    appear not to exist.
     """
 
     old_state = workspace / ".verbatus"

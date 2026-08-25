@@ -101,13 +101,7 @@ def test_ci_installs_the_frozen_project_environment_before_running_the_gate():
 
 
 def test_every_runtime_dependency_is_inside_the_image_and_everyday_environment():
-    """The chamber image and everyday gate install requirements-dev.txt. A
-    runtime dependency declared only in pyproject.toml would leave those two
-    environments unable to run the project they are supposed to exercise.
-
-    This focused check names a missing runtime dependency directly. The sibling
-    below reconciles the complete direct name/version inventory in both directions.
-    """
+    """Every runtime dependency must reach the image and everyday gate."""
     import tomllib
 
     declared = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["dependencies"]
@@ -142,18 +136,7 @@ def _pinned(requirements):
 
 
 def test_the_image_requirements_match_the_projects_declared_direct_environment():
-    """requirements-dev.txt builds the image and the everyday environment,
-    while CI builds the full gate from pyproject.toml through uv.lock.
-
-    uv never reads requirements-dev.txt, so `uv lock --check` cannot notice a
-    version bumped in one declaration and not the other. The sibling above
-    deliberately compares names only to give a focused missing-runtime message;
-    this one closes the version and extra-package cases in both directions.
-
-    Both directions, and the dependency groups too: the static tooling the gate
-    puts on PATH from `.venv` is as much part of the executed environment as the
-    runtime dependencies are.
-    """
+    """Both independently consumed declarations must pin the same direct environment."""
     import tomllib
 
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())
@@ -219,13 +202,7 @@ def test_a_missing_frozen_interpreter_points_chambers_at_the_image_launcher_fix(
 
 
 def gate_repo(tmp_path):
-    """A throwaway repository holding only the gate script under test.
-
-    `check-all.sh` resolves everything from `git rev-parse --show-toplevel`, so
-    a bare `git init` plus the one script is enough to reach the frozen-
-    interpreter checks — and nothing after them, which is what keeps these two
-    tests off the real suite.
-    """
+    """Stop after the early environment checks instead of entering the real suite."""
 
     repo = new_repo(tmp_path / "gate")
     (repo / ".githooks").mkdir()
@@ -255,16 +232,7 @@ def test_the_gate_refuses_to_run_without_the_frozen_interpreter(tmp_path):
 
 
 def test_the_gate_refuses_a_venv_python_that_is_really_paths_python(tmp_path):
-    """The assertion has to fail on the shadow it was written to catch.
-
-    `.venv/bin/python` symlinked straight onto the interpreter already on PATH
-    is the whole failure mode: pytest would run, collect and pass, out of an
-    environment that uv.lock does not describe. Python reports the path it was
-    invoked through, so this arrangement answers `sys.executable =
-    <root>/.venv/bin/python` — the first assertion written here believed it and
-    let it through. `sys.prefix` is the environment the imports come from, and
-    it does not.
-    """
+    """A `.venv/bin/python` symlink must not impersonate the frozen environment."""
 
     repo = gate_repo(tmp_path)
     venv = repo / ".venv"
@@ -283,11 +251,8 @@ def test_the_gate_refuses_a_venv_python_that_is_really_paths_python(tmp_path):
         timeout=60,
         check=True,
     ).stdout.splitlines()
-    # The premise of the test, stated rather than assumed: the weaker check
-    # passes here, and the stronger one has something to see. Some interpreter
-    # builds (Homebrew's macOS python re-execs its real binary) resolve the shim
-    # in sys.executable themselves — there the weaker check was never foolable
-    # and this scenario has nothing to prove.
+    # Some interpreters resolve the shim in sys.executable themselves, so the
+    # weaker identity check is not vulnerable on those builds.
     if reported[0] != str(shim):
         pytest.skip("this interpreter resolves the shim itself; the attack does not exist here")
     assert reported[1] != os.path.realpath(venv)

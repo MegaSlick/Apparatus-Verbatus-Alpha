@@ -52,18 +52,14 @@ def fixture_files(chair: str) -> dict[str, bytes]:
 
 def build(model_root: Path, manifest_root: Path) -> dict[str, str]:
     """Write every fixture snapshot and manifest; return each chair's pin."""
-    # A rebuild is a projection of this exact roster, not an additive update.
-    # Remove stale chairs, files, and manifests before writing the declared set.
-    # Absence is the only harmless failure: suppressing permission or I/O errors
-    # lets stale bytes enter the newly printed pins as if this build created them.
+    # The output is an exact projection, so stale files must not survive a rebuild.
+    # Only an absent root is harmless; other cleanup failures would preserve bytes.
     for root in (model_root, manifest_root):
         try:
             root.lstat()
         except FileNotFoundError:
             continue
-        # Do not catch FileNotFoundError from inside rmtree. Python 3.12 can
-        # still surface one for a disappearing child; that is a cleanup race,
-        # not proof that the top-level output was absent before deletion began.
+        # A FileNotFoundError inside rmtree is a cleanup race, not an absent root.
         shutil.rmtree(root)
     pins: dict[str, str] = {}
     for chair in FIXTURE_CHAIRS:

@@ -100,16 +100,8 @@ acquire_lifecycle_lock() {
     lifecycle_dir="${lifecycle_root}/workbench/autoclave/.locks"
     mkdir -p "$lifecycle_dir" ||
         die "could not create the task lock directory ${lifecycle_dir}"
-    # **`LIFECYCLE_LOCK` names only a lock this process created.** Assigned before
-    # the `mkdir`, it named the *other* launcher's lock for the whole of the
-    # refusal path — and `lifecycle_cleanup` removes whatever that variable holds.
-    # Nothing fires it there today, because the trap below is the only thing that
-    # arms it and a refused acquire never reaches it. That is one edit away from
-    # being false, and the failure it would produce is the worst kind this lock
-    # exists to prevent: a refused command silently releasing the lock a running
-    # dispatch is working under, leaving two launchers inside the same chamber
-    # believing they hold it. The candidate is a separate variable so the refusal
-    # can still name the path without ever making it ours to remove.
+    # Cleanup removes `LIFECYCLE_LOCK`, so assign it only after this process has
+    # created the directory; a refused acquire must not own the existing lock.
     lifecycle_candidate="${lifecycle_dir}/${lifecycle_task}.lock"
     mkdir "$lifecycle_candidate" 2>/dev/null ||
         die "task '${lifecycle_task}' is already active: ${lifecycle_candidate}. If no launcher is running, remove the stale lock with: rmdir ${lifecycle_candidate}"

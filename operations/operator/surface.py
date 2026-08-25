@@ -1067,8 +1067,6 @@ class OperatorSurface:
                         + (summary if isinstance(summary, str) else "saved record")
                     )
                     lines.extend(_status_projection(action, payload))
-                    if action == "upload":
-                        lines.extend(_status_manifest_projection(payload))
                 except RecordError as error:
                     label = f"{action} record {number}"
                     unreadable.append(f"{label}: {error}")
@@ -1703,8 +1701,15 @@ def _status_projection(action: str, payload: dict[str, Any]) -> list[str]:
             remediation = report.get("remediation")
             if report["color"] != "green" and isinstance(remediation, str) and remediation:
                 lines.append(f"  Saved boot next step: {remediation}")
-    elif action == "upload" and payload.get("zero_gpu_hours") is True:
-        lines.append("  Saved upload statement: zero GPU-hours were used.")
+    elif action == "upload":
+        if payload.get("zero_gpu_hours") is True:
+            lines.append("  Saved upload statement: zero GPU-hours were used.")
+        # Local paths are machine details; the digest is the durable manifest identity.
+        recorded_sha256 = payload.get("submission_manifest_sha256")
+        if recorded_sha256 is not None:
+            if not isinstance(recorded_sha256, str):
+                raise RecordError("saved upload record does not bind its submission record digest")
+            lines.append(f"  Sealed submission record digest: {recorded_sha256}.")
     elif action == "run":
         state = payload.get("state")
         if isinstance(state, str):
@@ -1738,22 +1743,6 @@ def _status_projection(action: str, payload: dict[str, Any]) -> list[str]:
                 "  Saved retained-volume price: $" + volume["ongoing_hourly_usd"] + " per hour."
             )
     return lines
-
-
-def _status_manifest_projection(payload: dict[str, Any]) -> list[str]:
-    """Show the upload's manifest identity without retaining a local path.
-
-    The receipt proves exactly which sealed record governed the transfer by
-    digest.  Local source and manifest paths are operator-machine details, not
-    durable evidence, so status cannot and must not reopen them later.
-    """
-
-    recorded_sha256 = payload.get("submission_manifest_sha256")
-    if recorded_sha256 is None:
-        return []
-    if not isinstance(recorded_sha256, str):
-        raise RecordError("saved upload record does not bind its submission record digest")
-    return [f"  Sealed submission record digest: {recorded_sha256}."]
 
 
 def _load_policy(path: str | Path) -> SpendPolicy:

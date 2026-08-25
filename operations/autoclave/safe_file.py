@@ -70,35 +70,25 @@ def open_regular(path: Path, flags: int, mode: int = 0o600):
         raise
 
 
-def source_is_in_drawer(source: Path, destination: Path) -> bool:
-    """Return whether SOURCE is beneath the agent-writable destination drawer.
+def open_write_source(source: Path, drawer: Path):
+    """Open a dispatch source without trusting agent-writable drawer components.
 
-    This classification is lexical on purpose. Resolving SOURCE would follow
-    symlinks before the helper has a chance to refuse them. ``abspath`` still
-    collapses ``..`` components; ``open_regular_beneath`` then refuses symlinks
-    in every remaining path component while opening beneath the drawer.
+    Classification is lexical because resolving the source would follow a
+    symlink before it can be refused. Sources outside the drawer may be the
+    session's standing-brief symlinks; sources beneath it may follow no component.
     """
 
+    drawer_absolute = Path(os.path.abspath(drawer))
     source_absolute = Path(os.path.abspath(source))
-    drawer_absolute = Path(os.path.abspath(destination.parent))
-    return source_absolute == drawer_absolute or drawer_absolute in source_absolute.parents
-
-
-def open_regular_beneath(path: Path, root: Path, flags: int):
-    """Open PATH beneath ROOT without following any component through a symlink."""
-
-    root_absolute = Path(os.path.abspath(root))
-    path_absolute = Path(os.path.abspath(path))
-    try:
-        relative = path_absolute.relative_to(root_absolute)
-    except ValueError as error:
-        raise OSError(f"{path} is outside the required drawer {root}") from error
+    if not source_absolute.is_relative_to(drawer_absolute):
+        return open(source, "rb")
+    relative = source_absolute.relative_to(drawer_absolute)
     if not relative.parts:
-        raise OSError(f"{path} is the drawer itself, not a regular file")
+        raise OSError(f"{source} is the drawer itself, not a regular file")
 
     directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
-        directory = os.open(root_absolute, directory_flags)
+        directory = os.open(drawer_absolute, directory_flags)
         try:
             for component in relative.parts[:-1]:
                 child = os.open(component, directory_flags, dir_fd=directory)
@@ -106,17 +96,17 @@ def open_regular_beneath(path: Path, root: Path, flags: int):
                 directory = child
             descriptor = os.open(
                 relative.parts[-1],
-                flags | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
+                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
                 dir_fd=directory,
             )
         finally:
             os.close(directory)
     except OSError as error:
-        raise OSError(f"cannot safely open {path} beneath {root}: {error}") from error
+        raise OSError(f"cannot safely open {source} beneath {drawer}: {error}") from error
     try:
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-            raise OSError(f"{path} is not a regular file")
-        return os.fdopen(descriptor, "rb" if flags == os.O_RDONLY else "wb")
+            raise OSError(f"{source} is not a regular file")
+        return os.fdopen(descriptor, "rb")
     except BaseException:
         os.close(descriptor)
         raise
@@ -150,13 +140,8 @@ def main() -> int:
             return 0
         if command == "write" and len(sys.argv) == 4:
             destination = Path(sys.argv[3])
-            source_open = (
-                open_regular_beneath(source, destination.parent, os.O_RDONLY)
-                if source_is_in_drawer(source, destination)
-                else open(source, "rb")
-            )
             with (
-                source_open as reading,
+                open_write_source(source, destination.parent) as reading,
                 open_regular(destination, os.O_WRONLY | os.O_CREAT) as writing,
             ):
                 # The launcher prints the drawer's brief path, so using that path as

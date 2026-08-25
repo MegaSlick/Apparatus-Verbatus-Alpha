@@ -15,12 +15,6 @@ from importlib.metadata import distributions
 PROJECT_DISTRIBUTION = "verbatus"
 
 
-def canonical_name(value: str) -> str:
-    """Apply the distribution-name normalization pip and indexes use."""
-
-    return re.sub(r"[-_.]+", "-", value).lower()
-
-
 def installed_pins() -> dict[str, str]:
     """Return one unambiguous name/version pair per installed distribution."""
 
@@ -29,7 +23,7 @@ def installed_pins() -> dict[str, str]:
         raw_name = distribution.metadata.get("Name")
         if not raw_name:
             raise ValueError("an installed distribution has no Name metadata")
-        name = canonical_name(raw_name)
+        name = re.sub(r"[-_.]+", "-", raw_name).lower()
         if name == PROJECT_DISTRIBUTION:
             continue
         version = distribution.version

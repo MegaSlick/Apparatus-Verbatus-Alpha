@@ -2168,31 +2168,33 @@ def test_mac_wrapper_refuses_an_empty_project_root(
 
 
 def _checkout_root_entry_names() -> set[str]:
-    """Every direct child of the checkout, by name.
-
-    Deliberately one level deep and names only. Reading the whole tree would
-    make this test a slow hash of the repository and would go red on any
-    unrelated editor scratch file; every placement this pins — `.verbatus/`,
-    a bare `verbatus/`, a `.verbatus-dry-run-*` scratch folder — appears at the
-    top level, because that is where the workspace root is.
-    """
+    """Read one level: every prohibited state or scratch placement starts at the root."""
 
     return {entry.name for entry in ROOT.iterdir()}
+
+
+@pytest.fixture
+def recorded_temporary_directories(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[Path]:
+    """Capture scratch paths without changing TemporaryDirectory cleanup."""
+
+    real = dry_run.tempfile.TemporaryDirectory
+    created: list[Path] = []
+
+    def recording(*args, **kwargs):
+        handle = real(*args, **kwargs)
+        created.append(Path(handle.name))
+        return handle
+
+    monkeypatch.setattr(dry_run.tempfile, "TemporaryDirectory", recording)
+    return created
 
 
 def test_operator_state_and_rehearsal_scratch_stay_out_of_the_checkout_root(
     tmp_path: Path,
 ) -> None:
-    """The whole flow and rehearsal create no state or scratch entry at the root.
-
-    The state root and the dry-run scratch directory were both moved out of the
-    checkout so records survive a `git clean` and so a rehearsal cannot leave
-    litter in `git status`. Nothing asserted it: the end-to-end test compares
-    only the state root against itself, which stays green no matter what else
-    the surface writes. This runs the six words against a workspace that *is*
-    the checkout — the ordinary case, and the one where a stray relative path
-    lands here rather than in a temporary folder.
-    """
+    """The six-word flow may create no state or scratch entry at workspace root."""
 
     before = _checkout_root_entry_names()
     surface = _surface(tmp_path)
@@ -2215,55 +2217,31 @@ def test_operator_state_and_rehearsal_scratch_stay_out_of_the_checkout_root(
 
 
 def test_the_rehearsal_scratch_folder_is_never_created_inside_the_checkout(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, recorded_temporary_directories: list[Path]
 ) -> None:
-    """Pinned while the rehearsal runs, not merely after it.
+    """Observe the scratch path before automatic cleanup can hide its placement."""
 
-    The scratch directory used to be created with `dir=ROOT`, and it is removed
-    on the way out — so comparing the checkout before and afterwards cannot see
-    it. What it left behind mid-run was a folder in `git status` and, on a
-    failed rehearsal, one that outlived the process. Recording the request is
-    the only way to assert about a directory that is meant to be gone by the
-    time anyone looks.
-    """
-
-    real = dry_run.tempfile.TemporaryDirectory
-    created: list[Path] = []
-
-    def recording(*args, **kwargs):
-        handle = real(*args, **kwargs)
-        created.append(Path(handle.name))
-        return handle
-
-    monkeypatch.setattr(dry_run.tempfile, "TemporaryDirectory", recording)
     dry_run.make_transcript(tmp_path / "rehearsal.txt")
 
-    assert created
-    for scratch in created:
+    assert recorded_temporary_directories
+    for scratch in recorded_temporary_directories:
         assert ROOT not in scratch.resolve().parents
 
 
 def test_a_tmpdir_inside_the_checkout_cannot_put_rehearsal_scratch_back_there(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    recorded_temporary_directories: list[Path],
 ) -> None:
     """TemporaryDirectory honours TMPDIR, so the placement must be checked."""
 
     configured = ROOT / "operator-temporary-files"
     monkeypatch.setattr(dry_run.tempfile, "gettempdir", lambda: str(configured))
-    real = dry_run.tempfile.TemporaryDirectory
-    created: list[Path] = []
-
-    def recording(*args, **kwargs):
-        handle = real(*args, **kwargs)
-        created.append(Path(handle.name))
-        return handle
-
-    monkeypatch.setattr(dry_run.tempfile, "TemporaryDirectory", recording)
 
     dry_run.make_transcript(tmp_path / "rehearsal.txt")
 
-    assert created
-    assert all(ROOT not in scratch.resolve().parents for scratch in created)
+    assert recorded_temporary_directories
+    assert all(ROOT not in scratch.resolve().parents for scratch in recorded_temporary_directories)
 
 
 def test_scripted_dry_run_is_a_readable_six_word_acceptance_artifact(tmp_path: Path) -> None:
@@ -2510,12 +2488,10 @@ def test_status_contract_says_it_reads_receipts_without_reopening_manifests() ->
     assert "reads saved receipts and sealed submission records" not in overview
 
 
-def test_default_operator_state_root_is_outside_the_workspace(tmp_path: Path) -> None:
-    parser = cli.build_parser()
-    state = parser.parse_args(["status"]).state_dir
+def test_default_operator_state_root_is_absolute_and_not_dot_verbatus() -> None:
+    state = cli.build_parser().parse_args(["status"]).state_dir
 
     assert state.is_absolute()
-    assert state != tmp_path / ".verbatus"
     assert ".verbatus" not in str(state)
 
 
@@ -2523,16 +2499,7 @@ def test_default_operator_state_root_is_outside_the_workspace(tmp_path: Path) ->
 def test_a_non_absolute_xdg_state_home_does_not_put_records_back_in_the_checkout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str
 ) -> None:
-    """`XDG_STATE_HOME=` is an ordinary way to spell "unset", and the Base
-    Directory specification says a non-absolute value is to be ignored.
-
-    Read literally it yielded a *relative* default, and `main` resolves a
-    relative `--state-dir` against the workspace — so the operator's records
-    landed in the checkout again, which is the one placement this default exists
-    to prevent. Asserting `is_absolute()` on the parser default alone missed it:
-    that assertion passes on any developer machine, because the environment
-    variable is normally unset there.
-    """
+    """The Base Directory specification requires ignoring non-absolute values."""
 
     workspace = tmp_path / "checkout"
     workspace.mkdir()
@@ -2541,11 +2508,10 @@ def test_a_non_absolute_xdg_state_home_does_not_put_records_back_in_the_checkout
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
 
     default = cli.build_parser().parse_args(["status"]).state_dir
-    resolved = default if default.is_absolute() else workspace / default
 
     assert default.is_absolute()
-    assert workspace not in resolved.parents
-    assert resolved == tmp_path / "home" / ".local" / "state" / "verbatus"
+    assert workspace not in default.parents
+    assert default == tmp_path / "home" / ".local" / "state" / "verbatus"
 
 
 def test_a_relative_home_cannot_make_the_default_state_root_relative(
@@ -2566,9 +2532,7 @@ def test_a_relative_home_cannot_make_the_default_state_root_relative(
 def test_an_old_in_checkout_verbatus_directory_is_named_not_silently_abandoned(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """A `.verbatus/` left by a version that defaulted state inside the checkout
-    still holds real receipts. This version must say so rather than quietly
-    reading nothing from the new default and letting `status` look empty."""
+    """A moved default must not make existing receipts disappear silently."""
 
     workspace = tmp_path / "checkout"
     old_state = workspace / ".verbatus"

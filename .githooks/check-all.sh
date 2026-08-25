@@ -32,14 +32,9 @@ chamber_environment_followup() {
   echo "check-all: do not link .venv to /opt/venv: that image environment is resolved from requirements-dev.txt and does not freeze uv.lock's transitive versions." >&2
 }
 
-# CI and this gate share the exact environment described by uv.lock.  Refuse to
-# fall back to PATH's python: its installed packages are not evidence about the
-# frozen environment the project actually declares.
-#
-# First prove identity (the interpreter that runs pytest below is this exact
-# environment, not a PATH shadow), then make uv prove currency from its local
-# cache. A gate that checks only `sys.prefix` accepts an old but well-formed
-# `.venv` after uv.lock changes and silently runs the wrong versions.
+# The interpreter must both import from `.venv` and match the current lock. The
+# prefix check rejects a PATH shadow; the offline sync rejects a real but stale
+# `.venv`.
 frozen_python="$root/.venv/bin/python"
 UV_PROJECT_ENVIRONMENT="$root/.venv"
 export UV_PROJECT_ENVIRONMENT
@@ -48,18 +43,10 @@ export UV_PROJECT_ENVIRONMENT
   chamber_environment_followup
   exit 1
 }
-#
-# **The thing to compare is `sys.prefix`, not `sys.executable`.** Python reports
-# the path it was *invoked through*, so `.venv/bin/python` symlinked straight
-# onto PATH's interpreter reports `$root/.venv/bin/python` while importing
-# another environment's site-packages — which is precisely the PATH shadow this
-# refuses, waved through by the check written to catch it. Measured, not
-# reasoned: a bare symlink onto this machine's `python3` answered
-# `sys.executable = <root>/.venv/bin/python` and `sys.prefix = /usr`.
-# `sys.prefix` is the environment the imports actually come from. Compared
-# through `realpath` on both sides so a `.venv` that is itself a link to a real
-# frozen environment elsewhere still passes: that is a different arrangement of
-# the same environment, not a different environment.
+
+# `sys.executable` can report the symlink used to invoke a PATH interpreter;
+# `sys.prefix` identifies the environment supplying imports. Resolve both sides
+# so a `.venv` symlink to the same frozen environment remains valid.
 [ "$("$frozen_python" -c 'import os, sys; print(os.path.realpath(sys.prefix))')" \
   = "$(CDPATH='' cd -- "$root/.venv" && pwd -P)" ] || {
   echo "check-all: $frozen_python does not import from the frozen environment at $root/.venv; run 'uv sync --frozen --group test --group audit'" >&2
@@ -100,8 +87,7 @@ uv sync --frozen --offline --group test --group audit --no-config || {
   exit 1
 }
 
-# Static tools are part of the same reproducible check surface.  Put their
-# scripts ahead of PATH only after proving the environment we selected is real.
+# PATH may select `.venv` tools only after the environment passes both checks.
 PATH="$root/.venv/bin:$PATH"
 export PATH
 
@@ -115,11 +101,8 @@ fi
 
 "$frozen_python" -m pytest
 
-# Dependency vulnerability audit, fired by the deferred-tooling trigger the
-# moment dependencies stopped being an empty list. `--strict` makes an
-# unreachable advisory service or an unresolvable requirement a failing gate:
-# a check that cannot run is a failure, not a pass.
-#
+# `--strict` makes an unreachable advisory service or unresolvable requirement
+# fail; an audit that could not run is not evidence of clean dependencies.
 # Audit the exact installed inventory, not requirements-dev.txt. That file pins
 # every direct dependency, but `pip_audit --requirement` asks pip to resolve the
 # transitive closure again. A later compatible transitive release can therefore
@@ -128,14 +111,8 @@ fi
 # project itself is omitted because it is an editable local distribution with no
 # PyPI advisory identity. `--no-deps --disable-pip` makes pip-audit consume those
 # pins without resolving or installing anything.
-#
-# **Last, and that is the point.** `set -e` makes every step a barrier to the ones
-# after it, and this is the only step that needs a network and a tool the gate does
-# not itself install. Run earlier, an offline developer or a missing `pip_audit`
-# stopped the credential scans and the whole suite from running at all — the check
-# that keeps credentials out of outgoing history was sitting downstream of an
-# advisory service. It still fails the gate; it no longer decides whether the rest
-# of the gate happens.
+# Keep this network-dependent step last so advisory-service availability cannot
+# prevent credential scans or the test suite from running; it still fails the gate.
 audit_inventory=$(mktemp "${TMPDIR:-/tmp}/verbatus-frozen-audit.XXXXXX") || {
   echo "check-all: could not create the frozen audit inventory" >&2
   exit 1

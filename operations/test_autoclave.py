@@ -1348,12 +1348,8 @@ def test_a_second_dispatch_for_the_same_task_is_refused_while_the_first_runs(tmp
         )
         assert second.returncode != 0
         assert "task-x.lock" in second.stderr
-        # **The refusal must leave the running dispatch's lock exactly as it
-        # found it.** The refused launcher names that lock in its own message,
-        # and its cleanup removes whatever path it has recorded as its lock —
-        # so "it was refused" is only half the property. The other half is that
-        # the first dispatch still holds the chamber afterwards and still
-        # finishes normally.
+        # A refused contender must neither remove nor claim the running
+        # dispatch's lock.
         held = tmp_path / "workbench" / "autoclave" / ".locks" / "task-x.lock"
         assert held.is_dir()
     finally:
@@ -1418,11 +1414,7 @@ def test_an_invalid_dispatch_names_its_argument_even_while_the_task_is_locked(
         assert second.returncode != 0
         assert expected in second.stderr
         assert "already active" not in second.stderr
-        # Validation now runs *before* the shared lock, so the refusal happens
-        # while another dispatch holds it. Nothing on that path may read or
-        # write chamber state: the argument checks stat the brief the caller
-        # named and touch nothing else, and the lock the running dispatch holds
-        # is still there when the bad argument has been reported.
+        # Pre-lock validation may inspect the named brief but no chamber state.
         held = tmp_path / "workbench" / "autoclave" / ".locks" / "task-x.lock"
         assert held.is_dir()
         assert (tmp_path / "workbench" / "autoclave" / "task-x").is_dir()
@@ -2380,14 +2372,7 @@ class TestTheUntrustedDrawer:
         )
 
     def test_an_agent_writable_brief_source_cannot_be_a_symlink(self, tmp_path):
-        """Validation can precede a long lock wait, so the helper must rejudge
-        a source inside the drawer when it actually opens it.
-
-        Standing-brief links outside the drawer remain supported by the sibling
-        above. This source is different: the running chamber can replace it
-        while another dispatch waits, so following it would turn a pre-lock
-        regular-file check into authority to read a different host file.
-        """
+        """Rejudge a drawer source after a lock wait; the agent can replace it."""
 
         drawer = tmp_path / "drawer"
         drawer.mkdir()
@@ -2409,12 +2394,7 @@ class TestTheUntrustedDrawer:
         assert "SENTINEL-CONTENTS" not in result.stdout + result.stderr
 
     def test_an_agent_writable_brief_source_cannot_traverse_a_symlinked_directory(self, tmp_path):
-        """`O_NOFOLLOW` on only the final component does not contain the drawer.
-
-        Every component beneath the drawer is agent-writable. Following a
-        symlinked parent there would still copy a host file even though the
-        final source name is an ordinary regular file.
-        """
+        """Every component beneath the agent-writable drawer must reject symlinks."""
 
         drawer = tmp_path / "drawer"
         drawer.mkdir()

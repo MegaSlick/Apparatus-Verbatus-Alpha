@@ -56,7 +56,6 @@ def make_transcript(output: str | Path) -> Path:
         "This is an offline rehearsal. It contacts no cloud provider and creates no bill.",
         "",
     ]
-    # This rehearsal has no reason to leave a scratch directory in the checkout.
     with tempfile.TemporaryDirectory(
         prefix="verbatus-dry-run-", dir=_scratch_root()
     ) as temporary_name:
@@ -67,9 +66,8 @@ def make_transcript(output: str | Path) -> Path:
         shutil.copy2(ROOT / "uv.lock", workspace / "uv.lock")
         shutil.copy2(ROOT / "config" / "models.toml", config / "models.toml")
         shutil.copy2(ROOT / "config" / "pod_placement.toml", config / "pod_placement.toml")
-        # The rehearsal workspace is deliberately outside the checkout, but boot
-        # still records the checkout revision it exercises.  This read-only link
-        # lets Git resolve that revision without putting scratch state under ROOT.
+        # Boot must record the exercised checkout revision without putting its
+        # scratch workspace under that checkout.
         (workspace / ".git").symlink_to(ROOT / ".git")
         (workspace / "pipeline").symlink_to(ROOT / "pipeline", target_is_directory=True)
         (workspace / "proof").symlink_to(ROOT / "proof", target_is_directory=True)
