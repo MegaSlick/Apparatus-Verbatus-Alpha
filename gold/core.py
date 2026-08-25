@@ -141,7 +141,17 @@ def _frame_from_run(run: dict[str, Any]) -> tuple[dict[str, str], list[dict[str,
     source = []
     for page in pages:
         _refuse(not isinstance(page, dict), "a source page is not an object")
-        ordinal, page_sha = page.get("ordinal"), page.get("sha256")
+        # The digest the run authority BOUND, which is the Door's `computed_sha256`
+        # wherever it inspected the bytes, and the submitted declaration only where
+        # it could not (`common/runtree/store._default_corpus_frame_membership` uses
+        # exactly this fallback). Re-deriving from `sha256` alone was a real break:
+        # a page fanned out of a PDF carries its container's whole-file declaration
+        # there, so every honest container-sourced run failed this rederivation --
+        # and, from the other side, a frame forged over the declarations would have
+        # passed it while the run's own inspected bytes said something else. One
+        # frame identity means one field; this is that field.
+        ordinal = page.get("ordinal")
+        page_sha = page.get("computed_sha256", page.get("sha256"))
         _refuse(
             not isinstance(ordinal, int) or isinstance(ordinal, bool),
             "source page ordinal is not an integer",

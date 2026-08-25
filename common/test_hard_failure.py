@@ -213,6 +213,26 @@ def test_one_hard_failure_is_a_fluke_and_does_not_breach(tmp_path):
     assert tally["breached"] is False
 
 
+def test_the_ruled_cap_is_tallied_per_shard_run_not_across_run_trees(tmp_path):
+    """The ruling says "within a 1000 page run"; a shard is that run."""
+    policy = load_hard_failure_policy(DEFAULT_HARD_FAILURE_CONFIG_PATH)
+    tallies = []
+    for run_id in ("shard-one", "shard-two", "shard-three"):
+        tree = make_run(tmp_path / run_id, run_id=run_id)
+        for ordinal in (1, 2):
+            publish(
+                tree,
+                stage=PERLECTOR,
+                kind="perlectio",
+                subject=f"act_{ordinal:016d}",
+                outcome="failed",
+                adapter_revision="fake-perlector-v0",
+            )
+        tallies.append(tally_hard_failures(tree, policy))
+    assert [tally["count"] for tally in tallies] == [2, 2, 2]
+    assert all(tally["breached"] is False for tally in tallies)
+
+
 def test_instrument_arm_failures_are_visible_but_do_not_spend_the_ruled_cap(tmp_path):
     tree = make_run(tmp_path)
     for kind in ("lectio-nuda", "lectio-prior", "primed-without-prior"):
@@ -620,3 +640,61 @@ def test_a_duplicate_reason_scoped_kind_is_refused(tmp_path):
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))
+
+
+def test_a_crash_and_resume_does_not_spend_the_cap_twice_for_one_act(tmp_path):
+    """The wall a shard can die against: the tally must not double-count on resume.
+
+    A run that dies part-way through a shard is resumed by re-invoking the same
+    command, and a stage that had already published a failing outcome for an act
+    republishes it as a further attempt. Counted as raw artifacts, three shards
+    of a Montebello ingest would each drift toward Tyrel's cap by however many
+    times they were interrupted rather than by how many acts actually failed --
+    a halt nobody's evidence justifies, which is the same dishonesty as a missed
+    halt pointing the other way. Counted as `(stage, subject_id)` incidents, an
+    interruption costs nothing and the act still costs exactly one.
+    """
+    policy = load_hard_failure_policy(DEFAULT_HARD_FAILURE_CONFIG_PATH)
+    tree = make_run(tmp_path)
+    for act in ("act_0000000000000001", "act_0000000000000002"):
+        publish(
+            tree,
+            stage=PERLECTOR,
+            kind="perlectio",
+            subject=act,
+            outcome="failed",
+            adapter_revision="fake-perlector-v0",
+            attempt="att_0000000000000001",
+        )
+    before = tally_hard_failures(tree, policy)
+    assert before["count"] == 2 and before["breached"] is False
+
+    # The crash: nothing is removed (artifacts are append-only), and the resumed
+    # stage publishes a second attempt for one act it had already failed.
+    publish(
+        tree,
+        stage=PERLECTOR,
+        kind="perlectio",
+        subject="act_0000000000000001",
+        outcome="failed",
+        adapter_revision="fake-perlector-v0",
+        attempt="att_0000000000000002",
+    )
+    after = tally_hard_failures(tree, policy)
+
+    assert after["count"] == 2, "a resumed attempt is the same incident, not a second one"
+    assert after["subjects"] == before["subjects"]
+    assert after["breached"] is False
+
+    # And a genuinely new act failing after the resume does still cost one.
+    publish(
+        tree,
+        stage=PERLECTOR,
+        kind="perlectio",
+        subject="act_0000000000000003",
+        outcome="failed",
+        adapter_revision="fake-perlector-v0",
+        attempt="att_0000000000000001",
+    )
+    breached = tally_hard_failures(tree, policy)
+    assert breached["count"] == 3 and breached["breached"] is True
