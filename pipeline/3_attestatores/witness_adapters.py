@@ -1,17 +1,7 @@
 """Runnable native witness adapters, private to Attestatores.
 
-The shared registry in :mod:`common.witness_adapters` declares only names and
-scopes. These callables cross the native model boundary and must therefore
-remain in this stage, loaded as a sibling module rather than through an
-importable ``pipeline`` package.
-
-Unit 10A established the exact-name, no-fallback registry and its native
-``prompt``/``parse``/``retain`` boundary. Unit 10B completes consult section
-4.5's derived intake shape with ``present`` and ``observe``. A prompt constant
-still does not present an image, retention is still not a derived observation,
-and the five operations remain distinct.
-
-Later units may rely on this boundary:
+The shared registry declares only names and scopes. Native-boundary callables
+remain stage-local and obey these constraints:
 
 * adapter names resolve exactly, with no default, near match, preference, or
   callable outside this Attestatores-local registry;
@@ -33,11 +23,6 @@ Later units may rely on this boundary:
   any native parser/retention dispatch in :mod:`feeding` together. A failure
   while importing any callable binding propagates before ``main`` opens a run;
   there is no fallback adapter.
-
-These statements are the Unit 10B registry handoff. A later adapter may add a
-new implementation behind the same five roles, but may not merge ``present``
-with ``prompt`` or ``observe`` with ``retain`` and mistake native transport for
-the derived intake contract.
 """
 
 from __future__ import annotations
@@ -58,7 +43,7 @@ from common.witness_adapters import AdapterRefusal, resolve_witness_adapter_name
 
 @dataclass(frozen=True, slots=True)
 class RunnableAdapter:
-    """The native-boundary operations one local adapter supplies today.
+    """The five distinct native-boundary operations a local adapter supplies.
 
     The slots are named for what they actually bind. ``prompt`` returns the
     request framing the occupant was trained on; ``parse`` turns one native
@@ -81,27 +66,20 @@ class RunnableAdapter:
 def _present(context: Any, presentation: dict[str, Any]) -> dict[str, Any]:
     """Accept a closed presentation with access to its run-tree image source.
 
-    Churro uses the image unchanged. An adapter that owns a sub-crop needs the
-    context to publish and bind those derived bytes; omitting it here would make
-    the declared ``adapter-crop`` kind impossible to produce through this seam.
+    Churro uses the image unchanged but shares the context-bearing signature
+    required by adapters that publish their own derived crop.
     """
-    _ = context
     validate_presented(presentation)
     return presentation
 
 
 def _observe(presentation: dict[str, Any], native_payload: Any) -> list[dict[str, Any]]:
-    """Derive Churro's no-layout fallback beside the response it inspected."""
+    """Use presented bounds because Churro exposes no native layout channel."""
     validate_presented(presentation)
-    presented = presentation
-    # Churro's retained text has no native geometry to extract. Keeping the
-    # response in this callable's required signature prevents a later layout
-    # adapter from being wired to an interface that cannot inspect its own output.
-    _ = native_payload
     return [
         {
             "ordinal": 0,
-            "bounds": dict(presented["transform"]["bounds"]),
+            "bounds": dict(presentation["transform"]["bounds"]),
             "bounds_source": "presented",
             "span": None,
         }
@@ -124,16 +102,12 @@ def _dai_present(context: Any, presentation: dict[str, Any]) -> dict[str, Any]:
     page_id = source_transform["source_page_id"]
     page = context.tree.read_artifact(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", page_id))
     page_bytes = context.tree.read_bytes(page["payload"]["image_path"])
-    # Re-read against the page's real size now that it is in hand. The stage
-    # validates a Designator region against its sealed page before the adapter is
-    # reached, so this is a second wall rather than the only one -- but a box that
-    # ran off the page left here as `crop_png`'s bare ValueError, which is not a
-    # refusal any caller in this seam is written to account for, and a detector
-    # that proposes past the edge is exactly what Unit 9 will bring.
+    # Bounds failures must stay SchemaRefusals so callers can hold the attempt;
+    # ``crop_png`` alone would expose a bare ValueError at this boundary.
     validate_presented(presentation, page_size=dimensions(page_bytes))
     bounds = dict(source_transform["bounds"])
     crop = crop_png(page_bytes, bounds)
-    source_width, source_height = dimensions(crop)
+    source_width, source_height = bounds["w"], bounds["h"]
     target_width, target_height = feeding._dai_dimensions(source_width, source_height)
     model_transform: dict[str, Any] = {
         "operation": "crop",
@@ -142,11 +116,8 @@ def _dai_present(context: Any, presentation: dict[str, Any]) -> dict[str, Any]:
         "bounds": bounds,
     }
     if (target_width, target_height) == (source_width, source_height):
-        # This is an exact crop, not a resize with a filter that never ran.
-        # Pillow returns a copy before consulting LANCZOS or the mode-1
-        # substitution on an identity-sized call. Recording the closed crop
-        # recipe states the operation that actually produced these bytes and
-        # keeps a bilevel no-op byte-identical to its Designator crop.
+        # Identity-sized views must record the crop that ran, not a resampler
+        # Pillow never consulted, and must retain the crop bytes unchanged.
         model_image = crop
     else:
         model_image = resize_png_lanczos(crop, target_width, target_height)
@@ -181,9 +152,8 @@ def _dai_observe(presentation: dict[str, Any], native_payload: Any) -> list[dict
             "ordinal": 0,
             "bounds": dict(presentation["transform"]["bounds"]),
             "bounds_source": "presented",
-            # A failed/no-response attempt was still shown this exact image. It
-            # has no retained text to address, so the presentation fallback is
-            # honest but deliberately carries no span.
+            # A non-text response has no addressable span even though the image
+            # presentation remains evidence for the attempt.
             "span": {"start": 0, "end": len(native_payload)}
             if isinstance(native_payload, str)
             else None,

@@ -87,22 +87,10 @@ def test_dai_crop_resize_is_a_rederivable_adapter_crop_and_preserves_uncertainty
     """The shown pixels come from the sealed page recipe, not an opaque resize blob."""
     page = encode_grayscale_png_deterministic(3_000, 2, [bytearray(3_000), bytearray(3_000)])
     context = _DaiContext(page)
-    source = {
-        "kind": "region",
-        "source_page_id": "page-1",
-        "source_page_ordinal": 1,
-        "image_path": "2_designator/crop.png",
-        "image_sha256": "a" * 64,
-        "transform": {
-            "operation": "crop",
-            "source_page_id": "page-1",
-            "source_page_ordinal": 1,
-            "bounds": {"x": 0, "y": 0, "w": 3_000, "h": 2},
-        },
-        "region_ref": {"region_id": "region-1"},
-    }
+    source = _dai_region(3_000, 2)
     adapters = _load_local_adapters()
-    presented = adapters.resolve_runnable_adapter("dai.v1").present(context, source)
+    adapter = adapters.resolve_runnable_adapter("dai.v1")
+    presented = adapter.present(context, source)
 
     assert presented["kind"] == "adapter-crop"
     assert presented["transform"]["operation"] == "crop-resize-preserve-aspect"
@@ -123,8 +111,8 @@ def test_dai_crop_resize_is_a_rederivable_adapter_crop_and_preserves_uncertainty
         page_bytes=page,
     )
     response = "[UNCERTAIN] Marie [CROSSED_OUT]"
-    assert adapters.resolve_runnable_adapter("dai.v1").parse(response.encode()) == response
-    assert adapters.resolve_runnable_adapter("dai.v1").observe(presented, response)[0]["span"] == {
+    assert adapter.parse(response.encode()) == response
+    assert adapter.observe(presented, response)[0]["span"] == {
         "start": 0,
         "end": len(response),
     }
@@ -230,7 +218,7 @@ def test_local_callable_resolution_refuses_missing_or_unknown_names(name):
 
 
 def _dai_page(width, height, mode="L"):
-    """A sealed page in a mode the door really seals, encoded as the door does."""
+    """Only modes and encoding paths admitted by the door may reach the adapter."""
     from common.imaging import _encode_crop_deterministic
 
     image = Image.new(mode, (width, height), 1 if mode == "1" else 0)
@@ -260,7 +248,6 @@ def _dai_region(width, height, x=0, y=0):
 @pytest.mark.parametrize(
     ("width", "height", "mode", "target", "operation"),
     [
-        # The width ceiling itself, and the first size past it.
         pytest.param(1_500, 100, "L", (1_500, 100), "crop", id="at-the-width-ceiling"),
         pytest.param(
             1_501,
@@ -298,7 +285,7 @@ def _dai_region(width, height, x=0, y=0):
             "crop-resize-preserve-aspect",
             id="one-past-the-height-ceiling",
         ),
-        # The aspect band the pre-folded bound used to undercut by a pixel.
+        # Nested flooring undercuts the largest feasible width in this aspect band.
         pytest.param(
             581,
             4_212,
@@ -323,12 +310,7 @@ def _dai_region(width, height, x=0, y=0):
 def test_the_recorded_transform_replays_to_the_same_bytes_at_every_ceiling(
     width, height, mode, target, operation
 ):
-    """Sonnet fuzzed the dimensions; this asks whether the RECORD round-trips.
-
-    ARCHITECTURE invariant 3 is a property of the recorded transform, not of the
-    arithmetic behind it: at each ceiling the published blob is re-derived from
-    the sealed page through the recipe alone and compared digest for digest.
-    """
+    """Recorded transforms, not derivation arithmetic, must reproduce boundary views."""
     page = _dai_page(width, height, mode)
     context = _DaiContext(page)
     adapters = _load_local_adapters()
@@ -370,9 +352,7 @@ def test_the_recorded_transform_replays_to_the_same_bytes_at_every_ceiling(
     ],
 )
 def test_a_proposal_box_past_the_page_edge_is_refused_by_name(width, height, x, y):
-    """A detector that proposes past the edge is what Unit 9 brings, and this
-    seam answered it with `crop_png`'s bare ValueError — not a refusal any
-    caller here is written to account for."""
+    """Bounds failures must be schema refusals, with no adapter blob published."""
     page = _dai_page(2_000, 1_000)
     adapters = _load_local_adapters()
     context = _DaiContext(page)

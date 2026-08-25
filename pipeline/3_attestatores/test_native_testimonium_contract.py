@@ -137,8 +137,7 @@ def test_a_page_witness_with_one_failed_and_one_unread_act_is_still_attempted():
 
 
 def test_dai_uncertainty_tokens_reach_a_closed_testimonium_verbatim():
-    """Exercise parse -> observe -> Testimonium, not merely the parser in
-    isolation: the definition of done names the retained record as the end."""
+    """Uncertainty markers must survive every boundary, not only UTF-8 parsing."""
     adapter = attestatores.witness_adapters.resolve_runnable_adapter("dai.v1")
     raw = "[UNCERTAIN]  ſ [CROSSED_OUT]".encode("utf-8")
     parsed = adapter.parse(raw)
@@ -284,21 +283,14 @@ def _happy_run(tmp_path, run_id):
 
 
 def _region_testimonium(tree):
-    """Return a fixture Testimonium that presents a sealed Designator region.
-
-    DAI's independently re-derived presentation is deliberately an
-    ``adapter-crop``.  The tests below exercise the distinct 10B wall that
-    applies only when a record claims ``kind == \"region\"``.
-    """
-    return next(
-        tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
-        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
-        if entry["kind"] == "testimonium"
-        and tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])["payload"][
-            "presented"
-        ]["kind"]
-        == "region"
-    )
+    """Region-ref tests cannot use DAI's distinct ``adapter-crop`` shape."""
+    for entry in tree.build_manifest(ATTESTATORES)["artifacts"]:
+        if entry["kind"] != "testimonium":
+            continue
+        record = tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
+        if record["payload"]["presented"]["kind"] == "region":
+            return record
+    raise AssertionError("the fixture has no region-kind Testimonium")
 
 
 def test_a_continuation_act_states_which_of_its_crops_the_derived_layer_omits(tmp_path):
@@ -333,8 +325,6 @@ def test_a_continuation_act_states_which_of_its_crops_the_derived_layer_omits(tm
         if presented["kind"] == "region":
             assert presented["region_ref"]["region_id"] != second_crop
         else:
-            # An adapter crop is a different image kind; it must never borrow
-            # the region-only identity field to make this assertion pass.
             assert presented["kind"] == "adapter-crop"
             assert "region_ref" not in presented
     assert single != continuation

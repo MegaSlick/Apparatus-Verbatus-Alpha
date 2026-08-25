@@ -258,11 +258,8 @@ def test_a_backup_of_a_mid_recovery_tree_restores_and_resumes_byte_identically(
 
     mac = tmp_path / "Mac Backup"
     report = sync_run_tree(volume, "r", mac)
-    # A fresh backup destination can still reuse objects within this one
-    # snapshot: DAI's fixture-sized adapter crop is byte-identical to its
-    # Designator crop, so their distinct run-tree paths share one digest name.
-    # The snapshot must account for every tree member; object-store reuse is
-    # evidence of identical verified bytes, not an omitted copy.
+    # Distinct run-tree paths may share verified bytes, so copied plus reused
+    # objects—not copied objects alone—must account for every snapshot member.
     assert report.copied + report.reused == len(crashed)
 
     restored_root = tmp_path / "restored-from-mac"

@@ -678,13 +678,8 @@ class StageContext:
 
 _SEAL_EXCLUDED_KINDS: Final = frozenset({"stage-seal", "decode-environment"})
 _DECODE_PATHS: Final = frozenset({"project-png", "pillow", "pdfium", "none"})
-# Stages whose own pass turns bytes into pixels, as against passing an existing
-# derivative through. The Attestatores joined this set with the DAI adapter: its
-# presentation is cut from the sealed page and resampled here (Pillow LANCZOS,
-# `common/imaging.py::resize_png_lanczos`), so the stage that once only carried
-# crops now computes them. Recording `produced_pixels: false` for it after that
-# is a false statement in sealed evidence, which GOVERNANCE 6 does not allow the
-# record to make about its own pass.
+# Every stage that decodes or transforms image bytes in its own pass must seal
+# ``produced_pixels: true``; DAI makes Attestatores such a stage.
 _PIXEL_STAGES: Final = frozenset(
     {"door", "exemplar", "designator", "attestatores", "perlector", "recensor"}
 )
@@ -774,12 +769,8 @@ def _decode_environment(stage: str) -> dict[str, Any]:
         "door": {"pillow", "pdfium"},
         "exemplar": {"project-png"},
         "designator": {"project-png"},
-        # `project-png` and not a bare `pillow`: the Attestatores' DAI crop and
-        # resize both run through `common/imaging.py`'s own decoder and its own
-        # deterministic encoder, which is the same route the Perlector's page
-        # render already takes for the same Pillow LANCZOS call. The route family
-        # is what this field names; the resampler itself is named in the
-        # presentation's own transform, where it is executable.
+        # Decode paths name the project-owned deterministic codec route; the
+        # executable presentation transform separately names its resampler.
         "attestatores": {"project-png"},
         "perlector": {"project-png"},
         "recensor": {"project-png"},

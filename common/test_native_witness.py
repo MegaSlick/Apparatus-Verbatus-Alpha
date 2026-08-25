@@ -458,7 +458,6 @@ def test_partition_disagreement_ties_from_the_proposal_side_too():
 
 
 def _resized_presentation():
-    """A well-formed `crop-resize-preserve-aspect` block over a 40x20 crop."""
     value = payload()
     value["presented"].update({"kind": "adapter-crop", "image_sha256": "b" * 64})
     value["presented"]["image_path"] = "3_attestatores/blobs/sha256/" + "b" * 64
@@ -480,11 +479,7 @@ def _resized_presentation():
 
 
 def test_a_resize_recipe_must_preserve_the_aspect_its_own_operation_names():
-    """The digest check alone cannot catch this: re-derivation replays whatever
-    target the record asked for, so a stretched view re-derives perfectly and
-    the operation's name is the only thing that was false. `_dai_observe` reports
-    the crop's page bounds as the box for the whole shown image, which is a
-    sound identification over a uniform scale and nothing else."""
+    """Digest replay accepts stretched targets, but page mapping requires one scale."""
     presented = _resized_presentation()
     validate_presented(presented)
 
@@ -494,8 +489,7 @@ def test_a_resize_recipe_must_preserve_the_aspect_its_own_operation_names():
 
 
 def test_a_resize_recipe_rounds_down_and_never_up():
-    """`dimension_rounding` is `floor`, so 40x21 scaled to width 20 is 10 high,
-    not 11 — the one-pixel direction a reader would otherwise have to guess."""
+    """The sealed ``floor`` rule makes 40x21 at width 20 exactly 10 pixels high."""
     presented = _resized_presentation()
     presented["transform"]["bounds"]["h"] = 21
     presented["transform"]["resize"]["source_height_px"] = 21
@@ -507,8 +501,7 @@ def test_a_resize_recipe_rounds_down_and_never_up():
 
 
 def test_a_resize_recipe_never_scales_a_dimension_away_entirely():
-    """A very wide crop floors to height 0; the recipe pins the 1px floor that
-    `common/imaging.py::resize_png_lanczos` would refuse a 0 for anyway."""
+    """Flooring may not erase a dimension; executable resize targets start at 1px."""
     presented = _resized_presentation()
     presented["transform"]["bounds"].update({"w": 4000, "h": 3})
     presented["transform"]["resize"].update(
@@ -523,8 +516,7 @@ def test_a_resize_recipe_never_scales_a_dimension_away_entirely():
 
 
 def test_a_resize_dimension_is_typed_before_the_aspect_identity_reads_it():
-    """The type check runs first, so a string reaches a named refusal rather than
-    a TypeError from the arithmetic below it."""
+    """Malformed dimensions must reach a named refusal before aspect arithmetic."""
     presented = _resized_presentation()
     presented["transform"]["resize"]["target_width_px"] = "20"
     with pytest.raises(SchemaRefusal, match="resize dimensions are invalid"):

@@ -766,30 +766,13 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # recovery or hold an act (`pipeline/5_recensor/test_coverage_recovery_origin.py`).
 # `config_digest` binds the WHOLE fixture declaration (`common/stage.py`'s
 # `run_config_bindings`), so adding a scenario nobody runs still moves every
-# run's digest. Fixture bytes only: no stage behaviour, artifact kind, count or
-# exit code changes — 84/0 and 109/3 hold, and each digest below reproduced
-# twice in independent temporary roots through this module's own `orchestrate`
-# and `semantic_snapshot_digest` helpers at canonical run id "r".
-#
-# Unit 13 ledger reason: the fixture's act-scoped attestator_2 now runs the
-# DAI adapter. Its re-derivable adapter-crop is a new content-addressed blob,
-# so happy/review become 86/0 and 111/3. Re-measured after the final Unit 13
-# regression repair at the true candidate, run id "r", through the same
-# helpers; the digests below are the measured pins.
-#
-# Unit 13 final-seat ledger reason: identity-sized DAI views now seal the exact
-# `crop` operation that produced them, rather than a resize recipe naming
-# LANCZOS even though Pillow returns a copy before consulting the resampler.
-# Artifact counts and exits stay 86/0 and 111/3; only the Testimonium transform
-# records and their derived bindings move. Both digests below reproduced twice
-# in independent temporary roots at canonical run id "r".
+# run's digest. That candidate changed no stage behavior, artifact kind, count,
+# or exit code; its canonical measurements were 84/0 and 109/3.
+# DAI adds a content-addressed adapter crop, making canonical happy/review
+# counts 86/0 and 111/3. Identity-sized views seal ``crop`` because Pillow never
+# consults LANCZOS there. Both digests were reproduced twice in independent
+# temporary roots at canonical run id "r" after those bindings were final.
 HAPPY_RUN_TREE_DIGEST = "f5545389418d7c60eb24188bb6016b4b1df117bbb70cda27bca1ecd766d59e86"
-# Review only, once more in the same seat: a page witness invoked on every act
-# and unusable on all of them now records the serving moment that produced it
-# (`provenance_for(..., attempted=attempted_page)`), where the `reading` gate
-# left `receipt_ref: None` beside a `presented` block claiming pixels were shown.
-# One `receipt_ref` field on attestator_3's page-2 record; no new file, no count
-# or exit change (97/3), and happy is untouched at the digest above.
 REVIEW_RUN_TREE_DIGEST = "467500a72433f7096f94951f5a56bf2c607d9b10fa7259048901a2d3f52fd15b"
 
 
@@ -4402,8 +4385,6 @@ def test_repeating_the_identical_command_leaves_every_byte_unchanged(tmp_path):
     assert orchestrate(root, "r", "happy").returncode == 0
     before = snapshot(root)
 
-    # R0 adds two retained page Testimonia and two derived act attachments to
-    # the happy walking skeleton; repeatability still compares every byte.
     assert len(before) == 86
     assert semantic_snapshot_digest(root) == HAPPY_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "happy").returncode == 0
@@ -4449,8 +4430,6 @@ def test_repeating_the_review_scenario_also_changes_nothing(tmp_path):
     assert orchestrate(root, "r", "review").returncode == 3
     before = snapshot(root)
 
-    # R0 adds the same four retained page/attachment artifacts before review's
-    # recovery loop; its append-only invariant is unchanged.
     assert len(before) == 111
     assert semantic_snapshot_digest(root) == REVIEW_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "review").returncode == 3

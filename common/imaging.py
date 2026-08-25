@@ -64,7 +64,7 @@ Image.MAX_IMAGE_PIXELS = MAX_PIXELS
 
 
 def _refuse_past_pixel_bound(width: int, height: int, what: str = "page") -> None:
-    """The one bound shared by native/Pillow decode paths and resize targets."""
+    """Keep every decode and allocation under the door's sealed pixel ceiling."""
     if width * height > MAX_PIXELS:
         raise ValueError(
             f"a {width}x{height} {what} is past this pipeline's {MAX_PIXELS}-pixel bound"
@@ -423,47 +423,18 @@ def crop_png(png_bytes: bytes, bounds: Bounds) -> bytes:
     return encode_grayscale_png_deterministic(w, h, [row[x : x + w] for row in rows[y : y + h]])
 
 
-# Modes for which `Image.resize` throws the requested filter away and uses
-# NEAREST instead. The two-line condition quoted here is carried third-party
-# source from Pillow 12.3.0 `src/PIL/Image.py:2404-2405`, under Pillow's
-# MIT-CMU licence:
+# Pillow 12.3.0 silently forces NEAREST for modes `1` and `P`, so both must be
+# promoted before a transform may truthfully name LANCZOS. This behavior is
+# carried from `src/PIL/Image.py:2404-2405` under Pillow's MIT-CMU licence:
 # https://github.com/python-pillow/Pillow/blob/12.3.0/src/PIL/Image.py#L2404-L2405
 # https://github.com/python-pillow/Pillow/blob/12.3.0/LICENSE
-# (`if self.mode in ("1", "P"): resample = Resampling.NEAREST`). Promoted to
-# a sample-preserving mode before the call so the resampler that runs is the
-# resampler the caller's sealed transform names. Only `1` actually arrives:
-# the door seals a bilevel raster as mode `1` on purpose (`_PNG_IDENTITY_MODES` in
-# `pipeline/1_exemplar/image_formats.py`), which is the ordinary CCITT-G4
-# register scan, while `P` is written out as RGB by `_encode_crop_deterministic`
-# and so never reaches a crop. `P` is handled dynamically because its palette
-# may carry alpha; this helper is public and the substitution is Pillow's, not
-# this call site's.
-_LANCZOS_PROMOTIONS: Final = {"1": "L"}
-
-
 def resize_png_lanczos(png_bytes: bytes, width: int, height: int) -> bytes:
     """Resize an image with Pillow LANCZOS and deterministic PNG framing.
 
-    The resampler is deliberately part of the caller's sealed transform.  This
-    helper owns only the executable pixel operation and the evidence-safe PNG
-    encoding, so a model view can be regenerated from its sealed source pixels
-    and that transform rather than trusting a separately retained derivative.
-
-    A bilevel source is promoted to `L` first.  Pillow answers a LANCZOS request
-    on a `1` image with nearest-neighbour decimation and says nothing, so the
-    sealed transform's `pillow-lanczos` would have named an operation that did
-    not run -- and a re-deriver who honoured that word literally, by promoting
-    the samples themselves or by using any other LANCZOS implementation, would
-    get different pixels from the same recorded recipe.  That is ARCHITECTURE
-    invariant 3 failing for everyone except this exact Pillow call.  The
-    promotion is information-preserving (0/1 to 0/255) and the alternative,
-    thinning a bilevel scan of handwriting by dropping every other stroke
-    column, costs the reading GOALS 2 asks for.
-
-    Requesting the source's own dimensions is a copy, not a resample -- Pillow
-    returns `self.copy()` before it reaches either the filter or the mode
-    substitution -- so this returns `crop_png`'s bytes unchanged there, and the
-    promotion is deliberately not applied to a call that resamples nothing.
+    A sealed ``pillow-lanczos`` recipe must reproduce the operation that ran.
+    Bilevel and palette sources are therefore promoted before Pillow can replace
+    LANCZOS with nearest-neighbour; palette alpha is retained. An identity-sized
+    request returns the source bytes because no resampler ran.
     """
     if (
         not isinstance(width, int)
@@ -483,17 +454,16 @@ def resize_png_lanczos(png_bytes: bytes, width: int, height: int) -> bytes:
             _refuse_past_pixel_bound(image.width, image.height)
             image.load()
             source = image
-            promotion = _LANCZOS_PROMOTIONS.get(image.mode)
-            if image.mode == "P":
+            resizing = (image.width, image.height) != (width, height)
+            if resizing and image.mode == "1":
+                source = image.convert("L")
+            elif resizing and image.mode == "P":
                 # A palette's transparency can live either in image metadata or
-                # in an RGBA palette. RGB would make LANCZOS run but silently
-                # discard those samples before it did, changing the evidence.
+                # its palette; RGB promotion would discard those samples.
                 keeps_alpha = "transparency" in image.info or "A" in getattr(
                     image.palette, "mode", "RGB"
                 )
-                promotion = "RGBA" if keeps_alpha else "RGB"
-            if promotion is not None and (image.width, image.height) != (width, height):
-                source = image.convert(promotion)
+                source = image.convert("RGBA" if keeps_alpha else "RGB")
             resized = source.resize((width, height), resample=Image.Resampling.LANCZOS)
             return encode_image_deterministic(resized)
     except _DECODE_FAILURES as error:

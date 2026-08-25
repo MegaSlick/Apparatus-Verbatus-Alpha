@@ -331,8 +331,8 @@ def test_dai_carried_request_bytes_and_uncertainty_tokens_are_not_normalized():
         ),
         "user": "Extrais le texte de ce document.\n",
     }
-    # Byte-exact against the cited vendor files, trailing newline included: the
-    # docstring's "byte-for-byte" claim is a checkable fact, not a description.
+    # Vendor prompt bytes are pinned including trailing newlines because any
+    # character change alters the trained request framing.
     assert len(prompt["system"].encode("utf-8")) == 206
     assert len(prompt["user"].encode("utf-8")) == 33
     assert digest_bytes(prompt["system"].encode("utf-8")) == (
@@ -341,10 +341,8 @@ def test_dai_carried_request_bytes_and_uncertainty_tokens_are_not_normalized():
     assert digest_bytes(prompt["user"].encode("utf-8")) == (
         "3a5cd8eb3263f2511d207f49f9933b1cf184e95fd7a9534871207d8d8b6a3489"
     )
-    # Every carried value, not only the one that would be tempting to "fix":
-    # `dai_generation`'s docstring says the shipped configuration crosses
-    # unchanged, and a single-field check left the other eight free to drift
-    # away from the cited file without any test noticing.
+    # Every vendor value is pinned; changing any one creates a local decoding
+    # policy instead of reproducing the shipped configuration.
     assert dai_generation() == {
         "bos_token_id": 151_643,
         "do_sample": True,
@@ -356,7 +354,6 @@ def test_dai_carried_request_bytes_and_uncertainty_tokens_are_not_normalized():
         "top_p": 0.001,
         "transformers_version": "5.2.0",
     }
-    assert dai_generation()["do_sample"] is True
     response = "[UNCERTAIN]  ſ [CROSSED_OUT]"
     assert validate_dai_text(response.encode("utf-8")) == response
 
@@ -391,11 +388,8 @@ def test_every_dai_ceiling_seals_where_it_came_from():
     [
         (500, 10_000, (204, 4_080)),
         (1_500, 3_000, (1_086, 2_172)),
-        # Just past the 576:4096 crossover (design v2.1 s2 x the chosen height
-        # ceiling): a pre-folded `width_px * DAI_MAX_HEIGHT_PX // height_px`
-        # bound is a floor of a floor and previously undercut the true largest
-        # feasible width by one pixel here (564 x 4088, area 2,305,632) against
-        # the actual largest fit (565 x 4096, area 2,314,240 <= 2,359,296).
+        # This crossover distinguishes predicate search from a pre-floored
+        # height bound: 565x4096 fits, while nested flooring chooses only 564.
         (581, 4_212, (565, 4_096)),
     ],
 )

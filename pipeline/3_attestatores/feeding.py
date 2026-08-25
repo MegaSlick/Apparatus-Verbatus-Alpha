@@ -294,12 +294,8 @@ def dai_model_view(
 def _dai_dimensions(width_px: int, height_px: int) -> tuple[int, int]:
     """Largest integer aspect-preserving view within every DAI ceiling.
 
-    The search range is bounded only by ``width_px``/``DAI_MAX_WIDTH_PX``; the
-    height and total-pixel ceilings are both checked inside the search
-    predicate rather than pre-folded into the initial bound. A pre-folded
-    ``width_px * DAI_MAX_HEIGHT_PX // height_px`` bound looks equivalent but
-    is a floor of a floor, which can undercut the true largest feasible width
-    by one pixel for aspect ratios near the height ceiling.
+    Height and area must remain search predicates: pre-flooring a height-derived
+    width can undercut the largest feasible view by one pixel.
     """
     upper_width = min(width_px, DAI_MAX_WIDTH_PX)
     if upper_width < 1:
@@ -401,25 +397,16 @@ def retain_model_view(
             # uninspected capture is a recorded fact, not a detected failure.
             if finding["kind"] == "post-hoc-repetition":
                 record["stop_reason"] = "partial-post-hoc-repetition-detected"
-        if parser == "xml":
-            try:
-                record["parse"] = {
-                    "state": "parsed",
-                    "parser": "xml",
-                    "text": validate_churro_xml(raw_response),
-                }
-            except SchemaRefusal as error:
-                record["parse"] = {"state": "failed", "parser": "xml", "reason": str(error)}
-                record["stop_reason"] = "partial-parse-failed"
-    elif adapter == "dai.v1" and parser == "text":
+    if parser is not None:
+        validate_response = validate_churro_xml if parser == "xml" else validate_dai_text
         try:
             record["parse"] = {
                 "state": "parsed",
-                "parser": "text",
-                "text": validate_dai_text(raw_response),
+                "parser": parser,
+                "text": validate_response(raw_response),
             }
         except SchemaRefusal as error:
-            record["parse"] = {"state": "failed", "parser": "text", "reason": str(error)}
+            record["parse"] = {"state": "failed", "parser": parser, "reason": str(error)}
             record["stop_reason"] = "partial-parse-failed"
     return record
 
