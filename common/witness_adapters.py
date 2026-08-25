@@ -39,8 +39,8 @@ def resolve_witness_adapter_name(name: object) -> str:
 def validate_witness_adapter_bindings(models: ModelsConfig) -> None:
     """Validate sealed witness names and scopes before any run-tree write.
 
-    Unconfigured registry keys are deliberately reported rather than fatal: a
-    later adapter-owning unit may land before its configured occupant does.
+    An adapter may be registered before configuration assigns it an occupant,
+    so unused keys are reported without refusing the run.
     """
 
     if not isinstance(models, ModelsConfig):

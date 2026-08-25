@@ -6,7 +6,7 @@ inspection, and names every other shape in the derived payload instead of
 pretending it contained no testimony.  Geometry is derived only from the raw
 response that was retained beside it.
 
-**Provenance, stated because Unit 10 requires each adapter to state it.** The
+**Provenance.** The
 occupant is ``datalab-to/chandra`` ("Chandra OCR 2",
 https://github.com/datalab-to/chandra), which converts page images to structured
 HTML/Markdown/JSON with block identification and reading order.  Unlike
@@ -72,8 +72,6 @@ def parse(raw_response: bytes) -> Any:
 
 def retain(*args: Any, **kwargs: Any) -> dict[str, Any]:
     """Retain Chandra's response before its parser inspects the retained bytes."""
-    # The custody writer is shared with the other fixture adapters; this local
-    # wrapper keeps Chandra's fifth adapter role explicit in its own module.
     from feeding import retain_model_view
 
     return retain_model_view(*args, **kwargs)
@@ -84,9 +82,9 @@ def present(context: Any, presentation: dict[str, Any]) -> dict[str, Any]:
 
     Scope controls invocation, not presentation kind: the act compatibility
     records retain their original Designator crop while the durable witness
-    record carries the whole page.
+    record carries the whole page. ``context`` remains part of the common
+    adapter interface because adapters may publish their own derived crop.
     """
-    _ = context
     validate_presented(presentation)
     return presentation
 

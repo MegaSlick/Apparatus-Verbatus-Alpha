@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from common.chairs import load_models_toml
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import SchemaRefusal
 from common.contracts.stages import ATTESTATORES
@@ -25,20 +26,10 @@ def _load_stage_module(name: str):
     """Load a stage-local module under a unique name.
 
     A bare `import run` (or `import feeding`) answers from `sys.modules` first,
-    so whichever stage's `run.py` was imported earlier in the pytest process
-    wins regardless of `sys.path` order — measured: the Perlector's nuda tests
-    cache their own `run`, and this file then received a Perlector module where
-    it needed the Attestatores. Unique spec names make the cache honest.
+    so a module cached by another stage can win regardless of `sys.path` order.
+    Unique spec names keep this test bound to the Attestatores file it names.
     """
     spec = importlib.util.spec_from_file_location(f"attestatores_{name}", STAGE / f"{name}.py")
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def _load_chandra():
-    spec = importlib.util.spec_from_file_location("attestatores_chandra", STAGE / "chandra.py")
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -62,7 +53,7 @@ def _presented():
 
 
 def test_chandra_quantizes_retained_float_boxes_by_its_declared_rule():
-    chandra = _load_chandra()
+    chandra = _load_stage_module("chandra")
     raw = (
         b'{"schema":"fixture-chandra-response.v1","markdown":"one",'
         b'"blocks":[{"bbox":[20.25,20.5,180.0,100.1]}]}'
@@ -113,7 +104,7 @@ def test_fixture_run_retains_chandra_bytes_and_names_an_unverified_shape(tmp_pat
         assert digest_bytes(tree.read_bytes(raw["relative_path"])) == raw["sha256"]
         assert payload["provenance"]["resolved_identity"] is not None
         assert payload["adapter_metadata"] == {
-            "geometry_quantization": _load_chandra().QUANTIZATION_RULE
+            "geometry_quantization": _load_stage_module("chandra").QUANTIZATION_RULE
         }
         assert payload["observed"][0]["bounds_source"] == "native"
 
@@ -146,7 +137,7 @@ def test_chandra_shape_surprise_keeps_bytes_with_a_named_parse_outcome(tmp_path)
         "parser": "json",
         "outcome": "unverified-response-schema",
     }
-    chandra = _load_chandra()
+    chandra = _load_stage_module("chandra")
     assert chandra.parse(
         b'{"schema":"fixture-chandra-response.v1","markdown":"text",'
         b'"blocks":[{"bbox":[0,0,"bad",1]}]}'
@@ -155,8 +146,6 @@ def test_chandra_shape_surprise_keeps_bytes_with_a_named_parse_outcome(tmp_path)
 
 def test_chandra_shape_surprise_is_a_failed_attempt_not_a_successful_read(tmp_path):
     """Named bytes remain evidence, but an unread schema is not a reading."""
-    from common.chairs import load_models_toml
-
     attestatores = _load_stage_module("run")
     resolved = load_models_toml(ROOT / "config/models.toml").chairs["attestator_1"]
     context = SimpleNamespace(
@@ -190,8 +179,6 @@ def test_chandra_shape_surprise_is_a_failed_attempt_not_a_successful_read(tmp_pa
 
 def test_chandra_raw_text_must_equal_the_fixture_payload_after_retention(tmp_path):
     """A fixture row cannot declare two readings for the same response."""
-    from common.chairs import load_models_toml
-
     attestatores = _load_stage_module("run")
     resolved = load_models_toml(ROOT / "config/models.toml").chairs["attestator_1"]
     tree = RunTree(tmp_path / "runs", "r")
@@ -231,8 +218,6 @@ def test_chandra_raw_text_must_equal_the_fixture_payload_after_retention(tmp_pat
 
 
 def test_chandra_malformed_capabilities_fail_only_that_retained_attempt(tmp_path):
-    from common.chairs import load_models_toml
-
     attestatores = _load_stage_module("run")
     resolved = load_models_toml(ROOT / "config/models.toml").chairs["attestator_1"]
     context = SimpleNamespace(
@@ -268,7 +253,7 @@ def test_chandra_malformed_capabilities_fail_only_that_retained_attempt(tmp_path
 
 
 def test_chandra_conflicting_text_fields_and_huge_coordinates_are_named():
-    chandra = _load_chandra()
+    chandra = _load_stage_module("chandra")
     assert chandra.parse(
         b'{"schema":"fixture-chandra-response.v1","markdown":"one","text":"two","blocks":[]}'
     ) == {"parse_outcome": "conflicting-text-fields"}
@@ -285,7 +270,7 @@ def test_chandra_conflicting_text_fields_and_huge_coordinates_are_named():
 
 def test_an_unverified_chandra_wire_shape_cannot_acquire_fixture_geometry():
     """Only explicitly synthetic bytes use the placeholder page-pixel rule."""
-    chandra = _load_chandra()
+    chandra = _load_stage_module("chandra")
     raw = b'{"markdown":"plausible live response","blocks":[{"bbox":[0,0,100,100]}]}'
     assert chandra.parse(raw) == {"parse_outcome": "unverified-response-schema"}
     assert chandra.observe(_presented(), raw) == []
@@ -336,14 +321,6 @@ def test_chandra_out_of_order_stage_invocation_holds_cleanly(tmp_path):
     assert "missing predecessor" in result.stderr.lower() or "predecessor" in result.stderr.lower()
 
 
-# --- Adversarial re-derivation of the unit's three definition-of-done bullets --
-#
-# The happy-path tests above prove the DoD reachable. These ask the harder half:
-# what a real layout detector emits that the fixture never does -- overlapping
-# blocks, degenerate boxes, geometry that runs off the page edge -- and whether
-# each named outcome survives the write path rather than only the parser.
-
-
 def test_overlapping_native_blocks_are_both_retained_as_reported_geometry():
     """Two blocks over the same ink is a layout fact, not a contradiction.
 
@@ -352,7 +329,7 @@ def test_overlapping_native_blocks_are_both_retained_as_reported_geometry():
     or prefer between them -- the pipeline retains every reported box and lets
     the partition record hold the competing pairings (GOVERNANCE 3).
     """
-    chandra = _load_chandra()
+    chandra = _load_stage_module("chandra")
     raw = (
         b'{"schema":"fixture-chandra-response.v1","markdown":"one",'
         b'"blocks":[{"bbox":[10,10,100,100]},{"bbox":[50,50,150,150]}]}'
@@ -362,8 +339,7 @@ def test_overlapping_native_blocks_are_both_retained_as_reported_geometry():
         {"x": 10, "y": 10, "w": 90, "h": 90},
         {"x": 50, "y": 50, "w": 100, "h": 100},
     ]
-    # Dense, unique and zero-based even though the boxes intersect, and accepted
-    # by the shared wall rather than merely by this adapter's own arithmetic.
+    # Intersecting boxes still require dense response-order ordinals.
     validate_observed(observed, presented=_presented(), page_size=(200, 260))
 
 
@@ -382,13 +358,10 @@ def test_overlapping_native_blocks_are_both_retained_as_reported_geometry():
 def test_a_degenerate_native_box_is_named_and_derives_no_geometry(bbox):
     """A box with no area cannot become an observation, and does not vanish.
 
-    `_quantize_box` refusing is only half of it: the refusal has to reach the
-    record as a name. `parse` turns the whole response into
-    `malformed-block-geometry`, which is what the Testimonium then carries, and
-    `observe` derives nothing rather than emitting a box the shared wall would
-    have to catch downstream.
+    `parse` names the whole malformed response while `observe` emits no partial
+    geometry that could look like a complete partition.
     """
-    chandra = _load_chandra()
+    chandra = _load_stage_module("chandra")
     raw = json.dumps(
         {"schema": "fixture-chandra-response.v1", "markdown": "one", "blocks": [{"bbox": bbox}]}
     ).encode("utf-8")
@@ -405,7 +378,7 @@ def test_one_degenerate_box_does_not_let_its_neighbours_pass_unnamed():
     whole in its blob either way, so nothing is lost; what changes is whether the
     derived layer claims to be the witness's full report.
     """
-    chandra = _load_chandra()
+    chandra = _load_stage_module("chandra")
     raw = json.dumps(
         {
             "schema": "fixture-chandra-response.v1",
@@ -424,9 +397,9 @@ def test_reading_order_is_the_response_order_and_no_other_key_reorders_it():
     the list *is* the order. A block key this adapter does not read cannot
     quietly become an ordering authority -- the derived ordinals stay the
     positions the response gave, and the unread key survives verbatim in the
-    retained blob, where a later unit can decide what it means.
+    retained blob without affecting this adapter's declared order.
     """
-    chandra = _load_chandra()
+    chandra = _load_stage_module("chandra")
     raw = json.dumps(
         {
             "schema": "fixture-chandra-response.v1",
@@ -455,10 +428,10 @@ def test_a_block_past_the_page_edge_is_refused_rather_than_clamped_into_the_page
     never acquire. So the conversion never invents an in-page box from an
     out-of-page report; it reports what it derived and lets the wall speak.
 
-    This test pins that ruling in both directions, so a later seat that finds the
-    hold expensive cannot quietly buy relief with a clamp.
+    Both the outward rounding and downstream refusal are pinned so clamping
+    cannot silently convert out-of-page testimony into in-page coverage.
     """
-    chandra = _load_chandra()
+    chandra = _load_stage_module("chandra")
     raw = (
         b'{"schema":"fixture-chandra-response.v1","markdown":"one",'
         b'"blocks":[{"bbox":[0,0,200.2,260.0]}]}'
@@ -470,20 +443,10 @@ def test_a_block_past_the_page_edge_is_refused_rather_than_clamped_into_the_page
 
 
 def test_a_parse_failure_keeps_its_bytes_and_its_name_through_the_written_record(tmp_path):
-    """DoD bullet two, re-derived at the seam that actually publishes.
-
-    The sibling test above proves retention against a stub tree. This one runs
-    the real run-tree blob store and then carries the named outcome the whole way
-    into a closed Testimonium payload, because that is where a silent absence
-    would actually occur: a record whose `payload` had quietly become `None`
-    while its bytes sat unreferenced on disk.
-    """
+    """A written shape refusal must retain both its name and referenced bytes."""
     feeding = _load_stage_module("feeding")
     attestatores = _load_stage_module("run")
 
-    # The blob store is content-addressed and directory-creating on write,
-    # so this needs the real store rather than the stub above, not a whole
-    # orchestrated run.
     tree = RunTree(tmp_path / "runs", "r")
     raw = (
         b'{"schema":"fixture-chandra-response.v1","markdown":"text",'
@@ -518,11 +481,8 @@ def test_a_parse_failure_keeps_its_bytes_and_its_name_through_the_written_record
         unpresented_regions=[],
         outcome="read",
         raw_response_ref=retained["raw_response_ref"],
-        adapter_metadata={"geometry_quantization": _load_chandra().QUANTIZATION_RULE},
+        adapter_metadata={"geometry_quantization": _load_stage_module("chandra").QUANTIZATION_RULE},
     )
-    # The name is in the record, the bytes are addressed from the record, and
-    # neither is a silent absence: `payload` is not None and `reported` -- the
-    # textual bridge -- is correctly not offered for a non-textual payload.
     assert payload["payload"] == {"parse_outcome": "malformed-block-geometry"}
     assert payload["raw_response_ref"] == retained["raw_response_ref"]
     assert "reported" not in payload
@@ -530,15 +490,10 @@ def test_a_parse_failure_keeps_its_bytes_and_its_name_through_the_written_record
 
 
 def test_an_unknown_quantization_rule_is_refused_by_name(tmp_path):
-    """The record's declared rule is closed against what the adapters declare.
-
-    Not against Chandra's literal string: Units 12 and 13 also retain raw bytes,
-    and a schema that admitted one adapter's rule by name would have refused
-    theirs for not being Chandra's.
-    """
+    """Admissible rules derive from bindings, not from one adapter's literal."""
     attestatores = _load_stage_module("run")
 
-    chandra_rule = _load_chandra().QUANTIZATION_RULE
+    chandra_rule = _load_stage_module("chandra").QUANTIZATION_RULE
     attestatores.validate_adapter_metadata(
         {"adapter_metadata": {"geometry_quantization": chandra_rule}}
     )
@@ -550,7 +505,7 @@ def test_an_unknown_quantization_rule_is_refused_by_name(tmp_path):
 
 def test_quantization_metadata_belongs_to_the_recorded_adapter_and_blob():
     attestatores = _load_stage_module("run")
-    chandra_rule = _load_chandra().QUANTIZATION_RULE
+    chandra_rule = _load_stage_module("chandra").QUANTIZATION_RULE
     payload = {
         "provenance": {"resolved_identity": {"witness_adapter": "churro.v1"}},
         "adapter_metadata": {"geometry_quantization": chandra_rule},
@@ -610,16 +565,7 @@ def test_act_tally_rechecks_retained_response_bytes(tmp_path):
 
 
 def test_the_page_record_names_the_bytes_its_own_geometry_was_quantized_from(tmp_path):
-    """DoD bullet one, asked of the record that actually carries the geometry.
-
-    The act-scoped Testimonia are a compatibility bridge Unit 14 removes. The
-    durable output of a page-scoped occupant is the page Testimonium, and it is
-    the record whose `observed` boxes are integers this pipeline computed from
-    floats it did not keep. Without a reference to the retained response, that
-    record states a derived result with no route back to the evidence -- and the
-    route has to be in the record, not reconstructable by re-joining records that
-    are scheduled for deletion (GOALS 5).
-    """
+    """The page record must directly bind the bytes behind its derived boxes."""
     run_root = tmp_path / "runs"
     result = subprocess.run(
         [
@@ -660,14 +606,11 @@ def test_the_page_record_names_the_bytes_its_own_geometry_was_quantized_from(tmp
         for reference in refs:
             assert digest_bytes(tree.read_bytes(reference["relative_path"])) == reference["sha256"]
         assert payload["adapter_metadata"] == {
-            "geometry_quantization": _load_chandra().QUANTIZATION_RULE
+            "geometry_quantization": _load_stage_module("chandra").QUANTIZATION_RULE
         }
         assert payload["provenance"]["resolved_identity"] is not None
 
-    # The other half of the pairing, and the reason it is a pairing: a record
-    # whose geometry is only the presentation echo reports no conversion,
-    # because none happened. A rule stated there would describe a float this
-    # record never saw.
+    # Presentation echoes have no native floats and therefore no conversion rule.
     echoes = [
         record["payload"]
         for record in pages
@@ -680,15 +623,7 @@ def test_the_page_record_names_the_bytes_its_own_geometry_was_quantized_from(tmp
 
 
 def test_the_stage_seals_its_boundary_and_an_out_of_order_pass_seals_nothing(tmp_path):
-    """DoD bullet three, both halves in one place.
-
-    The existing out-of-order test proves the refusal by exit code and reason.
-    What it does not ask is the consequence the handoff makes load-bearing: a
-    pass held before it published stage evidence must leave *no* seal, so its
-    successor refuses a missing boundary rather than reading a stale one. A run
-    that refuses loudly and seals anyway is the more dangerous failure, and only
-    an inventory comparison can tell the two apart.
-    """
+    """A pass held before publication must leave no boundary seal to consume."""
     complete_root = tmp_path / "complete"
     complete = subprocess.run(
         [

@@ -1,46 +1,10 @@
-"""Every scenario's witness declarations, against that scenario's own structure.
+"""Structural constraints for every scenario's witness declarations.
 
-Three defects in a row in this fixture shared one shape. A page witness's
-declarations were hand-tuned for one scenario against an expectation that lived
-only in a test written for a different scenario, and the mismatch surfaced
-somewhere else entirely: as a blind dissent record, as an under-witnessed
-`confirmed-blank`, and as a fabricated fallback response whose box overflowed the
-sealed page. Each was repaired one row at a time, which left the *class* intact —
-the next scenario added could repeat it, because nothing walked the declarations
-as a whole and asked whether each one is structurally possible.
-
-That is what this module does. It is deliberately **derived, not enumerated**:
-every expectation below is computed from the fixture's own page, act, scenario
-and chair tables and from `config/models.toml`, so a new scenario, a new chair,
-or a new declared response is checked the moment it is added rather than when
-somebody remembers to extend a literal list. `test_proof_fixture_build.py` keeps
-the enumerated per-scenario assertions, which say what the fixture *is*; these
-say what any fixture of this shape must satisfy to be feedable at all.
-
-The five structural claims, and the defect each one closes:
-
-1. **Names resolve.** Every declaring row's scenario, chair and act exist.
-2. **Declared geometry is inside the sealed page.** A block that quantizes past
-   the page edge is refused by `common/native_witness.py` at publication and
-   takes the whole Attestatores pass to `UNKNOWN` — the ink-free-page fallback
-   defect, caught here at declaration time instead.
-3. **A region outside the observed partition stays geometry-free.** An act key
-   the fixture never declared is a Designator-minted fallback over a page with
-   no marked-out acts. A recovery crop may not become retroactively witness
-   covered, so no declaration may hand one reported geometry.
-4. **One attempt declares one reading.** A row's retained response text and its
-   declared payload are the same text (GOVERNANCE 5), and no attempt is declared
-   twice.
-5. **A scenario override keeps its chair's declaration shape.** If a chair's base
-   row for an act retains a native response, a scenario that overrides that row
-   with text of its own retains one too — the exact omission that made a page
-   witness's testimony unattachable and its dissent record blind.
-
-Claims 2, 4 and 5 are checked through the chair's **own configured adapter**,
-resolved from `config/models.toml`, never against a hard-coded adapter name: a
-declaration is well formed exactly when the adapter that will be asked to read it
-can read it. That is also what keeps this module honest for Units 12 and 13 —
-whichever adapter a chair is bound to, its own `parse`/`observe` answer here.
+Expectations derive from the fixture and configured chair bindings rather than
+from enumerated scenarios. Declared names must resolve; each adapter must parse
+its own chair's response; reported geometry must lie inside and reach the named
+act; minted fallback regions must remain geometry-free; and one attempt must
+retain one reading with the same response shape as its base declaration.
 """
 
 from __future__ import annotations
@@ -67,14 +31,13 @@ MODELS_CONFIG = ROOT / "config" / "models.toml"
 # the same (scenario?, act_key, chair) identity; they differ only in what they
 # say that response was.
 RESPONSE_TABLES = ("testimony", "witness_empty", "witness_failure", "witness_not_run")
-# Every key a response row may use to declare reported geometry. Claim 3 refuses
-# all of them over a minted region, so adding a second geometry channel later
-# cannot quietly escape the wall by not being called `raw_response`.
+# Every geometry channel is refused over minted regions; naming all channels
+# prevents a new spelling from bypassing that constraint.
 GEOMETRY_BEARING_KEYS = ("blocks", "observed", "x", "y", "w", "h")
 
 
 def _load_local_adapters():
-    """The stage's own runnable registry, loaded the way its siblings load it."""
+    """Load the non-package stage registry with its sibling imports resolvable."""
     path = STAGE / "witness_adapters.py"
     spec = importlib.util.spec_from_file_location("attestatores_witness_adapters", path)
     assert spec and spec.loader
@@ -122,16 +85,11 @@ def declared_acts(skeleton: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {act["key"]: act for act in skeleton["act"]}
 
 
-def declared_scenarios(skeleton: dict[str, Any]) -> set[str]:
-    return {scenario["name"] for scenario in skeleton["scenario"]}
-
-
 def minted_fallback_act_keys(skeleton: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """The act keys the Designator mints, for pages the fixture leaves unmarked.
 
-    Derived from the same helper the producer and the verifier share
-    (`common/stage.py::fallback_page_act_key`), so a rename cannot leave this
-    module quietly matching nothing and passing every claim below by vacuity.
+    Derived from the same helper the producer and verifier share so a rename
+    cannot make every minted-region assertion pass by vacuity.
     """
     acts = declared_acts(skeleton)
     unmarked = {
@@ -143,14 +101,7 @@ def minted_fallback_act_keys(skeleton: dict[str, Any]) -> dict[str, dict[str, An
 
 
 def page_for_act_key(skeleton: dict[str, Any], act_key: str) -> dict[str, Any]:
-    """The sealed page a declared response was read on, marked out or minted.
-
-    Resolved for both act kinds rather than only the declared ones. Claim 3
-    forbids geometry over a minted region, so today no minted row reaches the
-    containment check — but a claim that would raise `KeyError` if it ever did is
-    a guard that reports a crash where the fixture wants a finding, and it would
-    stop reporting anything at all the moment claim 3 is relaxed.
-    """
+    """Resolve both declared and minted act keys to their sealed page."""
     acts = declared_acts(skeleton)
     pages = declared_pages(skeleton)
     if act_key in acts:
@@ -161,16 +112,6 @@ def page_for_act_key(skeleton: dict[str, Any], act_key: str) -> dict[str, Any]:
 def response_rows(skeleton: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
     """Every declaration that says what one chair returned for one act."""
     return [(table, row) for table in RESPONSE_TABLES for row in skeleton.get(table, [])]
-
-
-def row_identity(row: dict[str, Any]) -> tuple[str | None, str, str, int]:
-    """The immutable attempt a row speaks for. Ordinal one unless it says."""
-    return (
-        row.get("scenario"),
-        row["act_key"],
-        row["chair"],
-        int(row.get("attempt_ordinal", 1)),
-    )
 
 
 def page_presentation(page: dict[str, Any]) -> dict[str, Any]:
@@ -229,12 +170,9 @@ def reported_geometry_declarations(
     return present
 
 
-# --- Claim 1: every declaring row names something that exists ------------------
-
-
 def test_every_declared_response_names_a_real_scenario_chair_and_act(skeleton, chairs):
     known_acts = set(declared_acts(skeleton)) | set(minted_fallback_act_keys(skeleton))
-    scenarios = declared_scenarios(skeleton)
+    scenarios = {scenario["name"] for scenario in skeleton["scenario"]}
     rows = response_rows(skeleton) + [
         ("native_observation", row) for row in skeleton.get("native_observation", [])
     ]
@@ -264,9 +202,6 @@ def test_a_minted_fallback_row_names_a_scenario_its_page_takes_part_in(skeleton)
             f"{table} row {row!r} declares a response over page {page['ordinal']}, which that "
             "scenario never renders"
         )
-
-
-# --- Claim 2: declared geometry lands inside the sealed page -------------------
 
 
 def test_every_declared_response_is_readable_by_its_own_chairs_adapter(skeleton, chairs, adapters):
@@ -302,14 +237,7 @@ def test_every_declared_response_is_readable_by_its_own_chairs_adapter(skeleton,
 def test_every_declared_response_geometry_lies_inside_its_own_sealed_page(
     skeleton, chairs, adapters
 ):
-    """The defect that held a whole pass, caught one layer earlier.
-
-    `common/native_witness.py` refuses an observed box outside the sealed page,
-    and that refusal takes the Attestatores attempt tally to `UNKNOWN`, holding
-    every act on the page. A fixture declaration that quantizes past the page
-    edge is therefore not a bad test expectation; it is an unfeedable fixture,
-    and it should fail here rather than four stages downstream.
-    """
+    """Reject unfeedable geometry before it can hold an Attestatores tally."""
     checked = 0
     for table, row in response_rows(skeleton):
         raw = row.get("raw_response")
@@ -337,20 +265,13 @@ def test_every_declared_response_geometry_lies_inside_its_own_sealed_page(
 def test_every_declared_response_geometry_reaches_the_act_it_is_declared_for(
     skeleton, chairs, adapters
 ):
-    """Geometry that misses its own act attaches to nothing.
-
-    A page witness reaches an act only by overlap of its reported geometry
-    against that act's sealed proposal. A declared response whose blocks miss the
-    act they are declared under is testimony the join cannot carry — which is how
-    `witness-capabilities` lost a chair's comparison view and `confirmed-blank`
-    reached two attached witnesses out of three completed responses.
-    """
+    """A page response must overlap the sealed act it claims to report."""
     acts = declared_acts(skeleton)
     for table, row in response_rows(skeleton):
         raw = row.get("raw_response")
         if raw is None or row["act_key"] not in acts:
-            # A minted region has no marked-out crop to reach. Claim 3 owns it,
-            # and owns it more strictly than this claim would.
+            # Minted regions have no marked-out crop; their separate wall
+            # forbids reported geometry entirely.
             continue
         act = acts[row["act_key"]]
         page = page_for_act_key(skeleton, row["act_key"])
@@ -383,9 +304,6 @@ def test_every_declared_native_observation_lies_inside_its_own_sealed_page(skele
             and row["x"] + row["w"] <= page["width"]
             and row["y"] + row["h"] <= page["height"]
         ), f"native_observation {row!r} falls outside page {page['ordinal']}"
-
-
-# --- Claim 3: a minted region stays visibly under-witnessed --------------------
 
 
 def test_no_declaration_hands_a_minted_fallback_region_reported_geometry(
@@ -426,13 +344,7 @@ def test_a_geometry_free_raw_response_is_not_mislabeled_as_reported_geometry(
 
 
 def test_a_minted_fallback_region_is_still_allowed_a_response(skeleton):
-    """The wall above forbids geometry, never testimony.
-
-    Stated as its own claim so a later tightening that deletes the fallback rows
-    outright — reading the wall as "no witness may answer for this region" — is a
-    red test rather than a quiet return to the state where three chairs were
-    recorded as having read a page none of them was asked about.
-    """
+    """The minted-region wall forbids reported geometry, not testimony."""
     minted = set(minted_fallback_act_keys(skeleton))
     declared = {row["act_key"] for _, row in response_rows(skeleton)}
     assert minted & declared, (
@@ -441,21 +353,16 @@ def test_a_minted_fallback_region_is_still_allowed_a_response(skeleton):
     )
 
 
-# --- Claim 4: one attempt declares one reading --------------------------------
-
-
 def test_no_attempt_is_declared_twice(skeleton):
-    """One (scenario, act, chair, ordinal) has at most one declared response.
-
-    The stage refuses a double declaration at run time, and only for the two
-    tables that happen to collide there. Asked of every response table at once,
-    this also catches the pair that never meet at run time — a `witness_empty`
-    and a `witness_not_run` for the same attempt, which is a fixture that cannot
-    say whether the chair was asked.
-    """
+    """One (scenario, act, chair, ordinal) has at most one response declaration."""
     seen: dict[tuple[str | None, str, str, int], str] = {}
     for table, row in response_rows(skeleton):
-        identity = row_identity(row)
+        identity = (
+            row.get("scenario"),
+            row["act_key"],
+            row["chair"],
+            int(row.get("attempt_ordinal", 1)),
+        )
         assert identity not in seen, (
             f"{table} redeclares attempt {identity}, already declared by {seen[identity]}"
         )
@@ -492,20 +399,8 @@ def test_a_retained_response_and_its_declared_payload_are_the_same_text(skeleton
     assert checked, "no retained response was compared; this guard would pass vacuously"
 
 
-# --- Claim 5: a scenario override keeps its chair's declaration shape ----------
-
-
 def test_a_scenario_override_retains_a_response_wherever_its_base_row_does(skeleton):
-    """The omission that made a page witness unattachable, stated as a rule.
-
-    A scenario row replaces the base row for one (act, chair). If the base row
-    retains native bytes and the override does not, the chair keeps its text and
-    loses its geometry — it reports a reading the page join cannot attach to any
-    act, and its dissent record goes blind. The exemption is derived rather than
-    listed: an override whose payload is not text is a native-payload boundary
-    case with no textual page read to retain, and `structured-witness` is exactly
-    that.
-    """
+    """A textual override cannot discard the native response shape of its base."""
     retaining = base_rows_that_retain_a_response(skeleton)
     assert retaining, "no base row retains a response; this guard would pass vacuously"
     for row in skeleton["testimony"]:
@@ -522,13 +417,12 @@ def test_a_scenario_override_retains_a_response_wherever_its_base_row_does(skele
 
 
 def test_a_completed_empty_row_retains_a_response_wherever_its_base_row_does(skeleton):
-    """Claim 5 for the other completed outcome, minus the minted regions.
+    """A marked-out empty override retains the response shape of its base.
 
     A chair reporting a genuinely empty response for a *marked-out* act looked at
     that act's real crop and found nothing there, and the Recensor's blank
     corroboration needs that geometry as evidence the chair actually examined the
-    region. Claim 3 has already excluded the minted regions, where the opposite
-    holds.
+    region. Minted regions are excluded because they must remain under-witnessed.
     """
     retaining = base_rows_that_retain_a_response(skeleton)
     minted = set(minted_fallback_act_keys(skeleton))

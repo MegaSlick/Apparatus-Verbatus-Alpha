@@ -4445,8 +4445,8 @@ def test_repeating_the_identical_command_leaves_every_byte_unchanged(tmp_path):
     assert orchestrate(root, "r", "happy").returncode == 0
     before = snapshot(root)
 
-    # Unit 11 adds two retained Chandra-response blobs to the walking skeleton;
-    # repeatability still compares every byte.
+    # The count includes two retained Chandra-response blobs; repeatability
+    # compares their bytes too.
     assert len(before) == 86
     assert semantic_snapshot_digest(root) == HAPPY_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "happy").returncode == 0
@@ -4492,8 +4492,8 @@ def test_repeating_the_review_scenario_also_changes_nothing(tmp_path):
     assert orchestrate(root, "r", "review").returncode == 3
     before = snapshot(root)
 
-    # Unit 11 adds the same two retained Chandra-response blobs before review's
-    # recovery loop; its append-only invariant is unchanged.
+    # The count includes the two retained Chandra blobs written before recovery;
+    # rerunning the loop must not append another copy.
     assert len(before) == 111
     assert semantic_snapshot_digest(root) == REVIEW_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "review").returncode == 3

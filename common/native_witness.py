@@ -422,28 +422,19 @@ def validate_page_testimonium_payload(
 def validate_retained_response_refs(
     payload: dict[str, Any], *, read_bytes: Callable[[str], bytes] | None = None
 ) -> None:
-    """Close the page record's link back to the bytes its geometry came from.
+    """Close a page partition's links to its retained native responses.
 
-    A page Testimonium is the durable home of a page witness's own partition,
-    and its `observed` boxes are integers this pipeline computed from a native
-    response that carried floats. Without a reference to that retained response
-    the record states a derived result and holds no route back to the evidence
-    it was derived from: the raw blob remains on disk, but nothing in the record
-    that carries the geometry says which blob, or by what rule (GOALS 5;
-    ARCHITECTURE invariant 3, whose whole claim is that the exact thing shown to
-    a model is reproducible from what was recorded).
-
-    The strict blob-path check belongs to the producing stage, which owns its own
-    blob namespace. What is closed here is the shape every consumer reads, and
-    the pairing: geometry-bearing metadata without the bytes it describes is the
-    complete-looking partial record invariant 6 refuses.
+    A partition may derive from several responses, so references remain plural
+    and ordered. The producing stage owns its blob namespace; this shared seam
+    closes the reference shape and prevents quantization metadata from appearing
+    without the bytes whose geometry it describes.
     """
     refs = payload.get("raw_response_refs")
     if refs is not None:
         if not isinstance(refs, list) or not refs:
             raise SchemaRefusal("a page Testimonium raw_response_refs is not a non-empty list")
+        expected_prefix = f"{writing_directory(ATTESTATORES)}/blobs/sha256/"
         for reference in refs:
-            expected_prefix = f"{writing_directory(ATTESTATORES)}/blobs/sha256/"
             if (
                 not isinstance(reference, dict)
                 or set(reference) != {"relative_path", "sha256"}

@@ -50,13 +50,11 @@ def test_chandra_and_churro_have_runnable_fixture_adapter_shapes():
 
 
 def test_the_registry_binds_the_native_intake_contract_seams():
-    """10B fills 10A's reserved derived-layer seams with real callables."""
+    """Every adapter exposes the closed native and derived intake seams."""
     adapters = _load_local_adapters()
     fields = {field.name for field in dataclasses.fields(adapters.RunnableAdapter)}
-    # Five operations plus the one declaration. `quantization` is data, not a
-    # sixth role: it names the rule `observe` applied, so the record can state
-    # the conversion instead of the writing stage guessing which adapter's rule
-    # to stamp on it. An adapter with no native geometry declares None.
+    # Quantization is data beside the five operations; no-layout adapters must
+    # explicitly remain without a conversion rule.
     assert fields == {"prompt", "parse", "retain", "present", "observe", "quantization"}
     assert adapters.RUNNABLE_ADAPTERS["churro.v1"].quantization is None
     assert (

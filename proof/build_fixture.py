@@ -134,15 +134,17 @@ TESTIMONY = {
 }
 
 
-def chandra_raw_response(payload: str, bounds: dict[str, int]) -> str:
-    """One retained Chandra response, including the block that saw these pixels.
+def chandra_raw_response_for_act(payload: str, act_key: str) -> str:
+    """Bind fixture text to native geometry over its declared act.
 
-    Chandra's fixture path has two independent facts: the text it returned and
-    the native layout blocks it reported while reading it.  Scenario-specific
-    responses must carry both.  Otherwise a page witness can honestly report
-    text (or a completed empty response) but has no geometry through which its
-    testimony can attach to the act it read.
+    Scenario overrides must retain both facts; text without reported geometry
+    leaves a page witness unable to attach to the act it read.
     """
+    act = next(row for row in ACTS if row["key"] == act_key)
+    page = next(row for row in ALL_PAGES if row["ordinal"] == act["page_ordinal"])
+    bounds = next(
+        row["bounds"] for row in page["acts"] if row["ordinal"] == act["proposal_ordinal"]
+    )
     return json.dumps(
         {
             "schema": "fixture-chandra-response.v1",
@@ -160,16 +162,6 @@ def chandra_raw_response(payload: str, bounds: dict[str, int]) -> str:
         },
         separators=(",", ":"),
     )
-
-
-def chandra_raw_response_for_act(payload: str, act_key: str) -> str:
-    """Build the fixture Chandra response for one declared base act."""
-    act = next(row for row in ACTS if row["key"] == act_key)
-    page = next(row for row in ALL_PAGES if row["ordinal"] == act["page_ordinal"])
-    bounds = next(
-        row["bounds"] for row in page["acts"] if row["ordinal"] == act["proposal_ordinal"]
-    )
-    return chandra_raw_response(payload, bounds)
 
 
 # R4's fixture-only Chandra view.  The HTML is deliberately retained as markup
@@ -347,16 +339,8 @@ PAGE_REFUSALS = (
 # same page with those declarations deliberately absent.
 WITNESS_EMPTY = (
     {"scenario": "genuinely-empty-witness", "act_key": "a1", "chair": "attestator_3"},
-    # Deliberately no `raw_response` here, unlike `confirmed-blank` and
-    # `blank-with-dissent` below: those confirm a chair actually looked at a
-    # real Designator crop and found nothing there, so their geometry must
-    # cover it. `page-fallback:3` is the opposite case -- a recovery crop must
-    # never become retroactively witness-covered just because a witness later
-    # reported emptiness over it -- and this test asserts exactly that
-    # (`test_an_ink_free_page_fallback_is_read_but_not_retroactively_witness_covered`).
-    # A declared native block here, even an empty-page one, would quantize to
-    # an observed box the Perlector's `witnessed_region_ids` would then find
-    # fully containing the fallback act's own region.
+    # No raw geometry: a recovery crop must remain under-witnessed rather than
+    # acquire retrospective coverage from a later empty response.
     {"scenario": "ink-free-page", "act_key": "page-fallback:3", "chair": "attestator_1"},
     {"scenario": "ink-free-page", "act_key": "page-fallback:3", "chair": "attestator_2"},
     {"scenario": "ink-free-page", "act_key": "page-fallback:3", "chair": "attestator_3"},

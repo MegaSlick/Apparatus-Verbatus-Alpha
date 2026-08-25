@@ -1,4 +1,4 @@
-"""Non-tautological refusals for Unit 10B's derived witness waist."""
+"""Non-tautological refusals for the derived witness waist."""
 
 import copy
 from io import BytesIO

@@ -130,12 +130,8 @@ def test_two_chairs_may_share_one_adapter_at_different_scopes():
     """
     models = _models()
     witness_adapters.validate_witness_adapter_bindings(models)
-    # Read off the live roster rather than named: Unit 11 moved `attestator_1`
-    # to Chandra, and repairing this test by asserting the two *different*
-    # adapters those two chairs now hold left its own claim untested -- the
-    # sharing pair had simply moved to the two chairs that still share Churro.
-    # Derived, so the next adapter unit that moves a chair cannot silently empty
-    # it again.
+    # Derive the sharing pair because chair-to-adapter bindings may move while
+    # the cross-scope sharing invariant remains unchanged.
     by_adapter: dict[str, list[str]] = {}
     for _, chair in sorted(models.chairs.items()):
         if isinstance(chair, ChairIdentity) and chair.witness_adapter is not None:
