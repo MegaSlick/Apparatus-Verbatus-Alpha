@@ -381,23 +381,20 @@ class OperatorSurface:
             assessment = result.preview.assessment
             if assessment.balance_unobservable_triggered:
                 refusal_state = LaunchState.REFUSED_BALANCE_UNOBSERVABLE.value
-            elif assessment.hard_floor_triggered:
-                refusal_state = LaunchState.REFUSED_BALANCE_FLOOR.value
-            else:
-                refusal_state = LaunchState.REFUSED_CEILING.value
-            self._record_failure("launch", refusal_state, result.detail)
-            if adopt_pod_id is not None:
-                code = ErrorCode.ADOPTION_REFUSED
-            elif assessment.balance_unobservable_triggered:
                 code = ErrorCode.BALANCE_UNOBSERVABLE
             elif assessment.hard_floor_triggered:
+                refusal_state = LaunchState.REFUSED_BALANCE_FLOOR.value
                 code = ErrorCode.BALANCE_FLOOR_REACHED
             else:
+                refusal_state = LaunchState.REFUSED_CEILING.value
                 code = (
                     ErrorCode.SPEND_POLICY_REQUIRED
                     if not policy.configured
                     else ErrorCode.PAID_ACTION_REFUSED
                 )
+            self._record_failure("launch", refusal_state, result.detail)
+            if adopt_pod_id is not None:
+                code = ErrorCode.ADOPTION_REFUSED
             raise OperatorError(code, detail=result.detail)
         return prepared
 
@@ -1590,7 +1587,7 @@ class OperatorSurface:
         self.present(outcome.line())
 
     def _notify_spend(self, message: str) -> PodNotifyOutcome:
-        """Carry one spend warning through the operator's opted-in notifier."""
+        """Adapt the event-aware notifier without letting failure gate spend."""
 
         one_line = " ".join(message.split()) or "no spend-warning detail recorded"
         try:

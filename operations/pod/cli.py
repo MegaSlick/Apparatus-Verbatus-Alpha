@@ -212,8 +212,8 @@ def _notifier(enabled: bool) -> Notifier:
     """Off unless the operator asked for it on this invocation.
 
     The spend floor is enforced by the runtime; a warning is notification-only,
-    and `operations/notify`'s topic is a bearer secret, so nothing here reaches a
-    phone as a side effect of running a preview.
+    and `operations/notify`'s topic is a bearer secret. Without ``--notify``, a
+    preview never reaches a phone.
     """
 
     return shell_notifier() if enabled else silent

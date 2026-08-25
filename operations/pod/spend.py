@@ -296,14 +296,14 @@ class SpendAssessment:
         }
 
 
-def _one_line(detail: str | None, limit: int = 160) -> str:
+def _one_line(detail: str | None) -> str:
     """Collapse a provider error into one bounded line fit for a printed reason."""
 
     if not detail:
         return ""
     text = " ".join(str(detail).split())
-    if len(text) > limit:
-        text = f"{text[:limit]} (reason truncated at {limit} characters)"
+    if len(text) > 160:
+        text = f"{text[:160]} (reason truncated at 160 characters)"
     return text
 
 
@@ -390,10 +390,9 @@ def assess_spend(
     """Apply the same checks to an estimated create or an adopted pod's rate.
 
     ``balance_unavailable_detail`` names *why* the balance could not be read when
-    ``balance_observation`` is ``None``.  The refusal is the same either way -- an
-    unobservable balance is treated as below the floor -- but "we could not even
-    check the account" is only actionable if it says whether that was a timeout, a
-    missing configured source, or a response nobody could parse.
+    ``balance_observation`` is ``None``. Both cases fail closed, but an unobservable
+    balance remains distinct from an observed floor breach so the refusal can name
+    whether the source was missing, timed out, or returned an unusable response.
     """
 
     start = require_utc(now, "spend assessment now")
@@ -462,13 +461,8 @@ def assess_spend(
             elif available <= policy.account_balance_floor_usd:
                 reasons.append("observed account balance is at or below the hard floor")
             elif available - reserved_liability - total_cost <= policy.account_balance_floor_usd:
-                # The floor is a reserve that has to survive this run, not merely
-                # exist when it starts.  Nothing re-reads the balance once a pod is
-                # live -- the only gates are create and adopt -- so if this run's own
-                # maximum liability is not subtracted here, it is never subtracted at
-                # all, and an authorized run drains straight through the reserve that
-                # exists to keep the network volume alive while data is secured.
-                # `total_cost` is the run to its hard deadline: the conservative end.
+                # No balance gate runs after create/adopt, so the reserve must
+                # survive this action's maximum cost through its hard deadline.
                 reasons.append(
                     "other reserved paid-action liability plus the estimated cost of this "
                     "action would take the observed account balance to or below the hard floor"

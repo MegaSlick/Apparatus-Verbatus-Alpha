@@ -54,8 +54,7 @@ def _phraseless(preview: PaidActionPreview | None) -> PaidActionPreview | None:
     A refused confirmation is printed and logged, and the challenge it carries
     is still spendable -- a typo deliberately does not burn the preview.  The
     refusal report therefore must not carry a phrase that would authorize
-    anything, which is the policy `_reassess_actual_price` already states for
-    its own refusal.  The operator retypes from the preview they were shown.
+    anything. The operator retypes from the preview they were shown.
 
     On the returned preview the `confirmation_phrase` property raises rather
     than returning a string; callers rendering a refusal read `to_record()`,
@@ -864,7 +863,12 @@ class PodRuntime:
         path = self._spend_alert_stamp_path(action, subject)
         with self._alert_state_lock(path):
             state = self._load_spend_alert_state(path)
-            if not self._spend_alert_due(state):
+            due = state is None or state["active"] is False
+            if not due:
+                stamped = datetime.fromtimestamp(int(state["delivered_at"]), tz=timezone.utc)
+                age = (self.now() - stamped).total_seconds()
+                due = age < 0 or age >= SPEND_ALERT_DEBOUNCE_SECONDS
+            if not due:
                 if state is not None and state["safe_observations"]:
                     self._write_spend_alert_state(
                         path,
@@ -920,7 +924,7 @@ class PodRuntime:
             text = path.read_text(encoding="utf-8").strip()
         except (OSError, UnicodeDecodeError):
             return None
-        # Compatibility with the timestamp-only state written by the earlier seat.
+        # Existing state files may contain only the original Unix timestamp.
         if re.fullmatch(r"-?\d+", text):
             raw: object = {
                 "delivered_at": int(text),
@@ -955,16 +959,6 @@ class PodRuntime:
         except (OverflowError, OSError, ValueError):
             return None
         return raw
-
-    def _spend_alert_due(self, state: dict[str, object] | None) -> bool:
-        if state is None or state["active"] is False:
-            return True
-        try:
-            stamped = datetime.fromtimestamp(int(state["delivered_at"]), tz=timezone.utc)
-        except (OverflowError, OSError, TypeError, ValueError):
-            return True
-        age = (self.now() - stamped).total_seconds()
-        return age < 0 or age >= SPEND_ALERT_DEBOUNCE_SECONDS
 
     def _record_nonalert_balance(
         self, action: str, subject: str, assessment: SpendAssessment

@@ -1077,7 +1077,6 @@ def test_balance_warning_debounces_a_hovering_balance_across_previews(tmp_path: 
     assert result.state is LaunchState.PREVIEW
     assert len(warnings) == 1
 
-    # A later, independent preview inside the debounce window sends nothing new.
     suppressed = pod_runtime.preview_create(request(clock))
     assert len(warnings) == 1
     assert suppressed.preview is not None
@@ -1086,7 +1085,6 @@ def test_balance_warning_debounces_a_hovering_balance_across_previews(tmp_path: 
         "is still inside the debounce window).",
     )
 
-    # A still-hovering balance pages again once the debounce window elapses.
     clock.sleep(SPEND_ALERT_DEBOUNCE_SECONDS + 1)
     pod_runtime.preview_create(request(clock))
     assert len(warnings) == 2
@@ -1245,12 +1243,7 @@ def test_a_corrupted_or_out_of_range_spend_alert_stamp_never_crashes_the_preview
 
 
 def test_a_balance_exactly_at_the_hard_floor_refuses(tmp_path: Path) -> None:
-    """The floor is inclusive, and only a strictly-below case was pinned before.
-
-    A reserve that a balance may sit exactly on is one cent of arithmetic away
-    from being no reserve, and nothing else in the suite fixes which side of the
-    comparison the boundary falls on.
-    """
+    """The reserve survives only when the available balance is strictly above it."""
 
     clock = Clock()
     provider = fake(clock)
@@ -1623,9 +1616,7 @@ def test_safe_balance_without_an_alert_episode_writes_no_debounce_state(tmp_path
 
 
 def test_pod_shell_notifier_keeps_the_reason_notify_sh_printed() -> None:
-    """The script's own `NOT DELIVERED (reason)` line is the only thing that says
-    whether the topic is missing or ntfy refused the message; dropping it left the
-    caller with "did not confirm delivery" and nothing to act on."""
+    """The script's reason distinguishes a missing topic from an ntfy refusal."""
 
     def runner(command, **kwargs):  # type: ignore[no-untyped-def]
         del command, kwargs
@@ -1658,10 +1649,7 @@ def test_pod_shell_notifier_reports_a_timeout_and_a_refused_message_honestly() -
 
 
 def test_the_pod_cli_does_not_page_a_phone_unless_asked() -> None:
-    """Nothing reaches a phone as a side effect of running a preview: the flag is
-    the whole consent, and without it the seam stays switched off. Before this the
-    seam existed but no shipped caller ever wired it, so the ruling's
-    notification-only half could not arrive at all."""
+    """The flag is the consent boundary; without it the seam stays switched off."""
 
     assert cli._notifier(False) is silent
     assert cli._notifier(True) is not silent

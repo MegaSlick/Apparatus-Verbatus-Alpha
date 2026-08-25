@@ -25,11 +25,7 @@ class NotifyOutcome:
     detail: str
 
     def line(self) -> str:
-        """One printable line, in the same words the operator surface uses.
-
-        ``operations/notify/README.md``: "If a send fails, say so." A warning
-        that never reached the phone must not read like one that did.
-        """
+        """Distinguish failed delivery from a warning that reached the phone."""
 
         if not self.attempted:
             return f"Phone notification: not sent ({self.detail})."
@@ -53,7 +49,7 @@ def silent(message: str) -> NotifyOutcome:
 def shell_notifier(
     *, runner: Callable[..., subprocess.CompletedProcess] = subprocess.run
 ) -> Notifier:
-    """Use the existing notification script with its ordinary milestone event."""
+    """Use ``milestone`` because a spend warning requests no decision."""
 
     def notify(message: str) -> NotifyOutcome:
         if "\n" in message or not message.strip():
@@ -76,10 +72,8 @@ def shell_notifier(
             return NotifyOutcome(True, False, f"the notification command could not run: {error}")
         if result.returncode == 0:
             return NotifyOutcome(True, True, "delivered")
-        # notify.sh prints its own `NOT DELIVERED (reason)`; keeping only "did not
-        # confirm delivery" threw away the one line that says whether the topic is
-        # missing, the message was malformed, or ntfy refused it.  Bounded, and one
-        # line, because this is printed into a record.
+        # Preserve notify.sh's bounded one-line reason so the recorded failure
+        # distinguishes a missing topic, malformed message, and ntfy refusal.
         detail = " ".join((result.stderr or result.stdout or "no reason given").split())
         if len(detail) > 160:
             detail = f"{detail[:160]} (reason truncated at 160 characters)"

@@ -81,8 +81,6 @@ class FakeProvider:
         self._billing[capture.pod_id] = capture
 
     def set_account_balance(self, available_usd: Decimal | str) -> None:
-        """Set the fake's observed available balance for a spend-floor drill."""
-
         self._account_balance_usd = as_decimal(available_usd, "fake available account balance")
 
     def observe_account_balance(self) -> AccountBalanceObservation:
