@@ -1,4 +1,4 @@
-"""Non-tautological refusals for Unit 10B's derived witness waist."""
+"""Derived witness facts remain closed, integer, and presentation-bound."""
 
 import copy
 from io import BytesIO
@@ -167,9 +167,7 @@ def test_a_confusable_field_name_is_an_unknown_field_not_the_field_it_resembles(
 
 
 def test_a_preference_key_nested_deep_inside_a_transform_is_still_refused():
-    """`_refuse_preference` is reused verbatim from the corpus register and is
-    recursive; nothing tested that at depth, and a preference claim buried in a
-    sub-object is exactly where one would survive a top-level-only check."""
+    """A nested preference claim must not survive top-level schema closure."""
     value = payload()
     value["presented"]["transform"]["bounds"] = {
         "x": 0,

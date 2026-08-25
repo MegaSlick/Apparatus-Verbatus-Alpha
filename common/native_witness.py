@@ -16,18 +16,10 @@ from common.corpus_register import _refuse_preference
 from common.imaging import crop_png
 
 PRESENTATION_KINDS: Final = frozenset({"page", "region", "adapter-crop"})
-# `native`  — geometry the witness itself reported.
-# `derived` — geometry this pipeline computed from what the witness reported.
-# `presented` — NOT witness geometry at all: a restatement of the box that was
-#   presented, recorded for a witness whose response carries no geometry.  It
-#   says "this report pertains to this image", never "the witness saw ink here",
-#   so no coverage derivation may read it as observed ink.  A whole-page
-#   presentation restated this way would otherwise contain every proposal on the
-#   page and hand a chair with no geometry at all complete witness coverage --
-#   a measurement that measured nothing (GOVERNANCE 10).  Unit 10C owns that
-#   derivation and must exclude this value from it.
+# `native` and `derived` are reported-ink evidence. `presented` only associates
+# a geometry-free response with its input image; treating it as observed ink
+# would give complete coverage to a witness that reported no geometry.
 BOUNDS_SOURCES: Final = frozenset({"native", "derived", "presented"})
-# The two values above that are evidence of ink a witness actually reported.
 REPORTED_BOUNDS_SOURCES: Final = frozenset({"native", "derived"})
 _BOUNDS_FIELDS: Final = frozenset({"x", "y", "w", "h"})
 PAGE_TESTIMONIUM_REQUIRED_FIELDS: Final = frozenset(
@@ -152,15 +144,9 @@ def validate_observed(
 ) -> list[dict[str, Any]]:
     """Validate dense witness order, source-page boxes, and non-overlapping text spans.
 
-    A span addresses **this Testimonium's own retained text**, in code points of
-    the string exactly as retained -- not of the NFC-normalized, whitespace-
-    collapsed view `common/alignment.py` derives, whose offsets are recoverable
-    from that view's own `offset_map`. A span was previously checked only for
-    shape, so `{"start": 0, "end": 10_000}` over a forty-character reading
-    validated and addressed text no record holds: a consumer resolving it either
-    crashes or silently truncates, and a witness's report would then be quoted
-    from ink nobody retained (GOALS 5). An observation may still carry
-    `span: null`; what it may not do is name an offset the record cannot answer.
+    A span addresses this Testimonium's exact retained string in code points,
+    never the normalized alignment view. It may be null, but it may not name an
+    offset the record cannot answer (GOALS 5).
     """
     if not isinstance(value, list):
         raise SchemaRefusal("a Testimonium observed block is not a list")
@@ -222,7 +208,8 @@ def validate_observed(
                     "a Testimonium observed span runs past the end of its own retained text"
                 )
             spans.append((span["start"], span["end"]))
-    for previous, current in zip(sorted(spans), sorted(spans)[1:], strict=False):
+    ordered_spans = sorted(spans)
+    for previous, current in zip(ordered_spans, ordered_spans[1:], strict=False):
         if current[0] < previous[1]:
             raise SchemaRefusal("a Testimonium observed spans overlap")
     _refuse_float(value, "a Testimonium observed block")
@@ -250,9 +237,7 @@ def validate_native_witness_geometry(
             raise SchemaRefusal("an unpresented Testimonium must carry an empty observed block")
         return payload
     presented = validate_presented(presented, page_size=page_size)
-    # The retained text a span may address lives under `payload` on both kinds:
-    # `page_testimonium_payload` builds through `testimonium_payload`, so the
-    # page-scoped record stores its joined reading in the same field.
+    # Both Testimonium kinds retain the exact span-addressable text in `payload`.
     validate_observed(
         observed,
         presented=presented,
@@ -353,13 +338,10 @@ def unpresented_region_ids(
 ) -> list[str]:
     """Re-derive which bound proposal crops fall outside one presented image.
 
-    The empty presentation is the separately recorded state "no image was
-    presented", so its list is inapplicable and therefore empty.  For a real
-    presentation, a proposal is expressible by this record's page-space geometry
-    exactly when it lies wholly inside the presented page-space bounds.  This one
-    derivation works for region, page, and adapter-crop presentations and prevents
-    an adapter that changes presentation kind from making the writer understate
-    the limit before either read-back seam sees it.
+    The list is inapplicable to an empty presentation. For a real presentation,
+    a proposal is expressible by this record exactly when it lies wholly inside
+    the presentation's page-space bounds; changing presentation kind must not
+    change that disclosure rule.
     """
     if presented == {}:
         return []
@@ -412,10 +394,8 @@ def validate_page_testimonium_payload(payload: Any) -> dict[str, Any]:
     return validate_native_witness_geometry(payload)
 
 
-# A declared, deliberately UNMEASURED routing rule.  Unit 10 records only the
-# unambiguous zero-overlap case; calibrating a near-overlap threshold would be a
-# measurement claim GOVERNANCE 10 does not permit until something has actually
-# been measured.
+# Only zero overlap is declared: calibrating a near-overlap threshold without a
+# measurement would violate GOVERNANCE 10.
 UNROUTED_OBSERVATION_OVERLAP: Final = {"rule": "positive-area", "status": "unmeasured"}
 
 
@@ -431,19 +411,11 @@ def unrouted_observations(
     It gives the Recensor's bounded fallback-recrop route the only legal next
     step; it never turns an observation into an act or moves an attempt ordinal.
 
-    **The denominator is every sealed proposal on the presented page, not the
-    reading act's own proposals.** Scoped to one act, a witness box belonging to
-    the act *next to it* on the same page reads as unaccounted ink -- on a real
-    page of twelve acts, eleven false findings per box, each one an invitation to
-    spend a recovery unit on ink the Designator already marked out. The question
-    this rule asks is GOALS 1's: did a witness report ink the partition never
-    claimed? That question is page-scoped.
+    The denominator is every sealed proposal on the presented page, not one
+    act's proposals; otherwise a neighboring act's ink becomes a false finding.
 
-    **Only reported geometry counts.** A `bounds_source: "presented"` box is this
-    pipeline restating the image it presented, not the witness reporting ink (see
-    `BOUNDS_SOURCES`). Routing one would let a whole-page presentation on a page
-    with no proposals at all produce a finding about ink no witness ever claimed
-    to see.
+    Only reported geometry counts. A `bounds_source: "presented"` box restates
+    the input image and must not create a finding about ink no witness reported.
     """
     prior_findings = prior_findings or set()
     proposal_boxes = [

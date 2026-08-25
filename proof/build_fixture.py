@@ -145,19 +145,8 @@ CHANDRA_ANCHORS = (
     },
 )
 
-# Native witness geometry is deliberately not the Designator's proposal.  This
-# is a marginal observation, outside EVERY proposal box on its page, so the
-# intake path can prove it routes a coverage finding instead of silently forcing
-# it into an act.  The overlap threshold is intentionally unmeasured; this
-# fixture only exercises the declared no-overlap case.
-#
-# Page 1 is 200x260 and both of its proposal crops span x 12..200 (y 15..114 and
-# y 114..238).  The box below sits in the left margin, clear of both in x.  Its
-# first shape, x 0..20 by y 230..250, overlapped act a2's crop by eight pixels
-# of x and eight of y: unaccounted ink for a1's own regions, ALREADY PROPOSED as
-# far as the page is concerned.  A per-act denominator called that a finding; a
-# page-scoped one does not, and the stimulus has to be genuinely unproposed for
-# the fixture to exercise the rule at all.
+# Page 1's proposals both begin at x=12. This left-margin box is therefore the
+# unambiguous zero-overlap stimulus required by the deliberately unmeasured rule.
 NATIVE_OBSERVATIONS = (
     {"chair": "attestator_1", "page_ordinal": 1, "x": 0, "y": 200, "w": 10, "h": 40},
 )

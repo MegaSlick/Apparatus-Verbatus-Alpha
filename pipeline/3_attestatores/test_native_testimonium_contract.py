@@ -1,4 +1,4 @@
-"""Writer-side closure and reread rule tests for the native intake contract."""
+"""Writer and read-back seams enforce the same closed native intake contract."""
 
 import copy
 import importlib.util
@@ -150,10 +150,7 @@ class _Context:
 
 
 def test_a_resealed_tally_record_cannot_retroactively_claim_a_recovery_crop(tmp_path):
-    """The same wall `pipeline/4_perlector/run.py::validate_testimonium_regions`
-    enforces must also hold at the writer/tally seam
-    (`validate_testimonium_presentation`), which is the validator this slice
-    added and which a Testimonium's own tally read-back actually calls."""
+    """Writer and consumer seams both exclude recovery crops from witness basis."""
     result = subprocess.run(
         [
             sys.executable,
@@ -255,12 +252,7 @@ def _happy_run(tmp_path, run_id):
 
 
 def test_a_continuation_act_states_which_of_its_crops_the_derived_layer_omits(tmp_path):
-    """0C ruled a continuation's second page is evidence. Its crop is bound by
-    digest in `regions`/`inputs`, but `presented` binds one image recipe and
-    `observed` boxes live in that one page's pixel space, so the far-side ink has
-    no derived geometry in this record and cannot acquire any. Every chair's
-    Testimonium for the continuation act therefore names the crop its
-    presentation does not speak for, live in the pinned happy run."""
+    """One page-space presentation must name a continuation crop it cannot describe."""
     tree = _happy_run(tmp_path, "continuation-scope")
     regions = [
         tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
@@ -287,9 +279,7 @@ def test_a_continuation_act_states_which_of_its_crops_the_derived_layer_omits(tm
 
 
 def test_page_native_geometry_is_not_copied_into_region_compatibility_records(tmp_path):
-    """The fixture's native observation belongs to one page-scoped report. Copying
-    it into each act compatibility record put the same box outside both recorded
-    region presentations and emitted three findings for one witness observation."""
+    """A page observation belongs only to the page-scoped report that presented it."""
     tree = _happy_run(tmp_path, "native-page-scope")
     native = []
     for entry in tree.build_manifest(ATTESTATORES)["artifacts"]:
@@ -313,10 +303,7 @@ def test_page_native_geometry_is_not_copied_into_region_compatibility_records(tm
 
 
 def test_a_page_presentation_naming_another_page_s_blob_is_refused_at_the_tally_seam(tmp_path):
-    """The wall wired into `validate_testimonium_presentation`: a self-consistent
-    record whose presented blob is a real, digest-bound sealed page -- the wrong
-    one. Its boxes would be validated against the page it names and read as that
-    page's geometry."""
+    """A real digest-bound page blob cannot stand in for a different named page."""
     tree = _happy_run(tmp_path, "page-blob-forgery")
     context = _Context(tree)
     pages = [
@@ -356,10 +343,7 @@ def test_a_page_presentation_naming_another_page_s_blob_is_refused_at_the_tally_
 
 def test_a_page_witness_shown_pixels_carries_the_serving_moment_that_produced_them(tmp_path):
     """One record may not say both "I was shown this image" and "no serving
-    happened". The review fixture has the case live: attestator_3's page-2
-    Testimonium, whose sole contributing act fails for that chair, is attempted
-    (Sonnet's finding 1) and so must carry a receipt (GOVERNANCE 6), exactly as
-    the act arm and the Armarium's own read-back already require."""
+    happened"; attempted testimony must carry its receipt (GOVERNANCE 6)."""
     result = subprocess.run(
         [
             sys.executable,
@@ -433,10 +417,7 @@ def test_a_never_presented_page_witness_is_not_run_and_carries_no_receipt(tmp_pa
 
 
 def test_a_region_ref_naming_no_sealed_designator_region_is_refused(tmp_path):
-    """The branch Sonnet named as logically sound but untested: a presentation
-    whose `region_id` matches nothing sealed. Everything else about the record
-    stays true, including its digest-bound pixels, so nothing but this lookup
-    stands between a forged region identity and a witness basis."""
+    """Digest-bound pixels cannot supply a forged region identity."""
     tree = _happy_run(tmp_path, "unknown-region-ref")
     context = _Context(tree)
     testimony = next(
@@ -452,7 +433,7 @@ def test_a_region_ref_naming_no_sealed_designator_region_is_refused(tmp_path):
 
 
 def test_a_region_ref_matching_two_manifest_rows_is_not_treated_as_unique(tmp_path, monkeypatch):
-    """Exercise the other arm of the same physical-identity lookup refusal."""
+    """A region identity must resolve to exactly one sealed manifest row."""
     tree = _happy_run(tmp_path, "duplicate-region-ref")
     context = _Context(tree)
     testimony = next(
@@ -482,11 +463,7 @@ def test_a_region_ref_matching_two_manifest_rows_is_not_treated_as_unique(tmp_pa
 
 
 def test_a_declared_quantization_rule_has_nowhere_to_ride_in_this_contract():
-    """Consult §3 puts declared quantization in the ADAPTER, beside the raw
-    digest, never in the derived waist -- so a Testimonium cannot declare a
-    quantization rule at all, and the "declared in one arm, applied in the other"
-    forgery has no field to inhabit. Executable rather than asserted: the closed
-    schemas refuse the key at the payload, the presentation, and the observation."""
+    """Quantization belongs beside native adapter data, never in derived facts."""
     for mutate in (
         lambda payload: payload.update({"quantization": "round-half-up"}),
         lambda payload: payload["presented"].update({"quantization": "round-half-up"}),

@@ -161,9 +161,7 @@ def region_references(regions: list[dict]) -> list[dict[str, str]]:
     ]
 
 
-def region_inputs(
-    context, regions: list[dict], presented: dict[str, Any] | None = None
-) -> list[dict[str, str]]:
+def region_inputs(context, regions: list[dict], presented: dict[str, Any]) -> list[dict[str, str]]:
     """Bind every proposal crop and the exact presentation, each distinct blob once."""
     inputs = {}
     for record in regions:
@@ -267,15 +265,6 @@ def native_observed_for(
     return [{"ordinal": 0, "bounds": bounds, "bounds_source": "native", "span": None}]
 
 
-def _sealed_source_page(
-    context, presented: dict[str, Any]
-) -> tuple[dict[str, Any], tuple[int, int]]:
-    """The sealed Exemplar page a presentation names, and its decoded size."""
-    page_id = presented["source_page_id"]
-    page = context.tree.read_artifact(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", page_id))
-    return page, dimensions(context.tree.read_bytes(page["payload"]["image_path"]))
-
-
 def validate_testimonium_presentation(context, record: dict[str, Any]) -> None:
     """Re-derive the presentation's sealed page, blob binding, and region wall."""
     payload = record["payload"]
@@ -285,8 +274,13 @@ def validate_testimonium_presentation(context, record: dict[str, Any]) -> None:
         if record.get("inputs") != []:
             raise SchemaRefusal("an unpresented Testimonium carries image inputs")
         return
-    page, page_size = _sealed_source_page(context, presented)
+    page = context.tree.read_artifact(
+        EXEMPLAR,
+        "page",
+        artifact_id(EXEMPLAR, "page", presented["source_page_id"]),
+    )
     page_bytes = context.tree.read_bytes(page["payload"]["image_path"])
+    page_size = dimensions(page_bytes)
     validate_native_witness_geometry(payload, page_size=page_size)
     validate_presented_page_binding(
         presented,
@@ -828,11 +822,8 @@ def testimonium_payload(
     if reason is not None:
         record["reason"] = reason
 
-    # Temporary consumer bridge: Perlector's current skeleton input contract only
-    # accepts a textual `reported` field. It is a projection of a *textual native
-    # payload*, never a self-report, and structured native payloads deliberately
-    # receive no coerced text substitute. The bridge can be deleted only by the
-    # Perlector owner when its consumer reads `payload` natively.
+    # `reported` is only a compatibility projection of textual native payloads;
+    # structured payloads must not acquire coerced substitute text.
     if outcome in WITNESS_READING_OUTCOMES and isinstance(native_payload, str):
         record["reported"] = native_payload
     return validate_testimonium_payload(record)
@@ -1264,10 +1255,8 @@ def validate_tallied_testimonium(
             raise SchemaRefusal(
                 "a Testimonium tally record does not bind exactly the proposal regions and inputs"
             )
-        # Every bound crop the one presented image does not speak for, named
-        # rather than left to be inferred from the difference between two other
-        # fields. Re-derived here from the sealed regions, so a record cannot
-        # understate its own limit any more than it can overstate its coverage.
+        # Re-derive the explicit limit from sealed regions so it cannot understate
+        # which bound crops the one presented image does not speak for.
         if payload["unpresented_regions"] != unpresented_region_ids(payload["presented"], regions):
             raise SchemaRefusal(
                 "a Testimonium tally record does not name exactly the bound regions its "
@@ -1669,36 +1658,22 @@ def publish_attempt(
     # roster cannot be allowed to seal an otherwise plausible record first.
     page_witness_chairs = declared_page_witness_chairs(context)
     attempted = attempt.outcome in ATTEMPTED_WITNESS_OUTCOMES
-    # `regions` may carry a continuation's second-page crop after `regions[0]`
-    # (`proposed_regions` returns every origin=="proposal" region for this act,
-    # sorted by attempt_ordinal, so index 0 is always the primary crop). The
-    # narrow-waist `presented` block binds ONE image recipe by this unit's own
-    # design (consult §4.1), and `observed` boxes are in the pixel space of that
-    # one page -- so a continuation's far-side ink cannot be expressed in this
-    # record's derived layer at all, whatever it contains.
-    #
-    # `payload["regions"]`/`record.inputs` still bind both crops by digest, so no
-    # blob or provenance is lost (invariant 3 holds). What would be lost is the
-    # LIMIT: a reader of `presented`/`observed` alone sees a complete-looking
-    # derived layer and no statement that it speaks for one of two crops. 0C
-    # ruled a continuation's second page is evidence; a record that quietly means
-    # "first page only" is the partial result invariant 6 refuses to let look
-    # whole. `unpresented_regions` states the delta, and both the tally and the
-    # Perlector re-derive it, so 10C's geometric `witness_covered` has a
-    # mechanical fact to consult instead of a comment to remember. Combining two
-    # frames' readings of one act stays Unit 19's job.
+    # One presentation has one page-pixel space. Continuation crops remain bound
+    # in `regions`/`inputs`, while `unpresented_regions` explicitly prevents the
+    # derived geometry from looking complete across pages it cannot describe.
     presented = presentation_for_region(regions[0]) if attempted else {}
-    if attempted and isinstance(resolved, ChairIdentity):
-        presented = witness_adapters.resolve_runnable_adapter(resolved.witness_adapter).present(
-            context, presented
-        )
-    unpresented_regions = unpresented_region_ids(presented, regions) if attempted else []
+    adapter = (
+        witness_adapters.resolve_runnable_adapter(resolved.witness_adapter)
+        if attempted and isinstance(resolved, ChairIdentity)
+        else None
+    )
+    if adapter is not None:
+        presented = adapter.present(context, presented)
+    unpresented_regions = unpresented_region_ids(presented, regions)
     if not presented:
         observed: list[dict[str, Any]] = []
-    elif isinstance(resolved, ChairIdentity):
-        observed = witness_adapters.resolve_runnable_adapter(resolved.witness_adapter).observe(
-            presented, attempt.native_payload
-        )
+    elif adapter is not None:
+        observed = adapter.observe(presented, attempt.native_payload)
     else:
         observed = observed_from_presentation(presented)
     payload = testimonium_payload(
@@ -2064,13 +2039,14 @@ def publish_page_testimonia_and_attachments(
             health = content_health(native_payload, completed=reading)
             resolved = context.registry.resolve(chair)
             presented = presentation_for_page(context, page_ordinal) if attempted_page else {}
-            if attempted_page and isinstance(resolved, ChairIdentity):
-                presented = witness_adapters.resolve_runnable_adapter(
-                    resolved.witness_adapter
-                ).present(context, presented)
-            unpresented_regions = (
-                unpresented_region_ids(presented, page_proposal_regions) if attempted_page else []
+            adapter = (
+                witness_adapters.resolve_runnable_adapter(resolved.witness_adapter)
+                if attempted_page and isinstance(resolved, ChairIdentity)
+                else None
             )
+            if adapter is not None:
+                presented = adapter.present(context, presented)
+            unpresented_regions = unpresented_region_ids(presented, page_proposal_regions)
             page_attempt = attempt_id(page_subject, f"read:{chair}", ordinal)
             roles = {
                 "primary" if act["page_ordinal"] == page_ordinal else "continuation"
@@ -2086,16 +2062,11 @@ def publish_page_testimonia_and_attachments(
                 observed = native_observed_for(
                     context, chair=chair, page_ordinal=page_ordinal, presented=presented
                 )
-            elif isinstance(resolved, ChairIdentity):
-                observed = witness_adapters.resolve_runnable_adapter(
-                    resolved.witness_adapter
-                ).observe(presented, native_payload)
+            elif adapter is not None:
+                observed = adapter.observe(presented, native_payload)
             else:
-                # Mirrors the act arm exactly. An absent chair always resolves
-                # to `dead_attempt`, so `attempted_page` cannot be true for one
-                # today; reaching an absent chair's non-existent adapter through
-                # an AttributeError rather than this stage's own vocabulary is
-                # not the way that invariant should be discovered if it breaks.
+                # An absent chair normally cannot be attempted; keep its fallback
+                # inside the stage vocabulary if that invariant is ever violated.
                 observed = observed_from_presentation(presented)
             payload = page_testimonium_payload(
                 page_ordinal=page_ordinal,
@@ -2105,16 +2076,8 @@ def publish_page_testimonia_and_attachments(
                 act_key=f"page-{page_ordinal}",
                 ordinal=ordinal,
                 regions=[],
-                # `attempted_page`, not `reading`, for the same reason `presented`
-                # uses it: a page chair invoked on every act that returned nothing
-                # usable was served, and GOVERNANCE 6 binds the serving moment to
-                # the record produced from it. Gated on `reading`, this record
-                # said in one breath that it was shown an image and that no
-                # serving happened -- and the act arm (`publish_attempt`) and the
-                # Armarium's own read-back (`require_receipt=outcome in
-                # ATTEMPTED_WITNESS_OUTCOMES`) had already settled which of the
-                # two is right. Nothing validates page-scope provenance today,
-                # which is why the contradiction was silent rather than refused.
+                # A failed response was still served; presentation and receipt
+                # therefore share the attempted gate rather than the reading gate.
                 provenance=provenance_for(context, resolved, attempted=attempted_page),
                 format_capabilities=DEFAULT_FORMAT_CAPABILITIES,
                 native_payload=native_payload if reading else None,

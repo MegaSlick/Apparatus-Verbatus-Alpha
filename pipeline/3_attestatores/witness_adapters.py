@@ -1,42 +1,18 @@
 """Runnable native witness adapters, private to Attestatores.
 
-The shared registry in :mod:`common.witness_adapters` declares only names and
-scopes. These callables cross the native model boundary and must therefore
-remain in this stage, loaded as a sibling module rather than through an
-importable ``pipeline`` package.
+The shared registry declares names and scopes only; native-boundary callables
+remain stage-local. Names resolve exactly with no fallback. ``prompt``,
+``parse``, and ``retain`` own native transport, while ``present`` and ``observe``
+own derived intake facts and may not be merged with those transport seams.
 
-Unit 10A established the exact-name, no-fallback registry and its native
-``prompt``/``parse``/``retain`` boundary. Unit 10B completes consult section
-4.5's derived intake shape with ``present`` and ``observe``. A prompt constant
-still does not present an image, retention is still not a derived observation,
-and the five operations remain distinct.
+``witness_scope`` is invocation granularity, not an image or coverage claim.
+Presentation kinds remain page, region, and adapter-crop. Churro has no native
+layout, so its observation is only a ``bounds_source='presented'`` association,
+which routing and coverage must exclude.
 
-Later units may rely on this boundary:
-
-* adapter names resolve exactly, with no default, near match, preference, or
-  callable outside this Attestatores-local registry;
-* ``witness_scope`` is the occupant's invocation granularity, closed to
-  ``page`` or ``act`` and sealed in its identity; it says nothing about image
-  kind, geometry, region identity, or coverage;
-* ``present(context, presentation)`` validates the closed ``presented`` block
-  with run-tree access for an adapter-owned crop, while
-  ``observe(presentation, native_payload)`` derives the closed ``observed``
-  entries from that exact image/response pair. Presentation kinds remain
-  ``page``, ``region``, and ``adapter-crop``: an adapter crop is a page-scoped
-  occupant's own subdivision, not a third witness scope;
-* the Churro fixture adapter preserves its input presentation and returns only a
-  ``bounds_source='presented'`` echo because its native payload has no layout.
-  That source is explicitly excluded from routing and coverage; no geometry is
-  fabricated from the presentation itself;
-* a new adapter must move the shared declared-name set, this local mapping, and
-  any native parser/retention dispatch in :mod:`feeding` together. A failure
-  while importing any callable binding propagates before ``main`` opens a run;
-  there is no fallback adapter.
-
-These statements are the Unit 10B registry handoff. A later adapter may add a
-new implementation behind the same five roles, but may not merge ``present``
-with ``prompt`` or ``observe`` with ``retain`` and mistake native transport for
-the derived intake contract.
+A new adapter must update the shared declared-name set, this mapping, and any
+native parser/retention dispatch together; import or resolution failure has no
+fallback path.
 """
 
 from __future__ import annotations
@@ -53,7 +29,7 @@ from common.witness_adapters import AdapterRefusal, resolve_witness_adapter_name
 
 @dataclass(frozen=True, slots=True)
 class RunnableAdapter:
-    """The native-boundary operations one local adapter supplies today.
+    """The five distinct operations every local adapter supplies.
 
     The slots are named for what they actually bind. ``prompt`` returns the
     request framing the occupant was trained on; ``parse`` turns one native
@@ -80,23 +56,21 @@ def _present(context: Any, presentation: dict[str, Any]) -> dict[str, Any]:
     context to publish and bind those derived bytes; omitting it here would make
     the declared ``adapter-crop`` kind impossible to produce through this seam.
     """
-    _ = context
     validate_presented(presentation)
     return presentation
 
 
 def _observe(presentation: dict[str, Any], native_payload: Any) -> list[dict[str, Any]]:
-    """Derive Churro's no-layout fallback beside the response it inspected."""
+    """Derive Churro's no-layout fallback beside the response it inspected.
+
+    The shared adapter signature includes the native response because adapters
+    with native layout must derive geometry from it; Churro has no such layout.
+    """
     validate_presented(presentation)
-    presented = presentation
-    # Churro's retained text has no native geometry to extract. Keeping the
-    # response in this callable's required signature prevents a later layout
-    # adapter from being wired to an interface that cannot inspect its own output.
-    _ = native_payload
     return [
         {
             "ordinal": 0,
-            "bounds": dict(presented["transform"]["bounds"]),
+            "bounds": dict(presentation["transform"]["bounds"]),
             "bounds_source": "presented",
             "span": None,
         }

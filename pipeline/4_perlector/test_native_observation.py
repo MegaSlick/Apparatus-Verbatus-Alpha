@@ -1,4 +1,4 @@
-"""Unit 10B's non-authoritative geometry routing check."""
+"""Witness geometry may flag unproposed ink but cannot establish act coverage."""
 
 import importlib.util
 from pathlib import Path

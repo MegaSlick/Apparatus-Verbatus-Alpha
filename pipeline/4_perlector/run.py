@@ -250,20 +250,6 @@ def _region_reference(region: dict) -> dict[str, str]:
     }
 
 
-def _testimonium_inputs(
-    context, regions: list[dict], presented: dict[str, Any] | None = None
-) -> list[dict[str, str]]:
-    """The proposal crops and exact presentation a witness attempt must bind."""
-    inputs = {}
-    for region in regions:
-        reference = context.input_ref(region["payload"]["image_path"])
-        inputs[reference["relative_path"]] = reference
-    if presented:
-        reference = context.input_ref(presented["image_path"])
-        inputs[reference["relative_path"]] = reference
-    return sorted(inputs.values(), key=lambda item: (item["relative_path"], item["sha256"]))
-
-
 def validate_testimonium_regions(context, record: dict, proposal_regions: list[dict]) -> None:
     """Validate native presentation, rather than the retired shared-crop premise."""
     payload = record["payload"]
@@ -313,13 +299,17 @@ def validate_testimonium_regions(context, record: dict, proposal_regions: list[d
         page_size=page_size,
         page_bytes=page_bytes,
     )
-    expected_inputs = _testimonium_inputs(context, proposal_regions, presented)
-    # The record's own statement of which bound crops its one presented image
-    # does NOT speak for -- re-derived for every presentation kind rather than
-    # trusted. A region, whole page, or executable adapter crop can each contain
-    # a different subset, but all observed boxes still live in this one page's
-    # pixel space. The far-side crop of a continuation therefore remains explicit
-    # and no presentation-kind switch can understate the record's limit.
+    inputs = {}
+    for region in proposal_regions:
+        reference = context.input_ref(region["payload"]["image_path"])
+        inputs[reference["relative_path"]] = reference
+    reference = context.input_ref(presented["image_path"])
+    inputs[reference["relative_path"]] = reference
+    expected_inputs = sorted(
+        inputs.values(), key=lambda item: (item["relative_path"], item["sha256"])
+    )
+    # Re-derive the explicit limit for every presentation kind so a kind change
+    # cannot understate which bound crops its one page-space image omits.
     if unpresented != unpresented_region_ids(presented, proposal_regions):
         raise SchemaRefusal(
             "a Testimonium does not name exactly the bound proposal regions its presentation "
@@ -447,23 +437,14 @@ def validate_page_testimonium_record(
 
 
 def sealed_proposal_regions(context) -> list[dict]:
-    """Every sealed Designator proposal region in the run, walked once.
-
-    The routing denominator for `unrouted_observations`, which asks whether a
-    witness reported ink NO proposal accounts for. That question is page-scoped,
-    so the answer may not be assembled from one act's own regions. Each region
-    here is validated in full by `regions_of` when its own act is read; this
-    walk needs their sealed geometry and origin, not a second provenance pass.
-    """
+    """Every verified proposal in the run-wide routing denominator."""
     regions = []
     for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]:
         if entry["kind"] != "region":
             continue
         record = context.tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
-        # Preserve the shared recovery-denominator refusal before the more
-        # general crop-lineage verifier names the same forged origin. This walk
-        # now consumes every region's geometry, so it must also ask the one
-        # common origin vocabulary rather than grow a fourth spelling of it.
+        # Keep the origin-specific refusal ahead of the general lineage refusal;
+        # callers rely on the shared recovery-denominator vocabulary.
         recovery_region_count(record.get("subject_id", "unidentified act"), [record])
         validate_serving_provenance(
             context,
@@ -737,14 +718,8 @@ def act_attachment_view(
             )
             page_payload = testimonium.get("payload")
             validate_page_testimonium_record(context, testimonium, all_proposal_regions)
-            # Collected for the caller's routing sweep rather than examined here:
-            # a page Testimonium belongs to a (page, chair) pair, not to this act,
-            # so its observations must be judged once per run and not once per act
-            # that happens to sit on the page. This is the only digest-checked read
-            # of these records the Perlector makes, which is why the sink hangs
-            # here instead of a second walk of the Attestatores manifest -- a
-            # second walk would need its own current-attempt collapse and would be
-            # the third mirror of the Recensor's (see `current_page_testimonia`).
+            # Page observations are judged once per (page, chair), not once per
+            # act on that page; collect them at this digest-checked read seam.
             if page_testimonia_seen is not None and isinstance(page_payload, dict):
                 page_testimonia_seen[testimonium["artifact_id"]] = testimonium
             unjoined = (
@@ -2200,12 +2175,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             page_testimonia_seen=page_testimonia,
             all_proposal_regions=all_proposal_regions,
         )
-        # Both scopes, against every sealed proposal in the run. The page-scoped
-        # records were excluded before, which under the production roster is two
-        # witnesses of three (consult §4.7.10): the rule that exists to catch ink
-        # nobody proposed was reading only the act-scoped chair. `reported_unrouted`
-        # is the run's real dedup state, so one page Testimonium's observation is
-        # named once and not once per act on its page.
+        # Both witness scopes use the run-wide proposal denominator. Deduplicate
+        # page testimony so an observation is named once, not once per act.
         unrouted = unrouted_observations(
             testimonia + list(page_testimonia.values()),
             all_proposal_regions,
@@ -2213,14 +2184,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         )
         for finding in unrouted:
             reported_unrouted.add((finding["testimonium_id"], finding["ordinal"]))
-            # Named on stderr before this stage seals, never silently normalized
-            # into the closest act. The Recensor remains the sole stage that can
-            # spend a recovery unit -- and, today, the only stage that could
-            # consume this finding cannot yet see it: nothing retains it in the
-            # run tree. Unit 10C owns that terminus (consult §4.4's
-            # `partition_disagreement.unclaimed_observations` on the page
-            # Testimonium, which `pipeline/5_recensor/run.py::current_page_testimonia`
-            # already reads). Until then this is a report, not a routed finding.
+            # This pass is diagnostic only: record shapes are fixed, and only
+            # the Recensor may initiate recovery, so the finding remains stderr.
             print(f"non-fatal finding: {finding}", file=sys.stderr)
 
         # Which regions any witness actually saw. Ink uncovered by a recovery
