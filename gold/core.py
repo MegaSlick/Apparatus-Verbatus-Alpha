@@ -54,9 +54,8 @@ BYTE_ORDER_MARK = "\ufeff"
 SETS = frozenset({"calibration", "locked-acceptance"})
 REGION_KINDS = frozenset({"act", "non-act-text", "occlusion", "true-blank"})
 
-# What a filesystem that will not hard-link answers with. Named so `write_append_only`
-# can say which setup fact is wrong instead of letting a bare OSError about `link`
-# escape as a traceback (mirrors common/runtree/store.py's `_atomic_create`).
+# These errors mean atomic publication by hard link is unavailable; other OS errors
+# retain their native diagnostics because they do not establish that constraint.
 _NO_HARD_LINKS = frozenset({errno.EPERM, errno.EOPNOTSUPP, errno.ENOSYS})
 
 
@@ -88,10 +87,9 @@ def _refuse_json_float(literal: str) -> Any:
     `TypeError` raised from inside `self_hash`, and some validators reach the
     self-hash before they reach the field: a layout region with `"x": 1.5`
     escaped `python -m gold.cli validate` as a traceback and exit 1 rather than
-    a named refusal and exit 2, which is the defect F-O8 and F-S5 were opened
-    for. Refused at the door instead, where the file that carries it can be
-    named. `parse_constant` covers `NaN` and `Infinity`, which json accepts by
-    default and which are floats by another spelling.
+    a named refusal and exit 2. Refusing it at the door lets the error name the
+    file that carries it. `parse_constant` covers `NaN` and `Infinity`, which
+    json accepts by default and which are floats by another spelling.
     """
     raise SchemaRefusal(
         f"a gold record carries integers, not the float {literal}; a float's JSON form "
@@ -111,8 +109,8 @@ def read_json(path: str | Path) -> Any:
     json's scanner recurses per nesting level, and `_records_in` reads every
     `*.json` in a directory, so one deeply nested file was enough to end
     `validate-corpus` or `verify-sampling` in a traceback rather than a named
-    refusal naming it. `common/runtree/store.py::_read_json` settled the
-    convention; the depth it fires at is the scanner's own and is not pinned here.
+    refusal naming it. The depth it fires at is the scanner's own and is not
+    pinned here.
     """
     try:
         return json.loads(
@@ -140,7 +138,9 @@ def read_transcription_text(path: str | Path) -> str:
     return text[:-1] if text.endswith("\n") else text
 
 
-def _frame_from_run(run: dict[str, Any]) -> tuple[dict[str, str], list[dict[str, Any]]]:
+def load_run_frame(path: str | Path) -> tuple[dict[str, str], list[dict[str, Any]]]:
+    """Read the source authority and reject a forged derived frame record."""
+    run = read_json(path)
     _refuse(not isinstance(run, dict), "run authority is not an object")
     _refuse(
         not verify_self_hash(run),
@@ -189,11 +189,6 @@ def _frame_from_run(run: dict[str, Any]) -> tuple[dict[str, str], list[dict[str,
     return dict(membership), source
 
 
-def load_run_frame(path: str | Path) -> tuple[dict[str, str], list[dict[str, Any]]]:
-    """Read the source authority once and reject a forged derived frame record."""
-    return _frame_from_run(read_json(path))
-
-
 def set_for_page(frame: dict[str, str], page_sha256: str) -> str:
     """A content-driven partition: a page has one set across every corpus frame.
 
@@ -208,14 +203,12 @@ def set_for_page(frame: dict[str, str], page_sha256: str) -> str:
     return "calibration" if int(rank[0], 16) < 8 else "locked-acceptance"
 
 
-def _rank(frame: dict[str, str], page: dict[str, Any], stratum: str) -> str:
+def _rank(frame: dict[str, str], page: dict[str, Any]) -> str:
     """One rank per catalog page, not per distinct byte content.
 
     The ordinal is part of the key because the corpus legitimately admits the
     same bytes at two ordinals (one page scanned twice); ranked by sha alone
     the two rows would tie exactly and the draw could not tell them apart.
-    Ordinals themselves never repeat -- the run authority refuses that, and
-    `_frame_from_run` mirrors the refusal, because an ordinal names one page.
     """
     return digest_bytes(
         canonical_bytes(
@@ -223,7 +216,7 @@ def _rank(frame: dict[str, str], page: dict[str, Any], stratum: str) -> str:
                 "seed": frame["seed"],
                 "ordinal": page["ordinal"],
                 "page_sha256": page["sha256"],
-                "stratum": stratum,
+                "stratum": page["stratum"],
                 "purpose": "gold-sample",
             }
         )
@@ -277,7 +270,7 @@ def _method_facts(method: Any, claimed_set: Any, sampling: Any) -> None:
     stated set and no catalog or plan behind it. Without this, a page chosen by
     hand could be minted as `stratified-seed`, and "the gold was drawn by the
     seed" would be an unfalsifiable label rather than a replayable fact
-    (GOVERNANCE 10; U18's *provably*).
+    (GOVERNANCE 10).
     """
     _refuse(
         not isinstance(method, str) or method not in {"stratified-seed", "manual"},
@@ -320,7 +313,7 @@ def build_sample(
 
     `set` is always the page-derived partition — never a caller's assertion — so
     calibration/locked-acceptance disjointness stays enforced by construction
-    (U14/U18) no matter which method produced the sample. `claimed_set` is the
+    no matter which method produced the sample. `claimed_set` is the
     separate, honest record of what a manual picker believed the set was at pick
     time; it is carried unchanged even when it disagrees with `set`, so a pick
     made before the frame/seed existed is never silently corrected or discarded
@@ -360,10 +353,10 @@ def _quotas(plan: Any, strata: set[str]) -> dict[str, dict[str, int]]:
     """The plan, checked to account for every stratum the catalog declares.
 
     A stratum the plan does not name contributes nothing to gold, and does so
-    without saying anything — the exact silent shortfall U18 ("the draw provably
-    covers the adverse strata") and GOVERNANCE 2 forbid. So the plan must name
-    every stratum in both sets, and a quota of 0 is how a stratum is deliberately
-    left unsampled: still a declaration, still visible in the plan file.
+    without saying anything — the silent shortfall GOVERNANCE 2 forbids. So the
+    plan must name every stratum in both sets, and a quota of 0 is how a stratum
+    is deliberately left unsampled: still a declaration, still visible in the
+    plan file.
     """
     _refuse(
         not isinstance(plan, dict) or set(plan) != SETS,
@@ -399,7 +392,7 @@ def sample_stratified(run_path: str | Path, catalog_rows: Any, plan: Any) -> lis
 def _select_stratified(
     frame: dict[str, str], catalog: list[dict[str, Any]], plan: dict[str, dict[str, int]]
 ) -> list[dict[str, Any]]:
-    """Pure selection from already-normalized, retained draw inputs."""
+    """Select from normalized inputs so retained draw bytes can be replayed without files."""
     # The normalized catalog and plan, so a row or key reordering of the same
     # stratification digests the same and a replay of the draw still matches.
     sampling = {
@@ -414,7 +407,7 @@ def _select_stratified(
                 for page in catalog
                 if page["stratum"] == stratum and set_for_page(frame, page["sha256"]) == gold_set
             ]
-            eligible.sort(key=lambda page: _rank(frame, page, stratum))
+            eligible.sort(key=lambda page: _rank(frame, page))
             _refuse(
                 len(eligible) < quota,
                 f"{gold_set}/{stratum} has {len(eligible)} structurally eligible pages "
@@ -597,10 +590,9 @@ def ingest_manual_pick(run_path: str | Path, pick: Any) -> dict[str, Any]:
     A manual pick's stated `set` is his provenance, not an assertion this
     function polices: B1 picks are made in week one, before the R0 frame or
     its seed exist, so there is no partition to check them against yet. The
-    persisted sample's `set` is always the page-derived partition (disjointness
-    stays enforced by construction, per U14/U18 and the unconditional "calibration
-    data disjoint from locked acceptance gold" in three_stage_reading_design.md
-    §6); his original stated set is kept alongside as `claimed_set` so a pick
+    persisted sample's `set` is always the page-derived partition, so
+    calibration and locked-acceptance membership remain disjoint; his original
+    stated set is kept alongside as `claimed_set` so a pick
     that turns out to land in the other set is an honest, visible, recorded
     disagreement — never a silent reclassification and never a refusal that
     would force him to redo real annotation hours.
@@ -685,10 +677,10 @@ def bind_instrument(
     `act_`-prefixed, per `common/contracts/identities.py`. It is not, and at
     R7a cannot be, verified against a real Designator proposal's bindings —
     no stage in the build order before R2 produces an act, so R7a has no act
-    authority to invent or check against (see TERRA_BUILD_REPORT.md). A
-    syntactically well-formed but never-derived act id will pass. Pass
-    `run_path` to additionally re-check the bound sample's frame and page
-    against the R0 run authority; it does not and cannot reach act existence.
+    authority to invent or check against. A syntactically well-formed but
+    never-derived act id will pass. Pass `run_path` to additionally re-check the
+    bound sample's frame and page against the R0 run authority; it does not and
+    cannot reach act existence.
     """
     validate_sample(sample, run_path)
     _act_identity(act_identity, "instrument")
@@ -720,27 +712,6 @@ def _person(value: Any, label: str) -> str:
         "measured against and may not be made of its output",
     )
     return value
-
-
-def _folded_occurrences(value: str, word: str) -> list[int]:
-    """Every case-insensitive occurrence of `word`, as indexes into `value` itself.
-
-    `str.casefold` is not length-preserving — `ß` folds to `ss`, `ﬁ` to `fi`, and
-    both survive NFC — so folding the whole reading and then indexing back into
-    the unfolded one desynchronizes from the first such character onward. That
-    is not theoretical for a border-parish register: `Straßburg, Straßberg
-    [ILLEGIBLE]` was refused as a badly spelled illegibility, and `ß \\illegible`
-    with a correct escape was refused too, both for a reason that was not true.
-    Refusing a transcriber's real hours by name, wrongly, is the failure this
-    module exists to avoid, so the window folded here is a fixed-width slice of
-    the original and every index returned is an index into it.
-    """
-    width = len(word)
-    return [
-        position
-        for position in range(len(value) - width + 1)
-        if value[position : position + width].casefold() == word
-    ]
 
 
 def _escaped_illegibilities(value: str, label: str) -> set[int]:
@@ -834,7 +805,11 @@ def _gold_text(value: Any, label: str) -> str:
             break
         reserved_spans.append((found, found + len(ILLEGIBLE)))
         start = found + len(ILLEGIBLE)
-    for position in _folded_occurrences(value, "illegible"):
+    # Casefold each fixed-width source slice: folding the whole string changes
+    # indexes after characters such as `ß` and `ﬁ`, both of which survive NFC.
+    for position in range(len(value) - len("illegible") + 1):
+        if value[position : position + len("illegible")].casefold() != "illegible":
+            continue
         end = position + len("illegible")
         within_reserved_token = any(
             span_start <= position and end <= span_end for span_start, span_end in reserved_spans
@@ -1014,9 +989,9 @@ def validate_adjudication(record: Any) -> dict[str, Any]:
         "adjudication has the wrong closed schema",
     )
     _refuse(record["schema"] != ADJUDICATION_SCHEMA, "adjudication schema is not recognized")
-    pair, _outcome, _adjudicator, _text = _adjudication_facts(
+    pair = _adjudication_facts(
         record["transcriptions"], record["outcome"], record["adjudicator"], record["text"]
-    )
+    )[0]
     _refuse(
         record["sample_digest"] != pair[0]["sample_digest"],
         "adjudication names a different sample than the transcriptions it carries",
@@ -1238,7 +1213,7 @@ def validate_measurement(record: Any) -> dict[str, Any]:
 
 
 def validate_record(record: Any, run_path: str | Path | None = None) -> dict[str, Any]:
-    """Validate any gold record by the schema it declares."""
+    """Dispatch on the closed schema label; unknown record versions must refuse."""
     schema = record.get("schema") if isinstance(record, dict) else None
     _refuse_dimensionless_schema(schema)
     if schema == SAMPLE_SCHEMA:
@@ -1376,17 +1351,9 @@ def validate_corpus(records: Any, run_path: str | Path | None = None) -> list[di
             "the byte-identical original seeded record, or preserve the corpus as partial "
             "and hold it for review",
         )
-        # The draw retains the whole normalized catalog -- every page in the frame,
-        # not only the selected ones -- so where a corpus keeps a draw it also keeps
-        # the predeclared stratum and pixel size of every page a manual pick could
-        # name. A seeded sample is already reconciled against that catalog by its
-        # membership digest; a manual one was reconciled against nothing, and could
-        # carry a stratum and page size that flatly contradicted the catalog beside
-        # it. That is the same defect the cross-record checks below exist for, minus
-        # the second record needed to expose it: one hand-picked page declaring a
-        # stratum nobody planned makes the stratification unmeasurable (GOVERNANCE
-        # 10), and one declaring an invented width makes "the rectangles are proven
-        # on-page" vacuous, since every rectangle fits a page said to be enormous.
+        # The retained whole catalog is the stratum and geometry authority even for
+        # manual picks; R0 carries neither fact, and an invented page size can make
+        # any rectangle appear to be on-page.
         catalog_rows = {(row["ordinal"], row["sha256"]): row for row in draw["catalog"]}
         for sample in samples:
             page = sample["page"]
@@ -1486,14 +1453,8 @@ def validate_corpus(records: Any, run_path: str | Path | None = None) -> list[di
             "of that kind. Preserve both records and hold the corpus for review",
         )
 
-    # Act custody is keyed on the act, not on (sample, act). An act identity binds
-    # the page it was marked out on, so it names one act once; keying custody on the
-    # sample record that reached it made every rule below say "per act *per sample
-    # record*" instead, and a page carried by two sample records therefore got two
-    # independent custody chains. One act then held two established readings, each
-    # internally impeccable, with nothing but file order to choose between them —
-    # a picker by omission (hard rule 8) in the corpus the pipeline is measured
-    # against, and two texts where GOVERNANCE 5 allows one.
+    # Custody is keyed by act identity, not sample digest: manual and seeded
+    # provenance may carry the same page, but the act still has one reading chain.
     transcriptions_by_digest: dict[str, dict[str, Any]] = {}
     transcription_keys: dict[tuple[str, str], str] = {}
     transcriptions_by_act: dict[str, set[str]] = {}
@@ -1593,14 +1554,9 @@ def validate_corpus(records: Any, run_path: str | Path | None = None) -> list[di
 def write_append_only(path: str | Path, record: dict[str, Any]) -> Path:
     """Atomically create a record. Identical bytes are reuse; different bytes refuse.
 
-    Refusing an existing pathname outright made a draw unrepeatable rather than
-    immutable: `sample` writes one file per selected page, so an interruption
-    partway through left a directory the same command could never finish — the
-    first already-written record aborted the rerun and the unwritten ones stayed
-    unwritten. Byte-for-byte republication changes no evidence, and this is the
-    rule `common/runtree/store.py::_publish_bytes` already applies to every
-    artifact in the pipeline: identical content is reuse, different content under
-    one name is `IncompatibleReuse`, and the existing file is never touched.
+    A sample draw writes several files and must be resumable after interruption.
+    Byte-for-byte republication changes no evidence; different content under one
+    name is `IncompatibleReuse`, and the existing file is never touched.
     """
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)

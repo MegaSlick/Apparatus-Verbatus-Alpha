@@ -30,8 +30,8 @@ from .core import (
 )
 
 
-def _records_in(directory: str) -> list[dict[str, object]]:
-    """Every gold record written under one directory, in a stable order."""
+def _records_in(directory: str | Path) -> list[dict[str, object]]:
+    """Read in filename order so the first collection refusal is reproducible."""
     root = Path(directory)
     if not root.is_dir():
         raise SchemaRefusal(f"{directory} is not a directory of gold records")
@@ -124,7 +124,7 @@ def main(argv: list[str] | None = None) -> int:
             args.run, read_json(args.catalog), read_json(args.plan)
         )
         with _locked_corpus(args.output_dir) as output:
-            existing = _records_in(str(output))
+            existing = _records_in(output)
             # Validate the state the whole command would create before publishing
             # its first immutable byte. This also makes an interrupted identical
             # run resumable: repeated identical records are reuse, and the union
@@ -141,7 +141,7 @@ def main(argv: list[str] | None = None) -> int:
         record = ingest_manual_pick(args.run, read_json(args.pick))
         output = Path(args.output)
         with _locked_corpus(output.parent):
-            existing = _records_in(str(output.parent))
+            existing = _records_in(output.parent)
             # A stratum is a collection fact, not a property R0 can derive from one
             # pick. Reconcile the destination corpus before publishing so a second
             # spelling of the same page is refused rather than counted twice -- any
@@ -181,7 +181,6 @@ def main(argv: list[str] | None = None) -> int:
             ),
         )
     elif args.command == "verify-sampling":
-        # One pairing rule for both paths, asked before any verification runs.
         if (args.catalog is None) != (args.plan is None):
             raise SchemaRefusal("--catalog and --plan must be supplied together")
         records = _records_in(args.directory)
@@ -189,7 +188,7 @@ def main(argv: list[str] | None = None) -> int:
         samples = [record for record in records if record.get("schema") == SAMPLE_SCHEMA]
         if len(draws) > 1:
             raise SchemaRefusal("the record directory contains more than one sampling draw")
-        if len(draws) == 1:
+        if draws:
             verify_recorded_draw(samples, draws[0], args.run)
             if args.catalog is not None:
                 verify_stratified_selection(
@@ -227,10 +226,8 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    # A refusal is a statement to the operator, not a stack trace: the named
-    # `SchemaRefusal` this module raises everywhere reaches the terminal as its
-    # message and exit 2, exactly as `pipeline/orchestrator/run.py` does it.
-    # `main()` still raises, so callers in-process keep the exception.
+    # CLI refusals are operator-facing messages with exit 2; in-process callers
+    # still receive the exception from `main()`.
     try:
         raise SystemExit(main())
     except ContractError as error:

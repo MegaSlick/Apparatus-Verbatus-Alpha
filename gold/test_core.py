@@ -108,7 +108,6 @@ def test_seeded_stratification_is_reproducible_and_sets_are_disjoint_by_construc
         )
         expected = "calibration" if int(rank[0], 16) < 8 else "locked-acceptance"
         assert record["set"] == expected == set_for_page(frame, record["page"]["sha256"])
-    # Attack the only way a page could cross sets: forge its stated membership.
     forged = dict(first[0])
     forged["set"] = "locked-acceptance" if forged["set"] == "calibration" else "calibration"
     forged["self_hash"] = self_hash(forged)
@@ -240,8 +239,6 @@ def test_manual_pick_predating_the_seed_is_still_ingested_with_an_honest_disagre
     assert result["set"] == true_set
     assert result["claimed_set"] == claimed_set
     assert result["claimed_set"] != result["set"]
-    # Disjointness stays enforced by construction: the persisted set is never the
-    # disputed one, whatever the pick claimed.
     assert validate_sample(result, path) == result
 
 
@@ -296,7 +293,7 @@ def test_cli_manual_ingest_refuses_one_page_in_two_strata(tmp_path):
 
 def test_a_plan_that_leaves_a_stratum_unnamed_is_refused(tmp_path):
     """A stratum the plan does not name contributes no gold and says nothing about
-    it — the silent shortfall U18 and GOVERNANCE 2 forbid. Naming it with quota 0
+    it — the silent shortfall GOVERNANCE 2 forbids. Naming it with quota 0
     is the declared way to skip it."""
     path, frame, pages = run_file(tmp_path)
     rows = catalog(pages)
@@ -406,7 +403,6 @@ def test_a_method_cannot_carry_another_methods_provenance(tmp_path):
             claimed_set="calibration",
             sampling=sampling,
         )
-    # And the same coherence holds on read, not only at construction.
     record = sample_stratified(path, rows, plan_for(frame, rows))[0]
     forged = json.loads(json.dumps(record))
     forged["claimed_set"] = "calibration"
@@ -694,7 +690,6 @@ def test_an_adjudication_cannot_assert_an_outcome_its_transcriptions_deny(tmp_pa
     forged["self_hash"] = self_hash(forged)
     with pytest.raises(SchemaRefusal, match="the outcome is 'adjudicated'"):
         validate_adjudication(forged)
-    # A single transcriber cannot be both readings, and the two must be of one act.
     with pytest.raises(SchemaRefusal, match="not independent"):
         adjudicate(first, transcribe(sample, _act(), "hand-a", "Jean Baptiste", path))
     with pytest.raises(SchemaRefusal, match="different acts"):
@@ -953,7 +948,7 @@ def test_bind_instrument_can_recheck_its_sample_against_run_authority(tmp_path):
 
 
 def test_a_shared_manual_pick_has_one_set_across_three_frames(tmp_path):
-    """The partition itself, not only the corpus validator, prevents F-O2.
+    """The partition itself, not only the corpus validator, keeps membership stable.
 
     R0 gives each frame a different seed. The same manually picked page must still
     have one set before the validator refuses combining the three distinct ranked
@@ -1274,7 +1269,6 @@ def test_corpus_refuses_a_manual_pick_that_contradicts_the_retained_catalog(tmp_
     enlarged = _pick(path, frame, {**never_drawn, "width": 999_999}, "Tyrel B1 pick")
     with pytest.raises(SchemaRefusal, match="rectangle boundary is therefore ambiguous.*preserve"):
         validate_corpus([draw, *selected, enlarged], path)
-    # And the enlargement is what would otherwise have let a rectangle off the page.
     layout = {
         "schema": LAYOUT_SCHEMA,
         "sample": enlarged,
@@ -1762,9 +1756,7 @@ def test_a_deeply_nested_gold_file_is_a_named_refusal_not_a_traceback(tmp_path):
 
 
 def test_cli_malformed_json_input_is_a_named_refusal_not_a_traceback(tmp_path):
-    """gold/cli.py's own JSON reading used to bypass core._read_json's SchemaRefusal
-    wrapping, so a malformed catalog/plan/pick/record crashed with a raw parser
-    traceback instead of a named refusal."""
+    """Every CLI input route must wrap malformed JSON in a named refusal."""
     path, _frame, _pages = run_file(tmp_path)
     bad = tmp_path / "not-json.json"
     bad.write_text("{not valid json", encoding="utf-8")
