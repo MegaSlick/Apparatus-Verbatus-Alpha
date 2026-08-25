@@ -1,5 +1,6 @@
 """Executable wiring tests for the small GitHub Actions workflow."""
 
+import importlib.util
 import os
 import re
 import shutil
@@ -14,6 +15,13 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 FROZEN_AUDIT_REQUIREMENTS = ROOT / ".githooks" / "frozen_audit_requirements.py"
 BASH = ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c"]
+
+_audit_spec = importlib.util.spec_from_file_location(
+    "verbatus_frozen_audit_requirements", FROZEN_AUDIT_REQUIREMENTS
+)
+assert _audit_spec is not None and _audit_spec.loader is not None
+frozen_audit = importlib.util.module_from_spec(_audit_spec)
+_audit_spec.loader.exec_module(frozen_audit)
 
 
 def workflow_text():
@@ -163,7 +171,12 @@ def test_the_audit_runs_in_the_gate_and_fails_closed():
     assert '"$frozen_python" -m pip_audit --strict --no-deps --disable-pip' in gate
     assert '--requirement "$audit_inventory"' in gate
     assert "import os, sys; print(os.path.realpath(sys.prefix))" in gate
-    assert "uv sync --frozen --offline --group test --group audit --no-config" in gate
+    assert '"$uv_binary" sync --frozen --offline --group test --group audit --no-config' in gate
+    assert '/usr/bin/env -i HOME="$uv_home" PATH=/usr/bin:/bin' in gate
+    assert 'mktemp -d "/tmp/verbatus-frozen-audit.XXXXXX"' in gate
+    assert 'PATH="$root/.venv/bin:/usr/bin:/bin:/usr/sbin:/sbin"' in gate
+    assert '"$frozen_python" .githooks/check_ingress.py --history HEAD' in gate
+    assert "root=$(/usr/bin/git rev-parse --show-toplevel" in gate
     # Not swallowed: `set -eu` is in force, and nothing rescues a non-zero exit.
     assert "set -eu" in gate
     for rescue in ("|| true", "|| :", "continue-on-error", "set +e"):
@@ -190,6 +203,25 @@ def test_the_frozen_audit_inventory_is_the_running_interpreters_exact_third_part
         if re.sub(r"[-_.]+", "-", distribution.metadata["Name"]).lower() != "verbatus"
     }
     assert audited == installed
+
+
+@pytest.mark.parametrize(
+    ("name", "version"),
+    (("safe\nother", "1.0"), ("safe", "1.0\nother==2"), ("safe; marker", "1.0")),
+)
+def test_the_frozen_audit_inventory_refuses_requirement_injection(
+    monkeypatch: pytest.MonkeyPatch, name: str, version: str
+) -> None:
+    class Distribution:
+        metadata = {"Name": name}
+
+        def __init__(self) -> None:
+            self.version = version
+
+    monkeypatch.setattr(frozen_audit, "distributions", lambda: [Distribution()])
+
+    with pytest.raises(ValueError, match="unsafe"):
+        frozen_audit.installed_pins()
 
 
 def test_a_missing_frozen_interpreter_points_chambers_at_the_image_launcher_fix():
@@ -257,10 +289,58 @@ def test_the_gate_refuses_a_venv_python_that_is_really_paths_python(tmp_path):
         pytest.skip("this interpreter resolves the shim itself; the attack does not exist here")
     assert reported[1] != os.path.realpath(venv)
 
-    result = run_gate(repo)
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    uv = fake_bin / "uv"
+    uv.write_text(
+        "#!/bin/sh\nif [ \"${1:-}\" = --version ]; then echo 'uv 0.12.1'; exit 0; fi\nexit 0\n"
+    )
+    uv.chmod(0o755)
+    environment = {**os.environ, "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"}
+
+    result = run_gate(repo, env=environment)
 
     assert result.returncode == 1
     assert "does not import from the frozen environment" in result.stderr
+
+
+def test_the_gate_refuses_a_repository_controlled_uv_binary(tmp_path):
+    repo = gate_repo(tmp_path)
+    subprocess.run(
+        [sys.executable, "-m", "venv", "--without-pip", str(repo / ".venv")],
+        check=True,
+        timeout=60,
+    )
+    uv = repo / "uv"
+    uv.write_text("#!/bin/sh\necho 'uv 0.12.1'\n")
+    uv.chmod(0o755)
+    environment = {**os.environ, "PATH": f"{repo}{os.pathsep}{os.environ['PATH']}"}
+
+    result = run_gate(repo, env=environment)
+
+    assert result.returncode == 1
+    assert "repository-controlled verifier" in result.stderr
+
+
+def test_the_gate_refuses_an_outside_uv_symlink_to_repository_code(tmp_path):
+    repo = gate_repo(tmp_path)
+    subprocess.run(
+        [sys.executable, "-m", "venv", "--without-pip", str(repo / ".venv")],
+        check=True,
+        timeout=60,
+    )
+    owned = repo / "owned-uv"
+    owned.write_text("#!/bin/sh\necho 'uv 0.12.1'\n")
+    owned.chmod(0o755)
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    (fake_bin / "uv").symlink_to(owned)
+    environment = {**os.environ, "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"}
+
+    result = run_gate(repo, env=environment)
+
+    assert result.returncode == 1
+    assert "repository-controlled verifier" in result.stderr
 
 
 def test_the_gate_refuses_when_uv_cannot_verify_the_venv_against_the_lock(tmp_path):
@@ -279,16 +359,18 @@ def test_the_gate_refuses_when_uv_cannot_verify_the_venv_against_the_lock(tmp_pa
     uv.write_text(
         "#!/bin/sh\n"
         "if [ \"${1:-}\" = --version ]; then echo 'uv 0.12.1 (fixture-platform)'; exit 0; fi\n"
-        'printf \'%s|%s\\n\' "$UV_PROJECT_ENVIRONMENT" "${UV_INEXACT-unset}" > "$UV_CALLS"\n'
-        'printf \'%s\\n\' "$*" >> "$UV_CALLS"\n'
+        'calls="${0%/*}/../uv-calls"\n'
+        'printf \'%s|%s|%s\\n\' "$UV_PROJECT_ENVIRONMENT" "${UV_INEXACT-unset}" '
+        '"${UV_NO_GROUP-unset}" > "$calls"\n'
+        'printf \'%s\\n\' "$*" >> "$calls"\n'
         "exit 1\n"
     )
     uv.chmod(0o755)
     environment = {
         **os.environ,
         "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
-        "UV_CALLS": str(calls),
         "UV_INEXACT": "1",
+        "UV_NO_GROUP": "audit",
         "UV_PROJECT_ENVIRONMENT": str(tmp_path / "wrong-environment"),
     }
 
@@ -296,7 +378,7 @@ def test_the_gate_refuses_when_uv_cannot_verify_the_venv_against_the_lock(tmp_pa
 
     assert result.returncode == 1
     assert calls.read_text().splitlines() == [
-        f"{repo / '.venv'}|unset",
+        f"{repo / '.venv'}|unset|unset",
         "sync --frozen --offline --group test --group audit --no-config",
     ]
     assert "could not reconcile" in result.stderr

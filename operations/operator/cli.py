@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import pwd
+import stat
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -18,8 +19,44 @@ from .errors import ErrorCode, OperatorError, strip_control_bytes
 from .surface import DEFAULT_FIXTURE, OperatorSurface
 from .volume_s3 import VolumeSpec, VolumeTransferRefusal
 
+MAX_REQUEST_BYTES = 1024 * 1024
 
-def _default_state_dir() -> Path:
+
+def _is_within(path: Path, directory: Path) -> bool:
+    """Judge containment by directory identity, including aliases and case variants."""
+
+    try:
+        directory_stat = os.stat(directory)
+    except OSError:
+        return False
+    spellings = (Path(os.path.abspath(path)), path.resolve(strict=False))
+    for spelling in spellings:
+        for ancestor in (spelling, *spelling.parents):
+            try:
+                if os.path.samestat(os.stat(ancestor), directory_stat):
+                    return True
+            except OSError:
+                continue
+    return False
+
+
+def _account_state_dir(workspace: Path | None = None) -> Path:
+    # Path.home() honours HOME, including an absolute value inside the checkout.
+    # The account database is the independent fallback for either that case or
+    # a relative HOME.
+    try:
+        environment_home = Path.home()
+    except RuntimeError:
+        environment_home = Path()
+    homes = (environment_home, Path(pwd.getpwuid(os.getuid()).pw_dir))
+    for home in homes:
+        candidate = home / ".local" / "state" / "verbatus"
+        if home.is_absolute() and (workspace is None or not _is_within(candidate, workspace)):
+            return candidate
+    raise RuntimeError("the operator account has no absolute home directory outside the checkout")
+
+
+def _default_state_dir(workspace: Path | None = None) -> Path:
     """Return durable operator state outside the checked-out project.
 
     The Base Directory specification requires an absolute `XDG_STATE_HOME`;
@@ -27,19 +64,15 @@ def _default_state_dir() -> Path:
     """
 
     state_home = Path(os.environ.get("XDG_STATE_HOME", ""))
-    if not state_home.is_absolute():
-        home = Path.home()
-        # Path.home() honours a relative HOME, so use the POSIX account database
-        # before accepting a checkout-relative state root.
-        if not home.is_absolute():
-            home = Path(pwd.getpwuid(os.getuid()).pw_dir)
-        if not home.is_absolute():
-            raise RuntimeError("the operator account has no absolute home directory")
-        state_home = home / ".local" / "state"
-    return state_home / "verbatus"
+    candidate = (
+        state_home / "verbatus" if state_home.is_absolute() else _account_state_dir(workspace)
+    )
+    if workspace is not None and _is_within(candidate, workspace):
+        candidate = _account_state_dir(workspace)
+    return candidate
 
 
-def _warn_about_abandoned_state_dir(workspace: Path, state: Path) -> None:
+def _warn_about_abandoned_state_dir(workspace: Path, *, using_default: bool) -> None:
     """Name an old in-checkout `.verbatus/` this version no longer reads by default.
 
     An old folder may hold real receipts; omitting it would make existing records
@@ -47,7 +80,7 @@ def _warn_about_abandoned_state_dir(workspace: Path, state: Path) -> None:
     """
 
     old_state = workspace / ".verbatus"
-    if state != _default_state_dir() or not old_state.is_dir():
+    if not using_default or not old_state.is_dir():
         return
     _print(
         f"Note: {old_state} holds operator records from before this version moved "
@@ -174,8 +207,10 @@ def build_parser() -> PlainParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
-    parser = build_parser()
     try:
+        # Parser construction resolves the environment-derived state root and
+        # belongs inside the same refusal boundary as parsing and execution.
+        parser = build_parser()
         if not arguments:
             # Inside the try, not before it: a Ctrl+C at this prompt has to
             # reach the same three-part contract as every other failure.
@@ -184,8 +219,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return 0
         args = parser.parse_args(arguments)
         workspace = args.workspace.resolve()
-        state = args.state_dir if args.state_dir.is_absolute() else workspace / args.state_dir
-        _warn_about_abandoned_state_dir(workspace, state)
+        explicit_state = any(
+            argument == "--state-dir" or argument.startswith("--state-dir=")
+            for argument in arguments
+        )
+        if explicit_state:
+            state = args.state_dir if args.state_dir.is_absolute() else workspace / args.state_dir
+        else:
+            state = _default_state_dir(workspace)
+        _warn_about_abandoned_state_dir(workspace, using_default=not explicit_state)
         surface = OperatorSurface(
             workspace,
             state,
@@ -266,8 +308,15 @@ def load_request(path: str | Path) -> PodCreateRequest:
 
     source = Path(path)
     try:
-        raw = json.loads(source.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        descriptor = os.open(source, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+        with os.fdopen(descriptor, "rb") as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                raise OSError("the pod request is not a regular file")
+            data = handle.read(MAX_REQUEST_BYTES + 1)
+        if len(data) > MAX_REQUEST_BYTES:
+            raise ValueError(f"the pod request exceeds {MAX_REQUEST_BYTES} bytes")
+        raw = json.loads(data.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
         raise OperatorError(
             ErrorCode.INVALID_COMMAND, detail="the pod request JSON could not be read"
         ) from error

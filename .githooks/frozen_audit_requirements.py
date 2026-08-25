@@ -13,6 +13,8 @@ import sys
 from importlib.metadata import distributions
 
 PROJECT_DISTRIBUTION = "verbatus"
+NAME = re.compile(r"[A-Za-z0-9]+(?:[-_.][A-Za-z0-9]+)*")
+VERSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9.!+_-]*")
 
 
 def installed_pins() -> dict[str, str]:
@@ -21,14 +23,18 @@ def installed_pins() -> dict[str, str]:
     pins: dict[str, str] = {}
     for distribution in distributions():
         raw_name = distribution.metadata.get("Name")
-        if not raw_name:
+        if not isinstance(raw_name, str) or not raw_name:
             raise ValueError("an installed distribution has no Name metadata")
+        if NAME.fullmatch(raw_name) is None:
+            raise ValueError("an installed distribution has an unsafe Name metadata value")
         name = re.sub(r"[-_.]+", "-", raw_name).lower()
         if name == PROJECT_DISTRIBUTION:
             continue
         version = distribution.version
-        if not version:
+        if not isinstance(version, str) or not version:
             raise ValueError(f"installed distribution {name!r} has no version metadata")
+        if VERSION.fullmatch(version) is None:
+            raise ValueError(f"installed distribution {name!r} has an unsafe version value")
         previous = pins.setdefault(name, version)
         if previous != version:
             raise ValueError(

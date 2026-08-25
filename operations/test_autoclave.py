@@ -2417,6 +2417,36 @@ class TestTheUntrustedDrawer:
         assert str(source) in result.stderr
         assert "SENTINEL-CONTENTS" not in result.stdout + result.stderr
 
+    def test_an_outside_alias_to_the_drawer_does_not_make_agent_bytes_trusted(self, tmp_path):
+        """Containment follows directory identity, including aliases and APFS case variants."""
+
+        drawer = tmp_path / "drawer"
+        drawer.mkdir()
+        (drawer / "nested").mkdir()
+        victim = tmp_path / "host-only.txt"
+        victim.write_text("SENTINEL-CONTENTS\n")
+        (drawer / "nested" / "next-brief.md").symlink_to(victim)
+        alias = tmp_path / "drawer-alias"
+        alias.symlink_to(drawer, target_is_directory=True)
+        destination = drawer / "brief.md"
+
+        result = subprocess.run(
+            [
+                "python3",
+                str(SAFE_FILE),
+                "write",
+                str(alias / "nested" / "next-brief.md"),
+                str(destination),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+
+        assert result.returncode != 0
+        assert not destination.exists()
+        assert "SENTINEL-CONTENTS" not in result.stdout + result.stderr
+
     @pytest.mark.parametrize("shape", ["directory", "fifo"])
     def test_the_helper_refuses_anything_that_is_not_a_regular_file(self, tmp_path, shape):
         """Directly, because `S_ISREG` and `O_NONBLOCK` are each removable on their

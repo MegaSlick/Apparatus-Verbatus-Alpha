@@ -9,6 +9,7 @@ read without needing a configured provider account.
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import shutil
 import tempfile
@@ -33,7 +34,7 @@ def _scratch_root() -> Path:
 
     checkout = ROOT.resolve()
     configured = Path(tempfile.gettempdir()).resolve()
-    if configured != checkout and checkout not in configured.parents:
+    if not _contains_directory(configured, checkout):
         return configured
 
     # tempfile honours TMPDIR/TEMP/TMP, any of which may point into the
@@ -41,9 +42,26 @@ def _scratch_root() -> Path:
     # if the checkout itself contains it, refuse rather than make the promise
     # false. This operator already supports POSIX only (cli.py uses pwd).
     fallback = Path("/tmp").resolve()
-    if fallback == checkout or checkout in fallback.parents:
+    if _contains_directory(fallback, checkout):
         raise RuntimeError("no temporary directory outside the checkout is available")
     return fallback
+
+
+def _contains_directory(path: Path, directory: Path) -> bool:
+    """Compare existing ancestors by identity, not case-sensitive spelling."""
+
+    try:
+        directory_stat = os.stat(directory)
+    except OSError:
+        return False
+    for spelling in (Path(os.path.abspath(path)), path.resolve(strict=False)):
+        for ancestor in (spelling, *spelling.parents):
+            try:
+                if os.path.samestat(os.stat(ancestor), directory_stat):
+                    return True
+            except OSError:
+                continue
+    return False
 
 
 def make_transcript(output: str | Path) -> Path:

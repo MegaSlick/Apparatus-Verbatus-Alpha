@@ -8,8 +8,12 @@ surface.
 
 from __future__ import annotations
 
+import hashlib
+import os
+import stat
 import subprocess
 import sys
+import tempfile
 import time
 import zipfile
 from dataclasses import dataclass
@@ -66,6 +70,7 @@ from .volume_s3 import S3VolumeTarget, VolumeSpec, VolumeTransferRefusal
 UTC = timezone.utc
 OPERATOR_CLOSE_PREFIX = "CLOSE"
 DEFAULT_FIXTURE = "synthetic-two-page-v0"
+MAX_SEALED_MANIFEST_BYTES = 4 * 1024 * 1024
 # The Door's program path, named once. Two spellings of it — the fault drill's
 # call site and the guard that decides the drill forwards real ingress — is how
 # the drill could go on running while quietly stopping injecting: change one and
@@ -523,7 +528,8 @@ class OperatorSurface:
         if not manifest_path.is_file():
             raise OperatorError(ErrorCode.UPLOAD_MANIFEST_MISSING)
         try:
-            manifest_sha256 = sha256_file(manifest_path)
+            manifest_bytes = _read_sealed_manifest(manifest_path)
+            manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
         except OSError as error:
             raise OperatorError(
                 ErrorCode.UPLOAD_MANIFEST_MISSING,
@@ -554,15 +560,18 @@ class OperatorSurface:
                 fail_once_for=self._fault_upload_key(manifest_path, prefix),
             )
         try:
-            report = ChecksummedTransfer(
-                source_root=source_path,
-                submission_manifest=manifest_path,
-                target=store,
-                prefix=prefix,
-                journal_path=self.state_root / "transfer" / f"{manifest_sha256}.json",
-            ).resume()
-            if sha256_file(manifest_path) != manifest_sha256:
-                raise TransferFailure("sealed submission record changed during transfer")
+            snapshot_root = self.state_root / "transfer" / ".manifest-snapshots"
+            snapshot_root.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(prefix="manifest-", dir=snapshot_root) as temporary:
+                manifest_snapshot = Path(temporary) / "sealed-manifest.json"
+                manifest_snapshot.write_bytes(manifest_bytes)
+                report = ChecksummedTransfer(
+                    source_root=source_path,
+                    submission_manifest=manifest_snapshot,
+                    target=store,
+                    prefix=prefix,
+                    journal_path=self.state_root / "transfer" / f"{manifest_sha256}.json",
+                ).resume()
         except (TransferFailure, VolumeTransferRefusal, OSError, ValueError) as error:
             receipt = self._write_action(
                 "upload",
@@ -1706,10 +1715,13 @@ def _status_projection(action: str, payload: dict[str, Any]) -> list[str]:
             lines.append("  Saved upload statement: zero GPU-hours were used.")
         # Local paths are machine details; the digest is the durable manifest identity.
         recorded_sha256 = payload.get("submission_manifest_sha256")
-        if recorded_sha256 is not None:
-            if not isinstance(recorded_sha256, str):
-                raise RecordError("saved upload record does not bind its submission record digest")
-            lines.append(f"  Sealed submission record digest: {recorded_sha256}.")
+        if not (
+            isinstance(recorded_sha256, str)
+            and len(recorded_sha256) == 64
+            and all(character in "0123456789abcdef" for character in recorded_sha256)
+        ):
+            raise RecordError("saved upload record does not bind its submission record digest")
+        lines.append(f"  Sealed submission record digest: {recorded_sha256}.")
     elif action == "run":
         state = payload.get("state")
         if isinstance(state, str):
@@ -1743,6 +1755,19 @@ def _status_projection(action: str, payload: dict[str, Any]) -> list[str]:
                 "  Saved retained-volume price: $" + volume["ongoing_hourly_usd"] + " per hour."
             )
     return lines
+
+
+def _read_sealed_manifest(path: Path) -> bytes:
+    """Read one bounded regular-file snapshot without following its final name."""
+
+    descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    with os.fdopen(descriptor, "rb") as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            raise OSError("the sealed submission record is not a regular file")
+        data = handle.read(MAX_SEALED_MANIFEST_BYTES + 1)
+    if len(data) > MAX_SEALED_MANIFEST_BYTES:
+        raise OSError(f"the sealed submission record exceeds {MAX_SEALED_MANIFEST_BYTES} bytes")
+    return data
 
 
 def _load_policy(path: str | Path) -> SpendPolicy:

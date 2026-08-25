@@ -70,37 +70,66 @@ def open_regular(path: Path, flags: int, mode: int = 0o600):
         raise
 
 
+def _drawer_ancestor(source: Path, drawer_descriptor: int) -> tuple[int, tuple[str, ...]] | None:
+    """Return an opened alias of ``drawer`` and the lexical suffix below it.
+
+    A case-insensitive filesystem or a symlink outside the drawer can give the
+    same directory another spelling.  Compare opened directory identities, not
+    strings, and keep the matching descriptor for the later no-follow walk.
+    """
+
+    drawer_stat = os.fstat(drawer_descriptor)
+    source_absolute = Path(os.path.abspath(source))
+    suffix: tuple[str, ...] = (source_absolute.name,)
+    ancestor = source_absolute.parent
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    while True:
+        try:
+            candidate = os.open(ancestor, directory_flags)
+        except OSError:
+            candidate = -1
+        if candidate >= 0:
+            if os.path.samestat(os.fstat(candidate), drawer_stat):
+                return candidate, suffix
+            os.close(candidate)
+        if ancestor.parent == ancestor:
+            return None
+        suffix = (ancestor.name, *suffix)
+        ancestor = ancestor.parent
+
+
 def open_write_source(source: Path, drawer: Path):
     """Open a dispatch source without trusting agent-writable drawer components.
 
-    Classification is lexical because resolving the source would follow a
-    symlink before it can be refused. Sources outside the drawer may be the
-    session's standing-brief symlinks; sources beneath it may follow no component.
+    Sources outside the drawer may be the session's standing-brief symlinks;
+    sources beneath it may follow no component. Containment is directory
+    identity, not spelling, so case variants and an outside alias to the drawer
+    receive the untrusted treatment too.
     """
 
     drawer_absolute = Path(os.path.abspath(drawer))
-    source_absolute = Path(os.path.abspath(source))
-    if not source_absolute.is_relative_to(drawer_absolute):
-        return open(source, "rb")
-    relative = source_absolute.relative_to(drawer_absolute)
-    if not relative.parts:
-        raise OSError(f"{source} is the drawer itself, not a regular file")
-
     directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
-        directory = os.open(drawer_absolute, directory_flags)
+        drawer_descriptor = os.open(drawer_absolute, directory_flags)
         try:
-            for component in relative.parts[:-1]:
-                child = os.open(component, directory_flags, dir_fd=directory)
+            match = _drawer_ancestor(source, drawer_descriptor)
+            if match is None:
+                return open(source, "rb")
+            directory, relative_parts = match
+            try:
+                for component in relative_parts[:-1]:
+                    child = os.open(component, directory_flags, dir_fd=directory)
+                    os.close(directory)
+                    directory = child
+                descriptor = os.open(
+                    relative_parts[-1],
+                    os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
+                    dir_fd=directory,
+                )
+            finally:
                 os.close(directory)
-                directory = child
-            descriptor = os.open(
-                relative.parts[-1],
-                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
-                dir_fd=directory,
-            )
         finally:
-            os.close(directory)
+            os.close(drawer_descriptor)
     except OSError as error:
         raise OSError(f"cannot safely open {source} beneath {drawer}: {error}") from error
     try:

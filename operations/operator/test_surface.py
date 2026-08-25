@@ -33,6 +33,7 @@ from operations.submit import gate
 from operations.submit.submit import build_manifest, walk_folder
 
 from . import cli, dry_run, entry, notify_bridge
+from . import surface as operator_surface
 from .dry_run import make_transcript
 from .errors import ErrorCode, OperatorError
 from .fakes import LocalFixtureObjectStore, OperatorFakeProvider
@@ -1039,6 +1040,59 @@ def test_partial_upload_is_recorded_and_retries_from_verified_work(tmp_path: Pat
     assert any("Upload is complete" in line for line in status)
 
 
+def test_upload_uses_one_sealed_manifest_snapshot_across_the_transfer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A valid replacement restored before the final hash cannot change what is sent."""
+
+    surface = _surface(tmp_path)
+    source = tmp_path / "submitted-pages"
+    source.mkdir()
+    (source / "page-one.bin").write_bytes(b"first\n")
+    manifest = tmp_path / "sealed-submission.json"
+    original = canonical_bytes(build_manifest(walk_folder(source)))
+    manifest.write_bytes(original)
+    (source / "page-two.bin").write_bytes(b"second\n")
+    replacement = canonical_bytes(build_manifest(walk_folder(source)))
+    real_resume = operator_surface.ChecksummedTransfer.resume
+
+    def swap_restore(self):  # type: ignore[no-untyped-def]
+        manifest.write_bytes(replacement)
+        try:
+            return real_resume(self)
+        finally:
+            manifest.write_bytes(original)
+
+    monkeypatch.setattr(operator_surface.ChecksummedTransfer, "resume", swap_restore)
+
+    surface.upload(source, sealed_manifest=manifest)
+
+    payload = surface.receipts.read(surface._descriptor_receipt("upload"))["payload"]
+    assert payload["transfer"]["completed_keys"] == ["volume/page-one.bin"]
+    assert payload["submission_manifest_sha256"] == hashlib.sha256(original).hexdigest()
+
+
+def test_upload_refuses_an_oversized_manifest_before_constructing_a_transfer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    surface = _surface(tmp_path)
+    source = tmp_path / "submitted-pages"
+    source.mkdir()
+    manifest = tmp_path / "sealed-submission.json"
+    manifest.write_bytes(b" " * (operator_surface.MAX_SEALED_MANIFEST_BYTES + 1))
+
+    def should_not_construct(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("the transfer was constructed for an oversized manifest")
+
+    monkeypatch.setattr(operator_surface, "ChecksummedTransfer", should_not_construct)
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.upload(source, sealed_manifest=manifest)
+
+    assert refusal.value.code is ErrorCode.UPLOAD_MANIFEST_MISSING
+    assert not (surface.state_root / "fixture-volume").exists()
+
+
 def test_red_boot_is_named_and_can_be_retried(tmp_path: Path) -> None:
     surface = _surface(tmp_path, faults=Faults(cache_failure=True))
 
@@ -1200,6 +1254,28 @@ def test_load_request_refuses_unreadable_json(tmp_path: Path) -> None:
 
     with pytest.raises(OperatorError) as refusal:
         cli.load_request(broken)
+
+    assert refusal.value.code is ErrorCode.INVALID_COMMAND
+
+
+def test_load_request_refuses_an_oversized_file_before_json_deserialization(tmp_path: Path) -> None:
+    request = tmp_path / "oversized-request.json"
+    request.write_bytes(b" " * (cli.MAX_REQUEST_BYTES + 1))
+
+    with pytest.raises(OperatorError) as refusal:
+        cli.load_request(request)
+
+    assert refusal.value.code is ErrorCode.INVALID_COMMAND
+    assert str(cli.MAX_REQUEST_BYTES) not in refusal.value.render()
+
+
+def test_load_request_does_not_follow_a_symlink(tmp_path: Path) -> None:
+    request = _request_json(tmp_path)
+    alias = tmp_path / "request-alias.json"
+    alias.symlink_to(request)
+
+    with pytest.raises(OperatorError) as refusal:
+        cli.load_request(alias)
 
     assert refusal.value.code is ErrorCode.INVALID_COMMAND
 
@@ -2244,6 +2320,16 @@ def test_a_tmpdir_inside_the_checkout_cannot_put_rehearsal_scratch_back_there(
     assert all(ROOT not in scratch.resolve().parents for scratch in recorded_temporary_directories)
 
 
+def test_rehearsal_scratch_containment_compares_directory_identity(tmp_path: Path) -> None:
+    checkout = tmp_path / "checkout"
+    scratch = checkout / "scratch"
+    scratch.mkdir(parents=True)
+    alias = tmp_path / "scratch-alias"
+    alias.symlink_to(scratch, target_is_directory=True)
+
+    assert dry_run._contains_directory(alias, checkout)
+
+
 def test_scripted_dry_run_is_a_readable_six_word_acceptance_artifact(tmp_path: Path) -> None:
     transcript = make_transcript(tmp_path / "operator-dry-run.txt").read_text(encoding="utf-8")
 
@@ -2478,6 +2564,31 @@ def test_upload_receipt_retains_manifest_identity_but_no_local_paths(tmp_path: P
     assert str(manifest.resolve()) not in serialized
 
 
+@pytest.mark.parametrize("digest", (None, "not-a-sha256", "A" * 64))
+def test_status_refuses_to_present_a_malformed_manifest_digest_as_evidence(
+    tmp_path: Path, digest: str | None
+) -> None:
+    surface = _surface(tmp_path)
+    payload = {
+        "summary": "synthetic upload record",
+        "state": "complete",
+        "zero_gpu_hours": True,
+    }
+    if digest is not None:
+        payload["submission_manifest_sha256"] = digest
+    surface._write_action(
+        "upload",
+        payload,
+        descriptor_action="upload",
+    )
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.status()
+
+    assert refusal.value.code is ErrorCode.STATUS_UNREADABLE
+    assert "does not bind its submission record digest" in str(refusal.value.detail)
+
+
 def test_status_contract_says_it_reads_receipts_without_reopening_manifests() -> None:
     help_text = cli.build_parser().format_help()
     overview = (ROOT / "operations" / "README.md").read_text()
@@ -2493,6 +2604,51 @@ def test_default_operator_state_root_is_absolute_and_not_dot_verbatus() -> None:
 
     assert state.is_absolute()
     assert ".verbatus" not in str(state)
+
+
+def test_an_absolute_xdg_state_root_inside_the_checkout_is_not_used(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "checkout"
+    workspace.mkdir()
+    monkeypatch.setenv("XDG_STATE_HOME", str(workspace / "xdg-state"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+    state = cli._default_state_dir(workspace)
+
+    assert state == tmp_path / "home" / ".local" / "state" / "verbatus"
+    assert not cli._is_within(state, workspace)
+
+
+def test_a_symlink_alias_cannot_hide_that_default_state_is_inside_the_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "checkout"
+    state_parent = workspace / "state-parent"
+    state_parent.mkdir(parents=True)
+    alias = tmp_path / "state-alias"
+    alias.symlink_to(state_parent, target_is_directory=True)
+    monkeypatch.setenv("XDG_STATE_HOME", str(alias))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+    state = cli._default_state_dir(workspace)
+
+    assert state == tmp_path / "home" / ".local" / "state" / "verbatus"
+
+
+def test_state_default_failure_uses_the_operator_error_contract(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def unavailable(_workspace: Path | None = None) -> Path:
+        raise RuntimeError("no safe state root")
+
+    monkeypatch.setattr(cli, "_default_state_dir", unavailable)
+
+    assert cli.main(["status"]) == 2
+    output = capsys.readouterr().out
+    assert "Verbatus met a problem it could not classify" in output
+    assert "no safe state root" in output
+    assert "Traceback" not in output
 
 
 @pytest.mark.parametrize("value", ("", ".", "relative/state"))
