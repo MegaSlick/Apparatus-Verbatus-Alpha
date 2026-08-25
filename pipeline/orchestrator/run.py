@@ -33,6 +33,7 @@ sequence and to checkpoint. Its four jobs:
 """
 
 import argparse
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -95,6 +96,7 @@ STAGE_PROGRAMS = dict(SEQUENCE)
 # Importing the gate here would cross the orchestrator's common-only boundary;
 # a test reconciles this duplicate path with the gate's constant.
 DEFAULT_DATA_GATE_POLICY_PATH = ROOT / "config" / "data_handling_policy.json"
+_TRANSFER_CREDENTIAL_ENV = frozenset({"RUNPOD_S3_ACCESS_KEY", "RUNPOD_S3_SECRET_KEY"})
 
 
 def require_coherent_ingress_options(args: argparse.Namespace) -> None:
@@ -127,6 +129,14 @@ def resolve_caller_paths(args: argparse.Namespace) -> argparse.Namespace:
     elif args.data_gate_policy is not None:
         args.data_gate_policy = Path(args.data_gate_policy).absolute()
     return args
+
+
+def stage_environment() -> dict[str, str]:
+    """Keep stage runtime settings, but drop credentials for the upload-only verb."""
+    environment = dict(os.environ)
+    for name in _TRANSFER_CREDENTIAL_ENV:
+        environment.pop(name, None)
+    return environment
 
 
 def invoke(program: str, args: argparse.Namespace, **extra) -> int:
@@ -207,7 +217,13 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
     for key, value in extra.items():
         command += [f"--{key.replace('_', '-')}", str(value)]
 
-    completed = subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
+    completed = subprocess.run(
+        command,
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        env=stage_environment(),
+    )
     if completed.stdout.strip():
         print(completed.stdout.rstrip())
     # A completed-but-partial Door publishes its private refusal report on stderr.

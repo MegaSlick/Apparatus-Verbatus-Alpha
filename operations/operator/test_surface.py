@@ -1455,6 +1455,67 @@ def test_the_laptop_crash_drill_still_carries_real_ingress_to_the_door(tmp_path:
     assert not any("fixture pages" in line for line in messages)
 
 
+def test_the_laptop_crash_drill_does_not_mask_the_doors_refusal_report(
+    tmp_path: Path,
+) -> None:
+    messages: list[str] = []
+
+    def partial_door(command, **_kwargs):  # type: ignore[no-untyped-def]
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            "",
+            "Private named refusal report: 1_exemplar/artifacts/refusal-report/report.json\n",
+        )
+
+    surface = OperatorSurface(
+        ROOT,
+        tmp_path / "operator-state",
+        present=messages.append,
+        faults=Faults(laptop_crash=True),
+        runner=partial_door,
+    )
+
+    with pytest.raises(OperatorError) as interruption:
+        surface.run(
+            run_id="partial-door-crash",
+            submission_folder=tmp_path / "approved" / "submitted-pages",
+        )
+
+    assert interruption.value.code is ErrorCode.RUN_INTERRUPTED
+    assert any("Private named refusal report:" in line for line in messages)
+    assert any("laptop-crash drill interrupted" in line for line in messages)
+
+
+def test_pipeline_children_do_not_receive_upload_only_credentials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    observed_environment: dict[str, str] = {}
+    monkeypatch.setenv("RUNPOD_S3_ACCESS_KEY", "upload-access-secret")
+    monkeypatch.setenv("RUNPOD_S3_SECRET_KEY", "upload-secret-secret")
+    monkeypatch.setenv("VERBATUS_STAGE_TEST_SENTINEL", "preserved")
+
+    def record_environment(command, **kwargs):  # type: ignore[no-untyped-def]
+        observed_environment.update(kwargs["env"])
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    surface = OperatorSurface(
+        ROOT,
+        tmp_path / "operator-state",
+        present=lambda _line="": None,
+        faults=Faults(laptop_crash=True),
+        runner=record_environment,
+    )
+
+    with pytest.raises(OperatorError) as interruption:
+        surface.run(run_id="credential-boundary")
+
+    assert interruption.value.code is ErrorCode.RUN_INTERRUPTED
+    assert "RUNPOD_S3_ACCESS_KEY" not in observed_environment
+    assert "RUNPOD_S3_SECRET_KEY" not in observed_environment
+    assert observed_environment["VERBATUS_STAGE_TEST_SENTINEL"] == "preserved"
+
+
 def test_a_failed_real_run_receipt_names_real_ingress(tmp_path: Path) -> None:
     """A receipt may retain fixture configuration without calling it the input."""
 
@@ -1825,6 +1886,9 @@ def test_a_non_list_pages_record_is_a_named_run_failure_not_a_character_count(
 
     assert failure.value.code is ErrorCode.RUN_FAILED
     assert "not a list" in (failure.value.detail or "")
+    receipt = surface.receipts.read(surface._descriptor_receipt("run"))["payload"]
+    assert receipt["state"] == "armarium-record-unreadable"
+    assert receipt["state"] != "complete"
 
 
 @pytest.mark.parametrize("member", ("pages", "non_delivered"))
@@ -1981,6 +2045,53 @@ def test_re_exporting_a_run_after_the_tree_changed_does_not_overwrite_the_first_
     assert first_receipt["sha256"] == hashlib.sha256(b"first export bytes").hexdigest()
     assert first_receipt["sha256"] == sha256_file(first_bundle)
     assert second_receipt["sha256"] == sha256_file(second_bundle)
+
+
+def test_export_refuses_a_symlink_at_an_existing_content_addressed_bundle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    surface = _surface(tmp_path)
+    run_root = tmp_path / "runs"
+    run_id = "linked-content-address"
+    surface._write_action(
+        "run",
+        {
+            "summary": "test run",
+            "state": "complete",
+            "run_root": str(run_root),
+            "run_id": run_id,
+        },
+        descriptor_action="run",
+    )
+    surface._armarium_export = lambda _root, _run_id: {  # type: ignore[method-assign]
+        "aggregate": {"status": "complete", "reasons": []},
+        "pages": [],
+        "delivered": [],
+        "non_delivered": [],
+    }
+    bundle_bytes = b"new evidence bundle"
+
+    def fake_bundle(self, _root, _run_id, destination):  # type: ignore[no-untyped-def]
+        del self
+        destination.write_bytes(bundle_bytes)
+
+    monkeypatch.setattr(OperatorSurface, "_write_base_armarium_bundle", fake_bundle)
+    exports = surface.state_root / "exports"
+    exports.mkdir(parents=True)
+    digest = hashlib.sha256(bundle_bytes).hexdigest()
+    destination = exports / f"{run_id}-armarium-base-{digest}.zip"
+    outside = tmp_path / "outside-existing-file"
+    outside.write_bytes(b"not the evidence bundle")
+    destination.symlink_to(outside)
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.export(run_id=run_id)
+
+    assert refusal.value.code is ErrorCode.EXPORT_FAILED
+    assert outside.read_bytes() == b"not the evidence bundle"
+    assert destination.is_symlink()
+    failure = surface.receipts.read(surface._descriptor_receipt("export"))["payload"]
+    assert failure["state"] == "local-copy-failed"
 
 
 def test_exporting_a_run_record_with_no_saved_run_root_fails_as_export_missing_not_unexpected(
@@ -2652,6 +2763,85 @@ def test_an_evidence_bundle_refuses_a_symlinked_armarium_member(tmp_path: Path) 
     assert "7_armarium/export.json is not a regular file" in (refusal.value.detail or "")
     assert not destination.exists(), "a refused bundle must not leave a file behind"
     assert not destination.with_name(f".{destination.name}.tmp").exists()
+
+
+def test_evidence_bundle_does_not_follow_its_old_predictable_temporary_name(
+    tmp_path: Path,
+) -> None:
+    surface = _surface(tmp_path)
+    run_root = tmp_path / "runs"
+    run_id = "temporary-link-race"
+    root = run_root / run_id
+    armarium = root / "7_armarium"
+    armarium.mkdir(parents=True)
+    (root / "run.json").write_text("{}", encoding="utf-8")
+    (armarium / "export.json").write_text("{}", encoding="utf-8")
+    destination = tmp_path / "bundle.zip"
+    victim = tmp_path / "must-not-be-truncated"
+    victim.write_bytes(b"outside bytes")
+    predictable = destination.with_name(f".{destination.name}.tmp")
+    predictable.symlink_to(victim)
+
+    surface._write_base_armarium_bundle(run_root, run_id, destination)
+
+    assert destination.is_file()
+    assert victim.read_bytes() == b"outside bytes"
+    assert predictable.is_symlink()
+
+
+def test_evidence_bundle_refuses_case_variant_archive_members(tmp_path: Path) -> None:
+    surface = _surface(tmp_path)
+    run_root = tmp_path / "runs"
+    run_id = "case-variant-members"
+    root = run_root / run_id
+    armarium = root / "7_armarium"
+    armarium.mkdir(parents=True)
+    (root / "run.json").write_text("{}", encoding="utf-8")
+    (armarium / "Result.json").write_text("{}", encoding="utf-8")
+    (armarium / "result.json").write_text("{}", encoding="utf-8")
+    destination = tmp_path / "case-collision.zip"
+
+    with pytest.raises(OperatorError) as refusal:
+        surface._write_base_armarium_bundle(run_root, run_id, destination)
+
+    assert refusal.value.code is ErrorCode.EXPORT_FAILED
+    assert "collide on the default macOS filesystem" in (refusal.value.detail or "")
+    assert not destination.exists()
+
+
+def test_evidence_bundle_refuses_a_member_replaced_between_check_and_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    surface = _surface(tmp_path)
+    run_root = tmp_path / "runs"
+    run_id = "member-open-race"
+    root = run_root / run_id
+    armarium = root / "7_armarium"
+    armarium.mkdir(parents=True)
+    (root / "run.json").write_text("{}", encoding="utf-8")
+    member = armarium / "export.json"
+    member.write_text('{"first": true}', encoding="utf-8")
+    replacement = tmp_path / "replacement.json"
+    replacement.write_text('{"replacement": true}', encoding="utf-8")
+    destination = tmp_path / "raced-bundle.zip"
+    real_open = os.open
+    swapped = False
+
+    def replace_before_open(path, flags, *args, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal swapped
+        if path == "export.json" and kwargs.get("dir_fd") is not None and not swapped:
+            swapped = True
+            member.unlink()
+            replacement.replace(member)
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", replace_before_open)
+
+    with pytest.raises(OperatorError) as refusal:
+        surface._write_base_armarium_bundle(run_root, run_id, destination)
+
+    assert "changed between check and open" in (refusal.value.detail or "")
+    assert not destination.exists()
 
 
 def test_the_top_of_the_reviewed_margin_range_passes_through_unchanged(tmp_path: Path) -> None:

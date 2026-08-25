@@ -837,6 +837,29 @@ def test_real_ingress_changes_only_the_doors_argv(monkeypatch, tmp_path):
             )
 
 
+def test_orchestrator_stage_children_do_not_receive_upload_only_credentials(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    orchestrator = _orchestrator_module("orchestrator_stage_environment")
+    observed_environment: dict[str, str] = {}
+    monkeypatch.setenv("RUNPOD_S3_ACCESS_KEY", "upload-access-secret")
+    monkeypatch.setenv("RUNPOD_S3_SECRET_KEY", "upload-secret-secret")
+    monkeypatch.setenv("VERBATUS_STAGE_TEST_SENTINEL", "preserved")
+
+    def record(command, **kwargs):  # type: ignore[no-untyped-def]
+        observed_environment.update(kwargs["env"])
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(orchestrator.subprocess, "run", record)
+    args = orchestrator.resolve_caller_paths(Namespace(**_orchestrator_namespace_fields(tmp_path)))
+
+    orchestrator.invoke(orchestrator.STAGE_PROGRAMS["door"], args)
+
+    assert "RUNPOD_S3_ACCESS_KEY" not in observed_environment
+    assert "RUNPOD_S3_SECRET_KEY" not in observed_environment
+    assert observed_environment["VERBATUS_STAGE_TEST_SENTINEL"] == "preserved"
+
+
 def test_invoke_refuses_a_caller_relative_path_instead_of_resolving_it_late(monkeypatch, tmp_path):
     """Direct invocation must not reinterpret caller paths under the child's cwd."""
 
