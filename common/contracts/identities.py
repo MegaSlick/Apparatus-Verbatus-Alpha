@@ -38,6 +38,7 @@ _PREFIXES: Final = {
     "physical-page": "ppg",
     "physical-act": "pac",
     "region": "rgn",
+    "variance-experiment": "ve",
     "attempt": "att",
     "artifact": "art",
 }
@@ -47,7 +48,7 @@ _PREFIXES: Final = {
 # path separators, no case-folding surprises between macOS and Linux.
 _RUN_ID_PATTERN: Final = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 
-_ID_PATTERN: Final = re.compile(r"^(pg|act|ppg|pac|rgn|att|art)_[0-9a-f]{%d}$" % _DIGEST_CHARS)
+_ID_PATTERN: Final = re.compile(r"^(pg|act|ppg|pac|rgn|ve|att|art)_[0-9a-f]{%d}$" % _DIGEST_CHARS)
 
 
 def validate_run_id(run_id: Any) -> str:

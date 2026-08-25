@@ -39,6 +39,7 @@ from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal  # noqa: E402
 from common.contracts.identities import artifact_id, attempt_id  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR, PERLECTOR  # noqa: E402
+from common.decoding import load_decoding_policy  # noqa: E402
 from common.exemplar_boundary import verify_exemplar_crop_lineage  # noqa: E402
 from common.fixture_identity import page_identity  # noqa: E402
 from common.imaging import dimensions  # noqa: E402
@@ -1308,6 +1309,27 @@ def preflight_appendable_ordinals(
     since the two must agree on what this ordinal means. The returned region map
     lets publication use the exact regions preflight already verified instead of
     walking and hashing Designator again.
+
+    **One ordinal for the whole pass, on a resume exactly as on a first run.**
+    Unit 2 asks what a crashed pass does about the pairs it already sealed, and
+    the answer is not a per-pair ordinal map. Three facts forbid one. A
+    page-scoped chair has no act-scoped attempt to repeat at all — `reread_pass`
+    refuses to mint one by name — so moving such a pair to ordinal 2 while the
+    page Testimonium and the act attachment stay at ordinal 1 publishes a
+    `not-run` over a good `read` and drops that chair out of the act's coverage.
+    `require_shared_whole_pass_ordinal` exists precisely because an act's
+    attachment is derived once per pass and cannot describe two ordinals at
+    once. And the Perlector's reading ordinal is a function of the act's crop
+    history, which the Recensor, Archetypus and Armarium each re-derive, so a
+    reading that appears without a recrop is refused downstream by all three.
+
+    So a resumed whole pass repeats its ordinal. For every chair that exists
+    today the repeat is byte-identical and the RunTree reuses it. If a future
+    non-deterministic chair answers differently, `_refuse_write_collision` names
+    the pair and the pass holds without writing — and the forward path is the
+    instrument that already exists, `--attempt-ordinal`, which moves *every*
+    pair to the next ordinal together and keeps the derived records coherent.
+    Nothing is overwritten and nothing is lost either way (GOVERNANCE 2, 4).
     """
     regions_by_act: dict[str, tuple[list[dict], str | None]] = {}
     attempts_by_pair: dict[tuple[str, str], Attempt] = {}
@@ -3615,6 +3637,11 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             "ignore the act and chair it was given, and report success"
         )
     context = open_context(args, ATTESTATORES, registry_factory=registry_factory)
+    # A witness reading is a model decode too.  The adapter currently exposes no
+    # generation knobs in the fixture seam, but this check keeps a future real
+    # adapter from treating the record posture as an unbound side setting.
+    _decoding_policy, decoding_sha256 = load_decoding_policy(args.decoding_config)
+    context.require_sealed_config("decoding", decoding_sha256)
     witness_adapters.validate_runnable_adapter_bindings(context.registry.config)
     acts = expected_acts(context)
     try:
@@ -3624,20 +3651,31 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     except ContractError as error:
         print(f"Attestatores attempt tally UNKNOWN: {error}", file=sys.stderr)
         return EXIT_HELD
-    # The stored inventory is evidence that attempts existed, and it is evidence
-    # even when none of them is left. Gating the check below on the *walk* finding
-    # something meant that losing part of a folder's Testimonium layer held it —
-    # stored and rebuilt no longer agree — while losing all of it did not: the
-    # first-run path was taken instead, attempt 1 was written for every pair, and
-    # `context.finish()` rewrote the inventory that said otherwise. A reread makes
-    # that loss material rather than merely re-derivable, because the ordinal it
-    # appended does not come back. So the stored manifest's own existence is the
-    # second trigger, and `attempt_tally` then says what it always says about an
-    # inventory that disagrees with the evidence: UNKNOWN, and hold. Re-deriving it
-    # deliberately (`RunTree.write_manifest`) remains the one-step way out, exactly
-    # as it is for a pass interrupted before its manifest was written.
+    # A stored inventory is evidence that attempts existed, and it is evidence even
+    # when none of them is left: gating this check on the *walk* finding something
+    # meant that losing part of a folder's Testimonium layer held it — stored and
+    # rebuilt no longer agree — while losing all of it did not, because the
+    # first-run path was taken instead and `context.finish()` rewrote the inventory
+    # that said otherwise. So the stored manifest's own existence is one trigger,
+    # and a stage seal is the other: a sealed boundary is a completed pass, and its
+    # tally must reconcile whether or not the inventory file survived.
+    #
+    # The walk alone is deliberately NOT a third trigger, and that is Unit 2's
+    # change here. A pass interrupted inside `attempt_pass` leaves immutable
+    # Testimonia, no inventory and no seal — and asking `attempt_tally` to
+    # reconcile against an inventory that was never written held every crash
+    # resume on a missing file, with a manual `RunTree.write_manifest` as the only
+    # way out. There is no stored claim to contradict in that state, so the resume
+    # below repeats the pass at its own ordinal: what is already sealed is reused
+    # byte-for-byte, what the crash never reached is written, and nothing is
+    # overwritten or concealed. A pass that sealed and then lost its inventory
+    # still reconciles, because the seal is still in the rebuilt walk.
     stored_inventory = context.tree.resolve(context.tree.manifest_path(ATTESTATORES)).exists()
-    if index.stage_has_artifacts or stored_inventory:
+    has_stage_seal = any(
+        entry["kind"] == "stage-seal"
+        for entry in context.tree.build_manifest(ATTESTATORES)["artifacts"]
+    )
+    if stored_inventory or has_stage_seal:
         # No chair denominator here: this pass is what fills it. See `attempt_tally`.
         prior_tally = attempt_tally(context.tree, context=context, acts=acts)
         if prior_tally["hold"]:

@@ -184,6 +184,94 @@ def test_reread_appends_and_current_keeps_the_new_failed_outcome(tmp_path):
     assert attestatores.attempt_tally(tree)["count"] == 12
 
 
+def test_an_unsealed_whole_pass_resumes_over_what_it_already_sealed(tmp_path, monkeypatch):
+    """A crash mid-pass resumes at the same ordinal, and the run still completes.
+
+    The injected exception comes *after* the normal writer has sealed the first
+    configured chair's Testimonium, so the next process meets a folder holding
+    immutable evidence, no stored inventory and no stage seal. It must repeat
+    the pass at its own ordinal rather than move the pairs it finds to a new
+    one: the sealed record is reused byte-for-byte, every pair ends at ordinal
+    one with no gap, and `latest_attempt` resolves for all of them.
+
+    Unit 2's per-pair resume ordinal was tried here and is what this test now
+    forbids. A page-scoped chair has no act-scoped attempt to repeat -- the
+    targeted reread refuses to mint one by name -- so taking the crashed pair
+    to ordinal 2 while the page Testimonium and the act attachment stayed at
+    ordinal 1 published a `not-run` over that chair's good `read`, dropped it
+    out of the act's witness coverage, and held the whole run at the Recensor.
+    The stage's own tally reported KNOWN throughout, which is why the assertion
+    below is the downstream one as well as the local one.
+    """
+    run_root, tree = run_to_designator(tmp_path, "happy")
+    real_publish = attestatores.publish_attempt
+    writes = 0
+
+    def crash_after_first_real_chair(*args, **kwargs):
+        nonlocal writes
+        real_publish(*args, **kwargs)
+        writes += 1
+        raise RuntimeError("simulated process crash after one real chair response")
+
+    monkeypatch.setattr(attestatores, "publish_attempt", crash_after_first_real_chair)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run.py",
+            "--run-root",
+            str(run_root),
+            "--run-id",
+            "retention",
+            "--scenario",
+            "happy",
+            "--fixture-root",
+            str(ROOT / "proof"),
+        ],
+    )
+    with pytest.raises(RuntimeError, match="simulated process crash"):
+        attestatores.main()
+    assert writes == 1
+    first = _testimonia(tree)
+    assert len(first) == 1
+    assert first[0]["outcome"] == "read", "the crash must follow a configured chair response"
+    assert not tree.resolve(tree.manifest_path(ATTESTATORES)).exists()
+    monkeypatch.undo()
+
+    resumed = invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py")
+
+    assert resumed.returncode == 0, resumed.stderr
+    records = _testimonia(tree)
+    by_pair: dict[tuple[str, str], list[int]] = {}
+    for record in records:
+        key = (record["subject_id"], record["payload"]["chair"])
+        by_pair.setdefault(key, []).append(record["payload"]["attempt_ordinal"])
+    crashed_pair = (first[0]["subject_id"], first[0]["payload"]["chair"])
+    assert crashed_pair in by_pair
+    # Every pair, including the one the crash caught, at exactly ordinal one.
+    assert all(sorted(ordinals) == [1] for ordinals in by_pair.values()), by_pair
+    # The record the crashed invocation sealed was reused, never rewritten.
+    survivor = next(
+        record
+        for record in records
+        if (record["subject_id"], record["payload"]["chair"]) == crashed_pair
+    )
+    assert survivor == first[0]
+    assert attestatores.attempt_tally(tree)["state"] == "KNOWN"
+
+    # The resumed folder is not merely self-consistent: it still reads as a
+    # complete witness layer to the stages that consume it. A resume that
+    # quietly cost one chair its coverage passed every check above.
+    for program in (
+        "pipeline/4_perlector/run.py",
+        "pipeline/5_recensor/run.py",
+        "pipeline/6_archetypus/run.py",
+        "pipeline/7_armarium/run.py",
+    ):
+        result = invoke_stage(run_root, "retention", "happy", program)
+        assert result.returncode == 0, f"{program}: {result.stderr}"
+
+
 def test_a_whole_pass_resolves_designator_inputs_once_per_act_not_once_per_chair(
     tmp_path, monkeypatch
 ):
@@ -241,10 +329,10 @@ def test_a_whole_pass_resolves_designator_inputs_once_per_act_not_once_per_chair
     )
 
     assert attestatores.main() == 0
-    # History index, the seal's prior/inventory checks, final manifest, and
-    # independent tally.  Completion evidence adds fixed stage-level walks; it
-    # must not reintroduce a walk per act or chair.
-    assert attestatores_manifest_calls == 6
+    # History index, the whole-pass boundary check, the seal's prior/inventory
+    # checks, final manifest, and independent tally. Completion evidence adds
+    # fixed stage-level walks; it must not reintroduce a walk per act or chair.
+    assert attestatores_manifest_calls == 7
     assert attempt_calls == 6  # one per act/chair, never re-resolved for publication
 
     act_ids = {record["subject_id"] for record in _testimonia(tree)}

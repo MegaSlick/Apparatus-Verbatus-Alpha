@@ -35,6 +35,7 @@ ROOT = Path(__file__).resolve().parents[2]
 # naming a sealed path is added to the orchestrator without a decision here:
 # cover it or declare it.
 SEALED_CONFIG_FLAGS = (
+    "--decoding-config",
     "--pdf-render-config",
     "--designator-padding-config",
     "--designator-geometry-config",
