@@ -20,6 +20,7 @@ which includes the witness roster the run was authorized with, not only the acts
 """
 
 import sys
+import unicodedata
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -37,8 +38,10 @@ from armarium_export import (  # noqa: E402
 
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.annotations import validate_annotations  # noqa: E402
-from common.contracts.canonical import digest_bytes, verify_self_hash  # noqa: E402
+from common.contracts.canonical import digest_bytes, digest_of, verify_self_hash  # noqa: E402
+from common.contracts.envelope import validate_input_refs  # noqa: E402
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal  # noqa: E402
+from common.contracts.identities import is_well_formed  # noqa: E402
 from common.contracts.outcomes import (  # noqa: E402
     TEXT_STATUSES,
     ArmariumCategory,
@@ -59,11 +62,13 @@ from common.contracts.stages import (  # noqa: E402
 )
 from common.contracts.uncertainty import from_perlectio  # noqa: E402
 from common.contracts.uncertainty import validate as validate_uncertainty
+from common.cross_capture_coverage import validate_cross_capture_coverage  # noqa: E402
 from common.exemplar_boundary import (  # noqa: E402
     verify_exemplar_corpus_seal,
     verify_exemplar_crop_lineage,
     verify_sealed_page_pixels,
 )
+from common.physical_act_partition import validate_physical_act_partition  # noqa: E402
 from common.residual_ink import edge_ink_from_runs  # noqa: E402
 from common.stage import (  # noqa: E402
     ATTEMPTED_WITNESS_OUTCOMES,
@@ -80,6 +85,438 @@ from common.stage import (  # noqa: E402
     unaddressed_chairs,
     validate_serving_provenance,
 )
+
+
+def logical_act_projection_entry(
+    record: dict, *, category: str, source_regions: list[dict], witnesses: list[dict]
+) -> dict:
+    """Project one clustered Archetypus record without selecting a member act.
+
+    The mature bundle codecs call their stable identity columns ``act_id`` and
+    ``act_key``.  For a logical record both are derived solely from
+    ``logical_act_id``; neither may contain a capture-local member key.  This
+    compatibility spelling is at the export edge only, while the immutable
+    Archetypus record and its index retain the explicit logical field.
+    """
+    required = {
+        "logical_act_id",
+        "physical_page_components",
+        "member_local_acts",
+        "text",
+        "text_hash",
+        "status",
+        "text_status",
+        "regions",
+        "provenance",
+        "annotations",
+        "uncertainty",
+        "evidence_ref",
+        "cross_capture_dissent_ref",
+        "perlectio_ref",
+        "recensor_ref",
+        "self_hash",
+    }
+    if not isinstance(record, dict) or set(record) != required:
+        raise SchemaRefusal(
+            "logical Armarium projection received an Archetypus outside its closed schema; "
+            "the projection is refused because added or missing fields can bypass conservation"
+        )
+    # The image-local export boundary re-derives the same integrity proof over
+    # its Archetypus record before trusting it (`_archetypus_rows`'s
+    # `validate_record`, and `verify_established_record`'s own self-hash and
+    # text_hash checks) rather than projecting a field set that merely matches.
+    # This logical entry point had none of that: closing the field set alone
+    # does not prove the record is the one its own self_hash and text_hash
+    # claim, or that it retains at least one physical page component and one
+    # member local act -- a forged, truncated, or memberless record passed
+    # every check here and was projected as an established logical act.
+    if not verify_self_hash(record):
+        raise SchemaRefusal(
+            "logical Armarium projection record fails its self_hash; the projection is "
+            "refused because member, text, and evidence bytes must remain bound at export"
+        )
+    logical_id = record["logical_act_id"]
+    if not is_well_formed(logical_id) or not logical_id.startswith("pac_"):
+        raise SchemaRefusal(
+            "logical Armarium projection logical_act_id is not a physical-act identity; the "
+            "projection is refused because a normalization trick or local id cannot key a "
+            "clustered export"
+        )
+    if (
+        not isinstance(record["physical_page_components"], list)
+        or not record["physical_page_components"]
+    ):
+        raise SchemaRefusal("logical Armarium projection has no retained physical page components")
+    if not isinstance(record["member_local_acts"], list) or not record["member_local_acts"]:
+        raise SchemaRefusal("logical Armarium projection has no retained local members")
+    component_fields = {"physical_page_id", "required_capture_sha256s"}
+    components = record["physical_page_components"]
+    component_pages = []
+    component_sources: set[str] = set()
+    for component in components:
+        if not isinstance(component, dict) or set(component) != component_fields:
+            raise SchemaRefusal(
+                "logical Armarium projection has a component outside its closed schema; the "
+                "projection is refused because its capture denominator cannot be verified"
+            )
+        page = component["physical_page_id"]
+        captures = component["required_capture_sha256s"]
+        if (
+            not is_well_formed(page)
+            or not page.startswith("ppg_")
+            or not isinstance(captures, list)
+            or not captures
+            or captures != sorted(set(captures))
+            or any(
+                not isinstance(source, str)
+                or len(source) != 64
+                or any(character not in "0123456789abcdef" for character in source)
+                for source in captures
+            )
+        ):
+            raise SchemaRefusal(
+                "logical Armarium projection has a malformed component identity or capture "
+                "set; the projection is refused because required evidence is not canonical"
+            )
+        component_pages.append(page)
+        component_sources.update(captures)
+    if component_pages != sorted(set(component_pages)):
+        raise SchemaRefusal(
+            "logical Armarium projection repeats or misorders a physical-page component; the "
+            "projection is refused because one component cannot count twice"
+        )
+    member_fields = {
+        "act_id",
+        "act_key",
+        "page_id",
+        "page_ordinal",
+        "source_sha256",
+        "proposal_refs",
+    }
+    members = record["member_local_acts"]
+    member_ids = []
+    member_keys = []
+    for member in members:
+        if not isinstance(member, dict) or set(member) != member_fields:
+            raise SchemaRefusal(
+                "logical Armarium projection has a member outside its closed lineage schema; "
+                "the projection is refused because every local proposal must remain named"
+            )
+        act_id_value = member["act_id"]
+        act_key_value = member["act_key"]
+        page_id_value = member["page_id"]
+        ordinal = member["page_ordinal"]
+        source = member["source_sha256"]
+        proposal_refs = member["proposal_refs"]
+        if (
+            not is_well_formed(act_id_value)
+            or not act_id_value.startswith("act_")
+            or not is_well_formed(page_id_value)
+            or not page_id_value.startswith("pg_")
+            or not isinstance(act_key_value, str)
+            or not act_key_value
+            or not act_key_value.isprintable()
+            or unicodedata.normalize("NFC", act_key_value) != act_key_value
+            or not isinstance(ordinal, int)
+            or isinstance(ordinal, bool)
+            or ordinal < 0
+            or source not in component_sources
+            or not isinstance(proposal_refs, list)
+            or not proposal_refs
+            or proposal_refs != sorted(set(proposal_refs))
+            or not all(isinstance(reference, str) and reference for reference in proposal_refs)
+        ):
+            raise SchemaRefusal(
+                "logical Armarium projection has malformed member identity, key, ordinal, "
+                "capture, or proposal evidence; the projection is refused because member "
+                "lineage is not canonical"
+            )
+        member_ids.append(act_id_value)
+        member_keys.append(act_key_value)
+    if member_ids != sorted(set(member_ids)) or len(member_keys) != len(set(member_keys)):
+        raise SchemaRefusal(
+            "logical Armarium projection repeats a member id/key or misorders its members; "
+            "the projection is refused because each proposal row must be conserved once"
+        )
+    member_sources = {member["source_sha256"] for member in members}
+    if not member_sources <= component_sources:
+        raise SchemaRefusal(
+            "logical Armarium projection has a member outside its required capture set; the "
+            "projection is refused because local ink cannot escape the clustered denominator"
+        )
+    text = record["text"]
+    if not isinstance(text, str) or record["text_hash"] != digest_of(text):
+        raise SchemaRefusal("logical Armarium projection text is not its one hashed string")
+    if record["status"] != "established":
+        raise SchemaRefusal("logical Armarium projection status is not the established literal")
+    if not isinstance(record["regions"], list) or not record["regions"]:
+        raise SchemaRefusal(
+            "logical Armarium projection record has no source regions; the projection is "
+            "refused because established text must stay anchored to ink"
+        )
+    if not isinstance(record["provenance"], dict) or not record["provenance"]:
+        raise SchemaRefusal(
+            "logical Armarium projection record has no model provenance; the projection is "
+            "refused because the reader identity and revision must travel with text"
+        )
+    validate_uncertainty(record["uncertainty"], text)
+    if validate_annotations(
+        record["annotations"], text, None, "logical Armarium annotation"
+    ) != record["annotations"] or record["text_status"] != derive_record_text_status(
+        text, record["annotations"], record["uncertainty"]
+    ):
+        raise SchemaRefusal(
+            "logical Armarium projection damage layers disagree with the one text; the "
+            "projection is refused because it would describe a different reading"
+        )
+    # The dissent is a sibling evidence record, never a text source.  Its
+    # validation here is a one-way consumer check: nothing is passed back into
+    # the Archetypus constructor.
+    parent_refs = [
+        record["cross_capture_dissent_ref"],
+        record["perlectio_ref"],
+        record["recensor_ref"],
+    ]
+    try:
+        validate_input_refs(parent_refs)
+    except SchemaRefusal as error:
+        raise SchemaRefusal(
+            "logical Armarium projection has a malformed or repeated parent reference; the "
+            "projection is refused because dissent, reading, and review must remain distinct "
+            "digest-bound evidence"
+        ) from error
+    if len({reference["relative_path"] for reference in parent_refs}) != 3:
+        raise SchemaRefusal(
+            "logical Armarium projection reuses one parent artifact path; the projection is "
+            "refused because dissent, reading, and review are distinct evidence records"
+        )
+    if category != ArmariumCategory.DELIVERED.value:
+        raise SchemaRefusal("logical Armarium projection only projects an established record")
+    # Consult §5.2: "every member local act and every capture/page attribution
+    # retained under that one logical entry."  The entry carried neither, so a
+    # clustered bundle exported one act row whose member captures existed
+    # nowhere in it -- the second capture's local act was simply gone from the
+    # export, which is GOVERNANCE 2's silent loss at the last boundary.  Every
+    # member is carried, in canonical set order; none is promoted to the row's
+    # identity (that stays derived from `logical_act_id` alone), and §7.15's
+    # duplicate export -- a member act beside its own logical act -- is refused
+    # against exactly this list by `armarium_export._validate_projection`.
+    members = record["member_local_acts"]
+    membership = {
+        "member_local_act_ids": sorted(
+            member["act_id"] for member in members if isinstance(member.get("act_id"), str)
+        ),
+        "member_act_keys": sorted(
+            member["act_key"] for member in members if isinstance(member.get("act_key"), str)
+        ),
+        "member_source_page_ordinals": sorted(
+            {
+                member["page_ordinal"]
+                for member in members
+                if isinstance(member.get("page_ordinal"), int)
+            }
+        ),
+        "physical_page_components": record["physical_page_components"],
+    }
+    if len(membership["member_local_act_ids"]) != len(members) or len(
+        membership["member_act_keys"]
+    ) != len(members):
+        raise SchemaRefusal(
+            "logical Armarium projection has a member local act with no act_id/act_key; a "
+            "member that cannot be named cannot be proved absent from the act rows"
+        )
+    return {
+        "act_id": logical_id,
+        "act_key": f"logical:{logical_id}",
+        "logical_act_id": logical_id,
+        "logical_membership": membership,
+        "category": category,
+        "canonical_clean_text": record["text"],
+        "text_status": record["text_status"],
+        "transcription_annotations": record["annotations"],
+        "provenance": record["provenance"],
+        "source_regions": source_regions,
+        "reason": None,
+        "evidence_refs": [record["cross_capture_dissent_ref"]],
+        "witnesses": witnesses,
+        "perlectio_ref": record["perlectio_ref"],
+        "recensor_ref": record["recensor_ref"],
+        "dissent_ref": record["cross_capture_dissent_ref"],
+        "uncertainty": record["uncertainty"],
+    }
+
+
+def logical_cross_capture_review_entry(
+    *,
+    partition: dict,
+    logical_act: dict,
+    review: dict,
+    review_ref: dict[str, str],
+    witness_coverage: dict,
+    witnesses: list[dict],
+) -> dict:
+    """Project a clustered Recensor hold as one text-free review item."""
+    checked_partition = validate_physical_act_partition(partition)
+    if checked_partition["findings"]:
+        raise SchemaRefusal(
+            "logical Armarium review projection received an unresolved physical-act "
+            "partition; the review row is refused because no act census may be claimed over "
+            "an unresolved equivalence relation"
+        )
+    if not isinstance(logical_act, dict):
+        raise SchemaRefusal(
+            "logical Armarium review projection has no partition row; the review row is "
+            "refused because its logical subject and members are unknown"
+        )
+    logical_id = logical_act.get("logical_act_id")
+    rows = [row for row in checked_partition["logical_acts"] if row["logical_act_id"] == logical_id]
+    if len(rows) != 1 or rows != [logical_act]:
+        raise SchemaRefusal(
+            "logical Armarium review projection row is not the row its partition publishes; "
+            "the review row is refused because member provenance cannot be supplied by a "
+            "foreign or retracted partition row"
+        )
+    try:
+        validate_input_refs([review_ref])
+    except SchemaRefusal as error:
+        raise SchemaRefusal(
+            "logical Armarium review projection has no digest-bound Recensor reference; the "
+            "review row is refused because its terminal decision cannot be cited"
+        ) from error
+    if not isinstance(review, dict) or digest_of(review) != review_ref["sha256"]:
+        raise SchemaRefusal(
+            "logical Armarium review projection bytes do not match the Recensor reference; "
+            "the review row is refused because one decision cannot travel beside another's "
+            "digest"
+        )
+    payload = review.get("payload")
+    if review.get("outcome") != "held-for-review" or not isinstance(payload, dict):
+        raise SchemaRefusal(
+            "logical Armarium review projection did not receive a held-for-review payload; "
+            "the review row is refused because delivered and held acts have different "
+            "terminal paths"
+        )
+    reason = payload.get("reason")
+    coverage = payload.get("cross_capture_coverage")
+    if (
+        not isinstance(reason, str)
+        or not reason
+        or not isinstance(coverage, dict)
+        or coverage.get("logical_act_id") != logical_id
+        or not isinstance(coverage.get("findings"), list)
+        or not coverage["findings"]
+    ):
+        raise SchemaRefusal(
+            "logical Armarium review projection has no named cross-capture finding and "
+            "reason for this act; the review row is refused because a hold without its cause "
+            "would lose the finding at export"
+        )
+    finding_facts: list[tuple[str, str]] = []
+    for finding in coverage["findings"]:
+        if (
+            not isinstance(finding, dict)
+            or set(finding) != {"code", "physical_page_id"}
+            or not isinstance(finding["code"], str)
+            or not finding["code"]
+            or not isinstance(finding["physical_page_id"], str)
+            or not finding["physical_page_id"]
+        ):
+            raise SchemaRefusal(
+                "logical Armarium review projection has a malformed cross-capture finding; "
+                "the review row is refused because every finding must name both its code "
+                "and physical-page component"
+            )
+        finding_facts.append((finding["code"], finding["physical_page_id"]))
+    if len(finding_facts) != len(set(finding_facts)):
+        raise SchemaRefusal(
+            "logical Armarium review projection repeats a cross-capture finding for one "
+            "physical-page component; the review row is refused because duplicated evidence "
+            "cannot inflate the terminal finding census"
+        )
+    finding_labels = [f"{code}:{page}" for code, page in sorted(finding_facts)]
+    try:
+        checked_coverage = validate_cross_capture_coverage(coverage)
+    except (SchemaRefusal, TypeError) as error:
+        raise SchemaRefusal(
+            "logical Armarium review projection has malformed cross-capture coverage; the "
+            "review row is refused because an unvalidated visibility record cannot account "
+            "for the act's capture denominator"
+        ) from error
+    expected_components = {
+        component["physical_page_id"]: component["required_capture_sha256s"]
+        for component in logical_act["physical_page_components"]
+    }
+    measured_components = {
+        component.get("physical_page_id"): component.get("required_capture_sha256s")
+        for component in checked_coverage["components"]
+        if isinstance(component, dict)
+    }
+    if measured_components != expected_components:
+        raise SchemaRefusal(
+            "logical Armarium review projection coverage does not measure the partition's "
+            "physical-page components and captures; the review row is refused because a "
+            "finding about other evidence cannot hold this act"
+        )
+    if not isinstance(witness_coverage, dict) or not isinstance(witnesses, list):
+        raise SchemaRefusal(
+            "logical Armarium review projection has malformed witness accounting; the review "
+            "row is refused because cross-capture coverage cannot replace the chair denominator"
+        )
+    members = logical_act["member_local_acts"]
+    membership = {
+        "member_local_act_ids": [member["act_id"] for member in members],
+        "member_act_keys": sorted(member["act_key"] for member in members),
+        "member_source_page_ordinals": sorted({member["page_ordinal"] for member in members}),
+        "physical_page_components": logical_act["physical_page_components"],
+    }
+    perlectio_ref = payload.get("perlectio_ref")
+    dissent_ref = payload.get("cross_capture_dissent_ref")
+    if perlectio_ref is None or dissent_ref is None:
+        raise SchemaRefusal(
+            "logical Armarium review projection is missing its Perlectio or cross-capture "
+            "dissent reference; the review row is refused because a visibility hold must "
+            "retain both the reading and its sibling evidence"
+        )
+    evidence_refs = [review_ref]
+    for reference in (perlectio_ref, dissent_ref):
+        try:
+            validate_input_refs([reference])
+        except SchemaRefusal as error:
+            raise SchemaRefusal(
+                "logical Armarium review projection has a malformed reading or dissent "
+                "reference; the review row is refused because its evidence chain cannot "
+                "be followed"
+            ) from error
+        evidence_refs.append(reference)
+    try:
+        validate_input_refs(evidence_refs)
+    except SchemaRefusal as error:
+        raise SchemaRefusal(
+            "logical Armarium review projection repeats or contradicts an evidence path; the "
+            "review row is refused because one artifact cannot stand for two parents"
+        ) from error
+    return {
+        "act_id": logical_id,
+        "act_key": f"logical:{logical_id}",
+        "logical_act_id": logical_id,
+        "logical_membership": membership,
+        "category": ArmariumCategory.HELD_FOR_REVIEW.value,
+        "canonical_clean_text": None,
+        "text_status": None,
+        "transcription_annotations": None,
+        "provenance": None,
+        "source_regions": [],
+        "reason": f"{reason}; cross-capture finding(s): {', '.join(finding_labels)}",
+        "evidence_refs": sorted(evidence_refs, key=lambda reference: reference["relative_path"]),
+        "witnesses": witnesses,
+        "perlectio_ref": perlectio_ref,
+        "recensor_ref": review_ref,
+        "dissent_ref": dissent_ref,
+        "uncertainty": None,
+        "under_witnessed": witness_coverage.get("under_witnessed"),
+        "witness_coverage": witness_coverage,
+        "cross_capture_coverage": coverage,
+    }
 
 
 def page_census(context) -> dict[int, dict]:

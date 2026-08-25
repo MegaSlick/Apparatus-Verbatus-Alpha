@@ -35,6 +35,7 @@ record that does not exist.
 """
 
 import sys
+import unicodedata
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -54,6 +55,7 @@ from common.contracts.canonical import (  # noqa: E402
 )
 from common.contracts.envelope import validate_input_refs  # noqa: E402
 from common.contracts.errors import FatalAccounting, SchemaRefusal  # noqa: E402
+from common.contracts.identities import is_well_formed  # noqa: E402
 from common.contracts.outcomes import (  # noqa: E402
     TEXT_STATUSES,
     classify,
@@ -70,6 +72,10 @@ from common.contracts.stages import (  # noqa: E402
 )
 from common.contracts.uncertainty import from_perlectio  # noqa: E402
 from common.contracts.uncertainty import validate as validate_uncertainty
+from common.cross_capture_autopsia import validate_autopsia  # noqa: E402
+from common.cross_capture_coverage import validate_cross_capture_coverage  # noqa: E402
+from common.cross_capture_dissent import validate_cross_capture_dissent  # noqa: E402
+from common.physical_act_partition import validate_physical_act_partition  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
     EXIT_HELD,
@@ -157,6 +163,34 @@ _INDEX_ROW_FIELDS = frozenset(
 )
 _INDEX_FIELDS = frozenset({"schema", "run_id", "stage", "record_count", "rows", "self_hash"})
 
+# Unit 19D is additive while image-local runs remain valid.  A physical-act
+# record never carries a representative local key or page: its subject and
+# index key are the one logical act, with every capture component retained.
+_LOGICAL_RECORD_FIELDS = frozenset(
+    {
+        "logical_act_id",
+        "physical_page_components",
+        "member_local_acts",
+        "text",
+        "text_hash",
+        "status",
+        "text_status",
+        "regions",
+        "provenance",
+        "annotations",
+        "uncertainty",
+        "evidence_ref",
+        "cross_capture_dissent_ref",
+        "perlectio_ref",
+        "recensor_ref",
+        "self_hash",
+    }
+)
+_LOGICAL_COMPONENT_FIELDS = frozenset({"physical_page_id", "required_capture_sha256s"})
+_LOGICAL_MEMBER_FIELDS = frozenset(
+    {"act_id", "act_key", "page_id", "page_ordinal", "source_sha256", "proposal_refs"}
+)
+
 
 def _is_ref_shaped(value) -> bool:
     if not isinstance(value, dict) or set(value) != {"relative_path", "sha256"}:
@@ -166,6 +200,90 @@ def _is_ref_shaped(value) -> bool:
     except SchemaRefusal:
         return False
     return True
+
+
+def _logical_sha(value, label: str) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise SchemaRefusal(
+            f"the logical Archetypus {label} is not a lowercase SHA-256; the record is "
+            "refused because capture provenance must retain a digest identity"
+        )
+    return value
+
+
+def _logical_component(value: object) -> dict:
+    if not isinstance(value, dict) or set(value) != _LOGICAL_COMPONENT_FIELDS:
+        raise SchemaRefusal(
+            "the logical Archetypus physical-page component is outside its closed schema; "
+            "the record is refused because its capture denominator cannot be reconstructed"
+        )
+    page = value["physical_page_id"]
+    captures = value["required_capture_sha256s"]
+    if (
+        not is_well_formed(page)
+        or not page.startswith("ppg_")
+        or not isinstance(captures, list)
+        or not captures
+        or captures != sorted(set(captures))
+    ):
+        raise SchemaRefusal(
+            "the logical Archetypus physical-page component has a malformed page identity "
+            "or capture set; the record is refused because its required evidence is not a "
+            "non-empty canonical set"
+        )
+    return {
+        "physical_page_id": page,
+        "required_capture_sha256s": [
+            _logical_sha(source, "required capture") for source in captures
+        ],
+    }
+
+
+def _logical_member(value: object) -> dict:
+    if not isinstance(value, dict) or set(value) != _LOGICAL_MEMBER_FIELDS:
+        raise SchemaRefusal(
+            "the logical Archetypus member act is outside its closed lineage schema; the "
+            "record is refused because every local proposal must remain identifiable"
+        )
+    act = value["act_id"]
+    page = value["page_id"]
+    key = value["act_key"]
+    ordinal = value["page_ordinal"]
+    refs = value["proposal_refs"]
+    if (
+        not is_well_formed(act)
+        or not act.startswith("act_")
+        or not is_well_formed(page)
+        or not page.startswith("pg_")
+        or not isinstance(key, str)
+        or not key
+        or not key.isprintable()
+        or unicodedata.normalize("NFC", key) != key
+        or not isinstance(ordinal, int)
+        or isinstance(ordinal, bool)
+        or ordinal < 0
+        or not isinstance(refs, list)
+        or not refs
+        or refs != sorted(set(refs))
+        or not all(isinstance(reference, str) and reference for reference in refs)
+    ):
+        raise SchemaRefusal(
+            "the logical Archetypus member act has malformed identity, key, ordinal, or "
+            "proposal references; the record is refused because local-act provenance is "
+            "not its canonical lineage"
+        )
+    return {
+        "act_id": act,
+        "act_key": key,
+        "page_id": page,
+        "page_ordinal": ordinal,
+        "source_sha256": _logical_sha(value["source_sha256"], "member source_sha256"),
+        "proposal_refs": list(refs),
+    }
 
 
 def _reference_key(reference: dict) -> tuple[str, str]:
@@ -708,6 +826,506 @@ def validate_record(record: dict) -> dict:
     if record["dissent_ref"] != record["perlectio_ref"]:
         raise SchemaRefusal("dissent must travel by reference to this record's one Perlectio")
     return record
+
+
+def validate_logical_record(record: dict) -> dict:
+    """Validate the clustered Archetypus shape without a representative member.
+
+    The legacy record remains the image-local contract.  This separate closed
+    shape makes the migration explicit: accepting an extra ``logical_act_id``
+    beside an old ``page_id``/``act_key`` would only conceal the picker in a
+    compatibility field.
+    """
+    if not isinstance(record, dict) or set(record) != _LOGICAL_RECORD_FIELDS:
+        raise SchemaRefusal(
+            "the logical Archetypus record is outside its closed schema; the record is "
+            "refused because added or missing fields can bypass one-text conservation"
+        )
+    if not verify_self_hash(record):
+        raise SchemaRefusal(
+            "the logical Archetypus record fails its nested self_hash; the record is refused "
+            "because member, text, and evidence bytes must remain bound after establishment"
+        )
+    if not is_well_formed(record["logical_act_id"]) or not record["logical_act_id"].startswith(
+        "pac_"
+    ):
+        raise SchemaRefusal(
+            "the logical Archetypus logical_act_id is not a physical-act identity; the "
+            "record is refused because a free-form or image-local id cannot key clustered text"
+        )
+    if (
+        not isinstance(record["physical_page_components"], list)
+        or not record["physical_page_components"]
+    ):
+        raise SchemaRefusal("the logical Archetypus record has no physical page components")
+    if not isinstance(record["member_local_acts"], list) or not record["member_local_acts"]:
+        raise SchemaRefusal("the logical Archetypus record has no retained local members")
+    components = [_logical_component(component) for component in record["physical_page_components"]]
+    if components != record["physical_page_components"] or [
+        component["physical_page_id"] for component in components
+    ] != sorted({component["physical_page_id"] for component in components}):
+        raise SchemaRefusal(
+            "the logical Archetypus physical-page components are not sorted unique canonical "
+            "rows; the record is refused because one component may not count twice"
+        )
+    members = [_logical_member(member) for member in record["member_local_acts"]]
+    member_ids = [member["act_id"] for member in members]
+    member_keys = [member["act_key"] for member in members]
+    if (
+        members != record["member_local_acts"]
+        or member_ids != sorted(set(member_ids))
+        or len(member_keys) != len(set(member_keys))
+    ):
+        raise SchemaRefusal(
+            "the logical Archetypus local members repeat an act id/key or are not in "
+            "canonical act-id order; the record is refused because every proposal row must "
+            "be conserved exactly once"
+        )
+    component_sources = {
+        source for component in components for source in component["required_capture_sha256s"]
+    }
+    member_sources = {member["source_sha256"] for member in members}
+    if not member_sources <= component_sources:
+        outside_components = sorted(member_sources - component_sources)
+        raise SchemaRefusal(
+            f"the logical Archetypus member capture(s) {outside_components} occur in no "
+            "physical-page component; the record is refused because member ink cannot fall "
+            "outside its capture denominator"
+        )
+    text = record["text"]
+    if not isinstance(text, str) or record["text_hash"] != digest_of(text):
+        raise SchemaRefusal("the logical Archetypus record text is not its one hashed string")
+    if record["status"] != "established":
+        raise SchemaRefusal("the logical Archetypus record status is not established")
+    validate_uncertainty(record["uncertainty"], text)
+    if (
+        validate_annotations(record["annotations"], text, None, "logical Archetypus annotation")
+        != record["annotations"]
+    ):
+        raise SchemaRefusal("the logical Archetypus annotation layer is malformed")
+    if record["text_status"] != derive_record_text_status(
+        text, record["annotations"], record["uncertainty"]
+    ):
+        raise SchemaRefusal("the logical Archetypus text status disagrees with its one text")
+    validate_text_status(text, record["text_status"], record["evidence_ref"])
+    if not isinstance(record["regions"], list) or not record["regions"]:
+        raise SchemaRefusal(
+            "the logical Archetypus has no source regions; the record is refused because "
+            "established text must remain anchored to ink"
+        )
+    for region in record["regions"]:
+        _validate_region_fields(region, "logical Archetypus source region")
+    if not isinstance(record["provenance"], dict) or not record["provenance"]:
+        raise SchemaRefusal(
+            "the logical Archetypus has no model provenance; the record is refused because "
+            "its established text must retain the reader identity and revision"
+        )
+    for field in ("cross_capture_dissent_ref", "perlectio_ref", "recensor_ref"):
+        if not _is_ref_shaped(record[field]):
+            raise SchemaRefusal(f"the logical Archetypus {field} is not digest-bound")
+    paths = {
+        record[field]["relative_path"]
+        for field in ("cross_capture_dissent_ref", "perlectio_ref", "recensor_ref")
+    }
+    if len(paths) != 3:
+        raise SchemaRefusal(
+            "the logical Archetypus parent references reuse one artifact path; the record is "
+            "refused because a dissent, Perlectio, and Recensor review are three different "
+            "pieces of evidence"
+        )
+    return record
+
+
+def _require_the_partition_this_reading_was_made_over(
+    *,
+    partition: dict,
+    logical_act: dict,
+    logical_id: str,
+    dossier: dict,
+    dissent: dict,
+) -> dict:
+    """Bind the row, the reading, and the dissent to one sealed partition.
+
+    ``logical_act`` decides what this record says about the ink behind its one
+    text: which captures were required, which local acts are members, which
+    physical pages the act sits on. Checked only by ``logical_act_id`` string
+    equality, that provenance was the caller's assertion rather than the
+    reading's -- a row naming five captures could be stapled to a joint
+    autopsia that only ever presented two, and the established record would
+    claim evidence its own reading never demonstrated (consult §5.1, hard
+    rule 6).
+
+    The landed 19B dossier already carries everything needed to close that.
+    ``cross_capture_autopsia`` is a full ``cross-capture-autopsia.v1``
+    (``common/cross_capture_autopsia.py::assemble_reader_input`` puts the
+    validated record into the delivered dossier, and the Perlector's own
+    reading schema admits the pair or neither), and it names both the
+    ``partition_ref`` the read was made over and the exact
+    ``required_capture_sha256s`` that reached the reader in one call. So:
+
+    1. the partition object must be the bytes that reference names;
+    2. ``logical_act`` must be *the* row that partition publishes for this
+       logical act, field for field -- not a row that merely agrees about its
+       id;
+    3. the captures the row declares required must be the captures the
+       autopsia actually delivered; and
+    4. the sibling dissent must cite the same partition.
+
+    Nothing here reads a member, a view, or an observation as text. The
+    partition is re-validated rather than trusted, on the same principle the
+    Armarium's ``verify_established_record`` re-derives Archetypus's own
+    checks: a denominator a consumer never re-computes is one refactor away
+    from being wrong where nobody looks.
+    """
+    autopsia = dossier.get("cross_capture_autopsia")
+    if not isinstance(autopsia, dict):
+        raise SchemaRefusal(
+            "logical establishment requires the joint reading's own cross-capture autopsia; "
+            "a dossier that names a logical act with no presentation behind it proves nothing "
+            "about which captures were read"
+        )
+    checked_autopsia = validate_autopsia(autopsia)
+    if checked_autopsia["logical_act_id"] != logical_id:
+        raise SchemaRefusal("logical establishment's autopsia presents another logical act")
+    if not isinstance(partition, dict):
+        raise SchemaRefusal("logical establishment has no physical-act partition")
+    checked_partition = validate_physical_act_partition(partition)
+    if digest_of(checked_partition) != checked_autopsia["partition_ref"]["sha256"]:
+        raise SchemaRefusal(
+            "logical establishment's partition is not the bytes the joint reading's own "
+            "autopsia names; the row that supplies this record's member and capture "
+            "provenance must come from the partition the read was actually made over"
+        )
+    if dissent["partition_ref"] != checked_autopsia["partition_ref"]:
+        raise SchemaRefusal(
+            "logical establishment's dissent cites a different partition than its reading"
+        )
+    published = [
+        row for row in checked_partition["logical_acts"] if row["logical_act_id"] == logical_id
+    ]
+    if len(published) != 1:
+        raise SchemaRefusal(
+            "logical establishment's partition publishes no single row for that logical act"
+        )
+    (published_row,) = published
+    if published_row != logical_act:
+        raise SchemaRefusal(
+            "logical establishment's partition row is not the row this partition publishes "
+            "for that logical act"
+        )
+    required = {
+        source
+        for component in logical_act["physical_page_components"]
+        for source in component["required_capture_sha256s"]
+    }
+    if required != set(checked_autopsia["required_capture_sha256s"]):
+        raise SchemaRefusal(
+            "logical establishment's partition row requires captures the joint reading did "
+            "not present; the established record may not claim evidence its own reading "
+            "never received"
+        )
+    return checked_autopsia
+
+
+def _require_joint_evidence_binding(
+    *,
+    logical_id: str,
+    accepted_perlectio: dict,
+    accepted_review: dict,
+    cross_capture_dissent: dict,
+    cross_capture_dissent_ref: dict[str, str],
+    autopsia: dict,
+    logical_act: dict,
+) -> None:
+    """Prove the sibling dissent and review describe this one joint read."""
+    payload = accepted_perlectio["payload"]
+    review_payload = accepted_review["payload"]
+    if digest_of(cross_capture_dissent) != cross_capture_dissent_ref["sha256"]:
+        raise SchemaRefusal(
+            "logical establishment's cross-capture dissent bytes do not match their "
+            "digest-bound reference; the Archetypus is refused because it may not cite one "
+            "dissent artifact while carrying another"
+        )
+    if cross_capture_dissent["config_digest"] != accepted_perlectio.get(
+        "config_digest"
+    ) or cross_capture_dissent["model_provenance"] != payload.get("provenance"):
+        raise SchemaRefusal(
+            "logical establishment's dissent configuration or model provenance differs from "
+            "its Perlectio; the Archetypus is refused because observations from another "
+            "reader invocation cannot accompany this text"
+        )
+    if cross_capture_dissent["reader_invocation_ref"] != payload.get(
+        "reader_invocation_ref"
+    ) or cross_capture_dissent["response_observation_digest"] != payload.get(
+        "response_observation_digest"
+    ):
+        raise SchemaRefusal(
+            "logical establishment's dissent does not bind the Perlectio's reader invocation "
+            "and observation digest; the Archetypus is refused because post-reading evidence "
+            "must come from the same single call"
+        )
+    presented = {
+        view["view_id"]: {
+            "source_sha256": view["source_sha256"],
+            "region_refs": view["region_refs"],
+        }
+        for view in autopsia["views"]
+    }
+    observed = {
+        view["view_id"]: {
+            "source_sha256": view["source_sha256"],
+            "region_refs": view["region_refs"],
+        }
+        for view in cross_capture_dissent["views"]
+    }
+    if observed != presented:
+        raise SchemaRefusal(
+            "logical establishment's dissent views do not equal the autopsia views its "
+            "Perlectio received; the Archetypus is refused because observations about other "
+            "captures cannot travel beside this text"
+        )
+    if review_payload.get("cross_capture_dissent_ref") != cross_capture_dissent_ref:
+        raise SchemaRefusal(
+            "logical establishment's accepted review does not cite this cross-capture "
+            "dissent; the Archetypus is refused because the Recensor did not review the "
+            "sibling evidence it would export"
+        )
+    coverage = review_payload.get("cross_capture_coverage")
+    if (
+        not isinstance(coverage, dict)
+        or coverage.get("logical_act_id") != logical_id
+        or not isinstance(coverage.get("findings"), list)
+    ):
+        raise SchemaRefusal(
+            "logical establishment's accepted review has no cross-capture coverage record "
+            "for this logical act; the Archetypus is refused because acceptance cannot erase "
+            "the Recensor's visibility denominator"
+        )
+    try:
+        checked_coverage = validate_cross_capture_coverage(coverage)
+    except (SchemaRefusal, TypeError) as error:
+        raise SchemaRefusal(
+            "logical establishment's accepted review has malformed cross-capture coverage; "
+            "the Archetypus is refused because an unvalidated visibility record cannot "
+            "account for the act's capture denominator"
+        ) from error
+    expected_components = {
+        component["physical_page_id"]: component["required_capture_sha256s"]
+        for component in logical_act["physical_page_components"]
+    }
+    measured_components = {
+        component["physical_page_id"]: component["required_capture_sha256s"]
+        for component in checked_coverage["components"]
+    }
+    if measured_components != expected_components:
+        raise SchemaRefusal(
+            "logical establishment's accepted review coverage does not equal the partition's "
+            "physical-page and capture denominator; the Archetypus is refused because a "
+            "visibility finding about other evidence cannot accept this act"
+        )
+    occluded = [
+        finding
+        for finding in coverage["findings"]
+        if isinstance(finding, dict) and finding.get("code") == "occluded-everywhere"
+    ]
+    if occluded:
+        raise SchemaRefusal(
+            "logical establishment's accepted review carries an occluded-everywhere finding; "
+            "the Archetypus is refused because that measured finding routes the act to a "
+            "review item, never to established text"
+        )
+
+
+def establish_logical_record(
+    *,
+    partition: dict,
+    logical_act: dict,
+    accepted_perlectio: dict,
+    accepted_review: dict,
+    perlectio_ref: dict[str, str],
+    recensor_ref: dict[str, str],
+    cross_capture_dissent: dict,
+    cross_capture_dissent_ref: dict[str, str],
+) -> dict:
+    """Copy the one accepted joint Perlectio text into a logical Archetypus.
+
+    This deliberately takes no capture observation or member text argument.
+    Those forms are structurally confined to ``cross_capture_dissent``; only
+    the Perlector's single joint response is permitted to supply ``text``.
+
+    ``accepted_perlectio`` and ``accepted_review`` are checked against
+    ``perlectio_ref``/``recensor_ref`` by digest before either is read, so a
+    caller cannot name one sealed reading in the reference while establishing
+    the text of an object that was never sealed under it.
+
+    ``partition`` is the ``physical-act-partition.v1`` the joint reading was
+    actually made over, and ``logical_act`` must be a row published in it.
+    Both are proved against the reading's own sealed
+    ``cross_capture_autopsia.partition_ref`` rather than taken on the caller's
+    word: the member and capture provenance this record carries is a claim
+    about *which* ink was read, and until it was checked a caller could staple
+    a five-capture partition row onto a reading that only ever demonstrated
+    two.
+    """
+    if not isinstance(logical_act, dict):
+        raise SchemaRefusal("logical establishment has no partition row")
+    logical_id = logical_act.get("logical_act_id")
+    if not isinstance(logical_id, str) or not logical_id:
+        raise SchemaRefusal("logical establishment has no logical act identity")
+    if (
+        not _is_ref_shaped(perlectio_ref)
+        or not _is_ref_shaped(recensor_ref)
+        or not _is_ref_shaped(cross_capture_dissent_ref)
+    ):
+        raise SchemaRefusal("logical establishment has malformed parent references")
+    # The image-local constructor never accepts a reading or review as a bare
+    # argument -- it resolves both itself through `context.tree.read_artifact_
+    # reference`, so what it establishes from is provably the exact sealed
+    # bytes a digest-checked reference names (`reviewed_reading`,
+    # `accepted_primed_perlectio`). This constructor takes its evidence as
+    # plain dicts instead, and until this check existed nothing tied
+    # `accepted_perlectio`/`accepted_review` to `perlectio_ref`/`recensor_ref`
+    # at all beyond the review's own claim about the Perlectio it reviewed --
+    # a caller could name one sealed reading in the reference and establish
+    # the text of a different object entirely. Every artifact in this tree is
+    # written as exactly `canonical_bytes(envelope)`
+    # (`RunTree.publish_artifact`), so a genuine `read_artifact_reference`
+    # result reproduces its own reference's digest here for free; this is the
+    # same proof `read_artifact_reference`'s own `verify_input_bytes` makes,
+    # made again because this function does not call it.
+    if (
+        not isinstance(accepted_perlectio, dict)
+        or digest_of(accepted_perlectio) != perlectio_ref["sha256"]
+    ):
+        raise SchemaRefusal(
+            "logical establishment's Perlectio is not the exact bytes its own "
+            "digest-bound reference names; an established text may only be copied "
+            "from the reading it claims to cite, never from an unverified object "
+            "beside a plausible-looking reference"
+        )
+    if (
+        not isinstance(accepted_review, dict)
+        or digest_of(accepted_review) != recensor_ref["sha256"]
+    ):
+        raise SchemaRefusal(
+            "logical establishment's Recensor review is not the exact bytes its own "
+            "digest-bound reference names"
+        )
+    if (
+        not isinstance(cross_capture_dissent, dict)
+        or digest_of(cross_capture_dissent) != cross_capture_dissent_ref["sha256"]
+    ):
+        raise SchemaRefusal(
+            "logical establishment's cross-capture dissent is not the exact bytes its own "
+            "digest-bound reference names; the Archetypus is refused because sibling "
+            "evidence cannot be substituted beside a valid reference"
+        )
+    payload = accepted_perlectio.get("payload") if isinstance(accepted_perlectio, dict) else None
+    review_payload = accepted_review.get("payload") if isinstance(accepted_review, dict) else None
+    if accepted_perlectio.get("outcome") != "read":
+        reason = payload.get("reason") if isinstance(payload, dict) else None
+        raise SchemaRefusal(
+            f"logical establishment's Perlectio outcome is "
+            f"{accepted_perlectio.get('outcome')!r} ({reason!r}); the Archetypus is refused "
+            "because a capacity hold, failed call, or not-run reading establishes no text"
+        )
+    if not isinstance(payload, dict) or not isinstance(payload.get("text"), str):
+        raise SchemaRefusal(
+            "logical establishment's read Perlectio has no string text payload; the "
+            "Archetypus is refused because absence or a malformed result is not a reading"
+        )
+    if not isinstance(payload.get("dossier"), dict):
+        raise SchemaRefusal(
+            "logical establishment's Perlectio has no object dossier; the Archetypus is "
+            "refused because its text has no joint presentation provenance"
+        )
+    if payload["dossier"].get("logical_act_id") != logical_id:
+        raise SchemaRefusal(
+            "logical establishment's Perlectio dossier names another logical act; the "
+            "Archetypus is refused because one act's reading cannot establish another"
+        )
+    if accepted_review.get("outcome") != "accepted":
+        reason = review_payload.get("reason") if isinstance(review_payload, dict) else None
+        raise SchemaRefusal(
+            f"logical establishment's Recensor outcome is "
+            f"{accepted_review.get('outcome')!r} ({reason!r}); the Archetypus is refused "
+            "because a held review must leave a review item, never established text"
+        )
+    if not isinstance(review_payload, dict):
+        raise SchemaRefusal(
+            "logical establishment's accepted Recensor review has no object payload; the "
+            "Archetypus is refused because acceptance has no checkable evidence"
+        )
+    if review_payload.get("perlectio_ref") != perlectio_ref:
+        raise SchemaRefusal(
+            "logical establishment's accepted Recensor review cites another Perlectio; the "
+            "Archetypus is refused because only the exact reviewed reading may supply text"
+        )
+    dissent = validate_cross_capture_dissent(cross_capture_dissent)
+    if dissent["logical_act_id"] != logical_id or dissent["perlectio_ref"] != perlectio_ref:
+        raise SchemaRefusal(
+            "logical establishment's dissent names another logical act or Perlectio; the "
+            "Archetypus is refused because its sibling evidence does not bind this reading"
+        )
+    autopsia = _require_the_partition_this_reading_was_made_over(
+        partition=partition,
+        logical_act=logical_act,
+        logical_id=logical_id,
+        dossier=payload["dossier"],
+        dissent=dissent,
+    )
+    _require_joint_evidence_binding(
+        logical_id=logical_id,
+        accepted_perlectio=accepted_perlectio,
+        accepted_review=accepted_review,
+        cross_capture_dissent=dissent,
+        cross_capture_dissent_ref=cross_capture_dissent_ref,
+        autopsia=autopsia,
+        logical_act=logical_act,
+    )
+    text = payload["text"]
+    annotations = payload.get("annotations", [])
+    uncertainty = from_perlectio(payload)
+    record = {
+        "logical_act_id": logical_id,
+        "physical_page_components": logical_act.get("physical_page_components"),
+        "member_local_acts": logical_act.get("member_local_acts"),
+        "text": text,
+        "text_hash": digest_of(text),
+        "status": "established",
+        "text_status": derive_record_text_status(text, annotations, uncertainty),
+        "regions": payload.get("basis", {}).get("regions", []),
+        "provenance": payload.get("provenance"),
+        "annotations": annotations,
+        "uncertainty": uncertainty,
+        "evidence_ref": None,
+        "cross_capture_dissent_ref": cross_capture_dissent_ref,
+        "perlectio_ref": perlectio_ref,
+        "recensor_ref": recensor_ref,
+    }
+    record["self_hash"] = self_hash(record)
+    return validate_logical_record(record)
+
+
+def build_logical_index(records: list[dict], *, run_id: str) -> dict:
+    """Build the one-row-per-logical-act index used by clustered consumers."""
+    rows = []
+    seen: set[str] = set()
+    for record in records:
+        checked = validate_logical_record(record)
+        logical_id = checked["logical_act_id"]
+        if logical_id in seen:
+            raise FatalAccounting("the logical Archetypus index has duplicate logical subjects")
+        seen.add(logical_id)
+        rows.append({"logical_act_id": logical_id, "text_hash": checked["text_hash"]})
+    index = {
+        "schema": "archetypus-logical-index.v1",
+        "run_id": run_id,
+        "record_count": len(rows),
+        "rows": sorted(rows, key=lambda row: row["logical_act_id"]),
+    }
+    index["self_hash"] = self_hash(index)
+    return index
 
 
 def _no_readable_text_evidence(

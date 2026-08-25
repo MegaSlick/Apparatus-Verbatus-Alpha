@@ -219,6 +219,44 @@ def test_textual_evidence_and_preference_are_refused_at_correspondence_boundary(
         )
 
 
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ({"act_key": "act:e\u0301"}, "printable NFC"),
+        ({"page_ordinal": True}, "page ordinal is negative, boolean"),
+        ({"page_ordinal": -1}, "page ordinal is negative, boolean"),
+    ],
+)
+def test_partition_constructor_refuses_unstable_keys_and_invalid_boundary_ordinals(
+    mutation, message
+):
+    local = {**_local(ACT_A, "pg_" + "1" * 16, SOURCE_A, "a"), **mutation}
+    with pytest.raises(SchemaRefusal, match=message):
+        build_physical_act_partition(
+            register=empty_register(),
+            register_digest=register_digest(empty_register()),
+            proposal_seal_ref={"relative_path": "x", "sha256": "0" * 64},
+            local_acts=[local],
+            capture_alignments=[],
+            source_ledger={SOURCE_A},
+        )
+
+
+def test_two_local_acts_cannot_share_one_export_key():
+    with pytest.raises(SchemaRefusal, match="act key occurs more than once.*partition is refused"):
+        build_physical_act_partition(
+            register=empty_register(),
+            register_digest=register_digest(empty_register()),
+            proposal_seal_ref={"relative_path": "x", "sha256": "0" * 64},
+            local_acts=[
+                _local(ACT_A, "pg_" + "1" * 16, SOURCE_A, "same-key"),
+                _local(ACT_B, "pg_" + "2" * 16, SOURCE_B, "same-key"),
+            ],
+            capture_alignments=[],
+            source_ledger={SOURCE_A, SOURCE_B},
+        )
+
+
 # --- Sonnet audit seat: driving the identity-totality edges ---------------------
 
 

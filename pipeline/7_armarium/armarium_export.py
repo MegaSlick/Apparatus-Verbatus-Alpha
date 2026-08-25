@@ -171,6 +171,12 @@ _CONTAINER_GRANULARITY_LIMIT: Final = (
     "represented and cannot be counted off this ledger"
 )
 _ACT_PARTITION_DENOMINATOR: Final = "proposal-seal expected acts"
+# The clustered spelling of the same claim. A logical act over two captures is
+# two proposal-seal rows and one terminal category, so a bundle that counted it
+# under the name above would be reporting a number nobody measured. Named as its
+# own denominator, with the seal's own row count carried beside it, exactly as
+# `_SALVAGE_CLAIM_FIELDS` keeps its two shapes apart rather than unioning them.
+_LOGICAL_ACT_PARTITION_DENOMINATOR: Final = "physical-act-partition logical acts"
 _PAGE_CENSUS_DENOMINATOR: Final = "run.json source-page/frame rows"
 _SALVAGE_PROMOTION_CLAIM: Final = (
     "recorded approval then pipeline re-entry; never export-time act promotion"
@@ -245,6 +251,23 @@ class ArmariumProjection:
     # beside them -- two fields could disagree, and the one that reached the
     # ledger would be the one nobody could check.
     ink_map_pages: tuple[dict[str, Any], ...] = ()
+    # How many rows the Designator's proposal seal actually held, when this run's
+    # acts are logical acts over a `physical-act-partition.v1` rather than the
+    # image-local acts the seal names one-for-one.
+    #
+    # `expected_acts` is the act *terminal* denominator, and consult §5.2 makes
+    # it `logical_expected_count` for a clustered run -- one terminal category
+    # per logical act. But the manifest's fixed claim calls that denominator
+    # "proposal-seal expected acts", and for a cluster the two numbers differ:
+    # a two-capture physical act is two seal rows and one logical act. Exporting
+    # the logical count under the local count's name is a claim about something
+    # that was not measured (GOVERNANCE 10), and dropping the local count
+    # entirely loses the evidence a reader needs to reconcile the bundle against
+    # the seal (GOVERNANCE 2). So a clustered run carries both, and the ledger
+    # says which is which -- consult §5.2's "the terminal ledger reports both
+    # counts explicitly". `None` is the ordinary image-local run, where the two
+    # numbers are the same number and the claim already says so.
+    local_proposal_rows: int | None = None
 
 
 @dataclass(frozen=True)
@@ -629,10 +652,24 @@ _MANIFEST_CLAIM_FIELDS: Final = frozenset(
         "ink_map",
     }
 )
-_CLAIM_SUBFIELDS: Final = {
-    "act_partition": frozenset(
+_ACT_PARTITION_CLAIM_FIELDS: Final = {
+    _ACT_PARTITION_DENOMINATOR: frozenset(
         {"denominator", "expected_count", "counted", "reconciles", "categories", "act_keys"}
     ),
+    _LOGICAL_ACT_PARTITION_DENOMINATOR: frozenset(
+        {
+            "denominator",
+            "expected_count",
+            "counted",
+            "reconciles",
+            "categories",
+            "act_keys",
+            "local_proposal_rows",
+            "logical_membership",
+        }
+    ),
+}
+_CLAIM_SUBFIELDS: Final = {
     "submission_inventory": frozenset(
         {
             "status",
@@ -706,6 +743,15 @@ def _verify_manifest_field_closure(manifest: dict[str, Any]) -> None:
     )
     for name, fields in _CLAIM_SUBFIELDS.items():
         _require_exact_fields(claims[name], fields, subject=f"the manifest {name} claim")
+    act_partition = claims["act_partition"]
+    if not isinstance(act_partition, dict):
+        raise SchemaRefusal("the manifest act_partition claim is not an object")
+    act_partition_fields = _ACT_PARTITION_CLAIM_FIELDS.get(act_partition.get("denominator"))
+    if act_partition_fields is None:
+        raise SchemaRefusal("the manifest act denominator is not this build's fixed claim")
+    _require_exact_fields(
+        act_partition, act_partition_fields, subject="the manifest act_partition claim"
+    )
     salvage = claims["salvage"]
     if not isinstance(salvage, dict):
         raise SchemaRefusal("the manifest salvage claim is not an object")
@@ -722,8 +768,6 @@ def _verify_manifest_field_closure(manifest: dict[str, Any]) -> None:
             frozenset({"category", "count", "act_ids"}),
             subject="an act partition category row",
         )
-    if claims["act_partition"]["denominator"] != _ACT_PARTITION_DENOMINATOR:
-        raise SchemaRefusal("the manifest act denominator is not this build's fixed claim")
     if claims["page_census"]["denominator"] != _PAGE_CENSUS_DENOMINATOR:
         raise SchemaRefusal("the manifest page denominator is not this build's fixed claim")
 
@@ -885,6 +929,157 @@ def edge_hold_pages_from_rows(rows: list[dict[str, Any]]) -> tuple[int, ...]:
     )
 
 
+def _act_partition_claim(
+    projection: ArmariumProjection, categories: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """The act denominator, under the name of the thing that was actually counted.
+
+    An image-local run counts proposal-seal rows and says so. A clustered run
+    counts logical acts, which is a different denominator with a different
+    number, and the seal's own row count travels beside it with the membership
+    that reconciles the two -- so a reader holding the bundle and the Designator
+    seal can see why 2 became 1, instead of finding a bundle that claims to have
+    counted seal rows and reports the wrong total for them (GOVERNANCE 10).
+    """
+    claim = {
+        "denominator": _ACT_PARTITION_DENOMINATOR,
+        "expected_count": projection.expected_acts,
+        "counted": len(projection.acts),
+        "reconciles": len(projection.acts) == projection.expected_acts,
+        "categories": categories,
+        "act_keys": {
+            act["act_id"]: act["act_key"]
+            for act in sorted(projection.acts, key=lambda item: item["act_id"])
+        },
+    }
+    logical_rows = [act for act in projection.acts if "logical_membership" in act]
+    if not logical_rows:
+        return claim
+    claim["denominator"] = _LOGICAL_ACT_PARTITION_DENOMINATOR
+    claim["local_proposal_rows"] = projection.local_proposal_rows
+    claim["logical_membership"] = {
+        act["act_id"]: {
+            "member_local_act_ids": list(act["logical_membership"]["member_local_act_ids"]),
+            "member_act_keys": list(act["logical_membership"]["member_act_keys"]),
+            "member_source_page_ordinals": list(
+                act["logical_membership"]["member_source_page_ordinals"]
+            ),
+        }
+        for act in sorted(logical_rows, key=lambda item: item["act_id"])
+    }
+    return claim
+
+
+_LOGICAL_MEMBERSHIP_FIELDS: Final = frozenset(
+    {
+        "member_local_act_ids",
+        "member_act_keys",
+        "member_source_page_ordinals",
+        "physical_page_components",
+    }
+)
+
+
+def _validate_logical_act_conservation(
+    projection: ArmariumProjection, act_ids: set[str], act_keys: set[str]
+) -> None:
+    """Every local proposal row is counted once: under a logical act, or alone.
+
+    Two things a clustered export could do silently, and now cannot.
+
+    **Double-count (consult §7.15).** Nothing refused a projection that carried
+    a logical act *and* its own member local acts as separate rows. Both would
+    have passed every check in this file -- distinct ids, distinct keys, one
+    terminal category each -- and the same ink would have left the pipeline as
+    three delivered acts. The check is exact-identity, not heuristic: a member
+    act_id or act_key that also names a row of this projection is the duplicate.
+
+    **Vanish (GOVERNANCE 2, invariant 8).** A clustered run's act denominator
+    is `logical_expected_count`, which is smaller than the proposal seal's row
+    count by construction. Without `local_proposal_rows` beside it, a member act
+    that never reached any logical act is invisible -- the arithmetic still
+    closes, because the number it closes against already shrank. So a clustered
+    projection must declare how many seal rows it is accounting for, and the
+    members it retains plus the acts it carries alone must be exactly that many.
+
+    Neither check reads a member as text or identity; the logical row's own
+    `act_id`/`act_key` stay derived from `logical_act_id` alone.
+    """
+    logical_rows = [act for act in projection.acts if "logical_membership" in act]
+    if not logical_rows:
+        if projection.local_proposal_rows is not None:
+            raise SchemaRefusal(
+                "an Armarium projection declares a proposal-seal row count but carries no "
+                "logical act; the two denominators are one number in an image-local run"
+            )
+        return
+    members: set[str] = set()
+    for act in logical_rows:
+        membership = act["logical_membership"]
+        if not isinstance(membership, dict) or set(membership) != _LOGICAL_MEMBERSHIP_FIELDS:
+            raise SchemaRefusal("an Armarium projection logical act has no closed membership")
+        ids = membership["member_local_act_ids"]
+        keys = membership["member_act_keys"]
+        components = membership["physical_page_components"]
+        if (
+            not isinstance(ids, list)
+            or not ids
+            or not isinstance(keys, list)
+            or len(keys) != len(ids)
+            or not isinstance(components, list)
+            or not components
+        ):
+            raise SchemaRefusal(
+                "an Armarium projection logical act retains no member local acts or no "
+                "physical page component"
+            )
+        colliding = sorted((set(ids) & act_ids) | (set(keys) & act_keys))
+        if colliding:
+            raise SchemaRefusal(
+                f"an Armarium projection exports member local act(s) {colliding} beside the "
+                "logical act they belong to; one logical act leaves as one act row, never "
+                "again as its own members"
+            )
+        if set(ids) & members:
+            raise SchemaRefusal(
+                "an Armarium projection maps one local act into two logical acts; a member "
+                "act belongs to exactly one logical act"
+            )
+        members.update(ids)
+        # Consult §5.2: attribution becomes `logical_act_id -> all source page
+        # ordinals`, and it is what keeps "a silent page cannot hide beside a
+        # busy page" true once several captures answer for one act. The basis
+        # supplies that attribution as a caller's assertion; the member rows are
+        # where the pages were actually marked out. A logical act attributed to
+        # fewer pages than its own members were cut on would leave the missing
+        # page looking silent -- or, worse, looking accounted for by a busy
+        # sibling. Superset, not equality: a continuation legitimately reaches a
+        # page no member proposal was cut on.
+        attributed = (projection.aggregate_basis.get("act_pages") or {}).get(act["act_key"])
+        if attributed is None:
+            continue
+        uncovered = sorted(set(membership["member_source_page_ordinals"]) - set(attributed))
+        if uncovered:
+            raise SchemaRefusal(
+                f"logical act {act['act_id']} has member acts marked out on page(s) {uncovered} "
+                "that its own page attribution does not name; a member capture's page may not "
+                "drop out of the run's page coverage check"
+            )
+    declared = projection.local_proposal_rows
+    if not isinstance(declared, int) or isinstance(declared, bool):
+        raise SchemaRefusal(
+            "an Armarium projection carries a logical act but does not say how many "
+            "proposal-seal rows its act denominator stands for"
+        )
+    accounted = len(members) + (len(projection.acts) - len(logical_rows))
+    if accounted != declared:
+        raise SchemaRefusal(
+            f"an Armarium projection accounts for {accounted} local proposal row(s) against a "
+            f"declared {declared}; every seal row is carried under exactly one logical act or "
+            "as an act of its own"
+        )
+
+
 def _validate_projection(projection: ArmariumProjection) -> None:
     if not isinstance(projection.fixture_id, str) or not projection.fixture_id:
         raise SchemaRefusal("an Armarium projection has no fixture identifier")
@@ -982,6 +1177,7 @@ def _validate_projection(projection: ArmariumProjection) -> None:
         if category == ArmariumCategory.EXCLUDED_WITH_APPROVAL.value:
             require_approval(ARMARIUM, category, act.get("approval_ref"))
         _reject_act_salvage_namespace(act)
+    _validate_logical_act_conservation(projection, act_ids, act_keys)
     # The basis is the copy the run's verdict is computed from, and it was the
     # one copy of the damage record nothing compared to the acts it describes —
     # the repaired defect's own shape, one level up. Delivered acts and the
@@ -2672,17 +2868,7 @@ def _export_manifest(
                 "denominator": INK_MAP_DENOMINATOR,
                 "held_pages": list(edge_hold_pages_from_rows(list(projection.ink_map_pages))),
             },
-            "act_partition": {
-                "denominator": _ACT_PARTITION_DENOMINATOR,
-                "expected_count": projection.expected_acts,
-                "counted": len(projection.acts),
-                "reconciles": len(projection.acts) == projection.expected_acts,
-                "categories": categories,
-                "act_keys": {
-                    act["act_id"]: act["act_key"]
-                    for act in sorted(projection.acts, key=lambda item: item["act_id"])
-                },
-            },
+            "act_partition": _act_partition_claim(projection, categories),
             "submission_inventory": {
                 "status": "reconciled-at-source-page-ordinal-granularity",
                 "granularity": _SOURCE_GRANULARITY,
