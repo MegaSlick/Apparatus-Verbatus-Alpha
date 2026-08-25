@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 from common.chairs.config import load_models_toml
+from common.chairs.errors import DigestMismatchRefusal
 
 from . import cli
 from . import launch as launch_module
@@ -2708,6 +2709,29 @@ def test_partial_transfer_becomes_named_red_bootstrap_result(tmp_path: Path) -> 
     assert BootstrapStep.PREFLIGHT not in actions.calls
 
 
+def test_model_store_security_refusal_keeps_its_code_and_stops_bootstrap(tmp_path: Path) -> None:
+    class RefusingModelStore(FakeBootstrapActions):
+        def materialize_model_store(self) -> dict[str, object]:
+            self.calls.append(BootstrapStep.MODEL_STORE)
+            raise DigestMismatchRefusal("qwen3.8-27B", "external link target refused")
+
+    lockfile = tmp_path / "uv.lock"
+    lockfile.write_text("version = 1\n", encoding="utf-8")
+    actions = RefusingModelStore()
+    report = Bootstrapper(
+        BootstrapJournal(
+            tmp_path / "bootstrap.json", BootstrapPlan("e" * 40, lockfile), now=lambda: START
+        ),
+        actions,
+    ).run()
+
+    assert report.failure_step is BootstrapStep.MODEL_STORE
+    assert report.detail is not None and "security refusal digest-mismatch" in report.detail
+    assert "qwen3.8-27B" in report.detail
+    assert BootstrapStep.CHAIR_CACHE not in actions.calls
+    assert BootstrapStep.PREFLIGHT not in actions.calls
+
+
 def test_production_bootstrap_refuses_a_lockfile_other_than_checked_out_uv_lock(
     tmp_path: Path,
 ) -> None:
@@ -2728,6 +2752,44 @@ def test_production_bootstrap_refuses_a_lockfile_other_than_checked_out_uv_lock(
 
     with pytest.raises(BootstrapStepFailure, match="not repository uv.lock"):
         actions.sync_uv_environment(other)
+
+
+def test_production_bootstrap_uses_absolute_tools_and_an_explicit_environment(
+    tmp_path: Path, monkeypatch
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    commit = "f" * 40
+    observed: list[tuple[list[str], dict[str, str]]] = []
+    monkeypatch.setenv("VERBATUS_PARENT_SECRET", "must-not-leak")
+
+    def run(argv, **kwargs):  # type: ignore[no-untyped-def]
+        observed.append((list(argv), dict(kwargs["env"])))
+        stdout = f"{commit}\n" if argv[1:] == ["rev-parse", "HEAD"] else ""
+        return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr("operations.pod.bootstrap.subprocess.run", run)
+    actions = SubprocessBootstrapActions(
+        repository=repository,
+        transfer=lambda: {},
+        materialize_model_store=lambda: {},
+        cache=None,  # type: ignore[arg-type]
+        preflight=lambda: {"color": "green"},
+    )
+
+    assert actions.checkout_commit(commit) == {"commit": commit}
+    assert observed
+    assert all(argv[0] == "/usr/bin/git" for argv, _ in observed)
+    assert all(
+        environment
+        == {
+            "PATH": "/usr/local/bin:/usr/bin:/bin",
+            "LANG": "C.UTF-8",
+            "LC_ALL": "C.UTF-8",
+        }
+        for _, environment in observed
+    )
+    assert all("VERBATUS_PARENT_SECRET" not in environment for _, environment in observed)
 
 
 def test_production_bootstrap_refuses_an_incomplete_model_store_receipt(tmp_path: Path) -> None:

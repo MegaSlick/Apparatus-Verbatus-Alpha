@@ -9,8 +9,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Callable, Protocol
+from typing import Callable, Mapping, Protocol
 
+from common.chairs.errors import ChairRefusal
 from common.chairs.model_store import MaterializationFetcher, materialize_real_roster
 from common.chairs.models import AbsentChair, ChairIdentity
 from common.chairs.registry import ChairRegistry
@@ -20,6 +21,12 @@ from .models import require_utc, utc_now
 from .preflight import is_cache_mismatch
 
 BOOTSTRAP_SCHEMA = "pod-bootstrap.v1"
+BOOTSTRAP_EXECUTABLES = {"git": "/usr/bin/git", "uv": "/usr/local/bin/uv"}
+BOOTSTRAP_ENVIRONMENT = {
+    "PATH": "/usr/local/bin:/usr/bin:/bin",
+    "LANG": "C.UTF-8",
+    "LC_ALL": "C.UTF-8",
+}
 
 
 class BootstrapStep(StrEnum):
@@ -285,6 +292,15 @@ class Bootstrapper:
             except BootstrapStepFailure as failure:
                 self.journal.mark_failure(record, failure)
                 return _report_from_record(record)
+            except ChairRefusal as refusal:
+                failure = BootstrapStepFailure(
+                    step,
+                    f"security refusal {refusal.code}: {refusal}",
+                    "Correct the named chair evidence mismatch, then resume this same "
+                    "journal; do not substitute an artifact, revision, or refusal.",
+                )
+                self.journal.mark_failure(record, failure)
+                return _report_from_record(record)
             except Exception as error:
                 failure = BootstrapStepFailure(
                     step,
@@ -399,12 +415,31 @@ class SubprocessBootstrapActions:
         cache: ChairCacheBootstrapAction,
         preflight: Callable[[], dict[str, object]],
         runner: Callable[[list[str], Path], subprocess.CompletedProcess[str]] | None = None,
+        executables: Mapping[str, str] = BOOTSTRAP_EXECUTABLES,
+        environment: Mapping[str, str] = BOOTSTRAP_ENVIRONMENT,
     ) -> None:
         self.repository = Path(repository)
         self.transfer = transfer
         self.materialize = materialize_model_store
         self.cache = cache
         self.preflight = preflight
+        if set(executables) != {"git", "uv"} or any(
+            not isinstance(value, str) or not Path(value).is_absolute()
+            for value in executables.values()
+        ):
+            raise ValueError("bootstrap executables must give absolute git and uv paths")
+        if any(
+            not isinstance(key, str)
+            or not key
+            or "=" in key
+            or "\x00" in key
+            or not isinstance(value, str)
+            or "\x00" in value
+            for key, value in environment.items()
+        ):
+            raise ValueError("bootstrap environment must contain valid explicit text entries")
+        self.executables = dict(executables)
+        self.environment = dict(environment)
         self.runner = runner or self._run
 
     def checkout_commit(self, commit: str) -> dict[str, object]:
@@ -471,7 +506,22 @@ class SubprocessBootstrapActions:
         return result
 
     def _command(self, argv: list[str], step: BootstrapStep) -> subprocess.CompletedProcess[str]:
-        result = self.runner(argv, self.repository)
+        executable = self.executables.get(argv[0])
+        if executable is None:
+            raise BootstrapStepFailure(
+                step,
+                f"no trusted executable is configured for command {argv[0]!r}",
+                "Configure the exact absolute bootstrap executable; PATH lookup is not used.",
+            )
+        command = [executable, *argv[1:]]
+        try:
+            result = self.runner(command, self.repository)
+        except OSError as error:
+            raise BootstrapStepFailure(
+                step,
+                f"command {argv[0]!r} could not start from {executable!r}: {error}",
+                "Repair the exact trusted bootstrap executable and resume.",
+            ) from error
         if result.returncode != 0:
             detail = (result.stderr or result.stdout).strip() or f"exit {result.returncode}"
             raise BootstrapStepFailure(
@@ -481,9 +531,15 @@ class SubprocessBootstrapActions:
             )
         return result
 
-    @staticmethod
-    def _run(argv: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(argv, cwd=cwd, text=True, capture_output=True, check=False)
+    def _run(self, argv: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            argv,
+            cwd=cwd,
+            env=self.environment,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
 
 
 def _report_from_record(record: dict[str, object]) -> BootstrapReport:

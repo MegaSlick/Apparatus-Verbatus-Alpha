@@ -8,7 +8,9 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import stat
 import tempfile
+import unicodedata
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Protocol
@@ -145,17 +147,27 @@ class HuggingFaceMaterializationFetcher:
                 repo_id=repo, revision=revision, cache_dir=client_cache
             )
             source = Path(str(downloaded))
-            if source.is_symlink() or not source.is_dir():
-                raise DigestMismatchRefusal(
-                    repo, "Hugging Face returned no regular snapshot directory"
-                )
-            if not source.resolve().is_relative_to(client_cache.resolve()):
+            if not _same_directory_anchor(source, client_cache):
                 raise DigestMismatchRefusal(
                     repo,
                     "Hugging Face returned a snapshot outside its per-call cache; only the "
                     "requested revision below that isolated cache can enter staging",
                 )
-            shutil.copytree(source, destination, dirs_exist_ok=True)
+            if client_cache.is_symlink() or not client_cache.is_dir():
+                raise DigestMismatchRefusal(
+                    repo,
+                    "Hugging Face replaced its per-call cache root; an isolated cache "
+                    "must remain one regular directory",
+                )
+            if source.is_symlink() or not source.is_dir():
+                raise DigestMismatchRefusal(
+                    repo, "Hugging Face returned no regular snapshot directory"
+                )
+            files = _validated_materialization_files(source, client_cache, repo)
+            for relative, origin, identity in files:
+                target = destination / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                _copy_verified_file(origin, target, identity, repo, relative)
         except OSError as error:
             failure = DigestMismatchRefusal(
                 repo, f"cannot copy the pinned Hugging Face snapshot into staging: {error}"
@@ -166,6 +178,125 @@ class HuggingFaceMaterializationFetcher:
             raise
         finally:
             _cleanup_huggingface_cache(client_cache, repo, failure)
+
+
+def _same_directory_anchor(path: Path, root: Path) -> bool:
+    """Prove lexical containment reaches the configured root's actual inode."""
+
+    try:
+        resolved_root = root.resolve(strict=True)
+        resolved = path.resolve(strict=True)
+        relative = resolved.relative_to(resolved_root)
+        anchor = resolved
+        for _ in relative.parts:
+            anchor = anchor.parent
+        return anchor.samefile(root)
+    except (OSError, ValueError):
+        return False
+
+
+def _validated_materialization_files(
+    source: Path, client_cache: Path, repo: str
+) -> list[tuple[str, Path, tuple[int, int]]]:
+    """Inventory repository files without following a link outside the cache."""
+
+    try:
+        cache_device = client_cache.stat(follow_symlinks=False).st_dev
+    except OSError as error:
+        raise DigestMismatchRefusal(repo, f"cannot inspect the per-call cache: {error}") from error
+    identities: dict[str, str] = {}
+    files: list[tuple[str, Path, tuple[int, int]]] = []
+
+    def refuse_walk(error: OSError) -> None:
+        raise DigestMismatchRefusal(
+            repo, f"cannot inspect the returned Hugging Face snapshot: {error}"
+        ) from error
+
+    for directory, directories, filenames in os.walk(
+        source, followlinks=False, onerror=refuse_walk
+    ):
+        parent = Path(directory)
+        for name in [*directories, *filenames]:
+            candidate = parent / name
+            relative = candidate.relative_to(source).as_posix()
+            folded = unicodedata.normalize("NFD", relative).casefold()
+            previous = identities.setdefault(folded, relative)
+            if previous != relative:
+                raise DigestMismatchRefusal(
+                    repo,
+                    "the pinned repository carries paths that collide on default APFS: "
+                    f"{previous!r} and {relative!r}",
+                )
+        for name in directories:
+            candidate = parent / name
+            relative = candidate.relative_to(source).as_posix()
+            if candidate.is_symlink():
+                raise DigestMismatchRefusal(
+                    repo,
+                    f"the Hugging Face cache represents directory {relative!r} as a symlink; "
+                    "directory links are never followed into repository evidence",
+                )
+            try:
+                status = candidate.stat(follow_symlinks=False)
+            except OSError as error:
+                raise DigestMismatchRefusal(
+                    repo, f"cannot inspect returned snapshot directory {relative!r}: {error}"
+                ) from error
+            if status.st_dev != cache_device:
+                raise DigestMismatchRefusal(
+                    repo,
+                    f"returned snapshot directory {relative!r} crosses the isolated "
+                    "cache's device boundary",
+                )
+        for name in filenames:
+            candidate = parent / name
+            relative = candidate.relative_to(source).as_posix()
+            try:
+                origin = candidate.resolve(strict=True) if candidate.is_symlink() else candidate
+                status = origin.stat(follow_symlinks=False)
+            except OSError as error:
+                raise DigestMismatchRefusal(
+                    repo, f"cannot resolve returned snapshot file {relative!r}: {error}"
+                ) from error
+            if not stat.S_ISREG(status.st_mode) or status.st_dev != cache_device:
+                raise DigestMismatchRefusal(
+                    repo,
+                    f"returned snapshot file {relative!r} is not a regular file on the "
+                    "isolated cache device",
+                )
+            if not _same_directory_anchor(origin, client_cache):
+                raise DigestMismatchRefusal(
+                    repo,
+                    f"returned snapshot file {relative!r} resolves outside the per-call "
+                    "cache; external link targets are never read",
+                )
+            files.append((relative, origin, (status.st_dev, status.st_ino)))
+    return sorted(files, key=lambda item: item[0])
+
+
+def _copy_verified_file(
+    origin: Path,
+    target: Path,
+    expected_identity: tuple[int, int],
+    repo: str,
+    relative: str,
+) -> None:
+    """Copy the inode that validation observed, refusing a check/use swap."""
+
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(origin, flags)
+    try:
+        status = os.fstat(descriptor)
+        if (status.st_dev, status.st_ino) != expected_identity:
+            raise DigestMismatchRefusal(
+                repo,
+                f"returned snapshot file {relative!r} changed between validation and copy",
+            )
+        with os.fdopen(descriptor, "rb", closefd=False) as source_handle:
+            with target.open("xb") as target_handle:
+                shutil.copyfileobj(source_handle, target_handle)
+    finally:
+        os.close(descriptor)
 
 
 def _cleanup_huggingface_cache(

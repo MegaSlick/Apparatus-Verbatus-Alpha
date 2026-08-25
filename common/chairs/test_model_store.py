@@ -545,6 +545,25 @@ def test_materializer_refuses_a_staged_symlink_before_reading_its_target(tmp_pat
         )
 
 
+def test_materializer_refuses_a_hard_link_to_bytes_owned_outside_staging(tmp_path):
+    outside = tmp_path / "outside-operator-file"
+    outside.write_bytes(b"not repository evidence")
+    store = tmp_path / "store"
+
+    class _HardLinksExternalBytes:
+        def fetch(self, repo: str, revision: str, destination: Path) -> None:
+            del repo, revision
+            os.link(outside, destination / "model.safetensors")
+
+    with pytest.raises(DigestMismatchRefusal, match="hard-linked file"):
+        materialize_real_roster(
+            store, _HardLinksExternalBytes(), capacity=dict(_MATERIALIZATION_CAPACITY)
+        )
+
+    assert outside.read_bytes() == b"not repository evidence"
+    assert outside.stat().st_nlink == 1
+
+
 def test_promote_verified_snapshot_refuses_a_manifest_name_no_record_may_reference(tmp_path):
     record = _store(tmp_path)
     entry = next(item for item in record["artifacts"] if item["artifact"] == "churro-3B")
@@ -568,6 +587,14 @@ def test_verify_store_refuses_a_manifest_tampered_after_it_was_written(tmp_path)
 
     with pytest.raises(DigestMismatchRefusal, match="manifest differs"):
         verify_store(tmp_path)
+
+
+def test_download_record_read_is_bounded_before_json_deserialization(tmp_path, monkeypatch):
+    monkeypatch.setattr(model_store, "MAX_DOWNLOAD_RECORD_BYTES", 32)
+    (tmp_path / "download_record.json").write_bytes(b"{" + b"x" * 32)
+
+    with pytest.raises(DigestMismatchRefusal, match="32-byte control-artifact limit"):
+        load_download_record(tmp_path)
 
 
 def test_verify_store_refuses_a_manifest_fifo_before_any_blocking_read(tmp_path):
@@ -1069,6 +1096,34 @@ def test_a_second_boot_verifies_the_whole_store_once_not_once_per_artifact(tmp_p
     assert {row["artifact"] for row in receipt["artifacts"]} == present
 
 
+def test_materializer_receipt_digest_names_the_record_whole_store_verification_checked(
+    tmp_path, monkeypatch
+):
+    """A concurrent valid active-record update cannot relabel verified evidence."""
+
+    fetcher = _FakeMaterializationFetcher()
+    capacity = dict(_MATERIALIZATION_CAPACITY)
+    materialize_real_roster(tmp_path, fetcher, capacity=capacity)
+    verify = model_store.verify_store
+    observed: dict[str, str] = {}
+
+    def verify_then_advance_active_record(root):  # type: ignore[no-untyped-def]
+        inventory = verify(root)
+        observed["verified"] = inventory["download_record_sha256"]
+        replacement = load_download_record(root)
+        replacement["capacity"]["available_bytes"] += 1
+        observed["advanced"] = write_download_record(replacement, root)
+        return inventory
+
+    monkeypatch.setattr(model_store, "verify_store", verify_then_advance_active_record)
+
+    receipt = materialize_real_roster(tmp_path, fetcher, capacity=capacity)
+
+    assert observed["verified"] != observed["advanced"]
+    assert receipt["download_record_sha256"] == observed["verified"]
+    assert digest_bytes(canonical_bytes(load_download_record(tmp_path))) == observed["advanced"]
+
+
 def _die_on_call(monkeypatch, name, ordinal):
     """Kill the materializer inside one named step, the way a pod dies."""
 
@@ -1364,6 +1419,14 @@ def test_shard_index_refuses_a_non_text_path_instead_of_coercing_it(tmp_path):
     (tmp_path / "7").write_bytes(b"not a valid shard name")
 
     with pytest.raises(DigestMismatchRefusal, match="nonblank relative POSIX paths"):
+        model_store._indexed_shards(tmp_path, "fixture-artifact")
+
+
+def test_shard_index_read_is_bounded_before_json_deserialization(tmp_path, monkeypatch):
+    monkeypatch.setattr(model_store, "MAX_SHARD_INDEX_BYTES", 32)
+    (tmp_path / "model.safetensors.index.json").write_bytes(b"{" + b"x" * 32)
+
+    with pytest.raises(DigestMismatchRefusal, match="32-byte control-artifact limit"):
         model_store._indexed_shards(tmp_path, "fixture-artifact")
 
 

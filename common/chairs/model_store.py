@@ -16,7 +16,9 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import stat
 import tempfile
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
@@ -166,6 +168,12 @@ DAI_PROMPT_CITATION = (
     "system.txt and query.txt"
 )
 MODEL_PAYLOAD_SUFFIXES = frozenset({".bin", ".gguf", ".onnx", ".pt", ".pth", ".safetensors"})
+# The record has six unique roster artifacts and no payload bytes.  One MiB is
+# deliberately generous while keeping a forged control document memory-bounded.
+MAX_DOWNLOAD_RECORD_BYTES = 1_048_576
+# Shard indexes name payloads but never contain them.  Real indexes remain well
+# below this ceiling; repository-controlled JSON cannot claim unbounded memory.
+MAX_SHARD_INDEX_BYTES = 16_777_216
 
 
 class MaterializationFetcher(Protocol):
@@ -233,6 +241,10 @@ def materialize_real_roster(
                 )
             _refuse_staged_symlinks(staging, requirement.artifact)
             licence = _snapshot_licence(staging, requirement)
+            # Synthetic licence evidence is created after the first ownership
+            # walk. Recheck before any rglob/read so a case collision or link
+            # introduced at that seam is still refused rather than measured.
+            _refuse_staged_symlinks(staging, requirement.artifact)
             carried = _carried_content(requirement, staging)
             payloads = sorted(
                 path.relative_to(staging).as_posix()
@@ -304,7 +316,10 @@ def materialize_real_roster(
         "artifacts": [
             completed[item.artifact] for item in requirements if item.artifact in completed
         ],
-        "download_record_sha256": digest_bytes(canonical_bytes(load_download_record(root))),
+        # This is the record `verify_store` actually checked. Reloading the
+        # active pointer here would let a concurrent valid update attach an
+        # unverified record digest to the already-computed verification result.
+        "download_record_sha256": inventory["download_record_sha256"],
         "complete": inventory["complete"],
         # Store completeness includes the non-roster Surya adapter; bootstrap
         # needs the narrower fact that every selectable real-roster pin verified.
@@ -335,25 +350,63 @@ def _cleanup_failed_staging(staging: Path, artifact: str, failure: BaseException
 
 
 def _refuse_staged_symlinks(snapshot: Path, artifact: str) -> None:
-    """Refuse links before any semantic inspection can follow their targets."""
+    """Refuse links and non-portable identities before inspecting fetched bytes.
+
+    Git snapshots do not preserve hard links or nested mount points.  Neither is
+    therefore repository evidence, and both can make containment depend on an
+    inode outside the staging tree.  APFS also folds Unicode normalization and
+    case by default, so two Linux names that collapse there are not two durable
+    artifacts and must never be measured as though they were.
+    """
 
     def refuse_walk(error: OSError) -> None:
         raise DigestMismatchRefusal(
             artifact, f"the fetched revision cannot be inspected for symlinks: {error}"
         ) from error
 
+    try:
+        root_device = snapshot.stat(follow_symlinks=False).st_dev
+    except OSError as error:
+        refuse_walk(error)
+    identities: dict[str, str] = {}
     for directory, directories, filenames in os.walk(
         snapshot, followlinks=False, onerror=refuse_walk
     ):
         parent = Path(directory)
         for name in [*directories, *filenames]:
             candidate = parent / name
+            relative = candidate.relative_to(snapshot).as_posix()
+            folded = unicodedata.normalize("NFD", relative).casefold()
+            previous = identities.setdefault(folded, relative)
+            if previous != relative:
+                raise DigestMismatchRefusal(
+                    artifact,
+                    "the fetched revision carries paths that collide on default APFS: "
+                    f"{previous!r} and {relative!r}",
+                )
             if candidate.is_symlink():
-                relative = candidate.relative_to(snapshot).as_posix()
                 raise DigestMismatchRefusal(
                     artifact,
                     f"the fetched revision carries a symlink at {relative!r}; materialization "
                     "never reads or manifests a link target",
+                )
+            try:
+                status = candidate.stat(follow_symlinks=False)
+            except OSError as error:
+                raise DigestMismatchRefusal(
+                    artifact, f"the fetched revision cannot inspect {relative!r}: {error}"
+                ) from error
+            if status.st_dev != root_device:
+                raise DigestMismatchRefusal(
+                    artifact,
+                    f"the fetched revision crosses a device boundary at {relative!r}; "
+                    "staging containment is an inode property, not a path spelling",
+                )
+            if stat.S_ISREG(status.st_mode) and status.st_nlink != 1:
+                raise DigestMismatchRefusal(
+                    artifact,
+                    f"the fetched revision carries a hard-linked file at {relative!r}; "
+                    "repository evidence must be owned by this staging tree alone",
                 )
 
 
@@ -433,7 +486,14 @@ def _indexed_shards(snapshot: Path, artifact: str) -> list[str]:
         if not path.is_file() or path.name not in SHARD_INDEX_NAMES:
             continue
         try:
-            index = json.loads(path.read_text(encoding="utf-8"))
+            index = json.loads(
+                _read_limited_bytes(
+                    path,
+                    MAX_SHARD_INDEX_BYTES,
+                    artifact,
+                    f"shard index {path.name!r}",
+                )
+            )
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
             raise DigestMismatchRefusal(
                 artifact, f"shard index {path.name!r} is unreadable: {error}"
@@ -636,7 +696,23 @@ def _write_licence_observation(path: Path, text: str, artifact: str) -> None:
     refuse both upstream-name collisions and concurrent writers.
     """
 
+    folded_name = unicodedata.normalize("NFD", path.name).casefold()
     try:
+        collision = next(
+            (
+                candidate.name
+                for candidate in path.parent.iterdir()
+                if unicodedata.normalize("NFD", candidate.name).casefold() == folded_name
+            ),
+            None,
+        )
+        if collision is not None:
+            raise DigestMismatchRefusal(
+                artifact,
+                f"reserved synthetic licence evidence name {path.name!r} collides on "
+                f"default APFS with repository path {collision!r}; upstream bytes are "
+                "never overwritten",
+            )
         with path.open("x", encoding="utf-8") as handle:
             handle.write(text)
     except FileExistsError as error:
@@ -686,6 +762,34 @@ def _materialization_receipt(entry: Mapping[str, Any]) -> dict[str, str]:
     }
 
 
+def _read_limited_bytes(path: Path, limit: int, chair: str, label: str) -> bytes:
+    """Read one small control artifact without allowing boundary amplification."""
+
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0),
+        )
+        status = os.fstat(descriptor)
+        if not stat.S_ISREG(status.st_mode):
+            raise DigestMismatchRefusal(chair, f"{label} must be a regular file")
+        with os.fdopen(descriptor, "rb") as handle:
+            descriptor = None
+            payload = handle.read(limit + 1)
+    except OSError as error:
+        raise DigestMismatchRefusal(chair, f"cannot read {label}: {error}") from error
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+    if len(payload) > limit:
+        raise DigestMismatchRefusal(
+            chair,
+            f"{label} exceeds the {limit}-byte control-artifact limit",
+        )
+    return payload
+
+
 def load_download_record(store_root: str | Path) -> dict[str, Any]:
     """Load the canonical active record and prove its immutable version exists."""
 
@@ -696,7 +800,12 @@ def load_download_record(store_root: str | Path) -> dict[str, Any]:
             "model-store", "download_record.json must be a regular in-store active copy"
         )
     try:
-        raw_bytes = active.read_bytes()
+        raw_bytes = _read_limited_bytes(
+            active,
+            MAX_DOWNLOAD_RECORD_BYTES,
+            "model-store",
+            "download_record.json",
+        )
         raw = json.loads(raw_bytes)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise DigestMismatchRefusal(
@@ -717,7 +826,12 @@ def load_download_record(store_root: str | Path) -> dict[str, Any]:
             "model-store", "immutable download record version must be a regular in-store file"
         )
     try:
-        archived_bytes = archive.read_bytes()
+        archived_bytes = _read_limited_bytes(
+            archive,
+            MAX_DOWNLOAD_RECORD_BYTES,
+            "model-store",
+            "immutable version of the download record",
+        )
     except OSError as error:
         raise DigestMismatchRefusal(
             "model-store",
@@ -1006,6 +1120,8 @@ def verify_store(store_root: str | Path) -> dict[str, Any]:
             # Nothing exists to verify and nothing is claimed: the absence is
             # named in the record and travels out in the inventory's `pending`.
             continue
+        snapshot = _under(root, item["snapshot"])
+        _refuse_staged_symlinks(snapshot, item["artifact"])
         manifest_path = _under(root, item["manifest"])
         if not manifest_path.is_file():
             raise DigestMismatchRefusal(
@@ -1037,7 +1153,6 @@ def verify_store(store_root: str | Path) -> dict[str, Any]:
                     item["artifact"],
                     f"carried content {carried['path']!r} is absent from its digest manifest",
                 )
-        snapshot = _under(root, item["snapshot"])
         if (snapshot / CACHE_DESCRIPTOR).exists():
             raise DigestMismatchRefusal(
                 item["artifact"],

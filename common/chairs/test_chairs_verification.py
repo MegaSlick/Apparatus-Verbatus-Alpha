@@ -529,6 +529,73 @@ def test_the_materialization_fetcher_refuses_a_snapshot_outside_its_per_call_cac
     assert sorted(destination.iterdir()) == []
 
 
+def test_the_materialization_fetcher_never_reads_an_external_cache_symlink(tmp_path):
+    outside = tmp_path / "operator-secret"
+    outside.write_bytes(b"must not enter model evidence")
+
+    class ReturnsExternalFileLink:
+        def snapshot_download(self, **kwargs):
+            source = Path(kwargs["cache_dir"]) / "snapshot"
+            source.mkdir(parents=True)
+            (source / "model.safetensors").symlink_to(outside)
+            return source
+
+    destination = tmp_path / "staging"
+    destination.mkdir()
+
+    with pytest.raises(DigestMismatchRefusal, match="external link targets are never read"):
+        HuggingFaceMaterializationFetcher(ReturnsExternalFileLink()).fetch(
+            "fixture-org/pinned", "a" * 40, destination
+        )
+
+    assert outside.read_bytes() == b"must not enter model evidence"
+    assert sorted(destination.iterdir()) == []
+
+
+def test_the_materialization_fetcher_copies_only_internal_cache_symlink_bytes(tmp_path):
+    class ReturnsInternalBlobLink:
+        def snapshot_download(self, **kwargs):
+            cache = Path(kwargs["cache_dir"])
+            blob = cache / "blobs" / "model"
+            blob.parent.mkdir(parents=True)
+            blob.write_bytes(b"pinned model bytes")
+            source = cache / "snapshots" / "revision"
+            source.mkdir(parents=True)
+            (source / "model.safetensors").symlink_to("../../blobs/model")
+            return source
+
+    destination = tmp_path / "staging"
+    destination.mkdir()
+
+    HuggingFaceMaterializationFetcher(ReturnsInternalBlobLink()).fetch(
+        "fixture-org/pinned", "a" * 40, destination
+    )
+
+    copied = destination / "model.safetensors"
+    assert not copied.is_symlink()
+    assert copied.read_bytes() == b"pinned model bytes"
+
+
+def test_the_materialization_fetcher_refuses_default_apfs_name_collisions(tmp_path):
+    class ReturnsCaseCollidingFiles:
+        def snapshot_download(self, **kwargs):
+            source = Path(kwargs["cache_dir"]) / "snapshot"
+            source.mkdir(parents=True)
+            (source / "Weights.bin").write_bytes(b"first")
+            (source / "weights.bin").write_bytes(b"second")
+            return source
+
+    destination = tmp_path / "staging"
+    destination.mkdir()
+
+    with pytest.raises(DigestMismatchRefusal, match="collide on default APFS"):
+        HuggingFaceMaterializationFetcher(ReturnsCaseCollidingFiles()).fetch(
+            "fixture-org/pinned", "a" * 40, destination
+        )
+
+    assert sorted(destination.iterdir()) == []
+
+
 def test_the_materialization_fetcher_names_a_per_call_cache_cleanup_failure(tmp_path, monkeypatch):
     class CachedSnapshotClientFake:
         def snapshot_download(self, **kwargs):
