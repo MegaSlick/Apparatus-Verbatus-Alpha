@@ -104,21 +104,11 @@ DEFAULT_PERLECTOR_AUDIT_CONFIG_PATH = (
 WITNESS_CONTEXT_REGIMES: Final = ("named", "blinded")
 MAX_NUDA_PER_MILLE: Final = 1000
 MAX_PERLECTOR_INSTRUMENT_PER_MILLE: Final = 1000
-# The approval-ref flags are sealed experiment selectors, not free-form notes.
-# `.v1` versions the experiment identity and executable sampling design, while
-# an approval record's `target_version_hash` versions the exact run configuration
-# used for one execution of it (D:B6: subject = experiment, version = config
-# digest). `lectio-nuda-sampling-design.v1` denotes an act-level, unprimed
-# Lectio with no testimony or prior draft, selected by nuda.py's
-# `digest-threshold-over-run-id-and-act-id.v1`. The prior-draft instrument
-# subject denotes an act-level `primed-without-prior` control that sees testimony
-# but no Pass-A draft, selected by protocol.py's
-# `digest-threshold-over-frame-page-seed-act.v1`. A change to either condition or
-# algorithm therefore requires a new subject; a rate or sealed configuration
-# change requires a new approval record for the new `config_digest`.
-#
-# Perlector resolves each selector to exactly one checked approval record after
-# the run authority exists and can therefore assert its target config digest.
+# These sealed CLI values identify experiments, not approval evidence. A changed
+# condition or selection algorithm needs a new `.v1` subject; a changed rate or
+# run configuration needs a new approval targeting the resulting `config_digest`.
+# Resolution happens after the run authority exists to avoid circularly including
+# an approval record's own content address in the configuration it approves.
 NUDA_APPROVAL_SUBJECT: Final = "lectio-nuda-sampling-design.v1"
 PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT: Final = "perlector-prior-draft-instrument-design.v1"
 

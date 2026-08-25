@@ -89,30 +89,14 @@ from common.stage import (  # noqa: E402
 def resolve_sampling_approval(context, *, approval_ref: str, subject: str) -> ApprovalRecordBinding:
     """Resolve one sealed experiment selector to its checked approval record.
 
-    A record cannot name a configuration digest that itself contains that
-    record's content address: that would be a hash fixed point.  The sealed
-    selector therefore names the experiment, while the stored record is found
-    by its subject and exact sealed version.  Every candidate is re-read through
-    ``RunTree.read_approval_record``; no decoded JSON is trusted as approval
-    evidence until its path, digest, schema, self-hash, and approver pass there.
-    The selector denotations live beside the two constants in ``common.stage``.
-    The returned binding carries the verified subject into the arm-specific
-    design builder, where an approval for the other executable design is refused
-    again instead of relying only on these call sites being wired correctly.
+    The sealed selector avoids a hash fixed point: an approval cannot both be
+    addressed by its content and target a configuration containing that address.
+    Candidates pass path, digest, schema, self-hash, approver, sole-subject,
+    action, and exact-version checks before the binding reaches either arm.
 
-    **What this gate establishes, exactly.**  That a well-formed, unedited record
-    exists in this run tree, filed under this experiment, this governed action,
-    and this run's own sealed ``config_digest``, and that it names Tyrel as its
-    approver.  ``approver`` is a string compare against a constant
-    ``common/contracts/approval.py`` stamps itself, so what the gate does *not*
-    establish is that Tyrel wrote it: nothing in the bytes distinguishes his
-    record from a well-formed one produced by anyone with write access to the run
-    tree.  The authority rests on who may write there, not on the check.  That is
-    a named alpha position, not an oversight -- the contract module says so at its
-    own docstring, `common/contracts/test_contracts_approval.py` holds pipeline
-    code away from the builder and the writer, and closing the residual would take
-    an out-of-band signature this project has not adopted.  A reader who needs the
-    stronger claim should reach for that, not for this function.
+    The record authenticates integrity and a claimed approver, not authorship;
+    run-tree write authority remains the trust boundary. Authenticating the human
+    act itself would require an out-of-band signature.
     """
     if approval_ref != subject:
         raise ContractError(
@@ -123,6 +107,8 @@ def resolve_sampling_approval(context, *, approval_ref: str, subject: str) -> Ap
     receipts = context.tree.resolve(RECEIPTS_DIR)
     candidates: list[ApprovalRecordReference] = []
     if receipts.is_dir():
+        # Every receipt must decode because an unreadable object could conceal a
+        # matching subject and make the exactly-one cardinality check incomplete.
         for path in sorted(receipts.glob("*.json")):
             relative_path = f"{RECEIPTS_DIR}/{path.name}"
             try:
@@ -159,14 +145,9 @@ def resolve_sampling_approval(context, *, approval_ref: str, subject: str) -> Ap
                 )
             if decoded.get("subject_ids") != [subject]:
                 continue
-            digest = path.stem
-            candidates.append(ApprovalRecordReference(f"{RECEIPTS_DIR}/{digest}.json", digest))
+            candidates.append(ApprovalRecordReference(relative_path, path.stem))
 
     if not candidates:
-        # The refusal names the two things an operator needs and cannot derive
-        # from the message otherwise: where the record goes, and which version it
-        # has to approve. Without them this is a dead end reached three stages
-        # into a run that has already spent on chairs.
         raise ContractError(
             f"no approval record names experiment {subject!r}; a nonzero sampling arm "
             "cannot draw without Tyrel's typed approval record. Expected one record "
@@ -194,6 +175,7 @@ def resolve_sampling_approval(context, *, approval_ref: str, subject: str) -> Ap
             "and start a new run tree with one current approval record before sampling"
         )
 
+    candidate = candidates[0]
     record = records[0]
     # "exclusion" and "salvage-promotion" approve a different governed action entirely
     # (GOVERNANCE 1); a sampling design is filed under "other" so a record meant to
@@ -201,7 +183,7 @@ def resolve_sampling_approval(context, *, approval_ref: str, subject: str) -> Ap
     # of subject text.
     if record["action"] != "other":
         raise ContractError(
-            f"approval record {candidates[0].relative_path!r} for experiment {subject!r} has "
+            f"approval record {candidate.relative_path!r} for experiment {subject!r} has "
             f"action {record['action']!r}, not 'other', for this run's sealed config_digest "
             f"{context.config_digest}. A sampling design approval is not an exclusion or "
             "salvage-promotion record. Preserve this run for review and start a new run tree with "
@@ -209,14 +191,14 @@ def resolve_sampling_approval(context, *, approval_ref: str, subject: str) -> Ap
         )
     if record["target_version_hash"] != context.config_digest:
         raise ContractError(
-            f"approval record {candidates[0].relative_path!r} for experiment {subject!r} names "
+            f"approval record {candidate.relative_path!r} for experiment {subject!r} names "
             f"version {record['target_version_hash']}, not this run's sealed config_digest "
             f"{context.config_digest}. The record approves a different sealed configuration. "
             "Preserve this run for review and start a new run tree with one approval record for "
             "the configuration that will be sampled"
         )
     return ApprovalRecordBinding(
-        candidates[0],
+        candidate,
         record["subject_ids"][0],
         record["target_version_hash"],
     )

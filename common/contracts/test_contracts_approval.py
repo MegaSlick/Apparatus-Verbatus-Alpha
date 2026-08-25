@@ -55,11 +55,7 @@ def test_data_gate_is_not_an_approvable_action():
 
 @pytest.mark.parametrize("timestamp", ["", "   ", None, 20260804])
 def test_the_builder_refuses_a_timestamp_the_validator_would_reject(timestamp):
-    """The builder and the validator have to accept exactly the same records. The
-    validator refuses a blank or non-string timestamp; the builder did not check it
-    at all, so a caller could seal one no reader would ever accept back — and its
-    self-hash would verify happily, because a hash covers whatever bytes were sealed
-    rather than whether they meant anything."""
+    """Builder and validator must agree; a self-hash proves no semantic validity."""
     with pytest.raises(ApprovalRefusal, match="no timestamp"):
         build_approval_record(
             subject_ids=["exclusion-subject"],
@@ -161,9 +157,6 @@ def test_a_non_dict_ingress_record_is_refused():
         parse_ingress_record("real")
 
 
-# --- Who may mint an approval: GOVERNANCE's "no agent stands in for him" ---------
-
-
 # The three places the approval builder and writer may legitimately appear: the
 # module that defines the builder, the store that defines the writer, and the
 # package that re-exports the builder for tests and operator tooling. Anything
@@ -189,12 +182,8 @@ def test_no_pipeline_module_mints_its_own_approval_record():
     An unused writer leaves no runtime trace, so this reads the source: a stage
     that grows an approval of its own fails here even though no test calls it.
 
-    Deliberately not a runtime check. This is a statement about the repository,
-    and the honest enforcement of it is that the fact is checked and named rather
-    than assumed. What it cannot do is stop a human, an operator script, or an
-    agent with write access from placing a well-formed record in a run tree by
-    hand; that residual is real, recorded here, and not closable without an
-    out-of-band signature this project has not adopted.
+    Source inspection cannot authenticate a record placed by a writer with run-tree
+    access; that stronger guarantee requires an out-of-band signature.
     """
     root = Path(__file__).resolve().parents[2]
     offenders = []

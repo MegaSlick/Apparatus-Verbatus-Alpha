@@ -68,21 +68,6 @@ def nuda_approval_record(scenario: str, nuda_per_mille: int) -> dict:
     )
 
 
-def nuda_approval_reference(scenario: str, nuda_per_mille: int) -> dict[str, str]:
-    """Where that record lands, computed without reading the run tree."""
-    digest = digest_bytes(canonical_bytes(nuda_approval_record(scenario, nuda_per_mille)))
-    return {"relative_path": f"receipts/sha256/{digest}.json", "sha256": digest}
-
-
-def _write_nuda_approval(run_root: Path, run_id: str, scenario: str, nuda_per_mille: int) -> None:
-    """Pre-place the human record before the fixture reaches the Perlector.
-
-    The fixture defaults to rate zero and has no approval.  A test that enables
-    the arm supplies the same predeclared record a real experiment requires.
-    """
-    RunTree(run_root, run_id).write_approval_record(nuda_approval_record(scenario, nuda_per_mille))
-
-
 def orchestrate(
     run_root: Path,
     run_id: str,
@@ -92,7 +77,9 @@ def orchestrate(
     approval_ref: str = APPROVAL,
 ):
     if nuda_per_mille and approval_ref == APPROVAL:
-        _write_nuda_approval(run_root, run_id, scenario, nuda_per_mille)
+        RunTree(run_root, run_id).write_approval_record(
+            nuda_approval_record(scenario, nuda_per_mille)
+        )
     command = [
         sys.executable,
         str(ORCHESTRATOR),
@@ -229,14 +216,16 @@ def test_a_sampled_nuda_records_the_design_it_was_drawn_under(nuda_run):
         if entry["kind"] == LECTIO_NUDA_KIND
     )
     record = nuda_run.read_artifact(PERLECTOR, LECTIO_NUDA_KIND, entry["artifact_id"])
-    # The reference is rebuilt from the record this run's approval *had* to be,
-    # never read back out of the payload being asserted: an assertion that takes
-    # its expected digest from the value under test would hold just as happily if
-    # the run had named some other experiment's approval.
+    # Deriving the expectation from the predeclared record keeps a wrong approval
+    # reference in the payload from validating itself.
+    approval_digest = digest_bytes(canonical_bytes(nuda_approval_record("happy", 1000)))
     assert record["payload"]["sampling"] == {
         "nuda_per_mille": 1000,
         "selection_rule": SELECTION_RULE,
-        "approval_ref": nuda_approval_reference("happy", 1000),
+        "approval_ref": {
+            "relative_path": f"receipts/sha256/{approval_digest}.json",
+            "sha256": approval_digest,
+        },
     }
 
 
@@ -252,7 +241,6 @@ def test_a_run_may_not_sample_nuda_without_tyrels_predeclared_design(tmp_path):
 
 
 def test_sampling_design_refuses_an_arbitrary_string_instead_of_an_approval_record():
-    """C's reproduction: a nonblank string is not approval evidence."""
     with pytest.raises(ValueError, match="arbitrary string is not an approval record"):
         sampling_design(nuda_per_mille=1000, approval_ref="not-a-record-or-digest")
 
@@ -291,14 +279,6 @@ def _approval_record(config_digest):
     )
 
 
-def _write_unchecked_approval(tree, record):
-    data = canonical_bytes(record)
-    digest = digest_bytes(data)
-    path = tree.resolve(tree.receipt_path(digest))
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(data)
-
-
 def test_nuda_approval_binds_its_experiment_subject_and_sealed_config_digest(tmp_path):
     context = _approval_context(tmp_path)
     record = _approval_record(context.config_digest)
@@ -314,10 +294,7 @@ def test_nuda_approval_binds_its_experiment_subject_and_sealed_config_digest(tmp
 
 
 def test_a_missing_approval_names_where_the_record_goes_and_what_it_must_approve(tmp_path):
-    """The refusal an operator actually meets: the selector passed the Door, the
-    run was created, three stages spent, and only here does the missing record
-    surface. A message that does not name the receipts path and the sealed
-    config_digest leaves them to derive both from source."""
+    """Late refusal must name both the receipt location and required version."""
     context = _approval_context(tmp_path)
 
     with pytest.raises(ContractError) as refusal:
@@ -376,7 +353,11 @@ def test_nuda_approval_refuses_a_corrupt_typed_record(tmp_path, corruption, refu
     else:
         record["schema"] = "approval-record.v9"
         record["self_hash"] = self_hash(record)
-    _write_unchecked_approval(context.tree, record)
+    data = canonical_bytes(record)
+    digest = digest_bytes(data)
+    path = context.tree.resolve(context.tree.receipt_path(digest))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
 
     with pytest.raises(ContractError, match=refusal):
         resolve_sampling_approval(
@@ -385,8 +366,6 @@ def test_nuda_approval_refuses_a_corrupt_typed_record(tmp_path, corruption, refu
 
 
 def test_nuda_per_mille_zero_produces_no_nuda_records_at_all(tmp_path):
-    """The unchanged default: every existing scenario runs exactly as it did
-    before this instrument existed."""
     root = tmp_path / "runs"
     result = orchestrate(root, "r", "happy", nuda_per_mille=0)
     assert result.returncode == 0, result.stderr

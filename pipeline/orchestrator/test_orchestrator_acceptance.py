@@ -3951,12 +3951,7 @@ def test_repeating_the_identical_command_leaves_every_byte_unchanged(tmp_path):
 
 
 def test_repeating_the_identical_command_with_nuda_enabled_leaves_every_byte_unchanged(tmp_path):
-    """The byte-identical-rerun property above is only ever exercised at the
-    default --nuda-per-mille 0. Lectio nuda's sampling rule is a deterministic
-    hash threshold over (run_id, act_id), never `random` -- this is the test
-    that actually drives two runs of the identical command with nuda turned on
-    and proves the property still holds rather than trusting the docstring's
-    word for it (audit finding: coverage gap, `nuda.py`)."""
+    """The rerun invariant must also hold when deterministic sampling is active."""
     root = tmp_path / "runs"
     assert (
         orchestrate(

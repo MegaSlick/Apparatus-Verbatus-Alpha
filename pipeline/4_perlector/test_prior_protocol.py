@@ -80,14 +80,7 @@ def sampling_approval_records(scenario, *extra) -> dict:
     }
 
 
-def approval_reference(record) -> dict:
-    """Where a built record lands, computed without reading the run tree."""
-    digest = digest_bytes(canonical_bytes(record))
-    return {"relative_path": f"receipts/sha256/{digest}.json", "sha256": digest}
-
-
 def _write_sampling_approvals(root, run_id, scenario, extra) -> None:
-    """Supply typed records only for tests that intentionally enable an arm."""
     records = sampling_approval_records(scenario, *extra)
     if not records:
         return
@@ -552,9 +545,6 @@ def test_a_real_published_control_satisfies_its_closed_schema(
 
 
 def test_control_sampling_design_refuses_an_arbitrary_string_instead_of_a_record():
-    """The control arm's half of 0D: the nuda arm already refuses an untyped
-    reference by name at the point the design record is built, and the arm that
-    assembled its block inline had no such refusal at all."""
     with pytest.raises(ValueError, match="arbitrary string is not an approval record"):
         protocol.control_sampling_design(
             per_mille=1000,
@@ -563,27 +553,22 @@ def test_control_sampling_design_refuses_an_arbitrary_string_instead_of_a_record
         )
 
 
-def test_control_sampling_design_refuses_a_rate_outside_its_range():
+def _approval_binding(subject):
     reference = ApprovalRecordReference("receipts/sha256/" + "a" * 64 + ".json", "a" * 64)
+    return ApprovalRecordBinding(reference, subject, "b" * 64)
+
+
+def test_control_sampling_design_refuses_a_rate_outside_its_range():
     with pytest.raises(ValueError, match=r"integer in \[0, 1000\]"):
         protocol.control_sampling_design(
             per_mille=1001,
             selection_rule=protocol.SELECTION_RULE,
-            approval_ref=ApprovalRecordBinding(
-                reference,
-                perlector.PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT,
-                "b" * 64,
-            ),
+            approval_ref=_approval_binding(perlector.PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT),
         )
 
 
 def test_control_sampling_design_publishes_the_typed_reference_it_was_given():
-    reference = ApprovalRecordReference("receipts/sha256/" + "a" * 64 + ".json", "a" * 64)
-    approval = ApprovalRecordBinding(
-        reference,
-        perlector.PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT,
-        "b" * 64,
-    )
+    approval = _approval_binding(perlector.PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT)
     assert protocol.control_sampling_design(
         per_mille=500,
         selection_rule=protocol.SELECTION_RULE,
@@ -591,17 +576,12 @@ def test_control_sampling_design_publishes_the_typed_reference_it_was_given():
     ) == {
         "perlector_instrument_per_mille": 500,
         "selection_rule": protocol.SELECTION_RULE,
-        "approval_ref": reference.to_record(),
+        "approval_ref": approval.reference.to_record(),
     }
 
 
 def test_control_sampling_design_refuses_a_rule_its_named_design_does_not_execute():
-    reference = ApprovalRecordReference("receipts/sha256/" + "a" * 64 + ".json", "a" * 64)
-    approval = ApprovalRecordBinding(
-        reference,
-        perlector.PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT,
-        "b" * 64,
-    )
+    approval = _approval_binding(perlector.PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT)
     with pytest.raises(ValueError, match="does not execute selection rule"):
         protocol.control_sampling_design(
             per_mille=500,
@@ -611,12 +591,7 @@ def test_control_sampling_design_refuses_a_rule_its_named_design_does_not_execut
 
 
 def test_control_sampling_design_refuses_an_approval_for_the_other_experiment():
-    reference = ApprovalRecordReference("receipts/sha256/" + "a" * 64 + ".json", "a" * 64)
-    approval = ApprovalRecordBinding(
-        reference,
-        perlector.NUDA_APPROVAL_SUBJECT,
-        "b" * 64,
-    )
+    approval = _approval_binding(perlector.NUDA_APPROVAL_SUBJECT)
     with pytest.raises(ValueError, match="but its approval record names"):
         protocol.control_sampling_design(
             per_mille=500,
@@ -641,10 +616,14 @@ def test_a_published_control_names_the_approval_record_it_was_drawn_under(
         "--perlector-instrument-approval-ref",
         perlector.PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT,
     )[perlector.PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT]
+    approval_digest = digest_bytes(canonical_bytes(record))
     assert published_primed_without_prior_payload["sampling"] == {
         "perlector_instrument_per_mille": 1000,
         "selection_rule": protocol_config["selection_rule"],
-        "approval_ref": approval_reference(record),
+        "approval_ref": {
+            "relative_path": f"receipts/sha256/{approval_digest}.json",
+            "sha256": approval_digest,
+        },
     }
 
 

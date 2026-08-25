@@ -1,5 +1,3 @@
-"""Adversarial lifecycle checks shared by both sampled Perlector arms."""
-
 from types import SimpleNamespace
 
 import pytest
