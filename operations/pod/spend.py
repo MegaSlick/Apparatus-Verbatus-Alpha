@@ -45,6 +45,18 @@ permission in the session, with this gate refusing everything that never saw a p
 CHALLENGE_BYTES = 8
 """Wide enough that a phrase cannot be guessed; short enough to retype from a screen."""
 
+PRICE_MOVE_MARKER = "the price may have changed between preview and confirmation"
+"""The one spelling of "this refusal is a price move", shared with its readers.
+
+A refused confirmation and a moved price are the same `LaunchState` but not the
+same thing to tell an operator: one says retype the phrase, the other says read
+a new price. `operations/operator/surface.py` tells them apart by looking for
+this text, and it used to look for a sentence fragment written out a second time
+there -- so rewording this refusal would have quietly reported every real price
+move as a mistyped phrase. The coupling is real either way; naming it makes the
+two move together.
+"""
+
 
 def mint_challenge() -> str:
     """A fresh, unpredictable challenge for exactly one preview."""
@@ -514,9 +526,8 @@ def require_confirmation(value: str | None, expected: str) -> None:
         and value[:price_start] == expected[:price_start]
     ):
         raise SpendRefusal(
-            "typed confirmation does not match this preview's phrase; the price may "
-            "have changed between preview and confirmation -- re-run the preview and "
-            "confirm the current price; no paid action occurred"
+            f"typed confirmation does not match this preview's phrase; {PRICE_MOVE_MARKER}"
+            " -- re-run the preview and confirm the current price; no paid action occurred"
         )
     # The expected phrase is deliberately not reproduced here: this refusal is
     # printed and logged, and the phrase it would quote is still spendable
