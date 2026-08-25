@@ -260,10 +260,39 @@ def act_attachment_view(
             "the fixture's page_witness_chairs declaration is not a list of chair names"
         )
     page_chairs = set(declared_chairs)
-    attachment_chairs = [
-        attachment.get("chair") if isinstance(attachment, dict) else None
-        for attachment in attachments
-    ]
+    # Validate every value that becomes a set/dict key before pair accounting.
+    # JSON booleans compare equal to integers in Python (`True == 1`), and an
+    # unhashable JSON value would otherwise escape as a raw TypeError here. The
+    # attachment is untrusted evidence read from disk, so neither may reach the
+    # denominator as though it named a real page.
+    attachment_fields = {
+        "chair",
+        "page_witness",
+        "page_ordinal",
+        "testimonium_ref",
+        "attached",
+        "content_health",
+        "alignment",
+        "span",
+    }
+    for attachment in attachments:
+        if (
+            not isinstance(attachment, dict)
+            or set(attachment) != attachment_fields
+            or not isinstance(attachment.get("chair"), str)
+            or not isinstance(attachment.get("page_witness"), bool)
+            or not isinstance(attachment.get("attached"), bool)
+            or not isinstance(attachment.get("content_health"), dict)
+        ):
+            raise SchemaRefusal("an act-attachment record has a malformed attachment")
+        page_ordinal = attachment["page_ordinal"]
+        if attachment["page_witness"] and (
+            not isinstance(page_ordinal, int) or isinstance(page_ordinal, bool)
+        ):
+            raise SchemaRefusal("a page-witness attachment has no integer page ordinal")
+        if not attachment["page_witness"] and page_ordinal is not None:
+            raise SchemaRefusal("an act-scoped witness carries a page ordinal")
+    attachment_chairs = [attachment["chair"] for attachment in attachments]
     if any(chair not in configured for chair in attachment_chairs):
         raise FatalAccounting(
             f"act {act_id} attachment chairs do not equal this run's configured witnesses"
@@ -291,25 +320,6 @@ def act_attachment_view(
     page_witness_chairs: set[str] = set()
     comparison_views: dict[str, str] = {}
     for attachment in attachments:
-        if (
-            not isinstance(attachment, dict)
-            or set(attachment)
-            != {
-                "chair",
-                "page_witness",
-                "page_ordinal",
-                "testimonium_ref",
-                "attached",
-                "content_health",
-                "alignment",
-                "span",
-            }
-            or not isinstance(attachment.get("chair"), str)
-            or not isinstance(attachment.get("page_witness"), bool)
-            or not isinstance(attachment.get("attached"), bool)
-            or not isinstance(attachment.get("content_health"), dict)
-        ):
-            raise SchemaRefusal("an act-attachment record has a malformed attachment")
         span = attachment["span"]
         characters = attachment["content_health"].get("characters")
         if attachment["attached"] and not attachment["page_witness"]:
@@ -429,9 +439,13 @@ def act_attachment_view(
             # primary page. Only the Recensor's whole-page view can verify `mixed`.
             role = page_payload.get("page_role")
             is_act_primary_page = attachment_page == act["page_ordinal"]
-            if role not in {"primary", "continuation", "mixed"} or (
-                (is_act_primary_page and role == "continuation")
-                or (not is_act_primary_page and role == "primary")
+            if (
+                not isinstance(role, str)
+                or role not in {"primary", "continuation", "mixed"}
+                or (
+                    (is_act_primary_page and role == "continuation")
+                    or (not is_act_primary_page and role == "primary")
+                )
             ):
                 raise SchemaRefusal(
                     f"act {act_id} page Testimonium for chair {chair!r} carries a page_role "

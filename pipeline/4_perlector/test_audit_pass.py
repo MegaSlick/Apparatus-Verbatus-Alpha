@@ -784,6 +784,55 @@ def test_change_record_refuses_a_change_extending_past_the_flag_end():
         audit.change_record("abcd", "aXYZ", flags)
 
 
+def test_unhashable_audit_classes_are_named_schema_refusals():
+    """Resealed JSON arrays cannot escape class allowlists as raw TypeError."""
+    policy = {"schema": audit.SCHEMA, "sha256": "0" * 64, "approval_ref": ""}
+    draft = {
+        "act_key": "a1",
+        "attempt_ordinal": 1,
+        "semi_final_text": "x",
+        "page_id": "p1",
+        "page_ids": ["p1"],
+        "round_cap": 1,
+        "policy": policy,
+        "flags": [{"class": [], "location": {"start": 0, "end": 1}}],
+    }
+    with pytest.raises(SchemaRefusal, match="unknown class"):
+        audit.validate_draft(draft)
+
+    finding = {key: value for key, value in draft.items() if key != "semi_final_text"}
+    finding.update(
+        {
+            "flags": [{"class": "testimony-diff", "location": {"start": 0, "end": 1}}],
+            "change_record": [
+                {"start": 0, "end": 1, "triggering_flag_class": []},
+            ],
+            "uncertain_spans": [],
+            "unresolved": False,
+        }
+    )
+    with pytest.raises(SchemaRefusal, match="unknown triggering flag class"):
+        audit.validate_finding(finding, text="y", flag_text="x")
+
+    reference = {"relative_path": "4_perlector/audit.json", "sha256": "0" * 64}
+    perlectio_audit = {
+        "draft_ref": reference,
+        "finding_ref": reference,
+        "finding_digest": "0" * 64,
+        "unresolved": False,
+        "reproofs": [
+            {
+                "class": [],
+                "location": {"start": 0, "end": 1},
+                "prompt": audit.neutral_prompt(start=0, end=1, text_length=1),
+            }
+        ],
+        "request_digest": None,
+    }
+    with pytest.raises(SchemaRefusal, match="unknown class or prompt"):
+        audit.validate_perlectio_audit(perlectio_audit, text_length=1)
+
+
 def test_change_record_names_the_narrowest_flag_that_located_the_change():
     """The triggering class is the soft-picker measurement, not decoration.
 

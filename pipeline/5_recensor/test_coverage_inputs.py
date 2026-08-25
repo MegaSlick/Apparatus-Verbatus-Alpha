@@ -330,6 +330,19 @@ def test_page_attachment_facts_refuse_a_duplicate_page_pair():
         RUN.act_attachment_facts(_context(_attachment_fact_record(rows)), "act-1")
 
 
+@pytest.mark.parametrize(
+    ("field", "message"),
+    [("status", "computed alignment fact"), ("anchor_basis", "malformed aligned")],
+)
+def test_page_attachment_facts_name_unhashable_alignment_enums(field, message):
+    """JSON arrays at enum fields are refusals, never set-membership tracebacks."""
+    row = _page_fact(ordinal=1, attached=True, anchor_basis="act-anchor")
+    row["alignment"][field] = []
+
+    with pytest.raises(FatalAccounting, match=message):
+        RUN.act_attachment_facts(_context(_attachment_fact_record([row])), "act-1")
+
+
 def test_a_held_act_without_an_attachment_refuses_even_without_page_testimony(monkeypatch):
     context = _context()
     monkeypatch.setattr(

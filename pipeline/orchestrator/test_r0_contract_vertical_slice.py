@@ -712,6 +712,32 @@ def test_perlector_refuses_an_attachment_for_an_unconfigured_chair(tmp_path):
     assert "configured witnesses" in result.stderr
 
 
+@pytest.mark.parametrize("forged_ordinal", [True, [1]], ids=["boolean", "unhashable-list"])
+def test_perlector_refuses_a_non_integer_attachment_page_before_pair_accounting(
+    tmp_path, forged_ordinal
+):
+    """Malformed ordinals cannot alias integers or escape through set hashing."""
+    root = tmp_path / "runs"
+    run_id = f"forged-attachment-page-{type(forged_ordinal).__name__}"
+    tree = _through_attestatores(root, run_id)
+    entry = next(
+        row
+        for row in tree.build_manifest(ATTESTATORES)["artifacts"]
+        if row["kind"] == "act-attachment"
+    )
+    path = tree.resolve(entry["relative_path"])
+    record = tree.read_artifact(ATTESTATORES, "act-attachment", entry["artifact_id"])
+    page_row = next(row for row in record["payload"]["attachments"] if row["page_witness"])
+    page_row["page_ordinal"] = forged_ordinal
+    _reseal(path, record)
+
+    result = invoke_stage(root, run_id, "happy", "pipeline/4_perlector/run.py")
+
+    assert result.returncode != 0
+    assert "integer page ordinal" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
 def test_perlector_refuses_a_referenced_page_ordinal_outside_the_fixture(tmp_path):
     root = tmp_path / "runs"
     tree = _through_attestatores(root, "forged-page")
@@ -739,6 +765,22 @@ def test_perlector_refuses_a_page_role_its_own_ordinal_contradicts(tmp_path):
     result = invoke_stage(root, "forged-role", "happy", "pipeline/4_perlector/run.py")
     assert result.returncode != 0
     assert "page_role" in result.stderr and "contradicts" in result.stderr
+
+
+def test_perlector_names_an_unhashable_page_role_as_a_schema_refusal(tmp_path):
+    """A JSON-shaped role must not escape through set membership as TypeError."""
+    root = tmp_path / "runs"
+    tree = _through_attestatores(root, "unhashable-role")
+    manifest = tree.build_manifest(ATTESTATORES)
+    page_entry, page = _page_testimonium_on(tree, manifest, 2)
+    page["payload"]["page_role"] = ["continuation"]
+    _reseal_page_and_references(tree, manifest, page_entry, page)
+
+    result = invoke_stage(root, "unhashable-role", "happy", "pipeline/4_perlector/run.py")
+
+    assert result.returncode != 0
+    assert "page_role" in result.stderr and "contradicts" in result.stderr
+    assert "Traceback" not in result.stderr
 
 
 def test_perlector_refuses_a_forged_continuation_page_act_anchor(tmp_path):

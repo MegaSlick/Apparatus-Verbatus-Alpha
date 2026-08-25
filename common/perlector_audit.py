@@ -192,7 +192,11 @@ def _validate_reproof_rows(rows: list[Any], *, text_length: int | None, subject:
     for reproof in rows:
         if not isinstance(reproof, dict) or set(reproof) != {"class", "location", "prompt"}:
             raise SchemaRefusal(f"a {subject} re-proof is not its closed schema")
-        if reproof["class"] not in FLAG_CLASSES or not isinstance(reproof["prompt"], str):
+        if (
+            not isinstance(reproof["class"], str)
+            or reproof["class"] not in FLAG_CLASSES
+            or not isinstance(reproof["prompt"], str)
+        ):
             raise SchemaRefusal(f"a {subject} re-proof has an unknown class or prompt")
         location = _location(
             reproof["location"], text_length=text_length, label=f"{subject} re-proof"
@@ -353,7 +357,7 @@ def _validate_common(value: dict[str, Any], *, text_length: int) -> None:
     for flag in value["flags"]:
         if not isinstance(flag, dict) or set(flag) != {"class", "location"}:
             raise SchemaRefusal("an audit flag is not its closed schema")
-        if flag["class"] not in FLAG_CLASSES:
+        if not isinstance(flag["class"], str) or flag["class"] not in FLAG_CLASSES:
             raise SchemaRefusal("an audit flag has an unknown class or malformed location")
         _location(flag["location"], text_length=text_length, label="audit flag")
 
@@ -382,7 +386,10 @@ def validate_finding(payload: Any, *, text: str, flag_text: str | None = None) -
     for change in value["change_record"]:
         if not isinstance(change, dict) or set(change) != {"start", "end", "triggering_flag_class"}:
             raise SchemaRefusal("an audit change record is not its closed schema")
-        if change["triggering_flag_class"] not in FLAG_CLASSES:
+        if (
+            not isinstance(change["triggering_flag_class"], str)
+            or change["triggering_flag_class"] not in FLAG_CLASSES
+        ):
             raise SchemaRefusal("an audit change record names an unknown triggering flag class")
         _location(
             {"start": change["start"], "end": change["end"]},

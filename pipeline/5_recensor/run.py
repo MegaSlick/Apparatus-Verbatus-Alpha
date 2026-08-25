@@ -258,7 +258,8 @@ def act_attachment_facts(context, act_id: str) -> dict[str, dict]:
         seen_pairs.add(pair)
         if page_witness:
             alignment = entry.get("alignment")
-            if not isinstance(alignment, dict) or alignment.get("status") not in {
+            alignment_status = alignment.get("status") if isinstance(alignment, dict) else None
+            if not isinstance(alignment_status, str) or alignment_status not in {
                 "aligned",
                 "unaligned",
             }:
@@ -276,19 +277,21 @@ def act_attachment_facts(context, act_id: str) -> dict[str, dict]:
             # and a reason-free unaligned record leaves an operator with no
             # statement of why comparison failed.
             if alignment["status"] == "aligned":
-                if set(alignment) != {
-                    "status",
-                    "anchor_basis",
-                    "anchor_span",
-                    "witness_span",
-                    "line_geometry",
-                    "loss",
-                    "offset_maps",
-                } or alignment["anchor_basis"] not in {
-                    "act-anchor",
-                    "no-page-anchor",
-                    "act-line-not-located",
-                }:
+                if (
+                    set(alignment)
+                    != {
+                        "status",
+                        "anchor_basis",
+                        "anchor_span",
+                        "witness_span",
+                        "line_geometry",
+                        "loss",
+                        "offset_maps",
+                    }
+                    or not isinstance(alignment["anchor_basis"], str)
+                    or alignment["anchor_basis"]
+                    not in {"act-anchor", "no-page-anchor", "act-line-not-located"}
+                ):
                     raise FatalAccounting(
                         f"act {act_id} page witness {chair!r} carries a malformed aligned "
                         "alignment record; the witness floor may not be counted from "
