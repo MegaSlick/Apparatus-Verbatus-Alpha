@@ -227,6 +227,25 @@ def test_a_sampled_nuda_records_the_design_it_was_drawn_under(nuda_run):
             "sha256": approval_digest,
         },
     }
+    assert record["payload"]["sampling"]["approval_ref"] in record["inputs"]
+
+
+def test_a_sampled_nuda_refuses_when_its_bound_approval_receipt_is_replaced(tmp_path):
+    root = tmp_path / "runs"
+    result = orchestrate(root, "r", "happy", nuda_per_mille=1000)
+    assert result.returncode == 0, result.stderr
+    tree = RunTree(root, "r")
+    entry = next(
+        entry
+        for entry in tree.build_manifest(PERLECTOR)["artifacts"]
+        if entry["kind"] == LECTIO_NUDA_KIND
+    )
+    record = tree.read_artifact(PERLECTOR, LECTIO_NUDA_KIND, entry["artifact_id"])
+    approval_ref = record["payload"]["sampling"]["approval_ref"]
+    tree.resolve(approval_ref["relative_path"]).write_bytes(b"{}")
+
+    with pytest.raises(SchemaRefusal, match="digest"):
+        tree.read_artifact(PERLECTOR, LECTIO_NUDA_KIND, entry["artifact_id"])
 
 
 def test_a_run_may_not_sample_nuda_without_tyrels_predeclared_design(tmp_path):

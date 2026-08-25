@@ -627,6 +627,33 @@ def test_a_published_control_names_the_approval_record_it_was_drawn_under(
     }
 
 
+def test_a_control_refuses_when_its_bound_approval_receipt_is_replaced(tmp_path):
+    root = tmp_path / "runs"
+    result = _run(
+        root,
+        "r",
+        "happy",
+        "--perlector-instrument-per-mille",
+        "1000",
+        "--perlector-instrument-approval-ref",
+        perlector.PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT,
+    )
+    assert result.returncode == 0, result.stderr
+    tree = RunTree(root, "r")
+    entry = next(
+        entry
+        for entry in tree.build_manifest(PERLECTOR)["artifacts"]
+        if entry["kind"] == "primed-without-prior"
+    )
+    record = tree.read_artifact(PERLECTOR, "primed-without-prior", entry["artifact_id"])
+    approval_ref = record["payload"]["sampling"]["approval_ref"]
+    assert approval_ref in record["inputs"]
+    tree.resolve(approval_ref["relative_path"]).write_bytes(b"{}")
+
+    with pytest.raises(SchemaRefusal, match="digest"):
+        tree.read_artifact(PERLECTOR, "primed-without-prior", entry["artifact_id"])
+
+
 @pytest.mark.parametrize("field", sorted(perlector._PRIMED_WITHOUT_PRIOR_FIELDS))
 def test_a_control_missing_any_field_of_its_record_is_refused(
     published_primed_without_prior_payload, _sealed_protocol, field

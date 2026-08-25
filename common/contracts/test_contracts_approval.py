@@ -16,6 +16,8 @@ import pytest
 
 from common.contracts.approval import (
     ACTIONS,
+    MAX_APPROVAL_REASON_BYTES,
+    MAX_APPROVAL_SUBJECTS,
     REAL_INGRESS,
     SYNTHETIC_FIXTURE_INGRESS,
     build_approval_record,
@@ -24,6 +26,7 @@ from common.contracts.approval import (
     synthetic_fixture_ingress_record,
     validate_approval_record,
 )
+from common.contracts.canonical import self_hash
 from common.contracts.errors import ApprovalRefusal
 
 
@@ -106,6 +109,50 @@ def test_an_approval_that_names_no_subject_approves_nothing():
         )
 
 
+def test_the_builder_refuses_a_string_instead_of_splitting_it_into_subjects():
+    with pytest.raises(ApprovalRefusal, match="names no subject"):
+        build_approval_record(
+            subject_ids="not-a-list",
+            action="exclusion",
+            reason="a reviewable reason",
+            target_version_hash="a" * 64,
+            timestamp="2026-08-04T12:00:00Z",
+        )
+
+
+def test_the_builder_names_a_non_string_reason_as_an_approval_refusal():
+    with pytest.raises(ApprovalRefusal, match="no reason"):
+        build_approval_record(
+            subject_ids=["x"],
+            action="exclusion",
+            reason=1,
+            target_version_hash="a" * 64,
+            timestamp="2026-08-04T12:00:00Z",
+        )
+
+
+def test_the_builder_bounds_subject_count_before_sorting_or_hashing_it():
+    with pytest.raises(ApprovalRefusal, match=f"more than {MAX_APPROVAL_SUBJECTS} subjects"):
+        build_approval_record(
+            subject_ids=[f"subject-{index}" for index in range(MAX_APPROVAL_SUBJECTS + 1)],
+            action="exclusion",
+            reason="a reviewable reason",
+            target_version_hash="a" * 64,
+            timestamp="2026-08-04T12:00:00Z",
+        )
+
+
+def test_the_builder_bounds_reason_bytes_before_hashing_them():
+    with pytest.raises(ApprovalRefusal, match=f"{MAX_APPROVAL_REASON_BYTES} UTF-8 bytes"):
+        build_approval_record(
+            subject_ids=["x"],
+            action="exclusion",
+            reason="x" * (MAX_APPROVAL_REASON_BYTES + 1),
+            target_version_hash="a" * 64,
+            timestamp="2026-08-04T12:00:00Z",
+        )
+
+
 def test_an_empty_reason_is_refused():
     with pytest.raises(ApprovalRefusal, match="unreviewable"):
         build_approval_record(
@@ -121,6 +168,38 @@ def test_a_record_missing_a_required_field_is_refused():
     record = approval()
     del record["reason"]
     with pytest.raises(ApprovalRefusal, match="missing"):
+        validate_approval_record(record)
+
+
+def test_a_resealed_record_with_an_extra_field_is_not_the_approval_schema():
+    record = approval()
+    record["unbounded_extension"] = {"nested": ["not", "approval", "evidence"]}
+    record["self_hash"] = self_hash(record)
+
+    with pytest.raises(ApprovalRefusal, match="unexpected fields"):
+        validate_approval_record(record)
+
+
+def test_a_non_string_extra_field_is_a_named_schema_refusal_not_a_sorting_crash():
+    record = approval()
+    record[1] = "not a JSON object key"
+
+    with pytest.raises(ApprovalRefusal, match="unexpected fields"):
+        validate_approval_record(record)
+
+
+def test_a_resealed_subject_permutation_is_not_a_second_content_address_for_one_approval():
+    record = build_approval_record(
+        subject_ids=["a", "b"],
+        action="exclusion",
+        reason="a reviewable reason",
+        target_version_hash="a" * 64,
+        timestamp="2026-08-04T12:00:00Z",
+    )
+    record["subject_ids"] = ["b", "a"]
+    record["self_hash"] = self_hash(record)
+
+    with pytest.raises(ApprovalRefusal, match="canonical order"):
         validate_approval_record(record)
 
 

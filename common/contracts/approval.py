@@ -37,6 +37,16 @@ APPROVER: Final = "Tyrel"
 
 ACTIONS: Final = ("exclusion", "salvage-promotion", "other")
 
+# Approval records are small operator-authored evidence, but both entry points
+# hash the whole object and the builder sorts every subject.  Bounds make a
+# planted object a named refusal rather than an unbounded allocation.  The
+# subject ceiling still permits a large explicit batch while keeping its maximum
+# encoded text below the receipt reader's four-mebibyte record bound.
+MAX_APPROVAL_SUBJECTS: Final = 384
+MAX_APPROVAL_SUBJECT_BYTES: Final = 1024
+MAX_APPROVAL_REASON_BYTES: Final = 256 * 1024
+MAX_APPROVAL_TIMESTAMP_BYTES: Final = 256
+
 # Ingress status must be part of self-hashed run authority. An absent field in a
 # mutable door artifact is never proof that the run began as a fixture.
 SYNTHETIC_FIXTURE_INGRESS: Final = "synthetic-fixture"
@@ -51,6 +61,7 @@ _REQUIRED: Final = (
     "timestamp",
     "self_hash",
 )
+_FIELDS: Final = frozenset({"schema", *_REQUIRED})
 
 
 class ApprovalRecordReference:
@@ -145,24 +156,36 @@ def build_approval_record(
     """Build a well-formed approval record, self-hash included."""
     if action not in ACTIONS:
         raise ApprovalRefusal(f"action {action!r} is not one of {list(ACTIONS)}")
-    if not subject_ids or any(
-        not isinstance(subject, str) or not subject.strip() for subject in subject_ids
-    ):
+    if not isinstance(subject_ids, list) or not subject_ids:
         raise ApprovalRefusal("an approval that names no subject approves nothing")
-    if not reason or not reason.strip():
+    if len(subject_ids) > MAX_APPROVAL_SUBJECTS:
+        raise ApprovalRefusal(
+            f"an approval names more than {MAX_APPROVAL_SUBJECTS} subjects; the explicit "
+            "approval record is bounded"
+        )
+    if any(not _bounded_text(subject, MAX_APPROVAL_SUBJECT_BYTES) for subject in subject_ids):
+        raise ApprovalRefusal(
+            f"an approval subject must be non-blank UTF-8 text no larger than "
+            f"{MAX_APPROVAL_SUBJECT_BYTES} bytes"
+        )
+    if len(set(subject_ids)) != len(subject_ids):
+        raise ApprovalRefusal("an approval names the same subject more than once")
+    if not _bounded_text(reason, MAX_APPROVAL_REASON_BYTES):
         raise ApprovalRefusal(
             "an approval with no reason is unreviewable later; the reason is the "
-            "part a reader six weeks out actually needs"
+            f"part a reader six weeks out actually needs, and it must be no larger than "
+            f"{MAX_APPROVAL_REASON_BYTES} UTF-8 bytes"
         )
     if not _is_sha256(target_version_hash):
         raise ApprovalRefusal(
             "an approval must name the lowercase sha256 of the exact policy or target version "
             "it approved, or it goes on approving something that changed underneath it"
         )
-    if not isinstance(timestamp, str) or not timestamp.strip():
+    if not _bounded_text(timestamp, MAX_APPROVAL_TIMESTAMP_BYTES):
         raise ApprovalRefusal(
             "an approval with no timestamp cannot be reviewed later; when it was given "
-            "is half of what makes it checkable against the version it approved"
+            f"is half of what makes it checkable against the version it approved, and it must "
+            f"be no larger than {MAX_APPROVAL_TIMESTAMP_BYTES} UTF-8 bytes"
         )
     record: dict[str, Any] = {
         "schema": "approval-record.v0",
@@ -181,6 +204,20 @@ def validate_approval_record(record: Any) -> dict[str, Any]:
     """Refuse anything that is not a sound, unedited approval record."""
     if not isinstance(record, dict):
         raise ApprovalRefusal("approval record is not an object")
+    unexpected = []
+    more_unexpected = False
+    for key in record:
+        if key not in _FIELDS:
+            if len(unexpected) == len(_FIELDS):
+                more_unexpected = True
+                break
+            unexpected.append(key)
+    unexpected.sort(key=repr)
+    if unexpected:
+        suffix = " or more" if more_unexpected else ""
+        raise ApprovalRefusal(
+            f"approval record has unexpected fields {unexpected}{suffix}; its schema is closed"
+        )
     missing = [field for field in _REQUIRED if field not in record]
     if missing:
         raise ApprovalRefusal(f"approval record is missing {missing}")
@@ -193,14 +230,23 @@ def validate_approval_record(record: Any) -> dict[str, Any]:
         )
     if record["action"] not in ACTIONS:
         raise ApprovalRefusal(f"approval record has action {record['action']!r}")
-    if (
-        not isinstance(record["subject_ids"], list)
-        or not record["subject_ids"]
-        or any(
-            not isinstance(subject, str) or not subject.strip() for subject in record["subject_ids"]
-        )
-    ):
+    subjects = record["subject_ids"]
+    if not isinstance(subjects, list) or not subjects:
         raise ApprovalRefusal("approval record names no subjects")
+    if len(subjects) > MAX_APPROVAL_SUBJECTS:
+        raise ApprovalRefusal(f"approval record names more than {MAX_APPROVAL_SUBJECTS} subjects")
+    if any(not _bounded_text(subject, MAX_APPROVAL_SUBJECT_BYTES) for subject in subjects):
+        raise ApprovalRefusal(
+            f"approval record subjects must be non-blank UTF-8 text no larger than "
+            f"{MAX_APPROVAL_SUBJECT_BYTES} bytes"
+        )
+    if len(set(subjects)) != len(subjects):
+        raise ApprovalRefusal("approval record names the same subject more than once")
+    if subjects != sorted(subjects):
+        raise ApprovalRefusal(
+            "approval record subjects are not in canonical order; one subject set must have "
+            "one content address"
+        )
     # The validator is the gate for records read off disk, so it has to be at
     # least as strict as the builder. It was not: the builder refuses an empty
     # reason or target version, and this only checked that the keys existed — so a
@@ -208,13 +254,17 @@ def validate_approval_record(record: Any) -> dict[str, Any]:
     # its self-hash would verify happily, because a hash covers whatever bytes
     # were sealed rather than whether they meant anything. The exact-version
     # binding this module exists for would then name no target at all.
-    for field in ("reason", "timestamp"):
+    for field, maximum in (
+        ("reason", MAX_APPROVAL_REASON_BYTES),
+        ("timestamp", MAX_APPROVAL_TIMESTAMP_BYTES),
+    ):
         value = record[field]
-        if not isinstance(value, str) or not value.strip():
+        if not _bounded_text(value, maximum):
             raise ApprovalRefusal(
                 f"approval record field {field!r} is empty or not a string; an "
                 "approval that does not say what it approved, why, or when is "
-                "unreviewable later, which is the whole point of writing it down"
+                "unreviewable later, which is the whole point of writing it down; "
+                f"the field is bounded to {maximum} UTF-8 bytes"
             )
     if not _is_sha256(record["target_version_hash"]):
         raise ApprovalRefusal(
@@ -235,3 +285,12 @@ def _is_sha256(value: Any) -> bool:
         and len(value) == 64
         and all(character in "0123456789abcdef" for character in value)
     )
+
+
+def _bounded_text(value: Any, maximum_bytes: int) -> bool:
+    if not isinstance(value, str) or not value.strip():
+        return False
+    try:
+        return len(value.encode("utf-8")) <= maximum_bytes
+    except UnicodeEncodeError:
+        return False

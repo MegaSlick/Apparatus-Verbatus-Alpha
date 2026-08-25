@@ -1,6 +1,8 @@
+import os
 from types import SimpleNamespace
 
 import pytest
+import run as perlector_run
 from run import resolve_sampling_approval
 
 from common.chairs import load_models_toml
@@ -45,11 +47,12 @@ def _resolve(context, subject):
     return resolve_sampling_approval(context, approval_ref=subject, subject=subject)
 
 
-def _write_unchecked_receipt(tree, data: bytes) -> None:
+def _write_unchecked_receipt(tree, data: bytes):
     digest = digest_bytes(data)
     path = tree.resolve(tree.receipt_path(digest))
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
+    return path
 
 
 @pytest.mark.parametrize("subject", SUBJECTS)
@@ -192,3 +195,115 @@ def test_each_gate_invocation_rereads_a_record_deleted_after_an_earlier_invocati
 
     with pytest.raises(ContractError, match="no approval record names experiment"):
         _resolve(context, subject)
+
+
+@pytest.mark.parametrize("subject", SUBJECTS)
+def test_each_arm_refuses_an_in_tree_symlink_instead_of_following_approval_bytes(tmp_path, subject):
+    context = _context(tmp_path, "a" * 64)
+    reference, _ = context.tree.write_approval_record(_record(subject, context.config_digest))
+    receipt = context.tree.resolve(reference.relative_path)
+    alternate = context.tree.root / "approval-by-another-name.json"
+    receipt.replace(alternate)
+    receipt.symlink_to(alternate)
+
+    with pytest.raises(ContractError, match="without following a redirect"):
+        _resolve(context, subject)
+
+
+@pytest.mark.parametrize("subject", SUBJECTS)
+def test_each_arm_refuses_a_hard_linked_receipt_with_a_second_mutable_name(tmp_path, subject):
+    context = _context(tmp_path, "a" * 64)
+    data = canonical_bytes(_record(subject, context.config_digest))
+    source = context.tree.root / "approval-by-another-name.json"
+    source.write_bytes(data)
+    receipt = context.tree.resolve(context.tree.receipt_path(digest_bytes(data)))
+    receipt.parent.mkdir(parents=True, exist_ok=True)
+    os.link(source, receipt)
+
+    with pytest.raises(ContractError, match="hard links"):
+        _resolve(context, subject)
+
+
+@pytest.mark.parametrize("subject", SUBJECTS)
+def test_each_arm_refuses_a_case_variant_receipt_collision(tmp_path, subject):
+    context = _context(tmp_path, "a" * 64)
+    reference, _ = context.tree.write_approval_record(_record(subject, context.config_digest))
+    receipt = context.tree.resolve(reference.relative_path)
+    variant = receipt.with_name(f"{reference.sha256.upper()}.JSON")
+    try:
+        descriptor = os.open(variant, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        receipt.rename(variant)
+        with pytest.raises(ContractError, match="noncanonical entry"):
+            _resolve(context, subject)
+        return
+    else:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(receipt.read_bytes())
+
+    with pytest.raises(ContractError, match="case-variant names"):
+        _resolve(context, subject)
+
+
+def test_sampling_approval_scan_refuses_more_receipts_than_its_bound(tmp_path, monkeypatch):
+    context = _context(tmp_path, "a" * 64)
+    context.tree.write_approval_record(_record(SUBJECTS[0], context.config_digest))
+    _write_unchecked_receipt(context.tree, b"{}")
+    monkeypatch.setattr(perlector_run, "MAX_SAMPLING_APPROVAL_RECEIPTS", 1)
+
+    with pytest.raises(ContractError, match="holds more than 1 entries"):
+        _resolve(context, SUBJECTS[0])
+
+
+def test_sampling_approval_scan_refuses_an_oversized_receipt_before_parsing(tmp_path, monkeypatch):
+    context = _context(tmp_path, "a" * 64)
+    _write_unchecked_receipt(context.tree, b'{"padding":"xxxxxxxx"}')
+    monkeypatch.setattr(perlector_run, "MAX_SAMPLING_APPROVAL_RECEIPT_BYTES", 8)
+
+    with pytest.raises(ContractError, match="larger than the 8-byte"):
+        _resolve(context, SUBJECTS[0])
+
+
+def test_sampling_approval_scan_compares_every_receipt_content_address(tmp_path):
+    context = _context(tmp_path, "a" * 64)
+    context.tree.write_approval_record(_record(SUBJECTS[0], context.config_digest))
+    path = context.tree.resolve(context.tree.receipt_path("b" * 64))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"{}")
+
+    with pytest.raises(ContractError, match="not its content-addressed name"):
+        _resolve(context, SUBJECTS[0])
+
+
+def test_sampling_approval_scan_refuses_ambiguous_noncanonical_json(tmp_path):
+    context = _context(tmp_path, "a" * 64)
+    context.tree.write_approval_record(_record(SUBJECTS[0], context.config_digest))
+    _write_unchecked_receipt(context.tree, b'{"ignored":1,"ignored":2}')
+
+    with pytest.raises(ContractError, match="not canonical JSON"):
+        _resolve(context, SUBJECTS[0])
+
+
+def test_sampling_approval_scan_names_deep_json_as_a_refusal(tmp_path):
+    context = _context(tmp_path, "a" * 64)
+    _write_unchecked_receipt(context.tree, b'{"nested":' * 10_000 + b"0" + b"}" * 10_000)
+
+    with pytest.raises(ContractError, match="malformed JSON"):
+        _resolve(context, SUBJECTS[0])
+
+
+def test_sampling_approval_scan_refuses_a_directory_changed_during_validation(
+    tmp_path, monkeypatch
+):
+    context = _context(tmp_path, "a" * 64)
+    context.tree.write_approval_record(_record(SUBJECTS[0], context.config_digest))
+    validate = perlector_run.validate_approval_record
+
+    def validate_while_adding_receipt(record):
+        _write_unchecked_receipt(context.tree, b"{}")
+        return validate(record)
+
+    monkeypatch.setattr(perlector_run, "validate_approval_record", validate_while_adding_receipt)
+
+    with pytest.raises(ContractError, match="changed while the sampling gate inspected"):
+        _resolve(context, SUBJECTS[0])

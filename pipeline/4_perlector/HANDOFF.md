@@ -337,7 +337,9 @@ subject travels with its typed reference to `nuda.sampling_design`, which refuse
 an approval for the other arm before publication. Each record carries
 `sampling = {nuda_per_mille, selection_rule, approval_ref}`, with
 `approval_ref` as the approval artifact's path and digest, because a sample of
-unknown design measures nothing (GOVERNANCE 10).
+unknown design measures nothing (GOVERNANCE 10). The same reference is an
+envelope input, so an ordinary artifact read compares the approval digest to
+the retained receipt bytes instead of merely displaying an unchecked hash.
 
 **Module boundary, not convention.** Every real consumer (`5_recensor`,
 `6_archetypus`, `7_armarium`, the orchestrator's own recovery dispatch) filters
@@ -388,7 +390,8 @@ including the rate, selector, and Perlector protocol bytes. The resolver and
 publisher apply the same sole-subject/action/version and cross-arm refusals as
 the nuda arm. It is a control artifact and cannot establish. The control and
 prior are separately tallied when failed; they do not consume the ruled
-production hard-failure cap.
+production hard-failure cap. Its approval reference is likewise an envelope
+input and is digest-checked whenever the control artifact is read.
 
 The Pass-B dossier contains a digest-checked reference to the Pass-A draft and
 records whether its text was `fed` or `withheld`. The `--draft-fed` default is
