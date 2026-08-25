@@ -521,17 +521,94 @@ def test_sealed_bundle_directly_refuses_bytes_changed_after_the_export_was_read(
         artifact_path=lambda *_args: "7_armarium/artifacts/export/export.json",
         resolve=lambda _path: SimpleNamespace(is_file=lambda: True),
         read_artifact=lambda *_args: {
+            "inputs": [{"relative_path": relative_path, "sha256": declared}],
             "payload": {
                 "bundle": {
                     "reference": {"relative_path": relative_path, "sha256": declared},
                     "sha256": declared,
                 }
-            }
+            },
         },
+        blob_path=lambda _stage, _digest: relative_path,
         read_bytes=lambda _path: b"changed bundle",
     )
 
     with pytest.raises(ContractError, match="no longer matches the digest"):
+        bundle_module.sealed_bundle(tree)
+
+
+def test_the_sealed_bundle_must_occupy_its_content_addressed_armarium_path():
+    """A sealed input path cannot be relabelled as the Armarium's product blob."""
+    import bundle as bundle_module
+
+    data = b"sealed bundle"
+    declared = digest_bytes(data)
+    substituted_path = "receipts/sha256/a-different-record.json"
+    reference = {"relative_path": substituted_path, "sha256": declared}
+    tree = SimpleNamespace(
+        artifact_path=lambda *_args: "7_armarium/artifacts/export/export.json",
+        resolve=lambda _path: SimpleNamespace(is_file=lambda: True),
+        read_artifact=lambda *_args: {
+            "inputs": [reference],
+            "payload": {"bundle": {"reference": reference, "sha256": declared}},
+        },
+        blob_path=lambda _stage, digest: f"7_armarium/blobs/sha256/{digest}",
+        read_bytes=lambda _path: data,
+    )
+
+    with pytest.raises(ContractError, match="does not occupy the Armarium"):
+        bundle_module.sealed_bundle(tree)
+
+
+def test_the_published_bundle_reference_must_be_the_export_artifacts_sealed_input(
+    tmp_path, happy_run
+):
+    """A digest-checked blob is not this export's evidence until its envelope binds it."""
+    import bundle as bundle_module
+
+    root = tmp_path / "runs"
+    shutil.copytree(happy_run / "r", root / "r")
+    tree = RunTree(root, "r")
+    export_path = tree.resolve(
+        tree.artifact_path(
+            ARMARIUM,
+            "export",
+            artifact_id(ARMARIUM, "export", "export", None),
+        )
+    )
+    export = json.loads(export_path.read_text(encoding="utf-8"))
+    old_reference = export["payload"]["bundle"]["reference"]
+    with ZipFile(BytesIO(tree.read_bytes(old_reference["relative_path"]))) as archive:
+        names = archive.namelist()
+        members = {name: archive.read(name) for name in names}
+
+    # Change only container metadata. The package's sealed members and manifest
+    # remain valid, but the resulting blob is a different object that the export
+    # artifact never named among its inputs.
+    buffer = BytesIO()
+    with ZipFile(buffer, "w", compression=ZIP_STORED) as archive:
+        for name in names:
+            info = ZipInfo(name, date_time=(1981, 1, 1, 0, 0, 0))
+            info.compress_type = ZIP_STORED
+            info.external_attr = 0o100644 << 16
+            archive.writestr(info, members[name])
+    substituted = buffer.getvalue()
+    substituted_digest = digest_bytes(substituted)
+    assert substituted_digest != old_reference["sha256"]
+    substituted_path = tree.blob_path(ARMARIUM, substituted_digest)
+    tree.resolve(substituted_path).write_bytes(substituted)
+    substituted_reference = {
+        "relative_path": substituted_path,
+        "sha256": substituted_digest,
+    }
+    export["payload"]["bundle"].update(
+        reference=substituted_reference,
+        sha256=substituted_digest,
+    )
+    export["self_hash"] = self_hash(export)
+    export_path.write_bytes(canonical_bytes(export))
+
+    with pytest.raises(ContractError, match="not the export artifact's sole digest-checked input"):
         bundle_module.sealed_bundle(tree)
 
 

@@ -2150,6 +2150,33 @@ def test_a_member_named_as_both_file_and_directory_is_refused_before_extraction(
     assert not [path for path in clean.rglob("*") if path.is_file()]
 
 
+@pytest.mark.parametrize(
+    ("alias", "message"),
+    [
+        ("SOURCES.JSON", "collide after filesystem case"),
+        ("./sources.json", "not in canonical POSIX spelling"),
+    ],
+)
+def test_member_names_that_alias_on_a_recipient_filesystem_are_refused_before_extraction(
+    alias, message, tmp_path
+):
+    """Distinct ZIP spellings can still name one extracted filesystem object."""
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    members[alias] = members["sources.json"]
+    buffer = BytesIO()
+    with ZipFile(buffer, "w", compression=ZIP_STORED) as archive:
+        for name in [EXPORT_MANIFEST_NAME] + sorted(
+            name for name in members if name != EXPORT_MANIFEST_NAME
+        ):
+            archive.writestr(name, members[name])
+
+    clean = tmp_path / "clean"
+    with pytest.raises(SchemaRefusal, match=message):
+        verify_export_bundle(buffer.getvalue(), clean)
+    assert not [path for path in clean.rglob("*") if path.is_file()]
+
+
 def test_a_compressed_member_is_refused_before_a_byte_is_decompressed(tmp_path):
     """The decompression bound is the refusal, so the refusal needs its own witness.
 
@@ -2171,6 +2198,31 @@ def test_a_compressed_member_is_refused_before_a_byte_is_decompressed(tmp_path):
     with pytest.raises(SchemaRefusal, match="is compressed"):
         verify_export_bundle(buffer.getvalue(), clean)
     assert not [path for path in clean.rglob("*") if path.is_file()]
+
+
+def test_a_directory_swapped_to_a_symlink_after_preflight_cannot_redirect_extraction(
+    tmp_path, monkeypatch
+):
+    """The no-link check and member write must be one descriptor-relative operation."""
+    import armarium_export as export_module
+
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    clean = tmp_path / "clean"
+    clean.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    real_extract = export_module._extract_archive_members
+
+    def swap_then_extract(archive, root_fd, names):
+        (clean / "text").symlink_to(outside, target_is_directory=True)
+        return real_extract(archive, root_fd, names)
+
+    monkeypatch.setattr(export_module, "_extract_archive_members", swap_then_extract)
+
+    with pytest.raises(SchemaRefusal, match="package member parent is not an ordinary directory"):
+        verify_export_bundle(bundle.data, clean)
+
+    assert not list(outside.rglob("*")), "no package byte may cross the clean-root boundary"
 
 
 def test_a_preexisting_file_symlink_is_refused_before_archive_extraction(tmp_path):
@@ -2216,19 +2268,23 @@ def test_an_extraction_cleanup_failure_names_the_leftover_temporary_file(tmp_pat
     """A failed cleanup is part of the refusal, never a silently retained member."""
     bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
     clean = tmp_path / "clean"
-    real_unlink = Path.unlink
+    import armarium_export as export_module
+
+    real_unlink = export_module._unlink_at
 
     monkeypatch.setattr(
         "armarium_export._atomic_replace",
-        lambda _source, _target: (_ for _ in ()).throw(OSError("simulated replace failure")),
+        lambda _source, _target, **_kwargs: (_ for _ in ()).throw(
+            OSError("simulated replace failure")
+        ),
     )
 
     def fail_temporary_unlink(path, *args, **kwargs):
-        if ".extracting-" in path.name:
+        if ".extracting-" in Path(path).name:
             raise OSError("simulated cleanup failure")
         return real_unlink(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "unlink", fail_temporary_unlink)
+    monkeypatch.setattr(export_module, "_unlink_at", fail_temporary_unlink)
 
     with pytest.raises(SchemaRefusal, match="temporary file .* could not be removed"):
         verify_export_bundle(bundle.data, clean)

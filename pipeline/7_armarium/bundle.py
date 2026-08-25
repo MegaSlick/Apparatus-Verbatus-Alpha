@@ -67,9 +67,19 @@ def sealed_bundle(tree: RunTree) -> tuple[bytes, dict]:
     declared = record["payload"].get("bundle", {}).get("sha256")
     if not isinstance(reference, dict) or not isinstance(declared, str):
         raise ContractError("the export artifact names no sealed product bundle")
+    if record.get("inputs") != [reference]:
+        raise ContractError(
+            "the sealed product bundle reference is not the export artifact's sole "
+            "digest-checked input; publication refuses an unverified link in the product chain"
+        )
     relative_path = reference.get("relative_path")
     if not isinstance(relative_path, str):
         raise ContractError("the export artifact names no sealed product bundle")
+    if relative_path != tree.blob_path(ARMARIUM, declared):
+        raise ContractError(
+            "the sealed product bundle reference does not occupy the Armarium's "
+            "content-addressed blob path; publication refuses a package substituted by path"
+        )
     try:
         data = tree.read_bytes(relative_path)
     except OSError as error:

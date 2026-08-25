@@ -25,15 +25,17 @@ the data, which is carried to Tyrel rather than settled here.
 from __future__ import annotations
 
 import json
+import os
+import secrets
 import shutil
 import sqlite3
+import stat
 import tempfile
 import unicodedata
 from collections import Counter, defaultdict
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from io import BytesIO
-from os import replace as _atomic_replace
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Final
 from zipfile import ZIP_STORED, BadZipFile, LargeZipFile, ZipFile, ZipInfo
@@ -63,6 +65,9 @@ from common.contracts.stages import ARMARIUM
 from common.contracts.uncertainty import utf8_round_trip
 from common.contracts.uncertainty import validate as validate_uncertainty
 from common.imaging import dimensions
+
+_atomic_replace = os.replace
+_unlink_at = os.unlink
 
 EXPORT_MANIFEST_NAME: Final = "EXPORT_MANIFEST.json"
 # The one name for the published archive, shared by run.py (which records it in the
@@ -374,46 +379,34 @@ def verify_export_bundle(data: bytes, clean_root) -> dict[str, Any]:
     represented as though it were part of the sealed package manifest.
     """
     root = Path(clean_root)
-    _prepare_clean_root(root)
-    # "These bytes are not an archive at all" is one of the refusals this function
-    # exists to make, not an exception for its caller to work out.
+    root_fd = _prepare_clean_root(root)
     try:
-        archive = ZipFile(BytesIO(data))
-    except (BadZipFile, LargeZipFile, OSError) as error:
-        raise SchemaRefusal("an Armarium package is not a readable ZIP archive") from error
-    with archive:
-        names = archive.namelist()
-        if not names or names[0] != EXPORT_MANIFEST_NAME:
-            raise SchemaRefusal("an Armarium package must begin with EXPORT_MANIFEST.json")
-        if len(set(names)) != len(names):
-            raise SchemaRefusal("an Armarium package repeats a member name")
-        for name in names:
-            _validate_member_name(name)
-        # Names are safe one at a time and still unextractable together: `a` beside
-        # `a/b` surfaces only as a `NotADirectoryError`, *after* part of the package
-        # has been written to the clean machine.
-        ancestors = {
-            parent.as_posix()
-            for name in names
-            for parent in PurePosixPath(name).parents
-            if parent.as_posix() != "."
-        }
-        shadowed = sorted(set(names) & ancestors)
-        if shadowed:
-            raise SchemaRefusal(
-                f"package member(s) {shadowed} are named as both a file and a directory"
-            )
-        # A stored member's extracted size cannot exceed the archive's own physical
-        # size, so refusing every other compression method -- before a byte is
-        # decompressed -- is what bounds a decompression bomb by construction rather
-        # than by an arbitrary cap. `_zip_bytes` never writes anything but stored.
-        for info in archive.infolist():
-            if info.compress_type != ZIP_STORED:
-                raise SchemaRefusal(
-                    f"package member {info.filename!r} is compressed; an Armarium "
-                    "package is only ever written stored, never compressed"
-                )
-        _extract_archive_members(archive, root, names)
+        # "These bytes are not an archive at all" is one of the refusals this function
+        # exists to make, not an exception for its caller to work out.
+        try:
+            archive = ZipFile(BytesIO(data))
+        except (BadZipFile, LargeZipFile, OSError) as error:
+            raise SchemaRefusal("an Armarium package is not a readable ZIP archive") from error
+        with archive:
+            names = archive.namelist()
+            if not names or names[0] != EXPORT_MANIFEST_NAME:
+                raise SchemaRefusal("an Armarium package must begin with EXPORT_MANIFEST.json")
+            _validate_archive_member_names(names)
+            # A stored member's extracted size cannot exceed the archive's own physical
+            # size, so refusing every other compression method -- before a byte is
+            # decompressed -- is what bounds a decompression bomb by construction rather
+            # than by an arbitrary cap. `_zip_bytes` never writes anything but stored.
+            for info in archive.infolist():
+                if info.compress_type != ZIP_STORED:
+                    raise SchemaRefusal(
+                        f"package member {info.filename!r} is compressed; an Armarium "
+                        "package is only ever written stored, never compressed"
+                    )
+            _extract_archive_members(archive, root_fd, names)
+        actual_names = _ordinary_member_names(root_fd)
+        _require_root_identity(root, root_fd)
+    finally:
+        os.close(root_fd)
 
     try:
         manifest = json.loads((root / EXPORT_MANIFEST_NAME).read_text(encoding="utf-8"))
@@ -432,7 +425,6 @@ def verify_export_bundle(data: bytes, clean_root) -> dict[str, Any]:
     listed = manifest["members"]
     if not isinstance(listed, list) or not listed:
         raise SchemaRefusal("EXPORT_MANIFEST.json has no member digest inventory")
-    actual_names = _ordinary_member_names(root)
     expected_names = {EXPORT_MANIFEST_NAME}
     listed_names: set[str] = set()
     for item in listed:
@@ -484,45 +476,81 @@ def verify_export_bundle(data: bytes, clean_root) -> dict[str, Any]:
     return {**manifest, "verification": verification}
 
 
-def _prepare_clean_root(root: Path) -> None:
+def _prepare_clean_root(root: Path) -> int:
     """Permit a reusable extraction root, but no link or special-file branch.
 
     Ordinary files may remain after a refusal; extraction replaces them atomically
-    so even a pre-existing hard link cannot redirect a write outside this tree.
+    so even a pre-existing hard link cannot redirect a write outside this tree. The
+    returned directory descriptor pins the root inode across preflight and extraction;
+    callers must close it.
     """
     try:
         if root.is_symlink():
             raise SchemaRefusal("the clean extraction root is a link, not a new package directory")
         root.mkdir(parents=True, exist_ok=True)
-        if not root.is_dir():
-            raise SchemaRefusal("the clean extraction root is not a directory")
+        root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     except OSError as error:
         raise SchemaRefusal("the clean extraction root cannot be prepared") from error
-    _ordinary_member_names(root)
+    try:
+        _ordinary_member_names(root_fd)
+        _require_root_identity(root, root_fd)
+    except BaseException:
+        os.close(root_fd)
+        raise
+    return root_fd
 
 
-def _ordinary_member_names(root: Path) -> set[str]:
-    """Inventory regular files without letting an unreadable or linked branch vanish."""
+def _same_inode(left: os.stat_result, right: os.stat_result) -> bool:
+    return (left.st_dev, left.st_ino) == (right.st_dev, right.st_ino)
+
+
+def _require_root_identity(root: Path, root_fd: int) -> None:
+    """Prove the path still names the directory descriptor opened at preflight."""
+    try:
+        named = os.stat(root, follow_symlinks=False)
+        opened = os.fstat(root_fd)
+    except OSError as error:
+        raise SchemaRefusal("the clean extraction root changed during verification") from error
+    if not stat.S_ISDIR(named.st_mode) or not _same_inode(named, opened):
+        raise SchemaRefusal("the clean extraction root changed during verification")
+
+
+def _ordinary_member_names(root_fd: int) -> set[str]:
+    """Inventory regular files through pinned directory descriptors only."""
     names: set[str] = set()
-    stack = [root]
-    while stack:
-        directory = stack.pop()
+    root_device = os.fstat(root_fd).st_dev
+
+    def walk(directory_fd: int, prefix: PurePosixPath) -> None:
         try:
-            entries = sorted(directory.iterdir(), reverse=True)
+            with os.scandir(directory_fd) as iterator:
+                entries = sorted(iterator, key=lambda entry: entry.name)
         except OSError as error:
-            raise SchemaRefusal(
-                f"the clean extraction directory {directory} cannot be listed"
-            ) from error
+            raise SchemaRefusal("the clean extraction directory cannot be listed") from error
         for entry in entries:
-            relative = entry.relative_to(root).as_posix()
+            relative = (prefix / entry.name).as_posix()
             try:
-                if entry.is_symlink():
+                named = os.stat(entry.name, dir_fd=directory_fd, follow_symlinks=False)
+                if stat.S_ISLNK(named.st_mode):
                     raise SchemaRefusal(
                         f"the clean extraction tree contains a link at {relative!r}"
                     )
-                if entry.is_dir():
-                    stack.append(entry)
-                elif entry.is_file():
+                if stat.S_ISDIR(named.st_mode):
+                    child_fd = os.open(
+                        entry.name,
+                        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                        dir_fd=directory_fd,
+                    )
+                    try:
+                        opened = os.fstat(child_fd)
+                        if opened.st_dev != root_device or not _same_inode(named, opened):
+                            raise SchemaRefusal(
+                                f"the clean extraction directory {relative!r} changed or "
+                                "crosses onto another device"
+                            )
+                        walk(child_fd, prefix / entry.name)
+                    finally:
+                        os.close(child_fd)
+                elif stat.S_ISREG(named.st_mode):
                     names.add(relative)
                 else:
                     raise SchemaRefusal(
@@ -532,45 +560,98 @@ def _ordinary_member_names(root: Path) -> set[str]:
                 raise SchemaRefusal(
                     f"the clean extraction entry {relative!r} cannot be inspected"
                 ) from error
+
+    walk(root_fd, PurePosixPath())
     return names
 
 
-def _extract_archive_members(archive: ZipFile, root: Path, names: list[str]) -> None:
+def _open_member_parent(root_fd: int, parents: tuple[str, ...]) -> int:
+    """Open a member's parent from the pinned root, refusing links and mount crossings."""
+    directory_fd = os.dup(root_fd)
+    root_device = os.fstat(root_fd).st_dev
+    try:
+        for component in parents:
+            try:
+                os.mkdir(component, mode=0o700, dir_fd=directory_fd)
+            except FileExistsError:
+                pass
+            named = os.stat(component, dir_fd=directory_fd, follow_symlinks=False)
+            if not stat.S_ISDIR(named.st_mode):
+                raise SchemaRefusal("a package member parent is not an ordinary directory")
+            child_fd = os.open(
+                component,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=directory_fd,
+            )
+            opened = os.fstat(child_fd)
+            if opened.st_dev != root_device or not _same_inode(named, opened):
+                os.close(child_fd)
+                raise SchemaRefusal(
+                    "a package member parent changed during extraction or crosses onto "
+                    "another device"
+                )
+            os.close(directory_fd)
+            directory_fd = child_fd
+        return directory_fd
+    except BaseException:
+        os.close(directory_fd)
+        raise
+
+
+def _temporary_member(parent_fd: int, target_name: str) -> tuple[int, str]:
+    """Create one unpredictable no-follow temporary file relative to a pinned parent."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+    for _attempt in range(100):
+        temporary_name = f".{target_name}.extracting-{secrets.token_hex(16)}"
+        try:
+            return os.open(temporary_name, flags, 0o600, dir_fd=parent_fd), temporary_name
+        except FileExistsError:
+            continue
+    raise SchemaRefusal("a collision-free extraction temporary file could not be reserved")
+
+
+def _extract_archive_members(archive: ZipFile, root_fd: int, names: list[str]) -> None:
     """Replace validated members atomically, never through an existing file link.
 
     The preflight walk has refused symlinks and special entries in every existing
-    directory. Writing each member to a new temporary regular file and replacing its
-    final name also breaks a pre-existing hard link instead of modifying the inode it
-    shares outside the extraction tree. The caller has already bounded every member
-    by requiring stored ZIP entries.
+    directory. Every later traversal is descriptor-relative and no-follow, so swapping
+    a checked directory path to a symlink cannot redirect the write. A new temporary
+    regular file plus descriptor-relative replace also breaks a pre-existing hard link
+    instead of modifying the inode it shares outside the tree. The caller has already
+    bounded every member by requiring stored ZIP entries.
     """
     for name in names:
-        target = root.joinpath(*PurePosixPath(name).parts)
-        temporary: Path | None = None
+        parts = PurePosixPath(name).parts
+        parent_fd: int | None = None
+        temporary_name: str | None = None
         try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with tempfile.NamedTemporaryFile(
-                mode="wb",
-                prefix=f".{target.name}.extracting-",
-                dir=target.parent,
-                delete=False,
-            ) as handle:
-                temporary = Path(handle.name)
-                handle.write(archive.read(name))
-            _atomic_replace(temporary, target)
-            temporary = None
+            parent_fd = _open_member_parent(root_fd, parts[:-1])
+            temporary_fd, temporary_name = _temporary_member(parent_fd, parts[-1])
+            with os.fdopen(temporary_fd, "wb") as handle, archive.open(name, "r") as source:
+                shutil.copyfileobj(source, handle)
+            _atomic_replace(
+                temporary_name,
+                parts[-1],
+                src_dir_fd=parent_fd,
+                dst_dir_fd=parent_fd,
+            )
+            temporary_name = None
         except (BadZipFile, OSError, RuntimeError) as error:
             raise SchemaRefusal(f"package member {name!r} could not be extracted safely") from error
         finally:
-            if temporary is not None:
-                try:
-                    temporary.unlink(missing_ok=True)
-                except OSError as cleanup_error:
-                    raise SchemaRefusal(
-                        f"package member {name!r} could not be extracted safely, and its "
-                        f"temporary file {temporary} could not be removed; the clean root is "
-                        "incomplete and must not be used"
-                    ) from cleanup_error
+            try:
+                if temporary_name is not None and parent_fd is not None:
+                    try:
+                        _unlink_at(temporary_name, dir_fd=parent_fd)
+                    except OSError as cleanup_error:
+                        raise SchemaRefusal(
+                            f"package member {name!r} could not be extracted safely, and its "
+                            f"temporary file {temporary_name} could not be removed; the clean "
+                            "root is incomplete and must not be used"
+                        ) from cleanup_error
+            finally:
+                if parent_fd is not None:
+                    os.close(parent_fd)
 
 
 _MANIFEST_FIELDS: Final = frozenset(
@@ -2610,8 +2691,8 @@ def _zip_bytes(members: dict[str, bytes]) -> bytes:
         names = [EXPORT_MANIFEST_NAME] + sorted(
             name for name in members if name != EXPORT_MANIFEST_NAME
         )
+        _validate_archive_member_names(names)
         for name in names:
-            _validate_member_name(name)
             info = ZipInfo(name, date_time=_ZIP_EPOCH)
             info.compress_type = ZIP_STORED
             info.create_system = 3
@@ -4065,7 +4146,46 @@ def _validate_member_name(name: str) -> None:
     subject = f"package member path {name!r}" if isinstance(name, str) else "a package member path"
     if isinstance(name, str) and name.endswith("/"):
         raise SchemaRefusal(f"{subject} is unsafe")
-    _reject_unsafe_relative_path(name, subject=subject)
+    path = _reject_unsafe_relative_path(name, subject=subject)
+    if path.as_posix() != name:
+        # `PurePosixPath` removes `.` components and repeated separators. Distinct
+        # archive spellings that normalize to one filesystem path would otherwise
+        # replace one another during extraction.
+        raise SchemaRefusal(f"{subject} is not in canonical POSIX spelling")
+
+
+def _portable_member_key(name: str) -> str:
+    """Approximate the case/normalization identity used by default APFS."""
+    return unicodedata.normalize("NFD", name).casefold()
+
+
+def _validate_archive_member_names(names: list[str]) -> None:
+    """Refuse names that alias or shadow one another on recipient filesystems."""
+    if len(set(names)) != len(names):
+        raise SchemaRefusal("an Armarium package repeats a member name")
+    keyed: dict[str, str] = {}
+    for name in names:
+        _validate_member_name(name)
+        key = _portable_member_key(name)
+        previous = keyed.get(key)
+        if previous is not None:
+            raise SchemaRefusal(
+                f"package members {previous!r} and {name!r} collide after filesystem "
+                "case and Unicode normalization"
+            )
+        keyed[key] = name
+
+    ancestor_keys = {
+        _portable_member_key(parent.as_posix())
+        for name in names
+        for parent in PurePosixPath(name).parents
+        if parent.as_posix() != "."
+    }
+    shadowed = sorted(name for name in names if _portable_member_key(name) in ancestor_keys)
+    if shadowed:
+        raise SchemaRefusal(
+            f"package member(s) {shadowed} are named as both a file and a directory"
+        )
 
 
 def _validate_run_relative_path(path: object) -> None:
