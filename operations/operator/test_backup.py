@@ -29,6 +29,14 @@ def _run_tree(tmp_path: Path) -> tuple[Path, str]:
     return root, "r"
 
 
+def _file_bytes(root: Path) -> dict[str, bytes]:
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
 def test_backup_is_content_addressed_resumable_and_verifies_each_digest(tmp_path: Path) -> None:
     volume, run_id = _run_tree(tmp_path)
     mac = tmp_path / "Mac Backup"
@@ -57,7 +65,7 @@ def test_backup_never_overwrites_an_object_with_the_wrong_digest(tmp_path: Path)
     volume, run_id = _run_tree(tmp_path)
     mac = tmp_path / "mac"
     source = volume / run_id / "run.json"
-    digest = __import__("hashlib").sha256(source.read_bytes()).hexdigest()
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
     target = mac / "objects" / "sha256" / digest
     target.parent.mkdir(parents=True)
     target.write_bytes(b"foreign bytes")
@@ -73,7 +81,7 @@ def test_backup_refuses_to_publish_a_snapshot_when_the_source_moves(
 ) -> None:
     volume, run_id = _run_tree(tmp_path)
     mac = tmp_path / "mac"
-    original = __import__("operations.operator.backup", fromlist=["_copy_verified"])._copy_verified
+    original = backup_module._copy_verified
     changed = False
 
     def copy_then_change(source, target, digest):
@@ -93,15 +101,9 @@ def test_backup_refuses_to_publish_a_snapshot_when_the_source_moves(
 def test_backup_snapshot_publish_survives_a_kill_before_the_link(tmp_path: Path) -> None:
     """A kill between the snapshot's temp write and its final link must resume, not brick.
 
-    `_publish_bytes` used to open the final content-addressed name directly
-    (`O_CREAT | O_EXCL`) and write into it; a kill between that open and the
-    write left a permanently empty file at the exact path a snapshot's own
-    digest names, and every later retry read it back, found it did not match,
-    and refused forever -- the one crash point in this module `_copy_verified`
-    already survives. This drives an actual uncatchable SIGKILL through the
-    write path in a child process, not a monkeypatched exception a `finally`
-    block would still run for, and proves the fixed temp-then-link idiom
-    leaves nothing a resume cannot complete.
+    This requires an actual SIGKILL: an exception-based test would run the
+    cleanup block and could not prove that the temporary-first publication
+    leaves no permanent digest-named partial file.
     """
     volume, run_id = _run_tree(tmp_path)
     mac = tmp_path / "mac"
@@ -305,29 +307,14 @@ def test_backup_custody_refusal_names_a_worker_and_partial_backup_state(
 def test_backup_refuses_a_destination_inside_the_run_tree_without_writing_into_it(
     tmp_path: Path,
 ) -> None:
-    """The sealed tree must not become its own backup store, even briefly.
-
-    Only the after-the-fact inventory recheck used to notice this, which is to
-    say it was noticed after the whole run tree had been copied into the run
-    tree -- and after custody had granted that path, inside the sealed tree, as
-    the one place the credential-free child could write.
-    """
+    """Overlap must be refused before layout creation mutates the sealed source."""
     volume, run_id = _run_tree(tmp_path)
-    before = {
-        path.relative_to(volume).as_posix(): path.read_bytes()
-        for path in sorted(volume.rglob("*"))
-        if path.is_file()
-    }
+    before = _file_bytes(volume)
 
     with pytest.raises(BackupRefusal, match="must not sit inside"):
         sync_run_tree(volume, run_id, volume / run_id / "backup")
 
-    after = {
-        path.relative_to(volume).as_posix(): path.read_bytes()
-        for path in sorted(volume.rglob("*"))
-        if path.is_file()
-    }
-    assert after == before
+    assert _file_bytes(volume) == before
     assert not (volume / run_id / "backup").exists()
 
 
@@ -340,11 +327,7 @@ def test_backup_refuses_a_destination_that_holds_the_run_tree(tmp_path: Path) ->
 def test_backup_layout_symlink_cannot_redirect_writes_into_the_source(tmp_path: Path) -> None:
     volume, run_id = _run_tree(tmp_path)
     source = volume / run_id
-    before = {
-        path.relative_to(source).as_posix(): path.read_bytes()
-        for path in sorted(source.rglob("*"))
-        if path.is_file()
-    }
+    before = _file_bytes(source)
     mac = tmp_path / "mac"
     mac.mkdir()
     (mac / "objects").symlink_to(source, target_is_directory=True)
@@ -352,12 +335,7 @@ def test_backup_layout_symlink_cannot_redirect_writes_into_the_source(tmp_path: 
     with pytest.raises(BackupRefusal, match="symbolic link"):
         sync_run_tree(volume, run_id, mac)
 
-    after = {
-        path.relative_to(source).as_posix(): path.read_bytes()
-        for path in sorted(source.rglob("*"))
-        if path.is_file()
-    }
-    assert after == before
+    assert _file_bytes(source) == before
     assert not (source / "sha256").exists()
     assert not (mac / "snapshots").exists()
 
@@ -497,8 +475,6 @@ def test_a_backup_taken_across_a_concurrent_append_refuses_and_stays_resumable(
     published = list((mac / "snapshots" / "sha256").glob("*.json"))
     assert len(published) == 1
     record = json.loads(published[0].read_text())
-    # The published snapshot names the settled tree exactly -- every member, and
-    # nothing the interrupted pass left behind.
     assert {row["relative_path"] for row in record["files"]} == {
         path.relative_to(volume / run_id).as_posix()
         for path in (volume / run_id).rglob("*")
@@ -507,6 +483,4 @@ def test_a_backup_taken_across_a_concurrent_append_refuses_and_stays_resumable(
     for row in record["files"]:
         stored = mac / "objects" / "sha256" / row["sha256"]
         assert hashlib.sha256(stored.read_bytes()).hexdigest() == row["sha256"]
-    # Two of the three objects were already on disk from the refused pass, so
-    # the refusal cost nothing but the snapshot.
     assert finished.reused == 2 and finished.copied == 1

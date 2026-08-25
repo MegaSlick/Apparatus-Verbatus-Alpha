@@ -1,13 +1,9 @@
-"""Offline acceptance of a mounted-volume run root and crash recovery."""
+"""Mounted-volume mobility and crash recovery must use real subprocesses."""
 
 from __future__ import annotations
 
 import hashlib
-
-# Loaded by path, not dotted import: stage directories are not importable
-# packages (pipeline/test_stage_import_boundaries.py), and the acceptance
-# module's own _load_recensor sets the idiom.
-import importlib.util as _importlib_util
+import importlib.util
 import json
 import os
 import signal
@@ -15,14 +11,16 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, cast
 
 from common.runtree.store import RunTree
 from operations.operator.backup import sync_run_tree
 
+# Stage code may not import `pipeline` by dotted path; the boundary test permits
+# an explicit path load for a same-stage test helper.
 _ACCEPTANCE_PATH = Path(__file__).resolve().parent / "test_orchestrator_acceptance.py"
-_spec = _importlib_util.spec_from_file_location("orchestrator_acceptance_helpers", _ACCEPTANCE_PATH)
-_acceptance = _importlib_util.module_from_spec(_spec)
+_spec = importlib.util.spec_from_file_location("orchestrator_acceptance_helpers", _ACCEPTANCE_PATH)
+_acceptance = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_acceptance)
 snapshot = _acceptance.snapshot
 
@@ -60,7 +58,7 @@ def _references(value: object) -> Iterator[dict[str, str]]:
         if set(value) == {"relative_path", "sha256"} and all(
             isinstance(value[key], str) for key in value
         ):
-            yield value  # type: ignore[misc]
+            yield cast(dict[str, str], value)
         for nested in value.values():
             yield from _references(nested)
     elif isinstance(value, list):
@@ -77,14 +75,14 @@ def _assert_every_reference_resolves(root: Path, run_id: str) -> int:
             assert resolved.is_file(), reference
             assert hashlib.sha256(resolved.read_bytes()).hexdigest() == reference["sha256"]
             matched += 1
-    # A walk that matched nothing would pass this function vacuously, which is
-    # the one way it could report a movable tree without having read one.
+    # Nonzero evidence is required; a broken traversal would otherwise prove
+    # mobility vacuously.
     assert matched, f"no run-tree references were found under {tree.root}"
     return matched
 
 
 def _region_count(root: Path, run_id: str) -> int:
-    """How many region artifacts the Designator has published so far.
+    """Polling must count regions without re-verifying a tree being mutated.
 
     `verify_inputs=False` deliberately: this is a count, not an inspection, and
     the poll below runs it repeatedly against a tree the driver is still writing.
@@ -94,7 +92,7 @@ def _region_count(root: Path, run_id: str) -> int:
     the crash.
     """
     manifest = RunTree(root, run_id).build_manifest("designator", verify_inputs=False)
-    return len([entry for entry in manifest["artifacts"] if entry["kind"] == "region"])
+    return sum(entry["kind"] == "region" for entry in manifest["artifacts"])
 
 
 def _kill_and_reap(process: subprocess.Popen[bytes]) -> int:
@@ -111,13 +109,12 @@ def _kill_and_reap(process: subprocess.Popen[bytes]) -> int:
 
 
 def _crash_mid_recovery(volume: Path, scratch: Path) -> dict[str, str]:
-    """Drive a real recovery on `volume` and SIGKILL it mid-member.
+    """SIGKILL a real recovery only after its first append.
 
-    Returns the crashed tree's snapshot.  A local directory stands in for the
-    offline volume mount required by Unit 27.
+    A local directory stands in for the offline mount; the returned snapshot is
+    the durable state available to resume.
     """
 
-    # First create the same durable boundary on the mounted-volume path.
     staged = _run(volume, "r", "review", "--from", "door", "--to", "recensor")
     assert staged.returncode == 3, staged.stderr
     before_crash = snapshot(volume)
@@ -181,8 +178,8 @@ def _crash_mid_recovery(volume: Path, scratch: Path) -> dict[str, str]:
     except BaseException:
         _kill_and_reap(process)
         raise
-    # Reaping a process group that has already been SIGKILLed; the bound is a
-    # hang guard for an unreapable child, not a wait for work to finish.
+    # The bound guards against an unreapable child; it does not extend the
+    # recovery work window.
     assert _kill_and_reap(process) == -signal.SIGKILL
 
     crashed = snapshot(volume)
@@ -194,7 +191,7 @@ def _crash_mid_recovery(volume: Path, scratch: Path) -> dict[str, str]:
 def test_volume_hosted_tree_is_movable_and_crash_resume_appends_without_rewriting(
     tmp_path: Path,
 ) -> None:
-    """Unit 27's first two claims: the tree moves, and a crash resumes by appending.
+    """A moved tree must resolve identically, and crash resume may only append.
 
     Every input reference in the volume-hosted tree resolves and hashes to its
     recorded digest, a SIGKILL mid-recovery leaves a resumable tree, and the
@@ -215,9 +212,8 @@ def test_volume_hosted_tree_is_movable_and_crash_resume_appends_without_rewritin
         if path.endswith(("/manifest.json", "/manifest-door.json", "/index.json")) or path.endswith(
             "run-health/recensor-partition-receipt.json"
         ):
-            # These are explicitly derived inventories/current-state receipts;
-            # a legitimate append rebuilds them.  The evidence they inventory
-            # must retain its bytes, which is the assertion below.
+            # A legitimate append rebuilds derived inventories and current-state
+            # receipts; the immutable evidence they name must retain its bytes.
             continue
         assert finished[path] == digest, f"resume rewrote surviving evidence at {path}"
     assert finished == uninterrupted
@@ -238,15 +234,10 @@ def test_volume_hosted_tree_is_movable_and_crash_resume_appends_without_rewritin
 def test_a_backup_of_a_mid_recovery_tree_restores_and_resumes_byte_identically(
     tmp_path: Path,
 ) -> None:
-    """The Mac backup of a tree whose recovery is mid-flight is a resumable tree.
+    """A mid-recovery backup must restore and resume byte-identically.
 
-    Three claims at once, none of which the crash test above reaches: that
-    `verbatus backup` publishes a snapshot for a tree interrupted *mid-recovery*
-    rather than refusing one; that restoring that snapshot reproduces
-    the crashed tree byte for byte; and that the driver resumes the restored
-    copy to the same bytes as the tree it was copied from.  The test above
-    already ties that tree to an uninterrupted local run, so the equality here
-    carries the restored copy to the same place.
+    The snapshot must publish for an interrupted tree, restore the crashed bytes
+    exactly, and let both the source and restored copy reach the same result.
     """
     volume = tmp_path / "mounted-volume" / "runs"
     crashed = _crash_mid_recovery(volume, tmp_path)
@@ -267,16 +258,7 @@ def test_a_backup_of_a_mid_recovery_tree_restores_and_resumes_byte_identically(
 
 
 def _restore(mac: Path, snapshot_sha256: str, destination: Path) -> None:
-    """Rebuild a run tree from one backup snapshot, verifying every digest.
-
-    There is no `verbatus restore` verb and this unit does not add one: the
-    snapshot is a complete self-describing inventory and the store is content
-    addressed, so a restore is a digest-checked copy and nothing more.  A verb
-    that *writes into* a run tree is a custody question in its own right under
-    Unit 4's doctrine, and it belongs to whichever unit takes that question up
-    rather than to the last seat of this one.  What this unit owes is the
-    evidence that the backup can be restored, which is what this performs.
-    """
+    """Test-only: production restore must have its own run-tree custody boundary."""
     record = json.loads((mac / "snapshots" / "sha256" / f"{snapshot_sha256}.json").read_text())
     for row in record["files"]:
         data = (mac / "objects" / "sha256" / row["sha256"]).read_bytes()

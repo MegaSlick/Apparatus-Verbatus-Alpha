@@ -25,13 +25,9 @@ from common.runtree.store import RunTree
 
 SCHEMA = "mac-run-backup.v2"
 CHUNK_BYTES = 1024 * 1024
-# What a filesystem that will not hard-link answers with.  Named here for the
-# same reason `common/runtree/store.py::_atomic_create` names it, and with more
-# cause: that one guards the run root, while this one guards a *Mac* directory,
-# so an exFAT USB drive, an SMB or AFP share, and some sync-provider folders are
-# all ordinary choices for it and all of them refuse `os.link`.  Unnamed, the
-# condition reaches the operator as an errno about a temporary file nobody asked
-# for, inside a message promising to name the backup-directory problem.
+# Backup targets commonly include exFAT, network shares, and sync folders; their
+# hard-link errors must name that filesystem constraint without weakening the
+# temp-then-link publication guarantee.
 _NO_HARD_LINKS: Final = frozenset({errno.EPERM, errno.EOPNOTSUPP, errno.ENOSYS})
 _LAYOUT_DIRECTORIES: Final = (
     PurePosixPath("objects"),
@@ -61,7 +57,7 @@ class BackupReport:
 
     @classmethod
     def from_record(cls, value: object) -> BackupReport:
-        """Read the worker's closed success report without trusting its types."""
+        """The parent must verify every worker-reported type before declaring success."""
 
         fields = {"schema", "snapshot_sha256", "copied", "reused"}
         if not isinstance(value, dict) or set(value) != fields:
@@ -96,12 +92,10 @@ def sync_run_tree(run_root: Path, run_id: str, mac_directory: Path) -> BackupRep
     """
 
     source, root = resolve_backup_paths(run_root, run_id, mac_directory)
-    # The requested id, not `source.name`: a run-id symlink that stays inside the
-    # run root resolves to a directory with a different name, and the snapshot
-    # records which run was asked for.
-    checked_run_id = validate_run_id(run_id)
     _prepare_backup_layout(source, root)
-    managed_paths = RunTree(run_root, checked_run_id).inventory_scope()
+    # Keep the requested id: an in-root symlink may resolve to a differently
+    # named directory, but the snapshot must record the run the operator named.
+    managed_paths = RunTree(run_root, run_id).inventory_scope()
     before, before_temporaries = _inventory(source, managed_paths)
     copied = reused = 0
     for relative, digest in before.items():
@@ -115,7 +109,7 @@ def sync_run_tree(run_root: Path, run_id: str, mac_directory: Path) -> BackupRep
         )
     record = {
         "schema": SCHEMA,
-        "run_id": checked_run_id,
+        "run_id": run_id,
         "files": [
             {"relative_path": relative, "sha256": digest}
             for relative, digest in sorted(before.items())
@@ -129,18 +123,16 @@ def sync_run_tree(run_root: Path, run_id: str, mac_directory: Path) -> BackupRep
     snapshot_sha256 = digest_bytes(data)
     _publish_bytes(root / "snapshots" / "sha256" / f"{snapshot_sha256}.json", data)
     report = BackupReport(snapshot_sha256, copied, reused)
-    verify_backup_snapshot(root, checked_run_id, report)
+    verify_backup_snapshot(root, run_id, report)
     return report
 
 
 def resolve_backup_paths(run_root: Path, run_id: str, mac_directory: Path) -> tuple[Path, Path]:
-    """The source run tree and the backup root, checked before either is written.
+    """Check source and destination before any destination component is created.
 
-    Separate from `sync_run_tree` so the operator command can apply the same
-    rules *before* it prepares the destination layout.  It creates those
-    directories itself, because the custody allowance deliberately grants
-    publication and not directory creation -- and a destination that fails these
-    checks would have had them created inside the run tree first.
+    The parent creates the layout before confinement because custody grants the
+    child publication, not directory creation. Delaying overlap checks to the
+    child could therefore create the layout inside the sealed source first.
     """
 
     try:
@@ -163,7 +155,7 @@ def resolve_backup_paths(run_root: Path, run_id: str, mac_directory: Path) -> tu
 
 
 def _validate_backup_layout(source: Path, root: Path) -> None:
-    """Refuse layout aliases before any one of them can redirect a write."""
+    """Every existing layout component must be a real, non-source directory."""
 
     for directory in (root, *(root / part for part in _LAYOUT_DIRECTORIES)):
         if directory.is_symlink():
@@ -181,7 +173,7 @@ def _validate_backup_layout(source: Path, root: Path) -> None:
 
 
 def _prepare_backup_layout(source: Path, root: Path) -> None:
-    """Create only the fixed store layout, checking every component at each step."""
+    """Revalidate after each mkdir because later paths depend on earlier ones."""
 
     _validate_backup_layout(source, root)
     for directory in (root, *(root / part for part in _LAYOUT_DIRECTORIES)):
@@ -210,13 +202,7 @@ def _contains(ancestor: Path, descendant: Path) -> bool:
     `/Volumes/Vol/runs` and `/Volumes/vol/runs` are one directory that compares
     unequal as text, and `Path.resolve` does not correct case on macOS.  Device
     and inode are what decide whether two names are the same directory, and they
-    settle a bind mount and a hard-linked directory with the same reading.
-
-    Checked in both directions.  A backup directory *inside* the run tree was
-    caught only by the after-the-fact inventory recheck, which is to say only
-    after the tool had copied the whole sealed tree into the sealed tree, and
-    only after custody had granted that path -- inside the run tree -- as the
-    one place the credential-free child was allowed to write.
+    also settle aliases such as bind mounts.
     """
     target = _identity(ancestor)
     if target is None:
@@ -247,8 +233,6 @@ def _inventory(
 
 
 def _is_publication_temporary(relative: str, managed_paths: tuple[str, ...]) -> bool:
-    """Whether `relative` is RunTree's private temporary for a managed target."""
-
     path = PurePosixPath(relative)
     if not path.name.startswith("."):
         return False
@@ -327,13 +311,11 @@ def _copy_verified(source: Path, target: Path, expected_sha256: str) -> str:
 
 
 def _link_or_refuse(temporary: Path, target: Path) -> None:
-    """`os.link`, with the one setup fact an operator can act on named.
+    """Publish atomically while translating unsupported hard links for the operator.
 
-    `FileExistsError` is deliberately let through: both callers verify the bytes
-    that won the name.  A plain `O_CREAT | O_EXCL` write is deliberately not
-    substituted for the link, for the reason `_atomic_create` gives -- it would
-    publish the final name before the bytes were in it, which is the failure
-    both call sites exist to prevent.
+    `FileExistsError` must reach the caller so it can verify the bytes that won
+    the name. A direct exclusive write would expose the final name before its
+    content was complete.
     """
     try:
         os.link(temporary, target)
@@ -376,7 +358,7 @@ def _refuse_a_different_snapshot(target: Path, data: bytes) -> None:
 
 
 def _publish_bytes(target: Path, data: bytes) -> None:
-    """Publish by the same write-temp-then-link idiom `_copy_verified` uses.
+    """Never expose a final snapshot name before its content is written and synced.
 
     A direct `O_CREAT | O_EXCL` open makes the final name exist before the
     bytes are in it; a kill between that open and the write leaves a

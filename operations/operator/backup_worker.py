@@ -1,4 +1,4 @@
-"""The credential-free child that writes a Mac backup store."""
+"""Runs without provider credentials; success stdout is a closed record."""
 
 from __future__ import annotations
 

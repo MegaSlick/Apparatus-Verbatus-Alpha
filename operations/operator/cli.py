@@ -358,15 +358,12 @@ def _backup_in_custody(run_root: Path, run_id: str, mac_directory: Path, workspa
         verify_backup_snapshot,
     )
 
-    # The same rules the worker applies, applied before the parent creates
-    # anything.  The parent prepares the destination layout, so a destination
-    # that overlaps the run tree would have had `objects/` and `snapshots/`
-    # created *inside* the sealed run tree on the way to the child refusing it.
+    # The parent must reject overlap before creating the layout; otherwise its
+    # setup can write `objects/` and `snapshots/` inside the sealed source.
+    # Custody grants the child publication rights but deliberately withholds
+    # directory creation, so the checked closed layout must exist first.
     try:
         source, destination = resolve_backup_paths(run_root, run_id, mac_directory)
-        # Landlock's custody allowance deliberately grants publication rights,
-        # not directory creation. Prepare the closed layout before the child;
-        # every existing component has already been refused if it redirects.
         _prepare_backup_layout(source, destination)
     except BackupRefusal as refusal:
         raise OperatorError(ErrorCode.BACKUP_FAILED, detail=str(refusal)) from refusal
