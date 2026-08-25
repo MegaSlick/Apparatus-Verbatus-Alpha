@@ -177,12 +177,8 @@ def _parse_chair(role: str, values: Any) -> ChairIdentity | AbsentChair:
 
     witness_adapter = values.get("witness_adapter")
     witness_scope = values.get("witness_scope")
-    # Only a witness has a native witness boundary. On any other role these two
-    # rows are read by nothing, yet `to_record()` carries them into that chair's
-    # provenance record and into `config_digest`, so the record would assert a
-    # boundary the occupant never crosses (GOVERNANCE 6) and a typo'd role would
-    # be absorbed rather than named (GOVERNANCE 2). Refused here rather than at
-    # binding time so the mistake is named against the file that made it.
+    # Non-witness adapter rows would enter provenance and config_digest despite
+    # naming a boundary that role never crosses. Refuse them at their source.
     if not is_witness_role(role) and (witness_adapter is not None or witness_scope is not None):
         raise ConfigurationRefusal(
             role,

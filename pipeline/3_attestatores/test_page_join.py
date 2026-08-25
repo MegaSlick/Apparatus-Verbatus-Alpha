@@ -1,15 +1,7 @@
-"""`page_join`: what a page witness's synthetic page reading may claim.
+"""A synthetic page reading may contain only content from that chair's act attempts.
 
-R0 has no live page-scoped witness. A page Testimonium is built by joining one
-chair's own act attempts on that page, so everything the page record asserts has
-to be derivable from those attempts and nothing else.
-
-The join used to be `"\\n".join(readable)` over every joined payload, with the
-outcome `read` whenever the *list* was non-empty. Two acts a chair genuinely read
-as empty therefore produced `payload="\\n"` under `outcome="read"`: a separator
-character no act delivered, retained as a reading of it, and counted as page
-content by every consumer downstream (CodeRabbit W44). Separators now appear only
-between delivered characters, and the outcome is derived from the joined text.
+Separators may occur only between delivered characters, and the outcome must be
+derived from the joined text rather than the number of attempts.
 """
 
 import ast
@@ -52,11 +44,10 @@ def _identity(role: str, scope: str) -> ChairIdentity:
     )
 
 
-def _scope_context(chairs=None, *, fixture=None, scopes=None, **fields):
+def _scope_context(chairs=None, *, scopes=None, **fields):
     scopes = scopes or {"attestator_1": "page", "attestator_3": "act"}
     configured = {role: _identity(role, scope) for role, scope in scopes.items()}
     return SimpleNamespace(
-        fixture={} if fixture is None else fixture,
         witness_chairs=list(scopes) if chairs is None else chairs,
         registry=SimpleNamespace(config=SimpleNamespace(chairs=configured)),
         **fields,
@@ -68,7 +59,7 @@ def _scope_context(chairs=None, *, fixture=None, scopes=None, **fields):
     ([], {}, [[]], {"nested": []}, {"a": {"b": [1, 2]}}, [[[]]], [{"a": [{}]}]),
 )
 def test_declared_page_witness_chairs_refuses_unhashable_json_values(bad_chair):
-    """Fixture data crosses this boundary before set-based roster handling."""
+    """Roster values must be type-checked before set-based handling."""
     context = _scope_context([bad_chair])
 
     with pytest.raises(SchemaRefusal, match="unique list of chair names"):
@@ -76,7 +67,7 @@ def test_declared_page_witness_chairs_refuses_unhashable_json_values(bad_chair):
 
 
 def test_an_unknown_page_witness_chair_is_refused_not_dropped_from_the_join():
-    """A declared typo is evidence of a missing witness, not an empty intersection."""
+    """A sealed-roster typo is a mismatch, not an empty intersection."""
     context = _scope_context(["attestator_33"])
 
     with pytest.raises(SchemaRefusal, match="absent from the current models configuration"):
@@ -90,7 +81,7 @@ def test_an_unknown_page_witness_chair_is_refused_by_the_shared_accessor_itself(
     directly and never call `publish_page_testimonia_and_attachments` (the
     reread path does not call it at all; the whole-pass path calls it only
     after `attempt_pass` has already sealed every attempt). The roster check
-    must live in the accessor itself or a typo'd chair silently reaches those
+    must live in the accessor itself or a mismatched chair silently reaches those
     write paths unrefused before the join ever runs."""
     context = _scope_context(["attestator_33"])
 
@@ -99,10 +90,7 @@ def test_an_unknown_page_witness_chair_is_refused_by_the_shared_accessor_itself(
 
 
 def test_the_roster_refusal_names_the_roster_and_not_only_the_offender():
-    """`attestator_33` is either a typo for a chair that exists or a chair this
-    run was never sealed with, and only the roster says which. A refusal that
-    names the offender alone hands the operator their own fixture back and makes
-    them open `config/models.toml` to learn what the run actually holds."""
+    """The operator needs both mismatched sets to distinguish drift from a typo."""
     context = _scope_context(["attestator_33"])
 
     with pytest.raises(SchemaRefusal) as caught:
@@ -123,9 +111,7 @@ def test_the_roster_refusal_names_the_roster_and_not_only_the_offender():
         True,
         pytest.param(10**5000, id="huge-int"),
         None,
-        # A recursive structure: no JSON file can hold one, but nothing here
-        # promises the fixture reached this accessor through `json.loads`, and a
-        # type check that recursed into it would hang rather than refuse.
+        # Recursive values can reach direct callers; validation must not walk them.
         "recursive",
     ),
 )
@@ -168,7 +154,7 @@ def test_no_testimonium_is_sealed_before_the_declaration_is_validated():
     """The timing guarantee, driven rather than reasoned about.
 
     `publish_attempt` builds its payload first and publishes last, so the
-    question is only whether the accessor runs on the near side of the write.
+    constraint is that the accessor runs on the near side of the write.
     A recording context answers it: the refusal must arrive with the publish
     list still empty, because a Testimonium sealed carrying a silently wrong
     `page_witness` flag is immutable (GOVERNANCE 4) and nothing later can take
@@ -352,7 +338,7 @@ def test_every_testimonium_write_path_validates_the_declaration_first():
 
     assert set(writers) == {"publish_attempt", "publish_page_testimonia_and_attachments"}, (
         f"{module_path} publishes a Testimonium from {sorted(writers)}; a new write path "
-        "must validate the page-witness declaration before it seals, and this scan is what "
+        "must validate sealed page-witness scope before it seals, and this scan is what "
         "notices it was added"
     )
     assert dynamic == {}, (
@@ -369,8 +355,8 @@ def test_every_testimonium_write_path_validates_the_declaration_first():
     )
     for name, (declaration_line, publish_lines) in writers.items():
         assert declaration_line >= 0 and declaration_line < min(publish_lines), (
-            f"{name} seals a Testimonium before validating the fixture's page-witness "
-            "declaration; a sealed record is immutable, so a refusal after the write "
+            f"{name} seals a Testimonium before validating sealed page-witness scope; "
+            "a sealed record is immutable, so a refusal after the write "
             "cannot take back the wrong page_witness flag it carries"
         )
 

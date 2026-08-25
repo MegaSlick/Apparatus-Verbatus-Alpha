@@ -1012,7 +1012,6 @@ def test_real_run_bindings_change_with_a_renderer_recipe_before_a_page_is_writte
 
 
 def test_real_run_bindings_refuse_a_configured_witness_without_an_adapter():
-    """The real Door applies the adapter preflight before it can create a run."""
     models = load_models_toml(ROOT / "config" / "models.toml")
     chairs = dict(models.chairs)
     chairs["attestator_1"] = replace(

@@ -1,7 +1,7 @@
 """Shared witness-adapter declarations, never the runnable adapter code.
 
 An adapter name and scope are sealed configuration facts used by every stage.
-The code which presents a request, parses a response, or retains native output
+The code which frames a request, parses a response, or retains native output
 belongs exclusively to Attestatores: other stages need the declared name and
 scope, not a callable route into that stage.
 """
@@ -27,9 +27,9 @@ class AdapterRefusal(SchemaRefusal):
             display = repr(name)
         else:
             # A non-string is refused for its type, before its representation is
-            # trusted.  In particular, repr(10**5000) raises under Python's
+            # trusted. In particular, repr(10**5000) raises under Python's
             # integer-rendering safety limit, and an object's custom __repr__
-            # can raise anything at all.  Neither may replace the named refusal.
+            # can raise anything at all. Neither may replace the named refusal.
             display = f"<{type(name).__name__}>"
         super().__init__(f"witness adapter {display} {happened}. {meaning}. {next_step}")
 
@@ -57,10 +57,11 @@ def resolve_witness_adapter_name(name: object) -> str:
 
 
 def validate_witness_adapter_bindings(models: ModelsConfig) -> None:
-    """Validate sealed witness names and scopes before any run-tree write.
+    """Validate concrete model configs before any run-tree write.
 
-    Unconfigured registry keys are deliberately reported rather than fatal: a
-    later adapter-owning unit may land before its configured occupant does.
+    Lightweight structural model doubles are outside this preflight. Unused
+    registry keys are reported rather than fatal because declarations and chair
+    configuration may be deployed independently.
     """
 
     if not isinstance(models, ModelsConfig):
@@ -87,14 +88,8 @@ def validate_witness_adapter_bindings(models: ModelsConfig) -> None:
 
     unused = sorted(KNOWN_WITNESS_ADAPTER_NAMES - declared)
     if unused:
-        # Printed, not warned. A `RuntimeWarning` is the only report in this tree
-        # that an unrelated global switch can erase: `PYTHONWARNINGS=ignore` or
-        # `-W ignore` deletes it and the run still exits successfully, which is
-        # the shape GOVERNANCE 2 refuses. stderr is the surface every stage
-        # already reports its non-fatal findings on, and the orchestrator
-        # forwards a child's stderr on the normal path
-        # (`pipeline/orchestrator/run.py::invoke`), so the operator who ran the
-        # pipeline is told.
+        # Warnings can be suppressed globally while the run still succeeds;
+        # stderr keeps this non-fatal finding visible to the orchestrator.
         print(
             f"witness adapter registry: {unused} declared with no configured occupant naming "
             "it. Reported, not fatal: an adapter may land before the chair that uses it",

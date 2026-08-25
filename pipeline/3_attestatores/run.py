@@ -1458,10 +1458,10 @@ def resolve_attempt(
 
 
 def declared_page_witness_chairs(context) -> set[str]:
-    """The sealed occupants whose configured scope is ``page``.
+    """Read page scope locally from the sealed model configuration.
 
-    This is intentionally a local reader of the same configuration facts as the
-    Perlector.  Neither stage trusts a fixture declaration for production scope.
+    This producer must not accept fixture scope or delegate roster validation to
+    the Perlector; each side of the handoff checks the sealed authority itself.
     """
     roster = context.witness_chairs
     if (
@@ -1518,9 +1518,8 @@ def publish_attempt(
         reason=attempt.reason,
     )
     if chair in declared_page_witness_chairs(context):
-        # This is the interim act view of an immutable page witness.
-        # Its attachment points at the retained page Testimonium; R4 replaces
-        # this declared view with alignment, not with another witness kind.
+        # This interim act view must point to the retained page Testimonium;
+        # alignment may replace the view, but not create another witness kind.
         payload["page_witness"] = True
     context.publish(
         kind="testimonium",
@@ -1781,8 +1780,8 @@ def publish_page_testimonia_and_attachments(
     compatibility view for the current Perlector; each is explicitly linked below
     to the immutable page Testimonium that supplied it.
     """
-    # `declared_page_witness_chairs` already validates the sealed roster against
-    # the configured occupants, so scope needs no further narrowing here.
+    # Scope is authoritative only after the sealed roster and configured
+    # occupants agree.
     page_chairs = declared_page_witness_chairs(context)
     limits, limits_digest = load_alignment_limits(context.args.alignment_config)
     context.require_sealed_config("alignment", limits_digest)

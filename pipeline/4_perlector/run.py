@@ -315,11 +315,10 @@ def testimonia_of(context, act_id: str, proposal_regions: list[dict]) -> list[di
 
 
 def declared_page_witness_chairs(context) -> set[str]:
-    """The sealed occupants whose configured scope is ``page``.
+    """Read page scope independently from the sealed model configuration.
 
-    This independent consumer check keeps the page-attachment boundary from
-    trusting the Attestatores, while taking production scope only from the
-    sealed model configuration.
+    This consumer must not trust the Attestatores' validation or fixture scope;
+    each side of the handoff checks the sealed authority itself.
     """
     roster = context.witness_chairs
     if (
@@ -390,9 +389,6 @@ def act_attachment_view(
         raise SchemaRefusal("an act-attachment record has no attachment list")
     configured = set(context.witness_chairs)
     page_ids = {basis["source_page_ordinal"]: basis["source_page_id"] for basis in bases}
-    # Read once, above the loop, because this is a fact about the run's fixture
-    # rather than about any one attachment; the function holds the producer's
-    # whole key — uniqueness and the sealed roster included.
     page_chairs = declared_page_witness_chairs(context)
     attachment_chairs = [
         attachment.get("chair") if isinstance(attachment, dict) else None
@@ -495,9 +491,6 @@ def act_attachment_view(
                 f"act {act_id} attachment for chair {chair!r} describes an attempt that is no "
                 "longer this chair's current Testimonium"
             )
-        # `declared_page_witness_chairs` above independently verifies the sealed
-        # roster is a unique list of strings and every member has a configured
-        # occupant. Scope itself comes from that occupant, never fixture data.
         expected_page_witness = chair in page_chairs
         if attachment["page_witness"] != expected_page_witness:
             raise SchemaRefusal(

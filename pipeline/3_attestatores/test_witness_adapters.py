@@ -1,5 +1,3 @@
-"""The native callables remain a private Attestatores sibling module."""
-
 import dataclasses
 import importlib.util
 import sys
@@ -10,7 +8,6 @@ import pytest
 
 from common.witness_adapters import KNOWN_WITNESS_ADAPTER_NAMES
 
-ROOT = Path(__file__).resolve().parents[2]
 STAGE = Path(__file__).resolve().parent
 
 
@@ -42,7 +39,7 @@ def test_retention_is_bound_to_the_resolved_adapter_and_cannot_be_relabeled():
     """The registry name remains the retained model-view provenance.
 
     Returning the generic ``retain_model_view`` function exposed its
-    ``adapter=`` argument to the caller.  A caller could resolve ``churro.v1``
+    ``adapter=`` argument to the caller. A caller could resolve ``churro.v1``
     and then retain the same bytes under another adapter's name, making the
     sealed registry advisory precisely where it is meant to bind provenance.
     """
@@ -74,23 +71,14 @@ def test_retention_is_bound_to_the_resolved_adapter_and_cannot_be_relabeled():
 
 
 def test_the_registry_does_not_pre_empt_the_intake_contract_seam_names():
-    """`presented`/`observed` are the intake contract's words for seams this
-    slice does not build. A slot wearing either name here would be a placeholder
-    that a later unit reads as already bound, and retention is not observation:
-    raw bytes are the native layer, an observation is derived."""
+    """Raw retention must not occupy the separate presentation or observation seams."""
     adapters = _load_local_adapters()
     fields = {field.name for field in dataclasses.fields(adapters.RunnableAdapter)}
     assert fields == {"prompt", "parse", "retain"}
 
 
 def test_a_callable_binding_that_raises_at_import_fails_loudly_without_fallback(monkeypatch):
-    """Import finishes before ``run.main`` can open or write a run tree.
-
-    A valid shared name therefore cannot fall through to another adapter when
-    its local callable binding is broken: the original exception propagates and
-    module construction stops. This models an adapter-local dependency or
-    eager binding that raises while its module is imported.
-    """
+    """A broken eager binding must propagate before a run opens, with no fallback."""
 
     exploding = ModuleType("feeding")
 

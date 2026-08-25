@@ -30,17 +30,10 @@ def is_hf_revision(value: object) -> bool:
     )
 
 
-# Which roles are Attestator chairs, in one place. Three call sites used to spell
-# this prefix themselves, and the witness-adapter rows made a fourth reading
-# necessary at parse time: a chair that is not a witness has no native witness
-# boundary, so declaring one on it is a configuration error rather than a fact.
-_WITNESS_ROLE_PREFIX = "attestator_"
-
-
 def is_witness_role(role: object) -> bool:
-    """True for the roles that bear witness, by the one naming rule that says so."""
+    """Apply the single naming rule used to classify Attestator chairs."""
 
-    return isinstance(role, str) and role.startswith(_WITNESS_ROLE_PREFIX)
+    return isinstance(role, str) and role.startswith("attestator_")
 
 
 @dataclass(frozen=True, slots=True)

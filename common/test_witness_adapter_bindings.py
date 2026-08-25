@@ -1,5 +1,3 @@
-"""Run-entry bindings for the named witness-adapter registry."""
-
 import warnings
 from dataclasses import replace
 from pathlib import Path
@@ -7,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from common import witness_adapters
+from common.chairs import load_models_toml
 from common.chairs.config import parse_models_config
 from common.chairs.models import ModelsConfig
 from common.contracts.errors import ContractError, IncompatibleReuse
@@ -17,8 +16,6 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _models() -> ModelsConfig:
-    from common.chairs import load_models_toml
-
     return load_models_toml(ROOT / "config" / "models.toml")
 
 
@@ -58,14 +55,10 @@ def test_an_unknown_adapter_name_refuses_at_run_binding_by_that_name():
 
 
 def test_a_known_adapter_name_with_no_configured_occupant_is_reported(monkeypatch, capsys):
-    """Reported, not fatal — and reported where a global switch cannot erase it.
+    """A non-fatal registry finding must survive global warning filters.
 
-    A `RuntimeWarning` here would vanish under `PYTHONWARNINGS=ignore` while the
-    run still exited successfully, which is the shape GOVERNANCE 2 refuses. The
-    filter below is set to "error" for that reason and not to "ignore": under it
-    a report routed through the warnings machinery would raise instead of
-    reaching anyone, so passing proves the report is not routed through it at
-    all, and the remaining assertions prove which stream it does reach.
+    Treating warnings as errors proves the report bypasses that suppressible
+    channel; the stream assertions prove it reaches stderr only.
     """
     monkeypatch.setattr(
         witness_adapters,
@@ -158,16 +151,7 @@ def test_two_chairs_may_share_one_adapter_at_different_scopes():
     ),
 )
 def test_a_non_witness_chair_may_not_declare_a_witness_boundary(rows):
-    """Only an Attestator is shown a witness's native boundary.
-
-    `validate_witness_adapter_bindings` walks `witness_chairs` alone, so these
-    rows on a Perlector or a Designator were read by nothing — while
-    `to_record()` still carried them into that chair's provenance record and
-    into `config_digest`. A record that asserts an adapter a chair never uses is
-    a false provenance fact (GOVERNANCE 6), and an operator who typed the rows
-    onto the wrong role was told nothing (GOVERNANCE 2). Both are refused at the
-    file that made the claim.
-    """
+    """Non-witness rows would seal provenance for a boundary the role never uses."""
     raw = {
         "witness_floor": 0,
         "chairs": {
@@ -204,16 +188,7 @@ def test_adapter_rows_travel_in_the_resolved_provenance_record():
 
 
 def test_witness_scope_is_inside_the_sealed_config_digest():
-    """Scope is a run-shaping fact, so a run cannot be resumed under a new one.
-
-    The two halves of that guarantee are tested apart: this asserts that
-    changing only `witness_scope` moves `config_digest`, and
-    `pipeline/orchestrator/test_orchestrator_acceptance.py::
-    test_reusing_a_run_id_with_a_changed_configuration_fails_before_writing`
-    asserts that a moved `config_digest` refuses by name at the Door. Without
-    the first half, a corpus re-run that quietly swapped a page witness for an
-    act witness would inherit the earlier run's seal.
-    """
+    """Changing invocation granularity must make the old run seal incompatible."""
     fixture = load_fixture(str(ROOT / "proof"))
     sealed = run_config_bindings(_models(), fixture, "happy")["config_digest"]
     flipped = run_config_bindings(_with_witness(witness_scope="act"), fixture, "happy")[
@@ -240,9 +215,8 @@ def test_witness_adapter_is_inside_the_sealed_config_digest(monkeypatch):
 def test_reducing_a_roster_cannot_reuse_one_run_id_silently(tmp_path):
     """A corpus may be run again under a changed roster, but not as the old run.
 
-    The synchronized witness-context declaration below permits the reduced
-    roster as a new configuration. Both its explicit chair list and its digest
-    move, and ``RunTree.create`` refuses the old run id before changing a byte.
+    The witness-context declaration must change with the roster; both its chair
+    list and digest then prevent reuse before a byte changes.
     """
     fixture = load_fixture(str(ROOT / "proof"))
     full_models = _models()
@@ -301,10 +275,7 @@ def test_reducing_a_roster_cannot_reuse_one_run_id_silently(tmp_path):
 
 
 def test_a_stale_fixture_still_declaring_page_witness_chairs_is_refused_not_ignored(tmp_path):
-    """Scope moved to models.toml's witness_scope; a fixture that still carries the
-    retired key must not load as if nothing changed. Read back and silently ignored
-    is the exact half-win a stale fixture must not get: the operator believes the
-    key still does something, and it does not."""
+    """A retired scope key must refuse rather than look authoritative when ignored."""
     original = (ROOT / "proof" / "skeleton_fixture.toml").read_text()
     marker = 'fixture_id = "synthetic-two-page-v0"\n'
     assert marker in original

@@ -1,16 +1,8 @@
-"""The two stages that read page-witness scope must read it the same way.
+"""Keep the independent producer and consumer scope readers in agreement.
 
-`declared_page_witness_chairs` exists twice on purpose — the Attestatores writes
-the page join under it and the Perlector validates the attachment under it, and
-neither stage is meant to take the other's word for scope. Deliberate
-duplication is not the same as licensed divergence, though: both copies derive
-from one sealed source, so any answer they disagree on is a defect in one of
-them, and the consult that ordered this slice names mirrored readers that have
-already drifted twice as the standing hazard.
-
-This is the drift alarm the pair did not have. It does not require the two
-functions to be textually identical — only to answer identically, including on
-the rosters each refuses.
+Neither stage may trust the other's boundary check, so the implementations stay
+separate. They must still derive identical answers and refusals from the same
+sealed authority.
 """
 
 import importlib.util
@@ -70,15 +62,10 @@ def _context(scopes: dict[str, str], *, roster=None, absent=(), fixture=None):
 
 
 AGREED = (
-    # The live roster's own shape: two page witnesses and one act witness.
     _context({"attestator_1": "page", "attestator_2": "act", "attestator_3": "page"}),
-    # No page-scoped occupant at all is a valid, empty answer, not a fallback.
     _context({"attestator_1": "act", "attestator_2": "act"}),
-    # Every occupant page-scoped.
     _context({"attestator_1": "page", "attestator_2": "page"}),
-    # An explicit absence stays in the roster and is scope-less, never page.
     _context({"attestator_1": "page"}, absent=("attestator_2",)),
-    # A stale fixture declaration must move neither reader.
     _context(
         {"attestator_1": "page", "attestator_2": "act"},
         fixture={"page_witness_chairs": ["attestator_2"]},
@@ -97,13 +84,9 @@ def test_both_stages_derive_the_same_page_scoped_set(context):
 
 
 REFUSED = (
-    # Not a list.
     _context({"attestator_1": "page"}, roster="attestator_1"),
-    # A repeated chair.
     _context({"attestator_1": "page"}, roster=["attestator_1", "attestator_1"]),
-    # A name no chair could be.
     _context({"attestator_1": "page"}, roster=["attestator_1", 3]),
-    # A sealed roster naming an occupant models.toml does not declare.
     _context({"attestator_1": "page"}, roster=["attestator_1", "attestator_9"]),
 )
 

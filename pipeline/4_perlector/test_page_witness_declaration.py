@@ -1,5 +1,3 @@
-"""The Perlector's independent read of sealed page-witness scope."""
-
 import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
