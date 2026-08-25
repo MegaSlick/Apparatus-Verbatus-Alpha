@@ -902,16 +902,10 @@ def test_the_live_roster_never_disagrees_with_the_store_about_an_artifact():
 
 
 def test_a_huggingface_roster_must_name_the_store_s_exact_repo_and_revision():
-    """The reconciliation, exercised against a roster that actually has a repo.
+    """Store pins must reconcile with the sole chair-to-model authority.
 
-    `models.toml` is the sole chair-to-model authority (GLOSSARY, "chair"); this
-    store is a materialization inventory an operator fetches against *before* any
-    chair resolves, which is why it names the same pins a second time rather than
-    deriving them, and why they need reconciling rather than trusting.
-
-    Built from the store's own Perlector entry so the agreeing case cannot rot into
-    a second hard-coded pin that drifts alongside the first — the only literals here
-    are the mutations.
+    The agreeing case derives from the store entry so only deliberate mutations
+    are independent pin literals.
     """
 
     perlector = next(item for item in REQUIRED_ARTIFACTS if item.chair == "perlector")
@@ -1055,14 +1049,7 @@ def test_materializer_does_not_call_another_writers_staging_entry_an_orphan(tmp_
 
 
 def test_a_second_boot_verifies_the_whole_store_once_not_once_per_artifact(tmp_path, monkeypatch):
-    """Re-verification is not optional; doing it five times over is.
-
-    A boot over a populated volume re-verifies rather than trusting the record,
-    and it must keep doing that. But `verify_store` verifies the whole store on
-    every call, so asking it per already-present artifact hashed the entire
-    volume once per artifact — five passes over roughly a hundred gigabytes of
-    real roster to reach the same conclusion five times.
-    """
+    """A populated boot re-verifies once because each call hashes the whole store."""
 
     fetcher = _FakeMaterializationFetcher()
     materialize_real_roster(tmp_path, fetcher, capacity=dict(_MATERIALIZATION_CAPACITY))
@@ -1120,15 +1107,7 @@ def _die_on_call(monkeypatch, name, ordinal):
 def test_a_boot_killed_mid_materialization_resumes_without_hand_repair(
     tmp_path, monkeypatch, killed_at, ordinal, expected_evidence
 ):
-    """Every window between fetch and record must be recoverable by re-fetching.
-
-    Both windows leave the same shape behind — a `pending-fetch` entry with
-    acquisition evidence beside it — and `verify_store` is right to refuse it.
-    What must not happen is the refusal outliving the condition: the boot that
-    would fix it re-verifies an earlier present artifact first, and the
-    whole-store verification that runs there re-raised this very refusal, so
-    every later boot died on a store one re-fetch would have closed.
-    """
+    """Every fetch-to-record interruption window must recover by re-fetching its pin."""
 
     capacity = dict(_MATERIALIZATION_CAPACITY)
     _die_on_call(monkeypatch, killed_at, ordinal)
@@ -1136,13 +1115,10 @@ def test_a_boot_killed_mid_materialization_resumes_without_hand_repair(
         materialize_real_roster(tmp_path, _FakeMaterializationFetcher(), capacity=capacity)
     monkeypatch.undo()
 
-    # The half-materialized store is refused while it is half-materialized, and
-    # the refusal names the exact evidence that contradicts the record.
     with pytest.raises(DigestMismatchRefusal) as refusal:
         verify_store(tmp_path)
     assert str(expected_evidence) in str(refusal.value)
-    # An interrupt is not an `Exception`; the part-fetched staging tree is still
-    # cleaned up rather than left on the volume.
+    # Interrupts outside `Exception` must still release their staged capacity.
     assert sorted((tmp_path / "staging").iterdir()) == []
 
     receipt = materialize_real_roster(tmp_path, _FakeMaterializationFetcher(), capacity=capacity)
@@ -1180,15 +1156,7 @@ def test_a_resumed_boot_still_refuses_bytes_that_differ_from_the_first_fetch(tmp
 
 
 def test_a_repository_that_ships_no_licence_file_may_still_have_declared_one(tmp_path):
-    """ "No licence file" and "no licence declared" are different observations.
-
-    The roster's YOLOv26 detector is the live case: its model card declares
-    AGPL-3.0 and its pinned revision ships `.gitattributes`, `README.md` and
-    `model.pt` and nothing else. Recording that as "no licence text was present"
-    put a store fact on disk contradicting the roster row's own
-    `license_note = "AGPL-3.0."` — on the one roster licence whose obligations
-    can reach this repository's source rather than only its outputs.
-    """
+    """No licence file and no licence declaration are distinct observations."""
 
     class _NoLicenceFiles(_FakeMaterializationFetcher):
         def fetch(self, repo: str, revision: str, destination: Path) -> None:
@@ -1210,8 +1178,7 @@ def test_a_repository_that_ships_no_licence_file_may_still_have_declared_one(tmp
         else:
             assert entry["license"] == UNTEXTED_LICENCE_SNAPSHOT
             assert requirement.license_declaration in text
-    # The sentinel is inside the snapshot the manifest was built from, so it is
-    # evidence under custody rather than a note beside the bytes.
+    # Synthetic evidence must be inside the manifest's custody boundary.
     yolo = stored["yolo26-detection"]
     assert yolo["license"] in yolo["required_files"]
     assert "README.md" in yolo["required_files"]
@@ -1483,9 +1450,6 @@ def _commented_licence_notes(path: Path) -> dict[str, str]:
     return notes
 
 
-# --- O3: the pod-sharing contract, encoded rather than described ----------------
-
-
 def test_pod_materialization_plan_splits_verified_store_halves(tmp_path):
     record = _store(tmp_path)
 
@@ -1546,11 +1510,8 @@ def test_verify_store_refuses_a_snapshot_used_directly_as_a_cache_entry(tmp_path
         verify_store(tmp_path)
 
 
-# --- O4: a licence snapshot with no text, and publication failures ---------------
-
-
 def test_store_refuses_a_licence_snapshot_with_no_text(tmp_path):
-    """U17 pins the licence text of the revision, not a file with the right name."""
+    """The pinned evidence is licence text, not an empty file with the right name."""
 
     record = _store(tmp_path)
     entry = next(item for item in record["artifacts"] if item["artifact"] == "churro-3B")
@@ -1583,13 +1544,7 @@ def test_store_names_a_licence_missing_from_its_manifest_as_the_licence(tmp_path
 
 @pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root ignores file modes")
 def test_publication_into_a_read_only_store_refuses_inside_the_taxonomy(tmp_path):
-    """A full disk or a locked store is what this writer exists to fail on.
-
-    Sonnet's S4 argument leaves `_publish_once` as the real backstop against a
-    store that cannot be written. A bare OSError escaping it would leave a
-    caller that catches ChairRefusal — the complete public taxonomy — with an
-    unhandled crash naming no chair.
-    """
+    """Write failures must remain inside the complete public refusal taxonomy."""
 
     record = _store(tmp_path)
     locked = tmp_path / "locked"
@@ -1608,9 +1563,6 @@ def test_publication_onto_a_name_already_taken_by_a_directory_refuses(tmp_path):
 
     with pytest.raises(DigestMismatchRefusal, match="cannot publish"):
         write_derived_inventory(record, tmp_path / "inventory.json")
-
-
-# --- O5: the refusals an operator migrating the real store will actually meet ----
 
 
 def test_the_ad_hoc_download_record_refusal_names_what_the_v1_record_needs(tmp_path):
@@ -1657,7 +1609,7 @@ def test_a_capacity_refusal_names_the_four_fields_a_migrating_operator_must_writ
 
 
 def test_a_digest_manifest_must_live_under_the_declared_manifests_root(tmp_path):
-    """The record declares named roots; snapshots obeyed them and manifests did not."""
+    """The record's named-root layout constrains both snapshots and manifests."""
 
     record = _store(tmp_path)
     entry = next(item for item in record["artifacts"] if item["artifact"] == "churro-3B")
@@ -1684,9 +1636,6 @@ def test_artifact_cannot_claim_another_artifacts_verified_snapshot(tmp_path):
 def test_exported_never_required_policy_cannot_be_mutated():
     with pytest.raises(TypeError):
         SURYA_OCR_2_REFUSAL["state"] = "pending-fetch"
-
-
-# --- L2: required files constrain a fetch, not merely the bytes that arrived -------
 
 
 def test_store_refuses_a_required_weight_absent_from_a_rewritten_manifest(tmp_path):

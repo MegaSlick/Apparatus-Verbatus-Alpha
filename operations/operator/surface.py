@@ -253,14 +253,10 @@ class FixtureBootstrapActions:
         return {"state": "recorded-upload", "receipt": str(self.transfer_receipt)}
 
     def materialize_model_store(self) -> dict[str, object]:
-        """The one step that would fetch real weights, and the reason it must not here.
+        """Report the required step without fetching weights from this fake-only surface.
 
-        This surface is fixture-only by construction, and ledger ruling 14 puts
-        the acquisition of real weights at the pod's launch and nowhere else. So
-        the step runs and reports honestly that it acquired nothing, exactly as
-        its siblings do. Leaving the method off did not make that true: the
-        bootstrapper still reached for it, the boot went red on a missing
-        attribute, and eleven operator tests failed with it.
+        Real acquisition belongs to pod launch; fixture bootstrap must still
+        account for the step explicitly so a green journal cannot omit it.
         """
         return {"state": "no-materialization", "mode": "fixture-only; no weights are fetched"}
 

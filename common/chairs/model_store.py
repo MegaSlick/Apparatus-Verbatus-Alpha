@@ -74,14 +74,8 @@ class RequiredArtifact:
     source: str
     repo: str | None
     revision: str | None
-    # The licence the pinned repository *declares*, or None where it declares
-    # none at all.  This is roster policy in the same sense as the revision
-    # beside it, and it exists because a licence is not always a file: the
-    # materializer looks for LICENSE/COPYING in the fetched snapshot, and a
-    # repository can be plainly licensed while shipping neither.  Without this
-    # column that case was recorded as "no licence text was present", which
-    # reads — and was commented in the code — as evidence that the repository
-    # declares no licence.  See `_snapshot_licence`.
+    # A repository may declare a licence in its model card without carrying a
+    # licence file, so declaration and snapshotted text are separate evidence.
     license_declaration: str | None = None
 
 
@@ -147,15 +141,9 @@ REQUIRED_ARTIFACTS = (
         "apache-2.0",
     ),
 )
-# The `chair` column above is a `config/models.toml` role key, not a label: an
-# inventory whose chair names cannot be joined to the roster tells the operator
-# who materializes the store nothing about which chair each snapshot serves.
-# `test_model_store.py` reconciles the two lists, with exactly one recorded
-# exception — Surya 2 has no roster role. Tyrel's roster ruling of 2026-08-20
-# named a Perlector and three witnesses and no Surya chair, so the absence is a
-# settled fact rather than a pending word; this store entry names the artifact
-# R2's Designator geometry adapter is built against, and the open question is
-# whether that adapter is ever chaired or removed, which is engineering.
+# `chair` is a `config/models.toml` role key. Surya 2 is the sole store-only
+# artifact because the Designator adapter depends on it but the settled roster
+# names no Surya chair; the reconciliation test fixes that exception at one.
 CHAIRS_WITHOUT_ROSTER_ROLE = MappingProxyType(
     {
         "proposer_surya2": (
@@ -201,22 +189,11 @@ def materialize_real_roster(
     ordinary reviewed config edit.  The durable record makes an interrupted boot
     visible as ``pending-fetch`` rather than treating missing weights as success.
 
-    **Pending artifacts are materialized before present ones are re-verified,
-    and the order is what makes an interrupted boot recoverable.**  A pod dies
-    mid-fetch at some point between publishing an artifact's manifest and
-    recording it present; the store is then briefly a real thing that
-    ``verify_store`` is right to refuse — a ``pending-fetch`` entry with
-    acquisition evidence beside it.  Re-verifying an already-present artifact
-    goes through ``require_store_artifact``, which verifies the *whole* store,
-    so in artifact order the very first present entry re-raised that refusal and
-    the boot could never reach the half-materialized artifact that caused it.
-    Every later boot failed the same way, on a store that a re-fetch would have
-    closed: the pinned revision yields the same bytes, so the orphaned manifest
-    is republished identically and reused.  Doing the pending work first brings
-    record and disk back into agreement before anything asks the store as a
-    whole.  Nothing is loosened — differing bytes are still refused at
-    publication and at promotion, and the final ``verify_store`` still has the
-    last word.
+    Pending artifacts must run before present ones are re-verified. An
+    interrupted promotion leaves acquisition evidence beside a pending record,
+    which whole-store verification correctly refuses; re-fetching the same pin
+    first closes that state. Differing bytes remain refused, and one final
+    whole-store verification backs every receipt.
     """
 
     root = Path(store_root).resolve()
@@ -224,24 +201,24 @@ def materialize_real_roster(
     active = root / "download_record.json"
     if active.exists():
         record = load_download_record(root)
-        # Materialization indexes this record by the fixed roster immediately
-        # below.  Perform the join first so a renamed/missing artifact is a
-        # named store refusal rather than a bare StopIteration from `_record_artifact`.
+        # Join before indexing so a renamed or missing artifact stays inside the
+        # named refusal taxonomy.
         derived_inventory(record)
     else:
         write_download_record(record, root)
 
     completed: dict[str, dict[str, str]] = {}
     requirements = _unique_huggingface_requirements()
+    record_by_artifact = {item["artifact"]: item for item in record["artifacts"]}
     already_present = {
         item.artifact
         for item in requirements
-        if _record_artifact(record, item.artifact)["state"] == "present"
+        if record_by_artifact[item.artifact]["state"] == "present"
     }
     for requirement in requirements:
         if requirement.artifact in already_present:
             continue
-        if not requirement.repo or not requirement.revision:  # closed by RequiredArtifact policy
+        if not requirement.repo or not requirement.revision:
             raise DigestMismatchRefusal(requirement.artifact, "Hugging Face artifact lacks a pin")
         staging_root = _under(root, "staging")
         staging_root.mkdir(parents=True, exist_ok=True)
@@ -269,7 +246,7 @@ def materialize_real_roster(
             _refuse_unpinned_additions(staging, requirement.artifact)
             indexed = _indexed_shards(staging, requirement.artifact)
             licence_evidence = {licence}
-            if licence in {UNTEXTED_LICENCE_SNAPSHOT, UNDECLARED_LICENCE_SNAPSHOT}:
+            if licence in SYNTHETIC_LICENCE_SNAPSHOTS:
                 # Either synthetic observation makes a claim about the repository's
                 # own model card. Requiring that card keeps a broken fetch from
                 # making the store say evidence arrived when it did not.
@@ -306,23 +283,13 @@ def materialize_real_roster(
             write_download_record(record, root)
             completed[requirement.artifact] = _materialization_receipt(present)
         except BaseException as error:
-            # `BaseException`, not `Exception`: a multi-hour weights fetch is
-            # interrupted by ^C or a shutdown signal far more often than by a
-            # Python error, and those raise `KeyboardInterrupt` — which the
-            # narrower clause let past, leaving a part-fetched staging tree on
-            # the volume the record's own capacity plan is trying to account for.
+            # Interrupts and shutdown signals must clean the same staged bytes
+            # as ordinary acquisition failures.
             _cleanup_failed_staging(staging, requirement.artifact, error)
             raise
 
-    # One whole-store verification, after every fetch and before any claim is made
-    # from it.  `verify_store` verifies the *whole* store each time it is called,
-    # so re-verifying per already-present artifact — which is what
-    # `require_store_artifact` does — hashed the entire volume once per artifact.
-    # On the real roster that is five passes over roughly a hundred gigabytes to
-    # learn one thing five times.  GOVERNANCE 1 pays for extra passes that read
-    # more carefully; this one read the same bytes to the same conclusion. The
-    # single call below verifies every present artifact, backs each receipt, and
-    # settles `complete`.
+    # `verify_store` covers the entire volume, so one call after all fetches
+    # backs every receipt without rehashing the same bytes per artifact.
     inventory = verify_store(root)
     verified = {row["artifact"]: row for row in inventory["artifacts"]}
     for artifact in already_present:
@@ -333,24 +300,18 @@ def materialize_real_roster(
 
     return {
         "store": str(root),
-        # Emitted in roster order rather than the order the work happened in, so
-        # a resumed boot's receipt reads the same as a first boot's.
+        # Roster order keeps first-boot and resumed-boot receipts identical.
         "artifacts": [
             completed[item.artifact] for item in requirements if item.artifact in completed
         ],
         "download_record_sha256": digest_bytes(canonical_bytes(load_download_record(root))),
         "complete": inventory["complete"],
-        # The durable store also inventories the non-roster Surya adapter bundle,
-        # so its whole-store `complete` remains false here by design. Bootstrap
-        # advances on this narrower, byte-verified fact: every selectable real
-        # roster repository fetched at its pin and survived `verify_store`.
+        # Store completeness includes the non-roster Surya adapter; bootstrap
+        # needs the narrower fact that every selectable real-roster pin verified.
         "real_roster_complete": real_roster_complete,
-        # A hard kill takes the `finally`-equivalent cleanup above with it, while
-        # a concurrent materializer can also have a live tree here. Remaining
-        # entries are named rather than deleted or classified: this call cannot
-        # tell those states apart, and `capacity.cleanup_owner` already says who
-        # owns reclaiming store space. Unnamed, they would be exactly the silent
-        # loss of a fact GOVERNANCE 2 forbids.
+        # A directory listing cannot distinguish interrupted work from a
+        # concurrent writer; name remaining entries without deleting or
+        # classifying space owned by `capacity.cleanup_owner`.
         "unattributed_staging_entries": _unattributed_staging_entries(root),
     }
 
@@ -440,9 +401,7 @@ def _unattributed_staging_entries(root: Path) -> list[str]:
 
     A completed call has moved or removed its own staging directory.  Anything
     left belongs to another invocation or to an interrupted earlier one, but a
-    directory listing cannot distinguish those states.  Calling every entry an
-    orphan turned that uncertainty into a false observation during concurrent
-    materialization; ``unattributed`` says exactly what was measured.
+    directory listing cannot distinguish those states.
     """
 
     staging = _under(root, "staging")
@@ -460,16 +419,9 @@ SHARD_INDEX_NAMES = ("model.safetensors.index.json", "pytorch_model.bin.index.js
 def _indexed_shards(snapshot: Path, artifact: str) -> list[str]:
     """Reconcile a fetched snapshot against the shard index it fetched with.
 
-    Without this, a fetch that stops early is measured rather than caught. The
-    manifest is built from whatever landed, that manifest becomes the artifact's
-    pin, and every later verification compares the snapshot against a pin
-    derived from the same short fetch — so seventeen of Qwen3.8-27B's eighteen
-    shards would record `present`, report `complete`, and agree with itself
-    forever. The store has no external anchor for a first materialization (see
-    `promote_verified_snapshot`), but it does not need one here: a sharded
-    repository ships `weight_map`, and that is the pinned revision's own account
-    of what a complete fetch contains. GOVERNANCE 2 — a partial result is
-    visibly partial, not a smaller successful one.
+    A first materialization derives its manifest from the bytes that arrived,
+    so the repository's own ``weight_map`` is the completeness anchor for a
+    sharded fetch.
 
     Returns the index and its shards so they join `required_files`, which makes
     the same reconciliation run at every later `verify_store` rather than only
@@ -551,10 +503,6 @@ def _initial_materialization_record(capacity: Mapping[str, Any]) -> dict[str, An
     }
 
 
-def _record_artifact(record: Mapping[str, Any], artifact: str) -> Mapping[str, Any]:
-    return next(item for item in record["artifacts"] if item["artifact"] == artifact)
-
-
 def _replace_record_artifact(
     record: Mapping[str, Any], replacement: Mapping[str, Any]
 ) -> dict[str, Any]:
@@ -571,22 +519,16 @@ LICENCE_FILE_NAMES = frozenset(
 )
 UNDECLARED_LICENCE_SNAPSHOT = "LICENSE-NOT-DECLARED.txt"
 UNTEXTED_LICENCE_SNAPSHOT = "LICENSE-DECLARED-WITHOUT-TEXT.txt"
+SYNTHETIC_LICENCE_SNAPSHOTS = frozenset({UNDECLARED_LICENCE_SNAPSHOT, UNTEXTED_LICENCE_SNAPSHOT})
 MODEL_CARD_PATH = "README.md"
 
 
 def _snapshot_licence(snapshot: Path, requirement: RequiredArtifact) -> str:
     """Name the licence evidence for this fetch, and never overstate it.
 
-    A repository that ships a licence file is the easy case.  The two hard ones
-    are different facts and were being recorded as one: a repository can ship no
-    licence file and still declare a licence — this roster's YOLOv26 detector
-    declares AGPL-3.0 in its model card and ships only `.gitattributes`,
-    `README.md` and `model.pt` — while another declares nothing anywhere, which
-    is the DAI witness.  Writing "no licence text was present" for both put a
-    sentence in the store that contradicted the roster row's own
-    `license_note = "AGPL-3.0."`, on the one roster licence whose obligations can
-    reach this repository's own source.  The roster's `license_declaration` is
-    what tells them apart, and the sentinel now says which case it is.
+    A repository may ship licence text, declare a licence only in its model
+    card, or declare none. The roster declaration distinguishes the latter two
+    cases without inventing terms.
 
     Either sentinel is written into the staged snapshot before its manifest is
     built, so it is covered by the artifact's digest manifest and cannot be
@@ -608,18 +550,12 @@ def _snapshot_licence(snapshot: Path, requirement: RequiredArtifact) -> str:
     if candidates:
         return candidates[0].relative_to(snapshot).as_posix()
     _reconcile_model_card_licence(snapshot, requirement)
-    if requirement.license_declaration is not None:
-        path = snapshot / UNTEXTED_LICENCE_SNAPSHOT
-        _write_licence_observation(
-            path,
-            _licence_observation_text(requirement),
-            requirement.artifact,
-        )
-        return path.name
-    # A repository that declares no licence still needs an explicit, immutable
-    # observation at its pinned revision.  This is evidence of absence, never a
-    # licence invented for the upstream bytes.
-    path = snapshot / UNDECLARED_LICENCE_SNAPSHOT
+    observation = (
+        UNTEXTED_LICENCE_SNAPSHOT
+        if requirement.license_declaration is not None
+        else UNDECLARED_LICENCE_SNAPSHOT
+    )
+    path = snapshot / observation
     _write_licence_observation(
         path,
         _licence_observation_text(requirement),
@@ -696,11 +632,8 @@ def _licence_observation_text(requirement: RequiredArtifact) -> str:
 def _write_licence_observation(path: Path, text: str, artifact: str) -> None:
     """Create synthetic evidence once, never overwrite repository bytes.
 
-    The reserved name is inside the fetched tree.  A hostile or simply unlucky
-    repository can therefore already contain it; ``write_text`` used to replace
-    those upstream bytes before the manifest measured the tree.  Exclusive
-    creation makes the collision a refusal, including when another writer wins
-    the race between inspection and publication.
+    The reserved name is inside the fetched tree, so exclusive creation must
+    refuse both upstream-name collisions and concurrent writers.
     """
 
     try:
@@ -1083,19 +1016,14 @@ def verify_store(store_root: str | Path) -> dict[str, Any]:
             manifest_path, expected_digest=item["digest_manifest"], chair=item["artifact"]
         )
         rows = {row.path: row for row in manifest.rows}
-        # The licence checks run before the generic required-files sweep:
-        # `required_files` always names the licence, so the sweep's "required
-        # file is absent/empty" wording would otherwise shadow these two
-        # refusals and their U17 reasoning forever.
+        # Licence-specific refusals must win over the generic required-file
+        # sweep because they identify the missing evidence class.
         license_row = rows.get(item["license"])
         if license_row is None:
             raise DigestMismatchRefusal(
                 item["artifact"], "license snapshot is absent from its digest manifest"
             )
-        # U17 asks for the licence *text* of the pinned revision. An empty file
-        # satisfies "a licence snapshot exists" and carries no terms at all, and
-        # three of this roster's licences are the reason the check is here:
-        # revenue-capped, non-commercial, and one repository that declares none.
+        # A zero-byte licence file exists but carries no licence terms.
         if license_row.size == 0:
             raise DigestMismatchRefusal(
                 item["artifact"],
@@ -1137,10 +1065,7 @@ def verify_store(store_root: str | Path) -> dict[str, Any]:
 
 
 def _verify_synthetic_licence_observation(snapshot: Path, item: Mapping[str, Any]) -> None:
-    if item["license"] not in {
-        UNDECLARED_LICENCE_SNAPSHOT,
-        UNTEXTED_LICENCE_SNAPSHOT,
-    }:
+    if item["license"] not in SYNTHETIC_LICENCE_SNAPSHOTS:
         return
     requirement = next(
         required for required in REQUIRED_ARTIFACTS if required.artifact == item["artifact"]
@@ -1433,13 +1358,8 @@ def _validate_record(raw: Mapping[str, Any]) -> None:
                 f"artifact names must be unique; {item['artifact']!r} is named twice",
             )
         seen.add(item["artifact"])
-        # The artifact name is a path component in both entry shapes: a present
-        # entry's snapshot and manifest are built from it below, and
-        # `verify_store` builds a pending entry's absent-evidence paths from it
-        # with no other field to check.  Only the roster join in
-        # `derived_inventory` keeps it to a known name today, and this validator
-        # is reached without that join (`write_download_record`), so the name is
-        # held to the same path rule as every other path in the record.
+        # Both record shapes use the artifact name as a path component before a
+        # roster join is guaranteed.
         _safe(item["artifact"], "artifact name")
         state = item.get("state")
         if state == "pending-fetch":
@@ -1480,10 +1400,7 @@ def _validate_record(raw: Mapping[str, Any]) -> None:
                 f"snapshot must be its artifact-keyed path {expected_snapshot!r}, not "
                 f"{item['snapshot']!r}",
             )
-        # The record declares a named-root layout and then had to be obeyed for
-        # snapshots only, which left `manifests` decorative: a manifest could sit
-        # anywhere under the root, including beside a snapshot it does not
-        # describe. A layout half-enforced is a layout a consumer cannot rely on.
+        # The named-root layout constrains manifests as well as snapshots.
         expected_manifest = f"manifests/{item['artifact']}.json"
         if item["manifest"] != expected_manifest:
             raise DigestMismatchRefusal(
@@ -1529,20 +1446,17 @@ def _validate_record(raw: Mapping[str, Any]) -> None:
             )
         for path in required_files:
             _safe(path, "required file")
+        required_file_set = set(required_files)
         declared_requirements = {item["license"], *(entry["path"] for entry in carried)}
-        if not declared_requirements <= set(required_files):
-            missing = sorted(declared_requirements - set(required_files))
+        if not declared_requirements <= required_file_set:
+            missing = sorted(declared_requirements - required_file_set)
             raise DigestMismatchRefusal(
                 item["artifact"],
                 f"required_files omits mandatory licence or carried content: {missing}",
             )
         licence_name = PurePosixPath(item["license"]).name.lower()
-        synthetic_licence_names = {
-            UNDECLARED_LICENCE_SNAPSHOT,
-            UNTEXTED_LICENCE_SNAPSHOT,
-        }
         if (
-            item["license"] not in synthetic_licence_names
+            item["license"] not in SYNTHETIC_LICENCE_SNAPSHOTS
             and licence_name not in LICENCE_FILE_NAMES
         ):
             raise DigestMismatchRefusal(
@@ -1550,7 +1464,7 @@ def _validate_record(raw: Mapping[str, Any]) -> None:
                 f"license snapshot {item['license']!r} is neither a repository licence "
                 "file nor a recognized synthetic observation",
             )
-        if item["license"] in synthetic_licence_names:
+        if item["license"] in SYNTHETIC_LICENCE_SNAPSHOTS:
             requirement = next(
                 (
                     required
@@ -1627,24 +1541,12 @@ def _validate_origin(item: Mapping[str, Any]) -> None:
 
 
 def _safe(value: object, label: str) -> None:
-    """Refuse anything that is not a relative POSIX path strictly under the root.
+    """Refuse paths that do not name an object strictly below the store root."""
 
-    ``manifests._safe_relative`` is the same rule for manifest rows, and it also
-    refuses ``"."``.  This copy did not: ``"."`` has no path parts, so it passed
-    every clause and named the store root itself — ``_under(root, ".")`` returns
-    the root, and ``_publish_once`` would then write its temporary as a *sibling*
-    of the root rather than inside it.  No field this guards may legitimately be
-    the root, so the two spellings of the one rule now agree.
-    """
-
-    if (
-        not isinstance(value, str)
-        or not value
-        or PurePosixPath(value).is_absolute()
-        or not PurePosixPath(value).parts
-        or ".." in PurePosixPath(value).parts
-        or "\\" in value
-    ):
+    if not isinstance(value, str) or not value:
+        raise DigestMismatchRefusal("model-store", f"{label} is not a safe relative POSIX path")
+    path = PurePosixPath(value)
+    if path.is_absolute() or not path.parts or ".." in path.parts or "\\" in value:
         raise DigestMismatchRefusal("model-store", f"{label} is not a safe relative POSIX path")
 
 

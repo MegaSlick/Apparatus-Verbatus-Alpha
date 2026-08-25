@@ -19,7 +19,12 @@ from pathlib import Path
 
 import pytest
 
-from common.chairs.errors import DigestMismatchRefusal, UnresolvedChairRefusal
+from common.chairs.config import load_models_toml
+from common.chairs.errors import (
+    ConfigurationRefusal,
+    DigestMismatchRefusal,
+    UnresolvedChairRefusal,
+)
 from common.chairs.manifests import (
     build_manifest,
     file_digest,
@@ -28,7 +33,12 @@ from common.chairs.manifests import (
     write_manifest,
 )
 from common.chairs.models import ChairIdentity
-from common.chairs.registry import CACHE_DESCRIPTOR, ChairRegistry
+from common.chairs.registry import (
+    CACHE_DESCRIPTOR,
+    PRE_MATERIALIZATION_SENTINEL,
+    ChairRegistry,
+    HuggingFaceMaterializationFetcher,
+)
 from common.contracts.canonical import canonical_bytes, digest_bytes
 
 from .conftest import (
@@ -417,23 +427,10 @@ def test_the_written_manifest_round_trips_through_its_own_reader(tmp_path):
 def test_an_unmeasured_all_zero_pin_is_refused_by_name_before_anything_reads_it(tmp_path):
     """The real roster's rows pin nothing yet, and must say so when asked to serve.
 
-    `config/models-real.toml` carries an all-zero `digest_manifest` on every row
-    by design: a manifest can only be built from a verified fetch, the pod
-    materializes the pinned repositories at launch, and the measured digests
-    reach the config through a reviewed edit afterwards. The sentinel was
-    already refused — but only incidentally, as "cannot read manifest ... no
-    such file", which invites an operator to supply the missing file rather than
-    to materialize the store, and which would have become a bare digest mismatch
-    the moment any file sat at that path.
-
-    Every door that relies on a pin goes through `_require_current_identity`, so
-    a sentinel cannot serve, cannot be verified, and cannot reach a receipt's
-    GOVERNANCE 6 provenance.
+    The parseable sentinel lets launch materialize the roster, but every door
+    that relies on a pin must refuse it before reading a manifest or producing
+    provenance.
     """
-    from common.chairs.config import load_models_toml
-    from common.chairs.errors import ConfigurationRefusal
-    from common.chairs.registry import PRE_MATERIALIZATION_SENTINEL
-
     snapshot = write_snapshot(tmp_path / "cache" / "attestator_1", {"model.bin": b"weights\n"})
     pin_snapshot(snapshot, tmp_path / "manifests" / "attestator_1.json")
     config = config_of(
@@ -461,21 +458,10 @@ def test_an_unmeasured_all_zero_pin_is_refused_by_name_before_anything_reads_it(
 def test_the_materialization_fetcher_separates_client_state_without_deleting_repo_bytes(tmp_path):
     """The Hugging Face client's bookkeeping must not become part of a pin.
 
-    `snapshot_download(local_dir=...)` keeps its own state inside the directory
-    it fills. Observed against the pinned huggingface_hub 1.26.0, downloading one
-    file writes `.cache/huggingface/` with a `.gitignore`, a `CACHEDIR.TAG`, a
-    `trees/<sha>.json`, a `download/<name>.lock` and a `download/<name>.metadata`
-    whose three lines are a commit hash, an etag and `time.time()`.
-
-    The store measures every regular file under the staging root into the
-    canonical manifest whose digest becomes the artifact's pin, so left in place
-    that timestamp makes the pin a function of when the fetch happened. Deleting
-    all of `.cache` after the fact is not equivalent: a pinned repository can own
-    bytes under that name, and removing them would make the measured tree smaller
-    than the revision. The adapter therefore copies the returned cached snapshot
-    instead of asking the client to put its state inside staging.
+    Client cache data can be nondeterministic, while a pinned repository may own
+    its own `.cache` bytes. The adapter must isolate the client namespace rather
+    than manifest it or delete repository content by name.
     """
-    from common.chairs.registry import HuggingFaceMaterializationFetcher
 
     class CachedSnapshotClientFake:
         def snapshot_download(self, **kwargs):
@@ -506,9 +492,6 @@ def test_the_materialization_fetcher_separates_client_state_without_deleting_rep
 
 
 def test_the_materialization_fetcher_refuses_a_symlinked_destination(tmp_path):
-    from common.chairs.errors import DigestMismatchRefusal
-    from common.chairs.registry import HuggingFaceMaterializationFetcher
-
     class ClientMustNotRun:
         def snapshot_download(self, **kwargs):
             raise AssertionError("a symlinked destination must be refused before download")
@@ -527,9 +510,6 @@ def test_the_materialization_fetcher_refuses_a_symlinked_destination(tmp_path):
 
 
 def test_the_materialization_fetcher_refuses_a_snapshot_outside_its_per_call_cache(tmp_path):
-    from common.chairs.errors import DigestMismatchRefusal
-    from common.chairs.registry import HuggingFaceMaterializationFetcher
-
     outside = tmp_path / "unrelated-snapshot"
     outside.mkdir()
     (outside / "model.safetensors").write_bytes(b"unrelated bytes")
@@ -550,9 +530,6 @@ def test_the_materialization_fetcher_refuses_a_snapshot_outside_its_per_call_cac
 
 
 def test_the_materialization_fetcher_names_a_per_call_cache_cleanup_failure(tmp_path, monkeypatch):
-    from common.chairs.errors import DigestMismatchRefusal
-    from common.chairs.registry import HuggingFaceMaterializationFetcher
-
     class CachedSnapshotClientFake:
         def snapshot_download(self, **kwargs):
             source = Path(kwargs["cache_dir"]) / "snapshot"

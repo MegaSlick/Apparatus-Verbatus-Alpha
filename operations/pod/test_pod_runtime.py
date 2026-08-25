@@ -2618,14 +2618,9 @@ def test_model_store_bootstrap_action_delegates_pinned_materialization(
 
 
 def test_every_bootstrap_actions_implementation_covers_every_step() -> None:
-    """A step added to the enum must fail here, not turn a real boot red.
+    """Protocol methods, resumable steps, and concrete actions must stay one-to-one.
 
-    `BootstrapActions` is a structural Protocol, so an implementation that has
-    not caught up with a new step is invisible until the bootstrapper reaches
-    for the missing method — and then it is a red boot report rather than a
-    named failure. That is what happened when the `model-store` step landed:
-    `FixtureBootstrapActions` never grew the method, and eleven operator-surface
-    tests failed on an attribute error dressed as a red environment.
+    Structural Protocol annotations do not enforce that alignment at runtime.
     """
     from operations.operator.surface import FixtureBootstrapActions
 

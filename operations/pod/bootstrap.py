@@ -109,24 +109,6 @@ class BootstrapActions(Protocol):
         """Return one green preflight receipt or raise with its named red reason."""
 
 
-def _missing_bootstrap_actions(actions: object) -> list[str]:
-    """Return Protocol methods the supplied structural implementation lacks.
-
-    Static typing is deliberately not a repository gate, so a structural
-    ``Protocol`` annotation alone cannot protect runtime fixtures.  Deriving the
-    method set from the Protocol means a future action fails at construction for
-    every implementation, including one a test forgot to add to a hand-written
-    implementation roster.
-    """
-
-    required = {
-        name
-        for name, member in vars(BootstrapActions).items()
-        if not name.startswith("_") and callable(member)
-    }
-    return sorted(name for name in required if not callable(getattr(actions, name, None)))
-
-
 class BootstrapJournal:
     """Durable bootstrap progress.  A crash leaves the current step incomplete."""
 
@@ -273,7 +255,15 @@ class Bootstrapper:
     """Run only unfinished steps.  A crash re-enters the current idempotent step."""
 
     def __init__(self, journal: BootstrapJournal, actions: BootstrapActions) -> None:
-        missing = _missing_bootstrap_actions(actions)
+        # Static typing is not a repository gate, so structural fixtures must
+        # prove every Protocol effect at construction too.
+        missing = sorted(
+            name
+            for name, member in vars(BootstrapActions).items()
+            if not name.startswith("_")
+            and callable(member)
+            and not callable(getattr(actions, name, None))
+        )
         if missing:
             raise TypeError(
                 f"bootstrap actions {type(actions).__name__} lacks callable Protocol methods: "

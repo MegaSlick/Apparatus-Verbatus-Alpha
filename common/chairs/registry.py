@@ -40,12 +40,8 @@ from .models import (
 from .receipts import build_receipt
 
 CACHE_DESCRIPTOR = ".chair-identity.json"
-# A roster row can exist before its bytes do.  `config/models-real.toml` carries
-# the real roster with an all-zero `digest_manifest` on every row, because a
-# manifest can only be built from a verified fetch and no fetch has happened —
-# the pod materializes the pinned repositories at launch, measures their
-# manifests, and those digests reach the config through an ordinary reviewed
-# edit.  Until then the row names a repository and pins nothing.
+# The real roster must be parseable before materialization, but no verification,
+# receipt, or serving path may treat this placeholder as a pin.
 PRE_MATERIALIZATION_SENTINEL = "0" * 64
 
 
@@ -153,9 +149,7 @@ class HuggingFaceMaterializationFetcher:
                 raise DigestMismatchRefusal(
                     repo, "Hugging Face returned no regular snapshot directory"
                 )
-            resolved_source = source.resolve()
-            resolved_cache = client_cache.resolve()
-            if not resolved_source.is_relative_to(resolved_cache):
+            if not source.resolve().is_relative_to(client_cache.resolve()):
                 raise DigestMismatchRefusal(
                     repo,
                     "Hugging Face returned a snapshot outside its per-call cache; only the "
@@ -194,7 +188,7 @@ def _cleanup_huggingface_cache(
 
 
 def load_model_card_metadata(path: Path) -> dict[str, object] | None:
-    """Parse one local card through the registry's deferred Hugging Face door."""
+    """Load card metadata without making Hugging Face an import-time dependency."""
 
     client = HuggingFaceFetcher.from_huggingface_hub().client
     return client.metadata_load(path)  # type: ignore[no-any-return,attr-defined]
@@ -301,22 +295,9 @@ class ChairRegistry:
                 identity.role,
                 "identity differs from the configured pin; ensure and receipt never accept a neighbouring revision",
             )
-        # After the identity match, not before it: a caller who supplies an
-        # all-zero digest against a row that pins a real one is asking for a
-        # neighbouring revision, and that is the refusal they should get.  This
-        # clause is for the row that really is a sentinel.
-        #
-        # Refused here rather than at parse time, and by name.  The roster has to
-        # stay readable — the materializer is driven from it — so the sentinel is
-        # a legitimate configured value and only becomes wrong at the door where
-        # a pin is relied on.  This is the shared door: `ensure`, `receipt` and
-        # `refuse_recipe_start` all pass through it, so no serving path, and no
-        # receipt written under GOVERNANCE 6, can take an unmeasured digest for a
-        # pin.  Refusing was never the gap; saying why was.  A sentinel row
-        # previously failed as "cannot read manifest ... no such file", which
-        # invites an operator to supply the missing file rather than to
-        # materialize the store, and would have become a bare digest mismatch the
-        # moment any file sat at that path.
+        # Identity mismatch must win when a caller supplies the sentinel against
+        # a configured real pin. Config accepts the sentinel only so launch-time
+        # materialization can read the roster; every pin-reliant door meets it here.
         if identity.digest_manifest == PRE_MATERIALIZATION_SENTINEL:
             raise ConfigurationRefusal(
                 identity.role,
