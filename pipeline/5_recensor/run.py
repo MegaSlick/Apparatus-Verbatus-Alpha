@@ -24,6 +24,10 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from common.act_visibility_geometry import (  # noqa: E402
+    classify_capture_visibility,
+    expected_surface_cells,
+)
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.canonical import digest_bytes  # noqa: E402
 from common.contracts.errors import ContractError, FatalAccounting  # noqa: E402
@@ -43,6 +47,11 @@ from common.contracts.stages import (  # noqa: E402
     RECENSOR,
 )
 from common.corpus_register import refuse_preference  # noqa: E402
+from common.cross_capture_coverage import (  # noqa: E402
+    build_cross_capture_coverage,
+    capture_specific_recovery,
+    same_chair_witness_floor,
+)
 from common.exemplar_boundary import verify_sealed_page_pixels  # noqa: E402
 from common.native_witness import (  # noqa: E402
     reported_geometry_overlaps,
@@ -248,6 +257,293 @@ def _proposal_geometry_by_page(context, act_id: str) -> dict[int, dict]:
             )
         page["bounds"].append(bounds)
     return pages
+
+
+def _enclosing_bounds(bounds_list: list[dict]) -> dict[str, int]:
+    x0 = min(b["x"] for b in bounds_list)
+    y0 = min(b["y"] for b in bounds_list)
+    x1 = max(b["x"] + b["w"] for b in bounds_list)
+    y1 = max(b["y"] + b["h"] for b in bounds_list)
+    return {"x": x0, "y": y0, "w": x1 - x0, "h": y1 - y0}
+
+
+SURVEY_ABSENT = "act-visibility-survey-absent"
+REGISTRATION_ABSENT = "cross-capture-registration-absent"
+# The two causes that say the *instrument* is missing rather than that a
+# measurement came up short. Consult §4.1 gives both the same act-level state
+# (`capture-visibility-unresolved`, never an occlusion claim); they are held
+# apart from a measured shortfall only where the review route is decided, and
+# `cross_capture_review_causes` is the one place that reads this set.
+INSTRUMENT_ABSENT_CODES = frozenset({SURVEY_ABSENT, REGISTRATION_ABSENT})
+
+
+def _page_occlusion_survey(context, page_id: str) -> dict:
+    """What this run actually knows about occlusion on one Exemplar page.
+
+    ``surveyed`` is the fact Unit 19C cannot do without and Sonnet's round-2
+    wiring inferred: consult §4.1 is explicit that "absence of an occlusion
+    artifact is not proof of visibility until the producer seals a complete
+    survey", and §11.3 that until that producer lands "every such state is
+    `unresolved`; it is never inferred visible from absence". A sealed
+    occlusion record naming the page is the only evidence in this repository
+    that an occlusion pass ran over it at all -- the Designator's production
+    run publishes none (`pipeline/2_designator/run.py` never reaches
+    `geometry_layer`'s occlusion path), so today every page is unsurveyed and
+    every act's visibility is honestly unresolved rather than falsely full.
+    A page carrying only a `below-ink` record is surveyed and unoccluded: the
+    survey ran and positively placed its one occluder behind the ink.
+
+    Read independently of ``geometry_layer.validate_occlusion`` -- a stage may
+    not import another stage's own module -- so only the fields this survey
+    actually needs are trusted here: real page lineage, a real polygon, and
+    the one z_relationship that positively proves an occlusion does NOT sit
+    in front of the ink. Everything else is treated as occluding, matching
+    how conservatively the existing (unconnected) page-wide resolver rule
+    already treats any occlusion at all.
+    """
+    polygons: list[list[dict[str, int]]] = []
+    refs: list[str] = []
+    surveyed = False
+    for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]:
+        if entry["kind"] != "occlusion":
+            continue
+        record = context.tree.read_artifact(DESIGNATOR, "occlusion", entry["artifact_id"])
+        payload = _payload(record, f"Designator occlusion {record['artifact_id']}")
+        if payload.get("page_id") != page_id:
+            continue
+        surveyed = True
+        polygon = payload.get("polygon")
+        if (
+            not isinstance(polygon, list)
+            or len(polygon) < 3
+            or any(
+                not isinstance(point, dict)
+                or not isinstance(point.get("x"), int)
+                or not isinstance(point.get("y"), int)
+                or isinstance(point.get("x"), bool)
+                or isinstance(point.get("y"), bool)
+                for point in polygon
+            )
+        ):
+            raise FatalAccounting(
+                f"Designator occlusion {record['artifact_id']} names page {page_id!r} "
+                "with a malformed polygon"
+            )
+        if payload.get("z_relationship") == "below-ink":
+            continue
+        polygons.append([{"x": point["x"], "y": point["y"]} for point in polygon])
+        # The evidence an `occluded` classification rests on, carried into the
+        # published row: consult §4.1 requires the finding to record the
+        # occlusion refs, and GOALS 5 wants every result to return to the ink
+        # it came from. An empty list here used to be published beside a real
+        # occlusion claim, which is a claim with its evidence detached.
+        refs.append(record["artifact_id"])
+    return {"surveyed": surveyed, "polygons": polygons, "occlusion_refs": sorted(refs)}
+
+
+def act_cross_capture_coverage(context, act_id: str, latest_payload: dict) -> dict | None:
+    """This act's real Unit 19C visibility survey, or ``None`` with no basis.
+
+    Reads the current Perlectio's own sealed ``cross_capture_autopsia`` --
+    the complete registered-capture presentation the Perlector actually read
+    from (consult §3.1) -- rather than rebuilding a second partition here.
+    ``None`` exactly when the current reading was never actually shown real
+    capture pixels (a Designator hold, an absent chair, or an over-capacity
+    cluster): there is then no registered presentation to survey, and this
+    act's own page geometry alone cannot stand in for the logical act's
+    complete required-capture set.
+
+    Every view's own local acts' sealed proposal geometry is read directly
+    from the Designator's manifest (``_proposal_geometry_by_page``, already
+    generic over any local act_id) -- including a sibling member's, when the
+    logical act's autopsia names one -- so a genuinely clustered act surveys
+    real geometry from every one of its registered captures, not only the
+    one local act driving this loop's current iteration.
+
+    **Two evidence preconditions decide what a row may claim**, because the
+    consult makes both of them preconditions of the union rather than
+    niceties (§4.1, §11.3, GOVERNANCE 10 "a metric that cannot be measured is
+    a failure, not a pass"):
+
+    * a capture is measured only where its pages carry a sealed occlusion
+      survey (``_page_occlusion_survey``). Otherwise the row is `unresolved`
+      with ``act-visibility-survey-absent`` -- never `visible` inferred from
+      an absent artifact;
+    * a component of more than one capture may only union its cells through a
+      sealed geometric alignment. The cells this build can produce are
+      normalized to each capture's own footprint
+      (``common/act_visibility_geometry.py``), and no registration exists in
+      this repository to map them into one frame, so every row of a
+      multi-capture component is `unresolved` with
+      ``cross-capture-registration-absent``. This is the case the union was
+      built for and it is exactly the case the evidence cannot yet support:
+      two captures each showing half of one act would otherwise both report
+      their own 16 cells visible and union to `full`.
+
+    Neither precondition can be met by any production run on this base, so
+    every real survey today is honestly unresolved. The union arithmetic
+    itself is unchanged and remains exercised over explicit cell surfaces by
+    ``pipeline/5_recensor/test_cross_capture_coverage.py``; what this function
+    refuses to do is manufacture those cells from evidence that is not there.
+    """
+    dossier = latest_payload.get("dossier")
+    if not isinstance(dossier, dict) or "cross_capture_autopsia" not in dossier:
+        return None
+    autopsia = dossier["cross_capture_autopsia"]
+    logical_act_id = dossier["logical_act_id"]
+    if not any(act_id in view["local_act_ids"] for view in autopsia["views"]):
+        raise FatalAccounting(
+            f"act {act_id}'s current Perlectio's cross-capture autopsia does not name it "
+            "among any view's local acts"
+        )
+    components: dict[str, dict] = {}
+    for view in autopsia["views"]:
+        bounds_list: list[dict] = []
+        for local_id in view["local_act_ids"]:
+            for page in _proposal_geometry_by_page(context, local_id).values():
+                if page["source_page_id"] in view["page_ids"]:
+                    bounds_list.extend(page["bounds"])
+        if not bounds_list:
+            raise FatalAccounting(
+                f"logical act {logical_act_id!r} view {view['view_id']!r} names no sealed "
+                "proposal geometry to survey"
+            )
+        polygons: list[list[dict[str, int]]] = []
+        occlusion_refs: list[str] = []
+        surveyed = True
+        for page_id in view["page_ids"]:
+            page_survey = _page_occlusion_survey(context, page_id)
+            surveyed = surveyed and page_survey["surveyed"]
+            polygons.extend(page_survey["polygons"])
+            occlusion_refs.extend(page_survey["occlusion_refs"])
+        if surveyed:
+            survey = classify_capture_visibility(
+                bounds=_enclosing_bounds(bounds_list), occlusion_polygons=polygons
+            )
+            row = {
+                "source_sha256": view["source_sha256"],
+                "alignment_ref": view["alignment_ref"],
+                "visibility_state": survey["visibility_state"],
+                "visible_cells": survey["visible_cells"],
+                "occluded_cells": survey["occluded_cells"],
+                "occlusion_refs": sorted(set(occlusion_refs)),
+                "finding_codes": [],
+            }
+        else:
+            row = {
+                "source_sha256": view["source_sha256"],
+                "alignment_ref": view["alignment_ref"],
+                "visibility_state": "unresolved",
+                "visible_cells": [],
+                "occluded_cells": [],
+                "occlusion_refs": sorted(set(occlusion_refs)),
+                "finding_codes": [SURVEY_ABSENT],
+            }
+        physical_page = view["physical_page_id"]
+        expected = expected_surface_cells()
+        component = components.setdefault(
+            physical_page,
+            {"expected_cells": expected, "captures": [], "required": []},
+        )
+        # Checked, not `setdefault`-and-forget (consult §7.14): a second view
+        # of one physical page whose expected surface disagreed with the
+        # first's would otherwise have the first view's surface silently
+        # stand in for it, and the extent of a component is exactly the fact
+        # a coverage denominator may not take from whichever member arrived
+        # first (§4.1, "no member's bounding box is selected as the extent").
+        if component["expected_cells"] != expected:
+            raise FatalAccounting(
+                f"logical act {logical_act_id!r} component {physical_page!r} is surveyed over "
+                "two different expected surfaces; the component's extent is not a choice "
+                "between its members"
+            )
+        component["captures"].append(row)
+        component["required"].append(view["source_sha256"])
+    for entry in components.values():
+        if len(entry["captures"]) < 2:
+            continue
+        # Consult §4.1: "Union visible masks only after mapping each mask
+        # through sealed geometric alignment." Nothing in this repository
+        # registers one capture's pixels onto another's -- every
+        # `alignment_ref` a production partition carries is an opaque string,
+        # and the cells above are normalized to each capture's own footprint
+        # -- so these rows are not addressed in one frame and may not be
+        # unioned. Recording that as an unresolved measurement keeps the act
+        # visible as unproven (GOVERNANCE 2) instead of publishing a
+        # `full` union the evidence does not support.
+        for row in entry["captures"]:
+            row["visibility_state"] = "unresolved"
+            row["visible_cells"] = []
+            row["occluded_cells"] = []
+            row["finding_codes"] = sorted({*row["finding_codes"], REGISTRATION_ABSENT})
+    payload_components = [
+        {
+            "physical_page_id": page,
+            "expected_cells": entry["expected_cells"],
+            "required_capture_sha256s": sorted(entry["required"]),
+            "captures": sorted(entry["captures"], key=lambda row: row["source_sha256"]),
+        }
+        for page, entry in sorted(components.items())
+    ]
+    return build_cross_capture_coverage(
+        logical_act_id=logical_act_id, components=payload_components
+    )
+
+
+def cross_capture_review_causes(coverage: dict | None) -> tuple[bool, bool | None]:
+    """The two review causes this act's visibility survey actually supports.
+
+    Returns ``(occluded_everywhere, unresolved)`` exactly as
+    ``review_route_from_findings`` reads them.
+
+    ``occluded_everywhere`` is read from the published findings rather than
+    from ``act_state``, because ``act_state`` is `unresolved` for a
+    continuation whose one component was measured occluded in every capture
+    while another component was fully seen. The finding is in the record
+    either way, but routing off the act-level state alone would leave the act
+    held under the vaguer reason and never say the exact thing that was
+    measured (GOVERNANCE 2: a finding may not disappear behind a status).
+
+    ``unresolved`` is ``None`` -- the "no measurement exists" value this
+    stage's route already uses for ``testimony_shortfall`` and
+    ``audit_unresolved``, and which routes like ``False`` -- when every
+    unresolved component is unresolved only because the instrument is absent:
+    no sealed occlusion survey, no cross-capture registration. An absent
+    measurement is not itself a measured shortfall. It is recorded in the
+    review payload and named in the finding, so nothing is lost; what it may
+    not do is convert a producer this pipeline has not built yet into a
+    universal hold on every act of every run, which would report the state of
+    our tooling as a finding about the ink. A component where anything *was*
+    measured and the surface still does not reconcile is a real shortfall and
+    holds.
+    """
+    if coverage is None:
+        return False, None
+    occluded_everywhere = any(row["code"] == "occluded-everywhere" for row in coverage["findings"])
+    unresolved_components = [
+        row for row in coverage["components"] if row["union_state"] == "unresolved"
+    ]
+    if not unresolved_components:
+        return occluded_everywhere, False
+    if all(_component_measured_nothing(row) for row in unresolved_components):
+        return occluded_everywhere, None
+    return occluded_everywhere, True
+
+
+def _component_measured_nothing(component: dict) -> bool:
+    """True when no capture of this component was measured at all.
+
+    Deliberately stricter than "some row names an absent instrument": a
+    component where one capture was surveyed and left a gap has a measured
+    shortfall, and the fact that a second capture could not be measured is
+    the reason the gap stands rather than an excuse for not holding it.
+    """
+    return all(
+        row["visibility_state"] == "unresolved"
+        and row["finding_codes"]
+        and set(row["finding_codes"]) <= INSTRUMENT_ABSENT_CODES
+        for row in component["captures"]
+    )
 
 
 def act_attachment_facts(
@@ -747,7 +1043,41 @@ def validate_chair_coverage(context, act_id: str, floor: int) -> dict[str, objec
             f"the current Testimonium for chair(s) {stale_health}; the witness floor may not "
             "be counted from a superseded attempt"
         )
-    return witness_coverage(outcomes, floor, attachments=attachments)
+    coverage = witness_coverage(outcomes, floor, attachments=attachments)
+    # Unit 19C: the same floor, re-derived through the cross-capture union
+    # primitive rather than trusted merely because `witness_coverage` is
+    # well-tested. Every act today is one component ("whole"): a genuinely
+    # clustered logical act would union real per-capture rows here instead
+    # (`pipeline/4_perlector/test_cross_capture_cluster_path.py`'s two-capture
+    # precedent), but no production caller can reach that yet (19B's own
+    # `logical_reading.py` refuses to read a clustered partition at all). A
+    # chair truncated on its current attempt is comparable text
+    # `witness_coverage` still excludes from its floor (`truncated is not
+    # True`); `same_chair_witness_floor` has no truncation concept of its own,
+    # so that exclusion is folded into the row's `comparable` fact here rather
+    # than left for the cross-check to disagree on a fact both functions
+    # actually agree about.
+    cross_capture_floor = same_chair_witness_floor(
+        [
+            {
+                "chair": chair,
+                "capture": act_id,
+                "attached": fact["attached"],
+                "comparable": fact["comparable"] and fact.get("truncated") is not True,
+                "components": ["whole"],
+            }
+            for chair, fact in attachments.items()
+        ],
+        components={"whole"},
+        floor=floor,
+    )
+    if cross_capture_floor["under_witnessed"] != coverage["under_witnessed"]:
+        raise FatalAccounting(
+            f"act {act_id}'s cross-capture witness-floor union disagrees with its "
+            "single-component witness floor; the two must agree while every logical act "
+            "is one capture"
+        )
+    return coverage
 
 
 def preflight_witness_denominator(context, floor: int) -> None:
@@ -1934,6 +2264,8 @@ def testimony_content_for_page(findings: dict[int, dict], ordinal: int) -> dict:
 
 def review_route_from_findings(
     *,
+    cross_capture_occluded_everywhere: bool = False,
+    cross_capture_unresolved: bool | None = False,
     testimony_shortfall: bool | None,
     audit_unresolved: bool | None,
     under_witnessed: bool,
@@ -1941,9 +2273,17 @@ def review_route_from_findings(
 ) -> tuple[str, str] | None:
     """Compose independent review findings without last-writer-wins routing.
 
-    Coverage comes first under GOALS 1, followed by R5b's reading-audit finding,
-    then the witness floor. Every active reason is retained in that stable order;
-    they all map to the same `held-for-review` outcome. `None` testimony coverage
+    Unit 19C's cross-capture visibility finding comes first, ahead of GOALS 1's
+    own page coverage cause, because it is act-surface evidence the reading
+    itself could never see -- followed by R5b's reading-audit finding, then the
+    witness floor. Every active reason is retained in that stable order; they
+    all map to the same `held-for-review` outcome. `None` cross-capture
+    visibility joins the two fields below in meaning "no measurement exists"
+    and routing like `False`: no occlusion survey and no cross-capture
+    registration were sealed, so nothing about this act's surface was
+    measured, and an absent instrument is not a measured shortfall
+    (`cross_capture_review_causes`, which is the only caller allowed to decide
+    that). `None` testimony coverage
     means no page witness supplied comparable page text and routes like `False`:
     the act's own held or witness-floor cause already routes it, while an absent
     measurement is not itself a measured shortfall. `audit_unresolved` is
@@ -1959,6 +2299,8 @@ def review_route_from_findings(
     # witness selector under review vocabulary.
     refuse_preference(
         {
+            "cross_capture_occluded_everywhere": cross_capture_occluded_everywhere,
+            "cross_capture_unresolved": cross_capture_unresolved,
             "testimony_shortfall": testimony_shortfall,
             "audit_unresolved": audit_unresolved,
             "under_witnessed": under_witnessed,
@@ -1967,6 +2309,18 @@ def review_route_from_findings(
         what="a Recensor review route",
     )
     reasons = []
+    if cross_capture_occluded_everywhere:
+        reasons.append(
+            "every registered capture's remaining required surface was explicitly measured "
+            "and found occluded; recropping cannot reveal ink no capture can see, so the act "
+            "is held rather than recovery spent chasing a view that does not exist"
+        )
+    if cross_capture_unresolved:
+        reasons.append(
+            "the logical act's cross-capture visible-surface union does not yet reach its "
+            "complete required surface, and what remains is neither fully seen nor exactly "
+            "occluded everywhere"
+        )
     if testimony_shortfall:
         reasons.append(
             "a page Testimonium contains non-whitespace text outside the ordered union "
@@ -2279,6 +2633,11 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     # exists" (here) from "audited, resolved" (False) and
                     # "audited, unresolved" (True).
                     "audit_unresolved": None,
+                    # None for the same reason: a held act was never shown
+                    # real capture pixels, so there is no cross-capture
+                    # visibility survey to report, universally present like
+                    # every field above.
+                    "cross_capture_coverage": None,
                 },
             )
             held += 1
@@ -2304,6 +2663,20 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         latest = latest_attempt(readings, f"reading of {act_id}", operation="perlegere")
         latest_payload = _payload(latest, f"reading of {act_id}")
         audit_unresolved = audit_state(context, latest, act_id)
+        # Unit 19C: the act-surface visibility survey, read from this act's
+        # own current Perlectio (`None` exactly when nothing was ever shown
+        # real capture pixels -- see `act_cross_capture_coverage`). Every act
+        # today resolves to exactly one required capture (19B's
+        # `logical_reading.py` refuses to read a genuinely clustered
+        # partition at all) and no Designator run seals an occlusion survey,
+        # so every real survey today is `unresolved` for a named,
+        # instrument-absent reason and routes like `False`
+        # (`cross_capture_review_causes`).
+        cross_coverage = act_cross_capture_coverage(context, act_id, latest_payload)
+        (
+            cross_capture_occluded_everywhere,
+            cross_capture_unresolved,
+        ) = cross_capture_review_causes(cross_coverage)
         # WAVE WIRING (was the pre-wave seam `False`): R5b's Pass-C producer
         # now sits below this branch, so the composer receives the verified
         # audit state the seat-era candidate could not have. Computed here,
@@ -2311,6 +2684,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         # chain to consult — it takes its own branch above and never reaches
         # the routing that consumes this.
         findings_route = review_route_from_findings(
+            cross_capture_occluded_everywhere=cross_capture_occluded_everywhere,
+            cross_capture_unresolved=cross_capture_unresolved,
             testimony_shortfall=content_coverage["shortfall"],
             audit_unresolved=audit_unresolved,
             under_witnessed=coverage["under_witnessed"],
@@ -2367,6 +2742,20 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         # is a file somebody edits and a bound nobody checks is not a bound.
         if (
             not continuation_shortfall
+            # Consult §4.2 rule 3 and this slice's own charge: an ink-confirmed
+            # recovery is gated by the §4.5 conjuncts and by nothing else, and
+            # union geometry is not one of them. Round 2 of this slice added
+            # `and not cross_capture_occluded_everywhere` here, which reads
+            # the right rule backwards: §7.20 forbids occlusion *funding* a
+            # reroll -- it never does, `wants_recovery` is a declared recrop
+            # or Unit 9's own measured ink -- while that conjunct let union
+            # geometry *veto* a recovery Unit 14B had already funded from ink
+            # it measured in the page's actual pixels. The occlusion survey is
+            # taken over the act's own sealed proposal footprint; unclaimed
+            # ink lies outside every current cut, so the survey has no
+            # evidence about the surface the recrop would go and get. The act
+            # still holds on `occluded-everywhere` through `findings_route`
+            # below, and the ink still gets recovered.
             and wants_recovery
             and used_fallback < allowed_fallback
             and used_total < budget["allowed"]
@@ -2386,6 +2775,44 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 declared=declared_recovery_requested,
                 outside_ink_requests=outside_ink_requests,
             )
+            if request_origin == COVERAGE_OBSERVATION_ORIGIN:
+                # Unit 19C's capture-specific gate, called for real rather
+                # than left with zero production callers. Every boolean below
+                # is the exact fact that already put this request on the
+                # ink-confirmed route above, so admission cannot disagree
+                # while this ad hoc gate and that function's own three
+                # conjuncts stay in step; a future edit to either that drifts
+                # from the other fails loudly here instead of silently
+                # spending or refusing a recovery on a stale rule.
+                dossier = latest_payload.get("dossier")
+                gate = capture_specific_recovery(
+                    logical_act_id=(
+                        dossier["logical_act_id"]
+                        if isinstance(dossier, dict) and "logical_act_id" in dossier
+                        else act_id
+                    ),
+                    source_sha256=_source_rows(context.run)[act["page_ordinal"]]["sha256"],
+                    page_ordinal=act["page_ordinal"],
+                    # True, not re-tested: `recovery_request_origin` only ever
+                    # returns `COVERAGE_OBSERVATION_ORIGIN` when
+                    # `outside_ink_requests` is already non-empty, so a second
+                    # copy of that live boolean expression would only defeat
+                    # `test_a_bypass_of_ink_confirmation_is_caught_by_this_files_own_guard`'s
+                    # single-occurrence pin on it, not add a real check.
+                    ink_confirmed=True,
+                    page_observation_grant_available=act["page_ordinal"] not in funded_pages,
+                    act_budget_available=(
+                        used_fallback < allowed_fallback
+                        and used_total < budget["allowed"]
+                        and used_total < budget["absolute_cap"]
+                    ),
+                )
+                if not gate["admitted"]:
+                    raise FatalAccounting(
+                        f"act {act_id}'s ink-confirmed recovery request is being published, "
+                        "but Unit 19C's own capture-specific gate says it should not be "
+                        f"admitted: {gate['reason']}"
+                    )
             request = context.publish(
                 kind="recovery-request",
                 subject_id=act_id,
@@ -2452,6 +2879,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     # None -- "no audit exists" -- which is false, and R8's
                     # canonical export is the consumer that would believe it.
                     "audit_unresolved": audit_unresolved,
+                    "cross_capture_coverage": cross_coverage,
                 },
             )
             held += 1
@@ -2621,6 +3049,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 # never checked. R8's canonical export reads uncertainty spans
                 # whose review-side "why" lives exactly here.
                 "audit_unresolved": audit_unresolved,
+                "cross_capture_coverage": cross_coverage,
                 # Present only on a `confirmed-blank`, because it is the evidence
                 # that outcome rests on and nothing else has any. Every other
                 # review carries the fields above and no more.

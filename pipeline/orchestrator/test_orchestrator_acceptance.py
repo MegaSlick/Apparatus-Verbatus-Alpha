@@ -978,7 +978,29 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # module's own `orchestrate` and `semantic_snapshot_digest` helpers.
 # Union re-pin (host, Unit 8 joins): membership-digest binding moves both
 # digests over the composed trees; measured on THIS tree, twice, rid "r".
-HAPPY_RUN_TREE_DIGEST = "f1003214426c71adce575750550905df6b52dae2526543c981c99bdd9b7f4e05"
+# Unit 19C build round 2 (Sonnet): the per-capture-blind coverage path is
+# replaced, not bypassed. Every Recensor review now carries a new
+# `cross_capture_coverage` field (`None` on a Designator hold; the real
+# `build_cross_capture_coverage` union otherwise, read from the current
+# Perlectio's own `cross_capture_autopsia` through real Designator region and
+# occlusion geometry -- `act_cross_capture_coverage`,
+# `pipeline/5_recensor/run.py`).
+#
+# Unit 19C audit (Opus): that survey reported `visible`/`full` for every act
+# of every run, from a page nothing had surveyed. No Designator run publishes
+# an occlusion artifact at all, and consult §4.1/§11.3 are explicit that
+# absence of one is not proof of visibility -- "every such state is
+# `unresolved`; it is never inferred visible from absence". Every act's
+# survey is now honestly `unresolved` with the named cause
+# `act-visibility-survey-absent`, which routes like `False` the way this
+# stage's other absent measurements do, so no reading, flag, recovery, or
+# outcome decision changes and the file count and exit stay where they were
+# (happy 98/0, review 107/3). Measured twice in independent temporary roots
+# at canonical run id "r" through this module's own `orchestrate` and
+# `semantic_snapshot_digest` helpers.
+# Union re-pin (host, Unit 19C joins): cross_capture_coverage field moves
+# both digests over the composed tree; measured twice, rid "r".
+HAPPY_RUN_TREE_DIGEST = "ab720df045aee3c28d387a8d1aac6ca3028775610de859a107003eb157a8fbda"
 # Review only, once more in the same seat: a page witness invoked on every act
 # and unusable on all of them now records the serving moment that produced it
 # (`provenance_for(..., attempted=attempted_page)`), where the `reading` gate
@@ -1067,7 +1089,20 @@ HAPPY_RUN_TREE_DIGEST = "f1003214426c71adce575750550905df6b52dae2526543c981c99bd
 # twice, independent roots, rid "r", via this module's own helpers.
 # Union re-pin (host, Unit 8 joins): membership-digest binding moves both
 # digests over the composed trees; measured on THIS tree, twice, rid "r".
-REVIEW_RUN_TREE_DIGEST = "522ec4af243db69498a1690a02f6e3fd1086c2bb2b3363e4d9d6e1397a5e7c30"
+# Unit 19C build round 2 (Sonnet): same `cross_capture_coverage` field as the
+# happy digest above, on every one of review's review, recovery-request, and
+# held payloads (`None` only where a Designator hold has no reading to
+# survey). Unit 19C audit (Opus): and the same correction -- the survey states
+# in those payloads are `unresolved` with `act-visibility-survey-absent`
+# rather than an unmeasured `full`. This scenario is the one that would show
+# it if the correction had touched recovery: it still spends exactly the same
+# one ink-confirmed recrop, and the recovery/audit/exit shape is unchanged
+# (107 files, exit 3). Measured twice in independent temporary roots at
+# canonical run id "r" through this module's own `orchestrate` and
+# `semantic_snapshot_digest` helpers.
+# Union re-pin (host, Unit 19C joins): cross_capture_coverage field moves
+# both digests over the composed tree; measured twice, rid "r".
+REVIEW_RUN_TREE_DIGEST = "a51d202e3a91ca6620cc95deaafa38e9019b5e4e6ff6068f991bd74bd7f3bec6"
 
 
 def orchestrate(
