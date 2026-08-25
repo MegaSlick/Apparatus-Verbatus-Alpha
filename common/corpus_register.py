@@ -23,6 +23,7 @@ earlier run's is therefore required to detect tail loss between runs.
 
 import json
 import os
+import stat
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
@@ -40,6 +41,9 @@ from common.contracts.identities import (
 )
 
 SCHEMA: Final = "corpus-register-v1"
+MAX_REGISTER_BYTES: Final = 64 * 1024 * 1024
+MAX_REGISTER_RECORDS: Final = 100_000
+MAX_RECORD_LIST_ITEMS: Final = 100_000
 _FORBIDDEN_PREFERENCE_FIELDS: Final = frozenset(
     {"primary", "canonical", "best", "preferred", "superseded_by"}
 )
@@ -55,6 +59,18 @@ EMPTY_REGISTER_DIGEST: Final = digest_bytes(empty_register())
 def register_digest(data: bytes) -> str:
     validate_register_bytes(data)
     return digest_bytes(data)
+
+
+def read_register_file(register_path: str | Path) -> bytes:
+    """Read one bounded regular register without following its final name.
+
+    A corpus register is mutable evidence outside the run tree.  Opening it by
+    pathname through ``Path.read_bytes`` lets a symlink substitution redirect a
+    stage to unrelated bytes between invocations.  The descriptor is therefore
+    the object checked and read, and a platform without ``O_NOFOLLOW`` refuses
+    rather than silently weakening that boundary.
+    """
+    return _read_register_path(Path(register_path), missing_ok=False)
 
 
 def append_records(
@@ -85,12 +101,14 @@ def append_records(
         or not all(isinstance(record, dict) for record in records)
     ):
         raise SchemaRefusal("a corpus-register append must contain one or more records")
+    if len(records) > MAX_REGISTER_RECORDS:
+        raise SchemaRefusal(
+            f"a corpus-register append has {len(records)} records, past the "
+            f"{MAX_REGISTER_RECORDS}-record replay bound"
+        )
     path.parent.mkdir(parents=True, exist_ok=True)
     with _register_lock(path):
-        try:
-            current = path.read_bytes()
-        except FileNotFoundError:
-            current = empty_register()
+        current = _read_register_path(path, missing_ok=True)
         observed = register_digest(current)
         if observed != expected_digest:
             raise IncompatibleReuse(
@@ -108,7 +126,21 @@ def append_records(
 def _register_lock(path: Path) -> Iterator[None]:
     """Serialize pathname replacement across writers; a crash releases the lock."""
     lock_path = path.with_name(f".{path.name}.lock")
-    with lock_path.open("a+b") as handle:
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    if no_follow is None:  # pragma: no cover - supported register stores are POSIX
+        raise SchemaRefusal(
+            "this platform cannot lock a corpus register without following symlinks"
+        )
+    flags = os.O_RDWR | os.O_CREAT | no_follow | getattr(os, "O_CLOEXEC", 0)
+    try:
+        descriptor = os.open(lock_path, flags, 0o600)
+    except OSError as error:
+        raise SchemaRefusal(
+            "the corpus-register lock could not be opened without following a redirect"
+        ) from error
+    with os.fdopen(descriptor, "a+b") as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            raise SchemaRefusal("the corpus-register lock is not a regular file")
         try:
             import fcntl
         except ImportError:  # pragma: no cover - supported register stores are POSIX
@@ -119,6 +151,40 @@ def _register_lock(path: Path) -> Iterator[None]:
             yield
         finally:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _read_register_path(path: Path, *, missing_ok: bool) -> bytes:
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    if no_follow is None:  # pragma: no cover - supported register stores are POSIX
+        raise SchemaRefusal(
+            "this platform cannot read a corpus register without following symlinks"
+        )
+    flags = os.O_RDONLY | no_follow | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except FileNotFoundError:
+        if missing_ok:
+            return empty_register()
+        raise
+    except (OSError, ValueError) as error:
+        raise SchemaRefusal(
+            "the corpus register could not be opened as a regular non-symlink file"
+        ) from error
+    with os.fdopen(descriptor, "rb") as handle:
+        details = os.fstat(handle.fileno())
+        if not stat.S_ISREG(details.st_mode):
+            raise SchemaRefusal("the corpus register is not a regular file")
+        if details.st_size > MAX_REGISTER_BYTES:
+            raise SchemaRefusal(
+                f"the corpus register is {details.st_size} bytes, past the "
+                f"{MAX_REGISTER_BYTES}-byte validation bound"
+            )
+        data = handle.read(MAX_REGISTER_BYTES + 1)
+    if len(data) > MAX_REGISTER_BYTES:
+        raise SchemaRefusal(
+            f"the corpus register is past the {MAX_REGISTER_BYTES}-byte validation bound"
+        )
+    return data
 
 
 def _atomic_replace(path: Path, data: bytes) -> None:
@@ -205,8 +271,8 @@ def verify_snapshot_is_current(run: dict[str, Any], register_path: str | None) -
             "one; start a new run against that register instead"
         )
     try:
-        live = register_digest(Path(register_path).read_bytes())
-    except OSError as error:
+        live = register_digest(read_register_file(register_path))
+    except (OSError, ContractError) as error:
         raise IncompatibleReuse("the corpus register could not be read") from error
     if live != sealed:
         raise IncompatibleReuse(
@@ -235,14 +301,26 @@ def validate_register_bytes(data: bytes) -> dict[str, Any]:
 
 def _read(data: bytes) -> tuple[dict[str, Any], _Reading]:
     """The validated register and everything replaying its records established."""
+    if not isinstance(data, bytes):
+        raise SchemaRefusal("corpus register must be bytes")
+    if len(data) > MAX_REGISTER_BYTES:
+        raise SchemaRefusal(
+            f"corpus register is {len(data)} bytes, past the "
+            f"{MAX_REGISTER_BYTES}-byte validation bound"
+        )
     try:
         value = json.loads(data.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError) as error:
+    except (UnicodeDecodeError, ValueError, RecursionError) as error:
         raise SchemaRefusal("corpus register is not UTF-8 JSON") from error
     if not isinstance(value, dict) or set(value) != {"schema", "records"}:
         raise SchemaRefusal("corpus register must be the closed {schema, records} record")
     if value["schema"] != SCHEMA or not isinstance(value["records"], list):
         raise SchemaRefusal("corpus register has an unknown schema or non-list records")
+    if len(value["records"]) > MAX_REGISTER_RECORDS:
+        raise SchemaRefusal(
+            f"corpus register has {len(value['records'])} records, past the "
+            f"{MAX_REGISTER_RECORDS}-record replay bound"
+        )
     _refuse_preference(value)
     reading = _Reading()
     for record in value["records"]:
@@ -314,17 +392,18 @@ def _membership_assertion_identity(physical_page: str, member: str) -> str:
 
 
 def _refuse_preference(value: Any) -> None:
-    if isinstance(value, dict):
-        forbidden = set(value) & _FORBIDDEN_PREFERENCE_FIELDS
-        if forbidden:
-            raise SchemaRefusal(
-                f"corpus register may not express capture preference: {sorted(forbidden)}"
-            )
-        for child in value.values():
-            _refuse_preference(child)
-    elif isinstance(value, list):
-        for child in value:
-            _refuse_preference(child)
+    pending = [value]
+    while pending:
+        current = pending.pop()
+        if isinstance(current, dict):
+            forbidden = set(current) & _FORBIDDEN_PREFERENCE_FIELDS
+            if forbidden:
+                raise SchemaRefusal(
+                    f"corpus register may not express capture preference: {sorted(forbidden)}"
+                )
+            pending.extend(current.values())
+        elif isinstance(current, list):
+            pending.extend(current)
 
 
 def _closed(record: Any, fields: set[str], what: str) -> dict[str, Any]:
@@ -336,6 +415,7 @@ def _closed(record: Any, fields: set[str], what: str) -> dict[str, Any]:
 def _digests(value: Any, what: str) -> list[str]:
     if (
         not isinstance(value, list)
+        or len(value) > MAX_RECORD_LIST_ITEMS
         or value != sorted(set(value))
         or not all(_is_sha256(member) for member in value)
     ):
@@ -360,6 +440,7 @@ def _evidence(value: Any, what: str) -> None:
     if (
         not isinstance(value, list)
         or not value
+        or len(value) > MAX_RECORD_LIST_ITEMS
         or not all(isinstance(item, str) and item for item in value)
     ):
         raise SchemaRefusal(f"{what} must name one or more evidence records")

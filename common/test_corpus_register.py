@@ -612,6 +612,52 @@ def test_a_failed_atomic_publish_leaves_the_complete_predecessor(tmp_path, monke
     assert list(tmp_path.glob(".register.json.tmp-*")) == []
 
 
+def test_a_register_symlink_is_never_read_or_replaced(tmp_path):
+    target = tmp_path / "outside.json"
+    target.write_bytes(empty_register())
+    linked = tmp_path / "register.json"
+    linked.symlink_to(target)
+
+    with pytest.raises(SchemaRefusal, match="non-symlink"):
+        append_records(linked, [_declaration()], expected_digest=EMPTY_REGISTER_DIGEST)
+
+    assert linked.is_symlink()
+    assert target.read_bytes() == empty_register()
+
+
+def test_a_symlinked_register_lock_cannot_disable_writer_serialization(tmp_path):
+    path = tmp_path / "register.json"
+    path.write_bytes(empty_register())
+    victim = tmp_path / "victim"
+    victim.write_bytes(b"unchanged")
+    path.with_name(".register.json.lock").symlink_to(victim)
+
+    with pytest.raises(SchemaRefusal, match="lock could not be opened"):
+        append_records(path, [_declaration()], expected_digest=EMPTY_REGISTER_DIGEST)
+
+    assert path.read_bytes() == empty_register()
+    assert victim.read_bytes() == b"unchanged"
+
+
+def test_register_bytes_and_replay_counts_are_bounded_before_amplification(monkeypatch):
+    monkeypatch.setattr(corpus_register, "MAX_REGISTER_BYTES", len(empty_register()) - 1)
+    with pytest.raises(SchemaRefusal, match="byte validation bound"):
+        validate_register_bytes(empty_register())
+
+    monkeypatch.setattr(corpus_register, "MAX_REGISTER_BYTES", 1024 * 1024)
+    monkeypatch.setattr(corpus_register, "MAX_REGISTER_RECORDS", 0)
+    one_record = canonical_bytes({"schema": SCHEMA, "records": [_declaration()]})
+    with pytest.raises(SchemaRefusal, match="record replay bound"):
+        validate_register_bytes(one_record)
+
+
+def test_pathologically_nested_json_is_a_named_schema_refusal():
+    depth = 10_000
+    data = b'{"schema":"corpus-register-v1","records":' + b"[" * depth + b"]" * depth + b"}"
+    with pytest.raises(SchemaRefusal, match="not UTF-8 JSON"):
+        validate_register_bytes(data)
+
+
 # --- The sealed snapshot, and the check that cannot be skipped -------------------
 
 
@@ -683,6 +729,17 @@ def test_a_run_created_without_a_register_refuses_one_introduced_later(tmp_path)
     run = {"register_digest": EMPTY_REGISTER_DIGEST, "register_required": False}
     with pytest.raises(IncompatibleReuse, match="may not introduce one"):
         verify_snapshot_is_current(run, str(register_path))
+
+
+def test_a_stage_never_follows_a_live_register_symlink(tmp_path):
+    target = tmp_path / "outside.json"
+    target.write_bytes(empty_register())
+    linked = tmp_path / "register.json"
+    linked.symlink_to(target)
+    run = {"register_digest": EMPTY_REGISTER_DIGEST, "register_required": True}
+
+    with pytest.raises(IncompatibleReuse, match="could not be read"):
+        verify_snapshot_is_current(run, str(linked))
 
 
 def test_a_refused_register_reuse_leaves_no_bytes_in_the_existing_run(tmp_path):

@@ -87,6 +87,7 @@ from common.contracts.canonical import digest_bytes, digest_of, self_hash  # noq
 from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.identities import artifact_id  # noqa: E402
 from common.contracts.stages import DOOR  # noqa: E402
+from common.corpus_register import read_register_file  # noqa: E402
 from common.hard_failure import load_hard_failure_policy  # noqa: E402
 from common.recovery import load_recovery_policy  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
@@ -1332,11 +1333,12 @@ def _read_corpus_register(register_path: str | None) -> bytes | None:
     if register_path is None:
         return None
     try:
-        return Path(register_path).read_bytes()
-    except OSError as error:
+        return read_register_file(register_path)
+    except (OSError, ContractError) as error:
         raise ContractError(
             "the corpus register could not be read before run creation; no run or admission "
-            "record was written; provide a readable canonical register and retry"
+            "record was written; provide a readable canonical register and retry; the file "
+            "must be bounded, regular, and not a symlink"
         ) from error
 
 

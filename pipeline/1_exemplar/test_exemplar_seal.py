@@ -26,6 +26,7 @@ from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash,
 from common.contracts.errors import ContractError
 from common.contracts.identities import artifact_id, page_id, physical_page_id
 from common.contracts.stages import DOOR, EXEMPLAR
+from common.exemplar_boundary import verify_sealed_page_pixels
 from common.runtree.store import RunTree
 from common.stage import EXIT_FATAL, StageContext
 from operations.submit import submit
@@ -449,6 +450,26 @@ def test_a_fabricated_render_transform_is_refused_rather_than_sealed_or_crashed(
     assert "Traceback" not in result.stderr
     assert "does not carry exactly" in result.stderr
     assert not (tree.root / "1_exemplar" / "artifacts" / "seal").exists()
+
+
+def test_a_malformed_render_origin_in_a_sealed_page_is_a_named_refusal(tmp_path):
+    tree, _ = build_door_run(tmp_path / "runs")
+    result = run_exemplar(tmp_path / "runs")
+    assert result.returncode == 0, result.stderr
+    run = tree.read_run()
+    entry = next(
+        row
+        for row in tree.build_manifest(EXEMPLAR)["artifacts"]
+        if row["kind"] == "page" and row["outcome"] == "sealed"
+    )
+    page = tree.read_artifact(EXEMPLAR, "page", entry["artifact_id"])
+    source = next(
+        row for row in run["source_manifest"] if row["ordinal"] == page["payload"]["ordinal"]
+    )
+    page["payload"]["rendered_from"] = {"container_page_index": 0}
+
+    with pytest.raises(ContractError, match="complete closed container render record"):
+        verify_sealed_page_pixels(tree, run, source, page)
 
 
 def test_a_fanned_source_cannot_seal_raw_container_bytes_without_a_render_transform(tmp_path):

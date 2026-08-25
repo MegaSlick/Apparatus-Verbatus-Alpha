@@ -69,17 +69,32 @@ def verify_sealed_page_pixels(
     if not _is_sha256(source_digest):
         raise ContractError("a sealed Exemplar page has no lowercase pixel sha256")
     rendered = payload.get("rendered_from")
-    origin = (
-        {"kind": "source", "sha256": source_digest}
-        if rendered is None
-        else {
+    if rendered is None:
+        origin = {"kind": "source", "sha256": source_digest}
+    else:
+        if not isinstance(rendered, dict) or set(rendered) != {
+            "container_format",
+            "container_sha256",
+            "container_page_index",
+            "render_contract",
+        }:
+            raise ContractError(
+                "a sealed Exemplar page's rendered origin is not the complete closed "
+                "container render record"
+            )
+        origin = {
             "kind": "container-page",
             "container_sha256": rendered["container_sha256"],
             "container_page_index": rendered["container_page_index"],
             "render_contract": rendered["render_contract"],
         }
-    )
-    expected_page_id = page_id(origin, {"operation": "whole"})
+    try:
+        expected_page_id = page_id(origin, {"operation": "whole"})
+    except (ContractError, TypeError, ValueError, RecursionError) as error:
+        raise ContractError(
+            "a sealed Exemplar page's immutable origin is malformed and cannot derive "
+            "a page identity"
+        ) from error
     if page.get("subject_id") != expected_page_id:
         raise ContractError(
             "a sealed Exemplar page identity does not bind its immutable origin and transform"
