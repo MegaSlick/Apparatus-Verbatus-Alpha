@@ -190,14 +190,7 @@ def test_there_are_two_acts_and_exactly_one_cross_page_continuation(skeleton):
 
 
 def test_every_recovery_region_stays_on_the_page_and_clear_of_the_other_act(skeleton):
-    """Both declared recrops widen into empty margin, never into a neighbour.
-
-    One rectangle per act, and each is checked against every OTHER act's
-    declared bounds rather than against one hard-coded neighbour: a recrop that
-    reached into the act next to it would be inventing an overlap rather than
-    widening a crop, and the Designator would answer with a coverage refusal
-    that named the wrong defect.
-    """
+    """Every recrop must widen into margin without overlapping another act."""
     assert len(skeleton["recovery"]) == len(ACTS) == 2
     page = next(item for item in PAGES if item["ordinal"] == 1)
     for recovery in skeleton["recovery"]:
@@ -334,10 +327,7 @@ def test_the_scenarios_are_exactly_the_declared_ones(skeleton):
     assert by_name["witness-capabilities"]["hold_acts"] == []
     assert by_name["review"]["recover_acts"] == ["a1"]
     assert by_name["review"]["hold_acts"] == ["a2"]
-    # The recrop subject here is a2 -- the act that runs across the page break.
-    # `review` only ever recrops a1, which lives on one page, so without this
-    # scenario nothing exercised an expanded crop on an act whose evidence
-    # spans two pages.
+    # This is the only scenario that recrops the cross-page act.
     assert by_name["continuation-recovery"]["recover_acts"] == ["a2"]
     assert by_name["continuation-recovery"]["hold_acts"] == []
     # The scenario's data, not only its presence in the name census: a wrong

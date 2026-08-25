@@ -616,11 +616,8 @@ TESTIMONIUM_FIELDS = frozenset(
 # carries, and allowing them here let a resealed act record wear page clothing.
 OPTIONAL_TESTIMONIUM_FIELDS = frozenset({"reason", "reported", "page_witness"})
 
-# A page Testimonium is a different, closed record from the act-scoped
-# compatibility Testimonium above.  In particular, ``page_role`` says whether
-# the page is the act's primary page, only carries continuations, or contains
-# both.  Keeping that fact in the producer's contract prevents page two from
-# being an anonymous duplicate of page one.
+# Page testimony has its own closed shape because `page_role` is evidence about
+# all acts contributing to that page, not a fact an act-scoped record can carry.
 PAGE_TESTIMONIUM_FIELDS = TESTIMONIUM_FIELDS | frozenset(
     {"scope", "page_ordinal", "page_role", "unjoined_act_attempts"}
 )
@@ -674,7 +671,7 @@ def page_testimonium_payload(
     unjoined_act_attempts: list[dict[str, Any]],
     **kwargs: Any,
 ) -> dict[str, Any]:
-    """Build and refuse the closed page-scoped Testimonium shape at its writer."""
+    """Page-scoped Testimonia admit only the producer's closed field set."""
     writer_fields = {
         "chair",
         "act_key",
@@ -705,7 +702,7 @@ def page_testimonium_payload(
 
 
 def validate_page_testimonium_payload(payload: Any) -> dict[str, Any]:
-    """Refuse the closed page-record shape before this stage publishes it."""
+    """A page record must carry valid scope, ordinal, role, and unjoined facts."""
     if not isinstance(payload, dict):
         raise SchemaRefusal(
             "a page Testimonium payload is not an object; its fields cannot be verified; "
@@ -1798,21 +1795,15 @@ def publish_page_testimonia_and_attachments(
         if act["outcome"] == "proposed":
             regions, refusal = regions_by_act[act["act_id"]]
             if regions:
-                # An act belongs to every page its proposal pixels came from.
-                # The scalar in the proposal seal remains its primary page
-                # identity; it is not a licence to discard the continuation's
-                # denominator.
+                # The proposal's scalar page identifies the primary; the region
+                # transforms supply the complete page denominator.
                 contributing_pages = sorted(
                     {region["payload"]["transform"]["source_page_ordinal"] for region in regions}
                 )
             else:
-                # A refused crop was never shown to a witness, but it still
-                # belongs to every page the sealed proposal says it covered.
-                # Keep the page-level non-reading Testimonium rather than
-                # turning an isolated crop failure into a page that vanishes
-                # from the attachment denominator. The continuation fact is
-                # independently bound into the proposal seal against the
-                # sealed fixture by `expected_acts`.
+                # With no verified regions, the sealed proposal and continuation
+                # declaration are the only available page denominator. The
+                # non-reading testimony must still account for every such page.
                 if refusal is None:
                     raise FatalAccounting(
                         f"act {act['act_id']} has neither verified proposal regions nor a "
@@ -1853,28 +1844,27 @@ def publish_page_testimonia_and_attachments(
                 for act in page_acts
             }
             page_role = roles.pop() if len(roles) == 1 else "mixed"
-            payload = page_testimonium_payload(
-                page_ordinal=page_ordinal,
-                page_role=page_role,
-                unjoined_act_attempts=unjoined_act_attempts,
-                chair=chair,
-                act_key=f"page-{page_ordinal}",
-                ordinal=ordinal,
-                regions=[],
-                provenance=provenance_for(context, resolved, attempted=reading),
-                format_capabilities=DEFAULT_FORMAT_CAPABILITIES,
-                native_payload=native_payload if reading else None,
-                witness_reported=None,
-                health=health if reading else no_response_health(reason=failure_reason),
-                outcome=outcome,
-                reason=None if reading else failure_reason,
-            )
             context.publish(
                 kind="page-testimonium",
                 subject_id=page_subject,
                 outcome=outcome,
                 attempt=page_attempt,
-                payload=payload,
+                payload=page_testimonium_payload(
+                    page_ordinal=page_ordinal,
+                    page_role=page_role,
+                    unjoined_act_attempts=unjoined_act_attempts,
+                    chair=chair,
+                    act_key=f"page-{page_ordinal}",
+                    ordinal=ordinal,
+                    regions=[],
+                    provenance=provenance_for(context, resolved, attempted=reading),
+                    format_capabilities=DEFAULT_FORMAT_CAPABILITIES,
+                    native_payload=native_payload if reading else None,
+                    witness_reported=None,
+                    health=health if reading else no_response_health(reason=failure_reason),
+                    outcome=outcome,
+                    reason=None if reading else failure_reason,
+                ),
             )
             page_records[(page_ordinal, chair)] = context.artifact_ref(
                 ATTESTATORES,
@@ -2004,7 +1994,6 @@ def publish_page_testimonia_and_attachments(
 
     for act in acts:
         entries: list[dict[str, Any]] = []
-        contributing_pages = contributing_pages_by_act.get(act["act_id"], [act["page_ordinal"]])
         for chair in context.witness_chairs:
             attempt = attempts_by_pair[(act["act_id"], chair)]
             page_witness = chair in page_chairs and act["outcome"] == "proposed"
@@ -2177,22 +2166,10 @@ def publish_page_testimonia_and_attachments(
                     alignment["status"] == "aligned" and attempt.outcome in WITNESS_READING_OUTCOMES
                 )
             if page_witness:
-                # The primary-page alignment above remains the comparison view;
-                # continuation pages with no anchor retain an explicit
-                # unaligned attachment rather than disappearing from evidence.
-                #
-                # Each page's pair is derived from the loop-invariant
-                # `alignment`/`attached` computed above rather than assigned
-                # over them: writing the continuation's unaligned result back
-                # into the enclosing names made the primary page's own entry
-                # depend on where it fell in `contributing_pages`. Sorted
-                # ascending, a continuation on an EARLIER page than the act's
-                # primary one — which nothing in the fixture, the seal or the
-                # Designator forbids — would have overwritten the real
-                # alignment before the primary page was reached, and published
-                # the act's comparison view as `unaligned`. The evidence would
-                # have been silently unusable, with a plausible reason on it.
-                for contributing_page in contributing_pages:
+                # Derive each row from the primary alignment without mutating it:
+                # source-page ordinal does not determine primary-first act order,
+                # so an earlier continuation must not erase the comparison view.
+                for contributing_page in contributing_pages_by_act[act["act_id"]]:
                     is_primary_page = contributing_page == act["page_ordinal"]
                     page_alignment = (
                         alignment

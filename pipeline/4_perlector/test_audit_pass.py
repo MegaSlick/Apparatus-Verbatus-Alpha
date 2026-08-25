@@ -670,11 +670,8 @@ def test_recovery_sibling_context_is_sealed_and_never_republished(tmp_path):
         protocol_sha256=protocol_sha256,
     )
 
-    # The sibling here is a2, the act that runs across the page break, so it
-    # contributes one row per page its sealed basis spans -- the same
-    # page-multiplication the recovered act's own rows get, and the same one the
-    # first whole-run pass gave it. Every row restates the one sealed reading;
-    # nothing here republishes it.
+    # Recovery must use the same per-page rows as the whole-run pass without
+    # publishing a new sibling reading.
     sibling_pages = sorted(
         {region["source_page_id"] for region in sibling["payload"]["basis"]["regions"]}
     )
@@ -699,10 +696,8 @@ def test_recovery_sibling_context_is_sealed_and_never_republished(tmp_path):
 def test_recovery_selects_a_sibling_reaching_the_page_only_by_continuation(tmp_path):
     """Selection uses the sealed Perlectio page set, not its primary-page scalar.
 
-    The real a2 Perlectio starts on page 1 and carries page 2. Presenting page 2
-    as the recovered comparison page reproduces the old blind spot without
-    inventing an artifact shape: the sibling's complete page set comes from the
-    real run tree, and its proposal row still names page 1 as primary.
+    The sibling's complete page set must come from the real run tree while its
+    proposal row continues to identify page 1 as primary.
     """
     result = _run(tmp_path / "runs")
     assert result.returncode == 0, result.stderr
@@ -1108,8 +1103,7 @@ def test_shared_chain_refuses_draft_finding_restatement_drift(tmp_path):
 def test_shared_chain_refuses_a_page_set_forged_back_to_the_primary_page(tmp_path):
     """A coordinated draft/finding reseal cannot erase page 2 from the audit.
 
-    Draft and finding already reconcile with each other. The independent fact is
-    the Perlectio's own sealed region basis, which still carries both pages.
+    The Perlectio's sealed region basis remains the independent page fact.
     """
     result = _run(tmp_path / "runs")
     assert result.returncode == 0, result.stderr

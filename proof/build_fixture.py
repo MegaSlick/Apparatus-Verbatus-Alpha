@@ -229,10 +229,8 @@ SCENARIO_TESTIMONY = (
 # where a2's *capture* rectangle begins: stopping there keeps every page pixel
 # cut under exactly one act identity, which stopping at 120 would not (rows
 # 114-119 are inside a2's crop, background though they are).
-# Act a1's recrop widens upward into the page margin; act a2's widens downward
-# into the foot. a2 is the act that runs across the page break, so its recrop
-# is what proves an expanded crop on the PRIMARY page leaves the continuation
-# page in the act's evidence denominator (`continuation-recovery` below).
+# The two recrops widen into opposite margins. Recropping cross-page a2 on its
+# primary page must leave its continuation page in the evidence denominator.
 RECOVERY_BOUNDS = {
     "a1": {"x": 0, "y": 0, "w": 200, "h": 114},
     "a2": {"x": 0, "y": 114, "w": 200, "h": 146},

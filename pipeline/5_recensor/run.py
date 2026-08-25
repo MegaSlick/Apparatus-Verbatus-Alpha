@@ -327,23 +327,16 @@ def act_attachment_facts(context, act_id: str) -> dict[str, dict]:
                     "across its pages; one act attempt cannot have two health records; "
                     "restore the attempt's single recorded health"
                 )
-            # A page witness has one attachment for every contributing page.
-            # Its act-level floor remains the one act attempt, so a continuation
-            # whose page has no anchor cannot erase the primary page's valid
-            # attachment; all page references remain separately checked by the
-            # content denominator below.
+            # The act-level floor is one attempt per chair, while page references
+            # remain separate; an unaligned continuation cannot erase an aligned
+            # primary-page row.
             facts[chair]["attached"] = facts[chair]["attached"] or fact["attached"]
             if fact["anchor_basis"] is not None and (
                 facts[chair]["anchor_basis"] is None
                 or fact["anchor_basis"] == "act-line-not-located"
             ):
-                # Only an attached row carries a basis. Preserve it whichever
-                # contributing page sorts first; otherwise an earlier-page
-                # continuation leaves the later primary alignment looking as
-                # though it had no checked geometry. A located-line failure is
-                # deliberately sticky if future page-specific attachments give
-                # one chair several aligned page rows: terminal blank cannot
-                # discard the one page whose geometry did not reconcile.
+                # `act-line-not-located` is sticky across aligned page rows: a
+                # terminal blank cannot discard the page whose geometry failed.
                 facts[chair]["anchor_basis"] = fact["anchor_basis"]
             continue
         facts[chair] = fact
@@ -1180,23 +1173,10 @@ def reconcile_page_roles(
 ) -> None:
     """Re-derive every page Testimonium's `page_role` from the whole page.
 
-    The Perlector already refuses a role that one act's own sealed
-    `page_ordinal` contradicts, but it reads one act at a time and so can only
-    catch the two labels a single act disproves
-    (`pipeline/4_perlector/run.py::act_attachment_view`, which says as much).
-    `mixed` contradicts no single act: it claims the page holds a primary region
-    AND a continuation, and only a stage holding every act on the page can tell
-    whether that is true. So a resealed continuation-only page could wear
-    `mixed` and pass every check downstream of the producer — the same hole as
-    the `primary` forgery, one label along.
-
-    The denominator here is the producer's own published attachment set, not a
-    second walk of the Designator: an act contributes to page P exactly when its
-    current attachment carries a page-witness row for P. Deriving it from the
-    regions again would be a second spelling of the producer's grouping, free to
-    drift from it — and the Perlector already binds each act's attachment pages
-    to the regions it actually read, so the attachments cannot quietly claim a
-    page the ink does not support.
+    Only the whole-page view can distinguish `mixed` from a uniform primary or
+    continuation page. Attachments are the denominator because the Perlector has
+    already reconciled their page set to the regions it read; walking Designator
+    regions again would duplicate that grouping rule.
     """
     primary_page = {act["act_id"]: act["page_ordinal"] for act in expected_acts(context)}
     contributors: dict[int, set[str]] = {}
@@ -1244,18 +1224,8 @@ def reconcile_page_roles(
         )
     for (ordinal, chair), record in page_testimonia.items():
         payload = _payload(record, f"page Testimonium {record['artifact_id']}")
-        roles = contributors.get(ordinal)
-        if not roles:
-            # The pair-set reconciliation above makes this unreachable, but
-            # keep the local guard so a future caller cannot turn an orphaned
-            # record into an unowned finding no act review will publish.
-            raise FatalAccounting(
-                f"page {ordinal}'s Testimonium for chair {chair!r} has no attached act; its "
-                "finding would have no review owner; restore the page attachment denominator"
-            )
-        # `next(iter(...))`, never `set.pop()`: `roles` is the shared set held in
-        # `contributors`, and popping it would empty the page's own denominator
-        # for the second chair that reads it.
+        roles = contributors[ordinal]
+        # Do not consume this shared set; every chair on the page uses it.
         expected = next(iter(roles)) if len(roles) == 1 else "mixed"
         if payload.get("page_role") != expected:
             raise FatalAccounting(
@@ -1296,12 +1266,11 @@ def testimony_content_findings(context) -> dict[int, dict]:
             if act not in page_acts:
                 page_acts.append(act)
             found_page = True
-        # Unit-level consumers can supply only the proposal denominator, before
-        # a Designator-region fixture exists. That is still one known primary
-        # page, not an empty denominator; real continuation evidence always
-        # takes the branch above.
+        # Unit callers may provide the proposal seal without materialized
+        # regions; its primary page remains a known one-page denominator.
         if not found_page:
             acts_by_page.setdefault(act["page_ordinal"], []).append(act)
+    rows_by_page_chair: dict[tuple[int, str], list[tuple[str, dict]]] = {}
     for ordinal, acts in acts_by_page.items():
         for act in acts:
             attachment = attachments.get(act["act_id"])
@@ -1314,11 +1283,8 @@ def testimony_content_findings(context) -> dict[int, dict]:
                 if (
                     not isinstance(row, dict)
                     or not row.get("page_witness")
-                    # Indexed, not defaulted: `reconcile_page_roles` above has
-                    # already proved every page-witness row carries an integer
-                    # page ordinal. A default of `ordinal` read "absent means
-                    # this page", so a row that lost its ordinal would have
-                    # counted on EVERY page it was compared against.
+                    # Missing must not default to the page currently being
+                    # scanned, which would count one malformed row on every page.
                     or row["page_ordinal"] != ordinal
                 ):
                     continue
@@ -1332,6 +1298,7 @@ def testimony_content_findings(context) -> dict[int, dict]:
                         "references no current page Testimonium; retained evidence is missing "
                         "or stale; restore the referenced Attestatores record"
                     )
+                rows_by_page_chair.setdefault((ordinal, chair), []).append((act["act_id"], row))
     # Reference every page row first, so a missing record names the act whose
     # evidence was lost. The whole-page role reconciliation then catches the
     # converse orphan (a page record no act owns) before any finding is built.
@@ -1362,43 +1329,20 @@ def testimony_content_findings(context) -> dict[int, dict]:
             # sends whoever reads the exit to the wrong producer.
             raise FatalAccounting("page Testimonium's reported page text is not text")
         spans = []
-        for act in acts_by_page.get(ordinal, []):
-            attachment = attachments.get(act["act_id"])
-            if attachment is None:
-                raise FatalAccounting(f"act {act['act_id']} has no attachment for content coverage")
-            rows = _payload(attachment, f"attachment for {act['act_id']}").get("attachments")
-            if not isinstance(rows, list):
-                raise FatalAccounting(f"attachment for {act['act_id']} has no rows")
-            for row in rows:
-                if (
-                    not isinstance(row, dict)
-                    or row.get("chair") != chair
-                    or not row.get("page_witness")
-                    # Indexed, not defaulted: `reconcile_page_roles` above has
-                    # already proved every page-witness row carries an integer
-                    # page ordinal. A default of `ordinal` read "absent means
-                    # this page", so a row that lost its ordinal would have
-                    # counted on EVERY page it was compared against.
-                    or row["page_ordinal"] != ordinal
+        for act_id, row in rows_by_page_chair.get((ordinal, chair), []):
+            alignment = row.get("alignment")
+            if (
+                row.get("attached")
+                and isinstance(alignment, dict)
+                and alignment.get("status") == "aligned"
+            ):
+                span = alignment.get("witness_span")
+                if not isinstance(span, dict) or not all(
+                    isinstance(span.get(k), int) and not isinstance(span.get(k), bool)
+                    for k in ("start", "end")
                 ):
-                    continue
-                if row.get("testimonium_ref") != context.artifact_ref(
-                    ATTESTATORES, "page-testimonium", record["artifact_id"]
-                ):
-                    raise FatalAccounting("act attachment points to a different page Testimonium")
-                alignment = row.get("alignment")
-                if (
-                    row.get("attached")
-                    and isinstance(alignment, dict)
-                    and alignment.get("status") == "aligned"
-                ):
-                    span = alignment.get("witness_span")
-                    if not isinstance(span, dict) or not all(
-                        isinstance(span.get(k), int) and not isinstance(span.get(k), bool)
-                        for k in ("start", "end")
-                    ):
-                        raise FatalAccounting("attached page witness has malformed alignment span")
-                    spans.append((span["start"], span["end"], act["act_id"]))
+                    raise FatalAccounting("attached page witness has malformed alignment span")
+                spans.append((span["start"], span["end"], act_id))
         covered = [False] * len(text)
         for start, end, _ in spans:
             if start < 0 or end < start or end > len(text):

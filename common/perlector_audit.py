@@ -549,10 +549,8 @@ def validate_chain(tree, reading: dict[str, Any], act_id: str) -> dict[str, Any]
                 "audit page set cannot be derived; restore one page id per integer ordinal"
             )
         pages_by_ordinal[ordinal] = page_id
-        # Region order is the sealed act order: the primary proposal region is
-        # first, followed by continuation and recovery regions. Source-page
-        # ordinal is a page identity, not act reading order; a continuation may
-        # legitimately be on an earlier-numbered page than the act's primary.
+        # Region order is sealed act order; source-page ordinal is identity and
+        # may place a continuation before the primary page numerically.
         if page_id not in basis_page_ids:
             basis_page_ids.append(page_id)
     if draft_payload["page_ids"] != basis_page_ids:

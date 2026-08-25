@@ -132,22 +132,9 @@ def flags_once_per_page(semi_finals: list[dict[str, Any]]) -> dict[str, list[dic
     The result is keyed by act id.  It contains no re-proof result or mutable
     state, so callers cannot make a changed result trigger flags for another act.
 
-    **An act contributing pixels to more than one page appears here once per
-    page**, because the cross-act classes below are page comparisons and a
-    continuation belongs in both of them
-    (`pipeline/4_perlector/run.py::audit_semi_finals_for_pages`). Its ACT-LOCAL
-    classes are facts about one text and one witness set, so they fire once for
-    the act — not once for every page its crop happens to span. Running them
-    inside the page loop gave act a2 four `testimony-diff` flags where two
-    witnesses disagreed, and every consumer of that count read it as evidence:
-    the re-proof plan asked the reader the identical neutral question twice, and
-    an exhausted round cap projected each uncertain span onto the export twice
-    (GOVERNANCE 10 — the instrument reported the crop's page span, not the ink).
-
-    The two cross-act classes that *are* page facts (`date-sequence`,
-    `numbering`, `order`) stay inside the page loop, and are deduplicated per
-    act at the end: they carry no page identity, so the same observation made on
-    two of an act's pages is one recorded flag, not two indistinguishable ones.
+    A continuation appears once per contributing page for cross-act comparisons,
+    but its text, testimony, and crop-containment flags remain act-local. Cross-act
+    flags are deduplicated because their record shape carries no page identity.
     """
     by_page: dict[str, list[dict[str, Any]]] = defaultdict(list)
     by_act: dict[str, dict[str, Any]] = {}
@@ -175,10 +162,8 @@ def flags_once_per_page(semi_finals: list[dict[str, Any]]) -> dict[str, list[dic
         if not isinstance(row.get("within_crop"), bool):
             raise SchemaRefusal("an audit semi-final does not say whether it stays within its crop")
         by_page[row["page_id"]].append(row)
-        # One act's rows restate the same reading. A producer that let them
-        # disagree would make the act-local pass below depend on which page
-        # happened to be visited first, so the disagreement is refused here
-        # rather than silently resolved by iteration order.
+        # Page rows for one act must restate one sealed reading; otherwise
+        # iteration order would choose the facts used by the act-local pass.
         first = by_act.setdefault(row["act_id"], row)
         if (first["text"], first["testimonia"], first["within_crop"]) != (
             row["text"],
@@ -191,7 +176,6 @@ def flags_once_per_page(semi_finals: list[dict[str, Any]]) -> dict[str, list[dic
                 "the page rows from one sealed Perlectio"
             )
     output: dict[str, list[dict[str, Any]]] = {row["act_id"]: [] for row in semi_finals}
-    # The act-local classes, once per act, in the acts' first-seen order.
     for row in by_act.values():
         text = row["text"]
         for testimony in row["testimonia"]:
@@ -203,13 +187,11 @@ def flags_once_per_page(semi_finals: list[dict[str, Any]]) -> dict[str, list[dic
         repeated = re.search(r"\b(\w+)\s+\1\b", text, flags=re.IGNORECASE)
         if repeated:
             output[row["act_id"]].append(_flag("repetition", repeated.start(), repeated.end()))
-        # The audit only records locations in the text delivered from this
-        # act's crop. It deliberately has no page partition or residual-ink
-        # predicate; those belong to the Recensor.
+        # Page partition and residual ink are Recensor facts; these offsets are
+        # confined to the text delivered for this act.
         if not row["within_crop"]:
             output[row["act_id"]].append(_flag("within-crop", 0, len(text)))
-    # The cross-act classes, once per page, because each is a statement about
-    # this act's place among the others on THAT page.
+    # These classes compare an act with the other acts on the same page.
     cross_act: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for rows in by_page.values():
         ordered = sorted(rows, key=lambda row: (row["order"], row["act_id"]))

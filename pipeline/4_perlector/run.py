@@ -222,7 +222,8 @@ def act_attachment_view(
     `testimonia` is this act's *current* attempt per chair, already collapsed by
     `testimonia_of`. The attachment is a derived view of one attempt, so it is
     checked against that collapse rather than trusted on its own: see the
-    per-chair reconciliation below.
+    per-chair reconciliation below. `bases` are the verified regions the
+    Perlector read and therefore the independent page denominator.
     """
     act_id = act["act_id"]
     current = {record["payload"]["chair"]: record for record in testimonia}
@@ -250,6 +251,8 @@ def act_attachment_view(
     configured = set(context.witness_chairs)
     page_ids = {basis["source_page_ordinal"]: basis["source_page_id"] for basis in bases}
     declared_chairs = context.fixture.get("page_witness_chairs", [])
+    # The producer enforces this exact shape; accepting a string here would turn
+    # membership into a per-character test at the consuming boundary.
     if not isinstance(declared_chairs, list) or any(
         not isinstance(item, str) for item in declared_chairs
     ):
@@ -363,11 +366,6 @@ def act_attachment_view(
                 f"act {act_id} attachment for chair {chair!r} describes an attempt that is no "
                 "longer this chair's current Testimonium"
             )
-        # The producer (`pipeline/3_attestatores/run.py::declared_page_witness_chairs`)
-        # refuses a declaration that is not a unique list of strings; this reader
-        # holds the same key to the same shape, or a string-valued declaration
-        # would degrade into per-character membership and blame the attachment
-        # for the fixture's own malformation.
         expected_page_witness = chair in page_chairs
         if attachment["page_witness"] != expected_page_witness:
             raise SchemaRefusal(
@@ -427,16 +425,8 @@ def act_attachment_view(
                 )
             ):
                 raise SchemaRefusal(f"act {act_id} attachment points to the wrong page Testimonium")
-            # `page_role` is the producer's own claim about whether this page is
-            # the act's primary page or one it only reaches by continuation
-            # (`pipeline/3_attestatores/run.py::publish_page_testimonia_and_attachments`).
-            # Nothing above reconciles that claim against the one fact this
-            # reader already holds independently -- `attachment_page` versus the
-            # act's own sealed `page_ordinal` -- so a resealed page Testimonium
-            # could wear either label with nothing to catch the flip. This is a
-            # partial check, not a full re-derivation of "mixed" (which needs
-            # every other act on the page, not available here): it only refuses
-            # the two combinations this act's own facts already contradict.
+            # One act can disprove `primary` or `continuation` from its sealed
+            # primary page. Only the Recensor's whole-page view can verify `mixed`.
             role = page_payload.get("page_role")
             is_act_primary_page = attachment_page == act["page_ordinal"]
             if role not in {"primary", "continuation", "mixed"} or (
@@ -1364,15 +1354,9 @@ def _sealed_sibling_semi_finals(
     current_ids = {row["act_id"] for row in current}
     page_ids = {row["page_id"] for row in current}
     order_by_id = {act["act_id"]: order for order, act in enumerate(expected)}
-    # Candidate selection itself must use the complete page set. The proposal
-    # seal carries only an act's primary page, but every completed Perlectio
-    # already carries the full region basis it read. Selecting on the scalar
-    # first meant an act whose primary page was elsewhere never had that basis
-    # opened, even when its continuation shared the recovered page. Omitting an
-    # intermediate row is not conservative: adjacency checks can both miss the
-    # omitted inversion and invent a new comparison between its former
-    # neighbours. Read the existing sealed map; no new artifact contract is
-    # needed.
+    # Primary-page scalars cannot select candidates: only a sibling's sealed
+    # region basis reveals whether a continuation shares the recovered page.
+    # Omitting a row can also invent adjacency between its former neighbours.
     sibling_ids = {act["act_id"] for act in expected if act["act_id"] not in current_ids}
     records_by_subject: dict[str, list[dict[str, Any]]] = {act_id: [] for act_id in sibling_ids}
     for entry in context.tree.build_manifest(PERLECTOR)["artifacts"]:
@@ -1436,13 +1420,8 @@ def _sealed_sibling_semi_finals(
         sibling_page_ids = {basis["source_page_id"] for basis in bases}
         if not page_ids.intersection(sibling_page_ids):
             continue
-        # Page-multiplied exactly like the recovered act's own rows above. A
-        # sibling that runs across the page break belongs in BOTH of its pages'
-        # cross-act comparisons, and the first (whole-run) pass placed it in
-        # both; building it here on its primary page alone made a recovery
-        # round's page comparisons a row short of the pass that preceded it,
-        # the same unsupported-short-denominator hazard this function already
-        # refuses for a missing record.
+        # Recovery must reproduce the whole-run denominator: a cross-page
+        # sibling participates in each contributing page's comparisons.
         siblings.extend(
             audit_semi_finals_for_pages(
                 act_id=act_id,
