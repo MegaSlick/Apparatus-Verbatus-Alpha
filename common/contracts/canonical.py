@@ -41,29 +41,13 @@ from typing import Any
 # pretending the two shapes agree.
 SCHEMA_LABEL = "skeleton.v1"
 
-# CPython permits an integer-to-decimal safety limit as low as 640 digits.  A
-# canonical vocabulary whose accepted values changed with that process setting
-# would not be one vocabulary at all, and no pipeline count, ordinal, or pixel
-# coordinate has a legitimate need for hundreds of digits.  Refuse at the
-# portable floor, before ``json.dumps`` can raise its bare, host-specific
-# ``ValueError``.
+# CPython's integer-to-decimal limit may be configured down to 640 digits;
+# canonical acceptance must not vary with that host setting.
 _MAX_INTEGER_MAGNITUDE = 10**640
 
 
 def _segment(key: str) -> str:
-    """One path segment that is always printable.
-
-    A refusal message ends up on an operator's stderr, and a key carrying a lone
-    surrogate would raise `UnicodeEncodeError` a second time out of the `print`
-    that was reporting the first one — the boundary crashing while naming the
-    reason it refused.
-
-    The test is printability, not ASCII-ness. This is a project about the very
-    words: `$.Étienne` is the path an operator wants to read, and escaping every
-    non-ASCII key to spare the one bad case would mangle the ordinary ones. A
-    surrogate is unprintable, and so is every control character that would
-    garble the line it lands in; those are escaped and nothing else is.
-    """
+    """Keep ordinary Unicode readable while making refusal paths safe for stderr."""
     return key if key.isprintable() else ascii(key)
 
 
@@ -87,10 +71,8 @@ def _refuse_floats(value: Any, path: str = "$") -> None:
     if isinstance(value, dict):
         for key, item in value.items():
             if not isinstance(key, str):
-                # Rendering an integer key with thousands of digits can itself
-                # raise ValueError on the refusal path.  The type and location
-                # name the schema error without asking the hostile value to
-                # format itself.
+                # A hostile or huge key may fail while being rendered; its type
+                # and location identify the schema defect without formatting it.
                 raise TypeError(f"non-string key of type {type(key).__name__} at {path}")
             _refuse_floats(item, f"{path}.{_segment(key)}")
     elif isinstance(value, (list, tuple)):
@@ -99,11 +81,7 @@ def _refuse_floats(value: Any, path: str = "$") -> None:
 
 
 def _unencodable_path(value: Any, path: str = "$") -> str | None:
-    """Where the first string lives that UTF-8 cannot encode, or None.
-
-    Walked only after `str.encode` has already failed, so the ordinary path
-    pays nothing for it and the cost falls on the record that is being refused.
-    """
+    """Locate the first UTF-8 failure in canonical order for a refusal message."""
     if isinstance(value, str):
         try:
             value.encode("utf-8")
@@ -111,16 +89,12 @@ def _unencodable_path(value: Any, path: str = "$") -> str | None:
             return path
         return None
     if isinstance(value, dict):
-        # Match ``json.dumps(sort_keys=True)`` above.  The encoding error names
-        # the first surrogate in canonical key order; walking insertion order
-        # could pair that offender with a different field's path when a record
-        # carried more than one unencodable string.
+        # The encoder sees sorted keys; insertion order could pair its offender
+        # with a different field's path when several strings are unencodable.
         for key in sorted(value):
             item = value[key]
-            # Keys are always strings by the time this runs: `_refuse_floats`
-            # has already refused any other kind. Guarded anyway rather than
-            # assumed, because a locator that raises while locating would put
-            # the wrong exception at the boundary.
+            # This locator must not replace the original refusal if called
+            # independently of the canonical-vocabulary walk.
             if not isinstance(key, str):
                 continue
             if _unencodable_path(key) is not None:
@@ -148,11 +122,8 @@ def canonical_bytes(value: Any) -> bytes:
             allow_nan=False,
         )
     except RecursionError as error:
-        # The parsed structure can be shallower than the JSON scanner's limit
-        # and still exceed the pure-Python vocabulary walk above.  A recursive
-        # in-memory list reaches the same exception.  Both mean there is no
-        # canonical form this process can establish, so name that fact at the
-        # serializer rather than leaking an implementation traceback.
+        # Both excessive nesting and cycles mean this process cannot establish
+        # a canonical form; neither may escape as an implementation traceback.
         raise TypeError(
             "structure is recursive or nests too deeply for canonical JSON; no "
             "canonical artifact can carry it or be hashed against it"
@@ -160,21 +131,9 @@ def canonical_bytes(value: Any) -> bytes:
     try:
         return text.encode("utf-8")
     except UnicodeEncodeError as error:
-        # A lone surrogate is the one value that passes every check above and
-        # still has no bytes. `json.loads` builds one happily from a `\udXXX`
-        # escape, so a damaged or hand-edited artifact on disk parses, reaches
-        # `verify_self_hash`, and used to leave this function as an uncaught
-        # `UnicodeEncodeError` — a traceback at exactly the boundary whose job
-        # is to name its refusals.
-        #
-        # Raised as `TypeError` deliberately, and not as a new exception class:
-        # `TypeError` is already this module's word for "outside the canonical
-        # vocabulary" (`_refuse_floats` above), and four guards written for the
-        # float case name it by that meaning — `verify_self_hash` below,
-        # `common/contracts/envelope.py::validate_envelope`,
-        # `common/runtree/store.py`'s partition-receipt reread, and
-        # `common/stage.py`'s serving-evidence reader. A new class would have
-        # walked past every one of them.
+        # json.loads accepts lone surrogates, but they have no UTF-8 form.
+        # TypeError is the established boundary for values outside this
+        # canonical vocabulary and is already handled by its consumers.
         offender = error.object[error.start : error.end]
         raise TypeError(
             f"unencodable character {offender!a} at {_unencodable_path(value) or '$'}: "
@@ -226,34 +185,16 @@ def verify_self_hash(record: dict[str, Any], field: str = "self_hash") -> bool:
     try:
         return stored == self_hash(record, field)
     except (RecursionError, TypeError):
-        # A record nested deep enough exhausts the stack here even when it was
-        # shallow enough for the JSON scanner that read it: `_refuse_floats`
-        # recurses once per nesting level walking the *parsed* structure, a
-        # second recursive pass a reader's own RecursionError guard on the read
-        # itself does not cover. The fact this call exists to establish is the
-        # same either way — a record whose self-hash cannot be trusted — so it
-        # is refused exactly as a mismatched hash would be, not crashed on. The
-        # same boundary also catches the serializer's TypeError for an unsupported
-        # parsed value (a float, a non-string key, a lone surrogate) and lets a
-        # refusing caller name that refusal through `self_hash_refusal` below.
+        # A boolean verifier must safely reject both an unrecomputable digest
+        # and a mismatch; human-facing boundaries recover the cause separately.
         return False
 
 
 def self_hash_refusal(record: dict[str, Any], field: str = "self_hash") -> str | None:
-    """Why this record's current contents cannot be hashed, or None if they can.
+    """Name why no digest can be computed, without claiming when damage arose.
 
-    `verify_self_hash` answers one boolean for its many callers, which is the
-    right shape for a check but throws away *which* of two very different facts
-    it found: current contents whose computed digest differs from the stored
-    digest, and current contents for which no digest can be computed at all. A
-    malformed record may have begun that way or may have been damaged or edited
-    after sealing; its present bytes cannot establish that history. They can and
-    should name the canonicalization failure that prevents the comparison.
-
-    A refusing caller — never the check itself — recomputes here to recover the
-    distinction, so the breadth `verify_self_hash` needs for its other callers
-    costs no diagnostic at the boundaries that report to a human. The cost is
-    one extra serialization on a path that is already ending in a refusal.
+    Kept separate from the boolean verifier because only human-facing refusal
+    paths need the diagnostic and its extra serialization.
     """
     try:
         self_hash(record, field)

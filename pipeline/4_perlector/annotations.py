@@ -73,6 +73,8 @@ def validate_uncertain_spans(spans: Any, text: str) -> list[dict]:
         ):
             raise SchemaRefusal(f"uncertain_spans[{index}] has no list of string alternatives")
         confidence = span.get("confidence")
+        # Membership and refusal formatting may invoke subclass-defined
+        # behavior, so both require an exact built-in string first.
         if type(confidence) is not str:
             raise SchemaRefusal(
                 f"uncertain_spans[{index}] confidence has type "
@@ -80,12 +82,6 @@ def validate_uncertain_spans(spans: Any, text: str) -> list[dict]:
                 f"{sorted(CONFIDENCE_LEVELS)}"
             )
         if confidence not in CONFIDENCE_LEVELS:
-            # ``repr`` is safe here because the exact-type check above has proved
-            # this is a built-in string: it escapes lone surrogates and control
-            # characters, and no subclass can replace ``__repr__`` or ``__hash__``.
-            # Rendering an arbitrary integer here used to raise ValueError for a
-            # value above CPython's decimal conversion limit, turning the refusal
-            # itself into the crash it was meant to prevent.
             raise SchemaRefusal(
                 f"uncertain_spans[{index}] confidence {confidence!r} is not one "
                 f"of {sorted(CONFIDENCE_LEVELS)}"

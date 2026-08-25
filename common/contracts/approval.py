@@ -196,13 +196,8 @@ def validate_approval_record(record: Any) -> dict[str, Any]:
             "without a checkable target version cannot be current"
         )
     if not verify_self_hash(record):
-        # Same recovery as the envelope boundary, and it matters more here: this
-        # record is the evidence that Tyrel approved something, so the reason it
-        # was refused is the first thing anyone will want. A float, non-string
-        # key, or lone surrogate in the current contents prevents any digest
-        # comparison; those bytes cannot say whether the record began malformed
-        # or was damaged or edited later. Name the present cause without
-        # inventing that history.
+        # Unhashable current contents permit no digest comparison, so they must
+        # not be described as proof that an approval was edited after sealing.
         unhashable = self_hash_refusal(record)
         if unhashable is not None:
             raise ApprovalRefusal(f"approval record fails its own self-hash: {unhashable}")

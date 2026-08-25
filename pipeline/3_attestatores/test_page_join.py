@@ -70,12 +70,7 @@ def test_an_unknown_page_witness_chair_is_refused_not_dropped_from_the_join():
 
 
 def test_an_unknown_page_witness_chair_is_refused_by_the_shared_accessor_itself():
-    """`publish_attempt` and `reread_pass` read `declared_page_witness_chairs`
-    directly and never call `publish_page_testimonia_and_attachments` (the
-    reread path does not call it at all; the whole-pass path calls it only
-    after `attempt_pass` has already sealed every attempt). The roster check
-    must live in the accessor itself or a typo'd chair silently reaches those
-    write paths unrefused before the join ever runs."""
+    """The accessor must protect write paths that cannot rely on the later page join."""
     context = SimpleNamespace(
         fixture={"page_witness_chairs": ["attestator_33"]},
         witness_chairs=("attestator_1",),
@@ -86,10 +81,7 @@ def test_an_unknown_page_witness_chair_is_refused_by_the_shared_accessor_itself(
 
 
 def test_the_roster_refusal_names_the_roster_and_not_only_the_offender():
-    """`attestator_33` is either a typo for a chair that exists or a chair this
-    run was never sealed with, and only the roster says which. A refusal that
-    names the offender alone hands the operator their own fixture back and makes
-    them open `config/models.toml` to learn what the run actually holds."""
+    """A usable roster mismatch names both the declaration and sealed roster."""
     context = SimpleNamespace(
         fixture={"page_witness_chairs": ["attestator_33"]},
         witness_chairs=("attestator_1", "attestator_3"),
@@ -111,16 +103,13 @@ def test_the_roster_refusal_names_the_roster_and_not_only_the_offender():
         True,
         pytest.param(10**5000, id="huge-int"),
         None,
-        # A recursive structure: no JSON file can hold one, but nothing here
-        # promises the fixture reached this accessor through `json.loads`, and a
-        # type check that recursed into it would hang rather than refuse.
+        # The accessor accepts in-memory fixtures, so it must refuse cycles
+        # without recursively inspecting or hashing them.
         "recursive",
     ),
 )
 def test_declared_page_witness_chairs_refuses_values_no_chair_name_could_be(bad_chair):
-    """The type check must precede every structural use of these values, and it
-    must not itself walk them. The exact-type check is O(1) on each and answers
-    every case without invoking value-defined hashing or rendering."""
+    """Type validation must precede hashing, traversal, and value rendering."""
     if bad_chair == "recursive":
         recursive: list = []
         recursive.append(recursive)
@@ -149,10 +138,7 @@ def test_a_chair_name_string_subclass_is_refused_before_set_or_rendering(chair):
 
 
 def test_a_chair_name_carrying_a_surrogate_is_refused_printably():
-    """A chair name is a string, so it clears the shape check and reaches the
-    roster refusal — which then puts it in a message an operator's stderr has to
-    encode. `repr` escapes the surrogate; an f-string interpolating it raw would
-    raise `UnicodeEncodeError` out of the report of the refusal."""
+    """The roster refusal must remain encodable when the chair name is not."""
     context = SimpleNamespace(
         fixture={"page_witness_chairs": ["attestator_\ud800"]},
         witness_chairs=("attestator_1",),
@@ -176,15 +162,7 @@ def test_hostile_but_encodable_chair_strings_are_refused_printably(chair):
 
 
 def test_no_testimonium_is_sealed_before_the_declaration_is_validated():
-    """The timing guarantee, driven rather than reasoned about.
-
-    `publish_attempt` builds its payload first and publishes last, so the
-    question is only whether the accessor runs on the near side of the write.
-    A recording context answers it: the refusal must arrive with the publish
-    list still empty, because a Testimonium sealed carrying a silently wrong
-    `page_witness` flag is immutable (GOVERNANCE 4) and nothing later can take
-    it back.
-    """
+    """A malformed declaration must refuse before immutable testimony is written."""
     published: list = []
     resolved = AbsentChair(role="attestator_1", reason="fixture test needs no live chair")
     context = SimpleNamespace(
@@ -216,9 +194,8 @@ class _FunctionPublishCalls(ast.NodeVisitor):
         self.bypass_lines: list[int] = []
 
     def visit_FunctionDef(self, node):
-        # A nested function is a third path in its own right, not part of its
-        # enclosing function's ordering proof. The outer ``ast.walk`` scans that
-        # definition separately, so do not fold its body into its parent too.
+        # Nested functions are independent write paths; the outer scan visits
+        # them separately and must not fold them into their parent's proof.
         return
 
     visit_AsyncFunctionDef = visit_FunctionDef
@@ -313,13 +290,7 @@ def _testimonium_write_scan(source: str):
 
 
 def test_the_write_scan_detects_a_third_path_even_when_its_syntax_changes():
-    """Prove the enforcement itself red, not merely its reading of today's file.
-
-    The former substring scan missed ordinary equivalent Python: single quotes,
-    whitespace around ``=``, a kind held in a local variable, or an alias of
-    ``context.publish``. These synthetic third writers drive all three forms so a
-    future weakening of the scanner cannot leave the two-function claim vacuous.
-    """
+    """The source pin must reject unclassified writes, aliases, and hidden validation."""
     literal = """
 def third(context):
     declared_page_witness_chairs(context)
@@ -369,21 +340,10 @@ def third(context):
 
 
 def test_every_testimonium_writer_has_a_dominating_declaration_call():
-    """The static half, and the half that covers a write path nobody has written yet.
+    """Every Testimonium writer must validate in an unconditional earlier statement.
 
-    The runtime test above proves the two writers this module has today check
-    before they seal. It cannot prove that a *third* one added later does — an
-    uncalled writer leaves no trace. So this reads the module's own source and
-    requires every function that publishes a Testimonium kind to make a direct,
-    top-level `declared_page_witness_chairs` call before its first
-    `context.publish`, and requires the set of such functions to be exactly the
-    two that do. The top-level restriction is what makes source order a real
-    dominance guarantee rather than a call hidden under a branch that may not
-    run.
-
-    Same instrument as `common/runtree/test_runtree_store.py`'s scan for a store
-    writer that invents its own path, and for the same reason: the property is
-    about the code, not about the fixtures a test happens to drive through it.
+    Runtime fixtures cannot detect an uncalled future writer. This source pin
+    therefore rejects new, indirect, or lower-level write paths it cannot prove.
     """
     module_path = Path(__file__).resolve().parent / "run.py"
     writers, dynamic, aliases, bypasses = _testimonium_write_scan(

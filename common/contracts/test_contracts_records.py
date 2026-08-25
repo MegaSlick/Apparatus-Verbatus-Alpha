@@ -86,10 +86,7 @@ def test_deep_nesting_is_a_named_serializer_refusal_not_recursion_error():
         canonical_bytes(nested)
 
 
-# A lone surrogate is the one value that clears `_refuse_floats`, clears
-# `json.dumps`, and still has no bytes. `json.loads` builds one from a `\udXXX`
-# escape without complaint, so it arrives the same way a float does: parsed off
-# disk out of a damaged or hand-edited artifact.
+# json.loads accepts this value, while canonical UTF-8 cannot encode it.
 SURROGATE = "\ud800"
 
 
@@ -103,31 +100,21 @@ SURROGATE = "\ud800"
     ),
 )
 def test_a_lone_surrogate_is_refused_by_name_rather_than_crashing(damaged):
-    """It used to leave here as an uncaught `UnicodeEncodeError` — a traceback out
-    of the one function whose job is to refuse what it cannot serialize, and past
-    every guard written for the float case, since none of them names `ValueError`.
-    `TypeError` is this module's word for "outside the canonical vocabulary", so
-    raising it here is what puts the surrogate through the same four boundaries the
-    float already goes through."""
+    """Values outside the canonical vocabulary use its established TypeError boundary."""
     with pytest.raises(TypeError) as caught:
         canonical_bytes(damaged)
     assert "unencodable character" in str(caught.value)
 
 
 def test_a_legitimate_non_ascii_key_is_still_named_as_itself_in_a_path():
-    """This is a project about the very words, and `$.Étienne` is the path an
-    operator wants to read. Escaping every non-ASCII key to make the surrogate
-    case safe would have mangled the ordinary ones."""
+    """Making surrogate paths printable must not escape ordinary Unicode keys."""
     with pytest.raises(TypeError) as caught:
         canonical_bytes({"Étienne": {"scale": 1.5}})
     assert "$.Étienne.scale" in str(caught.value)
 
 
 def test_a_surrogate_refusal_is_itself_printable():
-    """The message reaches an operator through `run_stage`'s `print` to stderr. A
-    message that embedded the offending text raw would raise `UnicodeEncodeError`
-    a second time out of the print reporting the first one — the boundary crashing
-    while naming the reason it refused."""
+    """A stderr refusal must not embed an unencodable offender raw."""
     with pytest.raises(TypeError) as caught:
         canonical_bytes({SURROGATE: {"scale": SURROGATE}})
     str(caught.value).encode("utf-8")
@@ -242,9 +229,7 @@ def test_only_tyrel_approves():
 
 
 def test_unhashable_current_content_is_told_apart_from_a_digest_mismatch():
-    """`verify_self_hash` answers one boolean, which is right for a check and
-    wrong for a message: unhashable current contents provide no computed digest
-    to compare with the stored one, while canonical edited contents do."""
+    """Only canonical edited contents provide a digest that can mismatch."""
     edited = sound_approval()
     edited["reason"] = "actually it was fine"
     assert self_hash_refusal(edited) is None
@@ -254,9 +239,7 @@ def test_unhashable_current_content_is_told_apart_from_a_digest_mismatch():
 
 
 def test_an_approval_with_unhashable_current_content_names_that_cause():
-    """This deliberately edits a sealed approval to an unhashable value. The
-    boundary can name why no comparison is now possible without pretending the
-    current bytes prove whether that value began malformed or changed later."""
+    """Current bytes cannot prove when an unhashable approval became malformed."""
     record = sound_approval()
     record["reason"] = SURROGATE
     with pytest.raises(ApprovalRefusal) as caught:

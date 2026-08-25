@@ -185,10 +185,7 @@ def test_a_parsed_artifact_with_a_float_is_refused_by_name_at_the_envelope_bound
 
 
 def test_the_float_refusal_names_the_offending_field_and_value():
-    """The point of recomputing on the refusal path is the diagnostic. A test that
-    only asserts `SchemaRefusal` passes just as happily on the generic "changed
-    after publication" sentence, even though no current digest exists to compare
-    with the stored one — so the assertion has to be on what it says."""
+    """Unhashable content must not be reported as a verified digest mismatch."""
     parsed = json.loads(json.dumps(sound_envelope()))
     parsed["payload"] = {"nested": {"scale": 1.5}}
 
@@ -209,12 +206,7 @@ def test_the_float_refusal_names_the_offending_field_and_value():
     ),
 )
 def test_a_parsed_artifact_with_a_lone_surrogate_is_refused_by_name(payload):
-    """The float's sibling, and it arrives the same way: `json.loads` builds a lone
-    surrogate from a `\\udXXX` escape without complaint, so a damaged artifact on
-    disk parses cleanly and then has no UTF-8 form to hash. It used to leave this
-    boundary as an uncaught `UnicodeEncodeError` — `UnicodeEncodeError` is a
-    `ValueError`, so neither `verify_self_hash`'s catch nor the recovery below
-    named it."""
+    """json.loads accepts lone surrogates, but canonical UTF-8 does not."""
     parsed = json.loads(json.dumps(sound_envelope()))
     parsed["payload"] = payload
 
@@ -223,15 +215,12 @@ def test_a_parsed_artifact_with_a_lone_surrogate_is_refused_by_name(payload):
     message = str(caught.value)
     assert "unencodable character" in message
     assert "changed after publication" not in message
-    # The consumer prints this. A message carrying the offender raw would raise
-    # the same error again out of the report of the first one.
+    # The consumer prints this message, so it must not carry the surrogate raw.
     message.encode("utf-8")
 
 
 def test_a_record_too_deep_to_hash_is_not_reported_as_a_verified_mismatch():
-    """`verify_self_hash` returns False for a record whose recursive walk exhausts
-    the stack. That is the right answer to the check, but the generic mismatch
-    sentence would claim a comparison this machine could not perform."""
+    """Exhausted traversal permits no digest-mismatch claim."""
     nested: dict = {"leaf": 1}
     for _ in range(2000):
         nested = {"nested": nested}
@@ -260,11 +249,7 @@ def test_a_huge_integer_is_named_at_the_envelope_boundary():
 
 
 def test_the_refusal_an_operator_sees_carries_the_diagnostic_through_run_stage():
-    """`common/stage.py::run_stage` is the last thing between a refusal and stderr.
-    It catches `ContractError` and prints `type: message`, so the recovered
-    diagnostic survives — asserted here rather than assumed, because a boundary
-    that names the offending field into a handler that discards it has fixed
-    nothing an operator can see."""
+    """The stage boundary must preserve the field diagnostic it prints to stderr."""
     from common.stage import EXIT_FATAL, run_stage
 
     parsed = json.loads(json.dumps(sound_envelope()))

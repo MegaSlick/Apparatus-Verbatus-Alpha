@@ -356,12 +356,11 @@ def test_an_edited_run_authority_is_refused(tmp_path):
     ),
 )
 def test_a_run_authority_with_uncanonical_current_content_names_that_cause(tmp_path, damage, named):
-    """`run.json` is read as bare JSON, never through an envelope, so this is the
-    only place its damage gets named. This test deliberately edits a sealed record
-    to a value the canonical serializer refuses; that current value prevents a
-    digest comparison, so the boundary names the cause without claiming the bytes
-    establish when it arose. Written without `canonical_bytes`, because the whole
-    point is a file the pipeline could not produce in its current form."""
+    """Bare run authority must name why its current contents cannot be compared.
+
+    The fixture bypasses canonical_bytes because valid pipeline output cannot
+    contain the malformed value this read boundary must still refuse.
+    """
     tree = make_run(tmp_path)
     record = tree.read_run()
     record["render_settings"] = json.loads(damage)

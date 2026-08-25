@@ -66,42 +66,34 @@ def test_an_uncertain_span_with_an_undeclared_confidence_refuses(confidence):
         )
 
 
-def _recursive_list() -> list:
-    """A structure the parametrize lists above cannot hold: pytest reprs its
-    parameters at collection, and a self-referential default would be walked
-    there rather than by the validator under test."""
-    recursive: list = []
-    recursive.append(recursive)
-    return recursive
+# An explicit id prevents pytest from recursively rendering this cycle during
+# collection, before the validator gets the value.
+_RECURSIVE_CONFIDENCE: list = []
+_RECURSIVE_CONFIDENCE.append(_RECURSIVE_CONFIDENCE)
 
 
 @pytest.mark.parametrize(
     "confidence",
     [
-        # Not JSON, and this validator is not promised JSON: it reads whatever a
-        # chair's adapter handed back. A check that compared before it typed, or
-        # that walked the value to type it, would hang or crash on these instead
-        # of refusing them.
+        # Adapter output is not guaranteed to have passed through JSON, so type
+        # refusal must precede comparison, traversal, or rendering.
         pytest.param(float("nan"), id="nan"),
         pytest.param(float("inf"), id="inf"),
         pytest.param(1.5, id="float"),
         pytest.param(10**5000, id="huge-int"),
         pytest.param(b"low", id="bytes"),
-        # A str, so it clears `isinstance` and lands in the message itself.
+        # These exact strings reach the value-bearing refusal message.
         pytest.param("\ud800", id="lone-surrogate"),
         pytest.param("NaN", id="nan-spelling"),
         pytest.param("low\0", id="null-byte"),
         pytest.param({"\ud800": "low"}, id="surrogate-key"),
-        pytest.param(_recursive_list(), id="recursive"),
+        pytest.param(_RECURSIVE_CONFIDENCE, id="recursive"),
         pytest.param(_UnhashableString("low"), id="unhashable-string-subclass"),
         pytest.param(_HostileReprString("maybe"), id="hostile-repr-string-subclass"),
     ],
 )
 def test_a_noncanonical_or_undeclared_confidence_refuses_printably(confidence):
-    """The refusal interpolates the offending value, and the refusal is printed.
-    Exact built-in strings use `!r`, which escapes a surrogate; every other type
-    is named without rendering its value, so a huge integer, recursive container,
-    or hostile string subclass cannot crash the report of the refusal."""
+    """Only exact strings may be rendered in the printable refusal message."""
     with pytest.raises(SchemaRefusal, match="confidence") as caught:
         annotations.validate_uncertain_spans(
             [{"start": 0, "end": 1, "alternatives": [], "confidence": confidence}], "reading"

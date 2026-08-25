@@ -317,13 +317,9 @@ class RunTree:
             )
         record = _read_json(run_file)
         if not verify_self_hash(record):
-            # `run.json` is read here as bare JSON, not through an envelope, so
-            # this is the first and only place its damage is named. A record
-            # carrying a value the canonical serializer refuses — a float, a
-            # non-string key, a lone surrogate — has no current digest to compare
-            # with the stored one. Those bytes cannot establish whether it began
-            # malformed or was damaged or edited later, so name the present
-            # canonicalization cause rather than inventing that history.
+            # Bare run authority has no envelope boundary to name an unhashable
+            # value; without a computed digest, this boundary cannot claim when
+            # the malformed content arose.
             unhashable = self_hash_refusal(record)
             if unhashable is not None:
                 raise IncompatibleReuse(

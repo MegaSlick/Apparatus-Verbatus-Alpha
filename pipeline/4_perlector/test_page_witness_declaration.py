@@ -1,19 +1,8 @@
-"""The consumer side of the page-witness declaration.
+"""The Perlector independently enforces the producer's page-witness declaration.
 
-`pipeline/3_attestatores/run.py::declared_page_witness_chairs` is the producer's
-key to this fixture field: a unique list of strings, every one of them a chair the
-run was sealed with. The Perlector holds its own copy of that key rather than
-trusting the producer's, because a consumer that trusts its producer has no
-boundary — and R0's handoff test drives all seven boundaries for exactly that
-reason.
-
-It held a weaker one. The reader checked only that the declaration was a list of
-strings, so two of the producer's three refusals had no counterpart here, and a
-declaration naming nobody real read as sound: `expected_page_witness` is false for
-every configured chair, every attachment and Testimonium in the tree agrees with
-it because none of them is a page witness either, and the stage validates a run in
-which the page-witness mechanism silently did not exist. That is a boundary
-dropping coverage without saying so.
+The declaration is a unique list drawn from the sealed witness roster. Trusting
+the producer here would leave malformed fixtures able to erase page coverage
+without contradicting any attachment in the run tree.
 """
 
 import importlib.util
@@ -54,8 +43,7 @@ def test_the_declared_page_witnesses_are_read_back_when_the_fixture_is_sound():
 
 
 def test_an_absent_declaration_is_no_page_witnesses_rather_than_a_refusal():
-    """Harvest #14: a seal that stops refusing bad things in order to stop refusing
-    good things is not a fix. The fixture is allowed to declare none."""
+    """The fixture is allowed to declare no page witnesses."""
     context = SimpleNamespace(fixture={}, witness_chairs=("attestator_1",))
     assert perlector.declared_page_witness_chairs(context) == set()
 
@@ -83,9 +71,7 @@ def test_a_declaration_that_is_not_a_list_of_chair_names_is_refused(declared):
 
 
 def test_a_duplicated_chair_is_refused_here_exactly_as_the_producer_refuses_it():
-    """`set(declared)` absorbs a duplicate in silence, so the reader used to accept
-    a fixture the producer would have refused outright — a run reading as sound one
-    stage after it could not have been produced."""
+    """Set conversion must not hide a declaration the producer refuses."""
     with pytest.raises(SchemaRefusal, match="unique list of chair names"):
         perlector.declared_page_witness_chairs(_context(["attestator_1", "attestator_1"]))
 
@@ -103,9 +89,7 @@ def test_a_chair_name_string_subclass_is_refused_before_set_or_rendering(chair):
 
 
 def test_a_chair_outside_the_configured_roster_is_refused_and_both_halves_named():
-    """The silent case, and the reason this check is worth having on the reader's
-    side at all: nothing in the run tree contradicts a declaration that names
-    nobody, so without this the stage reports a sound run over vanished coverage."""
+    """Unknown declarations can agree with every record while silently losing coverage."""
     with pytest.raises(SchemaRefusal) as caught:
         perlector.declared_page_witness_chairs(_context(["attestator_33"]))
     message = str(caught.value)
@@ -124,9 +108,7 @@ def test_an_all_held_preflight_still_validates_the_run_declaration():
 
 
 def test_a_chair_name_carrying_a_surrogate_is_refused_printably():
-    """It is a string, so it clears the shape check and reaches a message that an
-    operator's stderr has to encode. `repr` escapes it; a raw interpolation would
-    raise `UnicodeEncodeError` out of the report of the refusal itself."""
+    """The roster refusal must remain encodable when the chair name is not."""
     with pytest.raises(SchemaRefusal) as caught:
         perlector.declared_page_witness_chairs(_context(["attestator_\ud800"]))
     str(caught.value).encode("utf-8")
