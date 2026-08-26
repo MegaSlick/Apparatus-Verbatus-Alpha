@@ -579,7 +579,10 @@ def _advance_with_confirmation(
             )
         else:
             _print(f"Manual mode runs {stage} alone and passes nothing.")
-        _print(f"This invocation waits at: {', '.join(sorted(held))}.")
+        _print(
+            "This declared selection can require a person-held advance at: "
+            f"{', '.join(sorted(held))}."
+        )
         summary = boundary_summary(tree, stage)
         digest = summary["seal_digest"]
     except ApprovalRefusal as error:

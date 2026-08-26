@@ -79,7 +79,10 @@ def test_staged_mode_semantics_name_every_boundary_that_can_wait(
 
 
 def test_semi_mode_refuses_an_intermediate_boundary_not_actually_held() -> None:
-    with pytest.raises(ApprovalRefusal, match="waits at attestatores, perlector, not designator"):
+    with pytest.raises(
+        ApprovalRefusal,
+        match="can require a person-held advance at attestatores, perlector, not designator",
+    ):
         advance.held_boundaries_for_mode(
             "semi", stage="designator", from_stage="designator", to_stage="perlector"
         )
@@ -221,7 +224,10 @@ def test_semi_mode_confirmation_binds_the_displayed_last_boundary(
 
     rendered = capsys.readouterr().out
     assert "Semi mode runs the inclusive range designator through perlector" in rendered
-    assert "This invocation waits at: attestatores, perlector." in rendered
+    assert (
+        "This declared selection can require a person-held advance at: attestatores, perlector."
+        in rendered
+    )
     assert "Sealed evidence summary:" in rendered
     assert "Advance record:" in rendered
 
@@ -232,7 +238,7 @@ def test_manual_mode_confirmation_binds_the_named_boundary_end_to_end(
     """The third mode gets the same live-fixture proof the other two already had.
 
     Auto and semi each had an end-to-end case against a real sealed run tree;
-    manual, the mode that waits at every boundary, did not. A regression in
+    manual, the mode that runs one named boundary at a time, did not. A regression in
     manual's own path (for example a stray `from_stage`/`to_stage` leaking
     through) would not have failed any existing test.
     """
@@ -250,7 +256,7 @@ def test_manual_mode_confirmation_binds_the_named_boundary_end_to_end(
 
     rendered = capsys.readouterr().out
     assert "Manual mode runs designator alone and passes nothing." in rendered
-    assert "This invocation waits at: designator." in rendered
+    assert "This declared selection can require a person-held advance at: designator." in rendered
     assert "Sealed evidence summary:" in rendered
     assert "Advance record:" in rendered
 
@@ -281,7 +287,9 @@ def test_semi_mode_refuses_an_intermediate_boundary_end_to_end(
             to_stage="perlector",
         )
 
-    assert "waits at attestatores, perlector, not designator" in (refusal.value.detail or "")
+    assert "person-held advance at attestatores, perlector, not designator" in (
+        refusal.value.detail or ""
+    )
     after = set(receipts.glob("*.json")) if receipts.exists() else set()
     assert after == before
 
@@ -387,10 +395,10 @@ def test_auto_mode_never_solicits_a_typed_confirmation(
     assert "auto mode" in (refusal.value.detail or "").lower()
 
 
-def test_auto_mode_advances_the_one_boundary_that_holds_in_every_mode(
+def test_auto_mode_can_advance_the_boundary_that_may_hold_in_every_mode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Auto mode may advance the boundary the driver holds in every mode.
+    """Auto mode may advance the boundary where the driver can hold in every mode.
 
     The fixture run here completed, so this proves the console's *permission*,
     not a hold: what it pins is that an auto invocation is no longer refused at
@@ -416,7 +424,11 @@ def test_auto_mode_advances_the_one_boundary_that_holds_in_every_mode(
     )
 
     rendered = capsys.readouterr().out
-    assert "This invocation waits at: attestatores." in rendered
+    assert (
+        "This declared selection can require a person-held advance at: attestatores."
+        in rendered
+    )
+    assert "This invocation waits" not in rendered
     assert "Advance record:" in rendered
 
 

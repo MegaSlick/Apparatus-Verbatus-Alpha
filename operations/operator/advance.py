@@ -95,14 +95,14 @@ def held_boundaries_for_mode(
     from_stage: str | None = None,
     to_stage: str | None = None,
 ) -> frozenset[str]:
-    """Refuse unless this selection is genuinely stopped at ``stage``.
+    """Refuse unless this declared selection can require an advance at ``stage``.
 
     The held set is the driver's, not this module's opinion of it: an auto run
-    still stops at the Attestatores' witnessed boundary, and so does a semi
-    range that spans it (`common.stage.ALWAYS_HELD_BOUNDARIES`).  Refusing
-    those was refusing the operator the one decision record a boundary that
-    really did stop the run is entitled to, on the strength of a sentence about
-    the driver that the driver contradicts.
+    can still stop at the Attestatores' witnessed boundary, and so can a semi
+    range that spans it (`common.stage.ALWAYS_HELD_BOUNDARIES`). This function
+    validates invocation shape; the run tree carries no invocation mode or
+    exit-status evidence from which it could claim that one particular run did
+    stop there.
     """
 
     try:
@@ -114,10 +114,11 @@ def held_boundaries_for_mode(
         if mode == "auto":
             raise ApprovalRefusal(
                 f"advance refuses {stage} in auto mode: auto passes every selected boundary "
-                f"without a person-held record except {waits}, which stops a run in every mode"
+                f"without a person-held record except {waits}, where a run can stop in every mode"
             )
         raise ApprovalRefusal(
-            f"advance refuses {stage} in {mode} mode: that invocation waits at {waits}, not {stage}"
+            f"advance refuses {stage} in {mode} mode: that declared selection can require "
+            f"a person-held advance at {waits}, not {stage}"
         )
     return held
 
