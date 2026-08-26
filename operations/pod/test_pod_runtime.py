@@ -666,6 +666,64 @@ def test_a_challenge_does_not_authorize_a_request_the_operator_never_reviewed(
     )
 
 
+def test_a_preview_replaced_mid_claim_keeps_its_challenge_and_names_the_replacement(
+    tmp_path: Path,
+) -> None:
+    """The claim must consume the preview its phrase was built from, not whichever is held.
+
+    `_create_locked` reads the outstanding challenge, then does disk work --
+    `_open_lease_refusal` globs and reads every lease -- before `_claim_challenge`
+    runs. A second console window previewing in that gap replaces the entry, and
+    the claim used to delete whatever it found while checking the phrase against
+    the stale read. Two things went wrong at once: a superseded phrase still
+    bought a paid create, against `require_confirmation`'s own rule that a
+    confirmation is valid only for the preview that issued it; and the fresh
+    challenge was destroyed unused, so the window holding it was told "no preview
+    in this run issued a challenge for this create", which was false (rule 7).
+
+    The replacement is minted from inside the window, which is what a second
+    `preview_create` on another thread does, and nothing here needs a scheduler
+    to cooperate.
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+    pod_runtime = bare_runtime(provider, clock, tmp_path)
+    create_request = request(clock)
+    pod_runtime.preview_create(create_request)
+
+    scan = pod_runtime._open_lease_refusal
+
+    def preview_from_another_window() -> str | None:
+        pod_runtime._open_lease_refusal = scan  # type: ignore[method-assign]
+        pod_runtime.challenge_factory = lambda: "B" * 16
+        pod_runtime.preview_create(create_request)
+        return scan()
+
+    pod_runtime._open_lease_refusal = preview_from_another_window  # type: ignore[method-assign]
+
+    result = pod_runtime.create(create_request, confirmation=CREATE_CONFIRMATION)
+
+    assert result.state is LaunchState.REFUSED_CONFIRMATION
+    assert "a newer preview replaced the one this confirmation was issued for" in result.detail
+    assert "no paid action occurred" in result.detail
+    assert not any(verb == "create" for verb, _ in provider.calls), "a pod was created anyway"
+    assert list(tmp_path.glob("*.json")) == []
+    # The refusal spends nothing, so the window that holds the newer preview can
+    # still confirm the price it was actually shown.
+    newer = pod_runtime.create(
+        create_request,
+        confirmation=confirmation_phrase(
+            "create",
+            create_request.name,
+            POD_HOURLY,
+            VOLUME_HOURLY,
+            "B" * 16,
+        ),
+    )
+    assert newer.state is LaunchState.CREATED_GUARDED
+
+
 def test_an_adoption_challenge_does_not_authorize_another_expected_request(
     tmp_path: Path,
 ) -> None:

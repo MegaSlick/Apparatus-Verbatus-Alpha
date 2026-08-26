@@ -431,6 +431,7 @@ class PodRuntime:
                     request.name,
                     request.hard_deadline,
                     request.reviewed_digest(),
+                    preview_result.preview.challenge or "",
                     preview_result.preview.confirmation_phrase,
                     confirmation,
                 )
@@ -693,6 +694,7 @@ class PodRuntime:
                     preview_result.record.pod_id,
                     expected.hard_deadline,
                     expected.reviewed_digest(),
+                    preview_result.preview.challenge or "",
                     preview_result.preview.confirmation_phrase,
                     confirmation,
                 )
@@ -1186,6 +1188,7 @@ class PodRuntime:
         subject: str,
         hard_deadline: datetime,
         request_digest: str,
+        challenge: str,
         expected: str,
         typed: str | None,
     ) -> bool:
@@ -1203,15 +1206,30 @@ class PodRuntime:
         reviewed one raises without consuming for the same reason -- the preview the
         operator was actually shown is still theirs to confirm.
 
+        ``challenge`` is the one the caller's ``expected`` phrase was built from, read
+        outside this lock. Comparing it here is what makes ``expected`` trustworthy: a
+        preview minted between that read and this call replaces the entry, and without
+        this check the stale phrase would still be accepted while the fresh challenge
+        was deleted unused -- then reported to the window holding it as "no preview in
+        this run issued a challenge", which is false. Refusing without consuming leaves
+        the newer preview confirmable, which is the whole point of naming it.
+
         Returns ``False`` when no challenge matches this action, subject and deadline.
-        Raises ``SpendRefusal`` when one exists but the request or the typed phrase does
-        not match it.
+        Raises ``SpendRefusal`` when one exists but the preview, the request or the
+        typed phrase does not match it.
         """
 
         with self._challenge_lock:
             held = self._outstanding.get((action, subject))
             if held is None or not held.matches_deadline(hard_deadline):
                 return False
+            if held.challenge != challenge:
+                raise SpendRefusal(
+                    "a newer preview replaced the one this confirmation was issued for: "
+                    "a confirmation is valid only for the preview that issued it -- read "
+                    "the price the newer preview printed and type its phrase; the newer "
+                    "preview is untouched and no paid action occurred"
+                )
             if held.request_digest != request_digest:
                 raise SpendRefusal(
                     "typed confirmation authorizes a different request than this one: the "
