@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from itertools import permutations
 
+import pytest
+
 from common.contracts.errors import ContractError
 from common.shard_boundary import (
     CONTINUATION_HOLD,
@@ -142,3 +144,55 @@ def test_a_boundary_refuses_a_page_claimed_by_two_shards():
         assert "belongs to two shard memberships" in str(error)
     else:  # pragma: no cover - makes the intended refusal explicit
         raise AssertionError("overlapping shards must not manufacture reciprocal records")
+
+
+def test_a_boundary_refuses_a_partition_that_silently_omits_a_page():
+    with pytest.raises(ContractError, match=r"omits page ordinal\(s\) \[2\]"):
+        boundary_records(
+            [
+                {"membership_digest": ONE, "page_ordinals": [1]},
+                {"membership_digest": TWO, "page_ordinals": [3]},
+            ]
+        )
+
+
+def test_malformed_cluster_members_are_a_named_refusal_not_a_type_error():
+    with pytest.raises(ContractError, match="positive integers"):
+        boundary_records(
+            _three_shards(),
+            re_shoot_clusters=[{"cluster_id": "malformed", "member_page_ordinals": [2, "three"]}],
+        )
+
+
+def test_reciprocal_cluster_records_do_not_share_mutable_member_lists():
+    member_pages = [2, 3]
+    records = boundary_records(
+        _three_shards(),
+        re_shoot_clusters=[{"cluster_id": "leaf-cluster", "member_page_ordinals": member_pages}],
+    )
+    first = next(record for record in records[ONE] if record["kind"] == SPLIT_RESHOOT_CLUSTER)
+    second = next(record for record in records[TWO] if record["kind"] == SPLIT_RESHOOT_CLUSTER)
+
+    first["member_page_ordinals"].append(99)
+
+    assert second["member_page_ordinals"] == [2, 3]
+    assert member_pages == [2, 3]
+
+
+def test_boundary_facts_have_unique_identities():
+    with pytest.raises(ContractError, match="repeats act_key"):
+        boundary_records(
+            _three_shards(),
+            continuations=[
+                {"act_key": "same", "page_ordinal": 2, "continuation_page_ordinal": 3},
+                {"act_key": "same", "page_ordinal": 4, "continuation_page_ordinal": 5},
+            ],
+        )
+    with pytest.raises(ContractError, match="repeats cluster_id"):
+        boundary_records(
+            _three_shards(),
+            re_shoot_clusters=[
+                {"cluster_id": "same", "member_page_ordinals": [2, 3]},
+                {"cluster_id": "same", "member_page_ordinals": [4, 5]},
+            ],
+        )
