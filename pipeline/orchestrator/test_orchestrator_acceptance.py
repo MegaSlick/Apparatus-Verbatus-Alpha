@@ -756,6 +756,63 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # exit code changes — 84/0 and 109/3 hold, and each digest below reproduced
 # twice in independent temporary roots through this module's own `orchestrate`
 # and `semantic_snapshot_digest` helpers at canonical run id "r".
+# Unit 11 re-pin: Chandra retains one native JSON response blob for each of its
+# two fixture act reads, so both canonical trees gain two content-addressed
+# custody artifacts. In `review`, the page partition now carries both those
+# captured act boxes and the declared marginal observation: the former attach
+# each act witness and keep dissent measurable, while the latter remains an
+# unrouted observation for coverage recovery. Fresh canonical-id `r` runs
+# measured 86 files/exit 0 for happy and 111 files/exit 3 for review through
+# this module's `orchestrate` and `semantic_snapshot_digest` helpers.
+# Unit 11 Sonnet re-pin: `ink-free-page`'s minted `page-fallback:3` act declared
+# a whole-page Chandra `raw_response` (previous re-pin, below) whose native
+# block quantized to a box that both (a) fell outside the sealed page by one
+# pixel, holding the run before the Perlector ever established a reading for
+# that act, and (b) once the overflow was corrected, fully contained the
+# fallback act's own region -- retroactively "witness covering" a recovery
+# crop the architecture requires stay visibly under-witnessed
+# (`test_an_ink_free_page_fallback_is_read_but_not_retroactively_witness_covered`).
+# The row's `raw_response` is removed rather than reshaped: unlike
+# `confirmed-blank`/`blank-with-dissent`, this scenario's design is that no
+# witness geometry covers the recovery crop. The fixture is bound whole into
+# every run's config digest, so both canonical trees change although neither
+# happy nor review touches `page-fallback:3`. Measured twice from fresh
+# final-candidate runs at canonical run id "r": 86/0 for happy and 111/3 for
+# review (counts and exit codes unchanged from the prior re-pin).
+#
+# Unit 11 prior re-pin: Chandra's scenario-specific inputs now retain native
+# layout blocks wherever the scenario overrides its base response, including a
+# completed empty response.  The blocks are witness-reported geometry, never a
+# whole-page presentation fallback, so blank corroboration and the capability
+# scenario each retain the page-witness evidence their assertions require. The
+# fixture is bound whole into every run's config digest; therefore both canonical
+# trees change although happy and review use only the base Chandra responses.
+# Measured twice from fresh final-candidate runs at canonical run id "r": 86/0
+# for happy and 111/3 for review.
+#
+# Unit 11 Opus re-pin (final seat), and the last one in this unit: the durable
+# page Testimonium now names the retained responses its own derived geometry was
+# quantized from, and the rule that quantized them (`raw_response_refs`,
+# `adapter_metadata`). The act-scoped Testimonia already carried both, but they
+# are the compatibility bridge Unit 14 deletes, and the page record is the one a
+# page-scoped occupant actually produces -- so the record holding the integers
+# held no route back to the floats they came from (GOALS 5; ARCHITECTURE
+# invariant 3). Two payload fields on the one Chandra page record whose geometry
+# is native; a record whose observations are only the presentation echo reports
+# no conversion, because none happened. No new artifact, no new blob, no
+# behaviour change: counts and exit codes hold at 86/0 and 111/3, and each
+# digest below reproduced twice in independent temporary roots through this
+# module's own `orchestrate` and `semantic_snapshot_digest` helpers at canonical
+# run id "r".
+# Phase-2 Sol review re-pin: the placeholder JSON accepted by the offline
+# Chandra adapter now carries an explicit fixture schema.  Without that label,
+# a real but still-unverified Chandra response that happened to expose the same
+# generic `markdown`/`blocks`/`bbox` keys could acquire the fixture's declared
+# sealed-page-pixel quantization rule.  The label changes the fixture bytes,
+# their retained blob digests, and the config digest bound into every artifact;
+# counts and exits remain 86/0 and 111/3.  Both digests below reproduced twice
+# from independent canonical-id `r` runs after the correction.
+HAPPY_RUN_TREE_DIGEST = "2bdd0ef9f5d7ea63feaf2855793c0d9d2961700c125b3cb4efb108d4c8bc5de5"
 # Review only, once more in the same seat: a page witness invoked on every act
 # and unusable on all of them now records the serving moment that produced it
 # (`provenance_for(..., attempted=attempted_page)`), where the `reading` gate
@@ -779,8 +836,11 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # 10C's own narrative records. Both values measured through this module's own
 # `orchestrate` and `semantic_snapshot_digest` helpers, twice, at two
 # independent run roots.
-HAPPY_RUN_TREE_DIGEST = "f3cc7020f165a44ac1e6dd3504f15255b38dc584904fa17ebe45a96640b74466"
-REVIEW_RUN_TREE_DIGEST = "6631eb64932c3496f850d3857f34d4b748f62eb9bcd085b4bce95009c600397b"
+# Re-pinned at this merge (11 onto the composed pr tree): the pins bind the
+# merged tree alone; measured twice at two independent run roots through this
+# module's own helpers.
+HAPPY_RUN_TREE_DIGEST = "70c8c68ddf94fe3dfe24aacb1e0ec26c1d1a791efa31b45d71f8f91ce2597537"
+REVIEW_RUN_TREE_DIGEST = "06fc15d47afccbc8182d3031d8dfe8db76af06159d680861ae1667efd16e4211"
 
 
 def orchestrate(
@@ -4411,9 +4471,9 @@ def test_repeating_the_identical_command_leaves_every_byte_unchanged(tmp_path):
     assert orchestrate(root, "r", "happy").returncode == 0
     before = snapshot(root)
 
-    # R0 adds two retained page Testimonia and two derived act attachments to
-    # the happy walking skeleton; repeatability still compares every byte.
-    assert len(before) == 84
+    # The count includes two retained Chandra-response blobs; repeatability
+    # compares their bytes too.
+    assert len(before) == 86
     assert semantic_snapshot_digest(root) == HAPPY_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "happy").returncode == 0
     after = snapshot(root)
@@ -4453,9 +4513,9 @@ def test_repeating_the_review_scenario_also_changes_nothing(tmp_path):
     assert orchestrate(root, "r", "review").returncode == 3
     before = snapshot(root)
 
-    # R0 adds the same four retained page/attachment artifacts before review's
-    # recovery loop; its append-only invariant is unchanged.
-    assert len(before) == 109
+    # The count includes the two retained Chandra blobs written before recovery;
+    # rerunning the loop must not append another copy.
+    assert len(before) == 111
     assert semantic_snapshot_digest(root) == REVIEW_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "review").returncode == 3
     assert snapshot(root) == before

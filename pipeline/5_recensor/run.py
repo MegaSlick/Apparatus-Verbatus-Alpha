@@ -359,6 +359,7 @@ def act_attachment_facts(context, act_id: str, outcomes: dict[str, str]) -> dict
                 page_payload = validate_page_testimonium_payload(
                     page_testimonium.get("payload"),
                     testimonium_id=page_testimonium.get("artifact_id"),
+                    read_bytes=context.tree.read_bytes,
                 )
             except ContractError as error:
                 raise FatalAccounting(

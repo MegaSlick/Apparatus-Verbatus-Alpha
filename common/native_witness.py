@@ -8,10 +8,12 @@ or preference: correspondence is a consumer lookup, never witness testimony.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any, Final
 
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import SchemaRefusal
+from common.contracts.stages import ATTESTATORES, writing_directory
 from common.corpus_register import _refuse_preference
 from common.imaging import crop_png
 
@@ -43,7 +45,17 @@ PAGE_TESTIMONIUM_REQUIRED_FIELDS: Final = frozenset(
     }
 )
 PAGE_TESTIMONIUM_OPTIONAL_FIELDS: Final = frozenset(
-    {"reason", "reported", "partition_disagreement"}
+    {
+        "reason",
+        "reported",
+        "partition_disagreement",
+        # The retained responses this record's own derived geometry was
+        # quantized from, and the declared rule that converted them. Plural
+        # because a page record's partition may be assembled from more than one
+        # retained response; a page witness that answers once retains one.
+        "raw_response_refs",
+        "adapter_metadata",
+    }
 )
 PAGE_ROLES: Final = frozenset({"primary", "continuation", "mixed"})
 
@@ -390,7 +402,10 @@ def unpresented_region_ids(
 
 
 def validate_page_testimonium_payload(
-    payload: Any, *, testimonium_id: str | None = None
+    payload: Any,
+    *,
+    testimonium_id: str | None = None,
+    read_bytes: Callable[[str], bytes] | None = None,
 ) -> dict[str, Any]:
     """Close the page-scoped native Testimonium at writer and consumer seams."""
     if not isinstance(payload, dict) or not (
@@ -419,11 +434,75 @@ def validate_page_testimonium_payload(
             source_page_id=presented.get("source_page_id") if presented else None,
             testimonium_id=testimonium_id,
         )
+    validate_retained_response_refs(payload, read_bytes=read_bytes)
     return validated
 
 
-# Only zero overlap is declared: calibrating a near-overlap threshold without a
-# measurement would violate GOVERNANCE 10.
+def validate_retained_response_refs(
+    payload: dict[str, Any], *, read_bytes: Callable[[str], bytes] | None = None
+) -> None:
+    """Close a page partition's links to its retained native responses.
+
+    A partition may derive from several responses, so references remain plural
+    and ordered. The producing stage owns its blob namespace; this shared seam
+    closes the reference shape and prevents quantization metadata from appearing
+    without the bytes whose geometry it describes.
+    """
+    refs = payload.get("raw_response_refs")
+    if refs is not None:
+        if not isinstance(refs, list) or not refs:
+            raise SchemaRefusal("a page Testimonium raw_response_refs is not a non-empty list")
+        expected_prefix = f"{writing_directory(ATTESTATORES)}/blobs/sha256/"
+        for reference in refs:
+            if (
+                not isinstance(reference, dict)
+                or set(reference) != {"relative_path", "sha256"}
+                or not isinstance(reference["relative_path"], str)
+                or not reference["relative_path"]
+                or not isinstance(reference["sha256"], str)
+                or len(reference["sha256"]) != 64
+                or any(character not in "0123456789abcdef" for character in reference["sha256"])
+                or reference["relative_path"] != expected_prefix + reference["sha256"]
+            ):
+                raise SchemaRefusal(
+                    "a page Testimonium retained-response reference is not a closed blob reference"
+                )
+        if len({reference["sha256"] for reference in refs}) != len(refs):
+            raise SchemaRefusal("a page Testimonium names one retained response twice")
+        if read_bytes is not None:
+            for reference in refs:
+                try:
+                    retained = read_bytes(reference["relative_path"])
+                except OSError as error:
+                    raise SchemaRefusal(
+                        f"page Testimonium retained response {reference['relative_path']} could "
+                        f"not be read: {error}"
+                    ) from error
+                if digest_bytes(retained) != reference["sha256"]:
+                    raise SchemaRefusal(
+                        f"page Testimonium retained response {reference['relative_path']} "
+                        "differs from its digest"
+                    )
+    metadata = payload.get("adapter_metadata")
+    if metadata is not None:
+        if (
+            not isinstance(metadata, dict)
+            or set(metadata) != {"geometry_quantization"}
+            or not isinstance(metadata["geometry_quantization"], str)
+            or not metadata["geometry_quantization"]
+        ):
+            raise SchemaRefusal("a page Testimonium adapter metadata is not its closed shape")
+        if refs is None:
+            raise SchemaRefusal(
+                "a page Testimonium declares a quantization rule with no retained response to "
+                "have applied it to"
+            )
+
+
+# A declared, deliberately UNMEASURED routing rule.  Unit 10 records only the
+# unambiguous zero-overlap case; calibrating a near-overlap threshold would be a
+# measurement claim GOVERNANCE 10 does not permit until something has actually
+# been measured.
 UNROUTED_OBSERVATION_OVERLAP: Final = {"rule": "positive-area", "status": "unmeasured"}
 
 

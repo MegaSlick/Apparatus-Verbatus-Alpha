@@ -35,6 +35,7 @@ import witness_adapters  # noqa: E402
 from common.alignment import align_to_anchor, load_alignment_limits, markup_text_view  # noqa: E402
 from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
+from common.contracts.canonical import digest_bytes  # noqa: E402
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal  # noqa: E402
 from common.contracts.identities import artifact_id, attempt_id  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR, PERLECTOR  # noqa: E402
@@ -47,9 +48,11 @@ from common.native_witness import (  # noqa: E402
     reported_geometry_overlaps,
     unpresented_region_ids,
     validate_native_witness_geometry,
-    validate_page_testimonium_payload,
     validate_presented_page_binding,
     validate_unpresented_regions,
+)
+from common.native_witness import (
+    validate_page_testimonium_payload as validate_shared_page_testimonium_payload,
 )
 from common.stage import (  # noqa: E402
     ATTEMPTED_WITNESS_OUTCOMES,
@@ -464,7 +467,33 @@ def declared_response(
             "fixture declares both an empty response and a scenario response for "
             f"{(act_key, chair)!r} at attempt ordinal {declarations['ordinal']}"
         )
-    return {"payload": ""}
+    # An empty Chandra response can still carry native layout blocks.  Keep the
+    # response declaration as its source: manufacturing a box from the shown
+    # page would turn a presentation fallback into reported geometry and let a
+    # completed blank witness count as having covered ink it never located.
+    matching_empty_rows = [
+        row
+        for row in context.fixture.get("witness_empty", [])
+        if row.get("scenario") == context.scenario
+        and row.get("act_key") == act_key
+        and row.get("chair") == chair
+        and _declared_for_ordinal(row, declarations["ordinal"])
+    ]
+    if len(matching_empty_rows) > 1:
+        raise SchemaRefusal(
+            f"fixture declares more than one empty response for {(act_key, chair)!r}"
+        )
+    empty_response = matching_empty_rows[0] if matching_empty_rows else {}
+    if "raw_response" in empty_response and not isinstance(empty_response["raw_response"], str):
+        raise SchemaRefusal("fixture raw_response is not text encoding retained response bytes")
+    return {
+        "payload": "",
+        **(
+            {"raw_response": empty_response["raw_response"]}
+            if isinstance(empty_response.get("raw_response"), str)
+            else {}
+        ),
+    }
 
 
 def _native_problem(value: Any, path: str = "payload", *, depth: int = 0) -> str | None:
@@ -799,7 +828,9 @@ TESTIMONIUM_FIELDS = frozenset(
 # validated here. `scope` and `page_ordinal` are deliberately NOT listed: they
 # belong to the page-scoped kind, which this closed act-level payload never
 # carries, and allowing them here let a resealed act record wear page clothing.
-OPTIONAL_TESTIMONIUM_FIELDS = frozenset({"reason", "reported", "page_witness"})
+OPTIONAL_TESTIMONIUM_FIELDS = frozenset(
+    {"adapter_metadata", "raw_response_ref", "reason", "reported", "page_witness"}
+)
 
 # A page Testimonium is a different, closed record from the act-scoped
 # compatibility Testimonium above.  In particular, ``page_role`` says whether
@@ -826,6 +857,8 @@ def testimonium_payload(
     outcome: str,
     reason: str | None = None,
     page_witness: bool = False,
+    raw_response_ref: dict[str, str] | None = None,
+    adapter_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the stage schema without letting a compatibility field define it."""
     record: dict[str, Any] = {
@@ -848,12 +881,101 @@ def testimonium_payload(
         # Set before validation: the geometry contract must know this act view
         # restates a page witness's page-space geometry (see validate_observed).
         record["page_witness"] = True
+    if raw_response_ref is not None:
+        record["raw_response_ref"] = raw_response_ref
+    if adapter_metadata is not None:
+        record["adapter_metadata"] = adapter_metadata
 
     # `reported` is only a compatibility projection of textual native payloads;
     # structured payloads must not acquire coerced substitute text.
     if outcome in WITNESS_READING_OUTCOMES and isinstance(native_payload, str):
         record["reported"] = native_payload
     return validate_testimonium_payload(record)
+
+
+def declared_adapter_metadata(
+    resolved: ChairIdentity | AbsentChair, *, has_raw_response: bool
+) -> dict[str, str] | None:
+    """Declare only this occupant's conversion rule and only beside raw bytes."""
+    if not has_raw_response or not isinstance(resolved, ChairIdentity):
+        return None
+    rule = witness_adapters.resolve_runnable_adapter(resolved.witness_adapter).quantization
+    return None if rule is None else {"geometry_quantization": rule}
+
+
+def validate_raw_response_ref(reference: Any) -> dict[str, str]:
+    """Close one retained-response reference to this stage's own blob store."""
+    prefix = "3_attestatores/blobs/sha256/"
+    if (
+        not isinstance(reference, dict)
+        or set(reference) != {"relative_path", "sha256"}
+        or not isinstance(reference["relative_path"], str)
+        or not isinstance(reference["sha256"], str)
+        or len(reference["sha256"]) != 64
+        or any(character not in "0123456789abcdef" for character in reference["sha256"])
+        or reference["relative_path"] != prefix + reference["sha256"]
+    ):
+        raise SchemaRefusal("a Testimonium raw_response_ref is not an Attestatores blob reference")
+    return reference
+
+
+def validate_adapter_metadata(payload: Any) -> None:
+    """Require a bound rule and reconcile it with the record's own adapter."""
+    if not isinstance(payload, dict) or "adapter_metadata" not in payload:
+        return
+    metadata = payload["adapter_metadata"]
+    if (
+        not isinstance(metadata, dict)
+        or set(metadata) != {"geometry_quantization"}
+        or metadata["geometry_quantization"] not in witness_adapters.declared_quantization_rules()
+    ):
+        raise SchemaRefusal(
+            "a Testimonium adapter metadata is not a quantization rule any bound adapter declares"
+        )
+    provenance = payload.get("provenance")
+    identity = provenance.get("resolved_identity") if isinstance(provenance, dict) else None
+    adapter_name = identity.get("witness_adapter") if isinstance(identity, dict) else None
+    if isinstance(adapter_name, str):
+        expected = witness_adapters.resolve_runnable_adapter(adapter_name).quantization
+        if metadata["geometry_quantization"] != expected:
+            raise SchemaRefusal(
+                "a Testimonium adapter metadata does not belong to its resolved witness adapter"
+            )
+
+
+def validate_retained_response_pairing(payload: dict[str, Any]) -> None:
+    """Require retained bytes and their adapter rule to describe one record."""
+    has_references = (
+        bool(payload.get("raw_response_refs"))
+        if "raw_response_refs" in payload
+        else "raw_response_ref" in payload
+    )
+    if "adapter_metadata" in payload and not has_references:
+        raise SchemaRefusal("a Testimonium declares adapter metadata without a retained response")
+    provenance = payload.get("provenance")
+    identity = provenance.get("resolved_identity") if isinstance(provenance, dict) else None
+    adapter_name = identity.get("witness_adapter") if isinstance(identity, dict) else None
+    if isinstance(adapter_name, str):
+        quantization = witness_adapters.resolve_runnable_adapter(adapter_name).quantization
+        if has_references and quantization is not None and "adapter_metadata" not in payload:
+            raise SchemaRefusal(
+                "a Testimonium retained a quantized adapter response without naming its rule"
+            )
+
+
+def validate_retained_response_blob(tree: Any, reference: Any) -> None:
+    """Re-read one retained response so a missing or changed blob cannot pass a tally."""
+    checked = validate_raw_response_ref(reference)
+    try:
+        data = tree.read_bytes(checked["relative_path"])
+    except OSError as error:
+        raise SchemaRefusal(
+            f"retained witness response {checked['relative_path']} could not be read: {error}"
+        ) from error
+    if digest_bytes(data) != checked["sha256"]:
+        raise SchemaRefusal(
+            f"retained witness response {checked['relative_path']} differs from its digest"
+        )
 
 
 def validate_testimonium_payload(payload: Any) -> dict[str, Any]:
@@ -869,6 +991,10 @@ def validate_testimonium_payload(payload: Any) -> dict[str, Any]:
             "payload, and a field nothing validates is a field nothing downstream can trust"
         )
     validate_unpresented_regions(payload)
+    if "raw_response_ref" in payload:
+        validate_raw_response_ref(payload["raw_response_ref"])
+    validate_adapter_metadata(payload)
+    validate_retained_response_pairing(payload)
     return validate_native_witness_geometry(payload)
 
 
@@ -879,6 +1005,8 @@ def page_testimonium_payload(
     unjoined_act_attempts: list[dict[str, Any]],
     partition_disagreement: dict[str, Any] | None,
     testimonium_id: str,
+    raw_response_refs: list[dict[str, str]] | None = None,
+    adapter_metadata: dict[str, str] | None = None,
     **kwargs: Any,
 ) -> dict[str, Any]:
     """Page-scoped Testimonia admit only the producer's closed field set."""
@@ -912,8 +1040,24 @@ def page_testimonium_payload(
     }
     if partition_disagreement is not None:
         record["partition_disagreement"] = partition_disagreement
+    if raw_response_refs:
+        record["raw_response_refs"] = raw_response_refs
+    if adapter_metadata is not None:
+        record["adapter_metadata"] = adapter_metadata
     validate_page_testimonium_payload(record, testimonium_id=testimonium_id)
     return record
+
+
+def validate_page_testimonium_payload(
+    payload: Any, *, testimonium_id: str | None = None
+) -> dict[str, Any]:
+    """The page-record seam is closed before publication and on later reads."""
+    if isinstance(payload, dict):
+        for reference in payload.get("raw_response_refs", []):
+            validate_raw_response_ref(reference)
+        validate_adapter_metadata(payload)
+        validate_retained_response_pairing(payload)
+    return validate_shared_page_testimonium_payload(payload, testimonium_id=testimonium_id)
 
 
 AttemptHistory = dict[tuple[str, str], list[dict[str, Any]]]
@@ -1005,8 +1149,8 @@ def _refuse_write_collision(
     ordinal: int,
     attempt: "Attempt",
 ) -> None:
-    """Refuse before any write if this pass would seal different bytes than an
-    attempt already recorded at this exact (act, chair, ordinal) identity.
+    """Refuse before any Testimonium write if this pass would seal different
+    bytes than an attempt already recorded at this exact identity.
 
     A targeted reread and a whole pass can reach the very same identity with a
     different honest outcome — `resolve_attempt`'s docstring says so plainly: an
@@ -1016,8 +1160,10 @@ def _refuse_write_collision(
     it is reached, mid-pass, after every earlier pair in this invocation has
     already been published — a half-written attempt layer whose stored manifest
     was never rewritten to describe it. Checking every pair against what already
-    exists, before any of them is written, keeps a doomed pass from writing
-    anything at all rather than stranding the folder partway through.
+    exists, before any of them is written, keeps a doomed pass from writing a
+    Testimonium rather than stranding the folder partway through. Native response
+    bytes are deliberately retained before parsing and therefore stay as
+    content-addressed custody even when this later comparison refuses.
 
     Only a pair whose target ordinal already holds a record can collide;
     `require_appendable_ordinal` already refuses any ordinal beyond that, so
@@ -1042,12 +1188,19 @@ def _refuse_write_collision(
         or payload.get("format_capabilities") != attempt.format_capabilities
         or payload.get("content_health") != attempt.health
         or payload.get("reason") != attempt.reason
+        # The parsed text is not the native response. Two Chandra bodies may
+        # produce the same text while carrying different layout blocks, and the
+        # raw digest is what binds the geometry this attempt will publish. A
+        # resume that compared only the text discovered that collision later at
+        # the immutable writer, after earlier pairs had already been published.
+        or payload.get("raw_response_ref") != attempt.raw_response_ref
     ):
         raise SchemaRefusal(
             f"a whole pass at ordinal {ordinal} would record a different attempt for "
             f"{(act['act_key'], chair)!r} than the one already sealed there: sealed outcome "
-            f"{record['outcome']!r}, this pass would write {attempt.outcome!r}. Nothing was "
-            "written for this pass"
+            f"{record['outcome']!r}, this pass would write {attempt.outcome!r}. No Testimonium "
+            "was written for this pass; any raw response custody retained before this refusal "
+            "remains visible in the blob inventory"
         )
 
 
@@ -1229,6 +1382,8 @@ def validate_tallied_testimonium(
     if not isinstance(payload, dict):
         raise SchemaRefusal("a Testimonium tally record has no object payload")
     validate_testimonium_payload(payload)
+    if "raw_response_ref" in payload:
+        validate_retained_response_blob(context.tree, payload["raw_response_ref"])
     validate_testimonium_presentation(context, record)
     chair = payload["chair"]
     if not isinstance(chair, str) or chair not in context.witness_chairs:
@@ -1481,6 +1636,8 @@ class Attempt(NamedTuple):
     format_capabilities: dict[str, Any] | None
     health: dict[str, Any]
     reason: str | None
+    raw_response_ref: dict[str, str] | None = None
+    observation_payload: Any = None
 
 
 def dead_attempt(resolved: AbsentChair) -> Attempt:
@@ -1614,6 +1771,72 @@ def resolve_attempt(
             outcome = "not-run"
             reason = "no attempt was made for this configured chair"
         else:
+            if "raw_response" in response and resolved.witness_adapter != "chandra.v1":
+                raise SchemaRefusal(
+                    f"fixture raw_response has no native byte route for adapter "
+                    f"{resolved.witness_adapter!r}"
+                )
+            if "raw_response" in response and not isinstance(response["raw_response"], str):
+                raise SchemaRefusal(
+                    "fixture raw_response is not text encoding retained response bytes"
+                )
+            if resolved.witness_adapter == "chandra.v1" and isinstance(
+                response.get("raw_response"), str
+            ):
+                # Geometry may derive only from explicitly declared response
+                # bytes; synthesizing JSON from `payload` would create native
+                # evidence no witness returned.
+                raw_response = response["raw_response"].encode("utf-8")
+                adapter = witness_adapters.resolve_runnable_adapter("chandra.v1")
+                retained = adapter.retain(
+                    context.tree,
+                    adapter="chandra.v1",
+                    view={"prompt": adapter.prompt()},
+                    raw_response=raw_response,
+                    transport_stop_reason="fixture-complete",
+                    parser="json",
+                )
+                parsed = retained["parse"]
+                native_payload = (
+                    parsed["text"]
+                    if parsed["state"] == "parsed"
+                    else {"parse_outcome": parsed["outcome"]}
+                )
+                if parsed["state"] == "parsed" and response.get("payload") != native_payload:
+                    raise SchemaRefusal(
+                        "fixture Chandra raw response text differs from its declared payload"
+                    )
+                (
+                    native_payload,
+                    witness_reported,
+                    capabilities,
+                    health,
+                    recording_problem,
+                ) = prepared_response({**response, "payload": native_payload})
+                health = content_health(native_payload, completed=True)
+                if parsed["state"] != "parsed":
+                    outcome = "failed"
+                    reason = f"the Chandra response shape was not recognized: {parsed['outcome']}"
+                    if recording_problem is not None:
+                        reason = f"{reason}; {recording_problem}"
+                elif recording_problem is not None:
+                    outcome = "failed"
+                    reason = (
+                        f"the provider response was refused without repair: {recording_problem}"
+                    )
+                else:
+                    outcome = "genuinely-empty" if native_payload == "" else "read"
+                    reason = None
+                return Attempt(
+                    outcome,
+                    native_payload,
+                    witness_reported,
+                    capabilities,
+                    health,
+                    reason,
+                    retained["raw_response_ref"],
+                    raw_response,
+                )
             (
                 native_payload,
                 witness_reported,
@@ -1722,7 +1945,12 @@ def publish_attempt(
     ) is not None:
         observed = fixture_observed
     elif adapter is not None:
-        observed = adapter.observe(presented, attempt.native_payload)
+        observed = adapter.observe(
+            presented,
+            attempt.observation_payload
+            if attempt.observation_payload is not None
+            else attempt.native_payload,
+        )
     else:
         observed = observed_from_presentation(presented)
     payload = testimonium_payload(
@@ -1745,6 +1973,10 @@ def publish_attempt(
         # this view with alignment, not with another witness kind.
         page_witness=chair in page_witness_chairs,
         reason=attempt.reason,
+        raw_response_ref=attempt.raw_response_ref,
+        adapter_metadata=declared_adapter_metadata(
+            resolved, has_raw_response=attempt.raw_response_ref is not None
+        ),
     )
     inputs = region_inputs(context, regions, presented) if attempted else []
     # Adapter output is untrusted. Reconcile it while refusal can still leave
@@ -2100,13 +2332,56 @@ def publish_page_testimonia_and_attachments(
                 for act in page_acts
             }
             page_role = roles.pop() if len(roles) == 1 else "mixed"
+            page_response_refs: list[dict[str, str]] = []
+            # Declared fixture observations simulate native geometry; for a
+            # Chandra chair they are additive marginal evidence rather than the
+            # whole derived layer.
+            fixture_observed = _fixture_native_observations(
+                context, chair=chair, page_ordinal=page_ordinal
+            )
             if not presented:
                 observed: list[dict[str, Any]] = []
-            elif (
-                fixture_observed := _fixture_native_observations(
-                    context, chair=chair, page_ordinal=page_ordinal
-                )
-            ) is not None:
+            elif isinstance(resolved, ChairIdentity) and resolved.witness_adapter == "chandra.v1":
+                # The fixture executes one retained Chandra response per
+                # compatibility act, while the durable page Testimonium owns
+                # their page partition. Re-derive that partition only from
+                # responses whose primary page is this page; a continuation's
+                # primary-page response must not become geometry on its far
+                # page merely because the act belongs to both.
+                adapter = witness_adapters.resolve_runnable_adapter("chandra.v1")
+                observed = []
+                captured_geometry = False
+                needs_default_observation = False
+                for act in page_acts:
+                    if act["page_ordinal"] != page_ordinal:
+                        continue
+                    source_attempt = attempts_by_pair[(act["act_id"], chair)]
+                    raw = source_attempt.observation_payload
+                    if raw is None and source_attempt.outcome == "genuinely-empty":
+                        needs_default_observation = True
+                    if raw is None:
+                        continue
+                    captured_geometry = True
+                    # The page record must directly name each distinct source
+                    # blob in partition order; its geometry cannot depend on a
+                    # consumer reconstructing custody through act records.
+                    reference = source_attempt.raw_response_ref
+                    if reference is not None and reference not in page_response_refs:
+                        page_response_refs.append(reference)
+                    for item in adapter.observe(presented, raw):
+                        observed.append({**item, "ordinal": len(observed)})
+                if needs_default_observation or not captured_geometry:
+                    observed.extend(
+                        {**item, "ordinal": len(observed)}
+                        for item in observed_from_presentation(presented)
+                    )
+                if fixture_observed is not None:
+                    # Declared marginal geometry is additional evidence: native
+                    # response blocks still attach testimony to acts, while the
+                    # marginal box must remain available to the unclaimed route.
+                    for item in fixture_observed:
+                        observed.append({**item, "ordinal": len(observed)})
+            elif fixture_observed is not None:
                 observed = fixture_observed
             elif adapter is not None:
                 observed = adapter.observe(presented, native_payload)
@@ -2143,6 +2418,10 @@ def publish_page_testimonia_and_attachments(
                 unjoined_act_attempts=unjoined_act_attempts,
                 partition_disagreement=disagreement,
                 testimonium_id=page_artifact_id,
+                raw_response_refs=page_response_refs,
+                adapter_metadata=declared_adapter_metadata(
+                    resolved, has_raw_response=bool(page_response_refs)
+                ),
                 chair=chair,
                 act_key=f"page-{page_ordinal}",
                 ordinal=ordinal,
@@ -2554,9 +2833,10 @@ def attempt_pass(
     Returns how many records were written and whether any proposal crop was
     refused — the second is reported, never swallowed, because an act whose crop
     no chair could be shown is a different fact from an act every chair read. The
-    region and attempt maps are the result of this invocation's no-write
-    preflight. Publication therefore seals the exact attempt whose collision was
-    checked, while publication order and the single write path remain unchanged.
+    region and attempt maps are the result of this invocation's
+    no-Testimonium-write preflight. Publication therefore seals the exact attempt
+    whose collision was checked, while publication order and the single write
+    path remain unchanged.
     """
     recorded = 0
     isolated_crop_failure = False

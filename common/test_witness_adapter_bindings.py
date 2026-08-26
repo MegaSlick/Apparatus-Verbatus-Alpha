@@ -8,7 +8,7 @@ from common import witness_adapters
 from common.chairs import load_models_toml
 from common.chairs.config import parse_models_config
 from common.chairs.errors import ConfigurationRefusal, ReceiptRefusal
-from common.chairs.models import ModelsConfig, ServingDetails
+from common.chairs.models import ChairIdentity, ModelsConfig, ServingDetails
 from common.chairs.receipts import build_receipt, receipt_record, validate_receipt
 from common.contracts.errors import ContractError, IncompatibleReuse
 from common.runtree.store import RunTree
@@ -128,7 +128,7 @@ def test_a_known_adapter_name_with_no_configured_occupant_is_reported(monkeypatc
     monkeypatch.setattr(
         witness_adapters,
         "KNOWN_WITNESS_ADAPTER_NAMES",
-        frozenset({"churro.v1", "unbound.fixture.v1"}),
+        frozenset({"chandra.v1", "churro.v1", "unbound.fixture.v1"}),
     )
     with warnings.catch_warnings():
         warnings.simplefilter("error")
@@ -201,10 +201,17 @@ def test_two_chairs_may_share_one_adapter_at_different_scopes():
     """
     models = _models()
     witness_adapters.validate_witness_adapter_bindings(models)
-    first = models.chairs["attestator_1"]
-    second = models.chairs["attestator_2"]
-    assert first.witness_adapter == second.witness_adapter == "churro.v1"
-    assert (first.witness_scope, second.witness_scope) == ("page", "act")
+    # Derive the sharing pair because chair-to-adapter bindings may move while
+    # the cross-scope sharing invariant remains unchanged.
+    by_adapter: dict[str, list[str]] = {}
+    for _, chair in sorted(models.chairs.items()):
+        if isinstance(chair, ChairIdentity) and chair.witness_adapter is not None:
+            by_adapter.setdefault(chair.witness_adapter, []).append(chair.witness_scope)
+    sharing = {name: scopes for name, scopes in by_adapter.items() if len(scopes) > 1}
+    assert sharing, "no adapter is shared by two chairs; this test would pass vacuously"
+    assert any(set(scopes) == {"page", "act"} for scopes in sharing.values()), (
+        f"one adapter serves several chairs but never at both scopes: {sharing}"
+    )
 
 
 @pytest.mark.parametrize(
@@ -289,7 +296,7 @@ def test_the_live_roster_declares_the_rows_on_witness_chairs_and_nowhere_else():
 
 def test_adapter_rows_travel_in_the_resolved_provenance_record():
     record = _models().chairs["attestator_1"].to_record()
-    assert record["witness_adapter"] == "churro.v1"
+    assert record["witness_adapter"] == "chandra.v1"
     assert record["witness_scope"] == "page"
 
 
@@ -326,7 +333,7 @@ def test_witness_adapter_is_inside_the_sealed_config_digest(monkeypatch):
     monkeypatch.setattr(
         witness_adapters,
         "KNOWN_WITNESS_ADAPTER_NAMES",
-        frozenset({"churro.v1", "other.fixture.v1"}),
+        frozenset({"chandra.v1", "churro.v1", "other.fixture.v1"}),
     )
     fixture = load_fixture(str(ROOT / "proof"))
     sealed = run_config_bindings(_models(), fixture, "happy")["config_digest"]

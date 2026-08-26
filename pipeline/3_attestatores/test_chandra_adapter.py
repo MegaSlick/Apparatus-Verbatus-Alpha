@@ -1,0 +1,862 @@
+"""Chandra's offline fixture seam: retained bytes, native boxes, and ordering."""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import subprocess
+import sys
+from dataclasses import replace
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from common.chairs import load_models_toml
+from common.contracts.canonical import digest_bytes
+from common.contracts.errors import SchemaRefusal
+from common.contracts.stages import ATTESTATORES
+from common.native_witness import validate_observed
+from common.runtree.store import RunTree
+
+ROOT = Path(__file__).resolve().parents[2]
+STAGE = Path(__file__).resolve().parent
+
+
+def _load_stage_module(name: str):
+    """Load a stage-local module under a unique name.
+
+    A bare `import run` (or `import feeding`) answers from `sys.modules` first,
+    so a module cached by another stage can win regardless of `sys.path` order.
+    Unique spec names keep this test bound to the Attestatores file it names.
+    """
+    spec = importlib.util.spec_from_file_location(f"attestatores_{name}", STAGE / f"{name}.py")
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _presented():
+    return {
+        "kind": "page",
+        "source_page_id": "page-1",
+        "source_page_ordinal": 1,
+        "image_path": "1_exemplar/blobs/sha256/" + "0" * 64,
+        "image_sha256": "0" * 64,
+        "transform": {
+            "operation": "whole",
+            "source_page_id": "page-1",
+            "source_page_ordinal": 1,
+            "bounds": {"x": 0, "y": 0, "w": 200, "h": 260},
+        },
+    }
+
+
+def test_chandra_quantizes_retained_float_boxes_by_its_declared_rule():
+    chandra = _load_stage_module("chandra")
+    raw = (
+        b'{"schema":"fixture-chandra-response.v1","markdown":"one",'
+        b'"blocks":[{"bbox":[20.25,20.5,180.0,100.1]}]}'
+    )
+    assert chandra.observe(_presented(), raw) == [
+        {
+            "ordinal": 0,
+            "bounds": {"x": 20, "y": 20, "w": 160, "h": 81},
+            "bounds_source": "native",
+            "span": None,
+        }
+    ]
+
+
+def test_fixture_run_retains_chandra_bytes_and_names_an_unverified_shape(tmp_path):
+    run_root = tmp_path / "runs"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "pipeline/orchestrator/run.py"),
+            "--fixture",
+            "synthetic-two-page-v0",
+            "--fixture-root",
+            str(ROOT / "proof"),
+            "--scenario",
+            "happy",
+            "--run-root",
+            str(run_root),
+            "--run-id",
+            "r",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    tree = RunTree(run_root, "r")
+    records = [
+        tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
+        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
+        if entry["kind"] == "testimonium"
+    ]
+    chandra_records = [record for record in records if record["payload"]["chair"] == "attestator_1"]
+    assert chandra_records
+    for record in chandra_records:
+        payload = record["payload"]
+        raw = payload["raw_response_ref"]
+        assert digest_bytes(tree.read_bytes(raw["relative_path"])) == raw["sha256"]
+        assert payload["provenance"]["resolved_identity"] is not None
+        assert payload["adapter_metadata"] == {
+            "geometry_quantization": _load_stage_module("chandra").QUANTIZATION_RULE
+        }
+        assert payload["observed"][0]["bounds_source"] == "native"
+
+
+def test_chandra_shape_surprise_keeps_bytes_with_a_named_parse_outcome(tmp_path):
+    feeding = _load_stage_module("feeding")
+
+    class Tree:
+        def __init__(self):
+            self.blobs = {}
+
+        def put_blob(self, stage, data):
+            digest = digest_bytes(data)
+            path = f"3_attestatores/blobs/sha256/{digest}"
+            self.blobs[path] = data
+            return digest, type("Published", (), {"relative_path": path})()
+
+    raw = b'{"unknown":"shape"}'
+    record = feeding.retain_model_view(
+        Tree(),
+        adapter="chandra.v1",
+        view={},
+        raw_response=raw,
+        transport_stop_reason="fixture-complete",
+        parser="json",
+    )
+    assert record["raw_response_ref"]["sha256"] == digest_bytes(raw)
+    assert record["parse"] == {
+        "state": "unrecognized-shape",
+        "parser": "json",
+        "outcome": "unverified-response-schema",
+    }
+    chandra = _load_stage_module("chandra")
+    assert chandra.parse(
+        b'{"schema":"fixture-chandra-response.v1","markdown":"text",'
+        b'"blocks":[{"bbox":[0,0,"bad",1]}]}'
+    ) == {"parse_outcome": "malformed-block-geometry"}
+
+
+def test_chandra_shape_surprise_is_a_failed_attempt_not_a_successful_read(tmp_path):
+    """Named bytes remain evidence, but an unread schema is not a reading."""
+    attestatores = _load_stage_module("run")
+    resolved = load_models_toml(ROOT / "config/models.toml").chairs["attestator_1"]
+    context = SimpleNamespace(
+        tree=RunTree(tmp_path / "runs", "r"),
+        scenario="shape-surprise",
+        fixture={
+            "testimony": [
+                {
+                    "scenario": "shape-surprise",
+                    "act_key": "a1",
+                    "chair": "attestator_1",
+                    "payload": "declared fixture text",
+                    "raw_response": '{"schema":"fixture-chandra-response.v1","unknown":"shape"}',
+                }
+            ],
+            "witness_empty": [],
+        },
+    )
+    attempt = attestatores.resolve_attempt(
+        context,
+        {"act_key": "a1"},
+        "attestator_1",
+        resolved,
+        {"ordinal": 1, "empty": set(), "not_run": set(), "failures": set(), "malformed": {}},
+    )
+    assert attempt.outcome == "failed"
+    assert attempt.native_payload == {"parse_outcome": "missing-text"}
+    assert attempt.reason == "the Chandra response shape was not recognized: missing-text"
+    assert attempt.raw_response_ref is not None
+
+
+def test_chandra_raw_text_must_equal_the_fixture_payload_after_retention(tmp_path):
+    """A fixture row cannot declare two readings for the same response."""
+    attestatores = _load_stage_module("run")
+    resolved = load_models_toml(ROOT / "config/models.toml").chairs["attestator_1"]
+    tree = RunTree(tmp_path / "runs", "r")
+    raw = b'{"schema":"fixture-chandra-response.v1","markdown":"actual","blocks":[]}'
+    context = SimpleNamespace(
+        tree=tree,
+        scenario="mismatch",
+        fixture={
+            "testimony": [
+                {
+                    "scenario": "mismatch",
+                    "act_key": "a1",
+                    "chair": "attestator_1",
+                    "payload": "different declaration",
+                    "raw_response": raw.decode(),
+                }
+            ],
+            "witness_empty": [],
+        },
+    )
+    with pytest.raises(SchemaRefusal, match="raw response text differs"):
+        attestatores.resolve_attempt(
+            context,
+            {"act_key": "a1"},
+            "attestator_1",
+            resolved,
+            {
+                "ordinal": 1,
+                "empty": set(),
+                "not_run": set(),
+                "failures": set(),
+                "malformed": {},
+            },
+        )
+    digest = digest_bytes(raw)
+    assert tree.read_bytes(f"3_attestatores/blobs/sha256/{digest}") == raw
+
+
+def test_chandra_malformed_capabilities_fail_only_that_retained_attempt(tmp_path):
+    attestatores = _load_stage_module("run")
+    resolved = load_models_toml(ROOT / "config/models.toml").chairs["attestator_1"]
+    context = SimpleNamespace(
+        tree=RunTree(tmp_path / "runs", "r"),
+        scenario="bad-capabilities",
+        fixture={
+            "testimony": [
+                {
+                    "scenario": "bad-capabilities",
+                    "act_key": "a1",
+                    "chair": "attestator_1",
+                    "payload": "actual",
+                    "raw_response": (
+                        '{"schema":"fixture-chandra-response.v1","markdown":"actual","blocks":[]}'
+                    ),
+                    "format_capabilities": "not-an-object",
+                }
+            ],
+            "witness_empty": [],
+        },
+    )
+    attempt = attestatores.resolve_attempt(
+        context,
+        {"act_key": "a1"},
+        "attestator_1",
+        resolved,
+        {"ordinal": 1, "empty": set(), "not_run": set(), "failures": set(), "malformed": {}},
+    )
+    assert attempt.outcome == "failed"
+    assert attempt.native_payload == "actual"
+    assert attempt.raw_response_ref is not None
+    assert "format capabilities could not be retained" in attempt.reason
+
+
+def test_chandra_conflicting_text_fields_and_huge_coordinates_are_named():
+    chandra = _load_stage_module("chandra")
+    assert chandra.parse(
+        b'{"schema":"fixture-chandra-response.v1","markdown":"one","text":"two","blocks":[]}'
+    ) == {"parse_outcome": "conflicting-text-fields"}
+    raw = json.dumps(
+        {
+            "schema": "fixture-chandra-response.v1",
+            "markdown": "one",
+            "blocks": [{"bbox": [0, 0, 10**400, 1]}],
+        }
+    ).encode()
+    assert chandra.parse(raw) == {"parse_outcome": "malformed-block-geometry"}
+    assert chandra.observe(_presented(), raw) == []
+
+
+def test_chandra_bounds_native_json_before_decode_and_geometry_expansion(monkeypatch):
+    """One native response cannot crash or amplify past the adapter boundary."""
+    chandra = _load_stage_module("chandra")
+
+    monkeypatch.setattr(chandra, "MAX_RESPONSE_BYTES", 8)
+    assert chandra.parse(b"123456789") == {"parse_outcome": "response-too-large"}
+    assert chandra.observe(_presented(), b"123456789") == []
+
+    monkeypatch.setattr(chandra, "MAX_RESPONSE_BYTES", 16 * 1024 * 1024)
+    monkeypatch.setattr(chandra, "MAX_LAYOUT_BLOCKS", 1)
+    raw = json.dumps(
+        {
+            "schema": "fixture-chandra-response.v1",
+            "markdown": "two",
+            "blocks": [{"bbox": [0, 0, 1, 1]}, {"bbox": [1, 1, 2, 2]}],
+        }
+    ).encode()
+    assert chandra.parse(raw) == {"parse_outcome": "too-many-layout-blocks"}
+    assert chandra.observe(_presented(), raw) == []
+
+
+def test_chandra_names_excessive_json_nesting_and_non_byte_input():
+    chandra = _load_stage_module("chandra")
+    nested = (
+        b'{"schema":"fixture-chandra-response.v1","markdown":"x","blocks":[],"extra":'
+        + b"[" * 10_000
+        + b"0"
+        + b"]" * 10_000
+        + b"}"
+    )
+    # Parse-time recursion exhaustion is stack-dependent: when the interpreter's
+    # C recursion headroom runs out the nesting is named, and when the parser
+    # survives the depth the declared markdown parses normally. Either way the
+    # adapter never lets pathological nesting escape as a crash.
+    assert chandra.parse(nested) in ("x", {"parse_outcome": "excessive-json-nesting"})
+    assert chandra.observe(_presented(), nested) == []
+    assert chandra.parse("not bytes") == {"parse_outcome": "raw-response-not-bytes"}
+
+
+def test_an_unverified_chandra_wire_shape_cannot_acquire_fixture_geometry():
+    """Only explicitly synthetic bytes use the placeholder page-pixel rule."""
+    chandra = _load_stage_module("chandra")
+    raw = b'{"markdown":"plausible live response","blocks":[{"bbox":[0,0,100,100]}]}'
+    assert chandra.parse(raw) == {"parse_outcome": "unverified-response-schema"}
+    assert chandra.observe(_presented(), raw) == []
+
+
+@pytest.mark.parametrize(
+    ("adapter_name", "raw_response", "message"),
+    (
+        ("chandra.v1", 7, "raw_response is not text encoding"),
+        ("churro.v1", "native bytes", "has no native byte route"),
+    ),
+)
+def test_fixture_raw_response_cannot_be_silently_discarded(
+    tmp_path, adapter_name, raw_response, message
+):
+    attestatores = _load_stage_module("run")
+    resolved = load_models_toml(ROOT / "config/models.toml").chairs["attestator_1"]
+    if adapter_name != resolved.witness_adapter:
+        resolved = replace(resolved, witness_adapter=adapter_name)
+    context = SimpleNamespace(
+        tree=RunTree(tmp_path / "runs", "r"),
+        scenario="bad-raw",
+        fixture={
+            "testimony": [
+                {
+                    "scenario": "bad-raw",
+                    "act_key": "a1",
+                    "chair": "attestator_1",
+                    "payload": "declared text",
+                    "raw_response": raw_response,
+                }
+            ],
+            "witness_empty": [],
+        },
+    )
+    with pytest.raises(SchemaRefusal, match=message):
+        attestatores.resolve_attempt(
+            context,
+            {"act_key": "a1"},
+            "attestator_1",
+            resolved,
+            {"ordinal": 1, "empty": set(), "not_run": set(), "failures": set(), "malformed": {}},
+        )
+
+
+def test_empty_fixture_raw_response_cannot_be_silently_discarded(tmp_path):
+    attestatores = _load_stage_module("run")
+    resolved = load_models_toml(ROOT / "config/models.toml").chairs["attestator_1"]
+    context = SimpleNamespace(
+        tree=RunTree(tmp_path / "runs", "r"),
+        scenario="bad-empty-raw",
+        fixture={
+            "testimony": [],
+            "witness_empty": [
+                {
+                    "scenario": "bad-empty-raw",
+                    "act_key": "a1",
+                    "chair": "attestator_1",
+                    "raw_response": 7,
+                }
+            ],
+        },
+    )
+    with pytest.raises(SchemaRefusal, match="raw_response is not text encoding"):
+        attestatores.resolve_attempt(
+            context,
+            {"act_key": "a1"},
+            "attestator_1",
+            resolved,
+            {
+                "ordinal": 1,
+                "empty": {("a1", "attestator_1")},
+                "not_run": set(),
+                "failures": set(),
+                "malformed": {},
+            },
+        )
+
+
+def test_chandra_out_of_order_stage_invocation_holds_cleanly(tmp_path):
+    run_root = tmp_path / "runs"
+    door = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "pipeline/1_exemplar/door.py"),
+            "--fixture",
+            "synthetic-two-page-v0",
+            "--fixture-root",
+            str(ROOT / "proof"),
+            "--scenario",
+            "happy",
+            "--run-root",
+            str(run_root),
+            "--run-id",
+            "out-of-order",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert door.returncode == 0, door.stderr
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(STAGE / "run.py"),
+            "--fixture",
+            "synthetic-two-page-v0",
+            "--fixture-root",
+            str(ROOT / "proof"),
+            "--scenario",
+            "happy",
+            "--run-root",
+            str(run_root),
+            "--run-id",
+            "out-of-order",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    assert "missing predecessor" in result.stderr.lower() or "predecessor" in result.stderr.lower()
+
+
+def test_overlapping_native_blocks_are_both_retained_as_reported_geometry():
+    """Two blocks over the same ink is a layout fact, not a contradiction.
+
+    A real page segmenter overlaps constantly: a heading inside its own column,
+    a marginal name inside the act it belongs to. Nothing here may merge, drop
+    or prefer between them -- the pipeline retains every reported box and lets
+    the partition record hold the competing pairings (GOVERNANCE 3).
+    """
+    chandra = _load_stage_module("chandra")
+    raw = (
+        b'{"schema":"fixture-chandra-response.v1","markdown":"one",'
+        b'"blocks":[{"bbox":[10,10,100,100]},{"bbox":[50,50,150,150]}]}'
+    )
+    observed = chandra.observe(_presented(), raw)
+    assert [item["bounds"] for item in observed] == [
+        {"x": 10, "y": 10, "w": 90, "h": 90},
+        {"x": 50, "y": 50, "w": 100, "h": 100},
+    ]
+    # Intersecting boxes still require dense response-order ordinals.
+    validate_observed(observed, presented=_presented(), page_size=(200, 260))
+
+
+@pytest.mark.parametrize(
+    "bbox",
+    (
+        [10, 10, 10, 10],  # zero area in both axes
+        [10, 10, 100, 10],  # zero height
+        [10, 10, 10, 100],  # zero width
+        [100, 10, 10, 100],  # max edge before min edge: reading indices crossed
+        [-5, -5, 100, 100],  # negative origin
+        [10, 10, 100, "100"],  # a string where a coordinate belongs
+        [10, 10, 100],  # not four coordinates
+    ),
+)
+def test_a_degenerate_native_box_is_named_and_derives_no_geometry(bbox):
+    """A box with no area cannot become an observation, and does not vanish.
+
+    `parse` names the whole malformed response while `observe` emits no partial
+    geometry that could look like a complete partition.
+    """
+    chandra = _load_stage_module("chandra")
+    raw = json.dumps(
+        {"schema": "fixture-chandra-response.v1", "markdown": "one", "blocks": [{"bbox": bbox}]}
+    ).encode("utf-8")
+    assert chandra.parse(raw) == {"parse_outcome": "malformed-block-geometry"}
+    assert chandra.observe(_presented(), raw) == []
+
+
+def test_one_degenerate_box_does_not_let_its_neighbours_pass_unnamed():
+    """A mixed response is named for the whole response, not per block.
+
+    Deliberate and worth stating: the alternative -- keep the good blocks, drop
+    the bad one -- would publish a partition that looks complete while silently
+    missing a region the witness reported (invariant 6). The response is retained
+    whole in its blob either way, so nothing is lost; what changes is whether the
+    derived layer claims to be the witness's full report.
+    """
+    chandra = _load_stage_module("chandra")
+    raw = json.dumps(
+        {
+            "schema": "fixture-chandra-response.v1",
+            "markdown": "one",
+            "blocks": [{"bbox": [10, 10, 100, 100]}, {"bbox": [10, 10, 10, 10]}],
+        }
+    ).encode("utf-8")
+    assert chandra.parse(raw) == {"parse_outcome": "malformed-block-geometry"}
+    assert chandra.observe(_presented(), raw) == []
+
+
+def test_reading_order_is_the_response_order_and_no_other_key_reorders_it():
+    """The declared basis for `ordinal` is the order the response listed.
+
+    Chandra's published behaviour is that its output preserves reading order, so
+    the list *is* the order. A block key this adapter does not read cannot
+    quietly become an ordering authority -- the derived ordinals stay the
+    positions the response gave, and the unread key survives verbatim in the
+    retained blob without affecting this adapter's declared order.
+    """
+    chandra = _load_stage_module("chandra")
+    raw = json.dumps(
+        {
+            "schema": "fixture-chandra-response.v1",
+            "markdown": "two blocks",
+            "blocks": [
+                {"bbox": [10, 120, 100, 200], "reading_index": 7},
+                {"bbox": [10, 10, 100, 100], "reading_index": 0},
+            ],
+        }
+    ).encode("utf-8")
+    observed = chandra.observe(_presented(), raw)
+    assert [item["ordinal"] for item in observed] == [0, 1]
+    assert [item["bounds"]["y"] for item in observed] == [120, 10]
+    assert [block["reading_index"] for block in json.loads(raw)["blocks"]] == [7, 0]
+
+
+def test_a_block_past_the_page_edge_is_refused_rather_than_clamped_into_the_page():
+    """The declared rule rounds outward, and outward past the page is a refusal.
+
+    `ceil` on a max edge means any block whose float edge sits fractionally past
+    the sealed page derives a box the shared wall refuses, which takes the whole
+    Attestatores pass to `UNKNOWN`. Clamping it to the page instead would be the
+    cheaper failure and is the wrong one: on a Designator fallback crop -- whose
+    region *is* the whole page -- a clamped box lands exactly on the recovery
+    region and hands it the retrospective witness coverage a recovery crop may
+    never acquire. So the conversion never invents an in-page box from an
+    out-of-page report; it reports what it derived and lets the wall speak.
+
+    Both the outward rounding and downstream refusal are pinned so clamping
+    cannot silently convert out-of-page testimony into in-page coverage.
+    """
+    chandra = _load_stage_module("chandra")
+    raw = (
+        b'{"schema":"fixture-chandra-response.v1","markdown":"one",'
+        b'"blocks":[{"bbox":[0,0,200.2,260.0]}]}'
+    )
+    observed = chandra.observe(_presented(), raw)
+    assert observed[0]["bounds"] == {"x": 0, "y": 0, "w": 201, "h": 260}
+    with pytest.raises(SchemaRefusal, match="outside the sealed source page"):
+        validate_observed(observed, presented=_presented(), page_size=(200, 260))
+
+
+def test_a_parse_failure_keeps_its_bytes_and_its_name_through_the_written_record(tmp_path):
+    """A written shape refusal must retain both its name and referenced bytes."""
+    feeding = _load_stage_module("feeding")
+    attestatores = _load_stage_module("run")
+
+    tree = RunTree(tmp_path / "runs", "r")
+    raw = (
+        b'{"schema":"fixture-chandra-response.v1","markdown":"text",'
+        b'"blocks":[{"bbox":[0,0,"bad",1]}]}'
+    )
+    retained = feeding.retain_model_view(
+        tree,
+        adapter="chandra.v1",
+        view={"prompt": {"instruction": "x"}},
+        raw_response=raw,
+        transport_stop_reason="fixture-complete",
+        parser="json",
+    )
+    assert retained["parse"]["outcome"] == "malformed-block-geometry"
+    assert retained["stop_reason"] == "partial-parse-unrecognized-shape"
+    assert tree.read_bytes(retained["raw_response_ref"]["relative_path"]) == raw
+
+    payload = attestatores.testimonium_payload(
+        chair="attestator_1",
+        act_key="a1",
+        ordinal=1,
+        regions=[],
+        provenance={"chair": "attestator_1"},
+        format_capabilities=attestatores.DEFAULT_FORMAT_CAPABILITIES,
+        native_payload={"parse_outcome": retained["parse"]["outcome"]},
+        witness_reported=None,
+        health=attestatores.content_health(
+            {"parse_outcome": retained["parse"]["outcome"]}, completed=True
+        ),
+        presented={},
+        observed=[],
+        unpresented_regions=[],
+        outcome="read",
+        raw_response_ref=retained["raw_response_ref"],
+        adapter_metadata={"geometry_quantization": _load_stage_module("chandra").QUANTIZATION_RULE},
+    )
+    assert payload["payload"] == {"parse_outcome": "malformed-block-geometry"}
+    assert payload["raw_response_ref"] == retained["raw_response_ref"]
+    assert "reported" not in payload
+    assert payload["content_health"]["recordable"] is True
+
+
+def test_an_unknown_quantization_rule_is_refused_by_name(tmp_path):
+    """Admissible rules derive from bindings, not from one adapter's literal."""
+    attestatores = _load_stage_module("run")
+
+    chandra_rule = _load_stage_module("chandra").QUANTIZATION_RULE
+    attestatores.validate_adapter_metadata(
+        {"adapter_metadata": {"geometry_quantization": chandra_rule}}
+    )
+    with pytest.raises(SchemaRefusal, match="not a quantization rule any bound adapter"):
+        attestatores.validate_adapter_metadata(
+            {"adapter_metadata": {"geometry_quantization": "invented.v9.round-to-taste"}}
+        )
+
+
+def test_quantization_metadata_belongs_to_the_recorded_adapter_and_blob():
+    attestatores = _load_stage_module("run")
+    chandra_rule = _load_stage_module("chandra").QUANTIZATION_RULE
+    payload = {
+        "provenance": {"resolved_identity": {"witness_adapter": "churro.v1"}},
+        "adapter_metadata": {"geometry_quantization": chandra_rule},
+        "raw_response_ref": {
+            "relative_path": "3_attestatores/blobs/sha256/" + "a" * 64,
+            "sha256": "a" * 64,
+        },
+    }
+    with pytest.raises(SchemaRefusal, match="does not belong"):
+        attestatores.validate_adapter_metadata(payload)
+    with pytest.raises(SchemaRefusal, match="without a retained response"):
+        attestatores.validate_retained_response_pairing(
+            {"adapter_metadata": {"geometry_quantization": chandra_rule}}
+        )
+    with pytest.raises(SchemaRefusal, match="without naming its rule"):
+        attestatores.validate_retained_response_pairing(
+            {
+                "provenance": {"resolved_identity": {"witness_adapter": "chandra.v1"}},
+                "raw_response_ref": payload["raw_response_ref"],
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "reference",
+    (
+        {
+            "relative_path": "3_attestatores/blobs/sha256/" + "a" * 64,
+            "sha256": "z" * 64,
+        },
+        {
+            "relative_path": "3_attestatores/blobs/sha256/" + "a" * 64,
+            "sha256": "b" * 64,
+        },
+        {
+            "relative_path": "3_attestatores/blobs/sha256/../../elsewhere",
+            "sha256": "a" * 64,
+        },
+    ),
+)
+def test_retained_response_reference_is_the_exact_lowercase_digest_path(reference):
+    attestatores = _load_stage_module("run")
+    with pytest.raises(SchemaRefusal, match="Attestatores blob reference"):
+        attestatores.validate_raw_response_ref(reference)
+
+
+def test_act_tally_rechecks_retained_response_bytes(tmp_path):
+    attestatores = _load_stage_module("run")
+    tree = RunTree(tmp_path / "runs", "r")
+    raw = b"retained response"
+    digest, published = tree.put_blob(ATTESTATORES, raw)
+    reference = {"relative_path": published.relative_path, "sha256": digest}
+    attestatores.validate_retained_response_blob(tree, reference)
+    tree.resolve(published.relative_path).write_bytes(b"changed")
+    with pytest.raises(SchemaRefusal, match="differs from its digest"):
+        attestatores.validate_retained_response_blob(tree, reference)
+
+
+def test_resume_collision_compares_native_response_digest_not_only_parsed_text():
+    """Same text with different native geometry is a different attempt."""
+    attestatores = _load_stage_module("run")
+    sealed_ref = {
+        "relative_path": "3_attestatores/blobs/sha256/" + "a" * 64,
+        "sha256": "a" * 64,
+    }
+    candidate_ref = {
+        "relative_path": "3_attestatores/blobs/sha256/" + "b" * 64,
+        "sha256": "b" * 64,
+    }
+    health = attestatores.content_health("same text", completed=True)
+    history = {
+        ("act-1", "attestator_1"): [
+            {
+                "outcome": "read",
+                "payload": {
+                    "attempt_ordinal": 1,
+                    "payload": "same text",
+                    "witness_reported": None,
+                    "format_capabilities": attestatores.DEFAULT_FORMAT_CAPABILITIES,
+                    "content_health": health,
+                    "raw_response_ref": sealed_ref,
+                },
+            }
+        ]
+    }
+    candidate = attestatores.Attempt(
+        outcome="read",
+        native_payload="same text",
+        witness_reported=None,
+        format_capabilities=attestatores.DEFAULT_FORMAT_CAPABILITIES,
+        health=health,
+        reason=None,
+        raw_response_ref=candidate_ref,
+        observation_payload=b"different layout bytes",
+    )
+
+    with pytest.raises(SchemaRefusal, match="would record a different attempt"):
+        attestatores._refuse_write_collision(
+            history,
+            {"act_id": "act-1", "act_key": "a1"},
+            "attestator_1",
+            1,
+            candidate,
+        )
+
+
+def test_the_page_record_names_the_bytes_its_own_geometry_was_quantized_from(tmp_path):
+    """The page record must directly bind the bytes behind its derived boxes."""
+    run_root = tmp_path / "runs"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "pipeline/orchestrator/run.py"),
+            "--fixture",
+            "synthetic-two-page-v0",
+            "--fixture-root",
+            str(ROOT / "proof"),
+            "--scenario",
+            "happy",
+            "--run-root",
+            str(run_root),
+            "--run-id",
+            "r",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    tree = RunTree(run_root, "r")
+    pages = [
+        tree.read_artifact(ATTESTATORES, "page-testimonium", entry["artifact_id"])
+        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
+        if entry["kind"] == "page-testimonium"
+    ]
+    native = [
+        record["payload"]
+        for record in pages
+        if any(item["bounds_source"] == "native" for item in record["payload"]["observed"])
+        and record["payload"]["chair"] == "attestator_1"
+    ]
+    assert native, "no Chandra page record reported native geometry"
+    for payload in native:
+        refs = payload["raw_response_refs"]
+        assert refs, "a page record derived native geometry from bytes it does not name"
+        for reference in refs:
+            assert digest_bytes(tree.read_bytes(reference["relative_path"])) == reference["sha256"]
+        assert payload["adapter_metadata"] == {
+            "geometry_quantization": _load_stage_module("chandra").QUANTIZATION_RULE
+        }
+        assert payload["provenance"]["resolved_identity"] is not None
+
+    # Presentation echoes have no native floats and therefore no conversion rule.
+    echoes = [
+        record["payload"]
+        for record in pages
+        if all(item["bounds_source"] == "presented" for item in record["payload"]["observed"])
+    ]
+    assert echoes
+    for payload in echoes:
+        assert "raw_response_refs" not in payload
+        assert "adapter_metadata" not in payload
+
+
+def test_the_stage_seals_its_boundary_and_an_out_of_order_pass_seals_nothing(tmp_path):
+    """A pass held before publication must leave no boundary seal to consume."""
+    complete_root = tmp_path / "complete"
+    complete = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "pipeline/orchestrator/run.py"),
+            "--fixture",
+            "synthetic-two-page-v0",
+            "--fixture-root",
+            str(ROOT / "proof"),
+            "--scenario",
+            "happy",
+            "--run-root",
+            str(complete_root),
+            "--run-id",
+            "r",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert complete.returncode == 0, complete.stderr
+    sealed = RunTree(complete_root, "r")
+    seals = [
+        sealed.read_artifact(ATTESTATORES, "stage-seal", entry["artifact_id"])
+        for entry in sealed.build_manifest(ATTESTATORES)["artifacts"]
+        if entry["kind"] == "stage-seal"
+    ]
+    assert len(seals) == 1
+    census = {(row["kind"], row["outcome"]): row["count"] for row in seals[0]["payload"]["census"]}
+    assert census[("page-testimonium", "read")] > 0
+    assert census[("testimonium", "read")] > 0
+
+    held_root = tmp_path / "held"
+    door = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "pipeline/1_exemplar/door.py"),
+            "--fixture",
+            "synthetic-two-page-v0",
+            "--fixture-root",
+            str(ROOT / "proof"),
+            "--scenario",
+            "happy",
+            "--run-root",
+            str(held_root),
+            "--run-id",
+            "r",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert door.returncode == 0, door.stderr
+    out_of_order = subprocess.run(
+        [
+            sys.executable,
+            str(STAGE / "run.py"),
+            "--fixture",
+            "synthetic-two-page-v0",
+            "--fixture-root",
+            str(ROOT / "proof"),
+            "--scenario",
+            "happy",
+            "--run-root",
+            str(held_root),
+            "--run-id",
+            "r",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert out_of_order.returncode == 2
+    assert not list((held_root / "r" / ATTESTATORES / "artifacts" / "stage-seal").glob("*.json"))

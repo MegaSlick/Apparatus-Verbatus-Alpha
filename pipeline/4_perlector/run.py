@@ -589,7 +589,11 @@ def validate_page_testimonium_record(
 ) -> None:
     """Reconcile a page Testimonium's outcome, page, presentation, and inputs."""
     payload = record.get("payload")
-    validate_page_testimonium_payload(payload, testimonium_id=record.get("artifact_id"))
+    validate_page_testimonium_payload(
+        payload,
+        testimonium_id=record.get("artifact_id"),
+        read_bytes=context.tree.read_bytes,
+    )
     attempted = record["outcome"] in ATTEMPTED_WITNESS_OUTCOMES
     presented = payload["presented"]
     if payload["regions"] != []:

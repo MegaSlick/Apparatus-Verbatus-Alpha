@@ -467,6 +467,7 @@ def _patched_page_geometry(monkeypatch, context, observed_by_ordinal):
         }
 
     monkeypatch.setattr(context.tree, "read_artifact_reference", fake_reference, raising=False)
+    monkeypatch.setattr(context.tree, "read_bytes", lambda relative_path: b"", raising=False)
 
 
 def test_page_attachment_facts_preserve_a_later_primary_alignment(monkeypatch):

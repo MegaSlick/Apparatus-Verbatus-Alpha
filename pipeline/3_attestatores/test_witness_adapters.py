@@ -26,13 +26,25 @@ def _load_local_adapters():
     return module
 
 
-def test_churro_is_the_only_currently_runnable_fixture_adapter_shape():
+def test_chandra_and_churro_have_runnable_fixture_adapter_shapes():
     adapters = _load_local_adapters()
     assert set(adapters.RUNNABLE_ADAPTERS) == KNOWN_WITNESS_ADAPTER_NAMES
     spec = adapters.resolve_runnable_adapter("churro.v1")
     assert spec is adapters.RUNNABLE_ADAPTERS["churro.v1"]
     assert set(spec.prompt()) == {"system", "user"}
     assert spec.parse(b"<output>text</output>") == "text"
+    # Bound by identity, not by "is not None": the point of the slot is which
+    # function answers there, and a rebinding to a different one is exactly the
+    # change a later adapter unit must not make silently. Churro's slot binds
+    # the relabel-proof wrapper the test below proves out.
+    assert spec.retain is adapters._retain_churro_model_view
+    chandra = adapters.resolve_runnable_adapter("chandra.v1")
+    assert set(chandra.prompt()) == {"instruction"}
+    assert (
+        chandra.parse(b'{"schema":"fixture-chandra-response.v1","markdown":"text","blocks":[]}')
+        == "text"
+    )
+    assert chandra.retain is adapters.chandra.retain
 
 
 def test_retention_is_bound_to_the_resolved_adapter_and_cannot_be_relabeled():
@@ -71,10 +83,17 @@ def test_retention_is_bound_to_the_resolved_adapter_and_cannot_be_relabeled():
 
 
 def test_the_registry_binds_the_native_intake_contract_seams():
-    """10B fills 10A's reserved derived-layer seams with real callables."""
+    """Every adapter exposes the closed native and derived intake seams."""
     adapters = _load_local_adapters()
     fields = {field.name for field in dataclasses.fields(adapters.RunnableAdapter)}
-    assert fields == {"prompt", "parse", "retain", "present", "observe"}
+    # Quantization is data beside the five operations; no-layout adapters must
+    # explicitly remain without a conversion rule.
+    assert fields == {"prompt", "parse", "retain", "present", "observe", "quantization"}
+    assert adapters.RUNNABLE_ADAPTERS["churro.v1"].quantization is None
+    assert (
+        adapters.RUNNABLE_ADAPTERS["chandra.v1"].quantization == adapters.chandra.QUANTIZATION_RULE
+    )
+    assert adapters.declared_quantization_rules() == {adapters.chandra.QUANTIZATION_RULE}
     presented = {
         "kind": "page",
         "source_page_id": "page-1",

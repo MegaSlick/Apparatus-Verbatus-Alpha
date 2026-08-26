@@ -15,7 +15,7 @@ from common.chairs.models import AbsentChair, ModelsConfig
 from common.contracts.errors import ContractError, SchemaRefusal
 
 WITNESS_SCOPES: Final = frozenset({"page", "act"})
-KNOWN_WITNESS_ADAPTER_NAMES: Final = frozenset({"churro.v1"})
+KNOWN_WITNESS_ADAPTER_NAMES: Final = frozenset({"chandra.v1", "churro.v1"})
 # Adapter names are configuration keys, not model output.  The current names are
 # short, and a longer spelling cannot resolve exactly; bounding it before
 # whitespace scanning or set hashing keeps a malformed config from multiplying a
