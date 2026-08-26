@@ -69,6 +69,7 @@ from common.corpus_register import refuse_preference  # noqa: E402
 from common.cross_capture_autopsia import (  # noqa: E402
     atomic_delivered_pixels,
     over_capacity_reason,
+    validate_autopsia,
 )
 from common.exemplar_boundary import verify_exemplar_crop_lineage  # noqa: E402
 from common.imaging import dimensions  # noqa: E402
@@ -1189,13 +1190,21 @@ def _region_pixels(bases: list[dict]) -> int:
     )
 
 
-def _reading_image_inputs(context, bases: list[dict], page_renders: list[dict]) -> list[dict]:
-    """Every image blob the reading actually saw, including page context.
+def _reading_image_inputs(
+    context,
+    bases: list[dict],
+    page_renders: list[dict],
+    *,
+    autopsia: dict[str, Any] | None = None,
+) -> list[dict]:
+    """Every image blob the reading saw and its partition authority.
 
     The dossier records these references as payload facts; the envelope input
     list independently binds them as direct evidence.  Omitting page context
     there would let a Perlectio claim it saw a render that its own provenance
-    never retained as an input.
+    never retained as an input. The cross-capture partition is equally direct:
+    it is the authority for which capture set had to be presented, so a reading
+    whose dossier cites it must bind the same immutable bytes as an input.
     """
     inputs = {
         reference["relative_path"]: reference
@@ -1210,6 +1219,14 @@ def _reading_image_inputs(context, bases: list[dict], page_renders: list[dict]) 
             context.input_ref(render["image_path"]),
         ):
             inputs[reference["relative_path"]] = reference
+    if autopsia is not None:
+        partition_ref = validate_autopsia(autopsia)["partition_ref"]
+        prior = inputs.get(partition_ref["relative_path"])
+        if prior is not None and prior != partition_ref:
+            raise SchemaRefusal(
+                "a cross-capture partition path conflicts with another direct input digest"
+            )
+        inputs[partition_ref["relative_path"]] = partition_ref
     return sorted(inputs.values(), key=lambda item: (item["relative_path"], item["sha256"]))
 
 
@@ -1295,8 +1312,9 @@ _PRIMED_WITHOUT_PRIOR_FIELDS: Final = frozenset(
     }
 )
 
-# The two shapes a Perlectio takes when nothing was read: a held act (the
-# proposal never completed) and an explicitly absent chair. Both predate the
+# The three shapes a Perlectio takes when nothing was read: a held act (the
+# proposal never completed), an explicitly absent chair, and a complete atomic
+# presentation that exceeds the sealed image ceiling. The first two predate the
 # closed-schema guard the other two record kinds already carry -- D-6: the
 # record that says *why nothing was read* deserves the same guard as the one
 # that says what was, so a future edit that quietly drops `provenance` from
@@ -1305,14 +1323,18 @@ _NOT_RUN_HELD_FIELDS: Final = frozenset({"act_key", "attempt_ordinal", "reason",
 _NOT_RUN_ABSENT_FIELDS: Final = frozenset(
     {"act_key", "attempt_ordinal", "reason", "basis", "dissent", "provenance"}
 )
+_NOT_RUN_CAPACITY_FIELDS: Final = _NOT_RUN_ABSENT_FIELDS | {
+    "logical_act_id",
+    "cross_capture_autopsia",
+}
 
 
 def validate_not_run_payload(payload: dict, *, fields: frozenset) -> None:
     """Refuse a not-run Perlectio missing part of the record it claims.
 
-    Deliberately just the closed field set, not full record validation: a
-    not-run payload has no text, no dossier and no completed reading to check
-    against each other -- there is nothing else about it to validate.
+    Deliberately the common closed field-set check: a not-run payload has no
+    completed reading to validate. Capacity holds additionally validate their
+    retained autopsia and direct partition input at their production branch.
     """
     missing = sorted(fields - set(payload))
     unexpected = sorted(set(payload) - fields)
@@ -1323,6 +1345,58 @@ def validate_not_run_payload(payload: dict, *, fields: frozenset) -> None:
         )
 
 
+def _dossier_image_refs(rows: Any, *, what: str) -> list[tuple[str, str]]:
+    if not isinstance(rows, list):
+        raise SchemaRefusal(f"a cross-capture dossier has no {what} list")
+    references = []
+    for row in rows:
+        if (
+            not isinstance(row, dict)
+            or not isinstance(row.get("image_path"), str)
+            or not row["image_path"]
+            or not isinstance(row.get("image_sha256"), str)
+        ):
+            raise SchemaRefusal(f"a cross-capture dossier carries a malformed {what} reference")
+        references.append((row["image_path"], row["image_sha256"]))
+    return sorted(references)
+
+
+def _validate_cross_capture_dossier(
+    dossier: dict[str, Any], *, inputs: list[dict[str, str]] | None
+) -> None:
+    """Bind a published dossier to the exact atomic presentation it claims."""
+    if "cross_capture_autopsia" not in dossier:
+        return
+    record = validate_autopsia(dossier["cross_capture_autopsia"])
+    if dossier["logical_act_id"] != record["logical_act_id"]:
+        raise SchemaRefusal(
+            "a Perlector dossier's logical act identity disagrees with its cross-capture autopsia"
+        )
+    autopsia_regions = sorted(
+        (ref["relative_path"], ref["sha256"])
+        for view in record["views"]
+        for ref in view["region_refs"]
+    )
+    autopsia_pages = sorted(
+        (ref["relative_path"], ref["sha256"])
+        for view in record["views"]
+        for ref in view["page_render_refs"]
+    )
+    if _dossier_image_refs(dossier["regions"], what="region") != autopsia_regions:
+        raise SchemaRefusal(
+            "a Perlector dossier's regions differ from its complete cross-capture autopsia"
+        )
+    if _dossier_image_refs(dossier["page_renders"], what="page render") != autopsia_pages:
+        raise SchemaRefusal(
+            "a Perlector dossier's page renders differ from its complete cross-capture autopsia"
+        )
+    if inputs is not None and record["partition_ref"] not in inputs:
+        raise SchemaRefusal(
+            "a Perlector dossier cites a cross-capture partition that is absent from the "
+            "reading's direct inputs"
+        )
+
+
 def validate_reading_payload(
     payload: dict,
     *,
@@ -1330,8 +1404,9 @@ def validate_reading_payload(
     fields: frozenset,
     run_id: str | None = None,
     config_digest: str | None = None,
-    protocol_config: dict[str, str] | None = None,
+    protocol_config: dict[str, str | int] | None = None,
     protocol_sha256: str | None = None,
+    inputs: list[dict[str, str]] | None = None,
 ) -> None:
     """Refuse a reading payload that is missing part of the record it claims.
 
@@ -1421,6 +1496,7 @@ def validate_reading_payload(
     if reading_dossier["dossier_digest"] != digest_of(dossier_body):
         raise SchemaRefusal("a Perlector dossier digest does not match the dossier it seals")
     dossier_module.assert_no_order_bearing_field(dossier_body)
+    _validate_cross_capture_dossier(reading_dossier, inputs=inputs)
     lectio_kind = payload.get("lectio_kind")
     prior_draft = reading_dossier.get("prior_draft")
     if lectio_kind == "primed-with-prior":
@@ -1744,9 +1820,14 @@ def _audit_semi_final(
 
 
 def audit_page_ids(bases: list[dict[str, Any]]) -> list[str]:
-    """The complete, stable page denominator for one act's page audit."""
-    by_ordinal = {basis["source_page_ordinal"]: basis["source_page_id"] for basis in bases}
-    page_ids = [by_ordinal[ordinal] for ordinal in sorted(by_ordinal)]
+    """The complete canonical page set for one act's page audit.
+
+    Page sequence remains on each immutable region basis. This field is only a
+    denominator, so retaining ordinal traversal here would give its list order
+    an accidental representative meaning after the singular ``page_id`` was
+    removed.
+    """
+    page_ids = sorted({basis["source_page_id"] for basis in bases})
     if not page_ids:
         raise FatalAccounting("Perlectio has no source pages for its audit")
     return page_ids
@@ -1844,6 +1925,7 @@ def _sealed_sibling_semi_finals(
             config_digest=context.config_digest,
             protocol_config=protocol_config,
             protocol_sha256=protocol_sha256,
+            inputs=reading["inputs"],
         )
         chain = audit.validate_chain(context.tree, reading, act_id)
         draft_payload = chain["draft"]["payload"]
@@ -1948,17 +2030,15 @@ def _page_flags(
 
 
 def _reseal_dossier(dossier: dict[str, Any]) -> dict[str, Any]:
-    """Recompute a dossier's digest over its complete, final field set.
+    """Verify the preference sweep and seal a dossier's final field set.
 
     `build_dossier` seals `dossier_digest` over whatever it was given at
     construction. The combined cross-capture path (`combined.py`,
     `cross_capture_autopsia.assemble_reader_input`) adds `logical_act_id` and
     `cross_capture_autopsia` -- and, for the establishing pass, `prior_draft`
-    and `prior_draft_view` -- to an already-sealed dossier, so the digest that
-    dossier carries out of that path no longer covers everything in it. This
-    reproduces `build_dossier`'s own convention (digest of every field except
-    `dossier_digest` itself) over the dossier's actual final content, which is
-    exactly what `validate_reading_payload` checks a published dossier against.
+    and `prior_draft_view`. The transport now re-seals before the reader call;
+    this publication-side repetition is deliberate defense in depth and also
+    repeats the preference sweep over the exact fields retained on disk.
     """
     body = {key: value for key, value in dossier.items() if key != "dossier_digest"}
     # `build_dossier` sweeps for preference-bearing keys immediately before it
@@ -2030,19 +2110,26 @@ def _publish_lectio_nuda(
         "gaps": _whole_act_gap([], {}) if outcome == "no-readable-text" else [],
         "provenance": provenance_for(context, chair, attempted=True),
     }
+    reading_inputs = _reading_image_inputs(
+        context,
+        bases,
+        page_renders,
+        autopsia=nuda_dossier["cross_capture_autopsia"],
+    )
     validate_reading_payload(
         payload,
         outcome=outcome,
         fields=_LECTIO_NUDA_FIELDS,
         protocol_config=protocol_config,
         protocol_sha256=protocol_sha256,
+        inputs=reading_inputs,
     )
     context.publish(
         kind=nuda.LECTIO_NUDA_KIND,
         subject_id=act_id,
         outcome=outcome,
         attempt=perlector_attempt_id(act_id, "lectio-nuda", ordinal),
-        inputs=_reading_image_inputs(context, bases, page_renders),
+        inputs=reading_inputs,
         payload=payload,
     )
 
@@ -2096,19 +2183,26 @@ def _publish_lectio_prior(
             "draft_fed": context.draft_fed,
         },
     }
+    reading_inputs = _reading_image_inputs(
+        context,
+        bases,
+        page_renders,
+        autopsia=prior_dossier["cross_capture_autopsia"],
+    )
     validate_reading_payload(
         payload,
         outcome=outcome,
         fields=_LECTIO_PRIOR_FIELDS,
         protocol_config=protocol_config,
         protocol_sha256=protocol_sha256,
+        inputs=reading_inputs,
     )
     context.publish(
         kind="lectio-prior",
         subject_id=act_id,
         outcome=outcome,
         attempt=perlector_attempt_id(act_id, "lectio-prior", ordinal),
-        inputs=_reading_image_inputs(context, bases, page_renders),
+        inputs=reading_inputs,
         payload=payload,
     )
     prior_artifact_id = artifact_id(
@@ -2182,7 +2276,14 @@ def _publish_primed_without_prior(
             selection_rule=protocol_config["selection_rule"],
             approval_ref=approval_ref,
         ),
-        "membership": {**membership, "act_id": act_id, "protocol_sha256": protocol_sha256},
+        # The digest draw above is keyed by the logical act. Record that same
+        # subject here; a local capture ID would make a clustered control's
+        # retained membership impossible to reproduce from its own facts.
+        "membership": {
+            **membership,
+            "act_id": control_dossier["logical_act_id"],
+            "protocol_sha256": protocol_sha256,
+        },
         "dissent": dissent_against(text, dissent_testimonia(testimonia, attachment_view)),
         "truncation": truncation_record,
         "uncertain_spans": [],
@@ -2197,6 +2298,16 @@ def _publish_primed_without_prior(
             "draft_fed": context.draft_fed,
         },
     }
+    reading_inputs = (
+        _reading_image_inputs(
+            context,
+            bases,
+            page_renders,
+            autopsia=control_dossier["cross_capture_autopsia"],
+        )
+        + list(testimonium_references.values())
+        + [attachment_view["reference"]]
+    )
     validate_reading_payload(
         payload,
         outcome=outcome,
@@ -2205,17 +2316,34 @@ def _publish_primed_without_prior(
         config_digest=context.config_digest,
         protocol_config=protocol_config,
         protocol_sha256=protocol_sha256,
+        inputs=reading_inputs,
     )
     context.publish(
         kind="primed-without-prior",
         subject_id=act_id,
         outcome=outcome,
         attempt=perlector_attempt_id(act_id, "primed-without-prior", ordinal),
-        inputs=_reading_image_inputs(context, bases, page_renders)
-        + list(testimonium_references.values())
-        + [attachment_view["reference"]],
+        inputs=reading_inputs,
         payload=payload,
     )
+
+
+def _logical_sampling_decisions(context, logical_act_id: str) -> tuple[bool, bool]:
+    """Choose instrument membership once for a logical act, never per capture."""
+    nuda_sampled = nuda.is_nuda_sampled(
+        logical_act_id,
+        run_id=context.tree.run_id,
+        nuda_per_mille=context.nuda_per_mille,
+    )
+    frame_membership = context.run["corpus_frame_membership"]
+    control_sampled = protocol.is_control_sampled(
+        logical_act_id,
+        frame_digest=frame_membership["frame_digest"],
+        page_digest=frame_membership["page_digest"],
+        seed=frame_membership["seed"],
+        per_mille=context.perlector_instrument_per_mille,
+    )
+    return nuda_sampled, control_sampled
 
 
 def main(registry_factory=ChairRegistry.from_toml) -> int:
@@ -2417,6 +2545,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         # remains unreachable either way.
         capacity_finding = over_capacity_reason(autopsia, max_images)
         if capacity_finding is not None:
+            capacity_inputs = _reading_image_inputs(context, bases, page_renders, autopsia=autopsia)
             payload = {
                 "act_key": act["act_key"],
                 "attempt_ordinal": ordinal,
@@ -2424,13 +2553,16 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "basis": {"regions": [], "testimonia": []},
                 "dissent": [],
                 "provenance": provenance_for(context, chair, attempted=False),
+                "logical_act_id": logical_act_id,
+                "cross_capture_autopsia": autopsia,
             }
-            validate_not_run_payload(payload, fields=_NOT_RUN_ABSENT_FIELDS)
+            validate_not_run_payload(payload, fields=_NOT_RUN_CAPACITY_FIELDS)
             context.publish(
                 kind="perlectio",
                 subject_id=act_id,
                 outcome="not-run",
                 attempt=perlector_attempt_id(act_id, "perlegere", ordinal),
+                inputs=capacity_inputs,
                 payload=payload,
             )
             acknowledged += 1
@@ -2452,17 +2584,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         # (`nuda_per_mille`, fixed before the run) -- an independent artifact
         # from the establishing pass, decided once per logical act rather than
         # once per capture, exactly as the control sample below is.
-        nuda_sampled = nuda.is_nuda_sampled(
-            act_id, run_id=context.tree.run_id, nuda_per_mille=context.nuda_per_mille
-        )
-        frame_membership = context.run["corpus_frame_membership"]
-        control_sampled = protocol.is_control_sampled(
-            act_id,
-            frame_digest=frame_membership["frame_digest"],
-            page_digest=frame_membership["page_digest"],
-            seed=frame_membership["seed"],
-            per_mille=context.perlector_instrument_per_mille,
-        )
+        nuda_sampled, control_sampled = _logical_sampling_decisions(context, logical_act_id)
 
         def _publish_prior_and_get_draft(
             prior_dossier,
@@ -2649,7 +2771,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "attachment_view": attachment_view,
                 "prior": prior,
                 "autopsia": autopsia,
-                "inputs": _reading_image_inputs(context, bases, page_renders)
+                "inputs": _reading_image_inputs(context, bases, page_renders, autopsia=autopsia)
                 + list(testimonium_references.values())
                 + [attachment_view["reference"], prior["reference"]],
             }
@@ -2930,6 +3052,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             config_digest=context.config_digest,
             protocol_config=protocol_config,
             protocol_sha256=protocol_sha256,
+            inputs=reading_inputs,
         )
         context.publish(
             kind="perlectio",

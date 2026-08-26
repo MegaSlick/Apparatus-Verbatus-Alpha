@@ -43,6 +43,35 @@ def _source_sha256_of_page(context, page_id: str) -> str:
     return digest
 
 
+def _verified_source_ledger(context) -> set[str]:
+    """Every submitted capture that has immutable Exemplar page lineage.
+
+    ``run.json`` is the complete submission denominator, not proof that the
+    Exemplar admitted a page from every row: a door refusal remains in that
+    denominator deliberately. The physical-act partition needs the narrower
+    fact "this run can present this capture". Each digest returned here comes
+    from a page artifact re-read through ``RunTree.read_artifact``; a registered
+    cluster member that was submitted but never admitted therefore remains
+    absent and becomes ``cluster-member-absent`` before any Perlectio.
+    """
+    submitted = source_ledger_from_run(context.run)
+    verified: set[str] = set()
+    for entry in context.tree.build_manifest(EXEMPLAR)["artifacts"]:
+        if entry["kind"] != "page":
+            continue
+        page = context.tree.read_artifact(EXEMPLAR, "page", entry["artifact_id"])
+        digest = page.get("payload", {}).get("source_sha256")
+        if not isinstance(digest, str) or not digest:
+            raise SchemaRefusal(f"Exemplar page {entry['artifact_id']!r} carries no source_sha256")
+        if digest not in submitted:
+            raise SchemaRefusal(
+                "physical-act partition: an Exemplar page names a capture absent from "
+                "this run's sealed source manifest"
+            )
+        verified.add(digest)
+    return verified
+
+
 def _local_act_row(context, act: dict[str, Any]) -> dict[str, Any]:
     evidence = act.get("evidence") or []
     proposal_refs = sorted(
@@ -130,7 +159,7 @@ def build_run_partition(
         proposal_seal_ref=proposal_seal_ref,
         local_acts=local_acts,
         capture_alignments=[],
-        source_ledger=source_ledger_from_run(context.run),
+        source_ledger=_verified_source_ledger(context),
     )
     _refuse_a_partition_this_loop_cannot_read(partition)
     digest, published = context.tree.put_blob(PERLECTOR, canonical_bytes(partition))
@@ -225,25 +254,39 @@ def act_autopsia(
     provenance a later audit can look at, never a completed visibility claim
     read by anything downstream today.
     """
-    renders_by_page = {render["source_page_id"]: render for render in page_renders}
+    renders_by_page: dict[str, dict[str, Any]] = {}
+    for render in page_renders:
+        page_id = render["source_page_id"]
+        if page_id in renders_by_page and renders_by_page[page_id] != render:
+            raise SchemaRefusal(
+                f"act {act['act_id']!r} has two different page renders for {page_id!r}"
+            )
+        renders_by_page[page_id] = render
     pages = sorted({basis["source_page_id"] for basis in bases})
+    pages_by_capture: dict[str, list[str]] = {}
+    for page_id in pages:
+        pages_by_capture.setdefault(_source_sha256_of_page(context, page_id), []).append(page_id)
     views = []
     required: list[str] = []
-    for page_id in pages:
-        source_sha256 = _source_sha256_of_page(context, page_id)
+    for source_sha256 in sorted(pages_by_capture):
+        capture_pages = pages_by_capture[source_sha256]
         required.append(source_sha256)
-        render = renders_by_page.get(page_id)
-        if render is None:
-            raise SchemaRefusal(
-                f"act {act['act_id']!r} has a region on page {page_id!r} with no page render"
+        capture_renders = []
+        for page_id in capture_pages:
+            render = renders_by_page.get(page_id)
+            if render is None:
+                raise SchemaRefusal(
+                    f"act {act['act_id']!r} has a region on page {page_id!r} with no page render"
+                )
+            capture_renders.append(
+                {"relative_path": render["image_path"], "sha256": render["image_sha256"]}
             )
-        page_render_ref = {"relative_path": render["image_path"], "sha256": render["image_sha256"]}
         views.append(
             {
-                "view_id": f"view_{page_id}",
-                "physical_page_id": f"ppg_local_{page_id}",
+                "view_id": f"view_capture_{source_sha256}",
+                "physical_page_id": f"ppg_local_capture_{source_sha256}",
                 "source_sha256": source_sha256,
-                "page_ids": [page_id],
+                "page_ids": capture_pages,
                 "local_act_ids": [act["act_id"]],
                 # Not deduplicated by content: a recovery crop and its
                 # original proposal can cut different rectangles of an
@@ -263,11 +306,11 @@ def act_autopsia(
                 "region_refs": [
                     {"relative_path": basis["image_path"], "sha256": basis["image_sha256"]}
                     for basis in bases
-                    if basis["source_page_id"] == page_id
+                    if basis["source_page_id"] in capture_pages
                 ],
-                "page_render_refs": [page_render_ref],
-                "alignment_ref": f"identity-alignment:{page_id}",
-                "visibility_evidence_refs": [page_render_ref],
+                "page_render_refs": capture_renders,
+                "alignment_ref": f"identity-alignment:{source_sha256}",
+                "visibility_evidence_refs": capture_renders,
             }
         )
     return build_autopsia_from_run(

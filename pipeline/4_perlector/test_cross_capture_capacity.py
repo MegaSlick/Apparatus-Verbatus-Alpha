@@ -1,4 +1,4 @@
-"""A presentation that does not fit holds its own act, and only its own act.
+"""Over-capacity presentations become explicit holds without killing the stage.
 
 Consult §3.1 makes an over-capacity cluster a named finding plus a ``not-run``
 Perlectio for that logical act. Before this test existed the transport's
@@ -69,6 +69,14 @@ def test_an_over_capacity_presentation_holds_its_act_without_killing_the_stage(o
     for record in records:
         assert record["outcome"] == "not-run"
         assert record["payload"]["reason"].startswith(OVER_CAPACITY)
+        assert "max_images provides 1" in record["payload"]["reason"]
+        assert record["payload"]["logical_act_id"]
+        assert (
+            record["payload"]["cross_capture_autopsia"]["logical_act_id"]
+            == record["payload"]["logical_act_id"]
+        )
+        partition_ref = record["payload"]["cross_capture_autopsia"]["partition_ref"]
+        assert partition_ref in record["inputs"]
         # A not-run act names its absence rather than carrying half a reading.
         assert record["payload"]["basis"] == {"regions": [], "testimonia": []}
         assert record["payload"]["dissent"] == []

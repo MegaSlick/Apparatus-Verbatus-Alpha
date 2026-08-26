@@ -952,7 +952,14 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # unchanged (happy 98/0, review 107/3). Measured twice in independent
 # temporary roots at canonical run id "r" through this module's own
 # `orchestrate` and `semantic_snapshot_digest` helpers.
-HAPPY_RUN_TREE_DIGEST = "edd471b1d09807324f1756d17f19ba3356be3570809bc9d54b611fcd664164aa"
+# Unit 19B Sol formal review: every cross-capture dossier now binds the physical-
+# act partition it cites as a direct envelope input, and multi-page audit
+# denominators are canonical page-ID sets rather than ordinal traversal lists.
+# The first change moves every reading and its downstream chain; the second
+# moves the continuation act's audit chain. No reading, decision, exit, or file
+# count changes (happy 98/0). Measured twice in independent temporary roots at
+# canonical run id "r" through this module's own helpers.
+HAPPY_RUN_TREE_DIGEST = "8ec93af3be2601d363c0c10aa011594df9db946348918ffec8c32e07ef751c0e"
 # Review only, once more in the same seat: a page witness invoked on every act
 # and unusable on all of them now records the serving moment that produced it
 # (`provenance_for(..., attempted=attempted_page)`), where the `reading` gate
@@ -1032,7 +1039,13 @@ HAPPY_RUN_TREE_DIGEST = "edd471b1d09807324f1756d17f19ba3356be3570809bc9d54b611fc
 # each of them; file count stays 107 and the exit stays 3. Measured twice in
 # independent temporary roots at canonical run id "r" through this module's
 # own `orchestrate` and `semantic_snapshot_digest` helpers.
-REVIEW_RUN_TREE_DIGEST = "7964828990392a4c3e62011ced6e433651ebd21b41c98c698960ccd91e71c8b1"
+# Unit 19B Sol formal review: same partition-input and canonical page-set
+# corrections as happy above. Review's recovery attempts acquire the same
+# immutable partition input and its continuation audit uses the same canonical
+# denominator. File count remains 107 and exit remains 3. Measured twice in
+# independent temporary roots at canonical run id "r" through this module's
+# own helpers.
+REVIEW_RUN_TREE_DIGEST = "0609a5c8b29f945cf1bc84412111cdfa9e76f85c32829e137b96214f265bc3a9"
 
 
 def orchestrate(

@@ -20,13 +20,20 @@ DISSENT_SCHEMA: Final = "cross-capture-dissent.v1"
 _FORBIDDEN: Final = (
     "primary",
     "canonical",
-    "selected",
+    "select",
     "winner",
     "best",
-    "preferred",
+    "better",
+    "prefer",
     "rank",
+    "trust",
+    "weight",
     "score",
     "order",
+    "reliab",
+    "chosen",
+    "priority",
+    "picker",
 )
 
 
@@ -133,6 +140,12 @@ def build_autopsia(
     """Seal one complete, canonical capture presentation for one logical act."""
     if not isinstance(logical_act_id, str) or not logical_act_id:
         raise SchemaRefusal("cross-capture autopsia: logical_act_id is required")
+    if not isinstance(required_capture_sha256s, list):
+        raise SchemaRefusal(
+            "cross-capture autopsia: required_capture_sha256s is not a capture list"
+        )
+    if not isinstance(views, list):
+        raise SchemaRefusal("cross-capture autopsia: views is not a presentation list")
     _reject_preference({"logical_act_id": logical_act_id, "views": views})
     required = sorted({_sha(item, "required capture sha256") for item in required_capture_sha256s})
     if not required:
@@ -176,17 +189,18 @@ def build_autopsia_from_run(
     views: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """Build only when every presentation belongs to this run's source ledger."""
-    ledger = source_ledger_from_run(run)
-    required = set(required_capture_sha256s)
-    missing = required - ledger
-    if missing:
-        raise SchemaRefusal("cluster-member-absent: required capture is absent from this run")
-    return build_autopsia(
+    record = build_autopsia(
         logical_act_id=logical_act_id,
         partition_ref=partition_ref,
         required_capture_sha256s=required_capture_sha256s,
         views=views,
     )
+    ledger = source_ledger_from_run(run)
+    required = set(record["required_capture_sha256s"])
+    missing = required - ledger
+    if missing:
+        raise SchemaRefusal("cluster-member-absent: required capture is absent from this run")
+    return record
 
 
 def validate_autopsia(value: dict[str, Any]) -> dict[str, Any]:
@@ -264,7 +278,12 @@ def over_capacity_reason(autopsia: dict[str, Any], max_images: int | None) -> st
         or isinstance(max_images, bool)
         or max_images < needed
     ):
-        return f"{OVER_CAPACITY}: complete atomic presentation needs {needed} images"
+        available = repr(max_images) if max_images is not None else "no sealed image ceiling"
+        return (
+            f"{OVER_CAPACITY}: complete atomic presentation needs {needed} images but "
+            f"max_images provides {available}; no reader call is made and the logical act "
+            "remains held"
+        )
     return None
 
 
@@ -311,6 +330,18 @@ def assemble_reader_input(
     delivered = copy.deepcopy(dossier)
     delivered["logical_act_id"] = record["logical_act_id"]
     delivered["cross_capture_autopsia"] = record
+    # The transport is the last boundary before the reader. Production dossiers
+    # were swept when built, but a late field added by any caller must refuse
+    # here, before it can condition even a failed or unpublished invocation.
+    _reject_preference(delivered)
+    # A real dossier arrives with a digest sealing its pre-transport fields.
+    # Adding the logical identity and presentation after that seal and then
+    # calling the reader would hand it an object whose own integrity claim is
+    # already false. Re-seal before the invocation; publication may verify the
+    # same digest again, but it must describe the bytes the reader received.
+    if "dossier_digest" in delivered:
+        body = {key: value for key, value in delivered.items() if key != "dossier_digest"}
+        delivered["dossier_digest"] = digest_of(body)
     return delivered, pixels
 
 
