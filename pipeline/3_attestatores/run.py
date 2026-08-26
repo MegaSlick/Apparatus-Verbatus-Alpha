@@ -996,6 +996,18 @@ def validate_testimonium_payload(payload: Any) -> dict[str, Any]:
     if "raw_response_ref" in payload:
         validate_raw_response_ref(payload["raw_response_ref"])
     validate_adapter_metadata(payload)
+    # The closed confidence-ordinal set is a writer-side rule
+    # (`_confidence_problem`, applied in `prepared_response` and the Chandra
+    # branch of `resolve_attempt`), and this is the one envelope validator both
+    # of those writers and the tally/resume read-back share. Checking it again
+    # here is what makes it a property of every sealed Testimonium rather than
+    # of however many call sites remember to ask -- and, since Unit 2, this
+    # validator is also the gate a crash resume trusts before carrying a
+    # retained self-report forward into a freshly published record: unchecked
+    # here, a malformed claim that ever reached disk would be revalidated as
+    # fine and republished rather than refused.
+    if problem := _confidence_problem(payload.get("witness_reported")):
+        raise SchemaRefusal(problem)
     return validate_native_witness_geometry(payload)
 
 
@@ -2116,12 +2128,63 @@ def resolve_attempt(
                     else {"parse_outcome": parsed["outcome"]}
                 )
                 health = content_health(native_payload, completed=True)
+                # A Chandra response is untrusted witness input exactly like any
+                # other chair's, and `witness_reported`/`format_capabilities` are
+                # self-report fields the same closed rules gate elsewhere
+                # (`prepared_response`). Retained bytes were never the risk here;
+                # calling `format_capabilities_for` unguarded was -- a malformed
+                # declaration raised `SchemaRefusal` straight out of this
+                # function, past the per-attempt outcome vocabulary, and held
+                # the whole pass on one witness's bad self-report instead of
+                # failing only its own attempt (the isolation this stage's other
+                # untrusted-input guards, e.g. `_MAX_NATIVE_DEPTH`, exist for).
+                # Mirrored here rather than routed through `prepared_response`
+                # itself: that function starts from `row["payload"]`, which a
+                # Chandra response never carries -- its native text comes from
+                # `adapter.retain` above -- so reusing it would have to fabricate
+                # a `payload` key first.
+                witness_reported = response.get("witness_reported")
+                report_problem = _native_problem(witness_reported, "witness_reported")
+                if report_problem is None:
+                    report_problem = _confidence_problem(witness_reported)
+                if report_problem is not None:
+                    witness_reported = None
+                try:
+                    capabilities = format_capabilities_for(response)
+                except SchemaRefusal as error:
+                    reason = f"the witness format capabilities could not be retained: {error}"
+                    if report_problem is not None:
+                        reason = (
+                            f"{reason}; the witness self-report could not be "
+                            f"retained: {report_problem}"
+                        )
+                    return Attempt(
+                        "failed",
+                        native_payload,
+                        witness_reported,
+                        None,
+                        health,
+                        reason,
+                        retained["raw_response_ref"],
+                        raw_response,
+                    )
+                if report_problem is not None:
+                    return Attempt(
+                        "failed",
+                        native_payload,
+                        None,
+                        capabilities,
+                        health,
+                        f"the witness self-report could not be retained: {report_problem}",
+                        retained["raw_response_ref"],
+                        raw_response,
+                    )
                 outcome = "genuinely-empty" if native_payload == "" else "read"
                 return Attempt(
                     outcome,
                     native_payload,
-                    response.get("witness_reported"),
-                    format_capabilities_for(response),
+                    witness_reported,
+                    capabilities,
                     health,
                     None,
                     retained["raw_response_ref"],

@@ -1539,6 +1539,157 @@ def test_combined_unrecordable_witness_metadata_fails_one_attempt_without_crashi
     assert attestatores.attempt_tally(tree)["state"] == "KNOWN"
 
 
+def test_chandra_combined_unrecordable_metadata_fails_one_attempt_without_holding_the_pass(
+    tmp_path, monkeypatch
+):
+    """The Chandra branch of `resolve_attempt` is untrusted input too.
+
+    `attestator_1` is the fixture's Chandra chair: its `raw_response` string
+    takes a different path through `resolve_attempt` than every other chair's
+    declared `payload`, and that path used to call `format_capabilities_for`
+    unguarded and never checked `witness_reported` against the closed
+    confidence-ordinal set at all. A malformed declaration there raised
+    `SchemaRefusal` straight out of `resolve_attempt`, past the per-attempt
+    outcome vocabulary this stage otherwise guarantees, and held the *whole*
+    pass -- no Testimonium for any act or chair -- over one witness's bad
+    self-report, exactly the failure this stage's other untrusted-input guards
+    (e.g. `_MAX_NATIVE_DEPTH`) exist to prevent. This mirrors
+    `test_combined_unrecordable_witness_metadata_fails_one_attempt_without_crashing`
+    for the chair that used to skip both checks entirely.
+    """
+    run_root, tree = run_to_designator(tmp_path, "happy")
+    real_testimony_for = attestatores.testimony_for
+
+    def combined_chandra_testimony(context, act_key, chair, ordinal):
+        if (act_key, chair, ordinal) == ("a1", "attestator_1", 1):
+            return {
+                "raw_response": (
+                    '{"markdown":"SYNTHETIC ACT ONE alpha beta gamma",'
+                    '"blocks":[{"bbox":[20.25,20.5,180,100.1]}]}'
+                ),
+                "format_capabilities": "not an object",
+                "witness_reported": "\ud800",
+            }
+        return real_testimony_for(context, act_key, chair, ordinal)
+
+    monkeypatch.setattr(attestatores, "testimony_for", combined_chandra_testimony)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run.py",
+            "--run-root",
+            str(run_root),
+            "--run-id",
+            "retention",
+            "--scenario",
+            "happy",
+            "--fixture-root",
+            str(ROOT / "proof"),
+        ],
+    )
+
+    assert attestatores.main() == 0
+    records = _testimonia(tree)
+    assert len(records) == 6
+    malformed = _testimonium_for(tree, act_key="a1", chair="attestator_1", ordinal=1)
+    assert malformed["outcome"] == "failed"
+    # The native text a real witness sent is still retained as evidence -- only
+    # the untrustworthy self-report is discarded (GOVERNANCE 2, "kept, and
+    # demoted").
+    assert malformed["payload"]["payload"] == "SYNTHETIC ACT ONE alpha beta gamma"
+    assert malformed["payload"]["format_capabilities"] is None
+    assert malformed["payload"]["witness_reported"] is None
+    assert malformed["payload"]["raw_response_ref"] is not None
+    reason = malformed["payload"]["reason"]
+    assert "format capabilities could not be retained" in reason
+    assert "self-report could not be retained" in reason
+    assert sum(record["outcome"] == "read" for record in records) == 5
+    assert attestatores.attempt_tally(tree)["state"] == "KNOWN"
+
+
+def test_chandra_malformed_confidence_alone_fails_one_attempt_and_keeps_capabilities(
+    tmp_path, monkeypatch
+):
+    """A closed-ordinal violation is refused even with valid format capabilities.
+
+    Distinct from the combined case above: this pins that `_confidence_problem`
+    is actually consulted for the Chandra branch (not merely reached alongside
+    a capabilities failure), and that a clean `format_capabilities` value
+    survives untouched when only the self-report is bad.
+    """
+    run_root, tree = run_to_designator(tmp_path, "happy")
+    real_testimony_for = attestatores.testimony_for
+
+    def bad_confidence_only(context, act_key, chair, ordinal):
+        if (act_key, chair, ordinal) == ("a1", "attestator_1", 1):
+            return {
+                "raw_response": (
+                    '{"markdown":"SYNTHETIC ACT ONE alpha beta gamma",'
+                    '"blocks":[{"bbox":[20.25,20.5,180,100.1]}]}'
+                ),
+                "witness_reported": {"confidence": "extremely-confident"},
+            }
+        return real_testimony_for(context, act_key, chair, ordinal)
+
+    monkeypatch.setattr(attestatores, "testimony_for", bad_confidence_only)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run.py",
+            "--run-root",
+            str(run_root),
+            "--run-id",
+            "retention",
+            "--scenario",
+            "happy",
+            "--fixture-root",
+            str(ROOT / "proof"),
+        ],
+    )
+
+    assert attestatores.main() == 0
+    malformed = _testimonium_for(tree, act_key="a1", chair="attestator_1", ordinal=1)
+    assert malformed["outcome"] == "failed"
+    assert malformed["payload"]["payload"] == "SYNTHETIC ACT ONE alpha beta gamma"
+    assert malformed["payload"]["format_capabilities"] == attestatores.DEFAULT_FORMAT_CAPABILITIES
+    assert malformed["payload"]["witness_reported"] is None
+    assert "self-report could not be retained" in malformed["payload"]["reason"]
+    assert attestatores.attempt_tally(tree)["state"] == "KNOWN"
+
+
+def test_validate_testimonium_payload_refuses_a_witness_reported_confidence_outside_the_closed_set():
+    """The shared envelope validator is the one both the writer and the crash
+    resume's `validate_tallied_testimonium` call -- so closing this here closes
+    it for both, including a retained record a resumed pass would otherwise
+    revalidate as fine and carry forward into a freshly published record."""
+    base = attestatores.testimonium_payload(
+        chair="attestator_1",
+        act_key="a1",
+        ordinal=1,
+        regions=[],
+        provenance={
+            "chair": "attestator_1",
+            "chair_state": "absent",
+            "absence": {"kind": "roster-omission", "reason": "not configured"},
+            "resolved_identity": None,
+            "resolved_revision": None,
+            "receipt_ref": None,
+            "adapter_revision": "test",
+        },
+        format_capabilities=None,
+        native_payload=None,
+        witness_reported=None,
+        health=attestatores.no_response_health(reason="not-attempted"),
+        outcome="not-run",
+        reason="no attempt was made for this configured chair",
+    )
+    forged = {**base, "witness_reported": {"confidence": "extremely-confident"}}
+    with pytest.raises(SchemaRefusal, match="closed ordinal set"):
+        attestatores.validate_testimonium_payload(forged)
+
+
 def test_witness_metadata_cannot_rewrite_native_content_health():
     native = "verbatim native response"
     expected = attestatores.content_health(native, completed=True)
