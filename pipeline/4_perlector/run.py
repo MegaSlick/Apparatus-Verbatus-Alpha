@@ -132,14 +132,18 @@ def resolve_sampling_approval(context, *, approval_ref: str, subject: str) -> Ap
     candidates: list[ApprovalRecordReference] = []
     if receipts.is_dir():
         for path in sorted(receipts.glob("*.json")):
+            relative_path = f"{RECEIPTS_DIR}/{path.name}"
             try:
-                decoded = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, UnicodeDecodeError, ValueError):
+                # The directory was containment-checked above, but a member may
+                # itself be a symlink. Resolve every candidate through the run
+                # tree before inspecting even its untrusted subject selector.
+                decoded = json.loads(context.tree.read_bytes(relative_path).decode("utf-8"))
+            except (OSError, UnicodeDecodeError, ValueError, RecursionError):
                 continue
-            if decoded.get("subject_ids") != [subject]:
+            if not isinstance(decoded, dict) or decoded.get("subject_ids") != [subject]:
                 continue
             digest = path.stem
-            candidates.append(ApprovalRecordReference(f"{RECEIPTS_DIR}/{digest}.json", digest))
+            candidates.append(ApprovalRecordReference(relative_path, digest))
 
     if not candidates:
         # The refusal names the two things an operator needs and cannot derive

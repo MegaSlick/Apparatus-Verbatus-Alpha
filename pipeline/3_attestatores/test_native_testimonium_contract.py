@@ -2,6 +2,7 @@
 
 import copy
 import importlib.util
+import inspect
 import subprocess
 import sys
 from pathlib import Path
@@ -134,6 +135,16 @@ def test_a_page_witness_with_one_failed_and_one_unread_act_is_still_attempted():
         ("a2", "attestator_1"): _attempt("failed"),
     }
     assert attestatores.page_witness_attempted(acts, "attestator_1", attempts_by_pair) is True
+
+
+def test_each_testimonium_writer_reconciles_adapter_evidence_before_publication():
+    """A later tally refusal cannot undo immutable evidence already published."""
+    for writer in (
+        attestatores.publish_attempt,
+        attestatores.publish_page_testimonia_and_attachments,
+    ):
+        source = inspect.getsource(writer)
+        assert source.index("validate_testimonium_presentation(") < source.index("context.publish(")
 
 
 class _Context:

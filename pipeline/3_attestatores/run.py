@@ -1697,12 +1697,17 @@ def publish_attempt(
         # Its attachment points at the retained page Testimonium; R4 replaces
         # this declared view with alignment, not with another witness kind.
         payload["page_witness"] = True
+    inputs = region_inputs(context, regions, presented) if attempted else []
+    # Adapter output is untrusted. Reconcile it while refusal can still leave
+    # the immutable Testimonium identity unwritten; tally/consumer validation
+    # repeats this check but cannot undo an invalid publication.
+    validate_testimonium_presentation(context, {"payload": payload, "inputs": inputs})
     context.publish(
         kind="testimonium",
         subject_id=act["act_id"],
         outcome=attempt.outcome,
         attempt=attempt_id(act["act_id"], f"read:{chair}", ordinal),
-        inputs=region_inputs(context, regions, presented) if attempted else [],
+        inputs=inputs,
         payload=payload,
     )
 
@@ -2089,12 +2094,16 @@ def publish_page_testimonia_and_attachments(
                 outcome=outcome,
                 reason=None if reading else failure_reason,
             )
+            inputs = [context.input_ref(presented["image_path"])] if presented else []
+            # See the act-scoped writer: no adapter-derived evidence is made
+            # immutable before it reconciles with its sealed page and inputs.
+            validate_testimonium_presentation(context, {"payload": payload, "inputs": inputs})
             context.publish(
                 kind="page-testimonium",
                 subject_id=page_subject,
                 outcome=outcome,
                 attempt=page_attempt,
-                inputs=[context.input_ref(presented["image_path"])] if presented else [],
+                inputs=inputs,
                 payload=payload,
             )
             page_records[(page_ordinal, chair)] = context.artifact_ref(

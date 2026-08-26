@@ -2,6 +2,15 @@
 
 import importlib.util
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from common.contracts.approval import build_approval_record
+from common.contracts.canonical import canonical_bytes, digest_bytes
+from common.contracts.errors import ContractError, SchemaRefusal
+from common.runtree.store import RECEIPTS_DIR, RunTree
+from common.stage import NUDA_APPROVAL_SUBJECT
 
 
 def _load_perlector():
@@ -14,6 +23,74 @@ def _load_perlector():
 
 
 perlector = _load_perlector()
+
+
+def test_approval_discovery_does_not_open_a_symlink_outside_the_run_tree(tmp_path, monkeypatch):
+    config_digest = "a" * 64
+    tree = RunTree.create(
+        tmp_path / "runs",
+        "approval-symlink",
+        source_manifest=[],
+        config_digest=config_digest,
+        adapter_recipes={},
+        witness_chairs=[],
+    )
+    record = build_approval_record(
+        subject_ids=[NUDA_APPROVAL_SUBJECT],
+        action="other",
+        reason="test-only sampling approval",
+        target_version_hash=config_digest,
+        timestamp="2026-08-26T00:00:00Z",
+    )
+    data = canonical_bytes(record)
+    digest = digest_bytes(data)
+    outside = tmp_path / "outside-approval.json"
+    outside.write_bytes(data)
+    receipts = tree.resolve(RECEIPTS_DIR)
+    receipts.mkdir(parents=True)
+    candidate = receipts / f"{digest}.json"
+    candidate.symlink_to(outside)
+
+    original_open = Path.open
+
+    def guarded_open(path, *args, **kwargs):
+        if path == candidate:
+            raise AssertionError("approval discovery opened an outward symlink")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", guarded_open)
+    context = SimpleNamespace(tree=tree, config_digest=config_digest)
+    with pytest.raises(SchemaRefusal, match="resolves outside the run tree"):
+        perlector.resolve_sampling_approval(
+            context,
+            approval_ref=NUDA_APPROVAL_SUBJECT,
+            subject=NUDA_APPROVAL_SUBJECT,
+        )
+
+
+def test_approval_discovery_treats_non_object_json_as_untrusted_receipt_bytes(tmp_path):
+    config_digest = "a" * 64
+    tree = RunTree.create(
+        tmp_path / "runs",
+        "approval-array",
+        source_manifest=[],
+        config_digest=config_digest,
+        adapter_recipes={},
+        witness_chairs=[],
+    )
+    data = b"[]"
+    digest = digest_bytes(data)
+    receipt = tree.resolve(f"{RECEIPTS_DIR}/{digest}.json")
+    receipt.parent.mkdir(parents=True)
+    receipt.write_bytes(data)
+
+    context = SimpleNamespace(tree=tree, config_digest=config_digest)
+    with pytest.raises(ContractError, match="no approval record names experiment"):
+        perlector.resolve_sampling_approval(
+            context,
+            approval_ref=NUDA_APPROVAL_SUBJECT,
+            subject=NUDA_APPROVAL_SUBJECT,
+        )
 
 
 def _testimony(bounds, *, bounds_source="native", artifact_id="testimonium-native"):
