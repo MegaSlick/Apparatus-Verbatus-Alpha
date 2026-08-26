@@ -99,6 +99,43 @@ def test_surface_names_the_external_gap_and_imports_only_through_the_worker(
     assert "not a selected or applied result" in messages[-1]
 
 
+def test_parent_refuses_a_committed_summary_whose_project_digest_does_not_match_the_pin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The confined child checks its own pin before answering "committed"; the
+    parent must not take that answer on faith. A worker that reports success
+    for a project other than the one it was pinned to must still be refused
+    here, the same way every other field of its response is re-checked rather
+    than trusted.
+    """
+    from subprocess import CompletedProcess
+
+    from operations.operator.errors import ErrorCode, OperatorError
+
+    project = tmp_path / "scan.ScanTailor"
+    output = tmp_path / "geometry"
+    project.write_bytes(PROJECT)
+    output.mkdir()
+
+    def tampered(command, *, writable, cwd, input_text):
+        backend, completed = _worker(command, writable=writable, cwd=cwd, input_text=input_text)
+        if json.loads(input_text)["operation"] != "commit":
+            return backend, completed
+        response = json.loads(completed.stdout)
+        response["summary"]["project_sha256"] = "f" * 64
+        return backend, CompletedProcess(
+            completed.args, completed.returncode, json.dumps(response), completed.stderr
+        )
+
+    monkeypatch.setattr(scantailor, "run_confined", tampered)
+    with pytest.raises(OperatorError) as raised:
+        scantailor.import_in_custody(
+            project=project, output_dir=output, workspace=tmp_path, printer=lambda _: None
+        )
+    assert raised.value.code is ErrorCode.SCANTAILOR_UNRESOLVED
+    assert "committed a project digest other than the one it was pinned to" in raised.value.render()
+
+
 def test_instruction_anchors_a_relative_project_to_the_selected_workspace(tmp_path: Path) -> None:
     rendered = scantailor.instruction(Path("projects/scan.ScanTailor"), workspace=tmp_path)
     assert str(tmp_path / "projects" / "scan.ScanTailor") in rendered
@@ -193,6 +230,49 @@ def test_two_ids_naming_one_physical_page_refuses_rather_than_picking(tmp_path: 
     )
     with pytest.raises(ValueError, match="more than one geometry for the same physical page"):
         scantailor_worker.parse(two_labels, tmp_path / "twin.ScanTailor")
+
+
+def _case_variant_project(tmp_path: Path) -> bytes:
+    """Two distinct `<file>` rows whose names differ only by case."""
+    twin_file = b'<file id="6" dirId="1" name="SPREAD.tif"/></files>'
+    twin_image = (
+        b'<image id="7" subPages="2" fileId="6" fileImage="0">'
+        b'<size width="1200" height="800"/><dpi horizontal="300" vertical="300"/></image></images>'
+    )
+    twin_split = (
+        b'<image id="7" layoutType="single-uncut"><params mode="manual">'
+        b'<pages type="single-uncut"><outline>'
+        b'<point x="0" y="0"/><point x="1200" y="0"/><point x="1200" y="800"/><point x="0" y="800"/>'
+        b'<point x="0" y="0"/></outline></pages><dependencies/></params></image>'
+    )
+    return (
+        PROJECT.replace(b"</files>", twin_file)
+        .replace(b"</images>", twin_image)
+        .replace(b"</page-split>", twin_split + b"</page-split>")
+    )
+
+
+def test_case_variant_paths_for_one_physical_page_refuse_on_default_apfs_darwin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`spread.tif` and `SPREAD.tif` name one file on macOS's default APFS.
+
+    Without folding case for this identity check, two `<file>` rows spelled
+    differently would each carry a saved geometry for what is, on disk, one
+    physical page -- exactly the picker rule 8 forbids, reached through a
+    filesystem property instead of a project-id collision.
+    """
+    monkeypatch.setattr(scantailor_worker.sys, "platform", "darwin")
+    hostile = _case_variant_project(tmp_path)
+    with pytest.raises(ValueError, match="more than one geometry for the same physical page"):
+        scantailor_worker.parse(hostile, tmp_path / "case-variant.ScanTailor")
+
+
+def test_case_variant_paths_are_distinct_pages_off_darwin(tmp_path: Path) -> None:
+    """Off darwin, two differently-cased paths are two real files, not one page."""
+    distinct = _case_variant_project(tmp_path)
+    parsed = scantailor_worker.parse(distinct, tmp_path / "case-variant.ScanTailor")
+    assert len(parsed["geometry"]) == 2
 
 
 @pytest.mark.parametrize("coordinate", (b"not-a-number", b"1e999", b"nan", b" 600", b"1_0", b""))

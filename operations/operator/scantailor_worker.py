@@ -155,7 +155,7 @@ def parse(project_bytes: bytes, project_path: Path) -> dict[str, Any]:
         image = image_paths[entry.attrib["id"]]
         # Distinct project ids can name the same file frame; accepting both would
         # leave downstream code to choose between competing physical-page claims.
-        page = (image["source_path"], image["file_image"])
+        page = _physical_page_key(image["source_path"], image["file_image"])
         if page in claimed_pages:
             raise _refuse("page-split offers more than one geometry for the same physical page")
         claimed_pages.add(page)
@@ -204,6 +204,22 @@ def parse(project_bytes: bytes, project_path: Path) -> dict[str, Any]:
         "source_image_count": len(image_paths),
         "geometry": geometry,
     }
+
+
+def _physical_page_key(source_path: str, file_image: int) -> tuple[str, int]:
+    """Identify one physical page for the duplicate-geometry refusal.
+
+    macOS's default filesystem, APFS, is case-insensitive but case-preserving:
+    ``masters/spread.tif`` and ``masters/SPREAD.tif`` name one file on disk even
+    though they are two different strings. Comparing `source_path` by spelling
+    alone would let two `<file>` rows that differ only in case each carry a
+    saved geometry, which the parser would treat as two physical pages instead
+    of the one the refusal above exists to catch -- a picker rebuilt by
+    accident. Folded only for this identity check; the record itself keeps the
+    exact spelling the project file used.
+    """
+    key = source_path.casefold() if sys.platform == "darwin" else source_path
+    return (key, file_image)
 
 
 def _removed_half(value: str | None) -> str | None:

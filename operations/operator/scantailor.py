@@ -64,7 +64,12 @@ def import_in_custody(
         writable=output_dir.resolve(),
         workspace=workspace,
     )
-    result = _summary(committed, operation="commit", output_dir=output_dir)
+    result = _summary(
+        committed,
+        operation="commit",
+        output_dir=output_dir,
+        expected_project_sha256=summary["project_sha256"],
+    )
     printer(
         "Recorded ScanTailor geometry document: "
         f"{strip_control_bytes(str(result['document_path']))} ({result['document_sha256']}).\n"
@@ -110,7 +115,13 @@ def _call(
     return response
 
 
-def _summary(response: dict[str, Any], *, operation: str, output_dir: Path) -> dict[str, Any]:
+def _summary(
+    response: dict[str, Any],
+    *,
+    operation: str,
+    output_dir: Path,
+    expected_project_sha256: str | None = None,
+) -> dict[str, Any]:
     value = response.get("summary")
     required = {
         "project_sha256",
@@ -136,6 +147,15 @@ def _summary(response: dict[str, Any], *, operation: str, output_dir: Path) -> d
         != output_dir / f"scantailor-geometry-{value['document_sha256']}.json"
     ):
         raise OperatorError(error_code, detail="the confined importer returned an invalid summary")
+    if expected_project_sha256 is not None and value["project_sha256"] != expected_project_sha256:
+        # The confined child checks this pin itself before it may answer
+        # "committed"; the parent re-checks the same link rather than trust
+        # that internal refusal blindly, the same way it re-validates every
+        # other field this response carries instead of taking the child's word.
+        raise OperatorError(
+            error_code,
+            detail="the confined importer committed a project digest other than the one it was pinned to",
+        )
     return value
 
 
