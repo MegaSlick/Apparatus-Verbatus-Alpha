@@ -11,6 +11,9 @@ from common.contracts.errors import ContractError
 from common.contracts.identities import artifact_id, attempt_id, derive
 
 DEFAULT_DECODING_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "decoding.toml"
+_LOAD_RECOVERY = (
+    " No run or stage artifact was written. Restore or correct the decoding file and retry"
+)
 
 
 def load_decoding_policy(
@@ -21,19 +24,24 @@ def load_decoding_policy(
         raw = Path(path).read_bytes()
     except OSError as error:
         raise ContractError(
-            f"decoding configuration at {path} could not be read: {error}"
+            f"decoding configuration at {path} could not be read: {error}.{_LOAD_RECOVERY}"
         ) from error
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError as error:
-        raise ContractError(f"decoding configuration at {path} is not UTF-8: {error}") from error
+        raise ContractError(
+            f"decoding configuration at {path} is not UTF-8: {error}.{_LOAD_RECOVERY}"
+        ) from error
     try:
         policy = tomllib.loads(text)
     except tomllib.TOMLDecodeError as error:
         raise ContractError(
-            f"decoding configuration at {path} is not valid TOML: {error}"
+            f"decoding configuration at {path} is not valid TOML: {error}.{_LOAD_RECOVERY}"
         ) from error
-    _validate_decoding_policy(policy)
+    try:
+        _validate_decoding_policy(policy)
+    except ContractError as error:
+        raise ContractError(f"{error}.{_LOAD_RECOVERY}") from error
     return policy, digest_bytes(raw)
 
 

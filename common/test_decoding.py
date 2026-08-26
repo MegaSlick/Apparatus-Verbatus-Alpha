@@ -49,8 +49,10 @@ def test_decoding_policy_refuses_a_non_record_posture_or_retry_shaped_experiment
 ):
     path = tmp_path / "decoding.toml"
     path.write_text(body, encoding="utf-8")
-    with pytest.raises(ContractError, match=message):
+    with pytest.raises(ContractError, match=message) as refusal:
         load_decoding_policy(path)
+    assert "No run or stage artifact was written" in str(refusal.value)
+    assert "Restore or correct the decoding file and retry" in str(refusal.value)
 
 
 def test_each_variance_pass_has_its_own_artifact_identity_under_the_sealed_plan():
@@ -106,8 +108,10 @@ def test_decoding_policy_parse_refusals_name_the_actual_cause(tmp_path, body, me
     path = tmp_path / "decoding.toml"
     path.write_bytes(body)
 
-    with pytest.raises(ContractError, match=message):
+    with pytest.raises(ContractError, match=message) as refusal:
         load_decoding_policy(path)
+    assert "No run or stage artifact was written" in str(refusal.value)
+    assert "Restore or correct the decoding file and retry" in str(refusal.value)
 
 
 def test_a_variance_pass_can_never_become_an_act_s_reading_of_record():
