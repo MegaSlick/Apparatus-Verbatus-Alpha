@@ -97,7 +97,7 @@ class StageAuthorization:
                 raise ValueError(f"stage boot {label} must be a non-blank string")
 
     def to_record(self) -> dict[str, object]:
-        """The durable claim: these three strings *are* the grant's identity."""
+        """The durable claim: one reference, bound to this collection and stage."""
 
         return {
             "schema": "stage-boot-claim.v1",
@@ -166,6 +166,9 @@ COLLECTION_BOOT_SCHEDULE: tuple[ScheduledStage, ...] = (
     ScheduledStage("recensor", False),
     ScheduledStage("archetypus", False),
     ScheduledStage("armarium", False),
+)
+POD_REQUIRED_STAGES = frozenset(
+    item.stage for item in COLLECTION_BOOT_SCHEDULE if item.pod_required
 )
 
 
@@ -238,6 +241,13 @@ class StageCostRecord:
     authorization_ref: str
     pod_id: str
     close: CloseReport
+
+    def __post_init__(self) -> None:
+        if self.close.pod_id != self.pod_id:
+            raise ValueError(
+                f"stage cost pod {self.pod_id!r} does not match close report pod "
+                f"{self.close.pod_id!r}"
+            )
 
     def to_record(self) -> dict[str, object]:
         return {
@@ -340,7 +350,16 @@ class StageCostStore:
         """
 
         data = canonical_bytes(authorization.to_record())
-        target = self.root / self.CLAIMS / f"{digest_bytes(data)}.json"
+        # The external record reference is the grant. Collection and stage bind
+        # its declared scope in the file, but changing either must not mint a
+        # second address at which the same grant can be spent again.
+        claim_key = canonical_bytes(
+            {
+                "schema": "stage-authorization-key.v1",
+                "authorization_ref": authorization.authorization_ref,
+            }
+        )
+        target = self.root / self.CLAIMS / f"{digest_bytes(claim_key)}.json"
         try:
             exclusive_write(target, data, strict=True)
         except FileExistsError:
@@ -418,6 +437,12 @@ class PerStagePodLifecycle:
         was a real path to a pod that billed and left nothing on the volume.
         """
 
+        if authorization.stage not in POD_REQUIRED_STAGES:
+            raise StageBootRefusal(
+                f"stage {authorization.stage!r} is not a scheduled pod-backed stage; "
+                "no provider action occurred and no grant was spent; use the printed collection "
+                "boot schedule and run podless stages without this lifecycle"
+            )
         self.cost_store.claim(authorization, request)
         result = self.runtime.create(request, confirmation=confirmation)
         record = result.record
@@ -453,11 +478,23 @@ class PerStagePodLifecycle:
                     f"{cost.close.state.value} and its cost evidence was recorded"
                 ) from error
         if not result.green or record is None:
+            close_detail = ""
             if record is not None:
-                self._record_launcher_close(authorization, record.pod_id, result)
+                try:
+                    close_detail = "; " + self._record_launcher_close(
+                        authorization, record.pod_id, result
+                    )
+                except BaseException as error:
+                    raise StageBootRefusal(
+                        f"stage {authorization.stage!r} launcher refused with "
+                        f"{result.state.value} after identifying pod {record.pod_id!r}, but its "
+                        f"close evidence could not be persisted: {error}; the write-ahead cost "
+                        "intent remains unknown and the pod may still bill; do not retry until "
+                        "provider state and the durable stage records are reconciled"
+                    ) from error
             raise StageBootRefusal(
                 f"stage {authorization.stage!r} did not boot a guarded pod: {result.state.value}; "
-                f"{result.detail}"
+                f"{result.detail}{close_detail}"
             )
         return ActiveStageBoot(authorization, record)
 
@@ -490,6 +527,15 @@ class PerStagePodLifecycle:
             detail = "stage runtime returned no CloseReport from shutdown"
             self._record_close_failure(active, detail)
             raise StageCloseUnverified(detail)
+        if report.pod_id != active.record.pod_id:
+            detail = (
+                f"stage runtime returned close evidence for pod {report.pod_id!r}, not active "
+                f"pod {active.record.pod_id!r}; the active pod is not verified closed and may "
+                "still bill; inspect provider state and the durable close-failure record before "
+                "retrying"
+            )
+            self._record_close_failure(active, detail)
+            raise StageCloseUnverified(detail)
         cost = StageCostRecord(
             active.authorization.collection_id,
             active.authorization.stage,
@@ -508,11 +554,27 @@ class PerStagePodLifecycle:
 
     def _record_launcher_close(
         self, authorization: StageAuthorization, pod_id: str, result: LaunchResult
-    ) -> None:
+    ) -> str:
         """Keep the money evidence from a refusal the launcher closed itself."""
 
         report = result.close_report
         if isinstance(report, CloseReport):
+            if report.pod_id != pod_id:
+                detail = (
+                    f"launcher returned close evidence for pod {report.pod_id!r}, not created pod "
+                    f"{pod_id!r}; the created pod is not verified closed and may still bill; "
+                    "inspect provider state and this close-failure record before retrying"
+                )
+                self._write_close_failure(
+                    StageCloseFailure(
+                        authorization.collection_id,
+                        authorization.stage,
+                        authorization.authorization_ref,
+                        pod_id,
+                        detail,
+                    )
+                )
+                return detail
             cost = StageCostRecord(
                 authorization.collection_id,
                 authorization.stage,
@@ -522,17 +584,27 @@ class PerStagePodLifecycle:
             )
             self.cost_store.write(cost)
             self.cost_records.append(cost)
-            return
+            if report.verified:
+                return "launcher close was verified and its cost evidence was recorded"
+            return (
+                f"launcher close was {report.state.value}, so the pod may still bill; inspect "
+                "the durable stage cost record before retrying"
+            )
+        detail = (
+            f"launcher refused with {result.state.value} and returned no close report; "
+            f"{result.detail}; the pod may still bill; inspect provider state and this "
+            "close-failure record before retrying"
+        )
         self._write_close_failure(
             StageCloseFailure(
                 authorization.collection_id,
                 authorization.stage,
                 authorization.authorization_ref,
                 pod_id,
-                f"launcher refused with {result.state.value} and returned no close report; "
-                f"{result.detail}",
+                detail,
             )
         )
+        return detail
 
     def _record_close_failure(self, active: ActiveStageBoot, detail: str) -> None:
         self._write_close_failure(

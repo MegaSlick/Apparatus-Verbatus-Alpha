@@ -28,7 +28,7 @@ from .staged import (
     StageCloseFailure,
     StageCloseUnverified,
     StageCostStore,
-    render_boot_schedule,
+    print_boot_schedule,
     resolve_volume_inputs,
 )
 
@@ -237,8 +237,9 @@ def test_lifecycle_refuses_construction_without_a_durable_cost_store(tmp_path: P
         PerStagePodLifecycle(runtime)  # type: ignore[call-arg]
 
 
-def test_printed_schedule_starts_podless_and_states_the_ruled_witness_order() -> None:
-    schedule = render_boot_schedule("parish-17")
+def test_printed_schedule_starts_podless_and_states_the_ruled_witness_order(capsys) -> None:
+    print_boot_schedule("parish-17")
+    schedule = capsys.readouterr().out.rstrip("\n")
     assert schedule.splitlines()[1] == "1. ingest-to-volume: no pod (no GPU-hours)."
     witness_line = next(line for line in schedule.splitlines() if "attestatores:" in line)
     assert witness_line.index("Chandra") < witness_line.index("Churro") < witness_line.index("DAI")
@@ -301,6 +302,45 @@ def test_a_grant_spent_before_a_restart_cannot_boot_a_second_pod_after_one(
 
     assert restarted_runtime.calls == 0, "the restarted lifecycle reached the paid gate"
     assert len(provider.pods) == 1
+
+
+def test_one_authorization_reference_cannot_boot_again_under_a_different_scope(
+    tmp_path: Path,
+) -> None:
+    """Changing collection or stage cannot give one external grant a new address."""
+
+    clock, _, runtime, subject = lifecycle(tmp_path)
+    subject.run(
+        StageAuthorization("parish-17", "designator", "grant-shared"),
+        request(clock, name="designator"),
+        confirmation="separate confirmed stage grant",
+        work=lambda _: None,
+    )
+
+    with pytest.raises(StageBootRefusal, match="already spent"):
+        subject.boot(
+            StageAuthorization("another-collection", "perlector", "grant-shared"),
+            request(clock, name="perlector"),
+            confirmation="separate confirmed stage grant",
+        )
+
+    assert runtime.calls == 1
+
+
+@pytest.mark.parametrize("stage", ("ingest-to-volume", "unknown-stage"))
+def test_podless_or_unknown_stage_cannot_reach_the_paid_runtime(tmp_path: Path, stage: str) -> None:
+    clock, provider, runtime, subject = lifecycle(tmp_path)
+
+    with pytest.raises(StageBootRefusal, match="not a scheduled pod-backed stage"):
+        subject.boot(
+            StageAuthorization("parish-17", stage, f"grant-{stage}"),
+            request(clock, name=stage),
+            confirmation="separate confirmed stage grant",
+        )
+
+    assert runtime.calls == 0
+    assert provider.pods == {}
+    assert costs(tmp_path) == []
 
 
 def test_a_claim_is_durable_before_the_provider_is_touched(tmp_path: Path) -> None:
@@ -412,6 +452,78 @@ def test_a_refusal_with_a_pod_and_no_close_report_records_a_named_failure(
     assert subject.close_failures[0].pod_id == "fake-pod-1"
 
 
+def test_launcher_close_evidence_for_another_pod_cannot_settle_the_created_pod(
+    tmp_path: Path,
+) -> None:
+    clock, provider, runtime, subject = lifecycle(tmp_path)
+
+    def mismatched_close(supplied: PodCreateRequest, *, confirmation: str | None) -> LaunchResult:
+        created = provider.create(supplied)
+        other = provider.create(request(clock, name="other-pod"))
+        provider.bill(other.pod_id, Decimal("0.13"))
+        other_report = runtime.shutdown.close(other, reason="close unrelated pod")
+        return LaunchResult(
+            LaunchState.CREATE_UNLEASED,
+            record=created,
+            detail="created pod could not be bound",
+            close_report=other_report,
+        )
+
+    runtime.create = mismatched_close  # type: ignore[method-assign]
+    with pytest.raises(StageBootRefusal, match="not created pod.*may still bill"):
+        subject.boot(
+            StageAuthorization("parish-17", "designator", "grant-designator"),
+            request(clock),
+            confirmation="separate confirmed stage grant",
+        )
+
+    failures = cost_records(tmp_path, "stage-pod-close-failure.v1")
+    assert failures[0]["pod_id"] == "fake-pod-1"
+    assert "fake-pod-2" in failures[0]["detail"]
+    assert not any(
+        record["schema"] == "stage-pod-cost.v1" and record["pod_id"] == "fake-pod-1"
+        for record in costs(tmp_path)
+    )
+
+
+def test_launcher_refusal_names_unpersisted_close_evidence_and_keeps_its_cause(
+    tmp_path: Path,
+) -> None:
+    clock, provider, runtime, subject = lifecycle(tmp_path)
+
+    def refuse_after_closing(
+        supplied: PodCreateRequest, *, confirmation: str | None
+    ) -> LaunchResult:
+        created = provider.create(supplied)
+        provider.bill(created.pod_id, Decimal("0.13"))
+        report = runtime.shutdown.close(created, reason="launcher refusal")
+        return LaunchResult(
+            LaunchState.CREATE_UNLEASED,
+            record=created,
+            detail="created pod could not be bound",
+            close_report=report,
+        )
+
+    def unwritable(_record: object) -> Path:
+        raise OSError(errno.ENOSPC, "close evidence path is full")
+
+    runtime.create = refuse_after_closing  # type: ignore[method-assign]
+    subject.cost_store.write = unwritable  # type: ignore[method-assign]
+    with pytest.raises(StageBootRefusal) as refusal:
+        subject.boot(
+            StageAuthorization("parish-17", "designator", "grant-designator"),
+            request(clock),
+            confirmation="separate confirmed stage grant",
+        )
+
+    detail = str(refusal.value)
+    assert "create-unleased" in detail
+    assert "fake-pod-1" in detail
+    assert "cost intent remains unknown" in detail
+    assert "do not retry" in detail
+    assert isinstance(refusal.value.__cause__, OSError)
+
+
 def test_a_close_that_raises_still_names_the_pod_that_may_still_be_billing(
     tmp_path: Path,
 ) -> None:
@@ -453,6 +565,32 @@ def test_a_stage_runtime_with_no_shutdown_controller_records_before_it_refuses(
 
     failure = cost_records(tmp_path, "stage-pod-close-failure.v1")[0]
     assert failure["pod_id"] == active.record.pod_id
+
+
+def test_close_report_for_another_pod_cannot_verify_the_active_boot(
+    tmp_path: Path,
+) -> None:
+    clock, provider, runtime, subject = lifecycle(tmp_path)
+    active = subject.boot(
+        StageAuthorization("parish-17", "designator", "grant-designator"),
+        request(clock, name="designator"),
+        confirmation="separate confirmed stage grant",
+    )
+    other = subject.boot(
+        StageAuthorization("parish-17", "perlector", "grant-perlector"),
+        request(clock, name="perlector"),
+        confirmation="separate confirmed stage grant",
+    )
+    other_cost = subject.close(other, reason="close the other pod")
+    runtime.shutdown.close = lambda _record, *, reason: other_cost.close  # type: ignore[method-assign]
+
+    with pytest.raises(StageCloseUnverified, match="not active pod.*may still bill"):
+        subject.close(active, reason="stage finished")
+
+    assert active.record.pod_id in provider.pods
+    failure = cost_records(tmp_path, "stage-pod-close-failure.v1")[0]
+    assert failure["pod_id"] == active.record.pod_id
+    assert other.record.pod_id in failure["detail"]
 
 
 def test_a_boot_abandoned_before_its_close_has_unknown_cost_and_names_its_pod_on_the_volume(
