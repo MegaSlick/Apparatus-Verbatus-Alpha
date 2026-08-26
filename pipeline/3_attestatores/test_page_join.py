@@ -65,7 +65,7 @@ def test_an_unknown_page_witness_chair_is_refused_not_dropped_from_the_join():
 
     with pytest.raises(SchemaRefusal, match="outside the configured witness roster"):
         attestatores.publish_page_testimonia_and_attachments(
-            context, acts=[], ordinal=1, attempts_by_pair={}
+            context, acts=[], ordinal=1, attempts_by_pair={}, regions_by_act={}
         )
 
 
