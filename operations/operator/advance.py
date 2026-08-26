@@ -136,27 +136,20 @@ def record_advance(
 ) -> ApprovalRecordReference:
     """Append the one allowed decision record after proving its boundary exists.
 
-    **The read-then-write window is closed by detection, not by locking, and
-    that is the decision rather than an omission.** A seal re-written between
-    `sealed_boundary` above and the write below leaves a record binding a
-    digest that is already stale. No number of re-reads closes that: there is
-    no cross-process lock over a run tree, and GOVERNANCE 4 forbids retracting
-    the record once it is written. What the binding buys instead is that the
-    staleness is permanent and visible: `trigger_advance` checks again after
-    the append and refuses to report an already-stale record as success,
-    `verify_advance` refuses such a record, and `review._still_binds` names it
-    stale on the one surface a person reads, every time they read it.
+    The read-then-write window is detected, not locked. A seal re-written
+    between `sealed_boundary` and the append leaves an immutable record binding
+    a digest that is already stale; there is no cross-process run-tree lock, and
+    GOVERNANCE 4 forbids retracting the record. `trigger_advance` checks after
+    the append and refuses to report that record as success, `verify_advance`
+    refuses it, and `review._still_binds` keeps the staleness visible.
 
-    ``expected_digest`` is required, not merely checked when given: this is
-    the one function that can append an advance record, so it is the one
-    place that can silently drop the confirmation an operator was shown. An
-    ``expected_digest`` of ``None`` used to mean "compare against whatever is
-    on disk right now", which is not a check at all — it always matches
-    itself. A caller with no observed digest to bind has not shown anyone a
-    boundary to confirm, and must be refused before it can write.
+    ``expected_digest`` is required because substituting the current disk
+    digest would make the check compare a value with itself. A caller with no
+    observed digest has not shown anyone a boundary to confirm and must be
+    refused before it can write.
     """
 
-    _seal, seal_digest = sealed_boundary(tree, stage)
+    _, seal_digest = sealed_boundary(tree, stage)
     if expected_digest is None:
         raise ApprovalRefusal(
             "advance refuses to record without the exact seal digest that was shown for "
@@ -174,7 +167,7 @@ def record_advance(
         seal_digest,
         timestamp or datetime.now(UTC).isoformat().replace("+00:00", "Z"),
     )
-    reference, _result = tree.write_approval_record(record)
+    reference, _ = tree.write_approval_record(record)
     return reference
 
 
@@ -182,7 +175,7 @@ def verify_advance(tree: RunTree, stage: str, reference: ApprovalRecordReference
     """Read an advance only when it still names this exact sealed boundary."""
 
     record = tree.read_approval_record(reference)
-    _seal, current_digest = sealed_boundary(tree, stage)
+    _, current_digest = sealed_boundary(tree, stage)
     if record["action"] != ADVANCE_ACTION or record["subject_ids"] != [advance_subject(stage)]:
         raise ApprovalRefusal("advance record does not name this stage boundary")
     if record["target_version_hash"] != current_digest:
@@ -215,11 +208,8 @@ def trigger_advance(
     returned record against the current seal once more, so a change during the
     worker's append window is reported before this call can return success.
 
-    ``expected_digest`` is required for the same reason it is required in
-    `record_advance`: an omitted value used to fall back to whatever digest
-    this call happened to read from disk, which trivially matches itself and
-    checks nothing. A caller with no digest to bind is a caller that showed no
-    one a boundary to confirm.
+    As in `record_advance`, omitting ``expected_digest`` would turn the check
+    into a self-comparison rather than bind a digest shown for confirmation.
     """
 
     # Absolute before it is split between the two processes. The parent builds
@@ -232,7 +222,7 @@ def trigger_advance(
     root = Path(run_root).resolve()
     tree = RunTree(root, run_id)
     try:
-        _seal, current_digest = sealed_boundary(tree, stage)
+        _, current_digest = sealed_boundary(tree, stage)
     except ApprovalRefusal as error:
         raise OperatorError(ErrorCode.ADVANCE_REFUSED, detail=str(error)) from error
     if expected_digest is None:
@@ -243,8 +233,7 @@ def trigger_advance(
                 "advance without the exact digest it showed for confirmation"
             ),
         )
-    checked_digest = expected_digest
-    if checked_digest != current_digest:
+    if expected_digest != current_digest:
         raise OperatorError(
             ErrorCode.ADVANCE_REFUSED,
             detail=(
@@ -263,7 +252,7 @@ def trigger_advance(
     # granted. `validate_run_id` has already refused anything but
     # `[a-z0-9._-]`, and `root` is absolute, so neither value can be read by
     # the child's parser as an option.
-    request = json.dumps({"stage": stage, "reason": reason, "expected_digest": checked_digest})
+    request = json.dumps({"stage": stage, "reason": reason, "expected_digest": expected_digest})
     command = python_module_command(
         "operations.operator.advance_worker",
         Path(workspace),
@@ -293,7 +282,7 @@ def trigger_advance(
         if (
             record["action"] != ADVANCE_ACTION
             or record["subject_ids"] != [advance_subject(stage)]
-            or record["target_version_hash"] != checked_digest
+            or record["target_version_hash"] != expected_digest
             or record["reason"] != reason
         ):
             raise ApprovalRefusal("the advance worker returned a different decision record")

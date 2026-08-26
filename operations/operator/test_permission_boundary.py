@@ -52,13 +52,8 @@ def _make_run(tmp_path: Path) -> tuple[Path, str]:
 
 
 def _armarium_digest(run_root: Path, run_id: str) -> str:
-    """The exact digest a caller must observe and bind before it may advance.
+    """Return the observed digest required before an Armarium advance."""
 
-    `trigger_advance`/`record_advance` refuse an omitted `expected_digest`
-    outright (they no longer trust "whatever is on disk right now"), so every
-    test that drives them past an unsealed-boundary refusal has to hand one
-    in, the same way a real caller would after showing it to an operator.
-    """
     return advance.sealed_boundary(RunTree(run_root, run_id), "armarium")[1]
 
 

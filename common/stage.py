@@ -180,19 +180,10 @@ WITNESS_READING_OUTCOMES = _WITNESS_READING_OUTCOMES
 # presents them.  Selection remains an invocation choice, never run-tree bytes.
 RUN_MODES: Final = TRIAGE_MODES
 
-# The boundaries a staged run can stop at *whatever mode it was invoked in*.
-#
-# The driver returns EXIT_HELD on a held Attestatores before it consults `mode`
-# at all (`pipeline/orchestrator/run.py`, the Attestatores branch above the
-# `mode in ("semi", "manual")` stop), and the Attestatores has already written
-# its completion seal by the time its attempt tally can come back UNKNOWN
-# (`pipeline/3_attestatores/run.py`: `context.seal_boundary()` precedes the
-# tally hold).  So an auto or semi invocation really can stop, mid-selection,
-# at a *sealed* boundary with a person in front of it.  Deriving the held set
-# from the selection alone said that boundary had been auto-passed, which is a
-# false statement about the driver in this same tree, and it refused the one
-# decision record that boundary is entitled to.  `test_advance_modes.py` pins
-# this set against the driver's own source so the two cannot drift apart.
+# Attestatores can return EXIT_HELD before the driver consults `mode`, after it
+# has written its completion seal. Every mode can therefore stop at this sealed
+# boundary; `test_advance_modes.py` derives the set from the driver's syntax so
+# this cross-module claim cannot drift silently.
 ALWAYS_HELD_BOUNDARIES: Final = frozenset({ATTESTATORES})
 
 

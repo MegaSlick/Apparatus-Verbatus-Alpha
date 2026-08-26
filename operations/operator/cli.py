@@ -545,12 +545,9 @@ def _advance_with_confirmation(
 
     tree = RunTree(run_root.resolve(), run_id)
     try:
-        # The evidence listing comes first because it is a projection of the
-        # tree and true whatever the selection turns out to be.  The sentence
-        # about where this *mode* waits comes only after the selection has been
-        # checked: printed ahead of it, a `--mode semi` with no range announced
-        # "it waits at None" and only then refused, which is the console
-        # stating a boundary claim it had not established.
+        # Stored boundary facts do not depend on the declared selection. Mode
+        # claims must wait until the selection is validated, or an invalid
+        # range could be presented as evidence before it is refused.
         boundary_states: list[dict[str, object] | None] = []
         for candidate in STAGES:
             try:
@@ -559,21 +556,14 @@ def _advance_with_confirmation(
                 boundary_states.append(None)
             else:
                 boundary_states.append(candidate_summary)
-        for ordinal, state in enumerate(boundary_states):
-            if state is not None:
-                continue
-            later = next(
-                (
-                    STAGES[index]
-                    for index in range(ordinal + 1, len(STAGES))
-                    if boundary_states[index] is not None
-                ),
-                None,
-            )
-            if later is not None:
+        first_gap: str | None = None
+        for candidate, state in zip(STAGES, boundary_states, strict=True):
+            if state is None and first_gap is None:
+                first_gap = candidate
+            elif state is not None and first_gap is not None:
                 raise ApprovalRefusal(
-                    f"advance refuses the stored boundary chain: {STAGES[ordinal]} has no "
-                    f"completion seal although later stage {later} is sealed; earlier evidence "
+                    f"advance refuses the stored boundary chain: {first_gap} has no "
+                    f"completion seal although later stage {candidate} is sealed; earlier evidence "
                     "is missing, not merely unfinished"
                 )
         _print("Current boundary state (pipeline order; not a recommendation):")
@@ -866,11 +856,8 @@ def _interactive_arguments() -> list[str]:
             return []
         arguments = [verb, "--run-root", run_root, "--run-id", run_id]
         if verb == "advance":
-            # Every prompt on this route names its legal values.  A person at
-            # the double-click window has no `--help` and no shell history, so
-            # a prompt that only says "the sealed stage boundary" is asking
-            # them to guess `ink-map` against `ink_map`; the parser then
-            # refuses a spelling they were never shown.
+            # The double-click route has no `--help`, so every closed-value
+            # prompt must state the spellings its parser accepts.
             boundaries = ", ".join(STAGES)
             stage = _ask(f"The sealed stage boundary to pass — one of: {boundaries}")
             reason = _ask("Why this boundary should be advanced")
