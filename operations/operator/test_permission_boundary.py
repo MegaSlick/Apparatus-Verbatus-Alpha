@@ -1418,3 +1418,62 @@ def test_a_stage_record_changed_after_inventory_is_not_paired_with_the_old_diges
 
     with pytest.raises(SchemaRefusal, match="changed while the review inventory was being read"):
         review._record_row(tree, ARMARIUM, manifest_row)
+
+
+def test_export_rows_are_derived_from_the_stage_record_snapshot_not_a_later_reread(
+    tmp_path: Path,
+):
+    """One projection must not describe two versions of the Armarium export."""
+    run_root, run_id = _make_run(tmp_path)
+    tree = RunTree(run_root, run_id)
+    manifest_row = next(
+        row
+        for row in tree.build_manifest(ARMARIUM, verify_inputs=False)["artifacts"]
+        if row["kind"] == "export"
+    )
+    export_row = review._record_row(tree, ARMARIUM, manifest_row)
+    target = tree.resolve(manifest_row["relative_path"])
+    changed = json.loads(target.read_bytes().decode("utf-8"))
+    changed["payload"] = {**changed["payload"], "scenario": "changed-after-stage-walk"}
+    changed["self_hash"] = self_hash(changed)
+    target.write_bytes(canonical_bytes(changed))
+
+    payload, record_ref = review._armarium_payload(tree, [export_row])
+
+    assert payload["scenario"] != "changed-after-stage-walk"
+    assert payload is export_row["record"]["payload"]
+    assert record_ref == export_row["record_ref"]
+
+
+@pytest.mark.parametrize("evidence", ["page", "crop", "bundle"])
+def test_export_references_refuse_a_digest_that_disagrees_with_the_named_bytes(
+    tmp_path: Path, evidence: str
+):
+    """Review may not replace a contradictory recorded digest with a fresh one."""
+    run_root, run_id = _make_run(tmp_path, scenario="review")
+    tree = RunTree(run_root, run_id)
+    export_id = artifact_id(ARMARIUM, "export", "export", None)
+    record = tree.read_artifact(ARMARIUM, "export", export_id)
+    if evidence == "page":
+        pages = json.loads(json.dumps(record["payload"]["pages"]))
+        pages[0]["image_sha256"] = "0" * 64
+        record["payload"] = {**record["payload"], "pages": pages}
+    elif evidence == "crop":
+        delivered = json.loads(json.dumps(record["payload"]["delivered"]))
+        act = next(row for row in delivered if row["source_regions"])
+        act["source_regions"][0]["image_sha256"] = "0" * 64
+        record["payload"] = {**record["payload"], "delivered": delivered}
+    else:
+        bundle = json.loads(json.dumps(record["payload"]["bundle"]))
+        bundle["reference"]["sha256"] = "0" * 64
+        record["payload"] = {**record["payload"], "bundle": bundle}
+    record["self_hash"] = self_hash(record)
+    relative = tree.artifact_path(ARMARIUM, "export", export_id)
+    tree.resolve(relative).write_bytes(canonical_bytes(record))
+
+    with pytest.raises(OperatorError) as raised:
+        review.ReadOnlyRun(run_root, run_id).projection()
+
+    assert raised.value.code is ErrorCode.CONSOLE_TREE_UNREADABLE
+    assert relative in raised.value.detail
+    assert "digest" in raised.value.detail

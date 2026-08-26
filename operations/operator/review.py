@@ -13,7 +13,7 @@ from common.contracts.approval import validate_approval_record
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.identities import artifact_id
-from common.contracts.stages import ARMARIUM, STAGES
+from common.contracts.stages import ARMARIUM, DESIGNATOR, EXEMPLAR, STAGES
 from common.runtree.store import RunTree
 from common.stage import latest_attempt
 
@@ -80,7 +80,7 @@ class ReadOnlyRun:
                         ),
                     }
                 )
-            payload, export_ref = _armarium_payload(tree)
+            payload, export_ref = _armarium_payload(tree, stage_records)
             pages = tuple(_image_row(tree, row, export_ref) for row in payload.get("pages", []))
             acts = tuple(
                 _act_row(tree, row, export_ref)
@@ -146,43 +146,98 @@ def _record_row(tree: RunTree, stage: str, manifest_row: dict[str, Any]) -> dict
     }
 
 
-def _armarium_payload(tree: RunTree) -> tuple[dict[str, Any], dict[str, str]]:
-    try:
-        record = tree.read_artifact(
-            ARMARIUM, "export", artifact_id(ARMARIUM, "export", "export", None)
-        )
-        payload = record["payload"]
-    except (KeyError, OSError, TypeError, ValueError) as error:
+def _armarium_payload(
+    tree: RunTree, stage_records: list[dict[str, Any]]
+) -> tuple[dict[str, Any], dict[str, str]]:
+    export_id = artifact_id(ARMARIUM, "export", "export", None)
+    expected_path = tree.artifact_path(ARMARIUM, "export", export_id)
+    matches = [
+        row
+        for row in stage_records
+        if row["stage"] == ARMARIUM and row["kind"] == "export" and row["artifact_id"] == export_id
+    ]
+    if len(matches) != 1:
         raise OperatorError(
             ErrorCode.CONSOLE_TREE_UNREADABLE,
-            detail=f"the Armarium export record could not be read: {type(error).__name__}: {error}",
-        ) from error
+            detail=(
+                f"the Armarium export record {expected_path} appeared {len(matches)} times; "
+                "review requires exactly one immutable export snapshot"
+            ),
+        )
+    export_row = matches[0]
+    payload = export_row["record"]["payload"]
     if not isinstance(payload, dict):
         raise OperatorError(
-            ErrorCode.CONSOLE_TREE_UNREADABLE, detail="the Armarium export payload is not an object"
+            ErrorCode.CONSOLE_TREE_UNREADABLE,
+            detail=f"the Armarium export record {expected_path} payload is not an object",
         )
     for name in ("pages", "delivered", "non_delivered"):
         if not isinstance(payload.get(name, []), list):
             raise OperatorError(
-                ErrorCode.CONSOLE_TREE_UNREADABLE, detail=f"the Armarium {name} value is not a list"
+                ErrorCode.CONSOLE_TREE_UNREADABLE,
+                detail=f"the Armarium export record {expected_path} {name} value is not a list",
             )
-    return (
-        payload,
-        {
-            "relative_path": tree.artifact_path(ARMARIUM, "export", record["artifact_id"]),
-            "sha256": digest_bytes(
-                tree.read_bytes(tree.artifact_path(ARMARIUM, "export", record["artifact_id"]))
+    return payload, export_row["record_ref"]
+
+
+def _read_export_blob(
+    tree: RunTree,
+    *,
+    stage: str,
+    path: Any,
+    expected_digest: Any,
+    description: str,
+    export_ref: dict[str, str],
+) -> bytes:
+    export_path = export_ref["relative_path"]
+    if not isinstance(path, str) or not isinstance(expected_digest, str):
+        raise OperatorError(
+            ErrorCode.CONSOLE_TREE_UNREADABLE,
+            detail=(
+                f"the Armarium export record {export_path} {description} has no immutable "
+                "image path and digest"
             ),
-        },
-    )
+        )
+    expected_path = tree.blob_path(stage, expected_digest)
+    if path != expected_path:
+        raise OperatorError(
+            ErrorCode.CONSOLE_TREE_UNREADABLE,
+            detail=(
+                f"the Armarium export record {export_path} {description} claims digest "
+                f"{expected_digest} but names {path}, not its content-addressed path "
+                f"{expected_path}"
+            ),
+        )
+    data = tree.read_bytes(path)
+    actual_digest = digest_bytes(data)
+    if actual_digest != expected_digest:
+        raise OperatorError(
+            ErrorCode.CONSOLE_TREE_UNREADABLE,
+            detail=(
+                f"the Armarium export record {export_path} {description} names {path} with "
+                f"digest {expected_digest}, but its bytes have digest {actual_digest}"
+            ),
+        )
+    return data
 
 
 def _image_row(tree: RunTree, row: Any, export_ref: dict[str, str]) -> dict[str, Any]:
-    if not isinstance(row, dict) or not isinstance(row.get("image_path"), str):
+    if not isinstance(row, dict):
         raise OperatorError(
-            ErrorCode.CONSOLE_TREE_UNREADABLE, detail="a page has no immutable image path"
+            ErrorCode.CONSOLE_TREE_UNREADABLE,
+            detail=(
+                f"the Armarium export record {export_ref['relative_path']} has a page that is "
+                "not an object"
+            ),
         )
-    data = tree.read_bytes(row["image_path"])
+    data = _read_export_blob(
+        tree,
+        stage=EXEMPLAR,
+        path=row.get("image_path"),
+        expected_digest=row.get("image_sha256"),
+        description=f"page {row.get('ordinal')!r}",
+        export_ref=export_ref,
+    )
     return {
         "ordinal": row.get("ordinal"),
         "page_id": row.get("page_id"),
@@ -196,15 +251,39 @@ def _image_row(tree: RunTree, row: Any, export_ref: dict[str, str]) -> dict[str,
 def _act_row(tree: RunTree, row: Any, export_ref: dict[str, str]) -> dict[str, Any]:
     if not isinstance(row, dict):
         raise OperatorError(
-            ErrorCode.CONSOLE_TREE_UNREADABLE, detail="an Armarium act is not an object"
+            ErrorCode.CONSOLE_TREE_UNREADABLE,
+            detail=(
+                f"the Armarium export record {export_ref['relative_path']} has an act that is "
+                "not an object"
+            ),
+        )
+    source_regions = row.get("source_regions", [])
+    if not isinstance(source_regions, list):
+        raise OperatorError(
+            ErrorCode.CONSOLE_TREE_UNREADABLE,
+            detail=(
+                f"the Armarium export record {export_ref['relative_path']} act "
+                f"{row.get('act_id')!r} source_regions value is not a list"
+            ),
         )
     crops = []
-    for region in row.get("source_regions", []):
-        if not isinstance(region, dict) or not isinstance(region.get("image_path"), str):
+    for region in source_regions:
+        if not isinstance(region, dict):
             raise OperatorError(
-                ErrorCode.CONSOLE_TREE_UNREADABLE, detail="an act crop has no immutable image path"
+                ErrorCode.CONSOLE_TREE_UNREADABLE,
+                detail=(
+                    f"the Armarium export record {export_ref['relative_path']} act "
+                    f"{row.get('act_id')!r} has a source region that is not an object"
+                ),
             )
-        data = tree.read_bytes(region["image_path"])
+        data = _read_export_blob(
+            tree,
+            stage=DESIGNATOR,
+            path=region.get("image_path"),
+            expected_digest=region.get("image_sha256"),
+            description=(f"act {row.get('act_id')!r} source region {region.get('region_id')!r}"),
+            export_ref=export_ref,
+        )
         crops.append(
             {
                 "ordinal": region.get("source_page_ordinal"),
@@ -335,8 +414,38 @@ def _review_items(
     path = reference.get("relative_path") if isinstance(reference, dict) else None
     if not isinstance(path, str):
         return None
+    expected_digest = reference.get("sha256")
+    exported_digest = bundle.get("sha256")
+    if not isinstance(expected_digest, str) or exported_digest != expected_digest:
+        raise OperatorError(
+            ErrorCode.CONSOLE_TREE_UNREADABLE,
+            detail=(
+                f"the Armarium export record {export_ref['relative_path']} bundle reference "
+                "has no single digest"
+            ),
+        )
+    expected_path = tree.blob_path(ARMARIUM, expected_digest)
+    if path != expected_path:
+        raise OperatorError(
+            ErrorCode.CONSOLE_TREE_UNREADABLE,
+            detail=(
+                f"the Armarium export record {export_ref['relative_path']} bundle claims digest "
+                f"{expected_digest} but names {path}, not its content-addressed path "
+                f"{expected_path}"
+            ),
+        )
     try:
-        with zipfile.ZipFile(io.BytesIO(tree.read_bytes(path))) as archive:
+        bundle_bytes = tree.read_bytes(path)
+        actual_digest = digest_bytes(bundle_bytes)
+        if actual_digest != expected_digest:
+            raise OperatorError(
+                ErrorCode.CONSOLE_TREE_UNREADABLE,
+                detail=(
+                    f"the Armarium export record {export_ref['relative_path']} bundle {path} "
+                    f"claims digest {expected_digest}, but its bytes have digest {actual_digest}"
+                ),
+            )
+        with zipfile.ZipFile(io.BytesIO(bundle_bytes)) as archive:
             if "review-items.jsonl" not in archive.namelist():
                 return None
             return tuple(
