@@ -418,6 +418,16 @@ def test_an_upstream_finding_without_a_printable_name_is_refused_not_dropped(cod
         build_reshoot_delta_record(dissent)
 
 
+@pytest.mark.parametrize(
+    "code", ("cross-capture-structural-delta", "cross-capture-locus-not-compared")
+)
+def test_an_upstream_finding_cannot_masquerade_as_a_unit20_derived_flag(code):
+    dissent = _record(pairs=[_pair(["view:a", "view:b"], finding_codes=[code])])
+
+    with pytest.raises(SchemaRefusal, match="collide with Unit 20's derived review-flag names"):
+        build_reshoot_delta_record(dissent)
+
+
 def test_the_condition_vocabulary_still_matches_unit_19s_own_failure_names():
     """Reconciliation in place of the constraint that was removed.
 

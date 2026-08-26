@@ -81,6 +81,7 @@ CONDITION_CODES: Final = frozenset(
 )
 _DELTA_FLAG: Final = "cross-capture-structural-delta"
 _UNCOMPARED_FLAG: Final = "cross-capture-locus-not-compared"
+_DERIVED_FLAG_CODES: Final = frozenset({_DELTA_FLAG, _UNCOMPARED_FLAG})
 
 COMPARED: Final = "compared"
 NOT_COMPARED: Final = "not-compared"
@@ -175,6 +176,13 @@ def build_reshoot_delta_record(dissent_record: Any) -> dict[str, Any]:
         codes = sorted(
             {_named_code(code, "an upstream pair finding") for code in pair["finding_codes"]}
         )
+        collisions = sorted(set(codes) & _DERIVED_FLAG_CODES)
+        if collisions:
+            raise SchemaRefusal(
+                "reshoot delta record: upstream pair finding code(s) "
+                f"{collisions} collide with Unit 20's derived review-flag names; the derivative "
+                "is refused because an upstream finding may not masquerade as a computed result"
+            )
         compared = _conditions_hold(pair)
         deltas, uncompared = _locus_rows(dissent, pair["view_ids"]) if compared else ([], [])
         pair_records.append(
