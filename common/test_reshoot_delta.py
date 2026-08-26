@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from common.contracts.canonical import self_hash
+from common.contracts.canonical import self_hash, verify_self_hash
 from common.contracts.errors import SchemaRefusal
 from common.cross_capture_dissent import _FAILED_CONDITION_CODES, CAVEAT
 from common.reshoot_delta import (
@@ -184,6 +184,21 @@ def test_derivative_cannot_replace_the_caveat_or_create_an_unanchored_delta():
     )
     with pytest.raises(SchemaRefusal, match="structural locus anchor"):
         validate_reshoot_delta_record(malformed, _record())
+
+
+def test_building_the_derivative_does_not_alias_its_sealed_evidence():
+    """A mutable derivative must not provide a write path into Unit 19 evidence."""
+    dissent = _record()
+    original_perlectio_ref = dict(dissent["perlectio_ref"])
+    original_span = dict(dissent["loci"][0]["established_span_or_gap_ref"])
+    record = build_reshoot_delta_record(dissent)
+
+    record["perlectio_ref"]["relative_path"] = "changed/perlectio.json"
+    record["pair_records"][0]["delta_loci"][0]["established_span_or_gap_ref"]["end"] = 4
+
+    assert dissent["perlectio_ref"] == original_perlectio_ref
+    assert dissent["loci"][0]["established_span_or_gap_ref"] == original_span
+    assert verify_self_hash(dissent)
 
 
 def _locus(

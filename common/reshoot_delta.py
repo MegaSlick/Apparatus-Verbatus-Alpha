@@ -124,9 +124,12 @@ def _locus_rows(dissent: dict[str, Any], view_ids: list[str]) -> tuple[list, lis
     deltas: list[dict[str, Any]] = []
     uncompared: list[dict[str, Any]] = []
     for locus in dissent["loci"]:
+        established_ref = locus["established_span_or_gap_ref"]
         anchor = {
             "locus_id": locus["locus_id"],
-            "established_span_or_gap_ref": locus["established_span_or_gap_ref"],
+            "established_span_or_gap_ref": (
+                dict(established_ref) if established_ref is not None else None
+            ),
             "view_ids": list(view_ids),
         }
         observations = {
@@ -193,7 +196,7 @@ def build_reshoot_delta_record(dissent_record: Any) -> dict[str, Any]:
     result = {
         "schema": SCHEMA,
         "logical_act_id": seam["logical_act_id"],
-        "perlectio_ref": seam["perlectio_ref"],
+        "perlectio_ref": dict(seam["perlectio_ref"]),
         "dissent_digest": digest_of(dissent),
         "pair_records": sorted(pair_records, key=lambda item: item["pair_id"]),
         "review_flags": sorted(
