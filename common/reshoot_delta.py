@@ -117,8 +117,11 @@ def _locus_rows(dissent: dict[str, Any], view_ids: list[str]) -> tuple[list, lis
     from a locus both captures read identically: no delta, no finding, no row.
     A record that reads "these captures agreed" where one of them could not be
     read is a claim, and it is the claim GOVERNANCE 10 and GOVERNANCE 2 both
-    forbid.  So nothing is filtered out here; loci divide into deltas and named
-    non-comparisons, and the two lists together are the locus denominator.
+    forbid.  So every non-agreement remains visible here: loci divide into
+    deltas, named non-comparisons, and observed agreements.  Only the agreements
+    are omitted from both returned lists; the validated dissent input retains
+    the complete locus denominator, and the total-partition test pins that an
+    omitted locus can mean nothing else.
     """
     wanted = set(view_ids)
     deltas: list[dict[str, Any]] = []
