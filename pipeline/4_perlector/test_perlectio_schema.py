@@ -376,12 +376,12 @@ def held_not_run_payload(tmp_path_factory):
     )
     assert result.returncode == 3, result.stderr
     tree = RunTree(root, "r")
-    entry = next(
-        entry
+    records = [
+        tree.read_artifact(PERLECTOR, "perlectio", entry["artifact_id"])
         for entry in tree.build_manifest(PERLECTOR)["artifacts"]
         if entry["kind"] == "perlectio"
-    )
-    record = tree.read_artifact(PERLECTOR, "perlectio", entry["artifact_id"])
+    ]
+    record = next(record for record in records if record["outcome"] == "not-run")
     assert record["outcome"] == "not-run"
     return record["payload"]
 

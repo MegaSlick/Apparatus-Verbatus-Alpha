@@ -256,11 +256,9 @@ def _components(runs: list[_Run], gap: int) -> list[dict]:
             )
         )
 
-    # The published order is the retired implementation's order, and downstream
-    # identity depends on it: `residual_act_ordinal(index)` in run.py names each
-    # residual by its position here. `label_components` sorts by origin and then
-    # by the sorted member pixels — never by pixel count — so two components
-    # sharing a (top, left) origin must be ordered by their ink, not by a count
+    # Residual identity binds class and bounds, but published evidence must still
+    # reproduce independently of union-find insertion order. Components sharing
+    # a (top, left) origin are ordered by their ink, not by a count
     # that the oracle ignores or by union-find insertion order. Tied components
     # are compared over a lazily merged run stream: memory stays proportional to
     # the runs, which already exist, never to the pixels they cover.

@@ -41,6 +41,7 @@ import stat
 import sys
 import tempfile
 from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Final
 
@@ -67,7 +68,8 @@ from common.contracts.errors import (
     SchemaRefusal,
 )
 from common.contracts.identities import validate_run_id
-from common.contracts.stages import writing_directory
+from common.contracts.stages import DOOR, writing_directory
+from common.corpus_register import empty_register, validate_register_bytes
 
 RUN_FILE: Final = "run.json"
 MANIFEST_FILE: Final = "manifest.json"
@@ -85,6 +87,8 @@ _BOUND_FIELDS: Final = (
     "adapter_recipes",
     "witness_chairs",
     "corpus_frame_membership",
+    "register_digest",
+    "register_required",
 )
 _INGRESS_FIELD: Final = "ingress"
 
@@ -188,6 +192,7 @@ class RunTree:
         adapter_recipes: dict[str, str],
         witness_chairs: list[str],
         corpus_frame_membership: dict[str, str] | None = None,
+        register_bytes: bytes | None = None,
         ingress: dict[str, Any] | None = None,
         render_settings: dict[str, Any] | None = None,
         sealed_config_digests: dict[str, str] | None = None,
@@ -199,6 +204,15 @@ class RunTree:
         leaves the tree exactly as it found it.
         """
         tree = cls(root, run_id)
+        # Validated and digested here, but not *stored* until the run authority
+        # has accepted it below. Storing it first would put a foreign register's
+        # bytes into an existing run's blob store on the way to refusing that
+        # very register as an incompatible reuse — writing into a tree while
+        # telling the operator nothing was written.
+        snapshot = empty_register() if register_bytes is None else register_bytes
+        register_required = register_bytes is not None
+        validate_register_bytes(snapshot)
+        snapshot_digest = digest_bytes(snapshot)
         # An ordinal names one page. Two rows carrying the same one do not describe
         # a duplicate page — they make the run's page count ambiguous before
         # anything has been read. That matters because the Armarium's page census
@@ -241,6 +255,8 @@ class RunTree:
             "adapter_recipes": dict(sorted(adapter_recipes.items())),
             "witness_chairs": sorted(witness_chairs),
             "corpus_frame_membership": membership,
+            "register_digest": snapshot_digest,
+            "register_required": register_required,
         }
         if ingress is not None:
             authority[_INGRESS_FIELD] = ingress
@@ -266,46 +282,30 @@ class RunTree:
         authority["self_hash"] = self_hash(authority)
 
         run_file = tree.root / RUN_FILE
-        tree.root.mkdir(parents=True, exist_ok=True)
-        tree._bind_root_identity()
-        try:
-            _atomic_create(run_file, canonical_bytes(authority))
-        except FileExistsError:
-            existing = tree.read_run()
-            # `.get`, not `[...]`: a run.json missing a bound field used to raise a
-            # bare KeyError out of the reuse check, which is a traceback and an
-            # exit 1 where the contract promises a named refusal. A missing field
-            # is also not "equal" to anything, so it lands in `differing` and is
-            # refused with the reason spelled out.
-            if existing.get("schema") != authority["schema"]:
-                raise IncompatibleReuse(
-                    f"run {run_id!r} was written under schema "
-                    f"{existing.get('schema')!r} and this is {authority['schema']!r}; "
-                    "the two describe different shapes and cannot share a tree"
-                ) from None
-            optional_bound_fields = tuple(
-                field
-                for field in (
-                    _INGRESS_FIELD,
-                    _RENDER_SETTINGS_FIELD,
-                    _SEALED_CONFIG_DIGESTS_FIELD,
-                )
-                if field in authority or field in existing
-            )
-            bound_fields = _BOUND_FIELDS + optional_bound_fields
-            differing = [
-                field
-                for field in bound_fields
-                if field not in existing or existing[field] != authority.get(field)
-            ]
-            if differing:
-                raise IncompatibleReuse(
-                    f"run {run_id!r} already exists and is bound to different "
-                    f"{', '.join(differing)}; a run id names one set of inputs and "
-                    "one configuration, so this is a different run wearing an old "
-                    "name. Nothing was written"
-                ) from None
-            return tree
+        tree.root.parent.mkdir(parents=True, exist_ok=True)
+        # Creators serialize on the already-resolved parent directory itself, so
+        # no predictable lock pathname is introduced.  A new run publishes the
+        # immutable snapshot first and run.json last: a failed blob write can no
+        # longer leave a trusted authority sealing evidence that never arrived.
+        with _run_creation_lock(tree.root.parent):
+            tree.root.mkdir(parents=True, exist_ok=True)
+            # The root did not exist when __init__ resolved it, so bind device and
+            # inode here, before any write goes through it. Every later descriptor
+            # this tree opens is checked against the directory bound at this line.
+            tree._bind_root_identity()
+            if run_file.exists():
+                _verify_compatible_reuse(tree, run_id, authority)
+                _verify_register_snapshot_present(tree, snapshot_digest, snapshot)
+                return tree
+            tree.put_blob(DOOR, snapshot)
+            try:
+                _atomic_create(run_file, canonical_bytes(authority))
+            except FileExistsError:
+                # A non-cooperating writer can still race the advisory lock. Its
+                # authority must pass the same complete reuse check before this
+                # caller can proceed.
+                _verify_compatible_reuse(tree, run_id, authority)
+                _verify_register_snapshot_present(tree, snapshot_digest, snapshot)
         return tree
 
     def read_run(self) -> dict[str, Any]:
@@ -1413,6 +1413,76 @@ def _all_writing_directories() -> list[str]:
     return list(WRITING_DIRECTORIES.values())
 
 
+@contextmanager
+def _run_creation_lock(parent: Path) -> Iterator[None]:
+    """Serialize run creation without trusting a writable lock-file name."""
+    directory = getattr(os, "O_DIRECTORY", None)
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    if directory is None or no_follow is None:  # pragma: no cover - supported stores are POSIX
+        raise SchemaRefusal(
+            "this platform cannot lock the run root through a no-follow directory descriptor"
+        )
+    try:
+        descriptor = os.open(parent, os.O_RDONLY | directory | no_follow)
+    except OSError as error:
+        raise SchemaRefusal("the requested run root could not be locked safely") from error
+    try:
+        try:
+            import fcntl
+        except ImportError as error:  # pragma: no cover - supported stores are POSIX
+            raise SchemaRefusal("this platform cannot serialize run creation") from error
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+    finally:
+        os.close(descriptor)
+
+
+def _verify_compatible_reuse(tree: RunTree, run_id: str, authority: dict[str, Any]) -> None:
+    existing = tree.read_run()
+    # `.get`, not `[...]`: a run.json missing a bound field must become a named
+    # refusal instead of a KeyError traceback.
+    if existing.get("schema") != authority["schema"]:
+        raise IncompatibleReuse(
+            f"run {run_id!r} was written under schema {existing.get('schema')!r} and this is "
+            f"{authority['schema']!r}; the two describe different shapes and cannot share a tree"
+        ) from None
+    optional_bound_fields = tuple(
+        field
+        for field in (_INGRESS_FIELD, _RENDER_SETTINGS_FIELD, _SEALED_CONFIG_DIGESTS_FIELD)
+        if field in authority or field in existing
+    )
+    differing = [
+        field
+        for field in _BOUND_FIELDS + optional_bound_fields
+        if field not in existing or existing[field] != authority.get(field)
+    ]
+    if differing:
+        raise IncompatibleReuse(
+            f"run {run_id!r} already exists and is bound to different {', '.join(differing)}; "
+            "a run id names one set of inputs and one configuration, so this is a different "
+            "run wearing an old name. Nothing was written"
+        ) from None
+
+
+def _verify_register_snapshot_present(tree: RunTree, digest: str, expected: bytes) -> None:
+    relative = tree.blob_path(DOOR, digest)
+    try:
+        observed = tree.read_bytes(relative)
+    except OSError as error:
+        raise IncompatibleReuse(
+            "run.json seals a corpus-register snapshot that is missing or unreadable; an "
+            "existing run's immutable evidence is refused rather than silently reconstructed"
+        ) from error
+    if observed != expected:
+        raise IncompatibleReuse(
+            "run.json seals corpus-register snapshot bytes that no longer match the accepted "
+            "reuse input"
+        )
+
+
 def _atomic_write(target: Path, data: bytes) -> None:
     """Temp file in the same directory, flushed, then replaced.
 
@@ -1496,6 +1566,10 @@ def _read_json_with_bytes(path: Path) -> tuple[Any, bytes]:
     # still reach `verify_self_hash`'s own recursive walk after this guard has
     # already let a shallower-but-still-deep file through; that band is caught
     # where it happens, in `common/contracts/canonical.py`.
+    #
+    # Both merged branches split this reader the same way and named the halves
+    # differently; one tuple-returning body survives, under this name, and it
+    # decodes and returns the exact same bytes a caller may later digest.
     try:
         data = path.read_bytes()
         return json.loads(data.decode("utf-8")), data

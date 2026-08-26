@@ -30,6 +30,7 @@ from common.contracts.errors import ApprovalRefusal, IncompatibleReuse, SchemaRe
 from common.contracts.identities import artifact_id
 from common.contracts.outcomes import INTERIM_GRANULARITY_BASIS
 from common.contracts.stages import DESIGNATOR, DOOR, EXEMPLAR, PERLECTOR, writing_directory
+from common.corpus_register import EMPTY_REGISTER_DIGEST, empty_register
 from common.recensor_receipt import build_recensor_partition_receipt
 from common.runtree import store as runtree_store
 from common.runtree.store import (
@@ -222,6 +223,21 @@ def test_creating_a_run_writes_a_self_hashed_authority(tmp_path):
     assert (tmp_path / "r1" / RUN_FILE).exists()
 
 
+def test_run_authority_seals_a_content_addressed_corpus_register_snapshot(tmp_path):
+    tree = make_run(tmp_path)
+    run = tree.read_run()
+    digest = run["register_digest"]
+    assert run["register_required"] is False
+    assert tree.read_bytes(tree.blob_path(DOOR, digest)) == empty_register()
+
+
+def test_run_authority_distinguishes_an_explicit_empty_register_from_no_register(tmp_path):
+    tree = make_run(tmp_path, register_bytes=empty_register())
+    run = tree.read_run()
+    assert run["register_digest"] == EMPTY_REGISTER_DIGEST
+    assert run["register_required"] is True
+
+
 def test_the_run_authority_does_not_predeclare_acts(tmp_path):
     """Pages are given; acts are discovered. The Designator's proposal seal is the
     downstream expected-act authority, so run.json naming acts would make the
@@ -336,6 +352,31 @@ def test_an_incompatible_reuse_writes_nothing(tmp_path):
     with pytest.raises(IncompatibleReuse):
         make_run(tmp_path, config_digest="d" * 64)
     assert sorted(path.name for path in (tmp_path / "r1").rglob("*")) == before
+
+
+def test_run_authority_is_not_published_when_its_register_snapshot_write_fails(
+    tmp_path, monkeypatch
+):
+    def fail_snapshot(_self, _stage, _data):
+        raise OSError("simulated snapshot publication failure")
+
+    monkeypatch.setattr(RunTree, "put_blob", fail_snapshot)
+    with pytest.raises(OSError, match="snapshot publication failure"):
+        make_run(tmp_path, register_bytes=empty_register())
+
+    assert not (tmp_path / "r1" / RUN_FILE).exists()
+
+
+def test_reuse_refuses_a_missing_register_snapshot_instead_of_reconstructing_it(tmp_path):
+    tree = make_run(tmp_path, register_bytes=empty_register())
+    run = tree.read_run()
+    snapshot = tree.resolve(tree.blob_path(DOOR, run["register_digest"]))
+    snapshot.unlink()
+
+    with pytest.raises(IncompatibleReuse, match="missing or unreadable"):
+        make_run(tmp_path, register_bytes=empty_register())
+
+    assert not snapshot.exists()
 
 
 def test_an_edited_run_authority_is_refused(tmp_path):
@@ -837,6 +878,27 @@ def test_a_manifest_describes_what_the_tree_actually_holds(tmp_path):
     assert manifest["artifacts"][0]["artifact_id"] == envelope["artifact_id"]
     assert manifest["artifacts"][0]["outcome"] == "proposed"
     assert manifest["blobs"] == [digest_bytes(b"a crop")]
+
+
+def test_manifest_validates_and_digests_one_artifact_read(tmp_path, monkeypatch):
+    tree = make_run(tmp_path)
+    published = tree.publish_artifact(make_envelope())
+    artifact = tree.resolve(published.relative_path)
+    original = artifact.read_bytes()
+    forged = canonical_bytes(make_envelope(proposals=99))
+    original_read_text = Path.read_text
+
+    def swap_after_validation(path, *args, **kwargs):
+        text = original_read_text(path, *args, **kwargs)
+        if path == artifact:
+            path.write_bytes(forged)
+        return text
+
+    monkeypatch.setattr(Path, "read_text", swap_after_validation)
+    manifest = tree.build_manifest(DESIGNATOR)
+
+    assert manifest["artifacts"][0]["sha256"] == digest_bytes(original)
+    assert artifact.read_bytes() == original
 
 
 def test_a_deleted_manifest_rebuilds_identically(tmp_path):

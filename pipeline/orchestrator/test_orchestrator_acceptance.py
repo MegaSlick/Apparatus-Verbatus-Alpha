@@ -41,6 +41,8 @@ from common.contracts.stages import (
     RECENSOR,
     STAGE_DIRECTORIES,
 )
+from common.contracts.uncertainty import from_perlectio
+from common.fixture_identity import page_identity
 from common.imaging import PNG_SIGNATURE, decode_grayscale_png
 from common.runtree.store import RunTree
 from common.stage import (
@@ -48,8 +50,6 @@ from common.stage import (
     EXIT_HELD,
     load_fixture,
     open_context,
-    page_identity,
-    residual_act_ordinal,
     run_config_bindings,
     stage_parser,
 )
@@ -284,8 +284,8 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # re-measured in the rebase entry below, never carried by arithmetic.
 # Re-pinned again for the System 06 deepening's second pass. File counts stay at
 # 47/51 — no scenario here produces a conservation residual, so the new
-# residual-holding-act mechanism (`common.stage.residual_act_ordinal`,
-# `_verify_residual_act_rows`) never fires and adds no artifact to either
+# residual-holding-act mechanism (`pipeline/2_designator/run.py::hold_residual_act`,
+# `common.stage::_verify_minted_act_rows`) never fires and adds no artifact to either
 # scenario. What moved: every proposal region's `padding` field now carries a
 # `provenance` sub-object (`geometry.load_padding_config` / `cut_region`),
 # stating plainly that the shipped basis-point values are carried forward from
@@ -617,8 +617,15 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # `(perlector, failed)` written into it. Comment bytes only; both digests
 # re-measured twice through this module's own helpers at the same tree, counts
 # and exits held at 64/0 and 71/3.
-HAPPY_RUN_TREE_DIGEST = "31e572e17b18868e90c933a36b471a3d04ca666382534f111410516a8337db48"
-REVIEW_RUN_TREE_DIGEST = "c6702b96996ee72813e9d4a6fa76ad4dcc5b02df501dabde0ad7b868079f2d4a"
+# Re-pinned in the Unit 18 formal correction pass after `run.json` began binding
+# `register_required` separately from `register_digest`. The distinction closes
+# the empty-register drift hole: an explicitly supplied empty register can grow,
+# so later stages must not mistake its empty digest for "no live register to
+# check." The new authority field moves both semantic trees; file counts and
+# exits remain 65/0 and 72/3. Both values below were measured from independent
+# orchestrator runs, never derived from the preceding pins.
+HAPPY_RUN_TREE_DIGEST = "ffba411c60bc363d1d5f4d3c6c07b796c253e8726359e0af7e9a7bfe980c069e"
+REVIEW_RUN_TREE_DIGEST = "db33df93959bd09ce173087af8ba3b53f3ca34bab87affc515ca544ede061739"
 
 
 def orchestrate(
@@ -1691,8 +1698,7 @@ def _mint_test_residual_row(
     is refused before that check ever runs and stays independent of a real
     conservation residual, the *denominator* check being what they exercise.
     """
-    ordinal = residual_act_ordinal(index)
-    act_id = derive_act_id(page_id, ordinal, bounds)
+    act_id = derive_act_id(page_id, "residual", bounds)
     hold = context.publish(
         kind="hold",
         subject_id=act_id,
@@ -1701,7 +1707,6 @@ def _mint_test_residual_row(
         payload={
             "act_key": f"residual:{page_ordinal}:{index}",
             "page_ordinal": page_ordinal,
-            "residual_ordinal": ordinal,
             "residual_bounds": hold_bounds if hold_bounds is not None else bounds,
             "residual_pixel_count": bounds["w"] * bounds["h"],
             "reason": "test-minted residual hold",
@@ -1832,11 +1837,11 @@ def test_a_self_consistent_residual_with_no_matching_conservation_component_is_r
 def test_a_residual_whose_bounds_do_not_match_its_own_conservation_record_is_refused(tmp_path):
     """The conservation record the hold references must actually carry this residual.
 
-    The hold's own ordinal and bounds still recompute the claimed identity
-    correctly, and it references a real conservation record — but at that
-    residual's ordinal, the referenced record's own `residual_components` name
-    a different rectangle. Self-consistency plus a reference is not the same
-    as a reference that actually corroborates the claim.
+    The hold's own bounds still recompute the claimed identity correctly, and it
+    references a real conservation record — but no component in that record's
+    own `residual_components` names this rectangle. Self-consistency plus a
+    reference is not the same as a reference that actually corroborates the
+    claim.
     """
     root = tmp_path / "runs"
     _run_through_designator(root)
@@ -1854,7 +1859,7 @@ def test_a_residual_whose_bounds_do_not_match_its_own_conservation_record_is_ref
 
     result = invoke_stage(root, "r", "happy", "pipeline/3_attestatores/run.py")
     assert result.returncode == EXIT_FATAL
-    assert "does not carry at that ordinal" in result.stderr
+    assert "does not carry at those bounds" in result.stderr
 
 
 def test_a_residual_act_claiming_to_be_proposed_is_refused(tmp_path):
@@ -1917,7 +1922,7 @@ def test_a_residual_act_whose_hold_bounds_do_not_verify_is_refused(tmp_path):
 
     result = invoke_stage(root, "r", "happy", "pipeline/3_attestatores/run.py")
     assert result.returncode == EXIT_FATAL
-    assert "does not verify against the residual ordinal and bounds" in result.stderr
+    assert "does not verify against the residual class and bounds" in result.stderr
 
 
 def test_a_residual_act_with_no_hold_record_is_refused(tmp_path):
@@ -1928,10 +1933,9 @@ def test_a_residual_act_with_no_hold_record_is_refused(tmp_path):
     tree = RunTree(root, "r")
     context = _designator_context_for(root, "r", "happy")
     page_id = page_identity(context.fixture, 1)
-    ordinal = residual_act_ordinal(0)
     bounds = {"x": 1, "y": 1, "w": 2, "h": 2}
     row = {
-        "act_id": derive_act_id(page_id, ordinal, bounds),
+        "act_id": derive_act_id(page_id, "residual", bounds),
         "act_key": "residual:1:0",
         "page_id": page_id,
         "page_ordinal": 1,
@@ -3103,11 +3107,12 @@ def test_armarium_refuses_a_resealed_archetypus_uncertainty_layer_its_parent_nev
     )
     path = tree.resolve(entry["relative_path"])
     record = json.loads(path.read_text(encoding="utf-8"))
-    assert record["payload"]["uncertainty"] == {
-        "uncertain_spans": [],
-        "gaps": [],
-        "self_revisions": [],
-    }
+    perlectio = next(
+        tree.read_artifact(PERLECTOR, "perlectio", candidate["artifact_id"])
+        for candidate in tree.build_manifest(PERLECTOR)["artifacts"]
+        if candidate["kind"] == "perlectio" and candidate["subject_id"] == record["subject_id"]
+    )
+    assert record["payload"]["uncertainty"] == from_perlectio(perlectio["payload"])
     assert len(record["payload"]["text"]) >= 1
     record["payload"]["uncertainty"]["uncertain_spans"] = [
         {"start": 0, "end": 1, "alternatives": ["?"], "confidence": "low"}
@@ -3159,7 +3164,7 @@ def test_repeating_the_identical_command_leaves_every_byte_unchanged(tmp_path):
 
     # R0 adds two retained page Testimonia and two derived act attachments to
     # the happy walking skeleton; repeatability still compares every byte.
-    assert len(before) == 64
+    assert len(before) == 65
     assert semantic_snapshot_digest(root) == HAPPY_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "happy").returncode == 0
     after = snapshot(root)
@@ -3206,7 +3211,7 @@ def test_repeating_the_review_scenario_also_changes_nothing(tmp_path):
 
     # R0 adds the same four retained page/attachment artifacts before review's
     # recovery loop; its append-only invariant is unchanged.
-    assert len(before) == 71
+    assert len(before) == 72
     assert semantic_snapshot_digest(root) == REVIEW_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "review").returncode == 3
     assert snapshot(root) == before

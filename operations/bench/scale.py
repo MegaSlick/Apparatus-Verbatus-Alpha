@@ -69,7 +69,12 @@ def _source(shard: int, ordinal: int) -> dict[str, object]:
 
 
 def _proposal(run_id: str, source: dict[str, object]) -> dict[str, object]:
-    page = page_id(source["sha256"], source["ordinal"])
+    # The submission ordinal names this synthetic manifest row; it is not a
+    # fact about the page and therefore cannot enter its durable identity.
+    page = page_id(
+        {"kind": "source", "sha256": source["sha256"]},
+        {"operation": "whole"},
+    )
     return build_envelope(
         run_id=run_id,
         artifact_id=artifact_id(DESIGNATOR, "proposal", page),

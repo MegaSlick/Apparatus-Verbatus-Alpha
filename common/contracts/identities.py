@@ -1,4 +1,4 @@
-"""The six identities, derived from their bindings so a forged one is detectable.
+"""The seven derived identities, bound so a forged one is detectable.
 
 Every identity except `run_id` is a digest of exactly the facts it claims to bind,
 carried beside those facts in the artifact. That makes identity *verifiable*: a
@@ -6,7 +6,7 @@ reader recomputes and refuses a mismatch, instead of trusting a string that arri
 in a file. It is also what makes the architecture's first invariant — act identity
 survives recropping — a property a test can prove rather than a habit:
 
-    act_id    binds the original proposal          -> a recrop cannot change it
+    act_id    binds the original class and bounds  -> a recrop cannot change it
     region_id binds the act AND the transform      -> a recrop must change it
 
 Both statements fall out of what each identity hashes, so no code has to remember
@@ -19,6 +19,7 @@ from incompatible reuse failing before anything is written.
 """
 
 import re
+import unicodedata
 from typing import Any, Final
 
 from .canonical import digest_of
@@ -34,6 +35,8 @@ _DIGEST_CHARS: Final = 16
 _PREFIXES: Final = {
     "page": "pg",
     "act": "act",
+    "physical-page": "ppg",
+    "physical-act": "pac",
     "region": "rgn",
     "attempt": "att",
     "artifact": "art",
@@ -44,7 +47,7 @@ _PREFIXES: Final = {
 # path separators, no case-folding surprises between macOS and Linux.
 _RUN_ID_PATTERN: Final = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 
-_ID_PATTERN: Final = re.compile(r"^(pg|act|rgn|att|art)_[0-9a-f]{%d}$" % _DIGEST_CHARS)
+_ID_PATTERN: Final = re.compile(r"^(pg|act|ppg|pac|rgn|att|art)_[0-9a-f]{%d}$" % _DIGEST_CHARS)
 
 
 def validate_run_id(run_id: Any) -> str:
@@ -91,34 +94,165 @@ def is_well_formed(identity: Any) -> bool:
     return isinstance(identity, str) and bool(_ID_PATTERN.match(identity))
 
 
-# --- The five derived identities, each naming exactly what it binds -------------
+# --- The derived identities, each naming exactly what it binds -----------------
 
 
-def page_bindings(source_sha256: str, ordinal: int) -> dict[str, Any]:
-    """A page is the nth image out of one sealed source."""
-    return {"source_sha256": source_sha256, "ordinal": ordinal}
+def _closed(value: Any, fields: set[str], what: str) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != fields:
+        raise IdentityRefusal(f"{what} must be the closed record {sorted(fields)}")
+    return value
 
 
-def page_id(source_sha256: str, ordinal: int) -> str:
-    return derive("page", page_bindings(source_sha256, ordinal))
+def _sha256(value: Any, what: str) -> None:
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise IdentityRefusal(f"{what} must be a lowercase SHA-256 digest")
 
 
-def act_bindings(page: str, proposal_ordinal: int, proposal_bounds: Any) -> dict[str, Any]:
-    """An act is the nth proposal the Designator marked out on a page.
+def _bounds(value: Any, what: str) -> None:
+    row = _closed(value, {"x", "y", "w", "h"}, what)
+    if (
+        any(not isinstance(item, int) or isinstance(item, bool) for item in row.values())
+        or row["x"] < 0
+        or row["y"] < 0
+        or row["w"] <= 0
+        or row["h"] <= 0
+    ):
+        raise IdentityRefusal(f"{what} must have non-negative integer x/y and positive integer w/h")
 
-    The *original* proposal bounds, never the current ones. This is the whole
+
+def _identity(value: Any, prefix: str, what: str) -> None:
+    if not is_well_formed(value) or not value.startswith(f"{prefix}_"):
+        raise IdentityRefusal(f"{what} must be a well-formed {prefix}_ identity")
+
+
+def page_bindings(origin: Any, transform: Any) -> dict[str, Any]:
+    """A rendered page binds immutable origin bytes and its parent-space transform.
+
+    Submission ordinals describe manifest rows, not the image.  They are therefore
+    deliberately absent: inserting a row cannot rename an existing page.
+    """
+    origin = (
+        _closed(origin, {"kind", "sha256"}, "page origin")
+        if isinstance(origin, dict) and origin.get("kind") == "source"
+        else _closed(
+            origin,
+            {"kind", "container_sha256", "container_page_index", "render_contract"},
+            "page origin",
+        )
+    )
+    if origin["kind"] == "source":
+        _sha256(origin["sha256"], "source page origin sha256")
+    elif origin["kind"] == "container-page":
+        if (
+            not isinstance(origin["container_page_index"], int)
+            or isinstance(origin["container_page_index"], bool)
+            or origin["container_page_index"] < 0
+            or not isinstance(origin["render_contract"], dict)
+        ):
+            raise IdentityRefusal("container-page origin has malformed immutable facts")
+        _sha256(origin["container_sha256"], "container page origin sha256")
+    else:
+        raise IdentityRefusal("page origin kind must be 'source' or 'container-page'")
+    transform = (
+        _closed(transform, {"operation"}, "page transform")
+        if isinstance(transform, dict) and transform.get("operation") == "whole"
+        else _closed(transform, {"operation", "bounds"}, "page transform")
+    )
+    if transform["operation"] == "split":
+        _bounds(transform["bounds"], "split bounds")
+    elif transform["operation"] != "whole":
+        raise IdentityRefusal("page transform operation must be 'whole' or 'split'")
+    return {"origin": origin, "transform": transform}
+
+
+def page_id(origin: Any, transform: Any) -> str:
+    return derive("page", page_bindings(origin, transform))
+
+
+ACT_CLASSES: Final = frozenset({"proposal", "residual", "page-fallback"})
+
+
+def act_bindings(page: str, act_class: str, bounds: Any) -> dict[str, Any]:
+    """An act binds its image-local page, class and originally minted bounds.
+
+    The *originally minted* bounds, never the current ones. This is the whole
     mechanism behind "act identity survives recropping": a recrop produces new
     bounds and therefore a new region, and cannot reach these bindings at all.
+
+    The class is a closed enum rather than a position in a list of proposals:
+    one extra detected region on a page must not rename every act after it.
+    That leaves the rectangle as the only thing separating two acts of one
+    class on one page, so each minter proves it cannot produce the same
+    rectangle twice — the Designator at `_refuse_duplicate_proposal_bounds`
+    and `hold_residual_act`.
+
+    Validation lives here rather than in `act_id` so `verify()` — which is
+    handed bindings rebuilt from a payload a stage read back — refuses a shape
+    the minting path could never have produced, instead of hashing it and
+    reporting a mismatch that says nothing about why.
     """
+    if act_class not in ACT_CLASSES:
+        raise IdentityRefusal("act class must be 'proposal', 'residual', or 'page-fallback'")
+    _identity(page, "pg", "act page")
+    _bounds(bounds, "act bounds")
     return {
         "page_id": page,
-        "proposal_ordinal": proposal_ordinal,
-        "proposal_bounds": proposal_bounds,
+        "class": act_class,
+        "bounds": bounds,
     }
 
 
-def act_id(page: str, proposal_ordinal: int, proposal_bounds: Any) -> str:
-    return derive("act", act_bindings(page, proposal_ordinal, proposal_bounds))
+def act_id(page: str, act_class: str, bounds: Any) -> str:
+    return derive("act", act_bindings(page, act_class, bounds))
+
+
+def _declared_text(value: str) -> str:
+    """The one spelling a human-typed declaration is hashed under.
+
+    Every other binding in this system is a digest, an integer, or a closed
+    enum. The physical identities are the only ones bound to text a person
+    types, and NFC and NFD spellings of one accented folio label are different
+    bytes to `canonical_bytes` — so one physical page would be declared twice,
+    with nothing anywhere to reconcile the two. Normalising first turns that
+    silent split into the corpus register's loud duplicate-record refusal.
+    """
+    return unicodedata.normalize("NFC", value)
+
+
+def physical_page_bindings(corpus_id: str, volume_id: str, designation: str) -> dict[str, str]:
+    if not all(isinstance(value, str) and value for value in (corpus_id, volume_id, designation)):
+        raise IdentityRefusal(
+            "physical page bindings require non-empty corpus, volume, and designation"
+        )
+    return {
+        "corpus_id": _declared_text(corpus_id),
+        "volume_id": _declared_text(volume_id),
+        "designation": _declared_text(designation),
+    }
+
+
+def physical_page_id(corpus_id: str, volume_id: str, designation: str) -> str:
+    return derive("physical-page", physical_page_bindings(corpus_id, volume_id, designation))
+
+
+def physical_act_bindings(physical_page: str, mint_designation: str) -> dict[str, str]:
+    if not isinstance(mint_designation, str) or not mint_designation:
+        raise IdentityRefusal(
+            "physical act bindings require a physical page id and mint designation"
+        )
+    _identity(physical_page, "ppg", "physical act page")
+    return {
+        "physical_page_id": physical_page,
+        "mint_designation": _declared_text(mint_designation),
+    }
+
+
+def physical_act_id(physical_page: str, mint_designation: str) -> str:
+    return derive("physical-act", physical_act_bindings(physical_page, mint_designation))
 
 
 def region_bindings(act: str, transform: Any) -> dict[str, Any]:
