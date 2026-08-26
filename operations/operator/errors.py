@@ -51,6 +51,9 @@ class ErrorCode(StrEnum):
     CLOSE_REFUSED = "close-refused"
     STATUS_EMPTY = "status-empty"
     STATUS_UNREADABLE = "status-unreadable"
+    CONSOLE_CUSTODY_REFUSED = "console-custody-refused"
+    CONSOLE_TREE_UNREADABLE = "console-tree-unreadable"
+    ADVANCE_REFUSED = "advance-refused"
     INTERRUPTED = "interrupted"
     UNEXPECTED = "unexpected"
 
@@ -240,6 +243,21 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
         "A saved operator record could not be read safely.",
         "Status did not guess what the record meant or contact a provider.",
         "Preserve that record for review and repair or replace it before continuing; this is safe.",
+    ),
+    ErrorCode.CONSOLE_CUSTODY_REFUSED: ErrorCopy(
+        "The operator console or advance worker could not complete inside its custody boundary.",
+        "No provider action was reached. If this happened after an advance worker started, its append-only record may exist even though no checked result returned.",
+        "Follow the saved detail below. Before retrying an advance, open review and check its advance_records; otherwise fix the named Landlock or Seatbelt problem, then open the console again.",
+    ),
+    ErrorCode.CONSOLE_TREE_UNREADABLE: ErrorCopy(
+        "The operator console could not read the selected run tree safely.",
+        "It did not guess at missing evidence or change the run tree.",
+        "Preserve the run tree unchanged and investigate the named evidence problem. Resume only from retained valid evidence, or create a new run; never edit the damaged evidence in place.",
+    ),
+    ErrorCode.ADVANCE_REFUSED: ErrorCopy(
+        "The requested stage boundary could not be advanced.",
+        "No later stage was started. A worker failure after append may have left an immutable advance record even though no checked result returned.",
+        "Open review and inspect advance_records before retrying, then address the named seal or worker problem; never assume a retry is record-free.",
     ),
     ErrorCode.INTERRUPTED: ErrorCopy(
         "The Verbatus command was interrupted before it reported an end state.",
