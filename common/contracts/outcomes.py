@@ -637,15 +637,10 @@ def run_aggregate(
     contributes its own named reason, exactly as an under-witnessed act or a refused
     page does.
 
-    `edge_hold_pages` names every sealed page carrying an Ink Map
-    `unclaimed-edge-ink` finding that the Designator's actual cuts did not
-    release (consult §4.4). It is the one unresolved cause that belongs to a
-    *page* rather than to any act on it -- nobody yet knows which act, if any,
-    the ink is part of -- so a page whose acts all delivered still leaves the
-    run unreconciled. Without it the terminal ledger held the page while this
-    aggregate, beside it in the same manifest, still said `complete`: one
-    export, two statuses, and the reassuring one is the one a reader sees
-    first (GOVERNANCE 2; invariant 6).
+    `edge_hold_pages` is page-scoped because no act can yet own the unclaimed
+    ink. A held page therefore keeps the aggregate partial even when every act
+    cut from that page was delivered; otherwise the aggregate and terminal
+    ledger would report different statuses for one export.
 
     A delivered act with no status supplied is named too, rather than assumed whole:
     that is the same "this run does not know" `NO_ATTRIBUTION_REASON` refuses to

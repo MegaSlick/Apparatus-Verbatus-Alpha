@@ -1,26 +1,9 @@
-"""Unit 14B's request gate admits ink evidence, never witness preference alone.
+"""The request gate admits independently measured ink, never witness preference.
 
-Consult §4.5 (`/out/CONSULT_REPORT.md`, BINDING over the plan text): a native
-or derived witness box that overlaps nothing currently cut is a *pointer*,
-never itself the evidence. Recovery may be requested only where Unit 9's own
-ink map independently confirms real ink under that pointer -- "the box is a
-pointer; the ink is the evidence... this is what makes it not a picker."
-
-An earlier build pass wired the live gate straight to
-``content_coverage.get("unclaimed_observations")`` with no ink confirmation at
-all -- a witness's own report, unconfirmed, spending a real recovery budget or
-holding a real act. `pipeline/5_recensor/test_coverage_recovery_origin.py`
-proves that regression was live against the checked-in fixture (the
-`coverage-recovery` scenario's marginal witness box sits over measured-empty
-pixels). This file proves the restored gate at two levels: the structural
-wiring of the live ``wants_recovery`` expression to ``outside_ink_requests``
-(so a stale duplicate predicate here cannot drift from the real request path),
-and the ink-confirmation arithmetic of ``unclaimed_ink_observations`` itself,
-against synthetic Unit 9 evidence a witness box could not have seen.
-
-It also pins consult base question 11, which Unit 14B resolved as a change: an
-unclaimed observation is page-scoped, so it funds at most ONE act-scoped
-recovery request on its page rather than one per act that reads it.
+A native or derived witness box is a pointer, not coverage evidence. These
+tests bind the live request expression to ink-confirmed observations, exercise
+the measurement arithmetic, and require one page-scoped observation to fund at
+most one act-scoped recovery request.
 """
 
 from __future__ import annotations
@@ -119,7 +102,6 @@ def _wants_recovery(
     page_ordinal: int = 1,
     funded_pages: set[int] | None = None,
 ) -> bool:
-    """Drive the live request predicate under a no-scenario, fresh-budget run."""
     return bool(
         eval(  # noqa: S307 -- compile input is this checked-in module's one expression.
             _live_recovery_trigger(source),
@@ -143,12 +125,7 @@ def test_wants_recovery_is_inert_without_an_ink_confirmed_observation():
 
 
 def test_a_bypass_of_ink_confirmation_is_caught_by_this_files_own_guard():
-    """Mutate-and-observe: reintroducing the raw witness dict trips the guard.
-
-    This is the exact regression `test_coverage_recovery_origin.py` proves was
-    live in production. Reproducing it here, in isolation, pins down which
-    line would have to move for it to come back.
-    """
+    """The structural guard rejects a request predicate based on raw witness data."""
     source = RECENSOR.read_text(encoding="utf-8")
     live = "bool(outside_ink_requests)"
     assert source.count(live) == 1, "the test no longer identifies the live coverage origin"
@@ -158,8 +135,6 @@ def test_a_bypass_of_ink_confirmation_is_caught_by_this_files_own_guard():
 
 
 class _FakeTree:
-    """Just enough of `RunTree` for `ink_map_by_page` to read one ink map."""
-
     def __init__(self, maps_by_ordinal: dict[int, dict]):
         self._maps = maps_by_ordinal
 
@@ -181,7 +156,6 @@ class _FakeContext:
 
 
 def _ink_map(width: int, height: int, ink_boxes: list[dict]) -> dict:
-    """A synthetic ``ink-runs.v1`` page with ink exactly inside the given boxes."""
     rows: list[list[list[int]]] = []
     for y in range(height):
         runs = sorted(
@@ -225,12 +199,8 @@ def test_each_forbidden_witness_trigger_cannot_request_recovery_even_with_ink(fo
 def test_a_two_chair_disagreement_is_refused_through_the_real_gate_by_hand():
     """Reconstruct the two-chair case end to end: geometry alone never wins.
 
-    Two chairs disagreeing about a box's placement is exactly the "ANY
-    two-chair disagreement" trigger consult §4.5 names as forbidden ("both-
-    inside = finding, full stop"). Here both chairs' boxes sit outside every
-    proposal (a genuine Unit 10C finding either way), but neither pixel region
-    carries real ink. `wants_recovery` must refuse both for the ink reason, not
-    merely because this particular pair of chairs happened to agree or not.
+    Both boxes sit outside every proposal but contain no measured ink, so their
+    disagreement cannot authorize recovery.
     """
     recensor = _recensor()
     chair_1_box = {"x": 0, "y": 0, "w": 4, "h": 4}
@@ -272,32 +242,22 @@ def test_a_box_wholly_above_the_page_cannot_claim_ink_through_a_negative_slice()
 
 
 def test_ink_already_inside_a_cut_region_is_not_an_outside_part():
-    """§4.5 condition (2) measures the OUTSIDE part, and §4.3 fixes the mask.
+    """The live mask includes recovery crops, not only original proposals.
 
-    Unit 10C retains an observation as `unclaimed` against the *proposal* set
-    alone, so a pointer can sit inside a recovery crop already cut for a
-    neighbouring act on the same page. That shape is reachable in the shipped
-    fixtures -- `review` cuts a recovery crop for a1 while a2 still has an
-    unspent pool, and `test_coverage_recovery_origin.py` asserts the marginal
-    box is physically contained in that expanded crop -- so only the fixture's
-    zero ink kept it inert. With real ink under the pointer, counting the whole
-    box asks the Designator to expand a crop over ink it has already cut.
+    Observations are retained against the proposal set present when they were
+    recorded, so one may overlap a later recovery crop. Ink in that overlap is
+    already covered and cannot fund another recovery.
     """
     recensor = _recensor()
     box = {"x": 0, "y": 0, "w": 10, "h": 10}  # 100 px, well past MINIMUM_INK_PIXELS
     observation = {"kind": "unrouted-observation", "bounds": box}
     maps = recensor.ink_map_by_page(_FakeContext({1: _ink_map(20, 20, [box])}))
 
-    # Nothing cut: the whole box is outside, and the pointer is confirmed.
     assert recensor.unclaimed_ink_observations(maps, [observation], 1, {}) == [
         {"page_ordinal": 1, "outside_ink_pixels": 100}
     ]
-    # The same ink, wholly inside a region already cut on this page: nothing to
-    # recover, so nothing is requested.
     cut = {1: [{"x": 0, "y": 0, "w": 20, "h": 20}]}
     assert recensor.unclaimed_ink_observations(maps, [observation], 1, cut) == []
-    # A cut that claims only part of it leaves the rest outside, and the
-    # remainder still has to clear the floor on its own.
     partial = {1: [{"x": 0, "y": 0, "w": 10, "h": 8}]}  # leaves 2 rows = 20 px
     assert recensor.unclaimed_ink_observations(maps, [observation], 1, partial) == []
     smaller = {1: [{"x": 0, "y": 0, "w": 10, "h": 7}]}  # leaves 3 rows = 30 px
@@ -374,14 +334,7 @@ def test_an_observation_on_a_page_with_no_ink_map_entry_is_refused_by_name():
 
 
 def test_one_observation_funds_one_request_on_its_page():
-    """Consult base question 11: page-scoped evidence, one act-scoped grant.
-
-    The same page-scoped pointer is what every act on the page reads. Before
-    the bound, each of them spent its own single, unrecoverable chance to widen
-    its crop on it -- N bounded pools for one observation. The second act now
-    reads the same confirmed ink and asks for nothing, while an act on a
-    different page is untouched.
-    """
+    """Page-scoped evidence funds one act-scoped grant on that page."""
     confirmed = [{"page_ordinal": 1, "outside_ink_pixels": 40}]
     assert _wants_recovery(confirmed, page_ordinal=1, funded_pages=set()) is True
     assert _wants_recovery(confirmed, page_ordinal=1, funded_pages={1}) is False
@@ -418,8 +371,6 @@ def test_a_removal_of_the_page_bound_is_caught_by_this_files_own_guard():
 
 
 class _RequestTree:
-    """Just enough of `RunTree` to serve recovery-request artifacts."""
-
     def __init__(self, requests: list[dict]):
         self._requests = {request["artifact_id"]: request for request in requests}
 

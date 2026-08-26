@@ -206,7 +206,7 @@ def ink_map_page_rows(
 ) -> tuple[dict, ...]:
     """Re-measure the Ink Map against the Designator's actual cuts, and say so.
 
-    The pre-proposal map cannot know whether edge ink belongs to an act.  Its
+    The pre-proposal map cannot know whether edge ink belongs to an act. Its
     lossless page-space runs let this final boundary apply the Designator's
     recorded crop geometry to the *same measurement*, so a claimed edge mark
     releases and a genuinely unclaimed one remains visible for review.
@@ -216,11 +216,10 @@ def ink_map_page_rows(
     recomputes the held set from these numbers with the ink map's own gate; a
     bare list of held ordinals would be a claim it could only check against
     itself. A page the map never flagged is re-measured by nobody and records
-    `remeasured: None`, because writing zeros for it would put a measurement
-    that was never taken into the record (GOVERNANCE 10). Every initial outcome
-    is first reconciled with the retained runs against the original empty crop
-    set; that verifies Unit 9's existing measurement and is distinct from the
-    later re-measurement against Designator cuts.
+    `remeasured: None`, because writing zeros would record a measurement that
+    never occurred. Every initial outcome is first reconciled with the retained
+    runs against the original empty crop set, independently of the later
+    re-measurement against Designator cuts.
     """
     found: dict[int, dict] = {}
     for entry in context.tree.build_manifest(INK_MAP)["artifacts"]:
@@ -229,10 +228,8 @@ def ink_map_page_rows(
         record = context.tree.read_artifact(INK_MAP, "ink-map", entry["artifact_id"])
         payload = record.get("payload", {})
         ordinal = payload.get("page_ordinal") if isinstance(payload, dict) else None
-        # A second retained record for one page is refused rather than resolved:
-        # otherwise whichever copy the manifest walk reached last would decide
-        # the hold. Upstream inventories are static during an Armarium run; this
-        # is duplicate-accounting protection, not a claim of an atomic race guard.
+        # Duplicate page records are refused because manifest order cannot
+        # decide which retained finding controls the hold.
         if not isinstance(ordinal, int) or isinstance(ordinal, bool):
             raise FatalAccounting(
                 "ink-map has a record without an integer page ordinal. The Armarium cannot bind "
@@ -367,7 +364,7 @@ def pages_marked_out(context, manifest_cache: dict[str, dict]) -> dict[str, list
 
 
 def claimed_bounds_by_page(context, manifest_cache: dict[str, dict]) -> dict[int, list[dict]]:
-    """The verified capture rectangles which can release an edge finding."""
+    """Verified capture rectangles are the only geometry that can release a finding."""
     claimed: dict[int, list[dict]] = {}
     for entry in _cached_manifest(context, DESIGNATOR, manifest_cache)["artifacts"]:
         if entry["kind"] != "region":
@@ -1009,14 +1006,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         )
 
     unaddressed = list(unaddressed_chairs(context.registry.config))
-    # Measured before the aggregate, not after it: an unreleased edge finding is
-    # one of the run's own unresolved causes, so an aggregate computed without it
-    # would say `complete` beside a terminal ledger that holds the page.
-    # No capability sniff around this call. `page_census` above already reached
-    # `context.tree.build_manifest` unconditionally, so a tree without it never
-    # arrives here at all -- and a guard that silently yields "no holds" beside
-    # a hold gate is the shape that becomes reachable later without anyone
-    # noticing (GOVERNANCE 2).
+    # The aggregate and terminal ledger must derive from the same edge holds;
+    # computing the aggregate first could report complete beside a held page.
     ink_map_pages = ink_map_page_rows(
         context, census, claimed_bounds_by_page(context, manifest_cache)
     )

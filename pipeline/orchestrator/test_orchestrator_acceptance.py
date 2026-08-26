@@ -865,46 +865,11 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # twice each in independent temporary roots at canonical run id "r", through
 # this module's own orchestrate and semantic_snapshot_digest helpers. Counts
 # stay Unit 9's 97/118 (the seam moves bytes, not files) at unchanged exits.
-# Unit 14B reconciliation: the initial Ink Map finding is pre-proposal evidence.
-# Armarium re-measures its retained runs against verified Designator crops, so
-# the fully claimed synthetic ink releases rather than turning happy into a
-# false hold. The positive remains real: a page with no such crop stays held.
-# Both pins were measured twice in independent roots with this module's
-# `orchestrate` and `semantic_snapshot_digest` helpers at run id `r`: happy is
-# 97/0 and review is 106/3.
-# Unit 14B fix pass 2: that release accidentally made Unit 10C's existing
-# witness-observation recovery conditional on the new edge-ink trigger. The
-# older path keeps its own origin and fallback-recrop budget; it is not an
-# edge-ink request. Restoring it re-adds the second review recovery round, so
-# review returns to 118/3 while happy remains 97/0. Both pins were measured at
-# canonical run id `r` in two independent roots through the same helpers after
-# this final semantic byte: happy reproduced its existing digest and review
-# reproduced the replacement below.
-# Unit 14B Opus audit: the Armarium's edge hold is now derived, on both sides,
-# from one recorded ink-map row per sealed page carried in `sources.json`
-# (`armarium-sources.v3`), so the clean-machine verifier recomputes the held set
-# from the package's own source graph instead of reading it back out of the
-# claim it produced. Every package member except EXPORT_MANIFEST.json used to be
-# byte-identical whether or not a page was held, so a manifest built with the
-# hold simply dropped verified clean against the very run that had it. Both
-# trees gain the evidence, so both digests move; counts and exits are unchanged
-# (happy 97/0, review 106/3). Measured twice in independent temporary roots at
-# canonical run id "r" through this module's own `orchestrate` and
-# `semantic_snapshot_digest` helpers.
-# Unit 14B Opus audit, again in both trees: an audit draft's
-# `flag_location_basis` named every chair that reported, not the chairs whose
-# retained text departs from the reading. On this very fixture both acts raise
-# two `testimony-diff` flags and the basis named three chairs -- attestator_1
-# agreed with the reading exactly and was recorded as the basis of a flag it
-# did not raise (GOVERNANCE 10, consult §4.7: a fact re-derived over a wider
-# denominator than its writer counted on). The two producers are now held to
-# the same count. Counts and exits unchanged (happy 97/0, review 106/3); both
-# re-measured twice in independent roots at run id "r".
-# Unit 14B Phase-2 Sol review: `claims.ink_map` made the manifest's closed
-# shape incompatible with v2, so its schema id now honestly moves to v3 just
-# as the squash already moved `sources.json`. Only the exported schema byte and
-# its derived hashes change; happy remains 97 files at exit 0. Re-measured at
-# canonical run id "r" through this module's own helpers.
+# Edge findings release only when the retained ink runs are covered by verified
+# crops. The v3 export carries one source row per sealed page so clean-machine
+# verification derives the same held set, and testimony-diff bases use only
+# chairs whose retained text differs. This pin was measured twice in independent
+# roots at canonical run id "r"; happy remains 97 files at exit 0.
 HAPPY_RUN_TREE_DIGEST = "da138676ace7893653d0f9c6697173c833402f1d33b979a13d04d120ae24674e"
 # Review only, once more in the same seat: a page witness invoked on every act
 # and unusable on all of them now records the serving moment that produced it
@@ -927,45 +892,10 @@ HAPPY_RUN_TREE_DIGEST = "da138676ace7893653d0f9c6697173c833402f1d33b979a13d04d12
 # "r" by this module's `orchestrate` and `semantic_snapshot_digest` helpers.
 # Union re-pin: see the seam entry above the happy digest — measured on the
 # combined Unit 9 x Unit 14A tree.
-# Unit 14B Sonnet audit: fix pass 2's "restoration" above was the regression,
-# not the fix. Unit 10C's own `unclaimed_observations` is a witness's report --
-# a native/derived box the Attestatores reported, with no ink evidence behind
-# it -- and consult §4.5 (`/out/CONSULT_REPORT.md`, BINDING) requires Unit 9's
-# ink map to independently confirm real ink under that box before it may spend
-# a bounded recovery or hold an act; "the box is a pointer; the ink is the
-# evidence... this is what makes it not a picker." Measured directly against
-# the checked-in fixture (`common.residual_ink.ink_runs` over
-# `proof.synthetic_pages.page_bytes(1)`): the `review` scenario's marginal
-# witness box at page 1, x 0..10 / y 200..240, sits over zero ink. The second
-# review recovery round fix pass 2 restored was therefore spent on a2 (which
-# `hold_acts` declares should go straight to a hold) for no evidence at all --
-# a witness's own unconfirmed report picking a pipeline action for itself,
-# exactly what GOVERNANCE 3 forbids. Restoring the ink gate removes that
-# wasted round: a1's recovery request now names its true origin ("the crop may
-# be incomplete", not the coverage-origin phrase, since its own box is equally
-# unconfirmed by ink), and a2 goes directly to held-for-review, without an
-# intervening recovery-request/region/reading round. Review returns to 106
-# files at unchanged exit 3; happy is untouched (it carries no witness box at
-# all) at the digest above. Both pins were measured twice in independent
-# temporary roots at canonical run id "r" through this module's own
-# `orchestrate` and `semantic_snapshot_digest` helpers: happy reproduced its
-# existing digest and review reproduced the value below.
-# Unit 14B Opus audit: Sonnet's ink gate above is confirmed and unchanged -- the
-# marginal box still sits over measured-zero ink, so review keeps 106 files at
-# exit 3 and no recovery round returns. This digest moved once for the Armarium
-# source-graph byte named above the happy digest, and once more here: review's
-# one recovery request now records its `origin` as data beside the sentence that
-# states it, so the one-observation-one-request bound (consult base question 11)
-# counts a recorded fact rather than re-reading prose. Happy has no recovery
-# request, so its digest above is untouched by that second byte. The bound
-# itself changes no fixture behaviour -- no shipped scenario has ink under a
-# witness pointer at all -- and review stays at 106 files, exit 3. Measured
-# twice in independent temporary roots at canonical run id "r" through this
-# module's own `orchestrate` and `semantic_snapshot_digest` helpers.
-# Unit 14B Phase-2 Sol review: the manifest v3 correction described above the
-# happy pin changes the same exported schema byte and derived hashes here;
-# review remains 106 files at exit 3. Re-measured at canonical run id "r"
-# through this module's own helpers.
+# The review fixture's marginal witness box contains no independently measured
+# ink, so it cannot fund a second recovery. Its sole request records a causal
+# origin for the page-wide grant, leaving 106 files at exit 3. This pin was
+# measured twice in independent roots at canonical run id "r".
 REVIEW_RUN_TREE_DIGEST = "528b45f837e68578287533d47b3ef74883e6f38d05da91a7a6cb43f82a2c1920"
 
 

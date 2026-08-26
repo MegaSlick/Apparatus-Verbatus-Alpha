@@ -50,12 +50,10 @@ def _source_bytes(path: str) -> dict[str, bytes]:
 
 
 def _mapped_page(ordinal: int = 1) -> dict:
-    """An ink-map row for a page Unit 9 never flagged: nothing to release."""
     return {"ordinal": ordinal, "initial_outcome": "mapped", "remeasured": None}
 
 
 def _edge_page(ordinal: int = 1, *, outside: int, total: int = 10_000) -> dict:
-    """A flagged ink-map row carrying the numbers its release is judged on."""
     return {
         "ordinal": ordinal,
         "initial_outcome": "unclaimed-edge-ink",
@@ -284,8 +282,8 @@ def _otherwise_complete(**fields) -> ArmariumProjection:
             unaddressed_chairs=basis["unaddressed_chairs"],
             act_pages=basis["act_pages"],
             act_text_status=basis["act_text_status"],
-            # Mirrors the stage: an unreleased edge finding is one of the run's
-            # own unresolved causes, so the aggregate is measured with it.
+            # Page-scoped edge holds must enter the aggregate even when every
+            # act category is complete.
             edge_hold_pages=edge_hold_pages_from_rows(list(projection.ink_map_pages)),
         ),
     )
@@ -305,10 +303,8 @@ def test_an_otherwise_complete_export_is_complete_without_an_edge_hold():
 def test_the_required_ink_map_claim_moves_the_manifest_schema_to_v3(tmp_path):
     """A v2 identity may not describe the new closed claim set.
 
-    Unit 14B made ``claims.ink_map`` mandatory. Keeping the old schema id would
-    leave old and new readers mutually unable to read objects that both call
-    v2, the versioning defect the source-graph side already avoided by moving
-    ``sources.json`` to v3.
+    ``claims.ink_map`` is required, so old and new closed shapes need different
+    identities rather than two incompatible meanings of v2.
     """
     members = _members(
         build_armarium_bundle(
@@ -351,7 +347,7 @@ def test_an_unreleased_edge_finding_forces_a_partial_export_and_rejects_complete
 
 
 def test_a_release_is_by_ink_and_a_partial_claim_does_not_make_one():
-    """Consult §4.4: release is by ink, not by decision.
+    """Release is derived from measured ink, not a separate decision.
 
     The same flagged page, judged only on how much of its own edge ink the
     Designator's cuts actually reached. A clear re-measure releases; a crop
@@ -376,12 +372,8 @@ def test_a_release_is_by_ink_and_a_partial_claim_does_not_make_one():
 def test_a_dropped_edge_hold_cannot_be_verified_away_on_a_clean_machine(tmp_path):
     """The hold is derived from the source graph, never read out of its claim.
 
-    Every package member except EXPORT_MANIFEST.json used to be byte-identical
-    whether or not a page was held, and the verifier recomputed the terminal
-    ledger from `claims.ink_map.held_pages` -- so a manifest built with the
-    hold simply omitted verified clean against the very run that had it. The
-    ink-map rows now live in `sources.json`, and the held set is recomputed
-    from their recorded counts by the ink map's own gate.
+    The verifier cannot use `claims.ink_map.held_pages` to prove itself; the
+    recorded counts in `sources.json` are its independent derivation basis.
     """
     held = _members(
         build_armarium_bundle(
@@ -397,13 +389,12 @@ def test_a_dropped_edge_hold_cannot_be_verified_away_on_a_clean_machine(tmp_path
             _source_bytes,
         ).data
     )
-    # The evidence is now part of the package, so the two differ beyond the
-    # manifest. That difference is the whole point of the fix.
+    # A held and released page must differ in source evidence, not only in the
+    # manifest claim derived from it.
     assert held["sources.json"] != green["sources.json"]
 
-    # The forgery is the *green* manifest over the *held* source graph, with
-    # its member digests repaired so nothing but the derivation itself can
-    # refuse it. Before the fix this package verified clean.
+    # Repair member digests so only the false derivation can refuse this green
+    # manifest over a held source graph.
     forged = dict(held)
     green_manifest = json.loads(green[EXPORT_MANIFEST_NAME])
     for row in green_manifest["members"]:
@@ -432,7 +423,7 @@ def test_an_edited_ink_map_row_cannot_release_a_page_it_still_flags(tmp_path):
 
 
 def test_the_ink_map_denominator_must_be_exactly_the_sealed_page_census():
-    """Consult §4.3's cross-instrument identity, executable inside the package."""
+    """Ink-map rows and the sealed page census must have identical identities."""
     with pytest.raises(SchemaRefusal, match="ink-map denominator is not exactly"):
         build_armarium_bundle(
             _otherwise_complete(ink_map_pages=()), _formats(embed_pixels=False), _source_bytes

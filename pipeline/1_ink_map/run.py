@@ -137,8 +137,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 "page_ordinal": ordinal,
                 "ink": artifact_finding(ink_map),
                 "edge": artifact_finding(edge),
-                # Unit 14 reads this map; it never re-decodes page pixels to
-                # decide whether an outside observation asks for a recrop.
+                # Retain lossless runs so later coverage decisions cannot
+                # re-measure the page under a different pixel predicate.
                 "edge_findings": ink_runs(image_bytes),
             },
         )

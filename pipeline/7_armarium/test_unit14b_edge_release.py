@@ -1,17 +1,9 @@
-"""The by-ink release at the stage boundary: what may release, and what refuses.
+"""The by-ink release boundary: what may release, and what refuses.
 
-`test_armarium_export.py` proves the export half -- a released page carries no
-hold, a still-flagged one forces `partial`, and the held set is recomputed from
-the package's own recorded counts on a clean machine. This file proves the
-stage half: which run-tree evidence `ink_map_page_rows` and
-`claimed_bounds_by_page` will accept as the basis for a release at all.
-
-Consult §4.4: release is by ink, not by decision. The corollary is that every
-input to that re-measurement has to be the one the run actually sealed. A crop
-whose pixels no longer verify against the Exemplar page it claims cannot
-release anything, and two retained Ink Map findings for one page are refused
-rather than resolved -- otherwise whichever copy the manifest walk reached
-last would decide the hold.
+Release is derived from measured ink, so every re-measurement input must be
+sealed run evidence. A crop that no longer verifies against its Exemplar page
+cannot release anything, and duplicate page findings are refused because row
+order cannot decide the hold.
 """
 
 import importlib.util
@@ -126,7 +118,7 @@ def test_two_ink_map_records_for_one_page_are_refused_rather_than_resolved():
 
 
 def test_an_ink_map_page_outside_the_sealed_census_is_refused():
-    """Consult §4.3's cross-instrument identity, at the stage boundary."""
+    """The Ink Map and sealed page census must name the same page set."""
     armarium = _armarium()
     context = _context({INK_MAP: [_ink_record("a", 1), _ink_record("b", 2)]})
     with pytest.raises(FatalAccounting, match="denominator does not match"):

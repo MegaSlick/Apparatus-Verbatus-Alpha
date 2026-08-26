@@ -1867,15 +1867,10 @@ def flag_location_basis(
     This records a location basis only; it does not promote testimony into a
     reading or make boundary geometry a text flag.
 
-    The denominator is the chairs whose retained text actually DEPARTS from
-    this reading -- ``audit_semi_finals`` raises one `testimony-diff` flag per
-    such chair (`pipeline/4_perlector/audit.py`) and is handed bare strings, so
-    it cannot name them. Deriving the basis from "every chair that reported"
-    instead would name a chair that agreed with the reading exactly as the
-    basis of a flag it did not raise: a claim about something nobody measured
-    (GOVERNANCE 10), over a denominator wider than the one the flags were
-    counted on. The two producers are held to the same count below rather than
-    trusted to stay aligned, because nothing else in the draft compares them.
+    ``audit_semi_finals`` raises one flag per retained text that differs from
+    the reading but receives only bare strings, so it cannot name the chairs.
+    The basis must use that same denominator: including a chair whose text
+    agrees would attribute a flag to evidence that did not raise one.
     """
     rows = dossier.get("testimonia", [])
     basis = sorted(

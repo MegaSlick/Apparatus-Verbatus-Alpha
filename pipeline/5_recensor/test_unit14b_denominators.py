@@ -1,4 +1,4 @@
-"""Consult §4.3's headline falsification, in both directions, on a real tree.
+"""Keep act, ink, and witness denominators independent on a real tree.
 
 Three denominators are deliberately separate and never mixed: **acts** is the
 proposal seal's expected set, **ink** is Unit 9's per-page map plus the
@@ -17,9 +17,8 @@ both directions, each with the control that stops it passing vacuously:
   pre-proposal map (measured before any proposal existed) and the act set are
   unchanged.
 
-The perturbations are applied at the artifact read boundary rather than by
-rewriting the tree, so the run under test is the real one every other pin is
-measured against.
+Perturbations are applied at the artifact read boundary so the sealed run tree
+stays unchanged.
 """
 
 import copy
@@ -184,7 +183,6 @@ def _region_to_shrink(recensor, context) -> tuple[str, int]:
 
 
 def _shrinking_reader(context, target: str):
-    """Read the tree with one sealed cut `SHRINK_ROWS` shorter than it is."""
     original = context.tree.read_artifact
 
     def read(stage, kind, artifact_id):
@@ -199,7 +197,6 @@ def _shrinking_reader(context, target: str):
 
 
 def _witness_moving_reader(inner):
-    """Wrap a reader so every retained chair box moves, and count what moved."""
     moved: list[str] = []
 
     def read(stage, kind, artifact_id):

@@ -95,10 +95,9 @@ MINIMUM_FRACTION_OUTSIDE_COVERAGE = 0.02
 #: glance at a page and missing an act costs the act.
 SUBSTANTIAL_INK_PIXELS = 2_000
 
-# A bounded strip on every page edge.  This is an instrument boundary, not a
-# claim that 64 pixels is a calibrated cross-page-act threshold: the existing
-# ink thresholds above remain PROPOSED, NOT YET MEASURED.  It keeps the signal
-# local to the page break while Unit 14 decides the explicit hold outcome.
+# "64 pixels is a calibrated cross-page-act threshold" is not a claim this bounded
+# perimeter makes. It only localizes the signal; the thresholds remain proposed
+# until measured against a real corpus.
 EDGE_BAND_PIXELS = 64
 
 
@@ -232,9 +231,8 @@ def page_residual_ink(image_bytes: bytes, covered: list[Bounds]) -> dict[str, An
 def ink_runs(image_bytes: bytes) -> dict[str, Any]:
     """The ink map's reusable, lossless page-space evidence.
 
-    This is produced once by the ink-map stage.  Later consumers count runs in
-    a supplied box; they must not decode the page and make a second ink
-    measurement under a denominator the map writer could not have seen.
+    Later consumers must count these retained runs rather than decode the page
+    again under a potentially different pixel measurement.
     """
     width, height, rows = grayscale_rows(image_bytes)
     table = _ink_table(_background_level(rows))
@@ -259,12 +257,9 @@ def ink_runs(image_bytes: bytes) -> dict[str, Any]:
 def edge_ink_from_runs(evidence: dict[str, Any], covered: list[Bounds]) -> dict[str, Any]:
     """Re-measure the edge finding against later Designator cuts.
 
-    ``page_edge_ink`` deliberately runs before proposals exist, so its positive
-    outcome is a *candidate* coverage finding, not a final page verdict.  The
-    Ink Map retains these lossless ink runs precisely so the Designator's actual
-    cuts can release a finding without a later stage decoding the page under a
-    different measurement.  This is the same edge band and the same flag gates
-    as ``page_edge_ink``; only ``covered`` has changed.
+    The initial measure precedes all proposals, so it is a candidate finding.
+    A later crop may release it only by applying the same edge band and flag
+    gates to these retained runs; only the coverage mask may change.
     """
     if not isinstance(evidence, dict) or evidence.get("schema") != "ink-runs.v1":
         raise ValueError("ink-run evidence has the wrong schema")
@@ -358,9 +353,8 @@ def page_edge_ink(image_bytes: bytes) -> dict[str, Any]:
 
     The central rectangle is the only covered area, so this delegates the ink
     predicate and both existing flag gates to ``residual_ink`` rather than
-    creating a second detector with slightly different arithmetic.  Its finding
-    is evidence only: Unit 14 owns the hold outcome for a possible unproposed
-    cross-page half act.
+    creating a second detector with slightly different arithmetic. Its finding
+    is evidence only; this measurement does not assign the ink to an act.
     """
     width, height, rows = grayscale_rows(image_bytes)
     band = min(EDGE_BAND_PIXELS, width // 2, height // 2)

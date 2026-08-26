@@ -74,10 +74,8 @@ ARMARIUM_ARCHIVE_NAME: Final = "armarium-export.zip"
 # beside the new measured `claims.transcription_annotations` — a rename under
 # one id is the versioning miss the act-row bump below refuses, so the
 # manifest's id moves with its claims.
-# v3: `claims.ink_map` joins the closed claim set. A v2 verifier cannot answer
-# that page-level hold question and a v3 verifier refuses a v2 claim set that
-# omits it, so keeping the v2 id would give two mutually unreadable shapes one
-# name -- exactly the silent schema drift the v2 bump above exists to prevent.
+# v3 adds required `claims.ink_map`; v2 readers and writers cannot consume that
+# closed shape without an explicit schema boundary.
 EXPORT_MANIFEST_SCHEMA: Final = "armarium-export-manifest.v3"
 # v2: the damage record. `text_status` and `transcription_annotations` joined
 # the row, and the bare `annotations`/`annotation_status` pair was renamed
@@ -118,11 +116,8 @@ _SQLITE_SCHEMA: Final = "armarium-acts-sqlite.v2"
 _SQLITE_USER_VERSION: Final = 2
 # v2: every act-outcome row now REQUIRES `text_status` (exact-field-set
 # checked), so a v1 sources file and a v2 reader are mutually unreadable.
-# v3: `ink_map_pages` joins the graph, for the same reason again. Unit 14B's
-# edge hold reached the manifest as a claim with no source row behind it, so
-# the verifier that recomputes the terminal ledger "from the package's source
-# graph rather than out of the manifest" had to read that one input back out
-# of the manifest. A v2 file cannot answer a v3 reader's question at all.
+# v3 adds required `ink_map_pages`, which lets a verifier derive the hold from
+# source evidence instead of trusting the manifest claim it is checking.
 SOURCES_SCHEMA: Final = "armarium-sources.v3"
 SALVAGE_RECORD_SCHEMA: Final = "armarium-salvage-item.v1"
 CANONICAL_TEXT_FIELD: Final = "canonical_clean_text"
@@ -243,11 +238,8 @@ class ArmariumProjection:
     # materially different from a sealed, empty inventory: the former must not
     # be exported as a reassuring count of zero.
     salvage_items: tuple[dict[str, Any], ...] | None = None
-    # One row per sealed page: what Unit 9's pre-proposal map found, and what
-    # this stage re-measured its retained runs to once the Designator's actual
-    # cuts were known. The held set is DERIVED from these rows, never carried
-    # beside them -- two fields could disagree, and the one that reached the
-    # ledger would be the one nobody could check.
+    # One row per sealed page retains the initial map outcome and any later
+    # re-measurement. The held set is derived, never stored beside this evidence.
     ink_map_pages: tuple[dict[str, Any], ...] = ()
 
 
@@ -345,10 +337,8 @@ def build_armarium_bundle(
             "witness_chairs": list(projection.witness_chairs),
             "witness_floor": projection.witness_floor,
             "salvage_regions": _salvage_regions(projection.salvage_items),
-            # The evidence behind the edge hold, in the source graph rather
-            # than only in the claim it produces. Without it the terminal
-            # ledger's one page-level cause could not be recomputed on a clean
-            # machine at all.
+            # Source evidence must travel with the claim so a clean-machine
+            # verifier can derive the page-level hold independently.
             "ink_map_pages": list(projection.ink_map_pages),
         }
     )
@@ -902,24 +892,27 @@ def _validate_ink_map_pages(rows: Any, subject: str) -> list[dict[str, Any]]:
     return validated
 
 
-def edge_hold_pages_from_rows(rows: list[dict[str, Any]]) -> tuple[int, ...]:
-    """The held set, recomputed from the recorded counts by the shared gate.
-
-    Not a stored boolean. `coverage_flag` is the same predicate the ink map and
-    the re-measure themselves applied, so a row whose numbers say "released"
-    cannot also assert a hold, and a row whose numbers say "still flagged"
-    cannot assert a release. Consult §4.4: release is by ink, not by decision.
-    """
-    validated = _validate_ink_map_pages(rows, "an ink-map hold derivation")
+def _edge_hold_pages_from_validated_rows(rows: list[dict[str, Any]]) -> tuple[int, ...]:
     return tuple(
         sorted(
             row["ordinal"]
-            for row in validated
+            for row in rows
             if row["initial_outcome"] == _UNCLAIMED_EDGE_INK
             and coverage_flag(
                 row["remeasured"]["total_ink_pixels"], row["remeasured"]["outside_ink_pixels"]
             )[1]
         )
+    )
+
+
+def edge_hold_pages_from_rows(rows: list[dict[str, Any]]) -> tuple[int, ...]:
+    """The held set, recomputed from the recorded counts by the shared gate.
+
+    The held state is not stored: using the measurement predicate prevents a
+    row's counts from disagreeing with a separate asserted boolean.
+    """
+    return _edge_hold_pages_from_validated_rows(
+        _validate_ink_map_pages(rows, "an ink-map hold derivation")
     )
 
 
@@ -942,6 +935,7 @@ def _validate_projection(projection: ArmariumProjection) -> None:
         projection.acts,
     )
     ink_map_rows = _validate_ink_map_pages(list(projection.ink_map_pages), "an Armarium projection")
+    edge_hold_pages = _edge_hold_pages_from_validated_rows(ink_map_rows)
     sealed = {
         page["ordinal"]
         for page in projection.pages
@@ -1041,7 +1035,7 @@ def _validate_projection(projection: ArmariumProjection) -> None:
         {act["act_key"]: act["category"] for act in projection.acts},
         projection.pages,
         projection.aggregate_basis,
-        edge_hold_pages_from_rows(list(projection.ink_map_pages)),
+        edge_hold_pages,
     )
     if canonical_text(projection.aggregate) != canonical_text(expected_aggregate):
         raise SchemaRefusal("an Armarium projection aggregate does not match its measured basis")
@@ -2670,6 +2664,7 @@ def _export_manifest(
             "promotion": _SALVAGE_PROMOTION_CLAIM,
         }
     )
+    edge_hold_pages = edge_hold_pages_from_rows(list(projection.ink_map_pages))
     ledger = _terminal_ledger(
         _act_outcomes(projection.acts),
         list(projection.pages),
@@ -2677,7 +2672,7 @@ def _export_manifest(
         if isinstance(projection.aggregate_basis, dict)
         else None,
         projection.aggregate,
-        edge_hold_pages_from_rows(list(projection.ink_map_pages)),
+        edge_hold_pages,
     )
     manifest: dict[str, Any] = {
         "schema": EXPORT_MANIFEST_SCHEMA,
@@ -2710,7 +2705,7 @@ def _export_manifest(
             "terminal_ledger": ledger,
             "ink_map": {
                 "denominator": INK_MAP_DENOMINATOR,
-                "held_pages": list(edge_hold_pages_from_rows(list(projection.ink_map_pages))),
+                "held_pages": list(edge_hold_pages),
             },
             "act_partition": {
                 "denominator": _ACT_PARTITION_DENOMINATOR,
@@ -3075,16 +3070,12 @@ def _verify_honest_status_claims(
     must_be_partial = must_be_partial or any(
         page.get("outcome") != "sealed" for page in sources["pages"] if isinstance(page, dict)
     )
-    # The fourth way a run can be incomplete, and the only page-level one: an
-    # Ink Map finding the Designator's actual cuts never released. It is
-    # derived from the package's own ink-map rows and NEVER read back out of
-    # the claim it produced -- reading it out of `claims` would have made this
-    # function verify that lie against itself, and the whole package is
-    # otherwise byte-identical whether or not a page is held, so nothing else
-    # here could have caught the drop.
+    # Derive the page-level incomplete cause from source rows, never from the
+    # manifest claim being verified; otherwise a false claim verifies itself.
     ink_map_rows = _validate_ink_map_pages(
         sources.get("ink_map_pages"), "the package sources citation"
     )
+    derived_edge_holds = _edge_hold_pages_from_validated_rows(ink_map_rows)
     sealed_ordinals = {
         page["ordinal"]
         for page in sources["pages"]
@@ -3096,7 +3087,6 @@ def _verify_honest_status_claims(
             "least one page finding is missing or extra, so its terminal ledger cannot balance. "
             "Discard this extraction and rebuild the package from the intact run tree."
         )
-    derived_edge_holds = edge_hold_pages_from_rows(ink_map_rows)
     ink_map_claim = claims.get("ink_map")
     if (
         not isinstance(ink_map_claim, dict)
