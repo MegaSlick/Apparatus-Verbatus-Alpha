@@ -57,12 +57,6 @@ _COVERAGE_AND_BUDGET_NAMES = {
     "allowed_fallback",
     "used_total",
     "budget",
-    # Unit 19C round 2 added `cross_capture_occluded_everywhere` here, for a
-    # conjunct the Opus audit round removed again: union geometry may not veto
-    # an ink-confirmed recovery Unit 14B funded (consult §4.2 rule 3, and the
-    # gate's own comment). The name is out of the gate, so it is out of the
-    # allowlist -- an allowlist that names facts the gate does not consult
-    # stops being a statement about the gate.
 }
 
 # Names in this stage that carry a reading's quality rather than its coverage.

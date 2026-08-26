@@ -12,6 +12,7 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Any
 
+from common.contracts.canonical import is_sha256
 from common.contracts.errors import SchemaRefusal
 
 SCHEMA = "physical-act-visible-surface-union-v1"
@@ -75,10 +76,7 @@ def build_cross_capture_coverage(
         if (
             not isinstance(required, list)
             or not required
-            or any(
-                not isinstance(x, str) or len(x) != 64 or set(x) - set("0123456789abcdef")
-                for x in required
-            )
+            or any(not is_sha256(value) for value in required)
         ):
             raise SchemaRefusal("cross-capture component has invalid required captures")
         if len(required) != len(set(required)) or required != sorted(required):
@@ -87,6 +85,8 @@ def build_cross_capture_coverage(
         if not isinstance(captures, list):
             raise SchemaRefusal("cross-capture component captures are not a list")
         by_source: dict[str, dict[str, Any]] = {}
+        visible_union: frozenset[tuple[int, int]] = frozenset()
+        occluded_surfaces: list[frozenset[tuple[int, int]]] = []
         for row in captures:
             fields = {
                 "source_sha256",
@@ -101,9 +101,7 @@ def build_cross_capture_coverage(
                 raise SchemaRefusal("cross-capture capture survey is not closed")
             source, state = row["source_sha256"], row["visibility_state"]
             if (
-                not isinstance(source, str)
-                or len(source) != 64
-                or set(source) - set("0123456789abcdef")
+                not is_sha256(source)
                 or source in by_source
                 or not isinstance(state, str)
                 or state not in _STATES
@@ -117,13 +115,11 @@ def build_cross_capture_coverage(
                 raise SchemaRefusal("cross-capture survey escapes or overlaps its expected surface")
             occlusion_refs = row["occlusion_refs"]
             finding_codes = row["finding_codes"]
-            if (
-                not isinstance(occlusion_refs, list)
-                or any(not isinstance(ref, str) or not ref for ref in occlusion_refs)
-                or occlusion_refs != sorted(set(occlusion_refs))
-                or not isinstance(finding_codes, list)
-                or any(not isinstance(code, str) or not code for code in finding_codes)
-                or finding_codes != sorted(set(finding_codes))
+            if any(
+                not isinstance(values, list)
+                or any(not isinstance(value, str) or not value for value in values)
+                or values != sorted(set(values))
+                for values in (occlusion_refs, finding_codes)
             ):
                 raise SchemaRefusal("cross-capture survey references are malformed")
             if state == "unresolved":
@@ -144,12 +140,11 @@ def build_cross_capture_coverage(
                 "visible_cells": _record_cells(visible),
                 "occluded_cells": _record_cells(occluded),
             }
+            visible_union |= visible
+            occluded_surfaces.append(occluded)
         if set(by_source) != set(required):
             raise SchemaRefusal("cross-capture survey does not account for every required capture")
         ordered = [by_source[source] for source in required]
-        visible_union = frozenset().union(
-            *(_cells(row["visible_cells"], "visible_cells") for row in ordered)
-        )
         unresolved = any(row["visibility_state"] == "unresolved" for row in ordered)
         uncovered = expected - visible_union
         if not uncovered:
@@ -157,7 +152,7 @@ def build_cross_capture_coverage(
         elif (
             not unresolved
             and not visible_union
-            and all(_cells(row["occluded_cells"], "occluded_cells") >= uncovered for row in ordered)
+            and all(surface >= uncovered for surface in occluded_surfaces)
         ):
             union_state = "occluded-everywhere"
         else:
@@ -275,13 +270,7 @@ def capture_specific_recovery(
     fund recovery.  The Unit 14B ink observation on this exact source page is
     the conjunct that funds the bounded request.
     """
-    if (
-        not isinstance(logical_act_id, str)
-        or not logical_act_id
-        or not isinstance(source_sha256, str)
-        or len(source_sha256) != 64
-        or set(source_sha256) - set("0123456789abcdef")
-    ):
+    if not isinstance(logical_act_id, str) or not logical_act_id or not is_sha256(source_sha256):
         raise SchemaRefusal("capture-specific recovery lacks logical-act/capture identity")
     if not isinstance(page_ordinal, int) or isinstance(page_ordinal, bool) or page_ordinal < 0:
         raise SchemaRefusal("capture-specific recovery has invalid page ordinal")

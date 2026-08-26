@@ -1,40 +1,9 @@
-"""Unit 19C's real geometric adapter: page-pixel occlusion polygons projected
-into the small-integer cell surface ``common/cross_capture_coverage.py``
-unions across captures.
+"""Classify page-pixel occlusions on a capture-local act-surface grid.
 
-This is deliberately independent of ``pipeline/2_designator/geometry_layer.py``
--- a stage may not import another stage's own module (that module's own
-docstring records the one prior exception, Chandra custody, moving to
-``common/`` for exactly this reason). It is also deliberately independent of
-that module's ``resolve()``/``_derive_resolution()`` page-wide rule ("ANY
-occlusion on the page marks EVERY proposal on that page 'review'"), which
-stays exactly as conservative, and exactly as unconnected to this survey, as
-before (consult: "Keep that conservative page-wide review rule. Add a
-separate, explicit act-surface visibility measurement for cross-capture
-union"). This module is that separate measurement: an exact geometric
-classification, not a coarse presence flag.
-
-No real image-registration matrix exists anywhere in this repository -- two
-captures of one physical page are photographed independently, so their pixel
-grids are not directly comparable. Absent that, this adapter projects each
-capture's own act-surface AABB onto a small NxN grid **normalized to that
-capture's own bounds**, and classifies each cell by its fractional position
-within the capture's own footprint. Grid cell (c, r) therefore means "the
-same relative position within each capture's own act region," never one
-shared absolute pixel frame -- an explicit, narrower claim than pixel-exact
-registration, which nothing in this codebase can currently make.
-
-**That narrower claim is exactly why these cells may not be unioned across
-captures.** Consult §4.1 admits a cross-capture union only over masks "mapped
-through sealed geometric alignment", and the complementary-coverage case is
-the one this normalization gets wrong rather than merely coarsely: where two
-captures each expose a different part of one act, each capture's AABB bounds
-only the part it shows, so both classify their own 16 cells `visible` and a
-naive union reports the whole surface seen when neither capture ever showed
-half of it. One capture measured against its own footprint is a real, sound
-measurement; two captures' cells are not comparable until a registration
-lands. ``pipeline/5_recensor/run.py::act_cross_capture_coverage`` enforces
-that boundary and holds the multi-capture component `unresolved` instead.
+The grid is normalized to each capture's own bounds because no sealed
+cross-capture registration exists. Its cells are therefore sound within one
+capture but may not be unioned between captures; the Recensor leaves such a
+component unresolved until a registration maps every mask into one frame.
 """
 
 from __future__ import annotations
@@ -91,14 +60,6 @@ def _orientation(a: tuple[float, float], b: tuple[float, float], c: tuple[float,
     return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
 
 
-def _on_segment(a: tuple[float, float], b: tuple[float, float], point: tuple[float, float]) -> bool:
-    return (
-        isclose(_orientation(a, b, point), 0.0, abs_tol=1e-9)
-        and min(a[0], b[0]) <= point[0] <= max(a[0], b[0])
-        and min(a[1], b[1]) <= point[1] <= max(a[1], b[1])
-    )
-
-
 def _segments_intersect(
     a: tuple[float, float],
     b: tuple[float, float],
@@ -114,7 +75,9 @@ def _segments_intersect(
     if orientations[0] * orientations[1] < 0 and orientations[2] * orientations[3] < 0:
         return True
     return any(
-        isclose(orientation, 0.0, abs_tol=1e-9) and _on_segment(start, end, point)
+        isclose(orientation, 0.0, abs_tol=1e-9)
+        and min(start[0], end[0]) <= point[0] <= max(start[0], end[0])
+        and min(start[1], end[1]) <= point[1] <= max(start[1], end[1])
         for orientation, start, end, point in (
             (orientations[0], a, b, c),
             (orientations[1], a, b, d),
