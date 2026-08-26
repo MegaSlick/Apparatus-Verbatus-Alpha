@@ -690,6 +690,71 @@ def test_a_volume_that_refuses_the_boot_record_still_names_the_billing_pod(
     assert isinstance(refusal.value.__cause__, OSError)
 
 
+def test_an_interrupt_while_persisting_a_boot_record_propagates_as_itself(
+    tmp_path: Path,
+) -> None:
+    """Ctrl-C during a boot must reach the operator, never a swallowed refusal.
+
+    ``StageBootRefusal`` is an ordinary exception. A caller stepping through a
+    collection's stages under a broad ``except Exception`` -- logging one
+    failed stage and moving on to the next -- would otherwise absorb the
+    operator's stop request and boot a following stage under a fresh grant.
+    The immediate close still runs and lands its evidence; only the exception
+    identity must survive.
+    """
+
+    clock, provider, _, subject = lifecycle(tmp_path)
+
+    def refuse(_record: StageBootRecord) -> Path:
+        raise KeyboardInterrupt()
+
+    subject.cost_store.record_boot = refuse  # type: ignore[method-assign]
+    with pytest.raises(KeyboardInterrupt):
+        subject.boot(
+            StageAuthorization("parish-17", "designator", "grant-designator"),
+            request(clock),
+            confirmation="separate confirmed stage grant",
+        )
+
+    assert list(provider.pods) == ["fake-pod-1"], "the fixture did not actually create a pod"
+    assert provider.terminate_calls == ["fake-pod-1"]
+    assert len(cost_records(tmp_path, "stage-pod-cost-intent.v1")) == 1
+    assert len(cost_records(tmp_path, "stage-pod-cost.v1")) == 1
+
+
+def test_an_interrupt_while_persisting_launcher_close_evidence_propagates_as_itself(
+    tmp_path: Path,
+) -> None:
+    """The same masking risk, at the other refusal-composition site in ``boot``."""
+
+    clock, provider, runtime, subject = lifecycle(tmp_path)
+
+    def refuse_after_closing(
+        supplied: PodCreateRequest, *, confirmation: str | None
+    ) -> LaunchResult:
+        created = provider.create(supplied)
+        provider.bill(created.pod_id, Decimal("0.13"))
+        report = runtime.shutdown.close(created, reason="launcher refusal")
+        return LaunchResult(
+            LaunchState.CREATE_UNLEASED,
+            record=created,
+            detail="created pod could not be bound",
+            close_report=report,
+        )
+
+    def unwritable(_record: object) -> Path:
+        raise KeyboardInterrupt()
+
+    runtime.create = refuse_after_closing  # type: ignore[method-assign]
+    subject.cost_store.write = unwritable  # type: ignore[method-assign]
+    with pytest.raises(KeyboardInterrupt):
+        subject.boot(
+            StageAuthorization("parish-17", "designator", "grant-designator"),
+            request(clock),
+            confirmation="separate confirmed stage grant",
+        )
+
+
 def test_an_unwritable_cost_intent_refuses_before_the_provider_is_touched(
     tmp_path: Path,
 ) -> None:

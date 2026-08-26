@@ -405,6 +405,23 @@ WorkResult = TypeVar("WorkResult")
 _MISSING_WORK_RESULT = object()
 
 
+def _reraise_control_flow_signal(error: BaseException) -> None:
+    """Let an operator's interrupt or exit stand as itself, never as a refusal.
+
+    ``StageBootRefusal`` is an ordinary ``Exception``, so a caller stepping
+    through a collection's stages with a broad ``except Exception`` around each
+    one -- to log one failed stage and move on to the next -- would swallow it.
+    Unlike ``ServingManager``, this lifecycle holds no lease that keeps a
+    following boot refusing once one is interrupted: a fresh authorization is
+    all a later stage needs. Wrapping ``KeyboardInterrupt``/``SystemExit`` here,
+    even after the durable evidence for this boot is already settled, would let
+    the operator's stop request disappear and a next stage boot a pod anyway.
+    """
+
+    if not isinstance(error, Exception):
+        raise
+
+
 class PerStagePodLifecycle:
     """Create, run, verify-close, and record one independently authorized stage."""
 
@@ -461,12 +478,14 @@ class PerStagePodLifecycle:
                         reason="stage boot record could not be persisted; immediate pod-down",
                     )
                 except BaseException as close_error:
+                    _reraise_control_flow_signal(close_error)
                     raise StageBootRefusal(
                         f"stage {authorization.stage!r} created pod {record.pod_id!r} but its boot "
                         f"record could not be written to the volume: {error}; immediate close "
                         "did not produce durable verified evidence; the write-ahead cost intent "
                         "remains unknown, never zero"
                     ) from close_error
+                _reraise_control_flow_signal(error)
                 raise StageBootRefusal(
                     f"stage {authorization.stage!r} created pod {record.pod_id!r} but its boot "
                     f"record could not be written to the volume: {error}; immediate close was "
@@ -483,6 +502,7 @@ class PerStagePodLifecycle:
                     authorization, record.pod_id, result
                 )
             except BaseException as error:
+                _reraise_control_flow_signal(error)
                 raise StageBootRefusal(
                     f"stage {authorization.stage!r} launcher refused with "
                     f"{result.state.value} after identifying pod {record.pod_id!r}, but its "
