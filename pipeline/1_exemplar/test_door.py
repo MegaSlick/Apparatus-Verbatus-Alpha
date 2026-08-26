@@ -463,6 +463,79 @@ def test_pdf_and_multipage_tiff_fan_out_and_seal_lossless_page_blobs(tmp_path):
         assert validate_png(tree.read_bytes(payload["stored_at"])).format == "png"
 
 
+def test_source_expansion_refuses_paths_that_alias_on_default_apfs():
+    """A cross-host ledger must not acquire different ordinal-to-file meaning.
+
+    Exact-string uniqueness permits both spellings on Linux, while default APFS
+    resolves each pair to one pathname. Refuse before calling the byte reader, so
+    the host filesystem never gets to choose which row's evidence was opened.
+    """
+    data = png(2, 2)
+    rows = [
+        {"relative_path": path, "sha256": digest_bytes(data), "bytes": len(data)}
+        for path in ("Page.PNG", "page.png")
+    ]
+
+    with pytest.raises(ContractError, match="alias on default APFS"):
+        expand_sources(
+            rows,
+            lambda _path: pytest.fail("colliding paths must refuse before a source is read"),
+            POLICY,
+        )
+
+
+def test_pdf_cleanup_failure_does_not_mask_a_security_refusal(monkeypatch):
+    """Cleanup evidence is retained without replacing the refusal in flight."""
+    data = single_gray_page_pdf()
+    digest = digest_bytes(data)
+    source = SourceEntry(
+        1,
+        "register.pdf",
+        digest,
+        container_page_index=0,
+        declared_size=len(data),
+        detected_format="pdf",
+    )
+
+    class Opened:
+        def __init__(self):
+            self.handle = BytesIO(data)
+
+        def assert_unchanged(self, *, expected_sha256):
+            assert expected_sha256 == digest
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    monkeypatch.setattr(door.pdf_render, "open_document", lambda _handle: object())
+    monkeypatch.setattr(
+        door,
+        "decide",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ContractError("security refusal")),
+    )
+
+    def fail_close(_document):
+        raise door.pdf_render.PdfRefusal(RefusalReason.CORRUPT, "native cleanup failed")
+
+    monkeypatch.setattr(door.pdf_render, "close_document", fail_close)
+
+    with pytest.raises(ContractError, match="security refusal") as refused:
+        process_sources(
+            object(),
+            object(),
+            [source],
+            lambda _path: pytest.fail("a streamed PDF must not use the raster reader"),
+            policy=POLICY,
+            pdf_settings=object(),
+            open_source=lambda _path: Opened(),
+        )
+
+    assert refused.value.__notes__ == ["PDF cleanup also failed: corrupt: native cleanup failed"]
+
+
 def test_a_directoryless_classic_tiff_keeps_its_ordinal_and_is_named_corrupt(tmp_path):
     """The offset-0 TIFF gap: a real file must never vanish from the census.
 
@@ -873,6 +946,86 @@ def test_a_malformed_triage_document_names_its_role_effect_and_remedy(tmp_path, 
         )
     assert "no run was created" in str(refused.value)
     assert "export valid UTF-8 JSON and retry" in str(refused.value)
+
+
+def test_a_triage_document_is_bounded_before_json_decoding(tmp_path, monkeypatch):
+    decision_path = tmp_path / "manifest.json"
+    decision_path.write_bytes(b"123456789")
+    monkeypatch.setattr(door, "MAX_TRIAGE_DOCUMENT_BYTES", 8)
+
+    with pytest.raises(ContractError, match="8-byte input bound") as refused:
+        door.load_triage_decisions(decision_path)
+
+    assert "may not allocate without limit" in str(refused.value)
+    assert "records for this submitted shard" in str(refused.value)
+
+
+def test_a_triage_document_symlink_is_not_followed_at_the_read_boundary(tmp_path):
+    outside = tmp_path / "outside.json"
+    outside.write_text(
+        json.dumps(
+            {
+                "schema": door.triage_manifest.MANIFEST_SCHEMA,
+                "corpus_id": "parish-a",
+                "records": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    redirected = tmp_path / "manifest.json"
+    redirected.symlink_to(outside)
+
+    with pytest.raises(ContractError, match="could not be read") as refused:
+        door.load_triage_decisions(redirected)
+
+    assert "no run was created" in str(refused.value)
+
+
+def test_triage_split_count_refuses_before_quadratic_geometry_validation(tmp_path, monkeypatch):
+    decision_path = tmp_path / "manifest.json"
+    decision_path.write_text(
+        json.dumps(
+            {
+                "schema": door.triage_manifest.MANIFEST_SCHEMA,
+                "corpus_id": "parish-a",
+                "records": [{"split": {"parts": [{}, {}, {}]}}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(door, "MAX_TRIAGE_DERIVATIVE_PAGES", 2)
+
+    with pytest.raises(ContractError, match="more than 2 derivative pages") as refused:
+        door.load_triage_decisions(decision_path)
+
+    assert "before pairwise geometry validation" in str(refused.value)
+    assert "export one configured shard" in str(refused.value)
+
+
+def test_triage_cluster_members_are_bounded_before_set_expansion(tmp_path, monkeypatch):
+    decision_path = tmp_path / "manifest.json"
+    decision_path.write_text(
+        json.dumps(
+            {
+                "schema": door.triage_manifest.MANIFEST_SCHEMA,
+                "corpus_id": "parish-a",
+                "records": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    clusters_path = tmp_path / "clusters.json"
+    clusters_path.write_text(
+        json.dumps({"opening": {"member_frame_sha256": ["a", "b", "c"]}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(door, "MAX_TRIAGE_DERIVATIVE_PAGES", 2)
+
+    with pytest.raises(ContractError, match="more than 2 member references") as refused:
+        door.load_triage_decisions(decision_path, clusters_path)
+
+    assert "before set expansion" in str(refused.value)
+    assert "clusters for one configured shard" in str(refused.value)
 
 
 def test_split_render_uses_the_deterministic_common_encoder():

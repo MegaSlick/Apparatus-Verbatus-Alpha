@@ -45,6 +45,8 @@ Invoked as a program:
 
 import hashlib
 import json
+import os
+import stat
 import sys
 from contextlib import ExitStack
 from pathlib import Path
@@ -145,6 +147,13 @@ DOOR_DUPLICATE_REPORT_SUBJECT: Final = "duplicate-report"
 DOOR_CLUSTER_REPORT_SCHEMA: Final = "door-re-shoot-cluster-report.v1"
 _SOURCE_HASH_CHUNK: Final = 1024 * 1024
 _SNIFF_BYTES: Final = 4096
+# Triage JSON is untrusted ingress too. The real Door can create at most one
+# 1,000-page shard (the corpus-frame validator refuses any configured maximum
+# above 1,000), so a larger decision document or derivative census cannot shape
+# this run. Bound both before JSON-controlled lists reach Unit 5's pairwise
+# partition validation.
+MAX_TRIAGE_DOCUMENT_BYTES: Final = 64 * 1024 * 1024
+MAX_TRIAGE_DERIVATIVE_PAGES: Final = 1_000
 # The real Exemplar Door decodes/renders bytes; it is not the walking skeleton's
 # fake adapter. Bump this deliberately whenever source behavior changes so a real
 # run cannot resume under pixels made by a different Door implementation.
@@ -261,6 +270,7 @@ def load_triage_decisions(
         clusters = clusters_document
     else:
         clusters = None
+    _refuse_triage_amplification(document, clusters)
     try:
         checked = triage_manifest.validate_manifest(document, clusters)
     except ContractError as error:
@@ -274,13 +284,50 @@ def load_triage_decisions(
 
 def _read_triage_document(path: str | Path, label: str) -> tuple[bytes, Any]:
     """Return the same bytes parsed, so digest and decisions cannot straddle a rewrite."""
-    try:
-        data = Path(path).read_bytes()
-    except OSError as error:
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    if no_follow is None:
         raise ContractError(
+            f"the {label} cannot be opened without following symlinks on this platform; no run "
+            "was created because its approved location cannot be held at the read boundary"
+        )
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(
+            Path(path),
+            os.O_RDONLY | no_follow | getattr(os, "O_CLOEXEC", 0),
+        )
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise ContractError(
+                f"the {label} is not a regular file; no run was created because a decision "
+                "document cannot be a device, pipe, socket, or directory"
+            )
+        with os.fdopen(descriptor, "rb") as handle:
+            descriptor = None
+            data = handle.read(MAX_TRIAGE_DOCUMENT_BYTES + 1)
+    except OSError as error:
+        refusal = ContractError(
             f"the {label} could not be read; no run was created because its decisions are "
             "unavailable; restore a readable file inside an approved storage root and retry"
-        ) from error
+        )
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError as cleanup:
+                refusal.add_note(f"descriptor cleanup also failed: {cleanup}")
+        raise refusal from error
+    except BaseException as primary:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError as cleanup:
+                primary.add_note(f"descriptor cleanup also failed: {cleanup}")
+        raise
+    if len(data) > MAX_TRIAGE_DOCUMENT_BYTES:
+        raise ContractError(
+            f"the {label} exceeds the {MAX_TRIAGE_DOCUMENT_BYTES}-byte input bound; no run was "
+            "created because an untrusted decision document may not allocate without limit; "
+            "export only the records for this submitted shard and retry"
+        )
     try:
         return data, json.loads(data.decode("utf-8"))
     except (UnicodeDecodeError, ValueError) as error:
@@ -288,6 +335,39 @@ def _read_triage_document(path: str | Path, label: str) -> tuple[bytes, Any]:
             f"the {label} is not valid UTF-8 JSON; no run was created because its decisions "
             "cannot be interpreted; export valid UTF-8 JSON and retry"
         ) from error
+
+
+def _refuse_triage_amplification(document: Any, clusters: Any) -> None:
+    """Bound split and cluster fan-out before Unit 5 validates attacker-sized lists."""
+    if isinstance(document, dict) and isinstance(document.get("records"), list):
+        derivative_pages = 0
+        for row in document["records"]:
+            split = row.get("split") if isinstance(row, dict) else None
+            parts = split.get("parts") if isinstance(split, dict) else None
+            if not isinstance(parts, list):
+                continue
+            derivative_pages += len(parts)
+            if derivative_pages > MAX_TRIAGE_DERIVATIVE_PAGES:
+                raise ContractError(
+                    "the triage decision manifest declares more than "
+                    f"{MAX_TRIAGE_DERIVATIVE_PAGES} derivative pages; no run was created because "
+                    "attacker-controlled split counts must be bounded before pairwise geometry "
+                    "validation and source expansion; export one configured shard and retry"
+                )
+    if isinstance(clusters, dict):
+        member_references = 0
+        for record in clusters.values():
+            members = record.get("member_frame_sha256") if isinstance(record, dict) else None
+            if not isinstance(members, list):
+                continue
+            member_references += len(members)
+            if member_references > MAX_TRIAGE_DERIVATIVE_PAGES:
+                raise ContractError(
+                    "the triage re-shoot cluster records declare more than "
+                    f"{MAX_TRIAGE_DERIVATIVE_PAGES} member references; no run was created because "
+                    "attacker-controlled cluster counts must be bounded before set expansion; "
+                    "export only the clusters for one configured shard and retry"
+                )
 
 
 def decide(
@@ -527,6 +607,7 @@ def expand_sources(
             "were assigned because cluster evidence cannot be reconciled on its own; supply "
             "the matching triage decision manifest and retry"
         )
+    _require_case_unique_paths(files)
     submitted_digests = {row["sha256"] for row in files}
     ordinal = 0
     sources: list[SourceEntry] = []
@@ -719,6 +800,33 @@ def expand_sources(
                 "a manifest whose rows exactly match the submitted shard and retry"
             )
     return sources
+
+
+def _require_case_unique_paths(files: list[dict[str, Any]]) -> None:
+    """Refuse names that alias on default case-insensitive APFS.
+
+    A filename ledger is made on one host and may be admitted on another. Exact
+    string uniqueness is therefore insufficient: ``Page.PNG`` and ``page.png``
+    are two rows on a case-sensitive filesystem but one pathname on default APFS.
+    If the Door accepted both, which bytes an ordinal named would depend on the
+    host that happened to open it.
+    """
+    seen: set[str] = set()
+    for row in files:
+        path = row.get("relative_path") if isinstance(row, dict) else None
+        if not isinstance(path, str) or not path:
+            raise ContractError(
+                "a submitted source has no non-empty declared path; no source expansion was "
+                "returned because every ordinal must name one portable file"
+            )
+        portable = path.casefold()
+        if portable in seen:
+            raise ContractError(
+                "the submitted source manifest has case-variant path collisions; no source "
+                "expansion was returned because those rows alias on default APFS and cannot "
+                "name portable evidence uniquely"
+            )
+        seen.add(portable)
 
 
 def content_aware_shards(
@@ -1101,7 +1209,16 @@ def process_sources(
                 inputs=inputs,
             )
             admitted += 1
-    finally:
+    except BaseException as primary:
+        # Cleanup must not replace a security refusal already in flight. A native
+        # close failure still remains visible on the primary exception, while the
+        # refusal that stopped admission keeps its type, message, and control flow.
+        try:
+            close_active_pdf()
+        except BaseException as cleanup:
+            primary.add_note(f"PDF cleanup also failed: {cleanup}")
+        raise
+    else:
         close_active_pdf()
 
     return admitted

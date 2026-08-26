@@ -495,6 +495,53 @@ def _sealed_derivative(master_size, declared_frame):
     return contract, master, parent, sealed
 
 
+@pytest.mark.parametrize(
+    ("field", "forged"),
+    [("container_sha256", "f" * 64), ("container_page_index", 1)],
+)
+def test_a_derivative_container_origin_must_bind_its_submitted_source(field, forged):
+    """The nested master link cannot excuse a false outer container link."""
+    from common.contracts.canonical import digest_bytes
+    from common.exemplar_boundary import _verify_rendered_source_link
+
+    contract, master, _parent, _sealed = _sealed_derivative((4, 4), {"width": 4, "height": 4})
+    rendered = {
+        "container_format": "triage-split-raster",
+        "container_sha256": digest_bytes(master),
+        "container_page_index": 0,
+        "render_contract": contract,
+    }
+    source = {"sha256": digest_bytes(master), "container_page_index": 0}
+    forged_rendered = copy.deepcopy(rendered)
+    forged_rendered[field] = forged
+
+    with pytest.raises(ContractError, match="does not bind its submitted source"):
+        _verify_rendered_source_link(forged_rendered, forged_rendered, source)
+
+
+def test_a_page_cannot_change_the_render_origin_its_door_admission_sealed():
+    from common.contracts.canonical import digest_bytes
+    from common.exemplar_boundary import _verify_rendered_source_link
+
+    contract, master, _parent, _sealed = _sealed_derivative((4, 4), {"width": 4, "height": 4})
+    digest = digest_bytes(master)
+    admission_rendered = {
+        "container_format": "triage-split-raster",
+        "container_sha256": digest,
+        "container_page_index": 0,
+        "render_contract": contract,
+    }
+    page_rendered = copy.deepcopy(admission_rendered)
+    page_rendered["container_format"] = "some-other-origin"
+
+    with pytest.raises(ContractError, match="changed its Door admission's render origin"):
+        _verify_rendered_source_link(
+            page_rendered,
+            admission_rendered,
+            {"sha256": digest, "container_page_index": 0},
+        )
+
+
 def test_a_derivative_page_whose_row_under_declares_its_master_is_refused():
     """The right half of this master reaches no page, and every other check passes.
 

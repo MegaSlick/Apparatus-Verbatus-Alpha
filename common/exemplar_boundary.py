@@ -76,16 +76,7 @@ def verify_sealed_page_pixels(
     if not _is_sha256(source_digest):
         raise ContractError("a sealed Exemplar page has no lowercase pixel sha256")
     rendered = payload.get("rendered_from")
-    origin = (
-        {"kind": "source", "sha256": source_digest}
-        if rendered is None
-        else {
-            "kind": "container-page",
-            "container_sha256": rendered["container_sha256"],
-            "container_page_index": rendered["container_page_index"],
-            "render_contract": rendered["render_contract"],
-        }
-    )
+    origin = _page_origin(source_digest, rendered)
     expected_page_id = page_id(origin, {"operation": "whole"})
     if page.get("subject_id") != expected_page_id:
         raise ContractError("a sealed Exemplar page identity does not bind its pixels and ordinal")
@@ -119,7 +110,37 @@ def verify_sealed_page_pixels(
         admission = validate_envelope(json.loads(admission_data.decode("utf-8")))
     except (SchemaRefusal, UnicodeDecodeError, ValueError, TypeError) as error:
         raise ContractError("the sealed page's Door admission is not a valid artifact") from error
-    _verify_admission(admission, run, source, ordinal, blob_ref, tree)
+    _verify_admission(admission, run, source, ordinal, blob_ref, tree, rendered)
+
+
+def _page_origin(source_digest: str, rendered: Any) -> dict[str, Any]:
+    """Build page identity only from a complete, typed render origin."""
+    if rendered is None:
+        return {"kind": "source", "sha256": source_digest}
+    _validate_rendered_origin(rendered)
+    return {
+        "kind": "container-page",
+        "container_sha256": rendered["container_sha256"],
+        "container_page_index": rendered["container_page_index"],
+        "render_contract": rendered["render_contract"],
+    }
+
+
+def _validate_rendered_origin(rendered: Any) -> None:
+    """Refuse a partial render origin before any consumer indexes its fields."""
+    if (
+        not isinstance(rendered, dict)
+        or set(rendered)
+        != {"container_format", "container_sha256", "container_page_index", "render_contract"}
+        or not isinstance(rendered.get("container_format"), str)
+        or not rendered["container_format"]
+        or not _is_sha256(rendered.get("container_sha256"))
+        or not isinstance(rendered.get("container_page_index"), int)
+        or isinstance(rendered["container_page_index"], bool)
+        or rendered["container_page_index"] < 0
+        or not isinstance(rendered.get("render_contract"), dict)
+    ):
+        raise ContractError("a sealed Exemplar page has no complete rendered-container origin")
 
 
 def verify_refused_page_evidence(
@@ -687,6 +708,7 @@ def _verify_admission(
     ordinal: int,
     blob_ref: dict[str, str],
     tree: RunTree,
+    page_rendered: Any,
 ) -> None:
     if (
         admission.get("run_id") != run.get("run_id")
@@ -718,7 +740,7 @@ def _verify_admission(
             raise ContractError(
                 "a sealed Exemplar page's Door admission disagrees with the filename ledger"
             )
-    rendered = payload.get("rendered_from")
+    rendered = _verify_rendered_source_link(page_rendered, payload.get("rendered_from"), source)
     if not _is_triage_derivative(rendered):
         if admission.get("inputs") != [blob_ref]:
             raise ContractError("a sealed Exemplar page's Door admission has the wrong pixel input")
@@ -752,6 +774,26 @@ def _verify_admission(
     parent_bytes = _read_checked(tree, parent_ref, "the derivative page's submitted master")
     sealed_bytes = _read_checked(tree, blob_ref, "the sealed derivative page")
     _verify_triage_derivative(rendered["render_contract"], parent_bytes, parent, sealed_bytes)
+
+
+def _verify_rendered_source_link(
+    page_rendered: Any, admission_rendered: Any, source: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Bind a page's claimed container origin back to its Door admission and source row."""
+    if admission_rendered != page_rendered:
+        raise ContractError("a sealed Exemplar page changed its Door admission's render origin")
+    if admission_rendered is None:
+        if source.get("container_page_index") is not None:
+            raise ContractError("a fanned source page carries no rendered-container origin")
+        return None
+    _validate_rendered_origin(admission_rendered)
+    if admission_rendered["container_sha256"] != source.get("sha256") or admission_rendered[
+        "container_page_index"
+    ] != source.get("container_page_index"):
+        raise ContractError(
+            "a sealed Exemplar page's rendered-container origin does not bind its submitted source"
+        )
+    return admission_rendered
 
 
 def _is_triage_derivative(rendered: Any) -> bool:
