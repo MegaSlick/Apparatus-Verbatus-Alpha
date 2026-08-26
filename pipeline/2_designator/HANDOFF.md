@@ -235,13 +235,18 @@ no attempt binding. The independent coverage proof: every ink pixel at the
 stage's most sensitive declared threshold, `structure.SECONDARY_MARGIN`, reconciled
 against the *final* (padded)
 proposal crops actually cut on it — never against what grouping *claims* to have
-found, which is the gap an independent second read of the old pipeline's own
-conservation logic named precisely (`/stage/70_gpt_review/ASSESSMENT.md:172-173`
-in the window: it "proves coverage of units already emitted by a structural
-model. It cannot prove that the model did not miss ink entirely." An earlier
-draft of this sentence cited `MISSING.md`, which carries the same idea in
-different words at line 319 but is not where this exact sentence lives;
-corrected here after a second window read).
+found. The cut rectangles are what is passed as `claimed_bounds`
+(`pipeline/2_designator/run.py:1534`), and the counts and residual components are
+published from that scan (`:1544-1570`). Ink that no crop covers is not merely counted:
+every residual component becomes its own held act (`_publish_residual_holds`,
+`pipeline/2_designator/run.py:1277-1330`), so a mark structural grouping never proposed
+is visible rather than absent.
+
+What this cannot prove is therefore narrower than "coverage of the cuts". Ink fainter
+than `background - SECONDARY_MARGIN`, or a mark with no contrast against its background
+at all, never entered the denominator, so the accounting cannot establish that such a
+mark was not missed. A page whose background cannot be inferred is recorded
+`ink_measurable: false` with its reason rather than counted at a substituted divider.
 
 ```text
 page_ordinal, background_source, background_value | null

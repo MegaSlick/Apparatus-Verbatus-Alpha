@@ -1,8 +1,10 @@
 # operations
 
-**Status:** offline rehearsal; no pod is started, adopted, or billed. The one path that
-leaves the computer is `verbatus upload --network-volume`, which must be named explicitly
-and moves files only.
+This directory provides the offline operator rehearsal and its operational boundaries.
+No rehearsal verb starts, adopts, or bills a pod. `verbatus upload --network-volume` is
+an explicitly named transfer to a real RunPod volume, and `notify/notify.sh` can post a
+JSON notification to `https://ntfy.sh/` when invoked with its opt-in bearer topic
+(`operations/notify/notify.sh:172-191`).
 
 Anything with a human, a machine, or money on the other end.
 
@@ -59,8 +61,18 @@ will be contacted before a byte moves. Its credentials are read from the environ
 only. **That adapter has never been run against a real endpoint**: its logic is tested
 against an injected client and its network behaviour is untested.
 
-The current tree also has base Armarium evidence but not Spec 11's product export;
-`export` labels that distinction instead of presenting a substitute as the final product.
+The Spec 11 **product bundle** is built in `pipeline/7_armarium`: `run.py` projects the
+manifest, acts, pages, and aggregate basis and seals the bundle into the run tree
+(`pipeline/7_armarium/run.py:1426-1452`), and `bundle.py` publishes that sealed blob to a
+chosen destination after re-verifying it from the outside (`pipeline/7_armarium/bundle.py:87-128`).
+Spec 11's remainder is not built — the semantic annotation layer occupies a contract no
+producer fills, and its refusal cannot yet be recorded — and
+`pipeline/7_armarium/HANDOFF.md:254-271` names those parts.
+
+**The operator's `export` verb is not that bundle.** It copies `run.json` and the
+`7_armarium` directory out of the run tree as a base Armarium evidence bundle
+(`operations/operator/surface.py:908-966`), prints the reconciliation table, and says on
+screen that what it made is not the Spec 11 product bundle.
 
 Every problem is shown in three short parts: what happened, what it means, and what to
 do next. Save the receipt path Verbatus prints. Indexed receipts appear in `status`

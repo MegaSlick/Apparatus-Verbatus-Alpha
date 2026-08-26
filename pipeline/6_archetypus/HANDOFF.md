@@ -45,20 +45,21 @@ accepted later review.
 that later starts labelling its readings cannot slip bad material through on a field this
 stage does not look at:
 
-- an explicitly unprimed reading — `lectio_kind` naming anything but `primed`, or
-  `primed: false` — is refused;
+- an unprimed or differently primed reading is refused — `lectio_kind` must be exactly
+  `primed-with-prior`, so Lectio nuda, `lectio-prior`, and `primed-without-prior` are all
+  refused, as is a contradictory explicit `primed: false`;
 - `tier`, `source_tier` or `reading_tier` of `salvage` is refused (invariant #31's
   boundary);
 - the reading must retain a non-empty Testimonium basis, and every entry's reference
   must be a direct sealed input of that reading and resolve as an
   `(attestatores, testimonium)` artifact for this act.
 
-**A named assumption.** No Perlectio in this build records primed/unprimed at all; adding
-that field is the Perlector lane's work. Until it exists, an *unlabeled* reading is
-accepted and the retained Testimonium basis is the transitional indication that it was
-primed. That is a compatibility assumption, not proof — the refusals above are real, the
-positive claim "this reading was primed" rests on the producer eventually writing the
-field.
+**Priming is explicit at this boundary.** The constructor accepts only
+`lectio_kind == "primed-with-prior"`; it refuses every other kind, including Lectio nuda,
+and refuses a contradictory explicit `primed: false`
+(`pipeline/6_archetypus/run.py:608-626`). The retained Testimonium basis remains a separate
+required custody check, not a substitute for the priming discriminator
+(`pipeline/6_archetypus/run.py:638-645`).
 
 ## `kind="archetypus"`
 

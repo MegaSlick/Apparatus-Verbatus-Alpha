@@ -1,8 +1,8 @@
 # Verbatus — the operator surface
 
-**Status:** offline rehearsal; every verb runs against fixtures, and no pod is started,
-adopted, or billed. The one path that leaves the computer is `upload --network-volume`,
-which must be named explicitly and moves files only.
+Every rehearsal verb runs against fixtures and does not start, adopt, or bill a pod.
+`upload --network-volume` is the explicitly named exception for transfer: it sends the
+sealed submission record to the named RunPod network volume.
 
 **You do not need Terminal, SSH, Python, or an AI assistant for a normal run.**
 Double-click [Verbatus.command](Verbatus.command) and answer one question at a time.
@@ -21,7 +21,7 @@ pod, the boot checks and the default upload target are local stand-ins, so you c
 practise the whole flow without a bill. Nothing here has ever started, inspected or paid
 for a real machine. The one exception is the explicitly named
 `upload --network-volume`, which really does send files to a RunPod network volume (and
-only that): see the status line above and the upload section below.
+only that): see the upload section below.
 
 That is deliberate, and it is why every screen says "fixture" where a real run would say
 a real thing. The first real run is a separate, separately approved step.

@@ -62,12 +62,18 @@ builds each stage's argv explicitly and forwards no selector. This is checked, n
 run three ways and compare every byte, so a mode that leaked into the tree would differ
 between the three and fail.
 
-**Join with the triage stage's modes.** Tyrel's direction for scan triage
-(`STAGED_PIPELINE_2026-08-20.md`) gives that stage three operating modes — manual,
+**Join with the triage stage's modes.** Scan triage has three operating modes — manual,
 semi-automatic, fully automatic — chosen **per batch** and expressed as settings of a
-confidence threshold. They share three words with this table and are not the same
-vocabulary: triage's mode is a durable property of a batch that its records must carry,
-and this driver's is a property of one invocation that the pipeline is forbidden to
-record. The names collide; the concepts do not meet. Anything that reads a stored `mode`
-field is reading triage's, and this file's byte-identity tests are the standing proof
-that it can never be this one.
+confidence threshold (`config/triage_modes.toml`). This table does not merely share three
+words with them: it is **one vocabulary, named once**. `common/contracts/stages.py:111-118`
+declares `TRIAGE_MODES = ("manual", "semi", "auto")` precisely so that three spellings of
+one triple cannot drift, and says Unit 1's driver joins that name rather than declaring a
+fourth; `common/stage.py:182` is `RUN_MODES: Final = TRIAGE_MODES`, the same tuple read
+under this table's name, and `pipeline/0_triage/HANDOFF.md:49-53` states the same join
+from the other end.
+
+What differs is not the words but what each end may do with a selection. Triage's mode is
+a durable property of a batch that its records must carry; this driver's is a property of
+one invocation that the pipeline is forbidden to record. Anything that reads a stored
+`mode` field is reading triage's, and this file's byte-identity tests are the standing
+proof that it can never be this one.

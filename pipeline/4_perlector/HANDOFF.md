@@ -25,10 +25,11 @@ the evidence shape; it does not claim a real model reading. Its artifacts are
 `skeleton.v1` envelopes with derived identities, attempt bindings, self-hashes, and
 checked direct inputs.
 
-**No other stage reads this one's code.** `pipeline/5_recensor/run.py`,
-`pipeline/6_archetypus/run.py` and `pipeline/7_armarium/run.py` consume exactly the
-fields named below, unchanged in shape from the walking skeleton's first landing;
-everything added since is additive.
+**Successors consume this stage's artifacts, not its implementation.** Recensor reviews
+the Perlectio it names, Archetypus establishes only that exact accepted reading
+(`pipeline/6_archetypus/run.py:501-552`), and Armarium rechecks the established record
+against its Perlectio (`pipeline/7_armarium/run.py:979-1141`). Their contracts include
+the later-added fields described below; no successor imports Perlector implementation code.
 
 ## Input boundary
 
@@ -582,11 +583,25 @@ test that fails if the two ever part again.
   reconciles them itself, against the image") is not modeled: nothing upstream
   produces two independent readings of one attempt today, only re-reads driven
   by Recensor's own bounded recovery loop (already never a pick).
-- The closed-schema check above is producer-local. `validate_serving_provenance`
-  already refuses a wrong-schema provenance wherever a Perlectio is *consumed*,
-  but no consumer refuses a Perlectio that carries no `dissent` record at all —
-  a reading with the instrument missing could still be established. Closing that
-  belongs in `6_archetypus`, whose file another lane owns this round.
+- The Perlectio carries dissent as part of its closed payload. Archetypus preserves that
+  evidence by the checked `dissent_ref`/`perlectio_ref` identity
+  (`pipeline/6_archetypus/run.py:823-827`); the logical-act path additionally validates
+  the sibling cross-capture dissent before establishment
+  (`pipeline/6_archetypus/run.py:1264-1284`).
+- **No consumer refuses a Perlectio that carries no `dissent` record at all**, so the
+  gap the sentence above does not close is still open. The check that requires the field
+  is producer-local: `_PERLECTIO_FIELDS` (`pipeline/4_perlector/run.py:1224-1242`) is
+  enforced where this stage seals a reading (`:1365-1375`). What Archetypus checks at
+  `:823-827` is the *identity* of two references on its own record, and `dissent_ref` is
+  set to the accepted reading's own reference (`pipeline/6_archetypus/run.py:1555`), so
+  the equality holds whatever the Perlectio's payload contains. The constructor that
+  reads a Perlectio back off disk, `accepted_primed_perlectio`
+  (`pipeline/6_archetypus/run.py:555-756`), checks `lectio_kind`, the explicit `primed`
+  flag, salvage tier, regions, the retained Testimonium basis, the act-attachment view
+  and the prior draft — never `dissent`. A reading with the dissent instrument missing
+  could still be established. The cross-capture dissent validated on the logical-act path
+  is a sibling artifact about a cluster, not this record. Closing the gap belongs in
+  `6_archetypus`.
 - A real vLLM launch declaration (pinned `--revision` and `--tokenizer-revision`,
   an explicit `--chat-template` rather than an ambient tokenizer default,
   unmerged `--enable-lora` with its base verified separately, a bounded
@@ -595,24 +610,29 @@ test that fails if the two ever part again.
   territory and the serving-manager branch's file, and two implementations of
   one serving path is the drift this handoff exists to prevent. It is worth
   reading before that lane writes its own.
-- Spec 10's `text_status` (a closed `established | partial | no_readable_text`
-  enum on the Archetypus payload) has not landed — `pipeline/6_archetypus/run.py`
-  still writes a hardcoded, unvalidated `"status": "established"` string. This
-  stage's `outcome`/`gaps`/`truncation` give Archetypus everything it would need
-  to build that enum; wiring it is Archetypus's own file, owned by another lane
-  this round.
-- **No producer emits an `uncertain_span`.** `run.py` writes `uncertain_spans: []` on
-  every reading, primed and nuda. Spec 08's output contract asks for "`uncertain` spans —
-  read, with alternatives and confidence noted"; what exists here is the validator and
-  its schema, which a real reader can populate without this stage's shape changing. The
-  `FixtureReader` has nothing to be uncertain *about*, and emitting one anyway would be
-  manufactured evidence.
-- **`gaps` and `uncertain_spans` reach no consumer.** Neither word appears in
-  `pipeline/6_archetypus/run.py` or `pipeline/7_armarium/run.py`. Spec 08's own test 8 —
-  "spans and gaps round-trip; export-layer projection renders them without touching the
-  text" — is therefore not exercisable anywhere yet, and a gap's witness evidence, which
-  spec 08 wants displayable as "⟨illegible — witnesses agree: …⟩", stops at this stage.
-  The projection is the export layer's (spec 11); the carrying is Archetypus's file.
+- Spec 10's `text_status` is now an Archetypus field, distinct from that record's
+  fixed `status = "established"` literal. Archetypus re-derives it from the text,
+  annotations, and uncertainty before accepting the record
+  (`pipeline/6_archetypus/run.py:802-815`).
+- **Pass-C can emit an `uncertain_span`, but only under a zero cap.** The predicate is
+  `unresolved = bool(flags) and audit_policy["round_cap"] == 0`
+  (`pipeline/4_perlector/run.py:2713`): the spans are published when the sealed audit
+  policy allows *no* re-proof round at all, not when a round was spent and left the flag
+  standing. When it does fire, each frozen flag location becomes a low-confidence span
+  with reason `audit-round-cap-exhausted` on the audit finding and on the Perlectio
+  (`:2864-2870`, `:2901-2904`). **The committed policy cannot fire it**:
+  `config/perlector_audit.toml:12` sets `round_cap = 1`, so a flagged act gets its one
+  delivered re-proof round and every reading carries an empty `uncertain_spans` list.
+  Only a run under a sealed `round_cap = 0` — permitted, and the path
+  `test_audit_pass.py:469-481` exercises — produces one.
+- **`gaps` and `uncertain_spans` have downstream consumers.** Archetypus validates the
+  uncertainty layer and derives `text_status` from it with annotations
+  (`pipeline/6_archetypus/run.py:808-815`). Armarium independently re-derives that status
+  before projection (`pipeline/7_armarium/run.py:1129-1142`) and carries the checked status
+  and transcription annotations into delivered entries and the aggregate
+  (`pipeline/7_armarium/run.py:1307-1315`, `:1350-1359`). The product still does not render
+  canonical uncertainty inside `display:`; that explicit presentation convention remains
+  outside the implemented export contract.
 - **Spec 08's contextual-suggestion flag is not built.** "A contextual suggestion (a year
   that must be 1805) may ride as a flag while the text stays what the pixels support" —
   the closed `_PERLECTIO_FIELDS` set has no field that could carry one, and nothing here
