@@ -53,13 +53,8 @@ class SpendSurface:
         assert policy.hard_lifetime_seconds is not None
         lines = [
             "Reviewed spend policy (read-only):",
-            # `_recorded_text` here too: a path is the one value on this screen
-            # that reaches it as free text without passing through a receipt,
-            # and `cli._print` keeps newlines so a three-part refusal keeps its
-            # own. A policy path is a legal place for a newline on this
-            # platform, so without this the anchor line of the whole screen --
-            # the one that says which file every ceiling below came from --
-            # can carry a second line that nothing vouches for.
+            # POSIX paths may contain newlines, which `cli._print` preserves for
+            # refusal framing; contain the path so it cannot forge a ceiling line.
             f"- Policy record: {_recorded_text(str(source))} (SHA-256 {policy_digest})",
             f"- Combined hourly ceiling: ${policy.max_hourly_usd} (policy SHA-256 {policy_digest})",
             "- Estimated metered-cost ceiling: "
@@ -92,7 +87,12 @@ class SpendSurface:
             lines.append(
                 "Notification-only alert history (read-only; it did not block a paid action):"
             )
-            lines.extend(self._alert_line(item) for item in alerts)
+            lines.extend(
+                f"- Alert: {_recorded_text(item['alert'])}; "
+                f"delivery record: {_recorded_text(item['delivery'])}; "
+                f"receipt SHA-256 {item['digest']}"
+                for item in alerts
+            )
         else:
             lines.append("Notification-only alert history: no alert record was found.")
         return lines
@@ -100,21 +100,11 @@ class SpendSurface:
     def _recorded_balance_history(
         self,
     ) -> tuple[list[dict[str, str]], list[dict[str, str]], list[str]]:
-        """Every saved launch confirmation, oldest first: projected, or named as unread.
+        """Project launch confirmations oldest first, naming unreadable receipts.
 
-        `records_of_kind` reads the whole receipt directory and raises on the
-        first file that will not read, so one damaged receipt -- of any kind,
-        including kinds this view never shows -- deleted the ceilings, the
-        floor and every sound observation from the screen at once. `status`
-        survives that because it prints as it goes and marks the one record it
-        could not read; this view returns its lines all together, so it has to
-        carry the same gap in them (GOVERNANCE 2).
-
-        Oldest first, by the receipt's own `recorded_at`: content-addressed
-        filenames sort by digest, which is no order at all, and a money history
-        listed in no order invites its last line to be read as its latest.
-        `ReceiptStore.read` has already refused any stamp that is not canonical
-        UTC, so these sort lexicographically in time.
+        Content digests carry no chronology. `ReceiptStore.read` validates
+        canonical UTC, so `recorded_at` strings order by time. A partial money
+        history must retain a visible gap for every unreadable receipt.
         """
 
         observations: list[dict[str, str]] = []
@@ -126,19 +116,17 @@ class SpendSurface:
         for path, record in sorted(
             records, key=lambda item: (item[1]["recorded_at"], item[0].name)
         ):
-            digest = _receipt_digest(path)
+            # ReceiptStore.read matched the filename's digest to the canonical bytes.
+            digest = path.name.rsplit("-", 1)[-1].removesuffix(".json")
             preview = record["payload"].get("preview")
             if preview is None:
-                # A launch confirmation is written with a preview; one without
-                # a preview holds no spend fact either to show or to lose.
+                # A confirmation without a preview contains no spend fact to account for.
                 continue
             spend = preview.get("spend") if isinstance(preview, dict) else None
             ceilings = spend.get("ceilings") if isinstance(spend, dict) else None
             if not isinstance(ceilings, dict):
-                # Reached by a receipt whose ceilings are absent as well as by
-                # one whose ceilings are malformed. Both are worth a line: this
-                # receipt records a *confirmed paid action*, and a money screen
-                # that drops it shows fewer paid actions than were taken.
+                # Every confirmation represents a paid action even when its
+                # saved ceilings are absent or malformed.
                 unreadable.append(
                     f"{path.name}: its saved preview carries no readable spend ceilings, "
                     "so no number from this confirmed paid action is shown below"
@@ -164,25 +152,14 @@ class SpendSurface:
             observed_at = datetime.fromisoformat(observation["observed_at"].replace("Z", "+00:00"))
             age = (self.now - observed_at).total_seconds()
             if age < 0:
-                # The gate this projects keeps a future-dated observation apart
-                # from a stale one and refuses it under its own reason
-                # (`operations/pod/spend.py`). The distinction is the whole
-                # point of the line: "STALE" tells a reader the balance is
-                # merely old, when a stamp ahead of now says the clock or the
-                # record is wrong and the number cannot be aged at all.
+                # A future stamp cannot be aged; calling it stale would claim it is old.
                 staleness = "DATED IN THE FUTURE"
             elif age <= MAX_BALANCE_OBSERVATION_AGE_SECONDS:
                 staleness = "CURRENT"
             else:
                 staleness = "STALE"
-        # TypeError as well as ValueError: `fromisoformat` accepts a stamp with no
-        # offset and returns a naive datetime, and subtracting one from this
-        # surface's aware `now` raises TypeError, not ValueError. The saved
-        # stamp is free text out of a record -- which is why this branch exists
-        # at all -- so the narrower catch turned one malformed observation into
-        # the loss of the whole view: ceilings, floor and every other sound
-        # observation with it. GOVERNANCE 2 wants the partial result shown as
-        # partial, and this line named as the part that is missing.
+        # Offset-free strings parse as naive datetimes, whose subtraction from
+        # aware `now` raises TypeError; one malformed stamp must not hide the view.
         except (TypeError, ValueError):
             staleness = "UNREADABLE TIMESTAMP"
         return (
@@ -192,52 +169,19 @@ class SpendSurface:
             f"staleness now: {staleness}; receipt SHA-256 {observation['digest']}"
         )
 
-    @staticmethod
-    def _alert_line(alert: dict[str, str]) -> str:
-        return (
-            f"- Alert: {_recorded_text(alert['alert'])}; "
-            f"delivery record: {_recorded_text(alert['delivery'])}; "
-            f"receipt SHA-256 {alert['digest']}"
-        )
-
-
-def _receipt_digest(path: Path) -> str:
-    """ReceiptStore has already verified the name's digest against the bytes."""
-
-    return path.name.rsplit("-", 1)[-1].removesuffix(".json")
-
 
 def _alert_rows(ceilings: dict[str, object], digest: str) -> tuple[list[dict[str, str]], list[str]]:
     """Project one receipt's alert episodes without inventing a pairing.
 
-    Returns the rows to show and, separately, any note the caller must print
-    about what this receipt would not read.
-
-    The record keeps two flat lists, `alerts` and `alert_notifications`, not
-    pairs. The writer appends a delivery line only for an episode it actually
-    attempted: `operations/pod/launch.py:_record_spend_notifications` skips an
-    alert whose balance observation is absent or unusable, and skips one whose
-    stamp says it is not yet due, so a skipped episode leaves no hole at its own
-    index -- the later outcomes simply shift down. Equal lengths are therefore
-    the only state in which position means correspondence.
-
-    Today they are always equal, because `operations/pod/spend.py` has exactly
-    one `alerts.append` and it is not in a loop, so at most one alert exists per
-    assessment. That is a property of Unit 22's current thresholds, not of this
-    record's shape, and it is not this surface's to rely on: the day a second
-    threshold is added, reading position as identity would print one alert's
-    delivery outcome under another alert's name. A display that asserts a
-    pairing its record does not carry is reporting the reader rather than the
-    reading (GOVERNANCE 10), so when the counts disagree this says so and shows
-    both sides unattributed -- neither list is dropped (GOVERNANCE 2).
+    The record keeps alerts and delivery outcomes as separate flat lists. A
+    skipped delivery attempt leaves no placeholder, so position is attributable
+    only when the counts match. On a mismatch, both lists remain visible but
+    unattributed.
     """
 
     recorded = ceilings.get("alerts", [])
     deliveries = ceilings.get("alert_notifications", [])
     if not isinstance(recorded, list) or not isinstance(deliveries, list):
-        # Returning nothing here dropped whatever alert history the receipt did
-        # keep, and dropped it without a word; the caller names the receipt
-        # instead (GOVERNANCE 2).
         return [], [
             "its saved alerts and delivery outcomes are not both lists, "
             "so no alert episode from it is shown below"
@@ -250,8 +194,7 @@ def _alert_rows(ceilings: dict[str, object], digest: str) -> tuple[list[dict[str
     rows: list[dict[str, str]] = []
     for position, alert in enumerate(recorded):
         if not isinstance(alert, str):
-            # Named, not skipped: a skipped entry took its delivery outcome
-            # down with it and left the screen one paid-action warning short.
+            # Preserve position so the alert fact and its delivery outcome survive.
             alert = f"{NOT_RECORDED_AS_TEXT} (saved alert {position + 1})"
         if not paired:
             rows.append({"alert": alert, "delivery": unpaired, "digest": digest})
@@ -276,18 +219,14 @@ def _alert_rows(ceilings: dict[str, object], digest: str) -> tuple[list[dict[str
     return rows, []
 
 
+# Substitute one malformed field, never the record that contains it.
 NOT_RECORDED_AS_TEXT = "not readable: this value was not saved as text"
-"""Shown in place of one malformed field, never in place of the record holding it."""
 
 
 def _recorded_field(value: object) -> str:
     """Keep a malformed field visible as one missing field, not a missing fact.
 
-    Requiring all of an observation's fields to be strings dropped the whole
-    observation -- amount, source and stamp together -- when any one of them
-    was not, and dropped it with nothing said. The receipt keeps the bytes it
-    was given (GOVERNANCE 4); the screen says which part of them will not read
-    and leaves the rest legible (GOVERNANCE 2).
+    Rejecting the containing observation would also hide its readable fields.
     """
 
     return value if isinstance(value, str) else NOT_RECORDED_AS_TEXT
@@ -296,12 +235,8 @@ def _recorded_field(value: object) -> str:
 def _recorded_text(value: str) -> str:
     """Hold one recorded fact to one screen line.
 
-    `cli._print` strips control bytes but keeps newlines, deliberately: a
-    three-part refusal depends on its own. Every string this surface renders
-    from a receipt is free text the record supplied, so one carrying a newline
-    would print a second line that no receipt digest is attached to, reading
-    exactly like a policy line this surface vouched for. The receipt keeps the
-    bytes it was given -- GOVERNANCE 4 -- the screen simply does not gain a line.
+    `cli._print` preserves newlines for refusal framing, but recorded text must
+    not create an undigested line that looks like this surface's own output.
     """
 
     return strip_control_bytes(value)

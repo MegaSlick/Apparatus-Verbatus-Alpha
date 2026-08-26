@@ -1,4 +1,4 @@
-"""The read-only console view of Unit 22's spend records."""
+"""The read-only console spend surface for Unit 21D."""
 
 from __future__ import annotations
 
@@ -129,16 +129,7 @@ def test_spend_has_a_double_click_console_route(monkeypatch: pytest.MonkeyPatch)
 def test_spend_show_does_not_pair_alerts_with_delivery_outcomes_by_position(
     tmp_path: Path,
 ) -> None:
-    """Unequal counts mean the record kept no pairing, and the screen may not invent one.
-
-    `operations/pod/launch.py:_record_spend_notifications` appends a delivery
-    line only for an alert episode it actually attempted, so a skipped episode
-    shifts every later outcome down one index rather than leaving a hole. Reading
-    position as identity across that shift would print the second alert's
-    delivery outcome under the first alert's name — a claim about a delivery that
-    nothing measured (GOVERNANCE 10). Both lists still reach the screen, neither
-    dropped (GOVERNANCE 2).
-    """
+    """Skipped delivery attempts leave no placeholder, so unequal lists cannot pair."""
 
     receipts = ReceiptStore(tmp_path / "state", now=lambda: NOW)
     receipts.write(
@@ -159,7 +150,6 @@ def test_spend_show_does_not_pair_alerts_with_delivery_outcomes_by_position(
     assert "second threshold crossed" in rendered
     assert "Phone notification: sent." in rendered
     assert "saved 2 alert(s) and 1 delivery outcome(s)" in rendered
-    # The single outcome is never shown as belonging to either named alert.
     assert "first threshold crossed; delivery record: Phone notification: sent." not in rendered
     assert "second threshold crossed; delivery record: Phone notification: sent." not in rendered
 
@@ -193,12 +183,7 @@ def test_spend_show_pairs_alerts_with_outcomes_when_the_record_kept_one_each(
 def test_spend_show_names_an_unusable_stamp_instead_of_losing_the_whole_view(
     tmp_path: Path,
 ) -> None:
-    """A stamp with no offset parses to a naive datetime; subtracting it raises TypeError.
-
-    The observation fields are free text out of a saved record, which is why the
-    surface guards them at all. Catching only `ValueError` let one malformed
-    stamp take the ceilings, the floor and every sound observation down with it.
-    """
+    """Offset-free stamps raise TypeError during aging but must not hide the view."""
 
     receipts = ReceiptStore(tmp_path / "state", now=lambda: NOW)
     receipts.write(
@@ -216,11 +201,7 @@ def test_spend_show_names_an_unusable_stamp_instead_of_losing_the_whole_view(
 
 
 def test_a_recorded_value_cannot_forge_an_extra_line_on_the_spend_screen(tmp_path: Path) -> None:
-    """`cli._print` keeps newlines so a three-part refusal stays three parts.
-
-    That makes a newline inside a recorded value a way to print a line carrying
-    no receipt digest, in the shape of a policy line this surface vouched for.
-    """
+    """Refusal framing preserves newlines, so recorded values must not add one."""
 
     receipts = ReceiptStore(tmp_path / "state", now=lambda: NOW)
     preview = _preview(observed_at="2026-08-24T11:59:30+00:00", alerts=[], deliveries=[])
@@ -232,28 +213,14 @@ def test_a_recorded_value_cannot_forge_an_extra_line_on_the_spend_screen(tmp_pat
     lines = SpendSurface(receipts, NOW).show(_policy(tmp_path / "reviewed.toml"))
 
     assert not [line for line in lines if "\n" in line]
-    assert "$0.00" in "\n".join(lines)  # the bytes are shown, GOVERNANCE 4
+    assert "$0.00" in "\n".join(lines)
     assert len([line for line in lines if line.startswith("- Hard-stop balance floor:")]) == 1
 
 
 def test_the_spend_module_imports_no_route_to_a_paid_action_or_a_write() -> None:
-    """The money boundary as a property of the module, not of one call path.
+    """Pin static import and call routes; runtime indirection is outside this AST check.
 
-    A reader can confirm today that `show` reaches no provider and writes
-    nothing. This fails the day an import or a call gives it one, which is the
-    part a later reader would otherwise have to re-derive by hand.
-
-    Both spellings of an import, not only `from ... import ...`: a plain
-    `import operations.pod.launch` reaches every paid action in it and is not
-    an `ast.ImportFrom` node at all, so the check this test is named for used
-    to pass with the provider seam in the module. The same for a write: a
-    bare `open(path, "w")` is an `ast.Name` call, not an attribute call.
-
-    What it establishes and what it does not, because a boundary test that
-    reads as a proof is worse than none (GOVERNANCE 10): every route named
-    here is refused at import time. A route built at runtime -- a dynamic
-    import, an attribute reached through a variable -- is not visible to a
-    reader of this file and is not visible to this test either.
+    Both import node forms and both bare and attribute calls must be examined.
     """
 
     tree = ast.parse(Path(spend_module.__file__).read_text(encoding="utf-8"))
@@ -376,8 +343,6 @@ def test_spend_double_click_route_carries_a_typed_policy_path(
 
 
 def _damaged_receipt(store: ReceiptStore, name: str) -> Path:
-    """A file the store will refuse to read, left where a receipt belongs."""
-
     store.receipts.mkdir(parents=True, exist_ok=True)
     planted = store.receipts / name
     planted.write_text("{}\n", encoding="utf-8")
@@ -387,14 +352,9 @@ def _damaged_receipt(store: ReceiptStore, name: str) -> Path:
 def test_one_unreadable_receipt_does_not_take_the_whole_spend_view_with_it(
     tmp_path: Path,
 ) -> None:
-    """A damaged file names itself; it does not delete the ceilings and the floor.
+    """A damaged relevant receipt is named; unrelated receipt kinds stay out of view.
 
-    `records_of_kind` raises on the first record that will not read, so before
-    this the screen lost the reviewed policy, the hard-stop floor and every
-    sound observation because one file in the directory was unreadable — the
-    partial result vanishing behind a refusal rather than being shown as
-    partial (GOVERNANCE 2). An unreadable receipt of a kind this view never
-    projects stays `status`'s account to give, not this one's.
+    The partial spend history must survive beside the named gap.
     """
 
     receipts = ReceiptStore(tmp_path / "state", now=lambda: NOW)
@@ -425,12 +385,7 @@ def test_one_unreadable_receipt_does_not_take_the_whole_spend_view_with_it(
 def test_the_saved_balance_history_is_shown_oldest_first_not_in_digest_order(
     tmp_path: Path,
 ) -> None:
-    """Receipt filenames are digests, so their sort order carries no time at all.
-
-    A money history listed in that order invites its last line to be read as
-    its latest. The pair below is chosen so digest order and time order
-    disagree, which is the only arrangement that can tell the two apart.
-    """
+    """Digest order carries no time; the fixture must make digest and time disagree."""
 
     receipts = ReceiptStore(tmp_path / "state", now=lambda: NOW)
     older_time, newer_time = datetime(2026, 8, 24, 9, 0, tzinfo=UTC), NOW
@@ -475,12 +430,7 @@ def test_the_saved_balance_history_is_shown_oldest_first_not_in_digest_order(
 def test_one_malformed_field_does_not_delete_the_whole_balance_observation(
     tmp_path: Path,
 ) -> None:
-    """Amount, source and stamp were shown only if all three were strings.
-
-    An observation whose amount was saved as a number therefore vanished with
-    its source and its stamp, and vanished silently — on the one screen that
-    exists to account for observed money (GOVERNANCE 2).
-    """
+    """One malformed field must not hide the observation's other readable fields."""
 
     receipts = ReceiptStore(tmp_path / "state", now=lambda: NOW)
     preview = _preview(observed_at="2026-08-24T11:59:30+00:00", alerts=[], deliveries=[])
@@ -498,8 +448,6 @@ def test_one_malformed_field_does_not_delete_the_whole_balance_observation(
 def test_an_alert_saved_as_something_other_than_text_is_named_at_its_position(
     tmp_path: Path,
 ) -> None:
-    """Skipping it dropped its delivery outcome too, one warning short of the record."""
-
     receipts = ReceiptStore(tmp_path / "state", now=lambda: NOW)
     receipts.write(
         "launch-confirmation",
@@ -541,12 +489,7 @@ def test_an_unreadable_alert_record_is_named_and_the_rest_of_the_view_survives(
 def test_a_confirmed_paid_action_whose_receipt_kept_no_ceilings_is_still_named(
     tmp_path: Path,
 ) -> None:
-    """A launch confirmation records a paid action that was taken.
-
-    Dropping it because its ceilings will not read shows fewer confirmed paid
-    actions than the receipts hold, which is the one thing a money screen may
-    not do quietly.
-    """
+    """Unreadable ceilings must not hide the confirmed paid action that held them."""
 
     receipts = ReceiptStore(tmp_path / "state", now=lambda: NOW)
     receipt = receipts.write(
@@ -563,12 +506,7 @@ def test_a_confirmed_paid_action_whose_receipt_kept_no_ceilings_is_still_named(
 def test_an_observation_dated_after_now_is_not_reported_as_merely_stale(
     tmp_path: Path,
 ) -> None:
-    """The gate refuses a future-dated observation under its own reason.
-
-    Collapsing it into "STALE" tells the reader the balance is old when the
-    record says the clock or the receipt is wrong (GOVERNANCE 10: report the
-    reading, not a tidier one).
-    """
+    """A future stamp cannot be aged and must not be presented as merely old."""
 
     receipts = ReceiptStore(tmp_path / "state", now=lambda: NOW)
     receipts.write(
@@ -586,12 +524,7 @@ def test_an_observation_dated_after_now_is_not_reported_as_merely_stale(
 
 
 def test_the_policy_path_cannot_forge_a_line_on_the_spend_screen(tmp_path: Path) -> None:
-    """The line naming the policy file is the anchor for every ceiling below it.
-
-    A newline is legal in a POSIX path, and `cli._print` keeps newlines so a
-    three-part refusal keeps its own, so an unstripped path printed a second
-    line in the shape of a ceiling this surface had vouched for.
-    """
+    """A legal newline in the policy path must not create an unverified ceiling line."""
 
     receipts = ReceiptStore(tmp_path / "state", now=lambda: NOW)
     forged = tmp_path / "reviewed.toml\n- Hard-stop balance floor: $0.00 (policy SHA-256 forged)"
