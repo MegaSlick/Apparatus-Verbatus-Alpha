@@ -45,6 +45,8 @@ Invoked as a program:
 
 import hashlib
 import json
+import os
+import stat
 import sys
 from contextlib import ExitStack
 from pathlib import Path
@@ -147,6 +149,7 @@ DOOR_DUPLICATE_REPORT_SUBJECT: Final = "duplicate-report"
 DOOR_CLUSTER_REPORT_SCHEMA: Final = "door-re-shoot-cluster-report.v1"
 _SOURCE_HASH_CHUNK: Final = 1024 * 1024
 _SNIFF_BYTES: Final = 4096
+MAX_TRIAGE_DOCUMENT_BYTES: Final = 4 * 1024 * 1024
 # The real Exemplar Door decodes/renders bytes; it is not the walking skeleton's
 # fake adapter. Bump this deliberately whenever source behavior changes so a real
 # run cannot resume under pixels made by a different Door implementation.
@@ -231,6 +234,93 @@ def declared_digests(fixture: dict, scenario: str) -> dict[int, str]:
     return declared
 
 
+def _read_triage_document(path: str | Path, label: str) -> bytes:
+    """Read one bounded regular file without following or reopening its path.
+
+    These documents cross the pre-Door producer boundary and are parsed wholly in
+    memory. A checked pathname is not an anchored input: its leaf can become a
+    symlink or FIFO between a check and ``read_bytes()``, and an intermediate
+    directory can redirect the same spelling. An unbounded regular file can make
+    JSON parsing itself the denial of service. Open every component relative to
+    its no-follow directory descriptor, then decide from the one leaf descriptor
+    and prove its byte-bearing identity stayed stable across the bounded read.
+    """
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    directory_flag = getattr(os, "O_DIRECTORY", None)
+    if no_follow is None or directory_flag is None:
+        raise ContractError(
+            f"the {label} cannot be read safely on a platform without no-follow opens"
+        )
+    components = Path(os.path.abspath(os.fspath(path))).parts
+    if len(components) < 2:
+        raise ContractError(f"the {label} is not a regular file")
+    directory_flags = os.O_RDONLY | os.O_NONBLOCK | no_follow | directory_flag
+    file_flags = os.O_RDONLY | os.O_NONBLOCK | no_follow
+    parent_descriptors: list[int] = []
+    try:
+        parent = os.open(components[0], directory_flags)
+        parent_descriptors.append(parent)
+        for component in components[1:-1]:
+            parent = os.open(component, directory_flags, dir_fd=parent)
+            parent_descriptors.append(parent)
+        descriptor = os.open(components[-1], file_flags, dir_fd=parent)
+    except FileNotFoundError as error:
+        # Keep the established exact refusal for an absent requested document.
+        raise ContractError(f"the {label} could not be read") from error
+    except OSError as error:
+        raise ContractError(
+            f"the {label} could not be opened as a regular file without following path redirects"
+        ) from error
+    finally:
+        for parent_descriptor in reversed(parent_descriptors):
+            os.close(parent_descriptor)
+    with os.fdopen(descriptor, "rb") as handle:
+        before = os.fstat(handle.fileno())
+        if not stat.S_ISREG(before.st_mode):
+            raise ContractError(f"the {label} is not a regular file")
+        if before.st_size > MAX_TRIAGE_DOCUMENT_BYTES:
+            raise ContractError(
+                f"the {label} exceeds the {MAX_TRIAGE_DOCUMENT_BYTES}-byte document bound"
+            )
+        raw = handle.read(MAX_TRIAGE_DOCUMENT_BYTES + 1)
+        after = os.fstat(handle.fileno())
+    if len(raw) > MAX_TRIAGE_DOCUMENT_BYTES:
+        raise ContractError(
+            f"the {label} exceeds the {MAX_TRIAGE_DOCUMENT_BYTES}-byte document bound"
+        )
+    before_identity = (
+        before.st_dev,
+        before.st_ino,
+        before.st_mode,
+        before.st_size,
+        before.st_mtime_ns,
+        before.st_ctime_ns,
+        before.st_nlink,
+    )
+    after_identity = (
+        after.st_dev,
+        after.st_ino,
+        after.st_mode,
+        after.st_size,
+        after.st_mtime_ns,
+        after.st_ctime_ns,
+        after.st_nlink,
+    )
+    if before_identity != after_identity:
+        raise ContractError(f"the {label} changed while it was being read")
+    return raw
+
+
+def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Materialize one JSON object only when every member name occurs once."""
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON object member {key!r}")
+        result[key] = value
+    return result
+
+
 def load_triage_decisions(
     manifest_path: str | Path,
     clusters_path: str | Path | None = None,
@@ -248,13 +338,10 @@ def load_triage_decisions(
     """
 
     def read_document(path: str | Path, label: str) -> tuple[bytes, Any]:
+        raw = _read_triage_document(path, label)
         try:
-            raw = Path(path).read_bytes()
-        except OSError as error:
-            raise ContractError(f"the {label} could not be read") from error
-        try:
-            return raw, json.loads(raw.decode("utf-8"))
-        except (UnicodeDecodeError, ValueError) as error:
+            return raw, json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_json_object)
+        except (UnicodeDecodeError, ValueError, RecursionError) as error:
             raise ContractError(f"the {label} is not valid UTF-8 JSON") from error
 
     manifest_bytes, document = read_document(manifest_path, "triage decision manifest")
@@ -289,6 +376,13 @@ def load_triage_decisions(
         checked = triage_manifest.validate_manifest(document, clusters)
     except ContractError as error:
         raise ContractError(f"the triage decision manifest is invalid: {error}") from error
+    if recipe_document is None and any(
+        row["actor"]["kind"] == "producer" for row in checked["records"]
+    ):
+        raise ContractError(
+            "the triage decision manifest contains producer rows but no triage producer "
+            "recipe was supplied"
+        )
     rows: dict[str, dict[str, Any]] = {}
     for row in checked["records"]:
         digest = row["source_frame_sha256"]

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from base64 import b64decode
+from dataclasses import replace
 from io import BytesIO
 
 import pytest
@@ -588,6 +589,23 @@ def test_every_selected_pair_yields_exactly_one_evidence_record():
     )
 
 
+def test_proxy_bytes_must_match_the_digests_the_pass_carries():
+    """A carried proxy digest is evidence only when it is compared before use."""
+    config = instrument.load_config()
+    proxies = frames((256, 192), (256, 192))
+    proxies[0] = replace(proxies[0], signature_png=proxies[0].signature_png + b"changed")
+    with pytest.raises(instrument.InstrumentRefusal, match="proxy bytes.*recorded digest"):
+        instrument.candidate_evidence(proxies, config)
+
+
+def test_an_oversized_evidence_sequence_refuses_before_traversing_its_records():
+    config = instrument.load_config()
+    proxies = frames((256, 192), (256, 192))
+    selection = instrument.select_candidate_pairs([proxy.signature for proxy in proxies], config)
+    with pytest.raises(instrument.InstrumentRefusal, match="2 records for 1 selected pairs"):
+        instrument.evidence_manifest(proxies, selection, [object(), object()], config)
+
+
 def test_a_dropped_evidence_record_is_refused_by_name_not_silently_shorter():
     config = instrument.load_config()
     proxies = frames(*[(256, 192)] * 4)
@@ -649,6 +667,30 @@ def test_the_pass_manifest_binds_evidence_contents_not_only_pair_identities():
     assert original["evidence_records_sha256"] != digest_of(changed)
     with pytest.raises(instrument.InstrumentRefusal, match="records recomputed from this pass"):
         instrument.evidence_manifest(proxies, selection, changed, config)
+
+
+@pytest.mark.parametrize("digest_field", ["emitted_pairs_sha256", "evidence_records_sha256"])
+def test_persisted_pass_manifest_digests_are_compared_before_consumption(digest_field):
+    config = instrument.load_config()
+    proxies = frames((256, 192), (256, 192), (256, 192))
+    evidence, manifest = instrument.candidate_evidence(proxies, config)
+    assert instrument.validate_evidence_manifest(manifest, proxies, evidence, config) == manifest
+
+    altered = json.loads(json.dumps(manifest))
+    altered[digest_field] = "f" * 64
+    with pytest.raises(instrument.InstrumentRefusal, match="does not match.*evidence it seals"):
+        instrument.validate_evidence_manifest(altered, proxies, evidence, config)
+
+
+def test_persisted_pass_manifest_cannot_use_a_boolean_as_an_integer_count():
+    config = instrument.load_config()
+    proxies = frames((256, 192))
+    evidence, manifest = instrument.candidate_evidence(proxies, config)
+    assert manifest["frame_count"] == 1
+    altered = json.loads(json.dumps(manifest))
+    altered["frame_count"] = True
+    with pytest.raises(instrument.InstrumentRefusal, match="does not match.*evidence it seals"):
+        instrument.validate_evidence_manifest(altered, proxies, evidence, config)
 
 
 def test_a_pair_refused_for_unequal_dimensions_is_named_not_dropped():

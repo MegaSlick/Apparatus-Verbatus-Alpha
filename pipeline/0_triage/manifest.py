@@ -121,11 +121,12 @@ def _row_digest(row: Mapping[str, Any]) -> str:
     payload = {key: value for key, value in row.items() if key != "manifest_row_sha256"}
     try:
         return digest_bytes(canonical_bytes(payload))
-    except TypeError as error:
+    except (TypeError, UnicodeError) as error:
         # `canonical_bytes` refuses floats with a TypeError. A caller building a
-        # row is inside this contract's refusal algebra, so it is one here too;
-        # a bare TypeError would escape every `except SchemaRefusal` in the
-        # pipeline.
+        # row is inside this contract's refusal algebra, so it is one here too.
+        # JSON can also carry a lone Unicode surrogate which cannot enter the
+        # canonical UTF-8 record; a bare UnicodeEncodeError would likewise escape
+        # every `except SchemaRefusal` in the pipeline.
         raise SchemaRefusal(f"triage row cannot be canonically serialized: {error}") from error
 
 

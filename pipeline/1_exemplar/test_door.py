@@ -857,6 +857,44 @@ def test_triage_producer_recipe_is_the_third_bound_document_path(tmp_path):
     }
 
 
+def test_a_producer_authored_manifest_cannot_drop_its_producer_recipe(tmp_path):
+    data = png(4, 3)
+    source_digest = digest_bytes(data)
+    row = door.triage_manifest.make_row(
+        corpus_id="parish-a",
+        source_frame_sha256=source_digest,
+        frame={"width": 4, "height": 3},
+        split=door.triage_manifest.make_split(
+            [
+                door.triage_manifest.make_part(
+                    {"x": 0, "y": 0, "w": 4, "h": 3},
+                    {"x": 0, "y": 0, "w": 4, "h": 3},
+                    0,
+                    colour_mode="keep",
+                )
+            ]
+        ),
+        re_shoot_cluster_id=None,
+        confidence=0,
+        mode="manual",
+        actor={"kind": "producer", "identity": "triage-instrument", "revision": "v1"},
+        human_override=False,
+    )
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema": door.triage_manifest.MANIFEST_SCHEMA,
+                "corpus_id": "parish-a",
+                "records": [row],
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ContractError, match="producer rows.*no triage producer recipe"):
+        door.load_triage_decisions(manifest_path)
+
+
 def test_a_missing_triage_producer_recipe_path_is_a_named_read_refusal(tmp_path):
     """A requested recipe path must refuse by name when it cannot be read."""
     manifest_path = tmp_path / "manifest.json"
@@ -871,6 +909,53 @@ def test_a_missing_triage_producer_recipe_path_is_a_named_read_refusal(tmp_path)
         door.load_triage_decisions(manifest_path, producer_recipe_path=missing)
 
 
+def test_a_triage_document_symlink_is_not_followed(tmp_path):
+    target = tmp_path / "recipe-target.json"
+    target.write_text(json.dumps(producer_recipe(instrument_config())), encoding="utf-8")
+    redirected = tmp_path / "recipe.json"
+    redirected.symlink_to(target)
+    with pytest.raises(ContractError, match="without following path redirects"):
+        door._read_triage_document(redirected, "triage producer recipe")
+
+
+def test_a_triage_document_does_not_follow_an_intermediate_directory_symlink(tmp_path):
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "recipe.json").write_text(
+        json.dumps(producer_recipe(instrument_config())), encoding="utf-8"
+    )
+    redirected = tmp_path / "redirected"
+    redirected.symlink_to(target, target_is_directory=True)
+    with pytest.raises(ContractError, match="without following path redirects"):
+        door._read_triage_document(redirected / "recipe.json", "triage producer recipe")
+
+
+def test_a_triage_document_is_bounded_before_json_deserialization(tmp_path, monkeypatch):
+    monkeypatch.setattr(door, "MAX_TRIAGE_DOCUMENT_BYTES", 64)
+    oversized = tmp_path / "oversized.json"
+    oversized.write_bytes(b"x" * 65)
+    with pytest.raises(ContractError, match="64-byte document bound"):
+        door._read_triage_document(oversized, "triage producer recipe")
+
+
+def test_a_triage_document_path_replacement_cannot_change_the_opened_bytes(tmp_path, monkeypatch):
+    recipe_path = tmp_path / "recipe.json"
+    original = json.dumps(producer_recipe(instrument_config())).encode("utf-8")
+    recipe_path.write_bytes(original)
+    replacement = tmp_path / "replacement.json"
+    replacement.write_bytes(b"not the opened document")
+    real_open = door.os.open
+
+    def open_then_replace(path, flags, *, dir_fd=None):
+        descriptor = real_open(path, flags, dir_fd=dir_fd)
+        if path == recipe_path.name and not flags & door.os.O_DIRECTORY:
+            replacement.replace(recipe_path)
+        return descriptor
+
+    monkeypatch.setattr(door.os, "open", open_then_replace)
+    assert door._read_triage_document(recipe_path, "triage producer recipe") == original
+
+
 def test_a_non_json_triage_producer_recipe_names_its_exact_parse_failure(tmp_path):
     manifest_path = tmp_path / "manifest.json"
     manifest_path.write_text(
@@ -881,6 +966,27 @@ def test_a_non_json_triage_producer_recipe_names_its_exact_parse_failure(tmp_pat
     )
     bad_recipe = tmp_path / "recipe.json"
     bad_recipe.write_text("not JSON", encoding="utf-8")
+    with pytest.raises(ContractError, match="^the triage producer recipe is not valid UTF-8 JSON$"):
+        door.load_triage_decisions(manifest_path, producer_recipe_path=bad_recipe)
+
+
+@pytest.mark.parametrize(
+    "ambiguous",
+    [
+        b'{"schema":"triage-producer-recipe.v1","schema":"other"}',
+        b'{"nested":' + b"[" * 20_000 + b"]" * 20_000 + b"}",
+    ],
+)
+def test_ambiguous_or_pathologically_nested_triage_json_is_a_named_refusal(tmp_path, ambiguous):
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {"schema": door.triage_manifest.MANIFEST_SCHEMA, "corpus_id": "parish-a", "records": []}
+        ),
+        encoding="utf-8",
+    )
+    bad_recipe = tmp_path / "recipe.json"
+    bad_recipe.write_bytes(ambiguous)
     with pytest.raises(ContractError, match="^the triage producer recipe is not valid UTF-8 JSON$"):
         door.load_triage_decisions(manifest_path, producer_recipe_path=bad_recipe)
 

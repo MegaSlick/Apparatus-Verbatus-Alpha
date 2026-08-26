@@ -16,7 +16,7 @@ from typing import Any, Final, Iterable, Sequence
 
 from PIL import Image
 
-from common.contracts.canonical import digest_bytes, digest_of
+from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of
 from common.contracts.errors import ContractError
 from common.corpus_register import _refuse_preference
 from common.imaging import MAX_PIXELS, encode_image_deterministic, imaging_library_versions
@@ -99,6 +99,17 @@ EVIDENCE_FIELDS: Final = (
     "ink_count_distance_per_mille",
     "verdict",
     "thresholds",
+)
+EVIDENCE_MANIFEST_FIELDS: Final = (
+    "schema",
+    "instrument_config_sha256",
+    "frame_count",
+    "frame_digests",
+    "candidate_cost",
+    "emitted_evidence_records",
+    "emitted_pairs_sha256",
+    "evidence_records_sha256",
+    "dimension_refused_pairs",
 )
 
 
@@ -251,6 +262,33 @@ def _require_unique_frame_digests(signatures: Sequence[SignatureGrid]) -> None:
             "candidate pass repeats source frame digest(s), so index pairs would not be "
             f"unique evidence identities: {duplicates}"
         )
+
+
+def _require_proxy_integrity(proxies: Sequence[ProxySet]) -> None:
+    """Refuse proxy bytes whose carried digests or signature identity drifted."""
+    for proxy in proxies:
+        if not isinstance(proxy, ProxySet) or not isinstance(proxy.signature, SignatureGrid):
+            raise InstrumentRefusal("candidate pass contains no declared proxy set")
+        if not isinstance(proxy.signature_png, bytes) or not isinstance(proxy.review_png, bytes):
+            raise InstrumentRefusal("candidate proxy payloads must be bytes")
+        _lower_sha256(proxy.signature_png_sha256, "candidate signature proxy digest")
+        _lower_sha256(proxy.review_png_sha256, "candidate review proxy digest")
+        if proxy.source_frame_sha256 != proxy.signature.source_frame_sha256:
+            raise InstrumentRefusal(
+                "candidate proxy and signature disagree about their source frame digest"
+            )
+        if proxy.frame_size != proxy.signature.frame_size:
+            raise InstrumentRefusal(
+                "candidate proxy and signature disagree about their source frame dimensions"
+            )
+        if digest_bytes(proxy.signature_png) != proxy.signature_png_sha256:
+            raise InstrumentRefusal(
+                "candidate signature proxy bytes do not match their recorded digest"
+            )
+        if digest_bytes(proxy.review_png) != proxy.review_png_sha256:
+            raise InstrumentRefusal(
+                "candidate review proxy bytes do not match their recorded digest"
+            )
 
 
 def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> InstrumentConfig:
@@ -1074,15 +1112,12 @@ def evidence_manifest(
     because "which frames could not be compared" is the question a mixed-dimension
     reel actually raises.
     """
+    _require_proxy_integrity(proxies)
     _require_unique_frame_digests([proxy.signature for proxy in proxies])
     frame_digests = [
         _lower_sha256(proxy.source_frame_sha256, "candidate proxy source frame digest")
         for proxy in proxies
     ]
-    if any(proxy.source_frame_sha256 != proxy.signature.source_frame_sha256 for proxy in proxies):
-        raise InstrumentRefusal(
-            "candidate proxy and signature disagree about their source frame digest"
-        )
     if len(set(frame_digests)) != len(frame_digests):
         raise InstrumentRefusal(
             "candidate pass repeats a proxy source frame digest, so pair identity is ambiguous"
@@ -1097,6 +1132,14 @@ def evidence_manifest(
     ) or selection.cost.dimension_refused_pairs != len(selection.dimension_refused):
         raise InstrumentRefusal(
             "candidate selection cost does not account for its exact emitted and refused pair sets"
+        )
+    if len(evidence) != selection.cost.unique_candidate_pairs:
+        # Cardinality is checked before a caller-controlled sequence is traversed.
+        # Otherwise an arbitrarily long evidence list is fully validated and only
+        # then refused for not matching the bounded selected set.
+        raise InstrumentRefusal(
+            "candidate evidence does not account for every selected pair: "
+            f"{len(evidence)} records for {selection.cost.unique_candidate_pairs} selected pairs"
         )
     validated_evidence = [validate_candidate_evidence(record, config) for record in evidence]
     emitted = tuple(_canonical_pair(*record["both_digests"]) for record in validated_evidence)
@@ -1154,10 +1197,42 @@ def evidence_manifest(
     return record
 
 
+def validate_evidence_manifest(
+    record: Any,
+    proxies: Sequence[ProxySet],
+    evidence: Sequence[dict[str, Any]],
+    config: InstrumentConfig,
+) -> dict[str, Any]:
+    """Verify a persisted pass manifest against the evidence and proxy pass it seals."""
+    if not isinstance(record, dict) or set(record) != set(EVIDENCE_MANIFEST_FIELDS):
+        raise InstrumentRefusal("candidate evidence manifest has the wrong closed field set")
+    if record.get("schema") != EVIDENCE_MANIFEST_SCHEMA:
+        raise InstrumentRefusal("candidate evidence manifest has an unknown schema")
+    expected = evidence_manifest(
+        proxies,
+        select_candidate_pairs([proxy.signature for proxy in proxies], config),
+        evidence,
+        config,
+    )
+    try:
+        matches = canonical_bytes(record) == canonical_bytes(expected)
+    except (TypeError, UnicodeError) as error:
+        raise InstrumentRefusal(
+            "candidate evidence manifest cannot be canonically serialized"
+        ) from error
+    if not matches:
+        raise InstrumentRefusal(
+            "candidate evidence manifest does not match the proxy pass and evidence it seals"
+        )
+    _refuse_preference(record)
+    return record
+
+
 def candidate_evidence(
     proxies: Sequence[ProxySet], config: InstrumentConfig
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Compare every selected, equal-dimension pair and retain every verdict."""
+    _require_proxy_integrity(proxies)
     selection = select_candidate_pairs([proxy.signature for proxy in proxies], config)
     evidence = [
         compare_signatures(proxies[left].signature, proxies[right].signature, config)
