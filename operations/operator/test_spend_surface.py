@@ -330,3 +330,100 @@ def test_spend_double_click_route_carries_a_typed_policy_path(
         "--policy",
         "/tmp/reviewed-spend.toml",
     ]
+
+
+def _damaged_receipt(store: ReceiptStore, name: str) -> Path:
+    """A file the store will refuse to read, left where a receipt belongs."""
+
+    store.receipts.mkdir(parents=True, exist_ok=True)
+    planted = store.receipts / name
+    planted.write_text("{}\n", encoding="utf-8")
+    return planted
+
+
+def test_one_unreadable_receipt_does_not_take_the_whole_spend_view_with_it(
+    tmp_path: Path,
+) -> None:
+    """A damaged file names itself; it does not delete the ceilings and the floor.
+
+    `records_of_kind` raises on the first record that will not read, so before
+    this the screen lost the reviewed policy, the hard-stop floor and every
+    sound observation because one file in the directory was unreadable — the
+    partial result vanishing behind a refusal rather than being shown as
+    partial (GOVERNANCE 2). An unreadable receipt of a kind this view never
+    projects stays `status`'s account to give, not this one's.
+    """
+
+    receipts = ReceiptStore(tmp_path / "state", now=lambda: NOW)
+    receipts.write(
+        "launch-confirmation",
+        {
+            "summary": "recorded preview",
+            "preview": _preview(
+                observed_at="2026-08-24T11:59:30+00:00",
+                alerts=["observed account balance is below the notification threshold"],
+                deliveries=["Phone notification: sent."],
+            ),
+        },
+    )
+    damaged = _damaged_receipt(receipts, f"launch-confirmation-{'0' * 64}.json")
+    unrelated = _damaged_receipt(receipts, f"upload-{'1' * 64}.json")
+
+    rendered = "\n".join(SpendSurface(receipts, NOW).show(_policy(tmp_path / "reviewed.toml")))
+
+    assert "Hard-stop balance floor: $50.00" in rendered
+    assert "Observed balance: $60.00" in rendered
+    assert "Phone notification: sent." in rendered
+    assert "could not be read" in rendered
+    assert damaged.name in rendered
+    assert unrelated.name not in rendered
+
+
+def test_the_saved_balance_history_is_shown_oldest_first_not_in_digest_order(
+    tmp_path: Path,
+) -> None:
+    """Receipt filenames are digests, so their sort order carries no time at all.
+
+    A money history listed in that order invites its last line to be read as
+    its latest. The pair below is chosen so digest order and time order
+    disagree, which is the only arrangement that can tell the two apart.
+    """
+
+    receipts = ReceiptStore(tmp_path / "state", now=lambda: NOW)
+    older_time, newer_time = datetime(2026, 8, 24, 9, 0, tzinfo=UTC), NOW
+    for attempt in range(64):
+        receipts.now = lambda: older_time
+        older = receipts.write(
+            "launch-confirmation",
+            {
+                "summary": f"older preview {attempt}",
+                "preview": _preview(
+                    observed_at="2026-08-24T08:59:30+00:00", alerts=[], deliveries=[]
+                ),
+            },
+        )
+        receipts.now = lambda: newer_time
+        newer = receipts.write(
+            "launch-confirmation",
+            {
+                "summary": f"newer preview {attempt}",
+                "preview": _preview(
+                    observed_at="2026-08-24T11:59:30+00:00", alerts=[], deliveries=[]
+                ),
+            },
+        )
+        if newer.name < older.name:
+            break
+        older.unlink()
+        newer.unlink()
+    else:  # pragma: no cover - 64 independent digests never all sort one way
+        raise AssertionError("no receipt pair whose digest order reverses their time order")
+
+    lines = SpendSurface(receipts, NOW).show(_policy(tmp_path / "reviewed.toml"))
+
+    positions = [
+        index for index, line in enumerate(lines) if line.startswith("- Observed balance:")
+    ]
+    assert len(positions) == 2
+    assert "observed at: 2026-08-24T08:59:30+00:00" in lines[positions[0]]
+    assert "observed at: 2026-08-24T11:59:30+00:00" in lines[positions[1]]

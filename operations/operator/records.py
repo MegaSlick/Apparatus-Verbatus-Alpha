@@ -228,6 +228,44 @@ class ReceiptStore:
     def records_of_kind(self, kind: str) -> list[tuple[Path, dict[str, Any]]]:
         return [(path, record) for path, record in self.list() if record["kind"] == kind]
 
+    def readable_records_of_kind(
+        self, kind: str
+    ) -> tuple[list[tuple[Path, dict[str, Any]]], list[str]]:
+        """One kind's records, plus a named note for each file of that kind that failed.
+
+        `records_of_kind` reads the whole directory and raises on the first
+        record that will not read, so one damaged or planted file of any kind
+        takes every other record down with it. That is the right answer for
+        `status`, which prints as it goes and accounts for all of them. It is
+        the wrong answer for a caller that wants one kind and returns its whole
+        view at once: there the unreadable file would delete facts it has
+        nothing to do with, and GOVERNANCE 2 wants the gap named beside the
+        readings that survived, not the readings dropped.
+
+        Scoped by filename because `write` names every receipt
+        `{kind}-{digest}.json` and `read` refuses a file whose name does not
+        match the record inside it. The glob alone is not enough: `kind` may
+        contain hyphens, so `launch-confirmation-*.json` also matches a
+        well-formed receipt of kind `launch-confirmation-extra`. The kind of the
+        record that was actually read decides.
+        """
+
+        if not self.receipts.exists():
+            return [], []
+        if not self.receipts.is_dir() or self.receipts.is_symlink():
+            raise RecordError("operator receipt directory is not a safe directory")
+        loaded: list[tuple[Path, dict[str, Any]]] = []
+        unreadable: list[str] = []
+        for candidate in sorted(self.receipts.glob(f"{kind}-*.json")):
+            try:
+                record = self.read(candidate)
+            except RecordError as error:
+                unreadable.append(f"{candidate.name}: {error}")
+                continue
+            if record["kind"] == kind:
+                loaded.append((candidate, record))
+        return loaded, unreadable
+
 
 class DescriptorStore:
     """A small, self-hashed index of explicitly chosen receipt paths.

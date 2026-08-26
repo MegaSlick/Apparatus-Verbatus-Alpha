@@ -64,7 +64,13 @@ class SpendSurface:
             f"- Hard lifetime ceiling: {policy.hard_lifetime_seconds} seconds "
             f"(policy SHA-256 {policy_digest})",
         ]
-        observations, alerts = self._recorded_balance_history()
+        observations, alerts, unreadable = self._recorded_balance_history()
+        if unreadable:
+            lines.append(
+                "Saved launch confirmations that could not be read "
+                "(named, not skipped; no number below came from them):"
+            )
+            lines.extend(f"- {_recorded_text(note)}" for note in unreadable)
         if observations:
             lines.append(
                 "Recorded balance observations (read-only; no new provider check was made):"
@@ -81,14 +87,35 @@ class SpendSurface:
             lines.append("Notification-only alert history: no alert record was found.")
         return lines
 
-    def _recorded_balance_history(self) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    def _recorded_balance_history(
+        self,
+    ) -> tuple[list[dict[str, str]], list[dict[str, str]], list[str]]:
+        """Every saved launch confirmation, oldest first: projected, or named as unread.
+
+        `records_of_kind` reads the whole receipt directory and raises on the
+        first file that will not read, so one damaged receipt -- of any kind,
+        including kinds this view never shows -- deleted the ceilings, the
+        floor and every sound observation from the screen at once. `status`
+        survives that because it prints as it goes and marks the one record it
+        could not read; this view returns its lines all together, so it has to
+        carry the same gap in them (GOVERNANCE 2).
+
+        Oldest first, by the receipt's own `recorded_at`: content-addressed
+        filenames sort by digest, which is no order at all, and a money history
+        listed in no order invites its last line to be read as its latest.
+        `ReceiptStore.read` has already refused any stamp that is not canonical
+        UTC, so these sort lexicographically in time.
+        """
+
         observations: list[dict[str, str]] = []
         alerts: list[dict[str, str]] = []
         try:
-            records = self.receipts.records_of_kind("launch-confirmation")
+            records, unreadable = self.receipts.readable_records_of_kind("launch-confirmation")
         except RecordError as error:
             raise OperatorError(ErrorCode.STATUS_UNREADABLE, detail=str(error)) from error
-        for path, record in records:
+        for path, record in sorted(
+            records, key=lambda item: (item[1]["recorded_at"], item[0].name)
+        ):
             preview = record["payload"].get("preview")
             if not isinstance(preview, dict):
                 continue
@@ -118,7 +145,7 @@ class SpendSurface:
                         }
                     )
             alerts.extend(_alert_rows(ceilings, digest))
-        return observations, alerts
+        return observations, alerts, unreadable
 
     def _balance_line(self, observation: dict[str, str]) -> str:
         try:
