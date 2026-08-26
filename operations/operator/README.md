@@ -1,8 +1,10 @@
 # Verbatus — the operator surface
 
-Every rehearsal verb runs against fixtures and does not start, adopt, or bill a pod.
-`upload --network-volume` is the explicitly named exception for transfer: it sends the
-sealed submission record to the named RunPod network volume.
+The pod-lifecycle rehearsal verbs use fixtures and do not start, adopt, or bill a real
+pod; local verbs may read and write operator-supplied files. `upload --network-volume`
+is the explicitly named transfer exception: it sends only the files named by the sealed
+submission record to the named RunPod network volume
+(`operations/pod/transfer.py:94-150`).
 
 **You do not need Terminal, SSH, Python, or an AI assistant for a normal run.**
 Double-click [Verbatus.command](Verbatus.command) and answer one question at a time.

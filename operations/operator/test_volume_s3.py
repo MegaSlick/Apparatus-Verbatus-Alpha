@@ -294,7 +294,9 @@ def test_an_os_error_from_the_upload_names_source_or_network_without_guessing(
             )
 
 
-def test_upload_through_the_surface_sends_only_the_sealed_record(tmp_path: Path) -> None:
+def test_upload_through_the_surface_sends_only_files_named_by_the_sealed_record(
+    tmp_path: Path,
+) -> None:
     """The verb's own contract over a real-shaped target, still with no network."""
 
     messages: list[str] = []

@@ -34,7 +34,8 @@ The words are:
   call.
 - `boot` — checks the saved fixture setup and ends with a plainly labelled green or red
   report.
-- `upload` — transfers a sealed submission record to the fixture volume. It does not
+- `upload` — transfers only the files named by a sealed submission record to the fixture
+  volume. It does not
   need a pod and uses zero GPU-hours. Naming `--network-volume DATACENTER:VOLUME_ID`
   sends to a real RunPod network volume instead; see the caveat below.
 - `run` — resumes the named fixture run and says which pages and acts it is working on.
@@ -53,13 +54,13 @@ bootstrap checks and billing records are local fixtures, so the whole flow can b
 practised without a credential and without a cloud charge, and the surface refuses any
 pod provider that is not the in-memory fake.
 
-**One exception, and it is off unless you name it.** `upload --network-volume` sends the
-sealed submission record to a real RunPod network volume. Storage transfer needs no pod
-and starts no GPU meter — that is the point of running `upload` first — but it does leave
-this computer, which is why the operator has to name the volume and is told exactly what
-will be contacted before a byte moves. Its credentials are read from the environment
-only. **That adapter has never been run against a real endpoint**: its logic is tested
-against an injected client and its network behaviour is untested.
+**One exception, and it is off unless you name it.** `upload --network-volume` sends only
+the files named by the sealed submission record to a real RunPod network volume. Storage
+transfer needs no pod and starts no GPU meter — that is the point of running `upload`
+first — but it does leave this computer, which is why the operator has to name the volume
+and is told exactly what will be contacted before a byte moves. Its credentials are read
+from the environment only. **That adapter has never been run against a real endpoint**:
+its logic is tested against an injected client and its network behaviour is untested.
 
 The Spec 11 **product bundle** is built in `pipeline/7_armarium`: `run.py` projects the
 manifest, acts, pages, and aggregate basis and seals the bundle into the run tree
