@@ -108,6 +108,7 @@ from common.stage import (  # noqa: E402
     load_fixture,
     refuse_halted_run,
     require_corpus_frame_shard,
+    require_triage_modes,
     run_config_bindings,
     run_stage,
     scenario_for,
@@ -241,8 +242,106 @@ def declared_digests(fixture: dict, scenario: str) -> dict[int, str]:
     return declared
 
 
+def _read_triage_document(path: str | Path, label: str) -> tuple[bytes, Any]:
+    """Read one bounded regular file without following or reopening its path.
+
+    Returns the same bytes parsed, so digest and decisions cannot straddle a
+    rewrite; JSON objects refuse duplicate member names at parse time.
+
+    These documents cross the pre-Door producer boundary and are parsed wholly in
+    memory. A checked pathname is not an anchored input: its leaf can become a
+    symlink or FIFO between a check and ``read_bytes()``, and an intermediate
+    directory can redirect the same spelling. An unbounded regular file can make
+    JSON parsing itself the denial of service. Open every component relative to
+    its no-follow directory descriptor, then decide from the one leaf descriptor
+    and prove its byte-bearing identity stayed stable across the bounded read.
+    """
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    directory_flag = getattr(os, "O_DIRECTORY", None)
+    if no_follow is None or directory_flag is None:
+        raise ContractError(
+            f"the {label} cannot be read safely on a platform without no-follow opens"
+        )
+    components = Path(os.path.abspath(os.fspath(path))).parts
+    if len(components) < 2:
+        raise ContractError(f"the {label} is not a regular file")
+    directory_flags = os.O_RDONLY | os.O_NONBLOCK | no_follow | directory_flag
+    file_flags = os.O_RDONLY | os.O_NONBLOCK | no_follow
+    parent_descriptors: list[int] = []
+    try:
+        parent = os.open(components[0], directory_flags)
+        parent_descriptors.append(parent)
+        for component in components[1:-1]:
+            parent = os.open(component, directory_flags, dir_fd=parent)
+            parent_descriptors.append(parent)
+        descriptor = os.open(components[-1], file_flags, dir_fd=parent)
+    except FileNotFoundError as error:
+        # Keep the established exact refusal for an absent requested document.
+        raise ContractError(f"the {label} could not be read") from error
+    except OSError as error:
+        raise ContractError(
+            f"the {label} could not be opened as a regular file without following path redirects"
+        ) from error
+    finally:
+        for parent_descriptor in reversed(parent_descriptors):
+            os.close(parent_descriptor)
+    with os.fdopen(descriptor, "rb") as handle:
+        before = os.fstat(handle.fileno())
+        if not stat.S_ISREG(before.st_mode):
+            raise ContractError(f"the {label} is not a regular file")
+        if before.st_size > MAX_TRIAGE_DOCUMENT_BYTES:
+            raise ContractError(
+                f"the {label} exceeds the {MAX_TRIAGE_DOCUMENT_BYTES}-byte document bound"
+            )
+        raw = handle.read(MAX_TRIAGE_DOCUMENT_BYTES + 1)
+        after = os.fstat(handle.fileno())
+    if len(raw) > MAX_TRIAGE_DOCUMENT_BYTES:
+        raise ContractError(
+            f"the {label} exceeds the {MAX_TRIAGE_DOCUMENT_BYTES}-byte document bound"
+        )
+    before_identity = (
+        before.st_dev,
+        before.st_ino,
+        before.st_mode,
+        before.st_size,
+        before.st_mtime_ns,
+        before.st_ctime_ns,
+        before.st_nlink,
+    )
+    after_identity = (
+        after.st_dev,
+        after.st_ino,
+        after.st_mode,
+        after.st_size,
+        after.st_mtime_ns,
+        after.st_ctime_ns,
+        after.st_nlink,
+    )
+    if before_identity != after_identity:
+        raise ContractError(f"the {label} changed while it was being read")
+    try:
+        return raw, json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_json_object)
+    except (UnicodeDecodeError, ValueError, RecursionError) as error:
+        raise ContractError(
+            f"the {label} is not valid UTF-8 JSON; no run was created because its decisions "
+            "cannot be interpreted; export valid UTF-8 JSON and retry"
+        ) from error
+
+
+def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Materialize one JSON object only when every member name occurs once."""
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON object member {key!r}")
+        result[key] = value
+    return result
+
+
 def load_triage_decisions(
-    manifest_path: str | Path, clusters_path: str | Path | None = None
+    manifest_path: str | Path,
+    clusters_path: str | Path | None = None,
+    producer_recipe_path: str | Path | None = None,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]], dict[str, str]]:
     """Read the closed triage decision manifest without inventing another shape.
 
@@ -255,14 +354,29 @@ def load_triage_decisions(
     parsed, because two reads can straddle a rewrite.
     """
     manifest_bytes, document = _read_triage_document(manifest_path, "triage decision manifest")
-    clusters_bytes, clusters_document = (
-        _read_triage_document(clusters_path, "triage re-shoot cluster records")
-        if clusters_path is not None
-        else (None, None)
-    )
+    if clusters_path is not None:
+        clusters_bytes, clusters_document = _read_triage_document(
+            clusters_path, "triage re-shoot cluster records"
+        )
+    else:
+        clusters_bytes = clusters_document = None
+    if producer_recipe_path is not None:
+        recipe_bytes, recipe_document = _read_triage_document(
+            producer_recipe_path, "triage producer recipe"
+        )
+    else:
+        recipe_bytes = recipe_document = None
     digests = {"triage-decision-manifest": digest_bytes(manifest_bytes)}
     if clusters_bytes is not None:
         digests["triage-re-shoot-clusters"] = digest_bytes(clusters_bytes)
+    if recipe_bytes is not None:
+        from operations.triage.instrument import validate_producer_recipe
+
+        try:
+            validate_producer_recipe(recipe_document)
+        except ContractError as error:
+            raise ContractError(f"the triage producer recipe is invalid: {error}") from error
+        digests["triage-producer-recipe"] = digest_bytes(recipe_bytes)
     if clusters_document is not None:
         if not isinstance(clusters_document, dict):
             raise ContractError(
@@ -281,63 +395,22 @@ def load_triage_decisions(
             f"the triage decision manifest is invalid ({error}); no run was created because "
             "its page geometry cannot be trusted; correct the named manifest violation and retry"
         ) from error
-    rows = {row["source_frame_sha256"]: row for row in checked["records"]}
-    return rows, dict(clusters or {}), digests
-
-
-def _read_triage_document(path: str | Path, label: str) -> tuple[bytes, Any]:
-    """Return the same bytes parsed, so digest and decisions cannot straddle a rewrite."""
-    no_follow = getattr(os, "O_NOFOLLOW", None)
-    if no_follow is None:
+    if recipe_document is None and any(
+        row["actor"]["kind"] == "producer" for row in checked["records"]
+    ):
         raise ContractError(
-            f"the {label} cannot be opened without following symlinks on this platform; no run "
-            "was created because its approved location cannot be held at the read boundary"
+            "the triage decision manifest contains producer rows but no triage producer "
+            "recipe was supplied"
         )
-    descriptor: int | None = None
-    try:
-        descriptor = os.open(
-            Path(path),
-            os.O_RDONLY | no_follow | getattr(os, "O_CLOEXEC", 0),
-        )
-        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+    rows: dict[str, dict[str, Any]] = {}
+    for row in checked["records"]:
+        digest = row["source_frame_sha256"]
+        if digest in rows:
             raise ContractError(
-                f"the {label} is not a regular file; no run was created because a decision "
-                "document cannot be a device, pipe, socket, or directory"
+                "the triage decision manifest names one submitted frame more than once"
             )
-        with os.fdopen(descriptor, "rb") as handle:
-            descriptor = None
-            data = handle.read(MAX_TRIAGE_DOCUMENT_BYTES + 1)
-    except OSError as error:
-        refusal = ContractError(
-            f"the {label} could not be read; no run was created because its decisions are "
-            "unavailable; restore a readable file inside an approved storage root and retry"
-        )
-        if descriptor is not None:
-            try:
-                os.close(descriptor)
-            except OSError as cleanup:
-                refusal.add_note(f"descriptor cleanup also failed: {cleanup}")
-        raise refusal from error
-    except BaseException as primary:
-        if descriptor is not None:
-            try:
-                os.close(descriptor)
-            except OSError as cleanup:
-                primary.add_note(f"descriptor cleanup also failed: {cleanup}")
-        raise
-    if len(data) > MAX_TRIAGE_DOCUMENT_BYTES:
-        raise ContractError(
-            f"the {label} exceeds the {MAX_TRIAGE_DOCUMENT_BYTES}-byte input bound; no run was "
-            "created because an untrusted decision document may not allocate without limit; "
-            "export only the records for this submitted shard and retry"
-        )
-    try:
-        return data, json.loads(data.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError) as error:
-        raise ContractError(
-            f"the {label} is not valid UTF-8 JSON; no run was created because its decisions "
-            "cannot be interpreted; export valid UTF-8 JSON and retry"
-        ) from error
+        rows[digest] = row
+    return rows, dict(clusters or {}), digests
 
 
 def _refuse_triage_amplification(document: Any, clusters: Any) -> None:
@@ -1606,6 +1679,10 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         "--triage-clusters",
         help="corpus-scoped Unit 5 re-shoot cluster records keyed by cluster id",
     )
+    parser.add_argument(
+        "--triage-producer-recipe",
+        help="sealed triage-producer-recipe.v1 for the pre-door producer run",
+    )
     args = parser.parse_args()
     existing_tree = RunTree(Path(args.run_root), args.run_id)
     if existing_tree.resolve("run.json").exists():
@@ -1619,7 +1696,11 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             "a submission filename ledger is meaningful only with a real submission folder; "
             "the walking skeleton's declared synthetic pages are not gated input"
         )
-    if args.triage_decision_manifest is not None or args.triage_clusters is not None:
+    if (
+        args.triage_decision_manifest is not None
+        or args.triage_clusters is not None
+        or args.triage_producer_recipe is not None
+    ):
         raise ContractError("triage geometry is meaningful only with a real submission folder")
     return fixture_submission(args, registry)
 
@@ -1779,6 +1860,8 @@ def real_submission(args, registry) -> int:
     ledger = submission_ledger.load_manifest(manifest_path)
     if args.triage_clusters is not None and args.triage_decision_manifest is None:
         raise ContractError("triage cluster records require a triage decision manifest")
+    if args.triage_producer_recipe is not None and args.triage_decision_manifest is None:
+        raise ContractError("triage producer recipe requires a triage decision manifest")
     # Gated exactly as the submission filename ledger above is, and for the same
     # two reasons: a real-path input read from disk is inside the data-handling
     # policy's approved roots or it was never read, and a decision record sitting
@@ -1786,6 +1869,7 @@ def real_submission(args, registry) -> int:
     triage_paths = [
         (args.triage_decision_manifest, "triage decision manifest"),
         (args.triage_clusters, "triage re-shoot cluster records"),
+        (args.triage_producer_recipe, "triage producer recipe"),
     ]
     gated_triage: dict[str, Path] = {}
     for location, label in triage_paths:
@@ -1802,6 +1886,7 @@ def real_submission(args, registry) -> int:
         load_triage_decisions(
             gated_triage["triage decision manifest"],
             gated_triage.get("triage re-shoot cluster records"),
+            gated_triage.get("triage producer recipe"),
         )
         if args.triage_decision_manifest is not None
         else (None, None, {})
@@ -1848,22 +1933,6 @@ def real_submission(args, registry) -> int:
     def open_source(relative_path: str):
         return inventory.open_submission_source(submission_folder, relative_path)
 
-    sources = expand_sources(
-        [
-            {
-                "relative_path": source["relative_path"],
-                "sha256": source["sha256"],
-                "bytes": source["bytes"],
-                "ledger_sha256": ledger["self_hash"],
-            }
-            for source in ledger["files"]
-        ],
-        read_bytes,
-        format_policy,
-        open_source=open_source,
-        triage_rows=triage_rows,
-        triage_clusters=triage_clusters,
-    )
     bindings = _real_bindings(
         registry.config,
         ledger,
@@ -1887,6 +1956,25 @@ def real_submission(args, registry) -> int:
         perlector_protocol_config_path=args.perlector_protocol_config,
         perlector_audit_config_path=args.perlector_audit_config,
         draft_fed=args.draft_fed,
+    )
+    # The modes seal must be proved before triage rows can shape master-frame geometry.
+    if triage_rows is not None:
+        require_triage_modes(bindings["sealed_config_digests"])
+    sources = expand_sources(
+        [
+            {
+                "relative_path": source["relative_path"],
+                "sha256": source["sha256"],
+                "bytes": source["bytes"],
+                "ledger_sha256": ledger["self_hash"],
+            }
+            for source in ledger["files"]
+        ],
+        read_bytes,
+        format_policy,
+        open_source=open_source,
+        triage_rows=triage_rows,
+        triage_clusters=triage_clusters,
     )
     # Real ingress binds the same bounded shard policy before its RunTree exists.
     require_corpus_frame_shard(len(sources), bindings["sealed_config_digests"])
@@ -2108,6 +2196,13 @@ def _real_bindings(
             "the Perlector audit configuration binding at "
             f"{perlector_audit_config_path} could not be read"
         ) from error
+    triage_modes_config_path = ROOT / "config" / "triage_modes.toml"
+    try:
+        triage_modes_config_sha256 = digest_bytes(triage_modes_config_path.read_bytes())
+    except OSError as error:
+        raise ContractError(
+            f"the triage modes configuration binding at {triage_modes_config_path} could not be read"
+        ) from error
     return {
         "witness_chairs": list(models.witness_chairs),
         "config_digest": digest_of(
@@ -2138,8 +2233,14 @@ def _real_bindings(
                 "designator_padding_config_sha256": designator_padding_config_sha256,
                 "designator_geometry_config_sha256": designator_geometry_config_sha256,
                 "alignment_config_sha256": alignment_config_sha256,
-                # Triage documents shape sealed pixels and must therefore be
-                # run-bound; the empty mapping explicitly binds their absence.
+                "triage_modes_config_sha256": triage_modes_config_sha256,
+                # Unit 5's decisions are geometry that shaped these pixels, so
+                # they are bound like any other fact that did. A triage pass re-run
+                # between two attempts at one run id changes these digests, and
+                # `RunTree.create` then refuses the reuse by name instead of the
+                # swap being caught only where a changed row happens to reach an
+                # already-published admission. Empty for a submission with no
+                # split decisions, so an ordinary run's digest is unchanged.
                 "triage_document_digests": dict(sorted((triage_document_digests or {}).items())),
                 "corpus_frame_policy": corpus_frame_policy,
                 "corpus_frame_config_sha256": corpus_frame_config_sha256,
@@ -2185,6 +2286,7 @@ def _real_bindings(
             "pdf-render": pdf_render_config_sha256,
             "recovery": recovery_policy["config_sha256"],
             "hard-failure": hard_failure_policy["config_sha256"],
+            "triage-modes": triage_modes_config_sha256,
             # Real ingress only: the fixture route is not gated, so a fixture run
             # seals no data-handling name and a point of use that asked for one
             # there would be asking about a check that never happened.

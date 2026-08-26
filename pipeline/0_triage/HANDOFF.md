@@ -92,12 +92,13 @@ mismatch, which catches a row bound to a derivative rather than to its master.
 
 `triage-re-shoot-cluster-v1` is a corpus-scoped leaf record keyed by its member
 **frame source digests**. It has no run id, no shard id, and no cluster digest
-identity, so a cluster's members may lie in different corpus-frame shards and
-therefore different manifests. A row may name a cluster only when its source digest
-is a member, and all members declare the same split count. The mapping key a caller
-files a record under must equal the record's own `cluster_id`, and the record's
-`corpus_id` must match the manifest and every row it contains. Every frame remains
-processable.
+identity, but the consuming Door refuses a submitted shard when a named cluster reaches
+outside that shard. The enforced reach is therefore bounded by submitted-shard geometry;
+the producer must not represent a cross-shard cluster as ingestible. A row may name a
+cluster only when its source digest is a member, and all members declare the same split
+count. The mapping key a caller files a record under must equal the record's own
+`cluster_id`, and the record's `corpus_id` must match the manifest and every row it
+contains. Every frame remains processable.
 
 ## ScanTailor seam — unverified
 
@@ -134,3 +135,64 @@ where the plan puts a manual crop.
 A human actor's `revision` is `null`, not a placeholder string. GOVERNANCE 6 binds the
 resolved revision of the *model* that produced a record; a person has none, and a
 required string would only buy a value that protects nothing.
+
+## Unit 6B producer and confirmation contract
+
+Unit 6A supplies only an offline co-visibility instrument. It calls no model, writes no
+manifest or cluster, and asserts no link. Unit 6B is the sole path that may turn a reviewed
+confirmation into `re_shoot_cluster_id`; an instrument verdict never does so directly.
+Every confirmed cluster must trace to candidate evidence by
+`(instrument_config_sha256, sorted source-frame digest pair)`, and the confirmation must
+retain the evidence, its pass manifest, and the human or fixture/measurement authority that
+confirmed it. No designation means no register or manifest write.
+
+For every producer pass, write the exact closed value returned by
+`operations.triage.instrument.producer_recipe(load_config(...))` beside the decision
+manifest and pass it to the Door as `--triage-producer-recipe`. The recipe binds proxy
+scale and encoder, the 64x48 mean-plus-ink signature, comparison and selection parameters,
+imaging-library versions, the exact bounded determinism claim, every tuning value as
+`UNMEASURED`, and `known_blindness`. Its digest belongs only under the Door's
+`triage_document_digests["triage-producer-recipe"]`; the producer configuration remains
+outside `run_config_bindings` because it executes before a run exists. The run authority
+still hashes triage document digests without recording them by name; Unit 6A deliberately
+does not change that inherited Unit 5 shape, and 6B's pre-door confirmation does not depend
+on learning them from a run.
+
+Consume each complete `cluster-candidate-evidence.v1` record together with its
+`cluster-candidate-evidence-manifest.v1` and matching recipe. A record's `near-duplicate`
+verdict means only that two signatures agree; its record-local `near_duplicate_reason`
+explicitly says it is not page identity, and its threshold snapshot declares
+`measurement_status: UNMEASURED`. The recipe's `known_blindness` is load-bearing: different
+blank or near-blank openings of one printed form, and different openings with co-located
+ink, can be indistinguishable from a real re-shoot. Ink-count totals measure within-cell
+contrast, not ink volume; uniform blank, dark, or blown cells all count zero. Confirmation
+therefore reviews the frames, reason, blindness list, integer measures, and any disagreement;
+it never promotes a verdict by itself.
+
+One pass accepts each source-frame digest exactly once. Pair identity is the sorted pair of
+distinct source digests, regardless of submission order. The evidence manifest closes over
+exact pair multiplicities, names every unequal-dimension refusal by digest, and carries the
+frame set and instrument configuration that produced it. It binds a digest of the complete
+validated evidence-record contents as well as the pair set, so the pass detects both a
+missing pair and changed evidence for a retained pair. A duplicate frame digest, a
+duplicate emitted pair, a missing selected pair, or an evidence/recipe configuration mismatch
+is a whole-pass refusal. `_refuse_preference` remains mandatory on the recipe, every evidence
+record, the evidence manifest, confirmations, decision-manifest rows, cluster records, and
+both corpus-register record types.
+
+The two ScanTailor fixture seams must be replaced together when real transcription lands.
+A real project has no trustworthy `source_frame_sha256` attribute: Unit 6B computes a
+path-to-digest map from the submitted master bytes and binds each transcribed row through it.
+Nor does a project supply this pipeline's confidence ordinal: every transcribed row records
+confidence `0`, with `actor.kind == "scantailor"` preserving its origin. Do not synthesize
+geometry the real project does not carry, and verify its rotation sign convention against a
+real project before claiming transcription. A frame ScanTailor omitted still receives one
+explicit full-frame producer row at confidence 0 so coverage remains exact.
+
+Before producing rows, inspect every real master's decoded mode and dimensions. A mode outside
+`common.imaging.ENCODER_LOSSLESS_MODES` requires an explicit per-part colour conversion; an
+unequal-dimension candidate is recorded as refused, never dropped. The signature offset is in
+cells on the reduced proxy and measures no master geometry, so it may never seed a split, crop,
+or rotation. All three shipped triage modes continue to route every row to review until the
+real measured pass establishes thresholds; synthetic fixtures are regression cases, never
+calibration data.

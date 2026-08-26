@@ -154,6 +154,25 @@ def test_a_human_actor_is_recorded_without_inventing_a_revision():
     assert validate_manifest(manifest([human]))
 
 
+def test_offline_producer_actor_requires_a_resolved_identity_and_revision():
+    produced = row(actor={"kind": "producer", "identity": "triage-instrument", "revision": "v1"})
+    assert validate_manifest(manifest([produced]))
+    for actor in (
+        {"kind": "producer", "identity": "", "revision": "v1"},
+        {"kind": "producer", "identity": "triage-instrument", "revision": ""},
+        {"kind": "producer", "identity": "triage-instrument", "revision": None},
+    ):
+        with pytest.raises(ContractError):
+            validate_manifest(manifest([row(actor=actor)]))
+
+
+def test_a_non_utf8_actor_identity_stays_inside_the_typed_refusal_algebra():
+    malformed = row()
+    malformed["actor"] = {"kind": "producer", "identity": "\ud800", "revision": "v1"}
+    with pytest.raises(SchemaRefusal, match="cannot be canonically serialized"):
+        validate_manifest(manifest([malformed]))
+
+
 def test_missing_mode_actor_or_override_is_refused():
     for field in ("mode", "actor", "human_override"):
         values = row()

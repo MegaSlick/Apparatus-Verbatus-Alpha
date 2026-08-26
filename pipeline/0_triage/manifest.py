@@ -33,12 +33,20 @@ MANIFEST_SCHEMA: Final = "triage-decision-manifest-v1"
 CLUSTER_SCHEMA: Final = "triage-re-shoot-cluster-v1"
 CONFIDENCE_ORDINALS: Final = range(0, 5)
 COLOUR_MODES: Final = ("keep", "grayscale", "rgb", "bitonal")
-ACTOR_KINDS: Final = ("human", "model", "scantailor")
+# A deterministic offline producer is a distinct provenance role because it makes no
+# model call. Like other non-human actors, it carries a resolved identity and revision.
+ACTOR_KINDS: Final = ("human", "model", "scantailor", "producer")
 SCANTAILOR_IDENTITY: Final = "ScanTailor Advanced"
 SPLIT_OPERATION_ORDER: Final = "region-crop-rotate"
 MAX_MANIFEST_ROWS: Final = 1_000
 MAX_CLUSTER_RECORDS: Final = 1_000
 MAX_CLUSTER_MEMBERS: Final = 4_096
+# A single frame's parts must remain in one content-aware shard, and the shared
+# corpus-frame policy refuses any configured shard limit above 1,000 — so any
+# bound at or below that keeps every ingestible frame provable. The tighter
+# 64-part bound below is the security pass's ceiling on the quadratic
+# pairwise-disjointness proof; a real frame with more parts than this is a
+# triage-policy conversation, not a bigger loop.
 MAX_SPLIT_PARTS: Final = 64
 MAX_SCANTAILOR_PROJECT_BYTES: Final = 4 * 1024 * 1024
 
@@ -132,11 +140,13 @@ def _row_digest(row: Mapping[str, Any]) -> str:
     payload = {key: value for key, value in row.items() if key != "manifest_row_sha256"}
     try:
         return digest_bytes(canonical_bytes(payload))
-    except (TypeError, ValueError, RecursionError) as error:
+    except (TypeError, ValueError, RecursionError, UnicodeError) as error:
         # `canonical_bytes` refuses unsupported values with TypeError, circular
         # containers with ValueError, and cycles found by its own pre-walk with
-        # RecursionError. A caller building a row is inside this contract's refusal
-        # algebra, so each is one here too; a bare built-in exception would escape
+        # RecursionError; JSON can also carry a lone Unicode surrogate which
+        # cannot enter the canonical UTF-8 record. A caller building a row is
+        # inside this contract's refusal algebra, so each is one here too; a
+        # bare built-in exception would escape
         # every `except SchemaRefusal` in the pipeline.
         raise SchemaRefusal(f"triage row cannot be canonically serialized: {error}") from error
 
@@ -210,7 +220,8 @@ def _validate_actor(actor: Any) -> None:
             raise SchemaRefusal("a human triage actor carries no revision; it must be null")
     elif not isinstance(actor["revision"], str) or not actor["revision"].strip():
         raise SchemaRefusal(
-            "triage actor revision must be the resolved model revision or the ScanTailor version"
+            "triage actor revision must be the resolved model revision, ScanTailor version, "
+            "or producer revision"
         )
 
 
