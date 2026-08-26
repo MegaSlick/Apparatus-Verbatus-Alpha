@@ -81,6 +81,7 @@ from common.recovery import (
     recovery_kind_budget,
 )
 from common.runtree.store import PublishResult, RunTree
+from common.witness_adapters import validate_witness_adapter_bindings
 
 # Exit codes carry cause, per harvest invariant #11. The old contract worth
 # keeping: 0 = complete, 2 = structural or fatal, 3 = accounted but holdable.
@@ -1396,6 +1397,12 @@ def load_fixture(fixture_root: str) -> dict[str, Any]:
         fixture = tomllib.load(handle)
     if not fixture.get("page") or not fixture.get("act"):
         raise ContractError(f"{path} declares no pages or no acts")
+    if "page_witness_chairs" in fixture:
+        raise ContractError(
+            f"{path} declares page_witness_chairs, a key retired to the models configuration's "
+            "witness_scope. A stale fixture carrying it would be silently ignored rather "
+            "than honoured; remove the key so the sealed roster is the only source of scope."
+        )
     return fixture
 
 
@@ -1649,6 +1656,7 @@ def run_config_bindings(
     }
     recovery_policy = load_recovery_policy(recovery_config_path)
     hard_failure_policy = load_hard_failure_policy(hard_failure_config_path)
+    validate_witness_adapter_bindings(models)
     witness_context_config_digest = validate_witness_context_bindings(
         models,
         witness_context=witness_context,

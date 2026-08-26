@@ -15,6 +15,7 @@ import subprocess
 import sys
 import weakref
 import zlib
+from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
 from textwrap import dedent
@@ -34,6 +35,7 @@ from synthetic_sources import (
     two_page_pdf,
 )
 
+from common.chairs import load_models_toml
 from common.contracts.approval import synthetic_fixture_ingress_record
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash, verify_self_hash
 from common.contracts.errors import ContractError, IncompatibleReuse
@@ -1203,6 +1205,39 @@ def test_real_run_bindings_change_with_a_renderer_recipe_before_a_page_is_writte
     )
 
     assert baseline["config_digest"] != changed["config_digest"]
+
+
+def test_real_run_bindings_refuse_a_configured_witness_without_an_adapter():
+    models = load_models_toml(ROOT / "config" / "models.toml")
+    chairs = dict(models.chairs)
+    chairs["attestator_1"] = replace(
+        chairs["attestator_1"], witness_adapter=None, witness_scope=None
+    )
+    models = replace(models, chairs=chairs)
+    ledger = {
+        "files": [{"relative_path": "scan.pdf", "sha256": "a" * 64, "bytes": 12}],
+        "self_hash": "b" * 64,
+    }
+    settings = door.render_config.load_pdf_render_settings(
+        minimum_dpi=door.pdf_render.MIN_RENDER_DPI
+    )
+
+    with pytest.raises(
+        ContractError, match="chair 'attestator_1' has no witness_adapter"
+    ) as caught:
+        door._real_bindings(
+            models,
+            ledger,
+            POLICY,
+            settings,
+            door.load_recovery_policy(),
+            door.load_hard_failure_policy(),
+            **_sealed_binding_digests(),
+        )
+
+    message = str(caught.value)
+    assert "no native boundary to run" in message
+    assert "Add witness_adapter and witness_scope" in message
 
 
 def test_a_real_door_run_names_and_binds_its_non_fake_implementation_revision(monkeypatch):

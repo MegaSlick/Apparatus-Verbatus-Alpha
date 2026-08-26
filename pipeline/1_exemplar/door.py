@@ -114,6 +114,7 @@ from common.stage import (  # noqa: E402
     stage_parser,
     validate_witness_context_bindings,
 )
+from common.witness_adapters import validate_witness_adapter_bindings  # noqa: E402
 from operations.submit import gate, inventory  # noqa: E402
 from operations.submit import submit as submission_ledger  # noqa: E402
 
@@ -2066,6 +2067,7 @@ def _real_bindings(
     name — but as provenance and tamper-evidence only (WHICH caller-selected
     policy performed the storage-root check), never as a sign-off.
     """
+    validate_witness_adapter_bindings(models)
     witness_context_declaration_sha256 = validate_witness_context_bindings(
         models,
         witness_context=witness_context,

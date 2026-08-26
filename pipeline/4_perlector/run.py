@@ -543,31 +543,44 @@ def testimonia_of(context, act_id: str, proposal_regions: list[dict]) -> list[di
 
 
 def declared_page_witness_chairs(context) -> set[str]:
-    """Independently validate the producer's page-witness declaration.
+    """Read page scope independently from the sealed model configuration.
 
-    A consumer may not inherit trust across a stage boundary. Uniqueness keeps
-    duplicates from disappearing in a set, and roster membership prevents a
-    declaration for nonexistent chairs from silently erasing page coverage.
+    A consumer may not inherit trust across a stage boundary: this side must not
+    take the Attestatores' validation, or a fixture declaration, for the sealed
+    authority. Uniqueness keeps duplicates from disappearing into a set, and the
+    roster check below prevents a scope claim for a nonexistent chair from
+    silently erasing page coverage.
     """
-    declared = context.fixture.get("page_witness_chairs", [])
-    # Set construction and refusal formatting may invoke subclass-defined
-    # behavior, so both require exact built-in strings first.
+    roster = context.witness_chairs
+    # `type(chair) is not str` rather than `isinstance`: set construction and
+    # refusal formatting both invoke subclass-defined behaviour, so the exact
+    # built-in string is required first (work/boundary-named-refusals).
     if (
-        not isinstance(declared, list)
-        or any(type(item) is not str for item in declared)
-        or len(declared) != len(set(declared))
+        not isinstance(roster, list)
+        or any(type(chair) is not str for chair in roster)
+        or len(roster) != len(set(roster))
     ):
         raise SchemaRefusal(
-            "the fixture's page_witness_chairs declaration is not a unique list of chair names"
+            "the sealed witness roster is not a unique list of chair names. Page-witness scope "
+            "cannot be derived from this run authority. Start a new run from the sealed models "
+            "configuration; do not edit the existing run"
         )
-    declared_chairs = set(declared)
-    unknown = declared_chairs - set(context.witness_chairs)
+    configured = context.registry.config.chairs
+    unknown = set(roster) - set(configured)
     if unknown:
         raise SchemaRefusal(
-            "the fixture's page_witness_chairs declaration names chair(s) outside this run's "
-            f"configured witness roster: {sorted(unknown)} not in {sorted(context.witness_chairs)}"
+            "the sealed witness roster names chair(s) absent from the current models "
+            "configuration: "
+            f"{sorted(unknown)} not in {sorted(configured)}. The run authority and current models "
+            "configuration do not describe the same witness set. Reopen the run with its original "
+            "models configuration or start a new run; do not edit sealed evidence"
         )
-    return declared_chairs
+    return {
+        chair
+        for chair in roster
+        if isinstance(configured[chair], ChairIdentity)
+        and configured[chair].witness_scope == "page"
+    }
 
 
 def act_attachment_view(
@@ -611,9 +624,9 @@ def act_attachment_view(
         raise SchemaRefusal("an act-attachment record has no attachment list")
     configured = set(context.witness_chairs)
     page_ids = {basis["source_page_ordinal"]: basis["source_page_id"] for basis in bases}
-    # This run-global declaration is validated first, and by the stricter of the
-    # two readings that met here: exact strings, no duplicates hiding in a set,
-    # and no chair outside this run's configured roster. It must fail before any
+    # The run-global scope reading is validated first, and by the strictest of
+    # the readings that met here: exact strings, no duplicates hiding in a set,
+    # and no chair outside this run's sealed roster. It must fail before any
     # per-attachment diagnostic can misattribute its malformation to a chair record.
     page_chairs = declared_page_witness_chairs(context)
     # Validate every value that becomes a set/dict key before pair accounting.

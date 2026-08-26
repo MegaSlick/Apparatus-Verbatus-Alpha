@@ -509,7 +509,7 @@ def test_an_act_targeted_reread_of_a_page_witness_is_refused_by_name(tmp_path):
     result = reread(root, "r", "reread-success", act, "attestator_1")
 
     assert result.returncode != 0, "an act-targeted reread of a page witness was accepted"
-    assert "is a page witness" in result.stderr, result.stderr
+    assert "chair 'attestator_1' is page-scoped in this run" in result.stderr, result.stderr
     assert "No operation exists to re-ask a page witness" in result.stderr, result.stderr
     assert snapshot(root) == before, "a refused reread wrote to the run tree"
     assert {

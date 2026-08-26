@@ -672,6 +672,10 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 #
 # Re-pinned for the Door's cluster report, a new artifact in every run.
 #
+# Re-pinned for Unit 10A: adapter names and scopes enter models_digest and
+# config_digest, so the pins bind those provenance fields even though artifact
+# counts and outcomes do not move.
+#
 # Re-pinned at each merge that brings two authority-moving branches together. The
 # pins below stand for the merged tree and nothing else: every contributing branch
 # moved them on its own, so no branch's own pin describes this tree and taking one
@@ -679,8 +683,8 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # through this module's own `orchestrate` and `semantic_snapshot_digest` helpers,
 # twice, at two independent run roots, and the file counts below were re-measured
 # the same way. The host re-measures at integration.
-HAPPY_RUN_TREE_DIGEST = "6c54a76875530ca1edc0031141e35506c829193d5151781915f3f184ea3cc9c4"
-REVIEW_RUN_TREE_DIGEST = "853cfebbd99fff5f0b6b737d27f1d85c6286171fef99bdfa28d7c320c8525100"
+HAPPY_RUN_TREE_DIGEST = "ce416af2db55abe89fa1599c66f9cfaf66cdaafd77421a17842a2a5e01740689"
+REVIEW_RUN_TREE_DIGEST = "d4b6a3558f2ad9a6d1cbc7bde8a771e9b0346a77f2ac190607f216aeb1b75296"
 
 
 def orchestrate(

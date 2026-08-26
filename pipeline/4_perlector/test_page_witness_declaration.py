@@ -1,8 +1,10 @@
-"""The Perlector independently enforces the producer's page-witness declaration.
+"""The Perlector independently enforces page-witness scope.
 
-The declaration is a unique list drawn from the sealed witness roster. Trusting
-the producer here would leave malformed fixtures able to erase page coverage
-without contradicting any attachment in the run tree.
+Unit 10A moves the source of truth from the fixture to the sealed model
+configuration: scope is each configured occupant's `witness_scope`. What does
+not change is that this side reads it for itself. Trusting the producer here
+would leave a malformed roster able to erase page coverage without
+contradicting any attachment in the run tree.
 """
 
 import importlib.util
@@ -11,6 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from common.chairs.models import ChairIdentity
 from common.contracts.errors import SchemaRefusal
 
 
@@ -34,22 +37,45 @@ class _HostileReprString(str):
         raise RuntimeError("the refusal rendered an untrusted chair-name subclass")
 
 
-def _context(declared, chairs=("attestator_1", "attestator_3")):
-    return SimpleNamespace(fixture={"page_witness_chairs": declared}, witness_chairs=chairs)
+def _identity(role: str, scope: str) -> ChairIdentity:
+    return ChairIdentity(
+        role=role,
+        source="local-repository",
+        repo=None,
+        path=role,
+        revision=None,
+        digest_manifest="a" * 64,
+        manifest=f"manifests/{role}.json",
+        adapter_of=None,
+        serving_recipe="fixture",
+        license_note="fixture",
+        witness_adapter="churro.v1",
+        witness_scope=scope,
+    )
 
 
-def test_the_declared_page_witnesses_are_read_back_when_the_fixture_is_sound():
-    assert perlector.declared_page_witness_chairs(_context(["attestator_1"])) == {"attestator_1"}
+def _context(chairs=None, *, fixture=None, scopes=None):
+    scopes = scopes or {"attestator_1": "page", "attestator_3": "act"}
+    configured = {role: _identity(role, scope) for role, scope in scopes.items()}
+    return SimpleNamespace(
+        fixture={} if fixture is None else fixture,
+        witness_chairs=list(scopes) if chairs is None else chairs,
+        registry=SimpleNamespace(config=SimpleNamespace(chairs=configured)),
+    )
 
 
-def test_an_absent_declaration_is_no_page_witnesses_rather_than_a_refusal():
-    """The fixture is allowed to declare no page witnesses."""
-    context = SimpleNamespace(fixture={}, witness_chairs=("attestator_1",))
-    assert perlector.declared_page_witness_chairs(context) == set()
+def test_scope_is_read_from_the_configured_occupants_not_the_fixture():
+    context = _context(fixture={"page_witness_chairs": ["attestator_3"]})
+    assert perlector.declared_page_witness_chairs(context) == {"attestator_1"}
+
+
+def test_no_page_scoped_occupant_is_a_valid_empty_declaration():
+    """A roster with no page-scoped occupant is empty scope, not a refusal."""
+    assert perlector.declared_page_witness_chairs(_context(scopes={"attestator_1": "act"})) == set()
 
 
 @pytest.mark.parametrize(
-    "declared",
+    "roster",
     (
         "attestator_1",
         {"attestator_1": True},
@@ -63,15 +89,16 @@ def test_an_absent_declaration_is_no_page_witnesses_rather_than_a_refusal():
         pytest.param([10**5000], id="huge-int"),
     ),
 )
-def test_a_declaration_that_is_not_a_list_of_chair_names_is_refused(declared):
-    """A string-valued declaration would otherwise degrade into per-character
-    membership and blame the attachment for the fixture's own malformation."""
-    with pytest.raises(SchemaRefusal, match="unique list of chair names"):
-        perlector.declared_page_witness_chairs(_context(declared))
+def test_a_scope_roster_that_is_not_a_list_of_chair_names_is_refused(roster):
+    with pytest.raises(SchemaRefusal, match="unique list of chair names") as caught:
+        perlector.declared_page_witness_chairs(_context(roster))
+    message = str(caught.value)
+    assert "Page-witness scope cannot be derived" in message
+    assert "Start a new run" in message
 
 
-def test_a_duplicated_chair_is_refused_here_exactly_as_the_producer_refuses_it():
-    """Set conversion must not hide a declaration the producer refuses."""
+def test_a_duplicate_scope_chair_is_refused():
+    """Set conversion must not hide a roster the producer refuses."""
     with pytest.raises(SchemaRefusal, match="unique list of chair names"):
         perlector.declared_page_witness_chairs(_context(["attestator_1", "attestator_1"]))
 
@@ -84,12 +111,14 @@ def test_a_duplicated_chair_is_refused_here_exactly_as_the_producer_refuses_it()
     ),
 )
 def test_a_chair_name_string_subclass_is_refused_before_set_or_rendering(chair):
+    """The exact-type rule, not `isinstance`: a subclass can break set construction
+    or refusal rendering, and this reader must stop before either."""
     with pytest.raises(SchemaRefusal, match="unique list of chair names"):
         perlector.declared_page_witness_chairs(_context([chair]))
 
 
-def test_a_chair_outside_the_configured_roster_is_refused_and_both_halves_named():
-    """Unknown declarations can agree with every record while silently losing coverage."""
+def test_an_unknown_scope_chair_is_refused_and_both_halves_are_named():
+    """An unknown roster entry can agree with every record while losing coverage."""
     with pytest.raises(SchemaRefusal) as caught:
         perlector.declared_page_witness_chairs(_context(["attestator_33"]))
     message = str(caught.value)
@@ -97,17 +126,17 @@ def test_a_chair_outside_the_configured_roster_is_refused_and_both_halves_named(
     assert "attestator_1" in message and "attestator_3" in message
 
 
-def test_an_all_held_preflight_still_validates_the_run_declaration():
+def test_an_all_held_preflight_still_validates_the_run_roster():
     """Held acts skip Testimonium accounting but still produce immutable
-    ``not-run`` Perlectiones. The run-global declaration must refuse before those
-    writes rather than disappearing behind the held-act shortcut."""
+    ``not-run`` Perlectiones. The run-global roster reading must refuse before
+    those writes rather than disappearing behind the held-act shortcut."""
     context = _context(["attestator_33"])
 
-    with pytest.raises(SchemaRefusal, match="outside this run's configured witness roster"):
+    with pytest.raises(SchemaRefusal, match="absent from the current models configuration"):
         perlector.preflight_testimonia_denominator(context, [{"outcome": "held"}])
 
 
-def test_a_chair_name_carrying_a_surrogate_is_refused_printably():
+def test_an_unknown_scope_chair_with_a_surrogate_is_refused_printably():
     """The roster refusal must remain encodable when the chair name is not."""
     with pytest.raises(SchemaRefusal) as caught:
         perlector.declared_page_witness_chairs(_context(["attestator_\ud800"]))
@@ -115,7 +144,7 @@ def test_a_chair_name_carrying_a_surrogate_is_refused_printably():
 
 
 @pytest.mark.parametrize("chair", ("NaN", "attestator_\0"))
-def test_hostile_but_encodable_chair_strings_are_refused_printably(chair):
+def test_hostile_but_encodable_scope_chair_strings_are_refused_printably(chair):
     with pytest.raises(SchemaRefusal) as caught:
         perlector.declared_page_witness_chairs(_context([chair]))
     str(caught.value).encode("utf-8")
@@ -146,7 +175,9 @@ def test_an_unhashable_attachment_chair_is_refused_before_duplicate_accounting(m
         },
         read_artifact=lambda stage, kind, artifact_id: record,
     )
-    context = _context([], chairs=("attestator_1",))
+    # A list, and a roster whose one occupant is page-scoped: the merged reader
+    # requires an exact list and derives scope from the configured occupants.
+    context = _context(chairs=["attestator_1"], scopes={"attestator_1": "page"})
     context.tree = tree
     monkeypatch.setattr(perlector, "latest_attempt", lambda records, label, operation: records[0])
 
@@ -155,4 +186,8 @@ def test_an_unhashable_attachment_chair_is_refused_before_duplicate_accounting(m
             context,
             {"act_id": "act_0123456789abcdef", "act_key": "a1"},
             [{"payload": {"chair": "attestator_1"}}],
+            # `bases` joined the signature with work/continuation-page-evidence's
+            # per-(chair, page) accounting; the refusal under test fires before
+            # any basis is read.
+            [],
         )
