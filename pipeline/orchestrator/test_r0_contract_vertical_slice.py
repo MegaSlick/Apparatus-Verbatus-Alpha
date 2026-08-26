@@ -808,7 +808,11 @@ def test_perlector_names_an_unhashable_page_role_as_a_schema_refusal(tmp_path):
     result = invoke_stage(root, "unhashable-role", "happy", "pipeline/4_perlector/run.py")
 
     assert result.returncode != 0
-    assert "page_role" in result.stderr and "contradicts" in result.stderr
+    # The shared page-testimonium validator now closes the record's scope facts
+    # before the Perlector's per-page contradiction check can run, so the forged
+    # list-valued role is refused there by name — earlier, and still never as a
+    # raw TypeError escaping through set membership.
+    assert "invalid page scope facts" in result.stderr
     assert "Traceback" not in result.stderr
 
 
