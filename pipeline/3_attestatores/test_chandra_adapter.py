@@ -6,6 +6,7 @@ import importlib.util
 import json
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -268,12 +269,121 @@ def test_chandra_conflicting_text_fields_and_huge_coordinates_are_named():
     assert chandra.observe(_presented(), raw) == []
 
 
+def test_chandra_bounds_native_json_before_decode_and_geometry_expansion(monkeypatch):
+    """One native response cannot crash or amplify past the adapter boundary."""
+    chandra = _load_stage_module("chandra")
+
+    monkeypatch.setattr(chandra, "MAX_RESPONSE_BYTES", 8)
+    assert chandra.parse(b"123456789") == {"parse_outcome": "response-too-large"}
+    assert chandra.observe(_presented(), b"123456789") == []
+
+    monkeypatch.setattr(chandra, "MAX_RESPONSE_BYTES", 16 * 1024 * 1024)
+    monkeypatch.setattr(chandra, "MAX_LAYOUT_BLOCKS", 1)
+    raw = json.dumps(
+        {
+            "schema": "fixture-chandra-response.v1",
+            "markdown": "two",
+            "blocks": [{"bbox": [0, 0, 1, 1]}, {"bbox": [1, 1, 2, 2]}],
+        }
+    ).encode()
+    assert chandra.parse(raw) == {"parse_outcome": "too-many-layout-blocks"}
+    assert chandra.observe(_presented(), raw) == []
+
+
+def test_chandra_names_excessive_json_nesting_and_non_byte_input():
+    chandra = _load_stage_module("chandra")
+    nested = (
+        b'{"schema":"fixture-chandra-response.v1","markdown":"x","blocks":[],"extra":'
+        + b"[" * 10_000
+        + b"0"
+        + b"]" * 10_000
+        + b"}"
+    )
+    assert chandra.parse(nested) == {"parse_outcome": "excessive-json-nesting"}
+    assert chandra.observe(_presented(), nested) == []
+    assert chandra.parse("not bytes") == {"parse_outcome": "raw-response-not-bytes"}
+
+
 def test_an_unverified_chandra_wire_shape_cannot_acquire_fixture_geometry():
     """Only explicitly synthetic bytes use the placeholder page-pixel rule."""
     chandra = _load_stage_module("chandra")
     raw = b'{"markdown":"plausible live response","blocks":[{"bbox":[0,0,100,100]}]}'
     assert chandra.parse(raw) == {"parse_outcome": "unverified-response-schema"}
     assert chandra.observe(_presented(), raw) == []
+
+
+@pytest.mark.parametrize(
+    ("adapter_name", "raw_response", "message"),
+    (
+        ("chandra.v1", 7, "raw_response is not text encoding"),
+        ("churro.v1", "native bytes", "has no native byte route"),
+    ),
+)
+def test_fixture_raw_response_cannot_be_silently_discarded(
+    tmp_path, adapter_name, raw_response, message
+):
+    attestatores = _load_stage_module("run")
+    resolved = load_models_toml(ROOT / "config/models.toml").chairs["attestator_1"]
+    if adapter_name != resolved.witness_adapter:
+        resolved = replace(resolved, witness_adapter=adapter_name)
+    context = SimpleNamespace(
+        tree=RunTree(tmp_path / "runs", "r"),
+        scenario="bad-raw",
+        fixture={
+            "testimony": [
+                {
+                    "scenario": "bad-raw",
+                    "act_key": "a1",
+                    "chair": "attestator_1",
+                    "payload": "declared text",
+                    "raw_response": raw_response,
+                }
+            ],
+            "witness_empty": [],
+        },
+    )
+    with pytest.raises(SchemaRefusal, match=message):
+        attestatores.resolve_attempt(
+            context,
+            {"act_key": "a1"},
+            "attestator_1",
+            resolved,
+            {"ordinal": 1, "empty": set(), "not_run": set(), "failures": set(), "malformed": {}},
+        )
+
+
+def test_empty_fixture_raw_response_cannot_be_silently_discarded(tmp_path):
+    attestatores = _load_stage_module("run")
+    resolved = load_models_toml(ROOT / "config/models.toml").chairs["attestator_1"]
+    context = SimpleNamespace(
+        tree=RunTree(tmp_path / "runs", "r"),
+        scenario="bad-empty-raw",
+        fixture={
+            "testimony": [],
+            "witness_empty": [
+                {
+                    "scenario": "bad-empty-raw",
+                    "act_key": "a1",
+                    "chair": "attestator_1",
+                    "raw_response": 7,
+                }
+            ],
+        },
+    )
+    with pytest.raises(SchemaRefusal, match="raw_response is not text encoding"):
+        attestatores.resolve_attempt(
+            context,
+            {"act_key": "a1"},
+            "attestator_1",
+            resolved,
+            {
+                "ordinal": 1,
+                "empty": {("a1", "attestator_1")},
+                "not_run": set(),
+                "failures": set(),
+                "malformed": {},
+            },
+        )
 
 
 def test_chandra_out_of_order_stage_invocation_holds_cleanly(tmp_path):
@@ -562,6 +672,54 @@ def test_act_tally_rechecks_retained_response_bytes(tmp_path):
     tree.resolve(published.relative_path).write_bytes(b"changed")
     with pytest.raises(SchemaRefusal, match="differs from its digest"):
         attestatores.validate_retained_response_blob(tree, reference)
+
+
+def test_resume_collision_compares_native_response_digest_not_only_parsed_text():
+    """Same text with different native geometry is a different attempt."""
+    attestatores = _load_stage_module("run")
+    sealed_ref = {
+        "relative_path": "3_attestatores/blobs/sha256/" + "a" * 64,
+        "sha256": "a" * 64,
+    }
+    candidate_ref = {
+        "relative_path": "3_attestatores/blobs/sha256/" + "b" * 64,
+        "sha256": "b" * 64,
+    }
+    health = attestatores.content_health("same text", completed=True)
+    history = {
+        ("act-1", "attestator_1"): [
+            {
+                "outcome": "read",
+                "payload": {
+                    "attempt_ordinal": 1,
+                    "payload": "same text",
+                    "witness_reported": None,
+                    "format_capabilities": attestatores.DEFAULT_FORMAT_CAPABILITIES,
+                    "content_health": health,
+                    "raw_response_ref": sealed_ref,
+                },
+            }
+        ]
+    }
+    candidate = attestatores.Attempt(
+        outcome="read",
+        native_payload="same text",
+        witness_reported=None,
+        format_capabilities=attestatores.DEFAULT_FORMAT_CAPABILITIES,
+        health=health,
+        reason=None,
+        raw_response_ref=candidate_ref,
+        observation_payload=b"different layout bytes",
+    )
+
+    with pytest.raises(SchemaRefusal, match="would record a different attempt"):
+        attestatores._refuse_write_collision(
+            history,
+            {"act_id": "act-1", "act_key": "a1"},
+            "attestator_1",
+            1,
+            candidate,
+        )
 
 
 def test_the_page_record_names_the_bytes_its_own_geometry_was_quantized_from(tmp_path):

@@ -468,6 +468,8 @@ def declared_response(
             f"fixture declares more than one empty response for {(act_key, chair)!r}"
         )
     empty_response = matching_empty_rows[0] if matching_empty_rows else {}
+    if "raw_response" in empty_response and not isinstance(empty_response["raw_response"], str):
+        raise SchemaRefusal("fixture raw_response is not text encoding retained response bytes")
     return {
         "payload": "",
         **(
@@ -1125,8 +1127,8 @@ def _refuse_write_collision(
     ordinal: int,
     attempt: "Attempt",
 ) -> None:
-    """Refuse before any write if this pass would seal different bytes than an
-    attempt already recorded at this exact (act, chair, ordinal) identity.
+    """Refuse before any Testimonium write if this pass would seal different
+    bytes than an attempt already recorded at this exact identity.
 
     A targeted reread and a whole pass can reach the very same identity with a
     different honest outcome — `resolve_attempt`'s docstring says so plainly: an
@@ -1136,8 +1138,10 @@ def _refuse_write_collision(
     it is reached, mid-pass, after every earlier pair in this invocation has
     already been published — a half-written attempt layer whose stored manifest
     was never rewritten to describe it. Checking every pair against what already
-    exists, before any of them is written, keeps a doomed pass from writing
-    anything at all rather than stranding the folder partway through.
+    exists, before any of them is written, keeps a doomed pass from writing a
+    Testimonium rather than stranding the folder partway through. Native response
+    bytes are deliberately retained before parsing and therefore stay as
+    content-addressed custody even when this later comparison refuses.
 
     Only a pair whose target ordinal already holds a record can collide;
     `require_appendable_ordinal` already refuses any ordinal beyond that, so
@@ -1162,12 +1166,19 @@ def _refuse_write_collision(
         or payload.get("format_capabilities") != attempt.format_capabilities
         or payload.get("content_health") != attempt.health
         or payload.get("reason") != attempt.reason
+        # The parsed text is not the native response. Two Chandra bodies may
+        # produce the same text while carrying different layout blocks, and the
+        # raw digest is what binds the geometry this attempt will publish. A
+        # resume that compared only the text discovered that collision later at
+        # the immutable writer, after earlier pairs had already been published.
+        or payload.get("raw_response_ref") != attempt.raw_response_ref
     ):
         raise SchemaRefusal(
             f"a whole pass at ordinal {ordinal} would record a different attempt for "
             f"{(act['act_key'], chair)!r} than the one already sealed there: sealed outcome "
-            f"{record['outcome']!r}, this pass would write {attempt.outcome!r}. Nothing was "
-            "written for this pass"
+            f"{record['outcome']!r}, this pass would write {attempt.outcome!r}. No Testimonium "
+            "was written for this pass; any raw response custody retained before this refusal "
+            "remains visible in the blob inventory"
         )
 
 
@@ -1740,6 +1751,15 @@ def resolve_attempt(
             outcome = "not-run"
             reason = "no attempt was made for this configured chair"
         else:
+            if "raw_response" in response and resolved.witness_adapter != "chandra.v1":
+                raise SchemaRefusal(
+                    f"fixture raw_response has no native byte route for adapter "
+                    f"{resolved.witness_adapter!r}"
+                )
+            if "raw_response" in response and not isinstance(response["raw_response"], str):
+                raise SchemaRefusal(
+                    "fixture raw_response is not text encoding retained response bytes"
+                )
             if resolved.witness_adapter == "chandra.v1" and isinstance(
                 response.get("raw_response"), str
             ):
@@ -2810,9 +2830,10 @@ def attempt_pass(
     Returns how many records were written and whether any proposal crop was
     refused — the second is reported, never swallowed, because an act whose crop
     no chair could be shown is a different fact from an act every chair read. The
-    region and attempt maps are the result of this invocation's no-write
-    preflight. Publication therefore seals the exact attempt whose collision was
-    checked, while publication order and the single write path remain unchanged.
+    region and attempt maps are the result of this invocation's
+    no-Testimonium-write preflight. Publication therefore seals the exact attempt
+    whose collision was checked, while publication order and the single write
+    path remain unchanged.
     """
     recorded = 0
     isolated_crop_failure = False

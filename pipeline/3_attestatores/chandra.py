@@ -30,12 +30,21 @@ from __future__ import annotations
 
 import json
 import math
-from typing import Any
+from typing import Any, Final
 
 from common.native_witness import validate_presented
 
 QUANTIZATION_RULE = "chandra.v1.floor-min-ceil-max.sealed-page-pixels"
 FIXTURE_RESPONSE_SCHEMA = "fixture-chandra-response.v1"
+# Independent parser bounds for bytes that cross the native model boundary.
+# The byte ceiling matches the repository's existing RunPod response ceiling;
+# keeping it here as well makes direct and future non-RunPod callers obey the
+# same finite intake.  The block ceiling is a chosen operational ceiling, not a
+# claim about Chandra's behaviour: ten thousand layout blocks on one page leaves
+# ample headroom while preventing one compact response from expanding into an
+# unbounded list of derived geometry records.
+MAX_RESPONSE_BYTES: Final = 16 * 1024 * 1024
+MAX_LAYOUT_BLOCKS: Final = 10_000
 
 
 def prompt() -> dict[str, str]:
@@ -45,12 +54,28 @@ def prompt() -> dict[str, str]:
     }
 
 
+def _decode(raw_response: Any) -> tuple[Any | None, str | None]:
+    """Decode bounded raw JSON into a value or one closed parse outcome."""
+    if not isinstance(raw_response, bytes):
+        return None, "raw-response-not-bytes"
+    if len(raw_response) > MAX_RESPONSE_BYTES:
+        return None, "response-too-large"
+    try:
+        return json.loads(raw_response.decode("utf-8")), None
+    except RecursionError:
+        # The stdlib scanner raises this separately from JSONDecodeError for a
+        # sufficiently deep but otherwise valid value.  It is still one bad
+        # witness response, never permission to crash the whole stage.
+        return None, "excessive-json-nesting"
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None, "invalid-json"
+
+
 def parse(raw_response: bytes) -> Any:
     """Return validated text, or a named shape outcome that preserves custody."""
-    try:
-        decoded = json.loads(raw_response.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return {"parse_outcome": "invalid-json"}
+    decoded, problem = _decode(raw_response)
+    if problem is not None:
+        return {"parse_outcome": problem}
     if not isinstance(decoded, dict):
         return {"parse_outcome": "top-level-not-object"}
     if decoded.get("schema") != FIXTURE_RESPONSE_SCHEMA:
@@ -63,6 +88,8 @@ def parse(raw_response: bytes) -> Any:
         return {"parse_outcome": "missing-text"}
     if not isinstance(blocks, list):
         return {"parse_outcome": "missing-block-list"}
+    if len(blocks) > MAX_LAYOUT_BLOCKS:
+        return {"parse_outcome": "too-many-layout-blocks"}
     if any(not isinstance(block, dict) or "bbox" not in block for block in blocks):
         return {"parse_outcome": "malformed-block-list"}
     if any(_quantize_box(block["bbox"]) is None for block in blocks):
@@ -92,16 +119,14 @@ def present(context: Any, presentation: dict[str, Any]) -> dict[str, Any]:
 def observe(presentation: dict[str, Any], native_payload: Any) -> list[dict[str, Any]]:
     """Quantize Chandra block boxes from its retained raw JSON into page pixels."""
     validate_presented(presentation)
-    if not isinstance(native_payload, bytes):
-        return []
-    try:
-        decoded = json.loads(native_payload.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
+    decoded, problem = _decode(native_payload)
+    if problem is not None:
         return []
     if (
         not isinstance(decoded, dict)
         or decoded.get("schema") != FIXTURE_RESPONSE_SCHEMA
         or not isinstance(decoded.get("blocks"), list)
+        or len(decoded["blocks"]) > MAX_LAYOUT_BLOCKS
     ):
         return []
     observed: list[dict[str, Any]] = []
