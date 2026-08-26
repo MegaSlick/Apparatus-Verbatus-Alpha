@@ -72,8 +72,10 @@ fourth; `common/stage.py:182` is `RUN_MODES: Final = TRIAGE_MODES`, the same tup
 under this table's name, and `pipeline/0_triage/HANDOFF.md:49-53` states the same join
 from the other end.
 
-What differs is not the words but what each end may do with a selection. Triage's mode is
-a durable property of a batch that its records must carry; this driver's is a property of
-one invocation that the pipeline is forbidden to record. Anything that reads a stored
-`mode` field is reading triage's, and this file's byte-identity tests are the standing
-proof that it can never be this one.
+What differs is not the words but what each end may do with a selection. Triage persists
+the selected member of this triple as a durable property of a batch. The driver infers a
+member for one invocation and never persists that selection; this file's byte-identity
+tests are the standing proof that it does not enter the run tree. Other contracts also
+use a field named `mode` for unrelated vocabularies, so the field name alone never means
+either selection (`common/contracts/approval.py:112-138`,
+`pipeline/2_designator/geometry_layer.py:570`).
