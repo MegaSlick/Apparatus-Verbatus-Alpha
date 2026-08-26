@@ -238,9 +238,11 @@ proposal crops actually cut on it — never against what grouping *claims* to ha
 found. The cut rectangles are what is passed as `claimed_bounds`
 (`pipeline/2_designator/run.py:1534`), and the counts and residual components are
 published from that scan (`:1544-1570`). Ink that no crop covers is not merely counted:
-every residual component becomes its own held act (`_publish_residual_holds`,
-`pipeline/2_designator/run.py:1277-1330`), so a mark structural grouping never proposed
-is visible rather than absent.
+on a successful pass every residual component becomes its own held act
+(`_publish_residual_holds`, `pipeline/2_designator/run.py:1277-1330`), so a mark
+structural grouping never proposed is visible rather than absent. If two components
+share a bounding box and therefore cannot receive distinct act identities, the stage
+refuses before minting either instead of collapsing their evidence (`:1300-1311`).
 
 What this cannot prove is therefore narrower than "coverage of the cuts". Ink fainter
 than `background - SECONDARY_MARGIN`, or a mark with no contrast against its background
