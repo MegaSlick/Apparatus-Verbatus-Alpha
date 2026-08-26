@@ -86,6 +86,16 @@ from common.stage import (  # noqa: E402
     validate_serving_provenance,
 )
 
+_SOURCE_CITATION_FIELDS = frozenset(
+    {
+        "declared_path",
+        "declared_sha256",
+        "declared_bytes",
+        "ledger_sha256",
+        "container_page_index",
+    }
+)
+
 
 def logical_act_projection_entry(
     record: dict, *, category: str, source_regions: list[dict], witnesses: list[dict]
@@ -253,6 +263,23 @@ def logical_act_projection_entry(
         raise SchemaRefusal(
             "logical Armarium projection record has no source regions; the projection is "
             "refused because established text must stay anchored to ink"
+        )
+    if not isinstance(source_regions, list) or any(
+        not isinstance(region, dict) for region in source_regions
+    ):
+        raise SchemaRefusal(
+            "logical Armarium projection has malformed enriched source regions; the projection "
+            "is refused because its export citations cannot be matched to established crops"
+        )
+    retained_regions = [
+        {key: value for key, value in region.items() if key not in _SOURCE_CITATION_FIELDS}
+        for region in source_regions
+    ]
+    if retained_regions != record["regions"]:
+        raise SchemaRefusal(
+            "logical Armarium projection source regions do not equal the established region "
+            "basis; the projection is refused because no crop may vanish or be substituted "
+            "while source-file citations are attached"
         )
     if not isinstance(record["provenance"], dict) or not record["provenance"]:
         raise SchemaRefusal(

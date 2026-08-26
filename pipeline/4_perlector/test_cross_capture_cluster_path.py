@@ -388,6 +388,35 @@ def _full_coverage(logical_act: dict[str, Any], autopsia: dict[str, Any]) -> dic
     )
 
 
+def _joint_basis_regions(fixture: dict[str, Any], autopsia: dict[str, Any]) -> list[dict[str, Any]]:
+    """Retain one complete region-basis row for every crop the joint read saw."""
+    captures_by_page = {capture["page_id"]: capture for capture in fixture["captures"]}
+    regions = []
+    for view in autopsia["views"]:
+        (page_id,) = view["page_ids"]
+        capture = captures_by_page[page_id]
+        for reference in view["region_refs"]:
+            regions.append(
+                {
+                    "region_id": f"rgn_{digest_of(reference)[:16]}",
+                    "image_path": reference["relative_path"],
+                    "image_sha256": reference["sha256"],
+                    "verified_dimensions": {"w": 1, "h": 1},
+                    "source_page_ordinal": capture["page_ordinal"],
+                    "source_page_id": page_id,
+                    "transform": {
+                        "operation": "crop",
+                        "source_page_ordinal": capture["page_ordinal"],
+                        "source_page_id": page_id,
+                        "bounds": {"x": 0, "y": 0, "w": 1, "h": 1},
+                    },
+                    "structure_provenance": {"chair": "designator"},
+                    "witness_covered": True,
+                }
+            )
+    return sorted(regions, key=lambda region: (region["image_path"], region["region_id"]))
+
+
 def test_two_capture_leaf_cluster_runs_partition_autopsia_perlectio_and_dissent(tmp_path):
     fixture = _fixture()
     register_path, physical_page, physical_act = _register(tmp_path, fixture)
@@ -509,17 +538,7 @@ def test_composed_two_capture_path_establishes_one_logical_record_and_projects_o
     # from said page 1, and nothing compared the two.
     source_b_ordinal = source_b["page_ordinal"]
     assert source_a["page_ordinal"] != source_b_ordinal
-    region = {
-        "region_id": "rgn_joint",
-        "image_path": "2_designator/blobs/joint.png",
-        "image_sha256": digest_bytes(png_a),
-        "verified_dimensions": {"w": 1, "h": 1},
-        "source_page_ordinal": source_a["page_ordinal"],
-        "source_page_id": source_a["page_id"],
-        "transform": {"x": 0, "y": 0, "w": 1, "h": 1},
-        "structure_provenance": {"chair": "designator"},
-        "witness_covered": True,
-    }
+    regions = _joint_basis_regions(fixture, autopsia)
     # `perlectio_ref`/`review_ref` are the real digests of the objects they
     # name below, not arbitrary placeholder bytes: `establish_logical_record`
     # checks `accepted_perlectio`/`accepted_review` against these references
@@ -540,7 +559,7 @@ def test_composed_two_capture_path_establishes_one_logical_record_and_projects_o
                 "logical_act_id": logical_act["logical_act_id"],
                 "cross_capture_autopsia": autopsia,
             },
-            "basis": {"regions": [region]},
+            "basis": {"regions": regions},
             "provenance": {"chair": "perlector", "revision": "fixture"},
             "reader_invocation_ref": _ref(
                 "4_perlector/receipts/joint.json", "one reader invocation"
@@ -605,32 +624,40 @@ def test_composed_two_capture_path_establishes_one_logical_record_and_projects_o
     assert "page_id" not in established and "act_key" not in established
     assert archetypus.build_logical_index([established], run_id="u19d")["record_count"] == 1
 
-    source_regions = [
-        {
-            **region,
-            "declared_path": "register/capture-a.png",
-            "declared_sha256": digest_bytes(png_a),
-            "transform": {
-                "operation": "crop",
-                "source_page_ordinal": source_a["page_ordinal"],
-                "source_page_id": source_a["page_id"],
-                "bounds": {"x": 0, "y": 0, "w": 1, "h": 1},
-            },
-        }
-    ]
+    page_citations = {
+        source_a["page_id"]: ("capture-a/register.png", digest_bytes(png_a)),
+        source_b["page_id"]: ("capture-b/register.png", digest_bytes(png_b)),
+    }
+    source_regions = []
+    for region in regions:
+        declared_path, declared_sha256 = page_citations[region["source_page_id"]]
+        source_regions.append(
+            {
+                **region,
+                "declared_path": declared_path,
+                "declared_sha256": declared_sha256,
+            }
+        )
     entry = armarium.logical_act_projection_entry(
         established,
         category="delivered",
         source_regions=source_regions,
         witnesses=[{"chair": "attestator_1"}],
     )
+    with pytest.raises(SchemaRefusal, match="source regions do not equal.*no crop may vanish"):
+        armarium.logical_act_projection_entry(
+            established,
+            category="delivered",
+            source_regions=source_regions[:-1],
+            witnesses=[{"chair": "attestator_1"}],
+        )
     coverage = {"configured": 1, "floor": 1, "under_witnessed": False, "unresolved_chairs": 0}
     pages = (
         {
             "ordinal": source_a["page_ordinal"],
             "outcome": "sealed",
             "reason": "",
-            "declared_path": "register/capture-a.png",
+            "declared_path": "capture-a/register.png",
             "declared_sha256": digest_bytes(png_a),
             "page_id": source_a["page_id"],
             "image_path": "1_exemplar/blobs/a.png",
@@ -640,7 +667,7 @@ def test_composed_two_capture_path_establishes_one_logical_record_and_projects_o
             "ordinal": source_b_ordinal,
             "outcome": "sealed",
             "reason": "",
-            "declared_path": "register/capture-b.png",
+            "declared_path": "capture-b/register.png",
             "declared_sha256": digest_bytes(png_b),
             "page_id": source_b["page_id"],
             "image_path": "1_exemplar/blobs/b.png",
@@ -672,12 +699,12 @@ def test_composed_two_capture_path_establishes_one_logical_record_and_projects_o
         source_manifest=(
             {
                 "ordinal": source_a["page_ordinal"],
-                "relative_path": "register/capture-a.png",
+                "relative_path": "capture-a/register.png",
                 "sha256": digest_bytes(png_a),
             },
             {
                 "ordinal": source_b_ordinal,
-                "relative_path": "register/capture-b.png",
+                "relative_path": "capture-b/register.png",
                 "sha256": digest_bytes(png_b),
             },
         ),
@@ -700,7 +727,7 @@ def test_composed_two_capture_path_establishes_one_logical_record_and_projects_o
     bytes_by_path = {
         "1_exemplar/blobs/a.png": png_a,
         "1_exemplar/blobs/b.png": png_b,
-        "2_designator/blobs/joint.png": png_a,
+        **{region["image_path"]: b"unused without embedded pixels" for region in source_regions},
     }
     bundle = build_armarium_bundle(
         projection,
@@ -716,14 +743,29 @@ def test_composed_two_capture_path_establishes_one_logical_record_and_projects_o
         assert fixture["established_text"] in archive.read("acts.jsonl").decode()
         assert (
             fixture["established_text"]
-            in archive.read("text/_source_folder/register/readings.txt").decode()
+            in archive.read("text/_source_folder/capture-a/readings.txt").decode()
         )
+        readable_a = archive.read("text/_source_folder/capture-a/readings.txt").decode()
+        readable_b = archive.read("text/_source_folder/capture-b/readings.txt").decode()
+        assert fixture["established_text"] in readable_b
+        for readable in (readable_a, readable_b):
+            assert "source-page: capture-a/register.png" in readable
+            assert "source-page: capture-b/register.png" in readable
         assert archive.read("acts.jsonl").decode().count(fixture["established_text"]) == 1
         database = tmp_path / "acts.sqlite"
         database.write_bytes(archive.read("acts.sqlite"))
     with sqlite3.connect(database) as connection:
         [(sqlite_text,)] = connection.execute("SELECT canonical_clean_text FROM acts").fetchall()
     assert sqlite_text == established["text"]
+
+    verification_root = tmp_path / "duplicate-readable-verification"
+    with ZipFile(BytesIO(bundle.data)) as archive:
+        archive.extractall(verification_root)
+    readable_path = verification_root / "text/_source_folder/capture-a/readings.txt"
+    readable_bytes = readable_path.read_bytes()
+    readable_path.write_bytes(readable_bytes + b"\n" + readable_bytes)
+    with pytest.raises(SchemaRefusal, match="repeats one act inside the same source folder"):
+        armarium_export._text_bundle_records(verification_root, list(pages))
 
     # The bundle's own act denominator, under the name of what was counted.
     # Exporting one logical act under the manifest's fixed "proposal-seal
@@ -762,7 +804,6 @@ def _reading_inputs(
     text: str,
 ) -> dict[str, Any]:
     """The accepted joint reading and review, each bound to its own digest."""
-    capture = fixture["captures"][0]
     accepted_perlectio = {
         "config_digest": "a" * 64,
         "outcome": "read",
@@ -772,21 +813,7 @@ def _reading_inputs(
                 "logical_act_id": logical_act["logical_act_id"],
                 "cross_capture_autopsia": autopsia,
             },
-            "basis": {
-                "regions": [
-                    {
-                        "region_id": "rgn_joint",
-                        "image_path": "2_designator/blobs/joint.png",
-                        "image_sha256": digest_bytes(b"joint"),
-                        "verified_dimensions": {"w": 1, "h": 1},
-                        "source_page_ordinal": capture["page_ordinal"],
-                        "source_page_id": capture["page_id"],
-                        "transform": {"x": 0, "y": 0, "w": 1, "h": 1},
-                        "structure_provenance": {"chair": "designator"},
-                        "witness_covered": True,
-                    }
-                ]
-            },
+            "basis": {"regions": _joint_basis_regions(fixture, autopsia)},
             "provenance": {"chair": "perlector", "revision": "fixture"},
             "reader_invocation_ref": _ref(
                 "4_perlector/receipts/joint.json", "one reader invocation"
@@ -826,6 +853,56 @@ def _reading_inputs(
         "cross_capture_dissent": dissent,
         "cross_capture_dissent_ref": dissent_ref,
     }
+
+
+def test_logical_establishment_retains_every_joint_autopsia_crop(tmp_path):
+    fixture = _fixture()
+    register_path, physical_page, _physical_act = _register(tmp_path, fixture)
+    partition = _partition(register_path, fixture, physical_page, captures=fixture["captures"])
+    (logical_act,) = partition["logical_acts"]
+    autopsia, blobs = _autopsia(fixture, partition)
+    _reader, passes = _read(fixture, autopsia, blobs)
+    inputs = _reading_inputs(fixture, logical_act, autopsia, passes["perlectio"]["result"]["text"])
+    archetypus = _module("u19d_complete_region_basis", ARCHETYPUS_RUN)
+
+    incomplete_perlectio = {
+        **inputs["accepted_perlectio"],
+        "payload": {
+            **inputs["accepted_perlectio"]["payload"],
+            "basis": {"regions": inputs["accepted_perlectio"]["payload"]["basis"]["regions"][:-1]},
+        },
+    }
+    incomplete_ref = {
+        "relative_path": "4_perlector/artifacts/perlectio/incomplete-regions.json",
+        "sha256": digest_of(incomplete_perlectio),
+    }
+    incomplete_dissent = _dissent_for(logical_act, autopsia, incomplete_ref)
+    incomplete_dissent_ref = _ref(
+        "4_perlector/artifacts/cross-capture-dissent/incomplete-regions.json",
+        canonical_bytes(incomplete_dissent).decode(),
+    )
+    incomplete_review = {
+        **inputs["accepted_review"],
+        "payload": {
+            **inputs["accepted_review"]["payload"],
+            "perlectio_ref": incomplete_ref,
+            "cross_capture_dissent_ref": incomplete_dissent_ref,
+        },
+    }
+    with pytest.raises(SchemaRefusal, match="region basis does not equal every crop"):
+        archetypus.establish_logical_record(
+            partition=partition,
+            logical_act=logical_act,
+            accepted_perlectio=incomplete_perlectio,
+            accepted_review=incomplete_review,
+            perlectio_ref=incomplete_ref,
+            recensor_ref={
+                "relative_path": "5_recensor/artifacts/review/incomplete-regions.json",
+                "sha256": digest_of(incomplete_review),
+            },
+            cross_capture_dissent=incomplete_dissent,
+            cross_capture_dissent_ref=incomplete_dissent_ref,
+        )
 
 
 def test_logical_establishment_refuses_capacity_and_review_holds_by_their_real_cause(tmp_path):
@@ -932,6 +1009,52 @@ def test_an_occlusion_finding_cannot_hide_inside_a_review_labelled_accepted(tmp_
                     "recensor_ref": {
                         "relative_path": "5_recensor/artifacts/review/contradictory.json",
                         "sha256": digest_of(contradictory),
+                    },
+                }
+            ),
+        )
+
+    unresolved = build_cross_capture_coverage(
+        logical_act_id=logical_act["logical_act_id"],
+        components=[
+            {
+                "physical_page_id": component["physical_page_id"],
+                "expected_cells": [[0, 0]],
+                "required_capture_sha256s": component["required_capture_sha256s"],
+                "captures": [
+                    {
+                        "source_sha256": source,
+                        "alignment_ref": alignments[(component["physical_page_id"], source)],
+                        "visibility_state": "unresolved",
+                        "visible_cells": [],
+                        "occluded_cells": [],
+                        "occlusion_refs": [],
+                        "finding_codes": ["visibility-survey-unavailable"],
+                    }
+                    for source in component["required_capture_sha256s"]
+                ],
+            }
+            for component in logical_act["physical_page_components"]
+        ],
+    )
+    mislabeled_accepted = {
+        **inputs["accepted_review"],
+        "payload": {
+            **inputs["accepted_review"]["payload"],
+            "cross_capture_coverage": unresolved,
+        },
+    }
+    with pytest.raises(SchemaRefusal, match="capture-visibility-unresolved.*review item"):
+        archetypus.establish_logical_record(
+            partition=partition,
+            logical_act=logical_act,
+            **(
+                inputs
+                | {
+                    "accepted_review": mislabeled_accepted,
+                    "recensor_ref": {
+                        "relative_path": "5_recensor/artifacts/review/unresolved.json",
+                        "sha256": digest_of(mislabeled_accepted),
                     },
                 }
             ),
@@ -1120,7 +1243,24 @@ def test_dissent_reference_and_views_must_be_the_sibling_of_the_joint_read(tmp_p
         **wandering_views[0],
         "region_refs": [_ref("2_designator/blobs/other.png", "other capture")],
     }
-    wandering = build_cross_capture_dissent(**(body | {"views": wandering_views}))
+    wandering_loci = [
+        {
+            **locus,
+            "observations": [
+                {
+                    **observation,
+                    "image_region_refs": wandering_views[0]["region_refs"],
+                }
+                if observation["view_id"] == wandering_views[0]["view_id"]
+                else observation
+                for observation in locus["observations"]
+            ],
+        }
+        for locus in body["loci"]
+    ]
+    wandering = build_cross_capture_dissent(
+        **(body | {"views": wandering_views, "loci": wandering_loci})
+    )
     wandering_ref = _ref(
         "4_perlector/artifacts/cross-capture-dissent/wandering.json",
         canonical_bytes(wandering).decode(),
@@ -1212,7 +1352,7 @@ def test_one_active_capture_after_retraction_still_establishes_and_projects_one_
         partition=partition, logical_act=logical_act, **inputs
     )
     entry = armarium.logical_act_projection_entry(
-        established, category="delivered", source_regions=[], witnesses=[]
+        established, category="delivered", source_regions=established["regions"], witnesses=[]
     )
     assert entry["act_id"] == physical_act
     assert entry["canonical_clean_text"] == fixture["established_text"]
@@ -1272,7 +1412,10 @@ def test_a_resealed_logical_record_cannot_forge_identity_or_member_conservation(
             archetypus.validate_logical_record(variant)
         with pytest.raises(SchemaRefusal):
             armarium.logical_act_projection_entry(
-                variant, category="delivered", source_regions=[], witnesses=[]
+                variant,
+                category="delivered",
+                source_regions=variant["regions"],
+                witnesses=[],
             )
 
 
@@ -1409,8 +1552,8 @@ def test_a_partition_row_cannot_be_stapled_onto_a_reading_that_never_saw_its_cap
     assert "different partition" in str(refusal.value)
 
 
-def test_a_member_local_act_cannot_be_exported_beside_the_logical_act_it_belongs_to(tmp_path):
-    """§7.15: one logical act leaves as one act row, never again as its members.
+def test_logical_act_export_conserves_each_member_exactly_once(tmp_path):
+    """§7.15: one logical act leaves once with closed, non-overlapping membership.
 
     Nothing refused the duplicate: two member rows and their logical act all
     carry distinct identities and one terminal category each, so every other
@@ -1486,6 +1629,57 @@ def test_a_member_local_act_cannot_be_exported_beside_the_logical_act_it_belongs
             {act["act_key"] for act in alone.acts},
         )
     assert "accounts for 2 local proposal row(s) against a declared 3" in str(refusal.value)
+
+    other_membership = {
+        **members,
+        "member_local_act_ids": [
+            "act_cccccccccccccccc",
+            "act_dddddddddddddddd",
+        ],
+        # Distinct local ids do not make a reused export key a different
+        # proposal row. The key collision must be caught across logical acts.
+        "member_act_keys": list(members["member_act_keys"]),
+    }
+    other = {
+        **entry,
+        "act_id": "pac_ffffffffffffffff",
+        "act_key": "logical:pac_ffffffffffffffff",
+        "logical_act_id": "pac_ffffffffffffffff",
+        "logical_membership": other_membership,
+    }
+    reused_key = replace(
+        projection,
+        acts=(entry, other),
+        expected_acts=2,
+        local_proposal_rows=4,
+    )
+    with pytest.raises(SchemaRefusal, match="repeats local member id/key.*exactly one"):
+        _validate_logical_act_conservation(
+            reused_key,
+            {act["act_id"] for act in reused_key.acts},
+            {act["act_key"] for act in reused_key.acts},
+        )
+
+    # Malformed containers are contract refusals, never incidental TypeErrors;
+    # source-page attribution may not be silently empty either.
+    malformed_values = (
+        ("member_local_act_ids", [{}, *members["member_local_act_ids"][1:]]),
+        ("member_act_keys", [{}, *members["member_act_keys"][1:]]),
+        ("member_source_page_ordinals", [{}]),
+        ("member_source_page_ordinals", []),
+    )
+    for field, value in malformed_values:
+        malformed = {
+            **entry,
+            "logical_membership": {**members, field: value},
+        }
+        malformed_projection = replace(projection, acts=(malformed,), expected_acts=1)
+        with pytest.raises(SchemaRefusal, match="malformed member ids, keys"):
+            _validate_logical_act_conservation(
+                malformed_projection,
+                {malformed["act_id"]},
+                {malformed["act_key"]},
+            )
 
 
 def test_the_perlector_read_loop_refuses_a_clustered_partition_rather_than_reading_it(tmp_path):

@@ -3,8 +3,8 @@
 `common/test_unit19_no_picker.py` guards Unit 19A's identity surface and says
 plainly that the guards for 19B-19D "still have to build." Neither 19B nor 19C
 added a static screen for their own new files, and 19D's build (the logical
-Archetypus record/index, the Armarium's logical projection entry, and the new
-`cross-capture-dissent.v1` module) landed the same way: exercised by
+Archetypus record/index, the Armarium's logical projection and readable export
+path, and the new `cross-capture-dissent.v1` module) landed the same way: exercised by
 `pipeline/4_perlector/test_cross_capture_cluster_path.py`'s fixture, but never
 scanned for the forbidden shapes §7 names as binding review vocabulary.
 
@@ -28,8 +28,10 @@ ROOT = Path(__file__).resolve().parent.parent
 DISSENT_SOURCE = ROOT / "common" / "cross_capture_dissent.py"
 ARCHETYPUS_SOURCE = ROOT / "pipeline" / "6_archetypus" / "run.py"
 ARMARIUM_SOURCE = ROOT / "pipeline" / "7_armarium" / "run.py"
+ARMARIUM_EXPORT_SOURCE = ROOT / "pipeline" / "7_armarium" / "armarium_export.py"
 
-# The exact new callables 19D added to each stage file. A whole-file scan would
+# The exact new callables 19D added to each stage file, followed by the existing
+# bundle route that logical multi-capture output newly activates. A whole-file scan would
 # false-positive on unrelated, already-guarded code (`established[0]` behind a
 # `len(established) != 1` refusal, path/doc-string slicing); a name that stops
 # matching anything here is itself worth noticing; see the completeness test.
@@ -51,6 +53,16 @@ ARCHETYPUS_LOGICAL_FUNCTIONS = frozenset(
 )
 ARMARIUM_LOGICAL_FUNCTIONS = frozenset(
     {"logical_act_projection_entry", "logical_cross_capture_review_entry"}
+)
+ARMARIUM_EXPORT_LOGICAL_FUNCTIONS = frozenset(
+    {
+        "_act_partition_claim",
+        "_validate_logical_act_conservation",
+        # The bundle writer groups output by source folder. A positional read
+        # here would let region order pick one capture to represent a logical
+        # act, even though the projection itself retained every capture.
+        "_text_bundle_members",
+    }
 )
 
 
@@ -82,21 +94,40 @@ def _identifiers(node: ast.AST) -> set[str]:
 
 
 def _calls(node: ast.AST) -> set[str]:
-    return {
-        sub.func.id
-        for sub in ast.walk(node)
-        if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
-    }
+    calls = set()
+    for sub in ast.walk(node):
+        if not isinstance(sub, ast.Call):
+            continue
+        if isinstance(sub.func, ast.Name):
+            calls.add(sub.func.id)
+        elif isinstance(sub.func, ast.Attribute):
+            calls.add(sub.func.attr)
+    return calls
 
 
 def _int_subscripts(node: ast.AST) -> list[ast.Subscript]:
+    def is_integer_literal(value: ast.AST) -> bool:
+        if isinstance(value, ast.Constant):
+            return isinstance(value.value, int) and not isinstance(value.value, bool)
+        return (
+            isinstance(value, ast.UnaryOp)
+            and isinstance(value.op, (ast.UAdd, ast.USub))
+            and isinstance(value.operand, ast.Constant)
+            and isinstance(value.operand.value, int)
+            and not isinstance(value.operand.value, bool)
+        )
+
     return [
         sub
         for sub in ast.walk(node)
-        if isinstance(sub, ast.Subscript)
-        and isinstance(sub.slice, ast.Constant)
-        and isinstance(sub.slice.value, int)
+        if isinstance(sub, ast.Subscript) and is_integer_literal(sub.slice)
     ]
+
+
+def test_the_static_guard_sees_qualified_calls_and_negative_positions():
+    synthetic = ast.parse("random.choice(rows)\nlast = rows[-1]")
+    assert _calls(synthetic) == {"choice"}
+    assert [ast.unparse(node) for node in _int_subscripts(synthetic)] == ["rows[-1]"]
 
 
 def test_the_whole_new_dissent_module_names_no_shape_one_preference_word():
@@ -143,6 +174,18 @@ def test_the_new_armarium_logical_projection_calls_no_forbidden_selector():
     """§7 shapes 2, 3, 11 over exactly the function 19D added to Armarium."""
     tree = _module(ARMARIUM_SOURCE)
     for node in _functions_named(tree, ARMARIUM_LOGICAL_FUNCTIONS):
+        calls = _calls(node)
+        assert not calls & FORBIDDEN_CALLS, (node.name, sorted(calls & FORBIDDEN_CALLS))
+        subs = _int_subscripts(node)
+        assert subs == [], (node.name, [ast.unparse(n) for n in subs])
+
+
+def test_the_armarium_logical_export_path_names_no_preference_or_selector():
+    """§7 shapes 1-3/11 through conservation and the human-readable bundle."""
+    tree = _module(ARMARIUM_EXPORT_SOURCE)
+    for node in _functions_named(tree, ARMARIUM_EXPORT_LOGICAL_FUNCTIONS):
+        read = _identifiers(node)
+        assert not read & SHAPE_ONE_WORDS, (node.name, sorted(read & SHAPE_ONE_WORDS))
         calls = _calls(node)
         assert not calls & FORBIDDEN_CALLS, (node.name, sorted(calls & FORBIDDEN_CALLS))
         subs = _int_subscripts(node)
@@ -207,7 +250,7 @@ def test_no_export_emits_capture_member_acts_beside_the_logical_act():
     }
     record["self_hash"] = self_hash(record)
     entry = module.logical_act_projection_entry(
-        record, category="delivered", source_regions=[], witnesses=[]
+        record, category="delivered", source_regions=record["regions"], witnesses=[]
     )
     # The member's own local act_id/act_key never leaks into the projected
     # export identity, which is derived from the logical subject alone.
@@ -233,7 +276,7 @@ def test_no_export_emits_capture_member_acts_beside_the_logical_act():
     ):
         try:
             module.logical_act_projection_entry(
-                bad, category="delivered", source_regions=[], witnesses=[]
+                bad, category="delivered", source_regions=bad["regions"], witnesses=[]
             )
         except SchemaRefusal:
             continue

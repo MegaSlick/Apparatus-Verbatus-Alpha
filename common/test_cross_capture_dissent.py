@@ -161,8 +161,25 @@ def test_no_scalar_quality_claim_can_be_sealed_anywhere_in_the_record(carrier):
 
 def test_no_capture_can_be_named_preferred_inside_the_record():
     """§7 shape 1, screened by the register's own shared preference vocabulary."""
-    with pytest.raises(SchemaRefusal):
-        _record(model_provenance={"chair": "perlector", "preferred": "view:a"})
+    for field in ("preferred", "best_capture", "winner_view", "primary_observation"):
+        with pytest.raises(SchemaRefusal, match="preference"):
+            _record(model_provenance={"chair": "perlector", field: "view:a"})
+
+
+def test_dissent_requires_nonempty_provenance_and_sequence_denominators():
+    with pytest.raises(SchemaRefusal, match="provenance is absent or empty"):
+        _record(model_provenance={})
+    sealed = _record()
+    body = {key: value for key, value in sealed.items() if key != "self_hash"}
+    for field in ("views", "pairs", "loci"):
+        with pytest.raises(SchemaRefusal, match=rf"{field} are not a list"):
+            build_cross_capture_dissent(**(body | {field: None}))
+
+
+def test_noncanonical_model_provenance_is_a_named_contract_refusal():
+    for provenance in ({1: "non-string key"}, {"temperature": 0.2}):
+        with pytest.raises(SchemaRefusal, match="no canonical serial form.*digest-bound JSON"):
+            _record(model_provenance=provenance)
 
 
 def test_a_failed_unit20_condition_is_a_named_pair_finding_not_an_omitted_pair():
@@ -227,6 +244,19 @@ def test_a_failed_pair_condition_cannot_travel_unnamed_or_under_an_unrelated_cod
             )
 
 
+def test_a_passed_pair_condition_cannot_carry_its_failure_finding():
+    with pytest.raises(SchemaRefusal, match="passed condition.*same-ink-condition-failed"):
+        _record(
+            pairs=[
+                _pair(
+                    ["view:a", "view:b"],
+                    same_ink=True,
+                    finding_codes=["same-ink-condition-failed"],
+                )
+            ]
+        )
+
+
 def test_resealing_cannot_hide_an_unnamed_failed_pair_condition():
     forged = _record()
     forged["pairs"][0]["same_ink"] = False
@@ -250,7 +280,7 @@ def test_dissent_structural_ids_are_normalization_stable_and_sources_are_unique(
         _record(views=[_view("view:a", A), _view("view:alias", A)])
 
 
-def test_locus_and_observation_identities_cannot_count_twice():
+def test_each_locus_accounts_for_every_view_exactly_once_and_under_its_own_anchors():
     record = _record()
     locus = record["loci"][0]
     with pytest.raises(SchemaRefusal, match="loci repeat an identity"):
@@ -261,6 +291,18 @@ def test_locus_and_observation_identities_cannot_count_twice():
     }
     with pytest.raises(SchemaRefusal, match="one capture cannot count twice"):
         _record(loci=[repeated])
+    omitted = {**locus, "observations": locus["observations"][:-1]}
+    with pytest.raises(SchemaRefusal, match="omits view observation.*every capture"):
+        _record(loci=[omitted])
+    borrowed = {
+        **locus,
+        "observations": [
+            {**locus["observations"][0], "image_region_refs": [_ref("crop/view:b.png")]},
+            *locus["observations"][1:],
+        ],
+    }
+    with pytest.raises(SchemaRefusal, match="outside that view.*cannot borrow"):
+        _record(loci=[borrowed])
 
 
 def test_the_established_text_cannot_travel_in_a_locus_anchor():
@@ -279,11 +321,12 @@ def test_the_established_text_cannot_travel_in_a_locus_anchor():
                         "comparison_state": "unreadable",
                         "observations": [
                             {
-                                "view_id": "view:a",
+                                "view_id": view_id,
                                 "observed_form": None,
-                                "image_region_refs": [_ref("crop/view:a.png")],
+                                "image_region_refs": [_ref(f"crop/{view_id}.png")],
                                 "reason_codes": ["illegible"],
                             }
+                            for view_id in ("view:a", "view:b")
                         ],
                     }
                 ]
@@ -298,11 +341,12 @@ def test_the_established_text_cannot_travel_in_a_locus_anchor():
                 "comparison_state": "unreadable",
                 "observations": [
                     {
-                        "view_id": "view:a",
+                        "view_id": view_id,
                         "observed_form": None,
-                        "image_region_refs": [_ref("crop/view:a.png")],
+                        "image_region_refs": [_ref(f"crop/{view_id}.png")],
                         "reason_codes": ["illegible"],
                     }
+                    for view_id in ("view:a", "view:b")
                 ],
             }
         ]

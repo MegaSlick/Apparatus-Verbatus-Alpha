@@ -1084,6 +1084,43 @@ def _require_joint_evidence_binding(
             "Perlectio received; the Archetypus is refused because observations about other "
             "captures cannot travel beside this text"
         )
+    basis = payload.get("basis")
+    reading_regions = basis.get("regions") if isinstance(basis, dict) else None
+    if not isinstance(reading_regions, list):
+        raise SchemaRefusal(
+            "logical establishment's Perlectio has no region basis; the Archetypus is refused "
+            "because the established text must retain every crop used by the joint read"
+        )
+    retained_region_refs = []
+    for region in reading_regions:
+        if not isinstance(region, dict):
+            raise SchemaRefusal(
+                "logical establishment's Perlectio has a non-object region basis; the "
+                "Archetypus is refused because its crop provenance cannot be reconstructed"
+            )
+        image_path = region.get("image_path")
+        image_sha256 = region.get("image_sha256")
+        if not isinstance(image_path, str) or not image_path:
+            raise SchemaRefusal(
+                "logical establishment's Perlectio region has no image path; the Archetypus "
+                "is refused because a crop used by the joint read cannot be cited"
+            )
+        retained_region_refs.append(
+            {"relative_path": image_path, "sha256": _logical_sha(image_sha256, "region image")}
+        )
+    presented_region_refs = [
+        reference for view in autopsia["views"] for reference in view["region_refs"]
+    ]
+
+    def ref_key(reference):
+        return (reference["relative_path"], reference["sha256"])
+
+    if sorted(retained_region_refs, key=ref_key) != sorted(presented_region_refs, key=ref_key):
+        raise SchemaRefusal(
+            "logical establishment's Perlectio region basis does not equal every crop in its "
+            "joint autopsia; the Archetypus is refused because a capture used to establish "
+            "the text would be lost from its source-region provenance"
+        )
     if review_payload.get("cross_capture_dissent_ref") != cross_capture_dissent_ref:
         raise SchemaRefusal(
             "logical establishment's accepted review does not cite this cross-capture "
@@ -1123,16 +1160,16 @@ def _require_joint_evidence_binding(
             "physical-page and capture denominator; the Archetypus is refused because a "
             "visibility finding about other evidence cannot accept this act"
         )
-    occluded = [
-        finding
-        for finding in coverage["findings"]
-        if isinstance(finding, dict) and finding.get("code") == "occluded-everywhere"
-    ]
-    if occluded:
+    if checked_coverage["act_state"] != "full" or checked_coverage["findings"]:
+        finding_codes = sorted(
+            f"{finding['code']}:{finding['physical_page_id']}"
+            for finding in checked_coverage["findings"]
+        )
         raise SchemaRefusal(
-            "logical establishment's accepted review carries an occluded-everywhere finding; "
-            "the Archetypus is refused because that measured finding routes the act to a "
-            "review item, never to established text"
+            "logical establishment's accepted review carries unresolved cross-capture "
+            f"coverage ({checked_coverage['act_state']!r}; findings {finding_codes}); the "
+            "Archetypus is refused because every measured visibility finding routes the act "
+            "to a review item, never to established text"
         )
 
 

@@ -15,7 +15,7 @@ from typing import Any, Final
 from common.contracts.canonical import digest_of, self_hash, verify_self_hash
 from common.contracts.errors import SchemaRefusal
 from common.contracts.identities import is_well_formed
-from common.corpus_register import refuse_preference
+from common.corpus_register import _FORBIDDEN_PREFERENCE_FIELDS, refuse_preference
 
 SCHEMA: Final = "cross-capture-dissent.v1"
 CAVEAT: Final = (
@@ -114,6 +114,12 @@ def _refuse_scalar_claim_keys(value: Any) -> None:
     if isinstance(value, dict):
         for key, item in value.items():
             lowered = str(key).lower()
+            if any(fragment in lowered for fragment in _FORBIDDEN_PREFERENCE_FIELDS):
+                raise SchemaRefusal(
+                    f"cross-capture dissent: forbidden preference field {key!r}; the dissent "
+                    "record is refused because a compound field name cannot designate a "
+                    "capture or observation as the one to use"
+                )
             if any(fragment in lowered for fragment in _FORBIDDEN_CLAIM_FRAGMENTS):
                 raise SchemaRefusal(
                     f"cross-capture dissent: forbidden scalar-claim field {key!r}; this record "
@@ -197,9 +203,10 @@ def _view(value: Any) -> dict[str, Any]:
     }
 
 
-def _locus(value: Any, view_ids: set[str]) -> dict[str, Any]:
+def _locus(value: Any, views_by_id: dict[str, dict[str, Any]]) -> dict[str, Any]:
     if not isinstance(value, dict) or set(value) != _LOCUS_FIELDS:
         raise SchemaRefusal("cross-capture dissent: a locus is outside its closed schema")
+    view_ids = set(views_by_id)
     locus_id = _stable_id(value["locus_id"], "locus_id")
     if value["comparison_state"] not in {
         "same-across-views",
@@ -233,13 +240,36 @@ def _locus(value: Any, view_ids: set[str]) -> dict[str, Any]:
         codes = observation["reason_codes"]
         if not isinstance(codes, list) or not all(isinstance(code, str) and code for code in codes):
             raise SchemaRefusal("cross-capture dissent: an observation has malformed reason codes")
+        anchors = _refs(observation["image_region_refs"], "observation anchors")
+        known_anchors = {
+            (reference["relative_path"], reference["sha256"])
+            for reference in views_by_id[view_id]["region_refs"]
+        }
+        foreign_anchors = [
+            reference
+            for reference in anchors
+            if (reference["relative_path"], reference["sha256"]) not in known_anchors
+        ]
+        if foreign_anchors:
+            raise SchemaRefusal(
+                f"cross-capture dissent: locus {locus_id!r} observation {view_id!r} cites "
+                f"region(s) outside that view {foreign_anchors}; the locus is refused because "
+                "one capture's observation cannot borrow another capture's image evidence"
+            )
         checked.append(
             {
                 "view_id": view_id,
                 "observed_form": form,
-                "image_region_refs": _refs(observation["image_region_refs"], "observation anchors"),
+                "image_region_refs": anchors,
                 "reason_codes": sorted(set(codes)),
             }
+        )
+    if observed_view_ids != view_ids:
+        missing = sorted(view_ids - observed_view_ids)
+        raise SchemaRefusal(
+            f"cross-capture dissent: locus {locus_id!r} omits view observation(s) {missing}; "
+            "the locus is refused because every capture must remain explicit in the "
+            "observation denominator, including an unreadable or unavailable result"
         )
     return {
         "locus_id": locus_id,
@@ -253,7 +283,13 @@ def _pair(value: Any, view_ids: set[str]) -> dict[str, Any]:
     if not isinstance(value, dict) or set(value) != _PAIR_FIELDS:
         raise SchemaRefusal("cross-capture dissent: a pair is outside its closed schema")
     ids = value["view_ids"]
-    if not isinstance(ids, list) or len(ids) != 2 or len(set(ids)) != 2 or set(ids) - view_ids:
+    if (
+        not isinstance(ids, list)
+        or len(ids) != 2
+        or any(not isinstance(view_id, str) for view_id in ids)
+        or len(set(ids)) != 2
+        or set(ids) - view_ids
+    ):
         raise SchemaRefusal("cross-capture dissent: a pair must name exactly two known views")
     condition = value["capture_condition"]
     if not isinstance(condition, dict) or set(condition) != _CONDITION_FIELDS:
@@ -284,6 +320,13 @@ def _pair(value: Any, view_ids: set[str]) -> dict[str, Any]:
             f"cross-capture dissent: pair {sorted(ids)!r} failed condition finding(s) "
             f"{missing}; the Unit 20 pair is refused because a failed condition may not "
             "remain in the denominator without naming what failed"
+        )
+    contradicted = sorted((set(_FAILED_CONDITION_CODES.values()) - failed) & set(codes))
+    if contradicted:
+        raise SchemaRefusal(
+            f"cross-capture dissent: pair {sorted(ids)!r} names passed condition(s) as failed "
+            f"with finding(s) {contradicted}; the Unit 20 pair is refused because its finding "
+            "codes contradict the boolean denominator facts"
         )
     canonical_ids = sorted(ids)
     expected_pair_id = f"pair:{digest_of(canonical_ids)}"
@@ -319,6 +362,21 @@ def build_cross_capture_dissent(**record: Any) -> dict[str, Any]:
             "dissent record is refused because image-local or free-form text cannot stand "
             "in for its logical subject"
         )
+    if not isinstance(candidate["views"], list):
+        raise SchemaRefusal(
+            "cross-capture dissent: views are not a list; the dissent record is refused "
+            "because its capture denominator cannot be enumerated"
+        )
+    if not isinstance(candidate["pairs"], list):
+        raise SchemaRefusal(
+            "cross-capture dissent: pairs are not a list; the dissent record is refused "
+            "because its unordered-pair denominator cannot be reconstructed"
+        )
+    if not isinstance(candidate["loci"], list):
+        raise SchemaRefusal(
+            "cross-capture dissent: loci are not a list; the dissent record is refused "
+            "because its structural observations cannot be enumerated"
+        )
     views = [_view(item) for item in candidate["views"]]
     view_ids = {item["view_id"] for item in views}
     view_sources = {item["source_sha256"] for item in views}
@@ -335,9 +393,13 @@ def build_cross_capture_dissent(**record: Any) -> dict[str, Any]:
         raise SchemaRefusal(
             "cross-capture dissent: every unordered view pair, including failures, is required"
         )
-    if not isinstance(candidate["model_provenance"], dict):
-        raise SchemaRefusal("cross-capture dissent: model provenance is not retained")
-    loci = [_locus(item, view_ids) for item in candidate["loci"]]
+    if not isinstance(candidate["model_provenance"], dict) or not candidate["model_provenance"]:
+        raise SchemaRefusal(
+            "cross-capture dissent: model provenance is absent or empty; the dissent record "
+            "is refused because its observations must retain the reader identity and revision"
+        )
+    views_by_id = {item["view_id"]: item for item in views}
+    loci = [_locus(item, views_by_id) for item in candidate["loci"]]
     locus_ids = [item["locus_id"] for item in loci]
     if len(locus_ids) != len(set(locus_ids)):
         raise SchemaRefusal(
@@ -361,7 +423,14 @@ def build_cross_capture_dissent(**record: Any) -> dict[str, Any]:
         "pairs": sorted(pairs, key=lambda item: item["pair_id"]),
         "caveat": CAVEAT,
     }
-    result["self_hash"] = self_hash(result)
+    try:
+        result["self_hash"] = self_hash(result)
+    except (RecursionError, TypeError) as error:
+        raise SchemaRefusal(
+            "cross-capture dissent: the record has no canonical serial form; the dissent "
+            "record is refused because model provenance and observation evidence must be "
+            "digest-bound JSON data"
+        ) from error
     return result
 
 

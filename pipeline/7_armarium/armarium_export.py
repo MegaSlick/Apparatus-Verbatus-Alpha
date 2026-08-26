@@ -1013,25 +1013,42 @@ def _validate_logical_act_conservation(
                 "logical act; the two denominators are one number in an image-local run"
             )
         return
-    members: set[str] = set()
+    member_ids_seen: set[str] = set()
+    member_keys_seen: set[str] = set()
     for act in logical_rows:
         membership = act["logical_membership"]
         if not isinstance(membership, dict) or set(membership) != _LOGICAL_MEMBERSHIP_FIELDS:
             raise SchemaRefusal("an Armarium projection logical act has no closed membership")
         ids = membership["member_local_act_ids"]
         keys = membership["member_act_keys"]
+        ordinals = membership["member_source_page_ordinals"]
         components = membership["physical_page_components"]
         if (
             not isinstance(ids, list)
             or not ids
+            or any(not _is_line_safe_identity(member_id) for member_id in ids)
+            or ids != sorted(ids)
+            or len(ids) != len(set(ids))
             or not isinstance(keys, list)
             or len(keys) != len(ids)
+            or any(not _is_line_safe_identity(member_key) for member_key in keys)
+            or keys != sorted(keys)
+            or len(keys) != len(set(keys))
+            or not isinstance(ordinals, list)
+            or not ordinals
+            or any(
+                not isinstance(ordinal, int) or isinstance(ordinal, bool) or ordinal < 0
+                for ordinal in ordinals
+            )
+            or ordinals != sorted(ordinals)
+            or len(ordinals) != len(set(ordinals))
             or not isinstance(components, list)
             or not components
         ):
             raise SchemaRefusal(
-                "an Armarium projection logical act retains no member local acts or no "
-                "physical page component"
+                "an Armarium projection logical act has malformed member ids, keys, source "
+                "page ordinals, or physical-page components; the projection is refused "
+                "because its local proposal accounting cannot be reconstructed"
             )
         colliding = sorted((set(ids) & act_ids) | (set(keys) & act_keys))
         if colliding:
@@ -1040,12 +1057,15 @@ def _validate_logical_act_conservation(
                 "logical act they belong to; one logical act leaves as one act row, never "
                 "again as its own members"
             )
-        if set(ids) & members:
+        repeated_members = sorted((set(ids) & member_ids_seen) | (set(keys) & member_keys_seen))
+        if repeated_members:
             raise SchemaRefusal(
-                "an Armarium projection maps one local act into two logical acts; a member "
-                "act belongs to exactly one logical act"
+                f"an Armarium projection repeats local member id/key(s) {repeated_members} "
+                "across logical acts; the projection is refused because a proposal row "
+                "belongs to exactly one logical act"
             )
-        members.update(ids)
+        member_ids_seen.update(ids)
+        member_keys_seen.update(keys)
         # Consult §5.2: attribution becomes `logical_act_id -> all source page
         # ordinals`, and it is what keeps "a silent page cannot hide beside a
         # busy page" true once several captures answer for one act. The basis
@@ -1058,7 +1078,7 @@ def _validate_logical_act_conservation(
         attributed = (projection.aggregate_basis.get("act_pages") or {}).get(act["act_key"])
         if attributed is None:
             continue
-        uncovered = sorted(set(membership["member_source_page_ordinals"]) - set(attributed))
+        uncovered = sorted(set(ordinals) - set(attributed))
         if uncovered:
             raise SchemaRefusal(
                 f"logical act {act['act_id']} has member acts marked out on page(s) {uncovered} "
@@ -1071,7 +1091,7 @@ def _validate_logical_act_conservation(
             "an Armarium projection carries a logical act but does not say how many "
             "proposal-seal rows its act denominator stands for"
         )
-    accounted = len(members) + (len(projection.acts) - len(logical_rows))
+    accounted = len(member_ids_seen) + (len(projection.acts) - len(logical_rows))
     if accounted != declared:
         raise SchemaRefusal(
             f"an Armarium projection accounts for {accounted} local proposal row(s) against a "
@@ -1580,10 +1600,18 @@ def _text_bundle_members(
         if act["category"] != ArmariumCategory.DELIVERED.value:
             continue
         # A delivered act reached here with at least one region, each already carrying a
-        # validated `declared_path`, so the folder is read rather than re-proved.
-        folder = _source_folder_for_declared_path(act["source_regions"][0]["declared_path"])
-        folders.add(folder)
-        grouped[folder].append(act)
+        # validated `declared_path`. A logical act may cite captures in several source
+        # folders; copy its one unchanged text into every cited folder rather than allowing
+        # region order to choose one capture's folder as its representative.
+        source_folders = sorted(
+            {
+                _source_folder_for_declared_path(region["declared_path"])
+                for region in act["source_regions"]
+            }
+        )
+        for folder in source_folders:
+            folders.add(folder)
+            grouped[folder].append(act)
     members: dict[str, bytes] = {}
     for folder in sorted(folders):
         records = grouped[folder]
@@ -2131,6 +2159,7 @@ def _text_bundle_records(
         str,
         tuple[str, str, tuple[tuple[str, str], ...], dict[str, Any], str, list, str],
     ] = {}
+    record_locations: set[tuple[str, str]] = set()
     # The source graph authenticates the complete folder census, and the exact-member
     # check has already proved these are the package's only text files. Enumerating
     # those derived names is both directions of the promise; an `rglob` walk could
@@ -2207,11 +2236,7 @@ def _text_bundle_records(
                 if not digest_line.startswith("canonical_text_sha256: "):
                     raise SchemaRefusal("a text-bundle literal has no declared hash")
                 digest = digest_line.removeprefix("canonical_text_sha256: ")
-                if (
-                    not citations
-                    or digest != canonical_text_sha256(literal)
-                    or current_id in records
-                ):
+                if not citations or digest != canonical_text_sha256(literal):
                     raise SchemaRefusal("a text-bundle literal identity or hash is invalid")
                 pending = (literal, digest, tuple(citations))
             elif line == "uncertainty:":
@@ -2324,15 +2349,33 @@ def _text_bundle_records(
                     raise SchemaRefusal(
                         "a text-bundle display does not strip back to its canonical clean text"
                     )
-                if _source_folder_for_declared_path(citations[0][0]) != folder:
+                citation_folders = sorted(
+                    {_source_folder_for_declared_path(path) for path, _digest in citations}
+                )
+                if folder not in citation_folders:
                     raise SchemaRefusal("a text-bundle act is enclosed by the wrong source folder")
-                records[current_id] = (
+                candidate = (
                     *pending,
                     pending_uncertainty,
                     pending_text_status,
                     pending_annotations,
                     heading_key,
                 )
+                location = (current_id, folder)
+                if location in record_locations:
+                    raise SchemaRefusal(
+                        "a text-bundle repeats one act inside the same source folder; the "
+                        "bundle is refused because duplicated sections cannot be collapsed "
+                        "silently while cross-folder citations are reconciled"
+                    )
+                existing = records.get(current_id)
+                if existing is not None and existing != candidate:
+                    raise SchemaRefusal(
+                        "a text-bundle repeats one act with different text, provenance, or "
+                        "damage layers across source folders"
+                    )
+                record_locations.add(location)
+                records[current_id] = candidate
                 current_id, heading_key, pending, pending_uncertainty = None, None, None, None
                 pending_text_status, pending_annotations = None, None
         if current_id is not None:
