@@ -81,10 +81,10 @@ class ReadOnlyRun:
                     }
                 )
             payload, export_ref = _armarium_payload(tree, stage_records)
-            pages = tuple(_image_row(tree, row, export_ref) for row in payload.get("pages", []))
+            pages = tuple(_image_row(tree, row, export_ref) for row in payload["pages"])
             acts = tuple(
                 _act_row(tree, row, export_ref)
-                for row in (*payload.get("delivered", []), *payload.get("non_delivered", []))
+                for row in (*payload["delivered"], *payload["non_delivered"])
             )
             return ReviewProjection(
                 tree.run_id,
@@ -93,34 +93,27 @@ class ReadOnlyRun:
                 pages,
                 acts,
                 _review_items(tree, payload, export_ref),
-                _advance_records(tree, _sealed_digests(boundaries)),
+                _advance_records(
+                    tree,
+                    {row["stage"]: row["seal_digest"] for row in boundaries if row["sealed"]},
+                ),
             )
         except OperatorError:
             raise
         except (ContractError, KeyError, OSError, TypeError, ValueError) as error:
-            # The refusal that fired already names the evidence — which blob's
-            # bytes moved under a sealed reference, which record failed its own
-            # hash. Replacing it with a category left the operator holding a
-            # message whose own next step says "repair the *named* evidence
-            # problem" while naming nothing, and every other refusal on this
-            # surface (a false content-addressed receipt name, a stale advance)
-            # says exactly which file it means. A diagnostic that exists only in
-            # a `__cause__` nobody renders has been lost (GOVERNANCE 2).
+            # The rendered detail must retain the evidence path from the
+            # underlying refusal; its repair instruction requires a named file.
             raise OperatorError(
                 ErrorCode.CONSOLE_TREE_UNREADABLE,
-                detail=(
-                    "a stage boundary or immutable image reference could not be read: "
-                    f"{type(error).__name__}: {error}"
-                ),
+                detail=(f"run-tree evidence could not be read: {type(error).__name__}: {error}"),
             ) from error
 
 
 def _record_row(tree: RunTree, stage: str, manifest_row: dict[str, Any]) -> dict[str, Any]:
-    """One complete, validated stage record with its immutable address.
+    """Bind displayed record fields and their address to one filesystem read.
 
-    The projection is deliberately a walk of evidence rather than a summary that
-    silently chooses which outcome to expose.  The reference is the trace for
-    every copied header and the complete record is available to the renderer.
+    Every stage outcome must remain visible; this projection cannot collapse
+    records into a summary or pair fields with a digest from a later read.
     """
 
     record, record_bytes = tree.read_artifact_snapshot(
@@ -149,6 +142,8 @@ def _record_row(tree: RunTree, stage: str, manifest_row: dict[str, Any]) -> dict
 def _armarium_payload(
     tree: RunTree, stage_records: list[dict[str, Any]]
 ) -> tuple[dict[str, Any], dict[str, str]]:
+    """Use the stage-record snapshot; rereading could mix two export versions."""
+
     export_id = artifact_id(ARMARIUM, "export", "export", None)
     expected_path = tree.artifact_path(ARMARIUM, "export", export_id)
     matches = [
@@ -183,7 +178,7 @@ def _armarium_payload(
     return payload, export_row["record_ref"]
 
 
-def _read_export_blob(
+def _verified_export_blob_digest(
     tree: RunTree,
     *,
     stage: str,
@@ -191,7 +186,9 @@ def _read_export_blob(
     expected_digest: Any,
     description: str,
     export_ref: dict[str, str],
-) -> bytes:
+) -> str:
+    """A fresh digest must not repair a contradictory exported path or digest."""
+
     export_path = export_ref["relative_path"]
     if not isinstance(path, str) or not isinstance(expected_digest, str):
         raise OperatorError(
@@ -221,7 +218,7 @@ def _read_export_blob(
                 f"digest {expected_digest}, but its bytes have digest {actual_digest}"
             ),
         )
-    return data
+    return actual_digest
 
 
 def _image_row(tree: RunTree, row: Any, export_ref: dict[str, str]) -> dict[str, Any]:
@@ -233,7 +230,7 @@ def _image_row(tree: RunTree, row: Any, export_ref: dict[str, str]) -> dict[str,
                 "not an object"
             ),
         )
-    data = _read_export_blob(
+    image_digest = _verified_export_blob_digest(
         tree,
         stage=EXEMPLAR,
         path=row.get("image_path"),
@@ -246,7 +243,7 @@ def _image_row(tree: RunTree, row: Any, export_ref: dict[str, str]) -> dict[str,
         "page_id": row.get("page_id"),
         "outcome": row.get("outcome"),
         "image_path": row["image_path"],
-        "image_sha256": digest_bytes(data),
+        "image_sha256": image_digest,
         "record_ref": export_ref,
     }
 
@@ -279,7 +276,7 @@ def _act_row(tree: RunTree, row: Any, export_ref: dict[str, str]) -> dict[str, A
                     f"{row.get('act_id')!r} has a source region that is not an object"
                 ),
             )
-        data = _read_export_blob(
+        image_digest = _verified_export_blob_digest(
             tree,
             stage=DESIGNATOR,
             path=region.get("image_path"),
@@ -292,7 +289,7 @@ def _act_row(tree: RunTree, row: Any, export_ref: dict[str, str]) -> dict[str, A
                 "ordinal": region.get("source_page_ordinal"),
                 "region_id": region.get("region_id"),
                 "image_path": region["image_path"],
-                "image_sha256": digest_bytes(data),
+                "image_sha256": image_digest,
             }
         )
     return {
@@ -306,12 +303,6 @@ def _act_row(tree: RunTree, row: Any, export_ref: dict[str, str]) -> dict[str, A
 
 
 ADVANCE_SUBJECT_PREFIX = "stage-boundary:"
-
-
-def _sealed_digests(boundaries: list[dict[str, Any]]) -> dict[str, str]:
-    """The digest each stage's seal has *right now*, by stage."""
-
-    return {row["stage"]: row["seal_digest"] for row in boundaries if row["sealed"]}
 
 
 def _advance_records(tree: RunTree, sealed: dict[str, str]) -> tuple[dict[str, Any], ...]:

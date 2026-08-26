@@ -130,7 +130,7 @@ def test_held_armarium_review_rows_keep_their_bundle_and_export_record_trace(tmp
 def test_review_child_receives_no_write_right_even_when_the_parent_reads_every_record(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Review is evidence walking only; unlike advance it never mints a write path."""
+    """Review must never mint the write path that advance receives."""
     run_root, run_id = _make_run(tmp_path)
     seen: dict[str, object] = {}
 
@@ -1197,16 +1197,7 @@ def test_an_advance_whose_boundary_later_changed_is_named_stale_where_a_person_r
 
 
 def _second_armarium_seal(tree: RunTree) -> str:
-    """Append a well-formed second completion seal for the Armarium boundary.
-
-    A resealed stage is what makes "which seal is current" a question at all,
-    and no fixture scenario produces one. The forgery is deliberately *honest*
-    at every layer the readers check — `attempt_id` re-derives from
-    (subject, "seal", 2), `artifact_id` derives from that attempt, the payload
-    ordinal agrees, and the ordinals stay the contiguous run 1..2 — because a
-    seal that failed any of those would be refused by `latest_attempt` before
-    the display question this test is about could be reached.
-    """
+    """The synthetic reseal must pass validation before display logic is exercised."""
     from common.contracts.identities import attempt_id
 
     rows = [
@@ -1229,16 +1220,7 @@ def _second_armarium_seal(tree: RunTree) -> str:
 
 
 def test_a_resealed_boundary_shows_every_seal_and_names_exactly_one_as_current(tmp_path: Path):
-    """ "Current" is a label on a visible list, never a filter that hides the rest.
-
-    `latest_attempt` derives which seal a boundary presently names. That
-    derivation is the console's to *report*, not to act on: an operator looking
-    at a resealed stage needs to see that it was sealed twice and what each
-    census claimed, because the earlier seal is the evidence that the boundary
-    moved at all. Showing only the derived winner would be a picker wearing a
-    tidier face (hard rule 8), and it would lose the superseded attempt exactly
-    as GOVERNANCE 2 forbids.
-    """
+    """`current` is a label; superseded seals must remain visible evidence."""
     run_root, run_id = _make_run(tmp_path)
     tree = RunTree(run_root, run_id)
     superseded = review.ReadOnlyRun(run_root, run_id).projection()
@@ -1273,12 +1255,7 @@ def test_a_resealed_boundary_shows_every_seal_and_names_exactly_one_as_current(t
 
 
 def test_a_boundary_that_moved_under_two_advances_names_each_one_separately(tmp_path: Path):
-    """One record binds the seal that is there now; the other binds the one before it.
-
-    Two advances of one stage, with a reseal between them, is the case where a
-    single "advanced: yes" would be both true and false at once. Each record
-    keeps its own verdict, and the stale one is still listed.
-    """
+    """Each advance keeps its own verdict; a stale one remains visible."""
     run_root, run_id = _make_run(tmp_path)
     tree = RunTree(run_root, run_id)
     early = advance.trigger_advance(
@@ -1320,16 +1297,7 @@ def test_a_boundary_that_moved_under_two_advances_names_each_one_separately(tmp_
 def test_tampered_evidence_is_refused_naming_the_file_whose_bytes_moved(
     tmp_path: Path, evidence: str
 ):
-    """A refusal that names nothing is not the "named evidence problem" it prescribes.
-
-    Every one of these already refused — the digest checks under `read_artifact`
-    see to that — but the console's catch-all replaced the sentence identifying
-    the file with a category, and the only copy of that sentence lived in a
-    `__cause__` no operator renders. The person told to "repair the named
-    evidence problem" was handed no name (GOVERNANCE 2), while a false receipt
-    filename and a stale advance on the same surface both say precisely which
-    file they mean.
-    """
+    """The rendered refusal must name the file; its `__cause__` is not shown."""
     run_root, run_id = _make_run(tmp_path, scenario="review")
     tree = RunTree(run_root, run_id)
     projected = review.ReadOnlyRun(run_root, run_id).projection()
@@ -1348,10 +1316,8 @@ def test_tampered_evidence_is_refused_naming_the_file_whose_bytes_moved(
         )
     target = tree.resolve(relative)
     if evidence == "record":
-        # A record is sealed by its own `self_hash` over canonical content, so
-        # appending bytes to it is not a tamper at all — the meaning is
-        # identical and the projection honestly recomputes the new digest.
-        # Move a field instead, which is the change a reader must never absorb.
+        # Canonical self-hashes ignore trailing whitespace, so change a field to
+        # create a semantic tamper rather than alternate JSON serialization.
         record = json.loads(target.read_bytes().decode("utf-8"))
         record["payload"] = {**record["payload"], "census": []}
         target.write_bytes(canonical_bytes(record))
@@ -1367,15 +1333,7 @@ def test_tampered_evidence_is_refused_naming_the_file_whose_bytes_moved(
 
 
 def test_opening_a_run_for_review_changes_no_path_bytes_size_or_mtime(tmp_path: Path):
-    """The parent side of the boundary is unconfined, so its no-write is a claim.
-
-    `_review_in_custody` proves the *child* holds no write right, and the
-    kernel enforces that. The projection itself runs in the ordinary operator
-    process with full authority over the tree, one letter away from
-    `write_manifest`, and nothing checked that walking a run left it alone. So
-    this measures the tree rather than trusting the call sites: every file's
-    bytes, size and mtime, and the set of paths, before and after.
-    """
+    """The unconfined parent projection must preserve the entire run tree."""
     run_root, run_id = _make_run(tmp_path, scenario="review")
     root = run_root / run_id
 

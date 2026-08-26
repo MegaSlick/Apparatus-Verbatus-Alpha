@@ -807,16 +807,14 @@ class RunTree:
             # the walk emits in the order `sorted(rglob("*.json"))` did, and says so.
             members = list(self._walk_artifact_json(artifacts_root))
             for relative_path, path in members:
-                # One filesystem read supplies both the record that is verified
-                # and the digest published beside its fields.  Reading once to
-                # validate and again to hash allowed a concurrent replacement to
-                # pair metadata from one valid envelope with the digest of another.
+                # Published fields and digest must come from one filesystem
+                # read; otherwise a concurrent replacement can mix two records.
                 record, artifact_bytes = _read_json_with_bytes(path)
                 with _naming(relative_path):
                     record = validate_envelope(record)
                     self._verify_artifact_run(record)
-                # Outside the wrapper on purpose: this one already names the
-                # path it is judging, and prefixing it would say it twice.
+                # This check already names its path; wrapping it would duplicate
+                # the name in the operator-facing refusal.
                 self._verify_artifact_path(relative_path, record)
                 # Door and Exemplar deliberately share one physical directory:
                 # a Door admission is part of what Exemplar must account for.
@@ -1320,18 +1318,11 @@ def _write_temporary(target: Path, data: bytes) -> Path:
 
 @contextmanager
 def _naming(relative_path: str) -> Iterator[None]:
-    """Put the offending artifact's path into a refusal that could not know it.
+    """Add the evidence path while preserving the refusal's concrete class.
 
-    The envelope and identity checks are given a decoded record, so a self-hash
-    or identity failure they raise says *what* is wrong and has no way to say
-    *which file*. Every reader here does know, and a reader that drops the one
-    fact needed to find the file has made the refusal unactionable: the operator
-    console renders exactly this text under an instruction to "repair the named
-    evidence problem", and it named nothing. Blob-digest refusals on the same
-    path already carry their relative path, so this makes the two agree.
-
-    The class is preserved, not widened to `SchemaRefusal`: a caller catching
-    `IdentityRefusal` or `ApprovalRefusal` specifically must still catch it.
+    Envelope and identity validators see decoded content, not its filename, but
+    the operator-facing repair instruction requires the offending path. Callers
+    may catch a specific `SchemaRefusal` subclass, so wrapping must not widen it.
     """
 
     try:
