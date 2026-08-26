@@ -9,6 +9,7 @@ read without needing a configured provider account.
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import shutil
 import tempfile
@@ -28,6 +29,41 @@ ROOT = Path(__file__).resolve().parents[2]
 START = datetime(2026, 8, 9, 12, 0, tzinfo=UTC)
 
 
+def _scratch_root() -> Path:
+    """Return a temporary root that is provably outside the checkout."""
+
+    checkout = ROOT.resolve()
+    configured = Path(tempfile.gettempdir()).resolve()
+    if not _contains_directory(configured, checkout):
+        return configured
+
+    # tempfile honours TMPDIR/TEMP/TMP, any of which may point into the
+    # checkout. Use the POSIX system temporary directory only for that case;
+    # if the checkout itself contains it, refuse rather than make the promise
+    # false. This operator already supports POSIX only (cli.py uses pwd).
+    fallback = Path("/tmp").resolve()
+    if _contains_directory(fallback, checkout):
+        raise RuntimeError("no temporary directory outside the checkout is available")
+    return fallback
+
+
+def _contains_directory(path: Path, directory: Path) -> bool:
+    """Compare existing ancestors by identity, not case-sensitive spelling."""
+
+    try:
+        directory_stat = os.stat(directory)
+    except OSError:
+        return False
+    for spelling in (Path(os.path.abspath(path)), path.resolve(strict=False)):
+        for ancestor in (spelling, *spelling.parents):
+            try:
+                if os.path.samestat(os.stat(ancestor), directory_stat):
+                    return True
+            except OSError:
+                continue
+    return False
+
+
 def make_transcript(output: str | Path) -> Path:
     """Run all six words, one intentional refusal, and read-only status."""
 
@@ -38,7 +74,9 @@ def make_transcript(output: str | Path) -> Path:
         "This is an offline rehearsal. It contacts no cloud provider and creates no bill.",
         "",
     ]
-    with tempfile.TemporaryDirectory(prefix=".verbatus-dry-run-", dir=ROOT) as temporary_name:
+    with tempfile.TemporaryDirectory(
+        prefix="verbatus-dry-run-", dir=_scratch_root()
+    ) as temporary_name:
         temporary = Path(temporary_name)
         workspace = temporary / "workspace"
         config = workspace / "config"
@@ -46,6 +84,9 @@ def make_transcript(output: str | Path) -> Path:
         shutil.copy2(ROOT / "uv.lock", workspace / "uv.lock")
         shutil.copy2(ROOT / "config" / "models.toml", config / "models.toml")
         shutil.copy2(ROOT / "config" / "pod_placement.toml", config / "pod_placement.toml")
+        # Boot must record the exercised checkout revision without putting its
+        # scratch workspace under that checkout.
+        (workspace / ".git").symlink_to(ROOT / ".git")
         (workspace / "pipeline").symlink_to(ROOT / "pipeline", target_is_directory=True)
         (workspace / "proof").symlink_to(ROOT / "proof", target_is_directory=True)
         state = temporary / "operator-records"

@@ -40,6 +40,13 @@ IMAGE="${IMAGE_NAME}:${IMAGE_TAG}"
 # belonging to something else on this machine.
 PREFIX="verbatus-ac"
 
+# Agent-controlled bytes cross into the host only through bounded helper calls.
+# Four MiB leaves ample room for prompts and reports; a collection bundle may
+# carry repository history, so its ceiling is deliberately larger but finite.
+MAX_BRIEF_BYTES=4194304
+MAX_REPORT_BYTES=4194304
+MAX_COLLECTION_BUNDLE_BYTES=536870912
+
 # The repository root, resolved from this script rather than the caller's cwd,
 # so every command works from anywhere.
 REPO_ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
@@ -100,9 +107,12 @@ acquire_lifecycle_lock() {
     lifecycle_dir="${lifecycle_root}/workbench/autoclave/.locks"
     mkdir -p "$lifecycle_dir" ||
         die "could not create the task lock directory ${lifecycle_dir}"
-    LIFECYCLE_LOCK="${lifecycle_dir}/${lifecycle_task}.lock"
-    mkdir "$LIFECYCLE_LOCK" 2>/dev/null ||
-        die "task '${lifecycle_task}' is already active: ${LIFECYCLE_LOCK}. If no launcher is running, remove the stale lock with: rmdir ${LIFECYCLE_LOCK}"
+    # Cleanup removes `LIFECYCLE_LOCK`, so assign it only after this process has
+    # created the directory; a refused acquire must not own the existing lock.
+    lifecycle_candidate="${lifecycle_dir}/${lifecycle_task}.lock"
+    mkdir "$lifecycle_candidate" 2>/dev/null ||
+        die "task '${lifecycle_task}' is already active: ${lifecycle_candidate}. If no launcher is running, remove the stale lock with: rmdir ${lifecycle_candidate}"
+    LIFECYCLE_LOCK="$lifecycle_candidate"
     trap 'lifecycle_cleanup' 0
     trap 'lifecycle_cleanup; exit 1' 1 2 15
 }
@@ -1120,7 +1130,6 @@ cmd_dispatch() {
         claude|codex) : ;;
         *) die "dispatch takes 'claude' or 'codex'" ;;
     esac
-    acquire_lifecycle_lock "$task"
     [ -f "$brief" ] || die "no brief at '$brief'"
     [ -n "$model" ] || die "dispatch needs a model — see .claude/agents/README.md for which"
     # It reaches the container as an environment variable and never as interpolated
@@ -1181,6 +1190,11 @@ cmd_dispatch() {
         *) die "'$effort' is not an allowed effort for ${vendor} '${model}' — it takes: ${reachable}" ;;
     esac
 
+    # The shared lifecycle lock protects chamber state, not argument validation.
+    # In particular, a bad model or effort must name that bad argument even when
+    # another dispatch is active for this task.
+    acquire_lifecycle_lock "$task"
+
     need_docker
     running "$task" || die "chamber '$task' is not running — start it with: $0 new $task"
 
@@ -1226,8 +1240,8 @@ cmd_dispatch() {
     # a sentence, where the helper says only that it refused.
     brief_in="$(outdir_of "$task")/brief.md"
     [ -L "$brief_in" ] && die "brief slot ${brief_in} is a symlink — refusing to write through it"
-    python3 "$SAFE_FILE" write "$brief" "$brief_in" ||
-        die "brief slot ${brief_in} is not a safe regular file — refusing to write to it"
+    python3 "$SAFE_FILE" write "$brief" "$brief_in" "$MAX_BRIEF_BYTES" ||
+        die "brief copy from ${brief} to ${brief_in} was refused — the source or slot is not a safe regular file reachable without an agent-controlled symlink"
 
     note "dispatching ${vendor} into '${task}'"
     note "  brief:  $(outdir_of "$task")/brief.md"
@@ -1432,7 +1446,8 @@ cmd_collect() {
     bundle_snapshot=$(mktemp "${snapshot_dir}/autoclave-bundle.${task}.XXXXXX") ||
         die "could not create a host-owned bundle snapshot; nothing was fetched"
     LIFECYCLE_SNAPSHOT="$bundle_snapshot"
-    if ! python3 "$SAFE_FILE" read "$bundle_out" > "$bundle_snapshot"; then
+    if ! python3 "$SAFE_FILE" read "$bundle_out" \
+        "$MAX_COLLECTION_BUNDLE_BYTES" > "$bundle_snapshot"; then
         die "could not safely snapshot bundle slot ${bundle_out}; nothing was fetched"
     fi
     if ! git -C "$REPO_ROOT" bundle verify "$bundle_snapshot" >/dev/null 2>&1; then
@@ -1605,7 +1620,8 @@ cmd_report() {
     # says no whatever happens.
     [ -L "$report" ] && die "report at ${report} is a symlink — refusing to read through it"
     [ -f "$report" ] || die "no report at ${report}"
-    python3 "$SAFE_FILE" read "$report" || die "no safe regular report at ${report}"
+    python3 "$SAFE_FILE" read "$report" "$MAX_REPORT_BYTES" ||
+        die "no safe regular report at ${report}"
 }
 
 cmd_list() {

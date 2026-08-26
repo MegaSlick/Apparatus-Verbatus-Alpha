@@ -39,8 +39,9 @@ The words are:
 - `export` — makes a local evidence bundle and prints the Armarium reconciliation table.
 - `close` — asks for its own exact confirmation, then shows the captured cost through its
   cutoff and the retained volume's continuing hourly price.
-- `status` — reads saved receipts and sealed submission records only. It never contacts a
-  provider or creates a record.
+- `status` — reads saved receipts only, including the recorded digest that identifies each
+  sealed submission record. It never reopens local submission files, contacts a provider,
+  or creates a record.
 
 Each paid rehearsal needs a reviewed pod-request file and reviewed spending-policy file.
 Do not invent a GPU class or a ceiling: those are Tyrel's decision. If either is absent,

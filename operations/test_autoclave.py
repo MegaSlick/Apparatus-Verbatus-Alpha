@@ -32,6 +32,7 @@ from operations.autoclave.fingerprint import INPUTS as FINGERPRINT_INPUTS
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "operations" / "autoclave" / "autoclave.sh"
 SAFE_FILE = ROOT / "operations" / "autoclave" / "safe_file.py"
+SAFE_FILE_TEST_LIMIT = "4194304"
 BRIEF = ROOT / "operations" / "autoclave" / "agent-brief.md"
 FINGERPRINT = ROOT / "operations" / "autoclave" / "fingerprint.py"
 # The single declaration of what the image bakes in. `elsewhere` stages exactly these so
@@ -1348,9 +1349,81 @@ def test_a_second_dispatch_for_the_same_task_is_refused_while_the_first_runs(tmp
         )
         assert second.returncode != 0
         assert "task-x.lock" in second.stderr
+        # A refused contender must neither remove nor claim the running
+        # dispatch's lock.
+        held = tmp_path / "workbench" / "autoclave" / ".locks" / "task-x.lock"
+        assert held.is_dir()
     finally:
         release.touch()
         first.wait(timeout=30)
+    assert first.returncode == 0, first.stderr.read()
+    assert not held.exists(), "the finished dispatch did not release its own lock"
+
+
+@pytest.mark.parametrize(
+    ("model", "effort", "expected"),
+    (("not/a-model", "low", "not a plain model name"), ("gpt-5.6-luna", "banana", "'banana'")),
+)
+def test_an_invalid_dispatch_names_its_argument_even_while_the_task_is_locked(
+    tmp_path, model, effort, expected
+):
+    """Validation precedes the shared lock, so contention cannot hide a bad argument."""
+
+    script = elsewhere(tmp_path)
+    brief = tmp_path / "brief.md"
+    brief.write_text("bounded task\n")
+    (tmp_path / "workbench" / "autoclave" / "task-x").mkdir(parents=True)
+    env, _log = fake_docker(tmp_path)
+    ready = tmp_path / "dispatch-is-holding"
+    release = tmp_path / "release-dispatch"
+    env.update(
+        {
+            "FAKE_CONTAINER_EXISTS": "1",
+            "FAKE_CHAMBER_VENDOR": "codex",
+            "FAKE_AUTH_VALID": "1",
+            "FAKE_EXEC_STATUS": "0",
+            "FAKE_HOLD_ON": "codex exec",
+            "FAKE_HOLD_READY": str(ready),
+            "FAKE_HOLD_RELEASE": str(release),
+        }
+    )
+    first = subprocess.Popen(
+        ["sh", str(script), "dispatch", "task-x", "codex", str(brief), "gpt-5.6-luna", "low"],
+        cwd=tmp_path,
+        env={**os.environ, **env},
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not ready.exists():
+            assert time.monotonic() < deadline, "the first dispatch never reached the CLI"
+            assert first.poll() is None
+            time.sleep(0.01)
+        second = run(
+            "dispatch",
+            "task-x",
+            "codex",
+            str(brief),
+            model,
+            effort,
+            env=env,
+            script=script,
+            cwd=tmp_path,
+        )
+        assert second.returncode != 0
+        assert expected in second.stderr
+        assert "already active" not in second.stderr
+        # Pre-lock validation may inspect the named brief but no chamber state.
+        held = tmp_path / "workbench" / "autoclave" / ".locks" / "task-x.lock"
+        assert held.is_dir()
+        assert (tmp_path / "workbench" / "autoclave" / "task-x").is_dir()
+    finally:
+        release.touch()
+        first.wait(timeout=30)
+    assert first.returncode == 0, first.stderr.read()
+    assert not held.exists(), "the finished dispatch did not release its own lock"
 
 
 @pytest.mark.parametrize(
@@ -2225,12 +2298,14 @@ class TestTheUntrustedDrawer:
         slot.symlink_to(victim)
 
         write = subprocess.run(
-            ["python3", str(SAFE_FILE), "write", str(source), str(slot)],
+            ["python3", str(SAFE_FILE), "write", str(source), str(slot), SAFE_FILE_TEST_LIMIT],
             capture_output=True,
             text=True,
         )
         read = subprocess.run(
-            ["python3", str(SAFE_FILE), "read", str(slot)], capture_output=True, text=True
+            ["python3", str(SAFE_FILE), "read", str(slot), SAFE_FILE_TEST_LIMIT],
+            capture_output=True,
+            text=True,
         )
 
         assert write.returncode != 0 and read.returncode != 0
@@ -2299,6 +2374,97 @@ class TestTheUntrustedDrawer:
             "bounded task\n"
         )
 
+    def test_an_agent_writable_brief_source_cannot_be_a_symlink(self, tmp_path):
+        """Rejudge a drawer source after a lock wait; the agent can replace it."""
+
+        drawer = tmp_path / "drawer"
+        drawer.mkdir()
+        victim = tmp_path / "host-only.txt"
+        victim.write_text("SENTINEL-CONTENTS\n")
+        source = drawer / "next-brief.md"
+        source.symlink_to(victim)
+        destination = drawer / "brief.md"
+
+        result = subprocess.run(
+            [
+                "python3",
+                str(SAFE_FILE),
+                "write",
+                str(source),
+                str(destination),
+                SAFE_FILE_TEST_LIMIT,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+
+        assert result.returncode != 0
+        assert not destination.exists()
+        assert "SENTINEL-CONTENTS" not in result.stdout + result.stderr
+
+    def test_an_agent_writable_brief_source_cannot_traverse_a_symlinked_directory(self, tmp_path):
+        """Every component beneath the agent-writable drawer must reject symlinks."""
+
+        drawer = tmp_path / "drawer"
+        drawer.mkdir()
+        host_only = tmp_path / "host-only"
+        host_only.mkdir()
+        (host_only / "victim.md").write_text("SENTINEL-CONTENTS\n")
+        (drawer / "alias").symlink_to(host_only, target_is_directory=True)
+        source = drawer / "alias" / "victim.md"
+        destination = drawer / "brief.md"
+
+        result = subprocess.run(
+            [
+                "python3",
+                str(SAFE_FILE),
+                "write",
+                str(source),
+                str(destination),
+                SAFE_FILE_TEST_LIMIT,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+
+        assert result.returncode != 0
+        assert not destination.exists()
+        assert str(source) in result.stderr
+        assert "SENTINEL-CONTENTS" not in result.stdout + result.stderr
+
+    def test_an_outside_alias_to_the_drawer_does_not_make_agent_bytes_trusted(self, tmp_path):
+        """Containment follows directory identity, including aliases and APFS case variants."""
+
+        drawer = tmp_path / "drawer"
+        drawer.mkdir()
+        (drawer / "nested").mkdir()
+        victim = tmp_path / "host-only.txt"
+        victim.write_text("SENTINEL-CONTENTS\n")
+        (drawer / "nested" / "next-brief.md").symlink_to(victim)
+        alias = tmp_path / "drawer-alias"
+        alias.symlink_to(drawer, target_is_directory=True)
+        destination = drawer / "brief.md"
+
+        result = subprocess.run(
+            [
+                "python3",
+                str(SAFE_FILE),
+                "write",
+                str(alias / "nested" / "next-brief.md"),
+                str(destination),
+                SAFE_FILE_TEST_LIMIT,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+
+        assert result.returncode != 0
+        assert not destination.exists()
+        assert "SENTINEL-CONTENTS" not in result.stdout + result.stderr
+
     @pytest.mark.parametrize("shape", ["directory", "fifo"])
     def test_the_helper_refuses_anything_that_is_not_a_regular_file(self, tmp_path, shape):
         """Directly, because `S_ISREG` and `O_NONBLOCK` are each removable on their
@@ -2314,13 +2480,20 @@ class TestTheUntrustedDrawer:
         source.write_text("bounded task\n")
 
         read = subprocess.run(
-            ["python3", str(SAFE_FILE), "read", str(target)],
+            ["python3", str(SAFE_FILE), "read", str(target), SAFE_FILE_TEST_LIMIT],
             capture_output=True,
             text=True,
             timeout=15,
         )
         write = subprocess.run(
-            ["python3", str(SAFE_FILE), "write", str(source), str(target)],
+            [
+                "python3",
+                str(SAFE_FILE),
+                "write",
+                str(source),
+                str(target),
+                SAFE_FILE_TEST_LIMIT,
+            ],
             capture_output=True,
             text=True,
             timeout=15,
@@ -2335,12 +2508,42 @@ class TestTheUntrustedDrawer:
         source.write_text("bounded task\n")
         destination = tmp_path / "destination"
         write = subprocess.run(
-            ["python3", str(SAFE_FILE), "write", str(source), str(destination)],
+            [
+                "python3",
+                str(SAFE_FILE),
+                "write",
+                str(source),
+                str(destination),
+                SAFE_FILE_TEST_LIMIT,
+            ],
             capture_output=True,
             text=True,
         )
         assert write.returncode == 0, write.stderr
         assert destination.read_text() == "bounded task\n"
+
+    def test_the_helper_refuses_oversized_agent_bytes_before_publication(self, tmp_path):
+        source = tmp_path / "source"
+        source.write_bytes(b"123456789")
+        destination = tmp_path / "destination"
+
+        read = subprocess.run(
+            ["python3", str(SAFE_FILE), "read", str(source), "8"],
+            capture_output=True,
+            timeout=15,
+        )
+        write = subprocess.run(
+            ["python3", str(SAFE_FILE), "write", str(source), str(destination), "8"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+
+        assert read.returncode != 0
+        assert read.stdout == b""
+        assert write.returncode != 0
+        assert not destination.exists()
+        assert "8-byte limit" in read.stderr.decode() + write.stderr
 
     def test_bundle_creation_does_not_follow_an_output_symlink(self, tmp_path):
         repository = tmp_path / "repository"
@@ -2371,7 +2574,7 @@ class TestTheUntrustedDrawer:
         slot.write_text("bounded task\n")
 
         result = subprocess.run(
-            ["python3", str(SAFE_FILE), "write", str(slot), str(slot)],
+            ["python3", str(SAFE_FILE), "write", str(slot), str(slot), SAFE_FILE_TEST_LIMIT],
             capture_output=True,
             text=True,
         )

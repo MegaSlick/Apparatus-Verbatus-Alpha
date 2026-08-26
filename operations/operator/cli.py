@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import pwd
+import stat
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -15,6 +18,75 @@ from . import notify_bridge
 from .errors import ErrorCode, OperatorError, strip_control_bytes
 from .surface import DEFAULT_FIXTURE, OperatorSurface
 from .volume_s3 import VolumeSpec, VolumeTransferRefusal
+
+MAX_REQUEST_BYTES = 1024 * 1024
+
+
+def _is_within(path: Path, directory: Path) -> bool:
+    """Judge containment by directory identity, including aliases and case variants."""
+
+    try:
+        directory_stat = os.stat(directory)
+    except OSError:
+        return False
+    spellings = (Path(os.path.abspath(path)), path.resolve(strict=False))
+    for spelling in spellings:
+        for ancestor in (spelling, *spelling.parents):
+            try:
+                if os.path.samestat(os.stat(ancestor), directory_stat):
+                    return True
+            except OSError:
+                continue
+    return False
+
+
+def _account_state_dir(workspace: Path | None = None) -> Path:
+    # Path.home() honours HOME, including an absolute value inside the checkout.
+    # The account database is the independent fallback for either that case or
+    # a relative HOME.
+    try:
+        environment_home = Path.home()
+    except RuntimeError:
+        environment_home = Path()
+    homes = (environment_home, Path(pwd.getpwuid(os.getuid()).pw_dir))
+    for home in homes:
+        candidate = home / ".local" / "state" / "verbatus"
+        if home.is_absolute() and (workspace is None or not _is_within(candidate, workspace)):
+            return candidate
+    raise RuntimeError("the operator account has no absolute home directory outside the checkout")
+
+
+def _default_state_dir(workspace: Path | None = None) -> Path:
+    """Return durable operator state outside the checked-out project.
+
+    The Base Directory specification requires an absolute `XDG_STATE_HOME`;
+    accepting a relative value would put records under the workspace.
+    """
+
+    state_home = Path(os.environ.get("XDG_STATE_HOME", ""))
+    candidate = (
+        state_home / "verbatus" if state_home.is_absolute() else _account_state_dir(workspace)
+    )
+    if workspace is not None and _is_within(candidate, workspace):
+        candidate = _account_state_dir(workspace)
+    return candidate
+
+
+def _warn_about_abandoned_state_dir(workspace: Path, *, using_default: bool) -> None:
+    """Name an old in-checkout `.verbatus/` this version no longer reads by default.
+
+    An old folder may hold real receipts; omitting it would make existing records
+    appear not to exist.
+    """
+
+    old_state = workspace / ".verbatus"
+    if not using_default or not old_state.is_dir():
+        return
+    _print(
+        f"Note: {old_state} holds operator records from before this version moved "
+        "the default state location outside the checkout. They are not read here "
+        f"automatically — point at them explicitly with: --state-dir {old_state}"
+    )
 
 
 def _print(text: str = "") -> None:
@@ -53,7 +125,7 @@ def build_parser() -> PlainParser:
         help="the checked-out Apparatus Verbatus folder (defaults to the current directory)",
     )
     parser.add_argument(
-        "--state-dir", type=Path, default=Path(".verbatus"), help="where local receipts are kept"
+        "--state-dir", type=Path, default=_default_state_dir(), help="where local receipts are kept"
     )
     parser.add_argument(
         "--notify",
@@ -129,16 +201,16 @@ def build_parser() -> PlainParser:
         "--pod-id", help="the recorded fixture pod id, if you want to repeat it explicitly"
     )
 
-    verbs.add_parser(
-        "status", help="read saved receipts and manifests only; it never contacts a provider"
-    )
+    verbs.add_parser("status", help="read saved receipts only; it never contacts a provider")
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
-    parser = build_parser()
     try:
+        # Parser construction resolves the environment-derived state root and
+        # belongs inside the same refusal boundary as parsing and execution.
+        parser = build_parser()
         if not arguments:
             # Inside the try, not before it: a Ctrl+C at this prompt has to
             # reach the same three-part contract as every other failure.
@@ -147,7 +219,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return 0
         args = parser.parse_args(arguments)
         workspace = args.workspace.resolve()
-        state = args.state_dir if args.state_dir.is_absolute() else workspace / args.state_dir
+        explicit_state = any(
+            argument == "--state-dir" or argument.startswith("--state-dir=")
+            for argument in arguments
+        )
+        if explicit_state:
+            state = args.state_dir if args.state_dir.is_absolute() else workspace / args.state_dir
+        else:
+            state = _default_state_dir(workspace)
+        _warn_about_abandoned_state_dir(workspace, using_default=not explicit_state)
         surface = OperatorSurface(
             workspace,
             state,
@@ -228,8 +308,15 @@ def load_request(path: str | Path) -> PodCreateRequest:
 
     source = Path(path)
     try:
-        raw = json.loads(source.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        descriptor = os.open(source, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+        with os.fdopen(descriptor, "rb") as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                raise OSError("the pod request is not a regular file")
+            data = handle.read(MAX_REQUEST_BYTES + 1)
+        if len(data) > MAX_REQUEST_BYTES:
+            raise ValueError(f"the pod request exceeds {MAX_REQUEST_BYTES} bytes")
+        raw = json.loads(data.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
         raise OperatorError(
             ErrorCode.INVALID_COMMAND, detail="the pod request JSON could not be read"
         ) from error

@@ -20,6 +20,7 @@ produces and what is checked in, so the pins below can never quietly stop
 describing the bytes on disk.
 """
 
+import shutil
 import sys
 from pathlib import Path
 
@@ -51,6 +52,15 @@ def fixture_files(chair: str) -> dict[str, bytes]:
 
 def build(model_root: Path, manifest_root: Path) -> dict[str, str]:
     """Write every fixture snapshot and manifest; return each chair's pin."""
+    # The output is an exact projection, so stale files must not survive a rebuild.
+    # Only an absent root is harmless; other cleanup failures would preserve bytes.
+    for root in (model_root, manifest_root):
+        try:
+            root.lstat()
+        except FileNotFoundError:
+            continue
+        # A FileNotFoundError inside rmtree is a cleanup race, not an absent root.
+        shutil.rmtree(root)
     pins: dict[str, str] = {}
     for chair in FIXTURE_CHAIRS:
         directory = model_root / chair

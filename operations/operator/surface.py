@@ -14,6 +14,7 @@ import secrets
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 import unicodedata
 import zipfile
@@ -71,6 +72,12 @@ from .volume_s3 import S3VolumeTarget, VolumeSpec, VolumeTransferRefusal
 UTC = timezone.utc
 OPERATOR_CLOSE_PREFIX = "CLOSE"
 DEFAULT_FIXTURE = "synthetic-two-page-v0"
+MAX_SEALED_MANIFEST_BYTES = 4 * 1024 * 1024
+# The Door's program path, named once. Two spellings of it — the fault drill's
+# call site and the guard that decides the drill forwards real ingress — is how
+# the drill could go on running while quietly stopping injecting: change one and
+# the comparison fails silently, rehearsing a fixture door under a real
+# submission's name.
 DOOR_PROGRAM = "pipeline/1_exemplar/door.py"
 _TRANSFER_CREDENTIAL_ENV = frozenset({"RUNPOD_S3_ACCESS_KEY", "RUNPOD_S3_SECRET_KEY"})
 _COPY_CHUNK_BYTES = 1024 * 1024
@@ -525,7 +532,8 @@ class OperatorSurface:
         if not manifest_path.is_file():
             raise OperatorError(ErrorCode.UPLOAD_MANIFEST_MISSING)
         try:
-            manifest_sha256 = sha256_file(manifest_path)
+            manifest_bytes = _read_sealed_manifest(manifest_path)
+            manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
         except OSError as error:
             raise OperatorError(
                 ErrorCode.UPLOAD_MANIFEST_MISSING,
@@ -556,23 +564,24 @@ class OperatorSurface:
                 fail_once_for=self._fault_upload_key(manifest_path, prefix),
             )
         try:
-            report = ChecksummedTransfer(
-                source_root=source_path,
-                submission_manifest=manifest_path,
-                target=store,
-                prefix=prefix,
-                journal_path=self.state_root / "transfer" / f"{manifest_sha256}.json",
-            ).resume()
-            if sha256_file(manifest_path) != manifest_sha256:
-                raise TransferFailure("sealed submission record changed during transfer")
+            snapshot_root = self.state_root / "transfer" / ".manifest-snapshots"
+            snapshot_root.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(prefix="manifest-", dir=snapshot_root) as temporary:
+                manifest_snapshot = Path(temporary) / "sealed-manifest.json"
+                manifest_snapshot.write_bytes(manifest_bytes)
+                report = ChecksummedTransfer(
+                    source_root=source_path,
+                    submission_manifest=manifest_snapshot,
+                    target=store,
+                    prefix=prefix,
+                    journal_path=self.state_root / "transfer" / f"{manifest_sha256}.json",
+                ).resume()
         except (TransferFailure, VolumeTransferRefusal, OSError, ValueError) as error:
             receipt = self._write_action(
                 "upload",
                 {
                     "summary": "Upload is partial and can be resumed from its verified files.",
                     "state": "partial-transfer",
-                    "source": str(source_path.resolve()),
-                    "submission_manifest": str(manifest_path.resolve()),
                     "submission_manifest_sha256": manifest_sha256,
                     "detail": str(error),
                     "zero_gpu_hours": True,
@@ -591,8 +600,6 @@ class OperatorSurface:
                     else "Upload is complete; every recorded file was verified at its target."
                 ),
                 "state": "complete",
-                "source": str(source_path.resolve()),
-                "submission_manifest": str(manifest_path.resolve()),
                 "submission_manifest_sha256": manifest_sha256,
                 "transfer": report.to_record(),
                 "zero_gpu_hours": True,
@@ -1110,8 +1117,6 @@ class OperatorSurface:
                         + (summary if isinstance(summary, str) else "saved record")
                     )
                     lines.extend(_status_projection(action, payload))
-                    if action == "upload":
-                        lines.extend(_status_manifest_projection(payload))
                 except RecordError as error:
                     label = f"{action} record {number}"
                     unreadable.append(f"{label}: {error}")
@@ -1679,8 +1684,18 @@ def _status_projection(action: str, payload: dict[str, Any]) -> list[str]:
             remediation = report.get("remediation")
             if report["color"] != "green" and isinstance(remediation, str) and remediation:
                 lines.append(f"  Saved boot next step: {remediation}")
-    elif action == "upload" and payload.get("zero_gpu_hours") is True:
-        lines.append("  Saved upload statement: zero GPU-hours were used.")
+    elif action == "upload":
+        if payload.get("zero_gpu_hours") is True:
+            lines.append("  Saved upload statement: zero GPU-hours were used.")
+        # Local paths are machine details; the digest is the durable manifest identity.
+        recorded_sha256 = payload.get("submission_manifest_sha256")
+        if not (
+            isinstance(recorded_sha256, str)
+            and len(recorded_sha256) == 64
+            and all(character in "0123456789abcdef" for character in recorded_sha256)
+        ):
+            raise RecordError("saved upload record does not bind its submission record digest")
+        lines.append(f"  Sealed submission record digest: {recorded_sha256}.")
     elif action == "run":
         state = payload.get("state")
         if isinstance(state, str):
@@ -1716,46 +1731,17 @@ def _status_projection(action: str, payload: dict[str, Any]) -> list[str]:
     return lines
 
 
-def _status_manifest_projection(payload: dict[str, Any]) -> list[str]:
-    """Read only the exact sealed manifest bound into the upload receipt.
+def _read_sealed_manifest(path: Path) -> bytes:
+    """Read one bounded regular-file snapshot without following its final name."""
 
-    The sealed manifest lives outside `.verbatus/`, at whatever path the
-    operator chose, and this tool does not own it or promise to keep it:
-    deleting it, or re-sealing a later batch to the same filename, is
-    ordinary housekeeping, not a corrupted operator record. Only a malformed
-    *receipt* — one that fails to bind a string path and digest at all — is
-    this operator's own saved record failing, and that alone is
-    `RecordError`/`STATUS_UNREADABLE`. A missing or since-changed external
-    file is its own named ledger line: the upload receipt still stands
-    either way, and `status` keeps showing every other record.
-    """
-
-    path_text = payload.get("submission_manifest")
-    recorded_sha256 = payload.get("submission_manifest_sha256")
-    if path_text is None and recorded_sha256 is None:
-        return []
-    if not isinstance(path_text, str) or not isinstance(recorded_sha256, str):
-        raise RecordError("saved upload record does not bind its submission record digest")
-    try:
-        path = Path(path_text)
-        if sha256_file(path) != recorded_sha256:
-            raise ValueError("digest no longer matches the upload receipt")
-        manifest = submission_door.load_manifest(path)
-        files = manifest.get("files")
-        if not isinstance(files, list):
-            raise ValueError("has no file list")
-    except FileNotFoundError:
-        return [
-            f"  The sealed submission record at {path_text} is no longer present. "
-            "The upload receipt itself still stands."
-        ]
-    except Exception:
-        return [
-            f"  The sealed submission record at {path_text} no longer matches what the "
-            "upload receipt recorded, or could not be read. The upload receipt itself "
-            "still stands."
-        ]
-    return [f"  Saved sealed submission record names {len(files)} file(s)."]
+    descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    with os.fdopen(descriptor, "rb") as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            raise OSError("the sealed submission record is not a regular file")
+        data = handle.read(MAX_SEALED_MANIFEST_BYTES + 1)
+    if len(data) > MAX_SEALED_MANIFEST_BYTES:
+        raise OSError(f"the sealed submission record exceeds {MAX_SEALED_MANIFEST_BYTES} bytes")
+    return data
 
 
 def _load_policy(path: str | Path) -> SpendPolicy:
