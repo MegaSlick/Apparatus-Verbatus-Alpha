@@ -4853,10 +4853,10 @@ def test_a_run_interrupted_at_every_boundary_resumes_to_the_same_tree_and_tally(
 
     `test_an_interrupted_run_resumes_without_rewriting_what_survived` interrupts
     the happy path once, by deleting whole stage directories. This drives the
-    *review* scenario -- the one carrying held units and a bounded recovery loop,
-    which is what a cross-shard straddle produces today (the Designator holds an
-    act whose continuation page is not in this run, `exemplar-continuation-not-
-    sealed`) -- and it stops the run at every boundary in turn rather than one.
+    *review* scenario -- the one carrying held units and a bounded recovery loop --
+    and stops the run at every boundary in turn rather than one. This is a resume
+    and tally test for one run; it does not claim to exercise a corpus split or
+    reciprocal cross-shard records.
 
     Two things must hold at each of them. The finished tree is byte-identical to
     the uninterrupted one, so no hold is lost and no recovery round is spent

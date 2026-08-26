@@ -638,10 +638,6 @@ def test_a_duplicate_reason_scoped_kind_is_refused(tmp_path):
         load_hard_failure_policy(path)
 
 
-if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__]))
-
-
 def test_a_crash_and_resume_does_not_spend_the_cap_twice_for_one_act(tmp_path):
     """The wall a shard can die against: the tally must not double-count on resume.
 
@@ -698,3 +694,7 @@ def test_a_crash_and_resume_does_not_spend_the_cap_twice_for_one_act(tmp_path):
     )
     breached = tally_hard_failures(tree, policy)
     assert breached["count"] == 3 and breached["breached"] is True
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__]))
