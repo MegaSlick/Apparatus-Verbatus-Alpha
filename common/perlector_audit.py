@@ -53,13 +53,23 @@ FLAG_CLASSES: Final = frozenset(
     {"date-sequence", "numbering", "order", "testimony-diff", "repetition", "within-crop"}
 )
 _DRAFT_FIELDS: Final = frozenset(
-    {"act_key", "attempt_ordinal", "semi_final_text", "page_id", "round_cap", "policy", "flags"}
+    {
+        "act_key",
+        "attempt_ordinal",
+        "semi_final_text",
+        "page_id",
+        "page_ids",
+        "round_cap",
+        "policy",
+        "flags",
+    }
 )
 _FINDING_FIELDS: Final = frozenset(
     {
         "act_key",
         "attempt_ordinal",
         "page_id",
+        "page_ids",
         "round_cap",
         "policy",
         "flags",
@@ -182,7 +192,11 @@ def _validate_reproof_rows(rows: list[Any], *, text_length: int | None, subject:
     for reproof in rows:
         if not isinstance(reproof, dict) or set(reproof) != {"class", "location", "prompt"}:
             raise SchemaRefusal(f"a {subject} re-proof is not its closed schema")
-        if reproof["class"] not in FLAG_CLASSES or not isinstance(reproof["prompt"], str):
+        if (
+            not isinstance(reproof["class"], str)
+            or reproof["class"] not in FLAG_CLASSES
+            or not isinstance(reproof["prompt"], str)
+        ):
             raise SchemaRefusal(f"a {subject} re-proof has an unknown class or prompt")
         location = _location(
             reproof["location"], text_length=text_length, label=f"{subject} re-proof"
@@ -283,13 +297,37 @@ def validate_audit_request(payload: Any) -> dict[str, Any]:
 
 
 def _validate_common(value: dict[str, Any], *, text_length: int) -> None:
-    if (
-        not isinstance(value["act_key"], str)
-        or not value["act_key"]
-        or not isinstance(value["page_id"], str)
-        or not value["page_id"]
-    ):
-        raise SchemaRefusal("an audit record has no act or page identity")
+    if not isinstance(value["act_key"], str) or not value["act_key"]:
+        raise SchemaRefusal(
+            "an audit record has no non-empty act identity; the finding cannot be bound "
+            "to an act; restore the act_key before publishing it"
+        )
+    if not isinstance(value["page_id"], str) or not value["page_id"]:
+        raise SchemaRefusal(
+            "an audit record has no non-empty primary page identity; its page evidence "
+            "cannot be reconciled; restore page_id before publishing it"
+        )
+    page_ids = value["page_ids"]
+    if not isinstance(page_ids, list) or not page_ids:
+        raise SchemaRefusal(
+            "an audit record has no non-empty contributing-page list; page evidence would "
+            "disappear from the audit; restore page_ids before publishing it"
+        )
+    if any(not isinstance(page_id, str) or not page_id for page_id in page_ids):
+        raise SchemaRefusal(
+            "an audit record carries an unusable contributing-page identity; its page "
+            "denominator cannot be addressed; replace it with non-empty page ids"
+        )
+    if len(page_ids) != len(set(page_ids)):
+        raise SchemaRefusal(
+            "an audit record repeats a contributing page identity; duplicate evidence would "
+            "distort the denominator; retain each page exactly once"
+        )
+    if value["page_id"] != page_ids[0]:
+        raise SchemaRefusal(
+            "an audit record's primary page is not first in its contributing-page list; the "
+            "scalar and page set disagree; restore the primary-first page order"
+        )
     if (
         not isinstance(value["attempt_ordinal"], int)
         or isinstance(value["attempt_ordinal"], bool)
@@ -319,7 +357,7 @@ def _validate_common(value: dict[str, Any], *, text_length: int) -> None:
     for flag in value["flags"]:
         if not isinstance(flag, dict) or set(flag) != {"class", "location"}:
             raise SchemaRefusal("an audit flag is not its closed schema")
-        if flag["class"] not in FLAG_CLASSES:
+        if not isinstance(flag["class"], str) or flag["class"] not in FLAG_CLASSES:
             raise SchemaRefusal("an audit flag has an unknown class or malformed location")
         _location(flag["location"], text_length=text_length, label="audit flag")
 
@@ -348,7 +386,10 @@ def validate_finding(payload: Any, *, text: str, flag_text: str | None = None) -
     for change in value["change_record"]:
         if not isinstance(change, dict) or set(change) != {"start", "end", "triggering_flag_class"}:
             raise SchemaRefusal("an audit change record is not its closed schema")
-        if change["triggering_flag_class"] not in FLAG_CLASSES:
+        if (
+            not isinstance(change["triggering_flag_class"], str)
+            or change["triggering_flag_class"] not in FLAG_CLASSES
+        ):
             raise SchemaRefusal("an audit change record names an unknown triggering flag class")
         _location(
             {"start": change["start"], "end": change["end"]},
@@ -475,9 +516,55 @@ def validate_chain(tree, reading: dict[str, Any], act_id: str) -> dict[str, Any]
         text=payload["text"],
         flag_text=draft_payload["semi_final_text"],
     )
-    shared_fields = ("act_key", "attempt_ordinal", "page_id", "round_cap", "policy", "flags")
+    shared_fields = (
+        "act_key",
+        "attempt_ordinal",
+        "page_id",
+        "page_ids",
+        "round_cap",
+        "policy",
+        "flags",
+    )
     if any(draft_payload[field] != finding_payload[field] for field in shared_fields):
         raise SchemaRefusal(f"audit draft and finding for {act_id} restate different frozen facts")
+    basis = payload.get("basis")
+    if not isinstance(basis, dict):
+        raise SchemaRefusal(
+            f"reading of {act_id} has no object basis; its completed reading cannot be "
+            "reconciled to evidence; restore the sealed basis before consuming it"
+        )
+    regions = basis.get("regions")
+    if not isinstance(regions, list) or not regions:
+        raise SchemaRefusal(
+            f"reading of {act_id} has no non-empty region basis; its completed text names "
+            "no ink; restore the contributing region records before consuming it"
+        )
+    pages_by_ordinal: dict[int, str] = {}
+    basis_page_ids: list[str] = []
+    for region in regions:
+        ordinal = region.get("source_page_ordinal") if isinstance(region, dict) else None
+        page_id = region.get("source_page_id") if isinstance(region, dict) else None
+        if (
+            not isinstance(ordinal, int)
+            or isinstance(ordinal, bool)
+            or not isinstance(page_id, str)
+            or not page_id
+            or (ordinal in pages_by_ordinal and pages_by_ordinal[ordinal] != page_id)
+        ):
+            raise SchemaRefusal(
+                f"reading of {act_id} has an unusable source page in its region basis; the "
+                "audit page set cannot be derived; restore one page id per integer ordinal"
+            )
+        pages_by_ordinal[ordinal] = page_id
+        # Region order is sealed act order; source-page ordinal is identity and
+        # may place a continuation before the primary page numerically.
+        if page_id not in basis_page_ids:
+            basis_page_ids.append(page_id)
+    if draft_payload["page_ids"] != basis_page_ids:
+        raise SchemaRefusal(
+            f"audit page set for {act_id} disagrees with the reading's sealed region basis; "
+            "the finding omits or invents page evidence; rebuild it from the sealed regions"
+        )
     if draft_payload["act_key"] != payload.get("act_key") or draft_payload[
         "attempt_ordinal"
     ] != payload.get("attempt_ordinal"):

@@ -265,9 +265,9 @@ def _verify_act_attachment_view(
             f"act {act_id} is accounted to page {page_id!r}, which none of its basis regions "
             "cites; a record's page identity and the ink it was read from are one fact"
         )
-    count = 0
     views: dict[str, str] = {}
-    seen_chairs: set[str] = set()
+    page_witness_chairs: set[str] = set()
+    seen_rows: set[tuple[str, int | None]] = set()
     for item in attachments:
         if (
             not isinstance(item, dict)
@@ -279,15 +279,33 @@ def _verify_act_attachment_view(
             raise SchemaRefusal(
                 f"act {act_id} referenced act-attachment has malformed witness scope"
             )
-        if item["chair"] in seen_chairs:
+        # A row is identified by (chair, page), not by chair alone. A continuation
+        # act's crop spans more than one source page, so one chair legitimately
+        # contributes one row per contributing page -- exactly one of which is the
+        # act's own page and can be `attached`. The duplicate-row refusal below and
+        # the per-chair comparison-view refusal further down are both kept: between
+        # them nothing a repeated chair could silently replace survives.
+        page_ordinal = item.get("page_ordinal")
+        if page_ordinal is not None and (
+            not isinstance(page_ordinal, int) or isinstance(page_ordinal, bool)
+        ):
             raise SchemaRefusal(
-                f"act {act_id} referenced act-attachment repeats witness {item['chair']!r}; "
-                "a repeated chair would silently replace a comparison view"
+                f"act {act_id} referenced act-attachment has malformed witness scope"
             )
-        seen_chairs.add(item["chair"])
+        row = (item["chair"], page_ordinal)
+        if row in seen_rows:
+            raise SchemaRefusal(
+                f"act {act_id} referenced act-attachment repeats witness {item['chair']!r} "
+                f"on page {page_ordinal!r}; a repeated row would silently replace a "
+                "comparison view"
+            )
+        seen_rows.add(row)
         if not item["page_witness"]:
             continue
-        count += 1
+        # What the dossier discloses is how many distinct chairs witnessed a page,
+        # never how many attachment rows there are: a two-page continuation act must
+        # not report four witnesses where the run configured two.
+        page_witness_chairs.add(item["chair"])
         if not item.get("attached"):
             continue
         chair, alignment, testimony_ref = (
@@ -314,8 +332,13 @@ def _verify_act_attachment_view(
             raise SchemaRefusal(
                 f"act {act_id} referenced act-attachment has no valid comparison view"
             )
+        if chair in views:
+            raise SchemaRefusal(
+                f"act {act_id} referenced act-attachment gives witness {chair!r} a second "
+                "comparison view; a repeated chair would silently replace a comparison view"
+            )
         views[chair] = markup_text_view(reported[span["start"] : span["end"]])["text"]
-    if count != attachment_view["page_witness_count"]:
+    if len(page_witness_chairs) != attachment_view["page_witness_count"]:
         raise SchemaRefusal(
             f"act {act_id} embedded page-witness count disagrees with its attachment"
         )
