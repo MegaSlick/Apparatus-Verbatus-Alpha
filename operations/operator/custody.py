@@ -37,7 +37,7 @@ import errno
 import json
 import os
 import platform as host_platform
-import shutil
+import stat
 import struct
 import subprocess
 import sys
@@ -230,25 +230,49 @@ class Confinement:
 
     def __init__(self) -> None:
         self._launcher_path: str | None = None
+        self._launcher_identity: tuple[int, int] | None = None
 
     def launcher(self, name: str, *, system_path: str) -> str:
-        """Resolve the trusted launcher once for both probe and real child.
+        """Pin one fixed-system launcher for both probe and real child.
 
-        Resolving twice left a probe/launch seam: a changed PATH or replaced
-        symlink could make the preflight test one binary and the child use
-        another. Prefer the fixed system path, and otherwise pin the first
-        resolved result on this backend instance.
+        A fallback through ``PATH`` lets an inherited environment choose the
+        program that establishes the boundary. A resolved pathname alone is
+        not a pin either: the directory entry can be replaced between the
+        probe and the real child while retaining the same spelling. Require
+        the reviewed absolute system location, refuse a symlink there, and
+        compare its device/inode identity every time the command is built.
         """
 
-        if self._launcher_path is not None:
-            return self._launcher_path
-        candidate = system_path if Path(system_path).is_file() else shutil.which(name)
-        if candidate is None:
+        candidate = Path(system_path)
+        if not candidate.is_absolute():
             raise OperatorError(
                 ErrorCode.CONSOLE_CUSTODY_REFUSED,
-                detail=f"this host has no {name} confinement launcher",
+                detail=f"the reviewed {name} confinement launcher path is not absolute",
             )
-        self._launcher_path = str(Path(candidate).resolve())
+        try:
+            identity = candidate.stat(follow_symlinks=False)
+        except OSError as error:
+            raise OperatorError(
+                ErrorCode.CONSOLE_CUSTODY_REFUSED,
+                detail=f"this host has no trusted {name} confinement launcher at {candidate}",
+            ) from error
+        if not stat.S_ISREG(identity.st_mode):
+            raise OperatorError(
+                ErrorCode.CONSOLE_CUSTODY_REFUSED,
+                detail=f"the trusted {name} confinement launcher at {candidate} is not a regular file",
+            )
+        observed = (identity.st_dev, identity.st_ino)
+        if self._launcher_path is None:
+            self._launcher_path = str(candidate)
+            self._launcher_identity = observed
+        elif self._launcher_path != str(candidate) or self._launcher_identity != observed:
+            raise OperatorError(
+                ErrorCode.CONSOLE_CUSTODY_REFUSED,
+                detail=(
+                    f"the trusted {name} confinement launcher changed after the boundary "
+                    "probe selected it; the real child was not started"
+                ),
+            )
         return self._launcher_path
 
     def command(self, command: Sequence[str], *, writable: Path | None = None) -> list[str]:
@@ -751,9 +775,34 @@ def run_confined(
     require_no_provider_credentials(environment)
     backend = confinement()
     checked_cwd = cwd.resolve()
+    checked_writable = None
+    writable_identity = None
+    if writable is not None:
+        lexical_identity = _plain_directory_identity(writable, "the confined writable directory")
+        checked_writable = writable.resolve()
+        writable_identity = _plain_directory_identity(
+            checked_writable, "the confined writable directory"
+        )
+        if lexical_identity != writable_identity:
+            raise OperatorError(
+                ErrorCode.CONSOLE_CUSTODY_REFUSED,
+                detail=(
+                    "the confined writable directory reaches a different device or inode "
+                    "after path resolution; symlinked write allowances are refused"
+                ),
+            )
     with _delegation_boundary(backend):
-        verify_confinement(backend, writable=writable, cwd=checked_cwd, environment=environment)
-        wrapped = backend.command(checked_command, writable=writable)
+        verify_confinement(
+            backend, writable=checked_writable, cwd=checked_cwd, environment=environment
+        )
+        if checked_writable is not None:
+            _require_directory_identity(checked_writable, writable_identity)
+        wrapped = backend.command(checked_command, writable=checked_writable)
+        if checked_writable is not None:
+            # ``command`` constructs policy text and is an extension seam. It
+            # must not be able to swap the allowed path after the preflight
+            # identity check and before the subprocess consumes that policy.
+            _require_directory_identity(checked_writable, writable_identity)
         with _launcher_environment_hidden(backend):
             completed = subprocess.run(
                 wrapped,
@@ -764,7 +813,42 @@ def run_confined(
                 text=True,
                 check=False,
             )
+        if checked_writable is not None:
+            _require_directory_identity(checked_writable, writable_identity)
     return backend, completed
+
+
+def _plain_directory_identity(path: Path, label: str) -> tuple[int, int]:
+    """Return a no-follow directory identity suitable for later comparison."""
+
+    try:
+        observed = path.stat(follow_symlinks=False)
+    except OSError as error:
+        raise OperatorError(
+            ErrorCode.CONSOLE_CUSTODY_REFUSED, detail=f"{label} could not be inspected: {error}"
+        ) from error
+    if not stat.S_ISDIR(observed.st_mode):
+        raise OperatorError(
+            ErrorCode.CONSOLE_CUSTODY_REFUSED,
+            detail=f"{label} is not a real directory; a symlink is not a writable boundary",
+        )
+    return observed.st_dev, observed.st_ino
+
+
+def _require_directory_identity(path: Path, expected: tuple[int, int] | None) -> None:
+    """Refuse a writable allowance whose directory entry changed after review."""
+
+    if (
+        expected is None
+        or _plain_directory_identity(path, "the confined writable directory") != expected
+    ):
+        raise OperatorError(
+            ErrorCode.CONSOLE_CUSTODY_REFUSED,
+            detail=(
+                "the confined writable directory changed device or inode between the "
+                "boundary probe and use; the child result is not trusted"
+            ),
+        )
 
 
 def landlock_command(command: Sequence[str], *, writable: Path | None = None) -> list[str]:

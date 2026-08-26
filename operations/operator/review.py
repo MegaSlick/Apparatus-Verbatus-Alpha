@@ -20,6 +20,10 @@ from common.runtree.store import RunTree
 from .advance import ADVANCE_SUBJECT_PREFIX, stored_boundary, verify_sealed_boundary
 from .errors import ErrorCode, OperatorError
 
+MAX_REVIEW_ITEMS_BYTES = 16 * 1024 * 1024
+MAX_REVIEW_ITEMS = 50_000
+_REVIEW_ITEMS_MEMBER = "review-items.jsonl"
+
 
 @dataclass(frozen=True, slots=True)
 class ReviewProjection:
@@ -233,12 +237,28 @@ def _advance_records(
     than skipped, matching every other read this projection performs.
     """
 
-    receipts_dir = tree.resolve("receipts/sha256")
-    if not receipts_dir.is_dir():
+    receipts_parent = tree.root / "receipts"
+    receipts_dir = receipts_parent / "sha256"
+    if not receipts_dir.exists():
         return ()
+    if (
+        receipts_parent.is_symlink()
+        or receipts_dir.is_symlink()
+        or not receipts_parent.is_dir()
+        or not receipts_dir.is_dir()
+    ):
+        raise OperatorError(
+            ErrorCode.CONSOLE_TREE_UNREADABLE,
+            detail="the content-addressed receipt directory is not a real directory",
+        )
     records: list[dict[str, Any]] = []
     for path in sorted(receipts_dir.glob("*.json")):
         relative_path = path.relative_to(tree.root).as_posix()
+        if path.is_symlink() or not path.is_file():
+            raise OperatorError(
+                ErrorCode.CONSOLE_TREE_UNREADABLE,
+                detail=f"receipt {relative_path} is not an immutable regular file",
+            )
         data = tree.read_bytes(relative_path)
         try:
             decoded = json.loads(data.decode("utf-8"))
@@ -341,12 +361,54 @@ def _review_items(tree: RunTree, payload: dict[str, Any]) -> tuple[dict[str, Any
                 ),
             )
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
-            if "review-items.jsonl" not in archive.namelist():
+            members = [
+                member for member in archive.infolist() if member.filename == _REVIEW_ITEMS_MEMBER
+            ]
+            if not members:
                 return None
-            return tuple(
-                json.loads(line) for line in archive.read("review-items.jsonl").splitlines()
-            )
-    except (OSError, ValueError, zipfile.BadZipFile) as error:
+            if len(members) != 1:
+                raise OperatorError(
+                    ErrorCode.CONSOLE_TREE_UNREADABLE,
+                    detail="the Armarium bundle contains more than one review-items.jsonl",
+                )
+            member = members[0]
+            if member.is_dir() or member.file_size > MAX_REVIEW_ITEMS_BYTES:
+                raise OperatorError(
+                    ErrorCode.CONSOLE_TREE_UNREADABLE,
+                    detail=(
+                        "review-items.jsonl exceeds the operator review limit of "
+                        f"{MAX_REVIEW_ITEMS_BYTES} bytes"
+                    ),
+                )
+            with archive.open(member) as source:
+                review_bytes = source.read(MAX_REVIEW_ITEMS_BYTES + 1)
+            if len(review_bytes) > MAX_REVIEW_ITEMS_BYTES:
+                raise OperatorError(
+                    ErrorCode.CONSOLE_TREE_UNREADABLE,
+                    detail=(
+                        "review-items.jsonl expands beyond the operator review limit of "
+                        f"{MAX_REVIEW_ITEMS_BYTES} bytes"
+                    ),
+                )
+            lines = review_bytes.splitlines()
+            if len(lines) > MAX_REVIEW_ITEMS:
+                raise OperatorError(
+                    ErrorCode.CONSOLE_TREE_UNREADABLE,
+                    detail=(
+                        "review-items.jsonl contains more than the operator review limit of "
+                        f"{MAX_REVIEW_ITEMS} records"
+                    ),
+                )
+            items = tuple(json.loads(line) for line in lines)
+            if any(not isinstance(item, dict) for item in items):
+                raise OperatorError(
+                    ErrorCode.CONSOLE_TREE_UNREADABLE,
+                    detail="review-items.jsonl contains a row that is not an object",
+                )
+            return items
+    except OperatorError:
+        raise
+    except (OSError, ValueError, RuntimeError, zipfile.BadZipFile) as error:
         raise OperatorError(
             ErrorCode.CONSOLE_TREE_UNREADABLE, detail="review-items.jsonl could not be read"
         ) from error

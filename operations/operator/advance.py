@@ -10,6 +10,8 @@ approval for an unrelated action.
 from __future__ import annotations
 
 import json
+import os
+import stat
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -29,7 +31,11 @@ from .errors import ErrorCode, OperatorError
 
 ADVANCE_ACTION = "advance"
 ADVANCE_SUBJECT_PREFIX = "stage-boundary:"
+MAX_ADVANCE_REASON_CHARACTERS = 4_000
+MAX_ADVANCE_REQUEST_CHARACTERS = 65_536
 UTC = timezone.utc
+
+_DIRECTORY_OPEN_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
 
 
 def advance_subject(stage: str) -> str:
@@ -38,6 +44,110 @@ def advance_subject(stage: str) -> str:
     if stage not in STAGES:
         raise ApprovalRefusal(f"advance names unknown stage {stage!r}; no boundary was advanced")
     return f"{ADVANCE_SUBJECT_PREFIX}{stage}"
+
+
+def directory_identity(path: Path, label: str) -> tuple[int, int]:
+    """Name one real directory by device and inode without following its leaf."""
+
+    try:
+        observed = path.stat(follow_symlinks=False)
+    except OSError as error:
+        raise ApprovalRefusal(f"{label} could not be inspected ({error})") from error
+    if not stat.S_ISDIR(observed.st_mode):
+        raise ApprovalRefusal(f"{label} is not a real directory; symlinks are refused")
+    return observed.st_dev, observed.st_ino
+
+
+def require_directory_identity(path: Path, expected: tuple[int, int], label: str) -> None:
+    """Refuse when a checked directory was replaced before or during use."""
+
+    if directory_identity(path, label) != expected:
+        raise ApprovalRefusal(
+            f"{label} changed device or inode after it was reviewed; "
+            "an advance record may exist, so inspect review before retrying"
+        )
+
+
+def receipt_directory_identity(
+    run_root: Path, run_identity: tuple[int, int], *, create: bool
+) -> tuple[int, int]:
+    """Open the receipt path beneath a pinned root, never through a symlink.
+
+    Directory descriptors make creation relative to the run object the parent
+    already inspected, rather than relative to a pathname an attacker can swap.
+    The case-fold check applies the default-APFS rule on every filesystem so a
+    tree prepared on Linux cannot acquire both ``receipts`` and ``Receipts``
+    and become ambiguous only after it moves to a Mac.
+    """
+
+    if not getattr(os, "O_DIRECTORY", 0) or not getattr(os, "O_NOFOLLOW", 0):
+        raise ApprovalRefusal(
+            "this platform cannot open the advance receipt directory with no-follow semantics"
+        )
+    descriptors: list[int] = []
+    try:
+        root_descriptor = os.open(run_root, _DIRECTORY_OPEN_FLAGS)
+        descriptors.append(root_descriptor)
+        if _descriptor_identity(root_descriptor) != run_identity:
+            raise ApprovalRefusal(
+                "the reviewed run tree changed device or inode before its receipt path was opened"
+            )
+        parent_descriptor = _open_child_directory(
+            root_descriptor, "receipts", create=create, label="run-tree receipts directory"
+        )
+        descriptors.append(parent_descriptor)
+        receipt_descriptor = _open_child_directory(
+            parent_descriptor,
+            "sha256",
+            create=create,
+            label="advance receipt directory",
+        )
+        descriptors.append(receipt_descriptor)
+        return _descriptor_identity(receipt_descriptor)
+    except OSError as error:
+        raise ApprovalRefusal(
+            f"the advance receipt directory could not be opened ({error})"
+        ) from error
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+
+def _open_child_directory(parent: int, name: str, *, create: bool, label: str) -> int:
+    _refuse_case_variant(parent, name, label)
+    if create:
+        try:
+            os.mkdir(name, dir_fd=parent)
+        except FileExistsError:
+            pass
+        _refuse_case_variant(parent, name, label)
+    try:
+        return os.open(name, _DIRECTORY_OPEN_FLAGS, dir_fd=parent)
+    except FileNotFoundError:
+        raise ApprovalRefusal(f"the {label} does not exist") from None
+
+
+def _refuse_case_variant(parent: int, name: str, label: str) -> None:
+    variants = sorted(entry for entry in os.listdir(parent) if entry.casefold() == name.casefold())
+    if any(entry != name for entry in variants):
+        raise ApprovalRefusal(
+            f"the {label} collides by case with {variants}; the path is ambiguous on default APFS"
+        )
+
+
+def _descriptor_identity(descriptor: int) -> tuple[int, int]:
+    observed = os.fstat(descriptor)
+    return observed.st_dev, observed.st_ino
+
+
+def validate_advance_reason(reason: Any) -> str:
+    """Bound the only requester-controlled text that reaches an approval record."""
+
+    if not isinstance(reason, str) or not reason.strip():
+        raise ApprovalRefusal("advance reason is blank or not a string")
+    if len(reason) > MAX_ADVANCE_REASON_CHARACTERS:
+        raise ApprovalRefusal(f"advance reason exceeds {MAX_ADVANCE_REASON_CHARACTERS} characters")
+    return reason
 
 
 def verify_sealed_boundary(tree: RunTree, stage: str) -> None:
@@ -158,6 +268,7 @@ def record_advance(
     person reads, every time they read it.
     """
 
+    reason = validate_advance_reason(reason)
     _seal, seal_digest = stored_boundary(tree, stage)
     if expected_digest is None:
         raise ApprovalRefusal(
@@ -255,8 +366,9 @@ def trigger_advance(
     # path the worker is permitted to write into is even created. The worker's
     # own check is the digest equality it binds; `record_advance` says why.
     try:
+        run_identity = directory_identity(tree.root, "the reviewed run tree")
         _seal, current_digest = sealed_boundary(tree, stage)
-    except ApprovalRefusal as error:
+    except (ApprovalRefusal, OSError) as error:
         raise OperatorError(ErrorCode.ADVANCE_REFUSED, detail=str(error)) from error
     # Checked after the seal is read, so an unsealed boundary is still refused
     # as unsealed rather than reported as a malformed request.
@@ -276,8 +388,14 @@ def trigger_advance(
                 "record was written"
             ),
         )
-    receipt_dir = tree.resolve("receipts/sha256")
-    receipt_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        reason = validate_advance_reason(reason)
+        require_directory_identity(tree.root, run_identity, "the reviewed run tree")
+        receipt_dir = tree.root / "receipts" / "sha256"
+        receipt_identity = receipt_directory_identity(tree.root, run_identity, create=True)
+        require_directory_identity(tree.root, run_identity, "the reviewed run tree")
+    except (ApprovalRefusal, OSError) as error:
+        raise OperatorError(ErrorCode.ADVANCE_REFUSED, detail=str(error)) from error
     # The run identity travels in argv and the decision travels on stdin, and
     # the split is the authority boundary, not a style choice: argv is written
     # by this trusted parent and names *which tree* may be written, while stdin
@@ -288,12 +406,25 @@ def trigger_advance(
     # `[a-z0-9._-]`, and `root` is absolute, so neither value can be read by
     # the child's parser as an option.
     request = json.dumps({"stage": stage, "reason": reason, "expected_digest": expected_digest})
+    if len(request) > MAX_ADVANCE_REQUEST_CHARACTERS:
+        raise OperatorError(
+            ErrorCode.ADVANCE_REFUSED,
+            detail="the bounded advance request could not be represented safely",
+        )
     command = python_module_command(
         "operations.operator.advance_worker",
         "--run-root",
         str(root),
         "--run-id",
         run_id,
+        "--run-device",
+        str(run_identity[0]),
+        "--run-inode",
+        str(run_identity[1]),
+        "--receipt-device",
+        str(receipt_identity[0]),
+        "--receipt-inode",
+        str(receipt_identity[1]),
     )
     backend, completed = run_confined(
         command,
@@ -309,7 +440,21 @@ def trigger_advance(
             # verdict on the advance request the worker never saw.
             raise OperatorError(ErrorCode.CONSOLE_CUSTODY_REFUSED, detail=launcher)
         raise OperatorError(ErrorCode.ADVANCE_REFUSED, detail=completed.stdout or completed.stderr)
+    if completed.stderr:
+        raise OperatorError(
+            ErrorCode.ADVANCE_REFUSED,
+            detail=(
+                "the advance worker reported a refusal despite returning success; it may "
+                "have written an advance record, so inspect review before retrying: "
+                + completed.stderr
+            ),
+        )
     try:
+        require_directory_identity(tree.root, run_identity, "the reviewed run tree")
+        if receipt_directory_identity(tree.root, run_identity, create=False) != receipt_identity:
+            raise ApprovalRefusal(
+                "the advance receipt directory changed device or inode after worker use"
+            )
         decoded = json.loads(completed.stdout)
         reference = ApprovalRecordReference(decoded["relative_path"], decoded["sha256"])
         record = tree.read_approval_record(reference)
@@ -326,6 +471,7 @@ def trigger_advance(
             ErrorCode.ADVANCE_REFUSED,
             detail=(
                 "the advance worker returned no checked decision reference; it may have "
-                "written an advance record, so inspect the review surface before retrying"
+                "written an advance record, so inspect the review surface before retrying: "
+                f"{error}"
             ),
         ) from error

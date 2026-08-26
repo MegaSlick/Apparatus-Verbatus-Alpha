@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 import types
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -53,6 +54,21 @@ def _make_run(tmp_path: Path) -> tuple[Path, str]:
 
 def _boundary_digest(run_root: Path, run_id: str, stage: str = "armarium") -> str:
     return advance.sealed_boundary(RunTree(run_root, run_id), stage)[1]
+
+
+def _worker_identity_arguments(tree: RunTree) -> list[str]:
+    run_identity = advance.directory_identity(tree.root, "test run tree")
+    receipt_identity = advance.receipt_directory_identity(tree.root, run_identity, create=False)
+    return [
+        "--run-device",
+        str(run_identity[0]),
+        "--run-inode",
+        str(run_identity[1]),
+        "--receipt-device",
+        str(receipt_identity[0]),
+        "--receipt-inode",
+        str(receipt_identity[1]),
+    ]
 
 
 def test_read_surface_projects_seals_census_pages_crops_and_optional_review_shape(tmp_path: Path):
@@ -273,6 +289,7 @@ def test_the_confined_worker_completes_an_advance_without_the_imports_seatbelt_d
         str(run_root),
         "--run-id",
         run_id,
+        *_worker_identity_arguments(tree),
         stdin=request,
     )
     assert worker.returncode == 0, worker.stderr
@@ -292,6 +309,92 @@ def test_the_confined_worker_completes_an_advance_without_the_imports_seatbelt_d
     )
     assert checker.returncode != 0
     assert "pypdfium2 is denied here" in checker.stderr
+
+
+def test_the_advance_worker_refuses_an_oversized_request_before_opening_a_tree(
+    tmp_path, monkeypatch
+):
+    oversized = "x" * (advance.MAX_ADVANCE_REQUEST_CHARACTERS + 1)
+    monkeypatch.setattr(advance_worker.sys, "stdin", io.StringIO(oversized))
+
+    result = advance_worker.main(
+        [
+            "--run-root",
+            str(tmp_path / "must-not-be-opened"),
+            "--run-id",
+            "bounded",
+            "--run-device",
+            "1",
+            "--run-inode",
+            "1",
+            "--receipt-device",
+            "1",
+            "--receipt-inode",
+            "1",
+        ]
+    )
+
+    assert result == 2
+    assert not (tmp_path / "must-not-be-opened").exists()
+
+
+def test_an_advance_reason_is_bounded_before_it_can_amplify_a_record():
+    with pytest.raises(ApprovalRefusal, match="reason exceeds"):
+        advance.validate_advance_reason("x" * (advance.MAX_ADVANCE_REASON_CHARACTERS + 1))
+
+
+def test_receipt_setup_does_not_create_through_a_planted_parent_symlink(tmp_path):
+    run = tmp_path / "run"
+    outside = tmp_path / "outside"
+    run.mkdir()
+    outside.mkdir()
+    (run / "receipts").symlink_to(outside, target_is_directory=True)
+    identity = advance.directory_identity(run, "test run")
+
+    with pytest.raises(ApprovalRefusal, match="could not be opened"):
+        advance.receipt_directory_identity(run, identity, create=True)
+
+    assert not (outside / "sha256").exists()
+
+
+def test_receipt_setup_refuses_case_variant_collisions_before_default_apfs_can_merge_them(
+    tmp_path,
+):
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "Receipts").mkdir()
+    identity = advance.directory_identity(run, "test run")
+
+    with pytest.raises(ApprovalRefusal, match="collides by case"):
+        advance.receipt_directory_identity(run, identity, create=True)
+
+    assert os.listdir(run) == ["Receipts"]
+
+
+def test_the_advance_worker_refuses_a_substituted_run_tree_identity(tmp_path, monkeypatch):
+    run_root, run_id = _make_run(tmp_path)
+    tree = RunTree(run_root, run_id)
+    before = {path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")}
+    monkeypatch.setattr(
+        advance_worker.sys,
+        "stdin",
+        io.StringIO(
+            json.dumps(
+                {
+                    "stage": "armarium",
+                    "reason": "the pathname now names another directory object",
+                    "expected_digest": _boundary_digest(run_root, run_id),
+                }
+            )
+        ),
+    )
+    identity_args = _worker_identity_arguments(tree)
+    identity_args[3] = str(int(identity_args[3]) + 1)
+
+    assert (
+        advance_worker.main(["--run-root", str(run_root), "--run-id", run_id, *identity_args]) == 2
+    )
+    assert {path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")} == before
 
 
 def test_a_boundary_that_stopped_verifying_is_refused_before_the_worker_is_launched(
@@ -500,6 +603,66 @@ def test_a_backend_that_does_not_actually_deny_writes_refuses_before_the_console
     assert "did not refuse both" in advance_error.value.detail
 
 
+def test_writable_directory_identity_is_rechecked_after_policy_construction(tmp_path, monkeypatch):
+    writable = tmp_path / "receipts" / "sha256"
+    writable.mkdir(parents=True)
+
+    class _SwappingBackend(_StubConfinement):
+        def __init__(self):
+            super().__init__(lambda command: command)
+            self.calls = 0
+
+        def command(self, command, *, writable=None):
+            self.calls += 1
+            if self.calls == 1:
+                return [
+                    sys.executable,
+                    "-c",
+                    "print('WRITE_REFUSED\\nNETWORK_REFUSED')",
+                ]
+            moved = writable.with_name("original-sha256")
+            writable.rename(moved)
+            writable.mkdir()
+            return list(command)
+
+    backend = _SwappingBackend()
+    _use_backend(monkeypatch, backend)
+
+    with pytest.raises(OperatorError) as excinfo:
+        custody.run_confined(
+            [sys.executable, *custody.CHILD_INTERPRETER_FLAGS, "-c", "print('child')"],
+            writable=writable,
+            cwd=ROOT,
+            input_text="",
+        )
+
+    assert excinfo.value.code == ErrorCode.CONSOLE_CUSTODY_REFUSED
+    assert "changed device or inode" in (excinfo.value.detail or "")
+
+
+def test_a_symlink_is_never_accepted_as_the_writable_allowance(tmp_path, monkeypatch):
+    real = tmp_path / "real-receipts"
+    real.mkdir()
+    alias = tmp_path / "receipt-alias"
+    alias.symlink_to(real, target_is_directory=True)
+
+    def _forbidden(*_args, **_kwargs):
+        raise AssertionError("a subprocess ran for a symlinked write allowance")
+
+    monkeypatch.setattr(custody.subprocess, "run", _forbidden)
+
+    with pytest.raises(OperatorError) as excinfo:
+        custody.run_confined(
+            [sys.executable, *custody.CHILD_INTERPRETER_FLAGS, "-c", "pass"],
+            writable=alias,
+            cwd=ROOT,
+            input_text="",
+        )
+
+    assert excinfo.value.code == ErrorCode.CONSOLE_CUSTODY_REFUSED
+    assert "symlink" in (excinfo.value.detail or "")
+
+
 def test_the_platform_probe_picks_a_backend_and_never_leaves_one_silently_absent(monkeypatch):
     """Every platform gets an answer, and "none" is an answer that refuses."""
     assert isinstance(custody.confinement("linux"), custody.LandlockConfinement)
@@ -576,34 +739,44 @@ def test_the_macos_backend_refuses_a_program_it_cannot_name_unambiguously(monkey
     not testable from this chamber, so the backend does not depend on the
     answer: it names the program by absolute path and refuses anything else.
     """
-    monkeypatch.setattr(custody.shutil, "which", lambda name: "/usr/bin/sandbox-exec")
     backend = custody.confinement("darwin")
+    monkeypatch.setattr(backend, "launcher", lambda *_args, **_kwargs: "/usr/bin/sandbox-exec")
     assert backend.command([sys.executable, "-c", "pass"])[:2] == ["/usr/bin/sandbox-exec", "-p"]
     with pytest.raises(OperatorError) as excinfo:
         backend.command(["-c", "pass"])
     assert excinfo.value.code == ErrorCode.CONSOLE_CUSTODY_REFUSED
 
 
-def test_probe_and_real_launch_pin_one_launcher_binary(monkeypatch):
-    """A passing probe may not be followed through a newly resolved executable."""
+def test_probe_and_real_launch_pin_one_launcher_binary(tmp_path):
+    """The same spelling with a different inode is not the probed launcher."""
 
-    answers = iter(("/tmp/first-sandbox-exec", "/tmp/replaced-sandbox-exec"))
-    pinned_first = str(Path("/tmp/first-sandbox-exec").resolve())
-    original_is_file = Path.is_file
-    monkeypatch.setattr(
-        Path,
-        "is_file",
-        lambda path: False if path == Path("/usr/bin/sandbox-exec") else original_is_file(path),
-    )
-    monkeypatch.setattr(custody.shutil, "which", lambda name: next(answers))
-    backend = custody.confinement("darwin")
+    launcher = tmp_path / "sandbox-exec"
+    launcher.write_text("first", encoding="utf-8")
+    backend = custody.Confinement()
 
-    first = backend.command([sys.executable, "-c", "pass"])
-    second = backend.command([sys.executable, "-c", "pass"])
+    assert backend.launcher("sandbox-exec", system_path=str(launcher)) == str(launcher)
+    replacement = tmp_path / "replacement"
+    replacement.write_text("second", encoding="utf-8")
+    replacement.replace(launcher)
 
-    # macOS resolves /tmp through the /private symlink; the pin compares the
-    # canonical path the launcher actually executes.
-    assert first[0] == second[0] == pinned_first
+    with pytest.raises(OperatorError) as excinfo:
+        backend.launcher("sandbox-exec", system_path=str(launcher))
+    assert excinfo.value.code == ErrorCode.CONSOLE_CUSTODY_REFUSED
+    assert "changed after the boundary probe" in (excinfo.value.detail or "")
+
+
+def test_confinement_launcher_never_falls_back_to_path(tmp_path, monkeypatch):
+    attacker = tmp_path / "setpriv"
+    attacker.write_text("attacker-selected launcher", encoding="utf-8")
+    monkeypatch.setenv("PATH", str(tmp_path))
+
+    with pytest.raises(OperatorError) as excinfo:
+        custody.Confinement().launcher(
+            "setpriv", system_path=str(tmp_path / "missing-system-setpriv")
+        )
+
+    assert excinfo.value.code == ErrorCode.CONSOLE_CUSTODY_REFUSED
+    assert "no trusted setpriv" in (excinfo.value.detail or "")
 
 
 @pytest.mark.skipif(sys.platform == "darwin", reason="a native macOS host has sandbox-exec")
@@ -950,6 +1123,59 @@ def test_review_refuses_bundle_bytes_that_do_not_match_the_export_reference():
     assert "Armarium bundle" in (excinfo.value.detail or "")
 
 
+def _review_bundle_payload(data: bytes) -> tuple[types.SimpleNamespace, dict]:
+    digest = digest_bytes(data)
+    tree = types.SimpleNamespace(read_bytes=lambda _path: data)
+    payload = {
+        "bundle": {
+            "reference": {
+                "relative_path": "7_armarium/blobs/sha256/example",
+                "sha256": digest,
+            },
+            "sha256": digest,
+        }
+    }
+    return tree, payload
+
+
+def test_review_refuses_a_zip_member_that_would_expand_past_its_input_limit():
+    bundle = io.BytesIO()
+    with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("review-items.jsonl", b"x" * (review.MAX_REVIEW_ITEMS_BYTES + 1))
+    tree, payload = _review_bundle_payload(bundle.getvalue())
+
+    with pytest.raises(OperatorError) as excinfo:
+        review._review_items(tree, payload)
+
+    assert "review limit" in (excinfo.value.detail or "")
+
+
+def test_review_refuses_more_review_rows_than_the_console_can_safely_project():
+    bundle = io.BytesIO()
+    with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("review-items.jsonl", b"{}\n" * (review.MAX_REVIEW_ITEMS + 1))
+    tree, payload = _review_bundle_payload(bundle.getvalue())
+
+    with pytest.raises(OperatorError) as excinfo:
+        review._review_items(tree, payload)
+
+    assert "records" in (excinfo.value.detail or "")
+
+
+def test_review_refuses_ambiguous_duplicate_review_members():
+    bundle = io.BytesIO()
+    with zipfile.ZipFile(bundle, "w") as archive:
+        archive.writestr("review-items.jsonl", b'{"reason":"first"}\n')
+        with pytest.warns(UserWarning, match="Duplicate name"):
+            archive.writestr("review-items.jsonl", b'{"reason":"second"}\n')
+    tree, payload = _review_bundle_payload(bundle.getvalue())
+
+    with pytest.raises(OperatorError) as excinfo:
+        review._review_items(tree, payload)
+
+    assert "more than one review-items.jsonl" in (excinfo.value.detail or "")
+
+
 def test_verify_advance_detects_a_boundary_that_changed_after_it_was_advanced(tmp_path):
     """Digest binding must be proven against a boundary that actually changed."""
     run_root, run_id = _make_run(tmp_path)
@@ -1038,6 +1264,32 @@ def test_review_refuses_an_advance_record_copied_under_a_false_content_address(t
     assert "content-addressed filename is false" in excinfo.value.detail
 
 
+def test_review_refuses_an_in_tree_symlink_at_a_receipt_address(tmp_path):
+    """An immutable receipt is a regular file, not an alias to equivalent bytes."""
+
+    run_root, run_id = _make_run(tmp_path)
+    tree = RunTree(run_root, run_id)
+    reference = advance.trigger_advance(
+        run_root,
+        run_id,
+        "armarium",
+        reason="reviewed before the receipt path was replaced",
+        workspace=ROOT,
+        expected_digest=_boundary_digest(run_root, run_id),
+    )
+    receipt = tree.root / reference.relative_path
+    alias = tree.root / "same-receipt-bytes.json"
+    alias.write_bytes(receipt.read_bytes())
+    receipt.unlink()
+    receipt.symlink_to(alias)
+
+    with pytest.raises(OperatorError) as excinfo:
+        review.ReadOnlyRun(run_root, run_id).projection()
+
+    assert excinfo.value.code == ErrorCode.CONSOLE_TREE_UNREADABLE
+    assert "not an immutable regular file" in (excinfo.value.detail or "")
+
+
 def test_operator_advance_requires_exact_confirmation_of_the_observed_digest(
     tmp_path, monkeypatch, capsys
 ):
@@ -1078,6 +1330,86 @@ def test_confirmed_operator_advance_runs_the_external_worker_and_reports_its_rec
     assert len(projected.advance_records) == 1
     assert projected.advance_records[0]["reason"] == "reviewed in the console"
     assert "Advance record:" in capsys.readouterr().out
+
+
+def test_a_worker_refusal_on_stderr_cannot_be_hidden_by_a_zero_exit(tmp_path, monkeypatch):
+    run_root, run_id = _make_run(tmp_path)
+    tree = RunTree(run_root, run_id)
+    expected_digest = _boundary_digest(run_root, run_id)
+
+    def _false_success(*_args, **_kwargs):
+        reference = advance.record_advance(
+            tree,
+            "armarium",
+            reason="worker reported both success and refusal",
+            expected_digest=expected_digest,
+        )
+        completed = subprocess.CompletedProcess(
+            [],
+            0,
+            json.dumps(reference.to_record()),
+            "SECURITY REFUSAL: worker state was inconsistent",
+        )
+        return _StubConfinement(lambda command: command), completed
+
+    monkeypatch.setattr(advance, "run_confined", _false_success)
+
+    with pytest.raises(OperatorError) as excinfo:
+        advance.trigger_advance(
+            run_root,
+            run_id,
+            "armarium",
+            reason="worker reported both success and refusal",
+            workspace=ROOT,
+            expected_digest=expected_digest,
+        )
+
+    assert excinfo.value.code == ErrorCode.ADVANCE_REFUSED
+    assert "reported a refusal despite returning success" in (excinfo.value.detail or "")
+    assert len(review.ReadOnlyRun(run_root, run_id).projection().advance_records) == 1
+
+
+def test_a_post_worker_security_refusal_keeps_its_exact_reason(tmp_path, monkeypatch):
+    run_root, run_id = _make_run(tmp_path)
+    tree = RunTree(run_root, run_id)
+    expected_digest = _boundary_digest(run_root, run_id)
+
+    def _success(*_args, **_kwargs):
+        reference = advance.record_advance(
+            tree,
+            "armarium",
+            reason="identity changed after the worker returned",
+            expected_digest=expected_digest,
+        )
+        return _StubConfinement(lambda command: command), subprocess.CompletedProcess(
+            [], 0, json.dumps(reference.to_record()), ""
+        )
+
+    real_require = advance.require_directory_identity
+    calls = 0
+
+    def _refuse_after_worker(path, expected, label):
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            raise ApprovalRefusal("SECURITY REFUSAL: reviewed run-tree inode changed")
+        return real_require(path, expected, label)
+
+    monkeypatch.setattr(advance, "run_confined", _success)
+    monkeypatch.setattr(advance, "require_directory_identity", _refuse_after_worker)
+
+    with pytest.raises(OperatorError) as excinfo:
+        advance.trigger_advance(
+            run_root,
+            run_id,
+            "armarium",
+            reason="identity changed after the worker returned",
+            workspace=ROOT,
+            expected_digest=expected_digest,
+        )
+
+    assert excinfo.value.code == ErrorCode.ADVANCE_REFUSED
+    assert "SECURITY REFUSAL: reviewed run-tree inode changed" in (excinfo.value.detail or "")
 
 
 def test_advance_verb_is_the_confirmed_operator_path_to_the_external_worker(
@@ -1266,7 +1598,18 @@ def test_an_advance_request_cannot_ask_the_worker_for_any_other_approval(tmp_pat
     printed: list[str] = []
     monkeypatch.setattr("builtins.print", lambda *a, **k: printed.append(" ".join(map(str, a))))
 
-    assert advance_worker.main(["--run-root", str(run_root), "--run-id", run_id]) == 0
+    assert (
+        advance_worker.main(
+            [
+                "--run-root",
+                str(run_root),
+                "--run-id",
+                run_id,
+                *_worker_identity_arguments(tree),
+            ]
+        )
+        == 0
+    )
 
     reference = json.loads(printed[-1])
     record = tree.read_approval_record(
