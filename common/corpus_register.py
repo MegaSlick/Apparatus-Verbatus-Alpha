@@ -139,9 +139,25 @@ def append_records(
 
 @contextmanager
 def _register_lock(path: Path) -> Iterator[None]:
-    """Serialize pathname replacement across writers; a crash releases the lock."""
+    """Serialize pathname replacement across writers; a crash releases the lock.
+
+    The lock name is predictable -- ``.<register name>.lock`` beside the register
+    it guards -- so it is opened with ``O_NOFOLLOW``. Without that, anything able
+    to place a symlink at that name before the first writer arrives would redirect
+    every future writer's exclusion lock onto a file of its choosing: two corpora
+    serialized against each other instead of themselves, or a file created at a
+    path this process never named. A predictable name is safe only if the open
+    refuses to follow it.
+    """
     lock_path = path.with_name(f".{path.name}.lock")
-    with lock_path.open("a+b") as handle:
+    try:
+        descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    except OSError as error:
+        raise ContractError(
+            f"the corpus register lock at {lock_path} could not be opened without "
+            "following a symlink"
+        ) from error
+    with os.fdopen(descriptor, "a+b") as handle:
         try:
             import fcntl
         except ImportError:  # pragma: no cover - supported register stores are POSIX

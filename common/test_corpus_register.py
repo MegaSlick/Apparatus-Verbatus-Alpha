@@ -515,6 +515,28 @@ def test_append_records_creates_and_extends_one_valid_register(tmp_path):
     assert members_of(path.read_bytes(), PAGE) == ["a" * 64]
 
 
+def test_append_records_refuses_a_symlinked_lock_path(tmp_path):
+    """A predictable lock name is safe only if opening it never follows a symlink.
+
+    Anything able to plant `.register.json.lock` before the first writer arrives
+    would otherwise redirect every future writer's exclusion lock onto a file of
+    its choosing -- defeating the serialization `append_records` exists to
+    provide, and doing so with no trace beyond the symlink itself.
+    """
+    path = tmp_path / "register.json"
+    target = tmp_path / "elsewhere"
+    target.write_bytes(b"untouched")
+    lock_path = path.with_name(f".{path.name}.lock")
+    lock_path.symlink_to(target)
+
+    with pytest.raises(ContractError, match="without following a symlink"):
+        append_records(path, [_declaration()], expected_digest=EMPTY_REGISTER_DIGEST)
+
+    assert target.read_bytes() == b"untouched"
+    assert lock_path.is_symlink()
+    assert not path.exists()
+
+
 def test_a_stale_writer_cannot_overwrite_a_concurrent_append(tmp_path):
     path = tmp_path / "register.json"
     current = append_records(path, [_declaration()], expected_digest=EMPTY_REGISTER_DIGEST)
