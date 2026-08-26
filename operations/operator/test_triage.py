@@ -264,10 +264,8 @@ def test_unhashable_public_inputs_are_named_refusals(tmp_path: Path, operation: 
 def test_write_mode_declaration_refuses_a_field_smuggled_inside_a_non_string(tmp_path: Path):
     """A preference field hidden inside a non-string batch_id/operator must not reach disk.
 
-    Regression: the write used to validate `str(declaration["batch_id"])` while
-    writing the original, untouched `declaration` mapping, so a dict-valued
-    `batch_id` carrying a forbidden field passed validation (its stringified form
-    is an ordinary string) but the smuggled field still landed in the written file.
+    Validating a string-coerced field would check different data from the mapping
+    that serialization publishes.
     """
     smuggled = {
         "schema": triage.MODE_SCHEMA,
@@ -314,10 +312,8 @@ def _pinned_draft(tmp_path: Path) -> dict:
 def test_write_shown_confirmation_refuses_a_smuggled_preference_field(tmp_path: Path):
     """A forbidden preference field must never reach disk, even with a matching digest.
 
-    Regression: the write used to check only that the written bytes matched the
-    claimed preview digest, so a self-consistent malicious draft (attacker controls
-    both the draft and its own preview digest) was written to the confirmation-out
-    file before `append_decision`'s later preference check ever ran.
+    The caller controls both inputs, so preview agreement alone cannot establish
+    that a draft is safe to publish.
     """
     pinned = _pinned_draft(tmp_path)
     smuggled = {**pinned, "preferred": True}
@@ -339,13 +335,8 @@ def test_write_shown_confirmation_refuses_a_malformed_schema(tmp_path: Path):
 def test_a_tuple_wrapped_payload_cannot_carry_a_preference_field_onto_disk(tmp_path: Path):
     """The check must walk what the serializer writes, not what the object looks like.
 
-    Adversarial follow-up to the two exact-object fixes. `canonical_bytes` renders a
-    tuple as a JSON array; `_refuse_preference` walks dicts and lists only. So a
-    forbidden field wrapped one level inside a tuple satisfied the exact-object
-    check and was still published as an ordinary array member — the same
-    validate-the-stand-in class, with the object itself as the stand-in for its
-    bytes. Every durable write now validates the structure re-read from the bytes
-    it is about to publish.
+    `canonical_bytes` renders a tuple as a JSON array, while `_refuse_preference`
+    walks dicts and lists. Reparse-before-validation closes that shape divergence.
     """
     pinned = _pinned_draft(tmp_path)
     cluster = dict(pinned["clusters"][0])
@@ -355,7 +346,6 @@ def test_a_tuple_wrapped_payload_cannot_carry_a_preference_field_onto_disk(tmp_p
     with pytest.raises(triage.TriageRefusal, match="expresses-preference"):
         triage.write_shown_confirmation(target, smuggled, preview_sha256=digest_of(smuggled))
     assert not target.exists()
-    # The evasion is real, not hypothetical: these are the bytes that used to land.
     assert b'"preferred"' in canonical_bytes(smuggled)
 
 
@@ -413,10 +403,8 @@ def test_tuple_wrapped_queue_preference_is_checked_on_the_persisted_form(tmp_pat
 def test_the_journal_refuses_a_prior_record_that_is_not_a_closed_decision(tmp_path: Path):
     """Every append republishes the whole journal, so every prior record is its bytes too.
 
-    The container was checked and its contents were not, so a hand-edited journal
-    carrying a non-digest item, an unknown decision word, or extra keys was copied
-    forward by the next append into a document the console then treated as its own
-    record of what the operator decided.
+    Container-only validation would adopt a hand-edited entry as console-authored
+    history on the next append.
     """
     batch = _Batch(tmp_path)
     state_path = tmp_path / "state.json"
@@ -793,18 +781,13 @@ def test_producer_refused_candidate_bindings_are_refused_before_journalling(
 def test_an_interrupted_acceptance_is_completed_by_its_replay(tmp_path: Path):
     """An acceptance is two files; a crash between them must not strand the first.
 
-    The journal is written before the confirmation so a bad draft never reaches
-    the confirmation file. That ordering left an unrecoverable window: after an
-    interruption the row was permanently journalled `accept` with no confirmation
-    on disk, and every retry was refused as `decision-already-recorded` — a
-    message about the wrong problem, and an acceptance that could never complete.
+    Journal-first ordering keeps an invalid draft from the confirmation file, but a
+    replay must complete the second write without treating the first as a new decision.
     """
     batch = _Batch(tmp_path)
     state_path = tmp_path / "state.json"
     confirmation = tmp_path / "confirmation.json"
     draft = batch.draft()
-    # The interruption: the journal append succeeded, the process died before the
-    # confirmation write.
     journalled = triage.append_decision(
         state_path, batch.queue, item_digest=batch.item, decision="accept", draft=draft
     )
@@ -818,10 +801,8 @@ def test_an_interrupted_acceptance_is_completed_by_its_replay(tmp_path: Path):
         preview_sha256=digest_of(draft),
     )
     assert confirmation.read_bytes() == canonical_bytes(draft)
-    # Nothing was rewritten: the journal still holds exactly the one decision.
     assert state["decisions"] == journalled["decisions"]
     assert triage._read_canonical(state_path, "queue-state") == journalled
-    # And replaying the now-complete acceptance is still a no-op, not a second write.
     triage.accept_candidate(
         state_path,
         batch.queue,
@@ -853,30 +834,26 @@ def test_a_decided_row_still_refuses_a_different_draft_or_a_reversal(tmp_path: P
         )
     assert not (tmp_path / "other.json").exists()
 
-    declined = _Batch(tmp_path)
     declined_state = tmp_path / "declined.json"
-    triage.append_decision(
-        declined_state, declined.queue, item_digest=declined.item, decision="decline"
-    )
+    triage.append_decision(declined_state, batch.queue, item_digest=batch.item, decision="decline")
+    declined_draft = batch.draft()
     with pytest.raises(triage.TriageRefusal, match="decision-already-recorded"):
         triage.accept_candidate(
             declined_state,
-            declined.queue,
-            item_digest=declined.item,
-            draft=declined.draft(),
+            batch.queue,
+            item_digest=batch.item,
+            draft=declined_draft,
             confirmation_path=tmp_path / "after-decline.json",
-            preview_sha256=digest_of(declined.draft()),
+            preview_sha256=digest_of(declined_draft),
         )
     assert not (tmp_path / "after-decline.json").exists()
 
 
 def test_an_unpinned_draft_never_becomes_a_journalled_acceptance(tmp_path: Path):
-    """`draft_confirmation`'s placeholder pin is refused at the seam, not just described.
+    """The placeholder pin must be refused at both irreversible write seams.
 
-    The comment claimed a blank pin could never reach the producer, but nothing
-    enforced it: the unpinned draft was written and journalled as an acceptance,
-    leaving an irreversible `accept` bound to a confirmation the producer would
-    later refuse and no path to redo it.
+    Otherwise an acceptance can become bound to a confirmation the producer cannot
+    commit, with no lawful path to decide the row again.
     """
     batch = _Batch(tmp_path)
     unpinned = batch.draft(pinned=False)
@@ -964,7 +941,9 @@ def test_a_console_acceptance_is_committable_and_edits_to_it_are_refused(tmp_pat
             )
 
 
-def test_a_recorded_decision_makes_its_directory_entry_durable(tmp_path: Path):
+def test_a_recorded_decision_makes_its_directory_entry_durable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     """A decision reported as recorded must survive a power cut, not only a process exit.
 
     Without the parent-directory fsync the rename can be lost after this call has
@@ -975,39 +954,21 @@ def test_a_recorded_decision_makes_its_directory_entry_durable(tmp_path: Path):
     batch = _Batch(tmp_path)
     synced: list[tuple[Path, bool]] = []
     original = triage.sync_directory
-    triage.sync_directory = lambda path, *, strict=False: (
-        synced.append((Path(path), strict)),
-        original(path, strict=strict),
-    )[-1]
-    try:
-        state_path = tmp_path / "records" / "state.json"
-        triage.append_decision(state_path, batch.queue, item_digest=batch.item, decision="decline")
-    finally:
-        triage.sync_directory = original
+    monkeypatch.setattr(
+        triage,
+        "sync_directory",
+        lambda path, *, strict=False: (
+            synced.append((Path(path), strict)),
+            original(path, strict=strict),
+        )[-1],
+    )
+    state_path = tmp_path / "records" / "state.json"
+    triage.append_decision(state_path, batch.queue, item_digest=batch.item, decision="decline")
     assert (state_path.parent, True) in synced
     assert sorted(entry.name for entry in state_path.parent.iterdir()) == [
         ".state.json.lock",
         "state.json",
     ]
-
-
-def _cli_files(tmp_path: Path, batch: "_Batch") -> dict[str, Path]:
-    files = {
-        "manifest": tmp_path / "manifest.json",
-        "evidence": tmp_path / "evidence.json",
-        "proxies": tmp_path / "proxies.json",
-    }
-    files["manifest"].write_bytes(canonical_bytes(batch.produced.manifest))
-    files["evidence"].write_bytes(canonical_bytes({"records": batch.evidence}))
-    files["proxies"].write_bytes(
-        canonical_bytes(
-            {
-                row["source_frame_sha256"]: str(tmp_path / f"{index}.png")
-                for index, row in enumerate(batch.produced.manifest["records"])
-            }
-        )
-    )
-    return files
 
 
 def test_the_triage_verb_refuses_accept_and_decline_as_one_operator_act(
@@ -1057,7 +1018,14 @@ def test_the_triage_verb_accepts_and_resumes_from_the_command_line(tmp_path: Pat
     from operations.operator import cli
 
     batch = _Batch(tmp_path)
-    files = _cli_files(tmp_path, batch)
+    files = {
+        "manifest": tmp_path / "manifest.json",
+        "evidence": tmp_path / "evidence.json",
+        "proxies": tmp_path / "proxies.json",
+    }
+    files["manifest"].write_bytes(canonical_bytes(batch.produced.manifest))
+    files["evidence"].write_bytes(canonical_bytes({"records": batch.evidence}))
+    files["proxies"].write_bytes(canonical_bytes(batch.paths))
     draft = batch.draft()
     draft_path = tmp_path / "draft.json"
     draft_path.write_bytes(canonical_bytes(draft))
@@ -1104,14 +1072,11 @@ def test_the_triage_verb_accepts_and_resumes_from_the_command_line(tmp_path: Pat
     assert confirmation.read_bytes() == canonical_bytes(draft)
     journal = triage._read_canonical(state_path, "queue-state")
 
-    # The interrupted case, as the operator meets it: the confirmation file is
-    # gone but the decision stands. Re-running the same word completes it.
     confirmation.unlink()
     assert cli.main(accept) == 0
     assert confirmation.read_bytes() == canonical_bytes(draft)
     assert triage._read_canonical(state_path, "queue-state") == journal
 
-    # A different draft for the same decided row is still refused, with copy.
     other = {**draft, "appending_run": "pass-2"}
     other_path = tmp_path / "other.json"
     other_path.write_bytes(canonical_bytes(other))

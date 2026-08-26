@@ -457,12 +457,8 @@ def _triage_queue(args: argparse.Namespace, workspace: Path) -> None:
                     "triage refusal preview-confirmation-required: accept needs the shown preview digest"
                 )
             draft = triage._read_canonical(args.draft, "confirmation-draft")
-            # One call, because the acceptance is one operator act made of two
-            # durable writes: the journal first, so a draft that fails the
-            # candidate binding never reaches the confirmation-out file even
-            # transiently, and then the confirmation — with a retry after an
-            # interruption completing the second write rather than being refused
-            # as a duplicate of the first.
+            # Acceptance spans two durable files; this transaction API preserves
+            # journal-first ordering and resumes a missing confirmation on replay.
             triage.accept_candidate(
                 args.queue_state,
                 queue,
