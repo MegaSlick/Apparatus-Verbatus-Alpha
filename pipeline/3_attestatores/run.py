@@ -1296,7 +1296,7 @@ def preflight_appendable_ordinals(
     declarations: dict[str, Any],
     index: "AttemptIndex",
     *,
-    reuse_unsealed: bool,
+    resume_incomplete_pass: bool,
 ) -> tuple[
     dict[str, tuple[list[dict], str | None]],
     dict[tuple[str, str], "Attempt"],
@@ -1376,7 +1376,7 @@ def preflight_appendable_ordinals(
                 for record in index.by_pair.get(pair, [])
                 if record["payload"]["attempt_ordinal"] == ordinal
             ]
-            if existing and reuse_unsealed:
+            if existing and resume_incomplete_pass:
                 if len(existing) != 1:
                     raise FatalAccounting(
                         f"Testimonium for {pair!r} has {len(existing)} records at ordinal "
@@ -1384,7 +1384,7 @@ def preflight_appendable_ordinals(
                     )
                 record = existing[0]
                 validate_tallied_testimonium(context, record, act, {act["act_id"]: regions})
-                attempt = _attempt_from_sealed_record(context, record)
+                attempt = _attempt_from_retained_testimonium(context.tree, record)
                 sealed_pairs.add(pair)
             else:
                 attempt = (
@@ -1676,15 +1676,20 @@ class Attempt(NamedTuple):
     observation_payload: Any = None
 
 
-def _attempt_from_sealed_record(context, record: dict[str, Any]) -> Attempt:
-    """Recover attempt facts without asking an already-recorded witness again."""
+def _attempt_from_retained_testimonium(tree, record: dict[str, Any]) -> Attempt:
+    """Crash resume must rehydrate retained Chandra bytes for page geometry.
+
+    The act-scoped Testimonium is not republished, but its response still feeds
+    the derived page record. Its blob therefore has to remain present and
+    digest-identical before that Testimonium can stand in for a new chair response.
+    """
     payload = record["payload"]
     raw_response_ref = payload.get("raw_response_ref")
     observation_payload = None
     if raw_response_ref is not None:
         validate_raw_response_ref(raw_response_ref)
         try:
-            observation_payload = context.tree.read_bytes(raw_response_ref["relative_path"])
+            observation_payload = tree.read_bytes(raw_response_ref["relative_path"])
         except OSError as error:
             raise SchemaRefusal(
                 "a resumed Testimonium's retained raw response could not be read: "
@@ -3734,7 +3739,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         entry["kind"] == "stage-seal"
         for entry in context.tree.build_manifest(ATTESTATORES)["artifacts"]
     )
-    if stored_inventory or has_stage_seal:
+    has_prior_boundary = stored_inventory or has_stage_seal
+    if has_prior_boundary:
         # No chair denominator here: this pass is what fills it. See `attempt_tally`.
         prior_tally = attempt_tally(context.tree, context=context, acts=acts)
         if prior_tally["hold"]:
@@ -3770,7 +3776,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 ordinal,
                 declarations,
                 index,
-                reuse_unsealed=not stored_inventory and not has_stage_seal,
+                resume_incomplete_pass=not has_prior_boundary,
             )
         except ContractError as error:
             # An ordinary preflight refusal holds this pass before it writes any
