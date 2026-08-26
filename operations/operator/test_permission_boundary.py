@@ -156,17 +156,17 @@ def test_advance_worker_is_external_and_binds_the_current_seal_digest(tmp_path: 
     assert "run_confined" in inspect.getsource(advance.trigger_advance)
 
 
-def test_write_approval_record_has_exactly_one_production_call_site() -> None:
-    """One implementation, really: nothing outside `advance.record_advance` writes one.
+def test_write_approval_record_has_exactly_one_direct_production_spelling() -> None:
+    """One direct spelling: only `advance.record_advance` names this writer.
 
     `RunTree.write_approval_record` is the generic append-only writer several
     approval subjects share (Lectio nuda sampling, the Perlector's prior-draft
     instrument, and this unit's stage-boundary advance). A second production
-    caller would be a second, unaudited route to minting one of those durable
-    records -- the write-side twin of GOVERNANCE 3's "a picker rebuilt under
-    another name is still a picker." Test files legitimately construct
-    approval records directly to set up fixtures and are excluded; only
-    source under the repository proper is asked to justify itself here.
+    spelling would be a second, unaudited route to minting one of those durable
+    records. This spelling-level guard does not claim to prove the absence of
+    dynamic dispatch; the authority-shape tests below separately constrain the
+    imports and actions available to operator modules. Test files legitimately
+    construct approval records directly to set up fixtures and are excluded.
     """
     root = Path(__file__).resolve().parents[2]
     definition = root / "common" / "runtree" / "store.py"
