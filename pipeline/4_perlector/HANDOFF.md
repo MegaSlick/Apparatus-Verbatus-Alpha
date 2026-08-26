@@ -325,11 +325,22 @@ carries the same regions and page renders a primed pass would.
 Sampled by a predeclared, run-sealed design: `--nuda-per-mille` (0–1000,
 `nuda.py`), a deterministic hash-threshold rule over `(run_id, act_id)` — never
 `random`, so the identical command samples the identical acts. Default `0`
-(off) for every scenario that predates this build. **A non-zero rate refuses
-without `--nuda-approval-ref`**: spec 08 requires a predeclared, Tyrel-approved
-sampling design, and hard rule 1 makes that a refusal rather than a note. Each
-record carries `sampling = {nuda_per_mille, selection_rule, approval_ref}`,
-because a sample of unknown design measures nothing (GOVERNANCE 10).
+(off) for every scenario that predates this build.
+`lectio-nuda-sampling-design.v1` denotes this exact experimental condition:
+an act-level, unprimed Lectio with no testimony or prior draft, selected by
+`digest-threshold-over-run-id-and-act-id.v1`. Changing the condition or rule
+requires a new subject; the record's `target_version_hash` separately binds the
+exact run configuration, including the rate and selector, that executed it.
+**A non-zero rate refuses without that sealed selector and exactly one typed
+approval record** whose sole subject is the selector, whose action is `other`,
+and whose target version is the run's own sealed `config_digest`. The resolved
+subject travels with its typed reference to `nuda.sampling_design`, which refuses
+an approval for the other arm before publication. Each record carries
+`sampling = {nuda_per_mille, selection_rule, approval_ref}`, with
+`approval_ref` as the approval artifact's path and digest, because a sample of
+unknown design measures nothing (GOVERNANCE 10). The same reference is an
+envelope input, so an ordinary artifact read compares the approval digest to
+the retained receipt bytes instead of merely displaying an unchecked hash.
 
 **Module boundary, not convention.** Every real consumer (`5_recensor`,
 `6_archetypus`, `7_armarium`, the orchestrator's own recovery dispatch) filters
@@ -369,10 +380,19 @@ is explicitly `lectio_kind="primed-with-prior"`, carries equality-only
 Archetypus accepts.
 
 The optional `kind="primed-without-prior"` control is gated by the run-sealed
-Perlector instrument rate and approval reference. Its digest draw uses corpus
-frame, page, seed, and act identity; it never uses a run identifier. It is a
-control artifact and cannot establish. The control and prior are separately
-tallied when failed; they do not consume the ruled production hard-failure cap.
+Perlector instrument rate and typed approval record.
+`perlector-prior-draft-instrument-design.v1` denotes this exact experimental
+condition: an act-level primed control that sees testimony but not the Pass-A
+draft, selected by `digest-threshold-over-frame-page-seed-act.v1`. Its digest
+draw uses corpus frame, page, seed, and act identity; it never uses a run
+identifier. Changing that condition or rule requires a new subject; the record's
+`target_version_hash` separately binds the run's exact sealed configuration,
+including the rate, selector, and Perlector protocol bytes. The resolver and
+publisher apply the same sole-subject/action/version and cross-arm refusals as
+the nuda arm. It is a control artifact and cannot establish. The control and
+prior are separately tallied when failed; they do not consume the ruled
+production hard-failure cap. Its approval reference is likewise an envelope
+input and is digest-checked whenever the control artifact is read.
 
 The Pass-B dossier contains a digest-checked reference to the Pass-A draft and
 records whether its text was `fed` or `withheld`. The `--draft-fed` default is

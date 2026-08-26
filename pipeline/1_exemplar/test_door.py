@@ -2164,7 +2164,7 @@ def test_real_bindings_refuse_an_unapproved_prior_control_before_run_creation():
     settings = door.render_config.load_pdf_render_settings(
         minimum_dpi=door.pdf_render.MIN_RENDER_DPI
     )
-    with pytest.raises(ContractError, match="unapproved instrument sample"):
+    with pytest.raises(ContractError, match="is not an approval record"):
         door._real_bindings(
             Models(),
             ledger,

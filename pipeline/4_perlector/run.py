@@ -27,6 +27,9 @@ and zero dissent there is the correct output.
 """
 
 import copy
+import json
+import os
+import stat
 import sys
 from pathlib import Path
 from typing import Any, Final
@@ -48,16 +51,29 @@ from reader import FixtureReader, validate_audit_delivery  # noqa: E402
 from common.alignment import markup_text_view  # noqa: E402
 from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
-from common.contracts.canonical import digest_of  # noqa: E402
+from common.contracts.approval import (  # noqa: E402
+    ApprovalRecordBinding,
+    ApprovalRecordReference,
+    validate_approval_record,
+)
+from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of  # noqa: E402
 from common.contracts.envelope import validate_input_refs  # noqa: E402
-from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal  # noqa: E402
+from common.contracts.errors import (  # noqa: E402
+    ApprovalRefusal,
+    ContractError,
+    FatalAccounting,
+    SchemaRefusal,
+)
 from common.contracts.identities import artifact_id, perlector_attempt_id  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, PERLECTOR  # noqa: E402
 from common.exemplar_boundary import verify_exemplar_crop_lineage  # noqa: E402
+from common.runtree.store import RECEIPTS_DIR  # noqa: E402
 from common.stage import (  # noqa: E402
     ATTEMPTED_WITNESS_OUTCOMES,
     EXIT_COMPLETE,
+    NUDA_APPROVAL_SUBJECT,
     PERLECTOR_CHAIR,
+    PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT,
     WITNESS_CONTEXT_REGIMES,
     WITNESS_READING_OUTCOMES,
     expected_acts,
@@ -71,6 +87,323 @@ from common.stage import (  # noqa: E402
     stage_parser,
     validate_serving_provenance,
 )
+
+# A sampling gate has to inspect the shared receipt directory because the sealed
+# experiment selector cannot contain the content address of the approval that
+# targets that selector's own config digest.  Bounds turn a planted directory
+# into a named refusal instead of an unbounded preflight.  Real receipts are a
+# few kilobytes; these ceilings allow a large alpha run while keeping both one
+# object and the aggregate scan finite.
+MAX_SAMPLING_APPROVAL_RECEIPTS: Final = 100_000
+MAX_SAMPLING_APPROVAL_RECEIPT_BYTES: Final = 4 * 1024 * 1024
+MAX_SAMPLING_APPROVAL_SCAN_BYTES: Final = 1024 * 1024 * 1024
+
+
+def _receipt_name_digest(name: str) -> str | None:
+    suffix = ".json"
+    if not name.endswith(suffix):
+        return None
+    digest = name[: -len(suffix)]
+    if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
+        return None
+    return digest
+
+
+def _open_receipts_directory(tree) -> int | None:
+    """Open the canonical receipt directory one component at a time, no-follow.
+
+    ``RunTree.resolve`` deliberately resolves symlinks before its spelling-based
+    containment check.  That is suitable for ordinary movable references, but
+    not for this security gate: a receipt alias could be changed through its
+    other name after approval was checked.  Directory descriptors keep every
+    lookup anchored to the inode that was actually opened.
+    """
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    directory = getattr(os, "O_DIRECTORY", None)
+    if no_follow is None or directory is None:
+        raise ContractError(
+            "the sampling approval gate cannot open receipt evidence without following links "
+            "on this platform"
+        )
+    flags = os.O_RDONLY | os.O_NONBLOCK | no_follow | directory
+    context_root = tree.root
+    try:
+        current = os.open(context_root, flags)
+    except OSError as error:
+        raise ContractError(
+            f"run tree {context_root} could not be opened without following a redirect while "
+            "resolving sampling approval"
+        ) from error
+    try:
+        for component in RECEIPTS_DIR.split("/"):
+            try:
+                child = os.open(component, flags, dir_fd=current)
+            except FileNotFoundError:
+                os.close(current)
+                return None
+            except OSError as error:
+                raise ContractError(
+                    f"receipt directory {RECEIPTS_DIR!r} could not be opened without following "
+                    "a redirect; sampling approval evidence must be plain directories"
+                ) from error
+            os.close(current)
+            current = child
+        return current
+    except BaseException:
+        os.close(current)
+        raise
+
+
+def _stable_file_metadata(details: os.stat_result) -> tuple[int, ...]:
+    return (
+        details.st_dev,
+        details.st_ino,
+        details.st_mode,
+        details.st_size,
+        details.st_mtime_ns,
+        details.st_ctime_ns,
+        details.st_nlink,
+    )
+
+
+def _read_receipt_bytes(directory_descriptor: int, name: str, relative_path: str) -> bytes:
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    if no_follow is None:
+        raise ContractError(
+            "the sampling approval gate cannot read receipt evidence without following links "
+            "on this platform"
+        )
+    try:
+        descriptor = os.open(
+            name,
+            os.O_RDONLY | os.O_NONBLOCK | no_follow,
+            dir_fd=directory_descriptor,
+        )
+    except OSError as error:
+        raise ContractError(
+            f"receipt {relative_path!r} could not be opened without following a redirect while "
+            "resolving sampling approval"
+        ) from error
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise ContractError(
+                f"receipt {relative_path!r} is not a regular file; the sampling gate reads only "
+                "immutable receipt files"
+            )
+        if before.st_nlink != 1:
+            raise ContractError(
+                f"receipt {relative_path!r} has {before.st_nlink} hard links; approval evidence "
+                "must have one immutable content-addressed name"
+            )
+        if before.st_size > MAX_SAMPLING_APPROVAL_RECEIPT_BYTES:
+            raise ContractError(
+                f"receipt {relative_path!r} is larger than the "
+                f"{MAX_SAMPLING_APPROVAL_RECEIPT_BYTES}-byte sampling-approval bound and was "
+                "not read"
+            )
+        with os.fdopen(descriptor, "rb") as handle:
+            descriptor = -1
+            data = handle.read(MAX_SAMPLING_APPROVAL_RECEIPT_BYTES + 1)
+            after = os.fstat(handle.fileno())
+        if len(data) > MAX_SAMPLING_APPROVAL_RECEIPT_BYTES:
+            raise ContractError(
+                f"receipt {relative_path!r} grew beyond the "
+                f"{MAX_SAMPLING_APPROVAL_RECEIPT_BYTES}-byte sampling-approval bound while "
+                "it was read"
+            )
+        if _stable_file_metadata(before) != _stable_file_metadata(after):
+            raise ContractError(
+                f"receipt {relative_path!r} changed while it was read; moving evidence cannot "
+                "authorize a sampling arm"
+            )
+        return data
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _sampling_receipts(context, *, subject: str) -> list[tuple[ApprovalRecordReference, dict]]:
+    """Read every receipt once and return validated records for ``subject``."""
+    directory = _open_receipts_directory(context.tree)
+    if directory is None:
+        return []
+    try:
+        directory_before = _stable_file_metadata(os.fstat(directory))
+        names: list[str] = []
+        casefolded: dict[str, str] = {}
+        try:
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    name = entry.name
+                    names.append(name)
+                    if len(names) > MAX_SAMPLING_APPROVAL_RECEIPTS:
+                        raise ContractError(
+                            f"receipt directory {RECEIPTS_DIR!r} holds more than "
+                            f"{MAX_SAMPLING_APPROVAL_RECEIPTS} entries; the sampling approval "
+                            "scan is bounded"
+                        )
+                    folded = name.casefold()
+                    other = casefolded.get(folded)
+                    if other is not None and other != name:
+                        raise ContractError(
+                            f"receipt directory {RECEIPTS_DIR!r} contains case-variant names "
+                            f"{other!a} and {name!a}; they collide on default APFS"
+                        )
+                    casefolded[folded] = name
+        except OSError as error:
+            raise ContractError(
+                f"receipt directory {RECEIPTS_DIR!r} could not be listed while resolving "
+                f"approval for experiment {subject!r}"
+            ) from error
+
+        records: list[tuple[ApprovalRecordReference, dict]] = []
+        scanned_bytes = 0
+        for name in sorted(names):
+            digest = _receipt_name_digest(name)
+            if digest is None:
+                raise ContractError(
+                    f"receipt directory {RECEIPTS_DIR!r} contains noncanonical entry {name!a}; "
+                    "the sampling gate cannot prove its approval inventory on a "
+                    "case-variant or non-content-addressed name"
+                )
+            relative_path = f"{RECEIPTS_DIR}/{name}"
+            data = _read_receipt_bytes(directory, name, relative_path)
+            scanned_bytes += len(data)
+            if scanned_bytes > MAX_SAMPLING_APPROVAL_SCAN_BYTES:
+                raise ContractError(
+                    f"receipt scan exceeded the {MAX_SAMPLING_APPROVAL_SCAN_BYTES}-byte "
+                    "sampling-approval bound; the gate refuses an amplified evidence directory"
+                )
+            actual = digest_bytes(data)
+            if actual != digest:
+                raise ContractError(
+                    f"receipt {relative_path!r} has digest {actual}, not its content-addressed "
+                    f"name {digest}; the sampling gate cannot skip corrupted evidence"
+                )
+            try:
+                decoded = json.loads(data.decode("utf-8"))
+            except UnicodeDecodeError as error:
+                raise ContractError(
+                    f"receipt {relative_path!r} is not UTF-8 while resolving approval for "
+                    f"experiment {subject!r}. The sampling gate cannot prove exactly one "
+                    "approval while any receipt is undecodable. Restore the exact immutable "
+                    "receipt bytes or hold this run for review, then rerun the Perlector"
+                ) from error
+            except (ValueError, RecursionError) as error:
+                raise ContractError(
+                    f"receipt {relative_path!r} is malformed JSON while resolving approval for "
+                    f"experiment {subject!r}: {error}. The sampling gate cannot prove exactly "
+                    "one approval while any receipt is malformed. Restore the exact immutable "
+                    "receipt bytes or hold this run for review, then rerun the Perlector"
+                ) from error
+            if not isinstance(decoded, dict):
+                raise ContractError(
+                    f"receipt {relative_path!r} is a JSON {type(decoded).__name__}, not an object, "
+                    f"while resolving approval for experiment {subject!r}. The sampling gate "
+                    "cannot prove exactly one approval without inspecting every receipt object. "
+                    "Restore the exact immutable receipt bytes or hold this run for review, then "
+                    "rerun the Perlector"
+                )
+            try:
+                canonical = canonical_bytes(decoded)
+            except (TypeError, ValueError, RecursionError) as error:
+                raise ContractError(
+                    f"receipt {relative_path!r} cannot be represented as canonical receipt "
+                    "bytes while resolving sampling approval"
+                ) from error
+            if canonical != data:
+                raise ContractError(
+                    f"receipt {relative_path!r} is not canonical JSON; duplicate or ambiguous "
+                    "evidence cannot authorize a sampling arm"
+                )
+            if decoded.get("subject_ids") != [subject]:
+                continue
+            reference = ApprovalRecordReference(relative_path, digest)
+            try:
+                record = validate_approval_record(decoded)
+            except ApprovalRefusal as error:
+                raise ContractError(
+                    f"approval record {relative_path!r} for experiment {subject!r} is refused: "
+                    f"{error}. The sampling gate cannot accept that record for this run's sealed "
+                    f"config_digest {context.config_digest}. Preserve this run for review and "
+                    "start a new run tree with one valid approval record before sampling"
+                ) from error
+            records.append((reference, record))
+        directory_after = _stable_file_metadata(os.fstat(directory))
+        if directory_after != directory_before:
+            raise ContractError(
+                f"receipt directory {RECEIPTS_DIR!r} changed while the sampling gate inspected "
+                "it; a moving inventory cannot prove exactly one approval"
+            )
+        return records
+    finally:
+        os.close(directory)
+
+
+def resolve_sampling_approval(context, *, approval_ref: str, subject: str) -> ApprovalRecordBinding:
+    """Resolve one sealed experiment selector to its checked approval record.
+
+    The sealed selector avoids a hash fixed point: an approval cannot both be
+    addressed by its content and target a configuration containing that address.
+    Candidates pass path, digest, schema, self-hash, approver, sole-subject,
+    action, and exact-version checks before the binding reaches either arm.
+
+    The record authenticates integrity and a claimed approver, not authorship;
+    run-tree write authority remains the trust boundary. Authenticating the human
+    act itself would require an out-of-band signature.
+    """
+    if approval_ref != subject:
+        raise ContractError(
+            f"approval reference {approval_ref!r} does not name experiment {subject!r}; "
+            "an arbitrary string is not an approval record"
+        )
+
+    candidates = _sampling_receipts(context, subject=subject)
+
+    if not candidates:
+        raise ContractError(
+            f"no approval record names experiment {subject!r}; a nonzero sampling arm "
+            "cannot draw without Tyrel's typed approval record. Expected one record "
+            f"under {RECEIPTS_DIR}/ in this run tree with subject_ids "
+            f"[{subject!r}], action 'other', and target_version_hash "
+            f"{context.config_digest}"
+        )
+    if len(candidates) != 1:
+        paths = [candidate.relative_path for candidate, _record in candidates]
+        raise ContractError(
+            f"{len(candidates)} validated approval records {paths} name experiment {subject!r} for "
+            f"this run's sealed config_digest {context.config_digest}. The sampling gate cannot "
+            "choose among approval records; it requires exactly one. Preserve this run for review "
+            "and start a new run tree with one current approval record before sampling"
+        )
+
+    candidate, record = candidates[0]
+    # "exclusion" and "salvage-promotion" approve a different governed action entirely
+    # (GOVERNANCE 1); a sampling design is filed under "other" so a record meant to
+    # authorize an exclusion can never double as a sampling approval by coincidence
+    # of subject text.
+    if record["action"] != "other":
+        raise ContractError(
+            f"approval record {candidate.relative_path!r} for experiment {subject!r} has "
+            f"action {record['action']!r}, not 'other', for this run's sealed config_digest "
+            f"{context.config_digest}. A sampling design approval is not an exclusion or "
+            "salvage-promotion record. Preserve this run for review and start a new run tree with "
+            "one approval record for action 'other' before sampling"
+        )
+    if record["target_version_hash"] != context.config_digest:
+        raise ContractError(
+            f"approval record {candidate.relative_path!r} for experiment {subject!r} names "
+            f"version {record['target_version_hash']}, not this run's sealed config_digest "
+            f"{context.config_digest}. The record approves a different sealed configuration. "
+            "Preserve this run for review and start a new run tree with one approval record for "
+            "the configuration that will be sampled"
+        )
+    return ApprovalRecordBinding(
+        candidate,
+        record["subject_ids"][0],
+        record["target_version_hash"],
+    )
 
 
 def regions_of(context, act_id: str) -> list[dict]:
@@ -1485,6 +1818,7 @@ def _publish_lectio_nuda(
     witness_context_table: dict,
     protocol_config: dict[str, str],
     protocol_sha256: str,
+    approval_ref: ApprovalRecordBinding,
 ) -> None:
     """Publish the unprimed instrument reading.
 
@@ -1525,7 +1859,7 @@ def _publish_lectio_nuda(
         "prompt": prompt,
         "sampling": nuda.sampling_design(
             nuda_per_mille=context.nuda_per_mille,
-            approval_ref=context.nuda_approval_ref,
+            approval_ref=approval_ref,
         ),
         "dissent": [],
         "truncation": truncation_record,
@@ -1545,7 +1879,8 @@ def _publish_lectio_nuda(
         subject_id=act_id,
         outcome=outcome,
         attempt=perlector_attempt_id(act_id, "lectio-nuda", ordinal),
-        inputs=_reading_image_inputs(context, bases, page_renders),
+        inputs=_reading_image_inputs(context, bases, page_renders)
+        + [approval_ref.reference.to_record()],
         payload=payload,
     )
 
@@ -1642,6 +1977,7 @@ def _publish_primed_without_prior(
     witness_context_table,
     protocol_config,
     protocol_sha256,
+    approval_ref: ApprovalRecordBinding,
 ) -> None:
     """The sampled control sees witnesses but never the Pass-A draft."""
     control_dossier, delivered_pixels = dossier_module.build_reader_dossier(
@@ -1695,11 +2031,11 @@ def _publish_primed_without_prior(
         },
         "dossier": control_dossier,
         "prompt": prompt,
-        "sampling": {
-            "perlector_instrument_per_mille": context.perlector_instrument_per_mille,
-            "selection_rule": protocol_config["selection_rule"],
-            "approval_ref": context.perlector_instrument_approval_ref,
-        },
+        "sampling": protocol.control_sampling_design(
+            per_mille=context.perlector_instrument_per_mille,
+            selection_rule=protocol_config["selection_rule"],
+            approval_ref=approval_ref,
+        ),
         "membership": {**membership, "act_id": act_id, "protocol_sha256": protocol_sha256},
         "dissent": dissent_against(text, dissent_testimonia(testimonia, attachment_view)),
         "truncation": truncation_record,
@@ -1731,7 +2067,7 @@ def _publish_primed_without_prior(
         attempt=perlector_attempt_id(act_id, "primed-without-prior", ordinal),
         inputs=_reading_image_inputs(context, bases, page_renders)
         + list(testimonium_references.values())
-        + [attachment_view["reference"]],
+        + [attachment_view["reference"], approval_ref.reference.to_record()],
         payload=payload,
     )
 
@@ -1750,6 +2086,24 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     )
     protocol_config, protocol_sha256 = protocol.load(context.perlector_protocol_config_path)
     context.require_sealed_config("perlector-protocol", protocol_sha256)
+    nuda_approval = (
+        resolve_sampling_approval(
+            context,
+            approval_ref=context.nuda_approval_ref,
+            subject=NUDA_APPROVAL_SUBJECT,
+        )
+        if context.nuda_per_mille
+        else None
+    )
+    instrument_approval = (
+        resolve_sampling_approval(
+            context,
+            approval_ref=context.perlector_instrument_approval_ref,
+            subject=PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT,
+        )
+        if context.perlector_instrument_per_mille
+        else None
+    )
     audit_policy, audit_sha256 = audit.load(context.perlector_audit_config_path)
     context.require_sealed_config("perlector-audit", audit_sha256)
 
@@ -1866,6 +2220,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 witness_context_table=witness_context_table,
                 protocol_config=protocol_config,
                 protocol_sha256=protocol_sha256,
+                approval_ref=nuda_approval,
             )
 
         prior = _publish_lectio_prior(
@@ -1906,6 +2261,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 witness_context_table=witness_context_table,
                 protocol_config=protocol_config,
                 protocol_sha256=protocol_sha256,
+                approval_ref=instrument_approval,
             )
 
         # The establishing read: every testimonium in the dossier, verbatim.
