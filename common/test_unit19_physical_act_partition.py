@@ -1740,3 +1740,35 @@ def test_one_source_split_into_two_pages_resolves_each_page_to_its_own_physical_
     # Each logical act names one physical page: one capture depicting two pages
     # never merges them.
     assert all(len(group["physical_page_components"]) == 1 for group in partition["logical_acts"])
+
+
+# --- Sonnet security seat: path-handling on the digest-bound seal reference -----
+
+
+@pytest.mark.parametrize("escaping_path", ["../outside", "a/../../outside", "/etc/passwd"])
+def test_a_traversal_proposal_seal_ref_is_refused_at_the_builder(escaping_path):
+    with pytest.raises(SchemaRefusal, match="escapes the run tree"):
+        build_physical_act_partition(
+            register=empty_register(),
+            register_digest=register_digest(empty_register()),
+            proposal_seal_ref={"relative_path": escaping_path, "sha256": "0" * 64},
+            local_acts=[_local(ACT_A, "pg_" + "1" * 16, SOURCE_A, "a")],
+            capture_alignments=[],
+            source_ledger=set(),
+        )
+
+
+def test_a_traversal_proposal_seal_ref_is_refused_at_the_validator():
+    payload = {
+        "schema": PARTITION_SCHEMA,
+        "register_digest": register_digest(empty_register()),
+        "proposal_seal_ref": {"relative_path": "../outside", "sha256": "0" * 64},
+        "local_expected_count": 0,
+        "logical_expected_count": 0,
+        "logical_acts": [],
+        "local_to_logical": [],
+        "findings": [],
+    }
+    payload["self_hash"] = self_hash(payload)
+    with pytest.raises(SchemaRefusal, match="escapes the run tree"):
+        validate_physical_act_partition(payload)

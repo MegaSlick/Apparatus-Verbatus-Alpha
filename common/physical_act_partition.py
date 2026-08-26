@@ -69,6 +69,16 @@ def _sha(value: Any, what: str) -> str:
     return value
 
 
+def _path(value: Any, what: str) -> str:
+    # Same containment idiom as `common/contracts/envelope.py::validate_input_refs`
+    # and `common/runtree/store.py::RunTree.resolve`: a reference is relative to
+    # the run root, and a digest-bound reference this schema seals must be
+    # refused here rather than trusted through to whichever reader dereferences it.
+    if value.startswith("/") or ".." in value.split("/"):
+        raise SchemaRefusal(f"physical-act partition: {what} path {value!r} escapes the run tree")
+    return value
+
+
 def _act(row: Any) -> dict[str, Any]:
     required = {"act_id", "act_key", "page_id", "page_ordinal", "source_sha256", "proposal_refs"}
     if not isinstance(row, dict) or set(row) != required:
@@ -197,6 +207,7 @@ def build_physical_act_partition(
         "sha256",
     }:
         raise SchemaRefusal("physical-act partition: proposal seal reference is not digest-bound")
+    _path(proposal_seal_ref["relative_path"], "proposal seal")
     _sha(proposal_seal_ref["sha256"], "proposal seal sha256")
     if not isinstance(local_acts, list) or not local_acts:
         raise SchemaRefusal("physical-act partition: no local expected acts are not a denominator")
@@ -378,6 +389,7 @@ def validate_physical_act_partition(payload: dict[str, Any]) -> dict[str, Any]:
         or not seal["relative_path"]
     ):
         raise SchemaRefusal("physical-act partition: proposal seal reference is not closed")
+    _path(seal["relative_path"], "proposal seal")
     _sha(seal["sha256"], "proposal seal sha256")
     if any(
         not isinstance(payload[name], int) or isinstance(payload[name], bool) or payload[name] < 0
