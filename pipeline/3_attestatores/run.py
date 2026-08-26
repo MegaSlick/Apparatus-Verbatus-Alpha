@@ -35,6 +35,7 @@ import witness_adapters  # noqa: E402
 from common.alignment import align_to_anchor, load_alignment_limits, markup_text_view  # noqa: E402
 from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
+from common.contracts.canonical import digest_bytes  # noqa: E402
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal  # noqa: E402
 from common.contracts.identities import artifact_id, attempt_id  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR, PERLECTOR  # noqa: E402
@@ -226,7 +227,8 @@ def presentation_for_page(context, page_ordinal: int) -> dict[str, Any]:
     page_id = page_identity(context.fixture, page_ordinal)
     page = context.tree.read_artifact(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", page_id))
     image_path = page["payload"]["image_path"]
-    width, height = dimensions(context.tree.read_bytes(image_path))
+    page_bytes = _verified_page_bytes(context, page)
+    width, height = dimensions(page_bytes)
     return {
         "kind": "page",
         "source_page_id": page_id,
@@ -285,11 +287,39 @@ def native_observed_for(
 
 def _sealed_source_page(
     context, presented: dict[str, Any]
-) -> tuple[dict[str, Any], tuple[int, int]]:
-    """The sealed Exemplar page a presentation names, and its decoded size."""
+) -> tuple[dict[str, Any], bytes, tuple[int, int]]:
+    """The sealed Exemplar page, exact verified bytes used, and decoded size."""
     page_id = presented["source_page_id"]
     page = context.tree.read_artifact(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", page_id))
-    return page, dimensions(context.tree.read_bytes(page["payload"]["image_path"]))
+    page_bytes = _verified_page_bytes(context, page)
+    return page, page_bytes, dimensions(page_bytes)
+
+
+def _verified_page_bytes(context, page: dict[str, Any]) -> bytes:
+    """Read once and bind the exact page bytes that image operations will use.
+
+    ``read_artifact`` verifies the page's inputs, but reopening its blob afterward
+    creates a check/use interval. Compare the one immutable byte object handed to
+    Pillow/cropping with the page digest so a filesystem swap cannot cross it.
+    """
+    payload = page.get("payload")
+    if not isinstance(payload, dict):
+        raise SchemaRefusal("a sealed Exemplar page has no object payload")
+    image_path = payload.get("image_path")
+    expected_digest = payload.get("source_sha256")
+    if not isinstance(image_path, str) or not image_path:
+        raise SchemaRefusal("a sealed Exemplar page has no image path")
+    try:
+        page_bytes = context.tree.read_bytes(image_path)
+    except OSError as error:
+        raise SchemaRefusal(f"sealed Exemplar page bytes could not be read: {error}") from error
+    actual_digest = digest_bytes(page_bytes)
+    if actual_digest != expected_digest:
+        raise SchemaRefusal(
+            "sealed Exemplar page bytes changed between artifact verification and image use: "
+            f"digest {actual_digest}, not {expected_digest}"
+        )
+    return page_bytes
 
 
 def validate_testimonium_presentation(context, record: dict[str, Any]) -> None:
@@ -301,8 +331,7 @@ def validate_testimonium_presentation(context, record: dict[str, Any]) -> None:
         if record.get("inputs") != []:
             raise SchemaRefusal("an unpresented Testimonium carries image inputs")
         return
-    page, page_size = _sealed_source_page(context, presented)
-    page_bytes = context.tree.read_bytes(page["payload"]["image_path"])
+    page, page_bytes, page_size = _sealed_source_page(context, presented)
     validate_native_witness_geometry(payload, page_size=page_size)
     validate_presented_page_binding(
         presented,

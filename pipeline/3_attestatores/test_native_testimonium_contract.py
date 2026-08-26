@@ -164,6 +164,26 @@ def test_dai_uncertainty_tokens_reach_a_closed_testimonium_verbatim():
     assert record["observed"][0]["span"] == {"start": 0, "end": len(record["payload"])}
 
 
+def test_page_image_use_refuses_bytes_swapped_after_artifact_verification():
+    original = b"sealed page bytes"
+    swapped = b"different page bytes"
+
+    class _SwappedTree:
+        def read_bytes(self, _relative_path):
+            return swapped
+
+    context = type("Context", (), {"tree": _SwappedTree()})()
+    page = {
+        "payload": {
+            "image_path": "1_exemplar/blobs/sha256/" + digest_bytes(original),
+            "source_sha256": digest_bytes(original),
+        }
+    }
+
+    with pytest.raises(SchemaRefusal, match="changed between artifact verification and image use"):
+        attestatores._verified_page_bytes(context, page)
+
+
 class _Context:
     def __init__(self, tree):
         self.tree = tree

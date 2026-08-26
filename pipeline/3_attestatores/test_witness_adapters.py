@@ -63,7 +63,13 @@ class _DaiTree:
 
     def read_artifact(self, stage, kind, item_id):
         assert (stage, kind, item_id) == (EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", "page-1"))
-        return {"payload": {"image_path": "1_exemplar/page-1.png", "ordinal": 1}}
+        return {
+            "payload": {
+                "image_path": "1_exemplar/page-1.png",
+                "source_sha256": digest_bytes(self.page_bytes),
+                "ordinal": 1,
+            }
+        }
 
     def read_bytes(self, relative_path):
         if relative_path == "1_exemplar/page-1.png":
@@ -156,6 +162,24 @@ def test_dai_readback_refuses_a_same_page_crop_other_than_its_assigned_proposal(
     )
     with pytest.raises(SchemaRefusal, match="assigned proposal and sealed resize ceilings"):
         adapters.validate_adapter_presentation("dai.v1", source, forged)
+
+
+def test_dai_crop_refuses_bytes_swapped_after_page_artifact_verification():
+    page = _dai_page(20, 10)
+    context = _DaiContext(page)
+    original_read_artifact = context.tree.read_artifact
+
+    def verified_before_swap(stage, kind, item_id):
+        page_record = original_read_artifact(stage, kind, item_id)
+        context.tree.page_bytes = page[:-1] + bytes([page[-1] ^ 1])
+        return page_record
+
+    context.tree.read_artifact = verified_before_swap
+    adapters = _load_local_adapters()
+
+    with pytest.raises(SchemaRefusal, match="changed between artifact verification and crop use"):
+        adapters.resolve_runnable_adapter("dai.v1").present(context, _dai_region(20, 10))
+    assert context.tree.blobs == {}
 
 
 def test_the_registry_binds_the_native_intake_contract_seams():

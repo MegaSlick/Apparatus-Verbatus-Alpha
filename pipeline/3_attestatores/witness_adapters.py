@@ -33,6 +33,7 @@ from typing import Any, Callable, Final
 import feeding
 
 from common.chairs.models import AbsentChair, ModelsConfig
+from common.contracts.canonical import digest_bytes
 from common.contracts.errors import SchemaRefusal
 from common.contracts.identities import artifact_id
 from common.contracts.stages import ATTESTATORES, EXEMPLAR
@@ -101,7 +102,15 @@ def _dai_present(context: Any, presentation: dict[str, Any]) -> dict[str, Any]:
     source_transform = presentation["transform"]
     page_id = source_transform["source_page_id"]
     page = context.tree.read_artifact(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", page_id))
-    page_bytes = context.tree.read_bytes(page["payload"]["image_path"])
+    try:
+        page_bytes = context.tree.read_bytes(page["payload"]["image_path"])
+    except OSError as error:
+        raise SchemaRefusal(f"DAI sealed page bytes could not be read: {error}") from error
+    actual_page_digest = digest_bytes(page_bytes)
+    if actual_page_digest != page["payload"].get("source_sha256"):
+        raise SchemaRefusal(
+            "DAI sealed page bytes changed between artifact verification and crop use"
+        )
     # Bounds failures must stay SchemaRefusals so callers can hold the attempt;
     # ``crop_png`` alone would expose a bare ValueError at this boundary.
     validate_presented(presentation, page_size=dimensions(page_bytes))

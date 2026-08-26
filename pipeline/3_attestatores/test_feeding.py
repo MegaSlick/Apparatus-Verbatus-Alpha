@@ -26,6 +26,7 @@ from feeding import (
     retain_model_view,
     stage_major_schedule,
     validate_churro_xml,
+    validate_dai_model_view,
     validate_dai_text,
 )
 
@@ -435,6 +436,77 @@ def test_dai_identity_view_requires_the_exact_source_image_reference():
         )
 
 
+@pytest.mark.parametrize(
+    "unsafe_path",
+    ["/etc/passwd", "../outside", "prompts/../../outside"],
+)
+def test_dai_model_view_refuses_reference_paths_that_escape_the_run_tree(unsafe_path):
+    with pytest.raises(SchemaRefusal, match="reference path escapes the run tree"):
+        dai_model_view(
+            source_image_ref=_ref(unsafe_path),
+            model_image_ref=_ref(unsafe_path),
+            width_px=1_000,
+            height_px=1_000,
+            system_prompt_ref=_ref("models/dai/system.txt"),
+            query_prompt_ref=_ref("models/dai/query.txt"),
+            generation_config_ref=_ref("models/dai/generation_config.json"),
+        )
+
+
+def test_dai_retention_refuses_an_image_limits_digest_that_was_not_compared():
+    source = _ref("designator/crops/small.png")
+    view = dai_model_view(
+        source_image_ref=source,
+        model_image_ref=source,
+        width_px=1_000,
+        height_px=1_000,
+        system_prompt_ref=_ref("models/dai/system.txt"),
+        query_prompt_ref=_ref("models/dai/query.txt"),
+        generation_config_ref=_ref("models/dai/generation_config.json"),
+    )
+    valid = retain_model_view(
+        _Tree(),
+        adapter="dai.v1",
+        view=view,
+        raw_response=b"native DAI text",
+        transport_stop_reason="eos",
+        parser="text",
+    )
+    assert valid["parse"] == {"state": "parsed", "parser": "text", "text": "native DAI text"}
+
+    view["image_limits_sha256"] = "b" * 64
+    tree = _Tree()
+
+    with pytest.raises(SchemaRefusal, match="image-limits digest does not match"):
+        retain_model_view(
+            tree,
+            adapter="dai.v1",
+            view=view,
+            raw_response=b"native DAI text",
+            transport_stop_reason="eos",
+            parser="text",
+        )
+    assert tree.blobs == {}
+
+
+def test_dai_model_view_refuses_rehashed_limits_that_change_the_sealed_ceiling():
+    source = _ref("designator/crops/small.png")
+    view = dai_model_view(
+        source_image_ref=source,
+        model_image_ref=source,
+        width_px=1_000,
+        height_px=1_000,
+        system_prompt_ref=_ref("models/dai/system.txt"),
+        query_prompt_ref=_ref("models/dai/query.txt"),
+        generation_config_ref=_ref("models/dai/generation_config.json"),
+    )
+    view["image_limits"]["max_width_px"] += 1
+    view["image_limits_sha256"] = digest_of(view["image_limits"])
+
+    with pytest.raises(SchemaRefusal, match="differ from the sealed executable limits"):
+        validate_dai_model_view(view)
+
+
 def test_chandra_intake_consumes_the_r2_blob_under_its_original_receipt():
     tree = _Tree()
     receipt = _ref("receipts/sha256/" + "b" * 64 + ".json")
@@ -743,6 +815,21 @@ def test_stage_major_execution_refuses_reentry_and_fails_closed_on_unload_failur
             residency=residency,
             serve=lambda *_: None,
         )
+
+
+def test_unload_failure_cannot_mask_a_security_refusal_from_the_resident_body():
+    def unload_fails(*_args):
+        raise RuntimeError("unload not verified")
+
+    residency = SingleChairResidency(lambda chair: chair, unload_fails)
+
+    with pytest.raises(SchemaRefusal, match="security refusal survives cleanup") as caught:
+        with residency.occupy("attestator_1"):
+            raise SchemaRefusal("security refusal survives cleanup")
+
+    assert isinstance(caught.value.__cause__, RuntimeError)
+    assert str(caught.value.__cause__) == "unload not verified"
+    assert residency.resident == "attestator_1"
 
 
 def test_stage_major_execution_fails_closed_when_the_load_itself_fails():
