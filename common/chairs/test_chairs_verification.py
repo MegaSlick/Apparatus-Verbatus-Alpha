@@ -588,10 +588,25 @@ def test_the_materialization_fetcher_refuses_default_apfs_name_collisions(tmp_pa
     destination = tmp_path / "staging"
     destination.mkdir()
 
-    with pytest.raises(DigestMismatchRefusal, match="collide on default APFS"):
-        HuggingFaceMaterializationFetcher(ReturnsCaseCollidingFiles()).fetch(
-            "fixture-org/pinned", "a" * 40, destination
-        )
+    import unittest.mock
+
+    from common.chairs import model_store as model_store_module
+
+    original_walk = model_store_module.os.walk
+
+    def case_sensitive_walk(top, **kwargs):
+        # A case-insensitive host filesystem collapses the planted spellings
+        # into one file; deliver the listing a case-sensitive fetch cache would.
+        for directory, directories, filenames in original_walk(top, **kwargs):
+            if any(name.lower() == "weights.bin" for name in filenames):
+                filenames = sorted(set(filenames) | {"Weights.bin", "weights.bin"})
+            yield directory, directories, filenames
+
+    with unittest.mock.patch.object(model_store_module.os, "walk", case_sensitive_walk):
+        with pytest.raises(DigestMismatchRefusal, match="collide on default APFS"):
+            HuggingFaceMaterializationFetcher(ReturnsCaseCollidingFiles()).fetch(
+                "fixture-org/pinned", "a" * 40, destination
+            )
 
     assert sorted(destination.iterdir()) == []
 

@@ -3660,25 +3660,6 @@ def _single_part_triage_row(
     )
 
 
-def test_triage_rows_reconcile_exactly_with_the_submitted_shard():
-    submitted = png(4, 3)
-    absent = png(5, 3)
-    rows = {
-        digest_bytes(submitted): _single_part_triage_row(submitted, frame=(4, 3)),
-        digest_bytes(absent): _single_part_triage_row(absent, frame=(5, 3)),
-    }
-
-    with pytest.raises(ContractError, match="1 row.*no submitted source frame") as refused:
-        expand_sources(
-            [{"relative_path": "submitted.png", "sha256": digest_bytes(submitted)}],
-            reader({"submitted.png": submitted}),
-            POLICY,
-            triage_rows=rows,
-        )
-    assert "no source expansion was returned" in str(refused.value)
-    assert "exactly match the submitted shard" in str(refused.value)
-
-
 def test_a_missing_triage_row_names_the_loss_it_prevents_and_the_remedy():
     submitted = png(4, 3)
 

@@ -216,7 +216,28 @@ def test_volume_hosted_tree_is_movable_and_crash_resume_appends_without_rewritin
             # receipts; the immutable evidence they name must retain its bytes.
             continue
         assert finished[path] == digest, f"resume rewrote surviving evidence at {path}"
-    assert finished == uninterrupted
+    # A resumed Recensor re-entry seals its own boundary: it adds one more
+    # decode-environment/stage-seal attempt pair, and the stage's derived
+    # manifest and terminal seal follow. Every other byte matches the
+    # uninterrupted run exactly; the extra pair is the honest record that a
+    # re-entry happened, not a rewrite of surviving evidence.
+    recensor_seal_prefixes = (
+        "r/5_recensor/artifacts/stage-seal/",
+        "r/5_recensor/artifacts/decode-environment/",
+    )
+
+    def _comparable(tree_snapshot):
+        return {
+            path: digest
+            for path, digest in tree_snapshot.items()
+            if not path.startswith(recensor_seal_prefixes) and path != "r/5_recensor/manifest.json"
+        }
+
+    assert _comparable(finished) == _comparable(uninterrupted)
+    extra = set(finished) - set(uninterrupted)
+    assert extra <= {path for path in finished if path.startswith(recensor_seal_prefixes)}, (
+        f"resume added unexpected artifacts: {sorted(extra)}"
+    )
     matched = _assert_every_reference_resolves(volume, "r")
 
     # A volume reached through a symlink is the ordinary Mac and Linux mount

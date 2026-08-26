@@ -170,20 +170,6 @@ def test_recensor_rederives_page_attachment_over_the_sealed_proposal_both_ways(
         recensor.validate_chair_coverage(context, act["act_id"], context.witness_floor)
 
 
-def test_recensor_uses_the_page_attempt_outcome_for_page_geometry(tmp_path, monkeypatch):
-    """A successful compatibility act row cannot turn a failed page attempt into coverage."""
-    root = tmp_path / "runs"
-    through_perlector(root, "page-outcome", "happy")
-    recensor = _load_recensor()
-    context = recensor.open_context(_recensor_args(root, "page-outcome"), RECENSOR)
-    act = next(act for act in recensor.expected_acts(context) if act["act_key"] == "a1")
-    original_artifact = context.tree.read_artifact
-    original_reference = context.tree.read_artifact_reference
-
-    def failed_attachment(stage, kind, artifact_id):
-        record = original_artifact(stage, kind, artifact_id)
-
-
 @pytest.mark.parametrize("drift", ["stored-false", "wrong-basis"])
 def test_recensor_rederives_act_scoped_attachment_instead_of_trusting_its_label(
     tmp_path, monkeypatch, drift
@@ -234,10 +220,28 @@ def test_page_attachment_merge_keeps_the_contributing_page_that_attached():
     assert recensor._merge_page_attachment_fact(attached, unattached) is attached
 
 
+def test_recensor_uses_the_page_attempt_outcome_for_page_geometry(tmp_path, monkeypatch):
+    """A successful compatibility act row cannot turn a failed page attempt into coverage."""
+    root = tmp_path / "runs"
+    through_perlector(root, "page-outcome", "happy")
+    recensor = _load_recensor()
+    context = recensor.open_context(_recensor_args(root, "page-outcome"), RECENSOR)
+    act = next(act for act in recensor.expected_acts(context) if act["act_key"] == "a1")
+    original_artifact = context.tree.read_artifact
+    original_reference = context.tree.read_artifact_reference
+
+    def failed_attachment(stage, kind, artifact_id):
+        record = original_artifact(stage, kind, artifact_id)
+        if (
+            stage == ATTESTATORES
+            and kind == "act-attachment"
+            and record["subject_id"] == act["act_id"]
+        ):
+            record = copy.deepcopy(record)
             entry = next(
                 item
                 for item in record["payload"]["attachments"]
-                if item["chair"] == "attestator_1" and item["page_ordinal"] == 1
+                if item["chair"] == "attestator_3" and item["page_ordinal"] == 1
             )
             assert entry["attached"] is True
             entry.update(attached=False, attachment_basis="unattached", span=None)
@@ -245,7 +249,7 @@ def test_page_attachment_merge_keeps_the_contributing_page_that_attached():
 
     def failed_page(reference, *, stage, kind, subject_id):
         record = original_reference(reference, stage=stage, kind=kind, subject_id=subject_id)
-        if kind == "page-testimonium" and record["payload"]["chair"] == "attestator_1":
+        if kind == "page-testimonium" and record["payload"]["chair"] == "attestator_3":
             record = copy.deepcopy(record)
             record["outcome"] = "failed"
         return record
@@ -269,7 +273,7 @@ def test_recensor_refuses_a_native_capture_attributed_to_another_adapter(tmp_pat
 
     def wrong_adapter(reference, *, stage, kind, subject_id):
         record = original(reference, stage=stage, kind=kind, subject_id=subject_id)
-        if kind == "page-testimonium" and record["payload"]["chair"] == "attestator_1":
+        if kind == "page-testimonium" and record["payload"]["chair"] == "attestator_3":
             record = copy.deepcopy(record)
             record["payload"]["native_capture"]["adapter"] = "another-adapter.v1"
         return record
@@ -291,7 +295,7 @@ def test_recensor_rederives_a_native_projection_from_the_retained_raw_response(
 
     def forged_projection(reference, *, stage, kind, subject_id):
         record = original(reference, stage=stage, kind=kind, subject_id=subject_id)
-        if kind == "page-testimonium" and record["payload"]["chair"] == "attestator_1":
+        if kind == "page-testimonium" and record["payload"]["chair"] == "attestator_3":
             record = copy.deepcopy(record)
             payload = record["payload"]
             text = payload["payload"]
