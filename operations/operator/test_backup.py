@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 import hashlib
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -12,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from . import backup as backup_module
-from . import cli
+from . import backup_worker, cli
 from .backup import SCHEMA, BackupRefusal, sync_run_tree
 from .custody import credential_free_environment
 from .errors import ErrorCode, OperatorError
@@ -84,9 +85,9 @@ def test_backup_refuses_to_publish_a_snapshot_when_the_source_moves(
     original = backup_module._copy_verified
     changed = False
 
-    def copy_then_change(source, target, digest):
+    def copy_then_change(source_descriptor, relative, objects_descriptor, target, digest):
         nonlocal changed
-        result = original(source, target, digest)
+        result = original(source_descriptor, relative, objects_descriptor, target, digest)
         if not changed:
             changed = True
             (volume / run_id / "run.json").write_bytes(b"changed after copy\n")
@@ -112,12 +113,12 @@ def test_backup_snapshot_publish_survives_a_kill_before_the_link(tmp_path: Path)
         "import os, signal, sys\n"
         f"sys.path.insert(0, {str(ROOT)!r})\n"
         "from operations.operator import backup as backup_module\n"
-        "real_link = os.link\n"
-        "def guarded_link(src, dst):\n"
-        "    if 'snapshots' in str(dst):\n"
+        "real_link = backup_module._link_or_refuse\n"
+        "def guarded_link(src, dst, directory_fd, *, target_display):\n"
+        "    if 'snapshots' in target_display.parts:\n"
         "        os.kill(os.getpid(), signal.SIGKILL)\n"
-        "    return real_link(src, dst)\n"
-        "os.link = guarded_link\n"
+        "    return real_link(src, dst, directory_fd, target_display=target_display)\n"
+        "backup_module._link_or_refuse = guarded_link\n"
         f"backup_module.sync_run_tree({str(volume)!r}, {run_id!r}, {str(mac)!r})\n"
     )
 
@@ -146,7 +147,12 @@ def test_backup_cli_uses_a_confined_credential_free_child(tmp_path: Path, monkey
 
     def confined(command, *, writable, cwd, input_text):
         observed.update(
-            {"command": command, "writable": writable, "request": json.loads(input_text)}
+            {
+                "command": command,
+                "writable": writable,
+                "cwd": cwd,
+                "request": json.loads(input_text),
+            }
         )
         report = sync_run_tree(volume, run_id, mac)
 
@@ -161,8 +167,17 @@ def test_backup_cli_uses_a_confined_credential_free_child(tmp_path: Path, monkey
     cli._backup_in_custody(volume, run_id, mac, tmp_path)
 
     assert observed["writable"] == mac.resolve()
+    assert observed["cwd"] == ROOT
     assert observed["request"]["run_id"] == run_id
+    assert observed["request"]["source_identity"] == list(
+        backup_module.required_identity(volume / run_id, what="source run tree")
+    )
+    assert observed["request"]["destination_identities"] == [
+        list(identity) for identity in backup_module.destination_identities(mac)
+    ]
     assert "backup_worker" in " ".join(observed["command"])
+    assert str(ROOT) in observed["command"]
+    assert str(tmp_path) not in observed["command"]
     assert credential_free_environment({"RUNPOD_S3_SECRET_KEY": "secret", "SAFE": "yes"}) == {
         "SAFE": "yes"
     }
@@ -177,6 +192,21 @@ def test_backup_cli_executes_the_worker_inside_the_real_custody_boundary(tmp_pat
 
     assert list((mac / "objects" / "sha256").iterdir())
     assert list((mac / "snapshots" / "sha256").iterdir())
+
+
+def test_backup_worker_bounds_its_request_before_json_deserialization() -> None:
+    completed = subprocess.run(
+        [sys.executable, "-m", "operations.operator.backup_worker"],
+        cwd=ROOT,
+        input=" " * (backup_worker.MAX_REQUEST_BYTES + 1),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 2
+    assert f"larger than {backup_worker.MAX_REQUEST_BYTES} bytes" in completed.stderr
+    assert completed.stdout == ""
 
 
 def test_backup_worker_failure_uses_the_named_three_part_operator_refusal(
@@ -237,6 +267,12 @@ def test_backup_invalid_run_id_uses_the_named_backup_refusal(tmp_path: Path) -> 
     (
         {"schema": "mac-run-backup.v1", "snapshot_sha256": "a" * 64, "copied": 2, "reused": 0},
         {"schema": SCHEMA, "snapshot_sha256": "a" * 64, "copied": "2", "reused": 0},
+        {
+            "schema": SCHEMA,
+            "snapshot_sha256": "a" * 64,
+            "copied": backup_module.MAX_BACKUP_FILES + 1,
+            "reused": 0,
+        },
         {"schema": SCHEMA, "snapshot_sha256": "a" * 64, "copied": 0, "reused": 0},
         {"schema": SCHEMA, "snapshot_sha256": "a" * 64, "copied": 2, "reused": 0},
     ),
@@ -340,6 +376,125 @@ def test_backup_layout_symlink_cannot_redirect_writes_into_the_source(tmp_path: 
     assert not (mac / "snapshots").exists()
 
 
+def test_backup_refuses_when_the_selected_destination_itself_is_a_symlink(
+    tmp_path: Path,
+) -> None:
+    volume, run_id = _run_tree(tmp_path)
+    redirected = tmp_path / "redirected"
+    redirected.mkdir()
+    selected = tmp_path / "Mac Backup"
+    selected.symlink_to(redirected, target_is_directory=True)
+
+    with pytest.raises(BackupRefusal, match="symbolic link"):
+        sync_run_tree(volume, run_id, selected)
+
+    assert not (redirected / "objects").exists()
+    assert not (redirected / "snapshots").exists()
+
+
+def test_backup_leaf_swap_cannot_redirect_a_read_outside_the_run_tree(
+    tmp_path: Path, monkeypatch
+) -> None:
+    volume, run_id = _run_tree(tmp_path)
+    source = volume / run_id / "run.json"
+    original_source = source.with_name("run-original.json")
+    outside = tmp_path / "outside-secret"
+    outside.write_bytes(b"must not enter backup")
+    real_open = backup_module._open_regular_descriptor
+    swapped = False
+
+    def swap_before_open(name, parent_descriptor, *, what):
+        nonlocal swapped
+        if name == "run.json" and not swapped:
+            swapped = True
+            source.rename(original_source)
+            source.symlink_to(outside)
+        return real_open(name, parent_descriptor, what=what)
+
+    monkeypatch.setattr(backup_module, "_open_regular_descriptor", swap_before_open)
+
+    with pytest.raises(BackupRefusal, match="without following"):
+        sync_run_tree(volume, run_id, tmp_path / "mac")
+
+    assert not list((tmp_path / "mac" / "snapshots" / "sha256").glob("*.json"))
+
+
+def test_backup_refuses_paths_that_collapse_on_default_apfs(tmp_path: Path) -> None:
+    volume, run_id = _run_tree(tmp_path)
+    source = volume / run_id
+    (source / "Alpha").mkdir()
+    (source / "alpha").mkdir()
+    (source / "Alpha" / "one.json").write_bytes(b"one")
+    (source / "alpha" / "two.json").write_bytes(b"two")
+
+    with pytest.raises(BackupRefusal, match="collide on default APFS"):
+        sync_run_tree(volume, run_id, tmp_path / "mac")
+
+    assert not list((tmp_path / "mac" / "snapshots" / "sha256").glob("*.json"))
+
+
+def test_backup_child_refuses_a_source_with_a_different_parent_observed_identity(
+    tmp_path: Path,
+) -> None:
+    volume, run_id = _run_tree(tmp_path)
+    mac = tmp_path / "mac"
+
+    with pytest.raises(BackupRefusal, match="changed filesystem identity"):
+        sync_run_tree(
+            volume,
+            run_id,
+            mac,
+            expected_source_identity=(0, 0),
+        )
+
+    assert not list((mac / "snapshots" / "sha256").glob("*.json"))
+
+
+def test_backup_child_refuses_a_replaced_layout_directory_identity(tmp_path: Path) -> None:
+    volume, run_id = _run_tree(tmp_path)
+    mac = tmp_path / "mac"
+    source, destination = backup_module.resolve_backup_paths(volume, run_id, mac)
+    backup_module._prepare_backup_layout(source, destination)
+    expected = backup_module.destination_identities(destination)
+    object_store = mac / "objects" / "sha256"
+    object_store.rename(mac / "objects" / "sha256-before-swap")
+    object_store.mkdir()
+
+    with pytest.raises(BackupRefusal, match="layout changed filesystem identity"):
+        sync_run_tree(
+            volume,
+            run_id,
+            mac,
+            expected_destination_identities=expected,
+        )
+
+    assert not list((mac / "snapshots" / "sha256").glob("*.json"))
+
+
+def test_backup_refuses_an_oversized_snapshot_before_publication(
+    tmp_path: Path, monkeypatch
+) -> None:
+    volume, run_id = _run_tree(tmp_path)
+    mac = tmp_path / "mac"
+    monkeypatch.setattr(backup_module, "MAX_SNAPSHOT_BYTES", 1)
+
+    with pytest.raises(BackupRefusal, match="larger than 1 bytes"):
+        sync_run_tree(volume, run_id, mac)
+
+    assert not list((mac / "snapshots" / "sha256").glob("*.json"))
+
+
+def test_backup_bounds_source_entry_count_before_publication(tmp_path: Path, monkeypatch) -> None:
+    volume, run_id = _run_tree(tmp_path)
+    mac = tmp_path / "mac"
+    monkeypatch.setattr(backup_module, "MAX_BACKUP_ENTRIES", 1)
+
+    with pytest.raises(BackupRefusal, match="more than 1 entries"):
+        sync_run_tree(volume, run_id, mac)
+
+    assert not list((mac / "snapshots" / "sha256").glob("*.json"))
+
+
 def test_backup_excludes_but_records_run_tree_publication_temporaries(tmp_path: Path) -> None:
     volume, run_id = _run_tree(tmp_path)
     temporary = volume / run_id / ".run.json.tmp-interrupted"
@@ -389,7 +544,7 @@ def test_backup_names_a_backup_directory_that_refuses_hard_links(
     volume, run_id = _run_tree(tmp_path)
     mac = tmp_path / "exfat"
 
-    def refusing_link(source, target):
+    def refusing_link(source, target, **kwargs):
         raise OSError(errno.EOPNOTSUPP, "Operation not supported")
 
     monkeypatch.setattr(backup_module.os, "link", refusing_link)
@@ -427,10 +582,14 @@ def test_backup_reads_a_new_snapshot_back_before_reporting_success(
     mac = tmp_path / "mac"
     real_link = backup_module.os.link
 
-    def link_then_corrupt(source, target):
-        real_link(source, target)
-        if "snapshots" in Path(target).parts:
-            Path(target).write_bytes(b"corrupt after link")
+    def link_then_corrupt(source, target, **kwargs):
+        real_link(source, target, **kwargs)
+        if target.endswith(".json"):
+            descriptor = os.open(target, os.O_WRONLY | os.O_TRUNC, dir_fd=kwargs["dst_dir_fd"])
+            try:
+                os.write(descriptor, b"corrupt after link")
+            finally:
+                os.close(descriptor)
 
     monkeypatch.setattr(backup_module.os, "link", link_then_corrupt)
 
@@ -457,9 +616,9 @@ def test_a_backup_taken_across_a_concurrent_append_refuses_and_stays_resumable(
     original = backup_module._copy_verified
     appended = False
 
-    def copy_then_append(source, target, digest):
+    def copy_then_append(source_descriptor, relative, objects_descriptor, target, digest):
         nonlocal appended
-        result = original(source, target, digest)
+        result = original(source_descriptor, relative, objects_descriptor, target, digest)
         if not appended:
             appended = True
             (volume / run_id / "receipts" / "sha256" / ("b" * 64 + ".json")).write_bytes(b"later\n")

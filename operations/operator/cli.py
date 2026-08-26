@@ -347,13 +347,15 @@ def _review_in_custody(run_root: Path, run_id: str, workspace: Path) -> None:
     _print(completed.stdout.rstrip())
 
 
-def _backup_in_custody(run_root: Path, run_id: str, mac_directory: Path, workspace: Path) -> None:
+def _backup_in_custody(run_root: Path, run_id: str, mac_directory: Path, _workspace: Path) -> None:
     """Copy evidence only in the no-network, credential-free custody child."""
 
     from .backup import (
         BackupRefusal,
         BackupReport,
         _prepare_backup_layout,
+        destination_identities,
+        required_identity,
         resolve_backup_paths,
         verify_backup_snapshot,
     )
@@ -365,14 +367,26 @@ def _backup_in_custody(run_root: Path, run_id: str, mac_directory: Path, workspa
     try:
         source, destination = resolve_backup_paths(run_root, run_id, mac_directory)
         _prepare_backup_layout(source, destination)
+        source_identity = required_identity(source, what="source run tree")
+        destination_identity = destination_identities(destination)
     except BackupRefusal as refusal:
         raise OperatorError(ErrorCode.BACKUP_FAILED, detail=str(refusal)) from refusal
-    command = python_module_command("operations.operator.backup_worker", workspace)
+    # `--workspace` selects project data for other verbs; it is not authority to
+    # replace this custody worker's code. Resolve the package root from the
+    # already-imported module, then use that same pinned root for imports and cwd.
+    worker_root = Path(__file__).resolve().parents[2]
+    command = python_module_command("operations.operator.backup_worker", worker_root)
     request = json.dumps(
-        {"run_root": str(run_root.resolve()), "run_id": run_id, "mac_directory": str(destination)}
+        {
+            "run_root": str(run_root.resolve()),
+            "run_id": run_id,
+            "mac_directory": str(destination),
+            "source_identity": list(source_identity),
+            "destination_identities": [list(identity) for identity in destination_identity],
+        }
     )
     backend, completed = run_confined(
-        command, writable=destination, cwd=workspace, input_text=request
+        command, writable=destination, cwd=worker_root, input_text=request
     )
     if completed.returncode != 0:
         launcher = backend.launcher_failure(completed)
@@ -382,7 +396,12 @@ def _backup_in_custody(run_root: Path, run_id: str, mac_directory: Path, workspa
         raise OperatorError(ErrorCode.BACKUP_FAILED, detail=detail)
     try:
         report = BackupReport.from_record(json.loads(completed.stdout))
-        verify_backup_snapshot(destination, run_id, report)
+        verify_backup_snapshot(
+            destination,
+            run_id,
+            report,
+            expected_destination_identities=destination_identity,
+        )
     except (BackupRefusal, ValueError, RecursionError) as error:
         raise OperatorError(ErrorCode.BACKUP_FAILED, detail=str(error)) from error
     _print(

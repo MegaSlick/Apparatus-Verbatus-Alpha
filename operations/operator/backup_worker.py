@@ -8,14 +8,58 @@ from pathlib import Path
 
 from .backup import BackupRefusal, sync_run_tree
 
+MAX_REQUEST_BYTES = 64 * 1024
+
+
+def _identity(value: object, *, field: str) -> tuple[int, int]:
+    if (
+        not isinstance(value, list)
+        or len(value) != 2
+        or any(
+            not isinstance(member, int) or isinstance(member, bool) or member < 0
+            for member in value
+        )
+    ):
+        raise BackupRefusal(f"backup request field {field!r} has no filesystem identity")
+    return (value[0], value[1])
+
+
+def _destination_identities(value: object) -> tuple[tuple[int, int], ...]:
+    if not isinstance(value, list) or len(value) != 5:
+        raise BackupRefusal(
+            "backup request field 'destination_identities' has no complete layout identity"
+        )
+    return tuple(
+        _identity(member, field=f"destination_identities[{index}]")
+        for index, member in enumerate(value)
+    )
+
 
 def main() -> int:
     try:
-        request = json.loads(sys.stdin.read())
-        if not isinstance(request, dict) or set(request) != {"run_root", "run_id", "mac_directory"}:
+        data = sys.stdin.buffer.read(MAX_REQUEST_BYTES + 1)
+        if len(data) > MAX_REQUEST_BYTES:
+            raise BackupRefusal(
+                f"backup request is larger than {MAX_REQUEST_BYTES} bytes and was not read"
+            )
+        request = json.loads(data)
+        fields = {
+            "run_root",
+            "run_id",
+            "mac_directory",
+            "source_identity",
+            "destination_identities",
+        }
+        if not isinstance(request, dict) or set(request) != fields:
             raise BackupRefusal("backup request has an invalid shape")
         report = sync_run_tree(
-            Path(request["run_root"]), request["run_id"], Path(request["mac_directory"])
+            Path(request["run_root"]),
+            request["run_id"],
+            Path(request["mac_directory"]),
+            expected_source_identity=_identity(request["source_identity"], field="source_identity"),
+            expected_destination_identities=_destination_identities(
+                request["destination_identities"]
+            ),
         )
     except (BackupRefusal, OSError, TypeError, ValueError) as error:
         print(str(error), file=sys.stderr)
