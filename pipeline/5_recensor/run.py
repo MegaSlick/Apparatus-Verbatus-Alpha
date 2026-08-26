@@ -49,6 +49,7 @@ from common.exemplar_boundary import verify_sealed_page_pixels  # noqa: E402
 from common.native_witness import (  # noqa: E402
     reported_geometry_overlaps,
     validate_page_testimonium_payload,
+    verify_native_capture_blob,
 )
 from common.perlector_audit import validate_chain  # noqa: E402
 from common.recensor_receipt import build_recensor_partition_receipt  # noqa: E402
@@ -351,6 +352,13 @@ def act_attachment_facts(context, act_id: str, outcomes: dict[str, str]) -> dict
                         f"act {act_id} page witness {chair!r} attributes its native capture to "
                         "an adapter other than that chair's configured boundary"
                     )
+                try:
+                    verify_native_capture_blob(context.tree, native_capture)
+                except ContractError as error:
+                    raise FatalAccounting(
+                        f"act {act_id} page witness {chair!r} has a native capture that does "
+                        f"not derive from its retained raw response: {error}"
+                    ) from error
             # Native page and compatibility act outcomes are independent; legacy
             # page joins instead derive their outcome from the act attempts.
             attachment_outcome = (

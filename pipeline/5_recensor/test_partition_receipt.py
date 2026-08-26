@@ -223,6 +223,33 @@ def test_recensor_refuses_a_native_capture_attributed_to_another_adapter(tmp_pat
         recensor.validate_chair_coverage(context, act["act_id"], context.witness_floor)
 
 
+def test_recensor_rederives_a_native_projection_from_the_retained_raw_response(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "runs"
+    through_perlector(root, "capture-projection", "happy")
+    recensor = _load_recensor()
+    context = recensor.open_context(_recensor_args(root, "capture-projection"), RECENSOR)
+    act = next(act for act in recensor.expected_acts(context) if act["act_key"] == "a1")
+    original = context.tree.read_artifact_reference
+
+    def forged_projection(reference, *, stage, kind, subject_id):
+        record = original(reference, stage=stage, kind=kind, subject_id=subject_id)
+        if kind == "page-testimonium" and record["payload"]["chair"] == "attestator_1":
+            record = copy.deepcopy(record)
+            payload = record["payload"]
+            text = payload["payload"]
+            forged = ("X" if text[0] != "X" else "Y") + text[1:]
+            payload["payload"] = forged
+            payload["reported"] = forged
+            payload["native_capture"]["parse"]["text"] = forged
+        return record
+
+    monkeypatch.setattr(context.tree, "read_artifact_reference", forged_projection)
+    with pytest.raises(FatalAccounting, match="parse.*retained raw response"):
+        recensor.validate_chair_coverage(context, act["act_id"], context.witness_floor)
+
+
 def test_recovery_replaces_the_current_partition_snapshot_without_erasing_history(tmp_path):
     root = tmp_path / "runs"
     through_perlector(root, "review", "review")

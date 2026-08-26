@@ -34,6 +34,7 @@ from common.chandra_custody import retain_chandra_response
 from common.contracts.canonical import digest_bytes, digest_of
 from common.contracts.errors import SchemaRefusal
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, writing_directory
+from common.native_witness import CHURRO_MAX_RESPONSE_BYTES
 from common.runtree.store import BLOBS_DIR
 
 PAGE_ID = "pg_fixture"
@@ -229,6 +230,32 @@ def test_churro_parse_normalization_is_harmless_because_raw_bytes_are_retained()
     )
     assert record["parse"]["text"] == "line one\nRené"
     assert tree.blobs[record["raw_response_ref"]["relative_path"]] == raw
+
+
+def test_an_oversized_churro_response_is_retained_but_never_parsed_or_scanned():
+    tree = _Tree()
+    raw = b"<output>" + b"x" * CHURRO_MAX_RESPONSE_BYTES + b"</output>"
+
+    record = retain_model_view(
+        tree,
+        adapter="churro.v1",
+        view={"prompt": churro_prompt(), "generation": churro_generation()},
+        raw_response=raw,
+        transport_stop_reason="eos",
+        parser="xml",
+    )
+
+    assert tree.blobs[record["raw_response_ref"]["relative_path"]] is raw
+    assert record["parse"]["state"] == "failed"
+    assert "exceeds the retained parsing limit" in record["parse"]["reason"]
+    assert record["findings"] == [
+        {
+            "kind": "post-hoc-repetition-uninspected",
+            "reason": record["parse"]["reason"],
+            "inspected": "raw-response",
+        }
+    ]
+    assert record["stop_reason"] == "partial-parse-failed"
 
 
 def test_repetition_detection_observes_only_bytes_already_captured(monkeypatch):

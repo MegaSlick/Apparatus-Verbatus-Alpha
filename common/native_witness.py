@@ -8,6 +8,8 @@ or preference: correspondence is a consumer lookup, never witness testimony.
 
 from __future__ import annotations
 
+import re
+import xml.etree.ElementTree as ET
 from typing import Any, Final
 
 from common.contracts.canonical import digest_bytes
@@ -55,6 +57,15 @@ PAGE_TESTIMONIUM_OPTIONAL_FIELDS: Final = frozenset(
     {"reason", "reported", "partition_disagreement", "native_capture"}
 )
 PAGE_ROLES: Final = frozenset({"primary", "continuation", "mixed"})
+
+# The serving request is already bounded at 24,000 generated tokens.  Four MiB
+# still allows more than 174 UTF-8 response bytes per requested token -- far
+# beyond an OCR transcription -- while giving the XML parser and the post-hoc
+# repetition scan a hard ceiling when a provider ignores that request bound.
+CHURRO_OUTPUT_TOKENS: Final = 24_000
+CHURRO_MAX_RESPONSE_BYTES: Final = 4 * 1024 * 1024
+_CHURRO_REPETITION_WINDOW: Final = 24
+_CHURRO_REPETITION_MIN_REPEATS: Final = 3
 
 
 def _integer(value: object) -> bool:
@@ -679,6 +690,153 @@ _CHURRO_CUTOFF_STOP_REASONS: Final = frozenset({"length", "max_new_tokens"})
 _CHURRO_STOP_REASONS: Final = frozenset({"eos", "stop"}) | _CHURRO_CUTOFF_STOP_REASONS
 
 
+def validate_churro_xml(raw: bytes) -> str:
+    """Validate one bounded native Churro response as a plain output element."""
+    if not isinstance(raw, (bytes, bytearray)):
+        raise SchemaRefusal("Churro response is not raw bytes")
+    if len(raw) > CHURRO_MAX_RESPONSE_BYTES:
+        raise SchemaRefusal(
+            "Churro response exceeds the retained parsing limit of "
+            f"{CHURRO_MAX_RESPONSE_BYTES} bytes (received {len(raw)})"
+        )
+    if b"<!DOCTYPE" in bytes(raw).upper():
+        raise SchemaRefusal("Churro response carries a DOCTYPE; a plain <output> element cannot")
+    try:
+        root = ET.fromstring(raw)
+    except (ET.ParseError, UnicodeDecodeError) as error:
+        raise SchemaRefusal(f"Churro response is not parseable XML: {error}") from error
+    if root.tag != "output" or set(root.attrib) or list(root):
+        raise SchemaRefusal("Churro response must be a plain <output> XML element")
+    return root.text or ""
+
+
+def detect_churro_repetition(raw: bytes) -> dict[str, Any] | None:
+    """Report a repeated tail after capture; this function has no generation input."""
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return {
+            "kind": "post-hoc-repetition-uninspected",
+            "reason": "response is not UTF-8 text",
+        }
+    normalized = re.sub(r"\s+", " ", text).strip()
+    if len(normalized) < _CHURRO_REPETITION_WINDOW * _CHURRO_REPETITION_MIN_REPEATS:
+        return None
+    for width in range(
+        _CHURRO_REPETITION_WINDOW,
+        min(256, len(normalized) // _CHURRO_REPETITION_MIN_REPEATS) + 1,
+    ):
+        unit = normalized[-width:]
+        repeats = 1
+        while (repeats + 1) * width <= len(normalized) and (
+            normalized[-(repeats + 1) * width : -repeats * width] == unit
+        ):
+            repeats += 1
+        if repeats >= _CHURRO_REPETITION_MIN_REPEATS:
+            return {"kind": "post-hoc-repetition", "unit_characters": width, "repeats": repeats}
+    return None
+
+
+def derive_churro_capture(
+    raw: bytes,
+    transport_stop_reason: str,
+    *,
+    parser: str | None,
+    xml_parser=validate_churro_xml,
+    repetition_detector=detect_churro_repetition,
+) -> dict[str, Any]:
+    """Derive the exact mutable-free facts a Churro capture may publish.
+
+    Oversized bytes have already crossed the response boundary, so they remain
+    evidence in the caller's blob store.  They are not handed to either parser
+    or detector; both unperformed operations are named in the retained facts.
+    """
+    if len(raw) > CHURRO_MAX_RESPONSE_BYTES:
+        reason = (
+            "Churro response exceeds the retained parsing limit of "
+            f"{CHURRO_MAX_RESPONSE_BYTES} bytes (received {len(raw)})"
+        )
+        parse = (
+            {"state": "not-requested", "parser": None}
+            if parser is None
+            else {"state": "failed", "parser": parser, "reason": reason}
+        )
+        return {
+            "parse": parse,
+            "findings": [
+                {
+                    "kind": "post-hoc-repetition-uninspected",
+                    "reason": reason,
+                    "inspected": "raw-response",
+                }
+            ],
+            "stop_reason": (
+                "partial-parse-failed" if parser is not None else transport_stop_reason
+            ),
+        }
+
+    parse: dict[str, Any] = {"state": "not-requested", "parser": None}
+    stop_reason = transport_stop_reason
+    if parser == "xml":
+        try:
+            parse = {"state": "parsed", "parser": "xml", "text": xml_parser(raw)}
+        except SchemaRefusal as error:
+            parse = {"state": "failed", "parser": "xml", "reason": str(error)}
+            stop_reason = "partial-parse-failed"
+    parsed_text = parse.get("text")
+    inspected, basis = (
+        (parsed_text.encode("utf-8"), "parsed-text")
+        if isinstance(parsed_text, str)
+        else (raw, "raw-response")
+    )
+    findings: list[dict[str, Any]] = []
+    if finding := repetition_detector(inspected):
+        findings.append({**finding, "inspected": basis})
+        if finding["kind"] == "post-hoc-repetition" and parse["state"] != "failed":
+            stop_reason = "partial-post-hoc-repetition-detected"
+    return {"parse": parse, "findings": findings, "stop_reason": stop_reason}
+
+
+def verify_native_capture_bytes(value: Any, raw: bytes) -> dict[str, Any]:
+    """Verify one capture's derived record against its authoritative raw blob."""
+    capture = validate_native_capture(value)
+    if not isinstance(raw, bytes):
+        raise SchemaRefusal("a page Testimonium raw response is not bytes")
+    actual_digest = digest_bytes(raw)
+    if actual_digest != capture["raw_response_ref"]["sha256"]:
+        raise SchemaRefusal(
+            "a page Testimonium raw response has digest "
+            f"{actual_digest}, not its native capture digest "
+            f"{capture['raw_response_ref']['sha256']}"
+        )
+    if capture["adapter"] != "churro.v1":
+        return capture
+    derived = derive_churro_capture(
+        raw,
+        capture["transport_stop_reason"],
+        parser=capture["parse"]["parser"],
+    )
+    for field in ("parse", "findings", "stop_reason"):
+        if capture[field] != derived[field]:
+            raise SchemaRefusal(
+                f"a Churro native capture's {field} differs from its retained raw response"
+            )
+    return capture
+
+
+def verify_native_capture_blob(tree: Any, value: Any) -> dict[str, Any]:
+    """Read, digest-check, and derive from the same raw bytes without a check/use gap."""
+    capture = validate_native_capture(value)
+    reference = capture["raw_response_ref"]
+    try:
+        raw = tree.read_bytes(reference["relative_path"])
+    except OSError as error:
+        raise SchemaRefusal(
+            f"a page Testimonium raw response could not be read: {error}"
+        ) from error
+    return verify_native_capture_bytes(capture, raw)
+
+
 def validate_native_capture(value: Any) -> dict[str, Any]:
     """Close the derived model view; raw response bytes remain in its referenced blob."""
     if not isinstance(value, dict) or set(value) != _NATIVE_CAPTURE_FIELDS:
@@ -761,11 +919,15 @@ def validate_native_capture(value: Any) -> dict[str, Any]:
             or set(generation) != {"max_new_tokens"}
             or not isinstance(generation["max_new_tokens"], int)
             or isinstance(generation["max_new_tokens"], bool)
-            or generation["max_new_tokens"] <= 0
+            or generation["max_new_tokens"] != CHURRO_OUTPUT_TOKENS
         ):
-            raise SchemaRefusal("a Churro page capture has no positive generation bound")
+            raise SchemaRefusal(
+                f"a Churro page capture does not retain its {CHURRO_OUTPUT_TOKENS}-token bound"
+            )
         if state not in {"parsed", "failed"} or parser != "xml":
             raise SchemaRefusal("a retained Churro page capture has no terminal XML parse record")
+        if len(findings) > 1:
+            raise SchemaRefusal("a Churro page capture carries more than one repetition finding")
         for finding in findings:
             kind = finding["kind"]
             if kind not in _CHURRO_CAPTURE_FINDING_KINDS:

@@ -578,6 +578,14 @@ def test_a_crop_written_by_another_encoder_is_not_refused_as_untraceable(real_re
     assert verified["region_id"] == region["payload"]["region_id"]
 
 
+def _replace_capture_projection(payload):
+    original = payload["payload"]
+    forged = ("X" if original[0] != "X" else "Y") + original[1:]
+    payload["payload"] = forged
+    payload["reported"] = forged
+    payload["native_capture"]["parse"]["text"] = forged
+
+
 @pytest.mark.parametrize(
     ("mutate", "message"),
     [
@@ -590,6 +598,7 @@ def test_a_crop_written_by_another_encoder_is_not_refused_as_untraceable(real_re
             lambda payload: payload["native_capture"].update(adapter="another-adapter.v1"),
             "configured boundary",
         ),
+        (_replace_capture_projection, "parse.*retained raw response"),
     ],
 )
 def test_page_testimonium_consumer_closes_payload_and_provenance(

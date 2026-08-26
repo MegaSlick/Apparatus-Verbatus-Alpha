@@ -72,6 +72,7 @@ from common.native_witness import (  # noqa: E402
     validate_native_witness_geometry,
     validate_page_testimonium_payload,
     validate_presented_page_binding,
+    verify_native_capture_blob,
 )
 from common.runtree.store import RECEIPTS_DIR  # noqa: E402
 from common.stage import (  # noqa: E402
@@ -686,6 +687,7 @@ def act_attachment_view(
                         f"act {act_id} page Testimonium for chair {chair!r} attributes its "
                         "native capture to an adapter other than that chair's configured boundary"
                     )
+                verify_native_capture_blob(context.tree, native_capture)
             # The SEALED PROPOSAL geometry, never every current basis region.
             # The writer computes this attachment from `proposed_regions`
             # (`pipeline/3_attestatores/run.py`) and cannot do otherwise: a

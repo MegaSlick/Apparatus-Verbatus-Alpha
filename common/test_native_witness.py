@@ -15,6 +15,7 @@ from common.native_witness import (
     validate_native_witness_geometry,
     validate_page_testimonium_payload,
     validate_presented_page_binding,
+    verify_native_capture_bytes,
 )
 
 
@@ -375,7 +376,7 @@ def test_page_payload_closure_is_shared_with_the_consumer_and_refuses_unhashable
 def _page_with_churro_capture() -> dict:
     value = payload()
     text = value["payload"]
-    digest = "a" * 64
+    digest = digest_bytes(f"<output>{text}</output>".encode())
     value.update(
         {
             "chair": "attestator_1",
@@ -440,6 +441,12 @@ def _page_with_churro_capture() -> dict:
             "exactly its prompt and generation",
         ),
         (
+            lambda value: value["native_capture"]["view"]["generation"].update(
+                max_new_tokens=10**100
+            ),
+            "24000-token bound",
+        ),
+        (
             lambda value: value["native_capture"].update(stop_reason="partial-parse-failed"),
             "disagrees with its parse and findings",
         ),
@@ -448,6 +455,23 @@ def _page_with_churro_capture() -> dict:
                 parse={"state": "pending", "parser": "xml"}
             ),
             "terminal XML parse",
+        ),
+        (
+            lambda value: value["native_capture"]["findings"].extend(
+                [
+                    {
+                        "kind": "post-hoc-repetition-uninspected",
+                        "reason": "first",
+                        "inspected": "raw-response",
+                    },
+                    {
+                        "kind": "post-hoc-repetition-uninspected",
+                        "reason": "second",
+                        "inspected": "raw-response",
+                    },
+                ]
+            ),
+            "more than one repetition finding",
         ),
         (
             lambda value: value["native_capture"]["parse"].update(text="different"),
@@ -487,6 +511,16 @@ def test_a_cut_off_empty_churro_capture_is_recordable_but_not_a_reported_absence
     value["reported"] = ""
     with pytest.raises(SchemaRefusal, match="claims a reported absence"):
         validate_page_testimonium_payload(value)
+
+
+def test_churro_capture_derivation_is_checked_against_its_authoritative_raw_bytes():
+    value = _page_with_churro_capture()
+    raw = f"<output>{value['payload']}</output>".encode()
+    assert verify_native_capture_bytes(value["native_capture"], raw) is value["native_capture"]
+
+    value["native_capture"]["parse"]["text"] = "a coherently resealed false projection"
+    with pytest.raises(SchemaRefusal, match="parse.*retained raw response"):
+        verify_native_capture_bytes(value["native_capture"], raw)
 
 
 def test_partition_disagreement_retains_all_ambiguous_geometry_without_a_winner():
