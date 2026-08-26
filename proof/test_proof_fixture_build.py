@@ -301,6 +301,7 @@ def test_the_scenarios_are_exactly_the_declared_ones(skeleton):
         "witness-capabilities",
         "review",
         "continuation-recovery",
+        "coverage-recovery",
         "audit-change",
         "refused-page",
         "refused-first-page",
@@ -330,6 +331,22 @@ def test_the_scenarios_are_exactly_the_declared_ones(skeleton):
     # This is the only scenario that recrops the cross-page act.
     assert by_name["continuation-recovery"]["recover_acts"] == ["a2"]
     assert by_name["continuation-recovery"]["hold_acts"] == []
+    # Any declared route here would re-conflate it with the unclaimed-geometry origin.
+    assert by_name["coverage-recovery"]["recover_acts"] == []
+    assert by_name["coverage-recovery"]["hold_acts"] == []
+    assert [
+        row for row in skeleton["native_observation"] if row.get("scenario") == "coverage-recovery"
+    ] == [
+        {
+            "scenario": "coverage-recovery",
+            "chair": "attestator_1",
+            "page_ordinal": 1,
+            "x": 0,
+            "y": 200,
+            "w": 10,
+            "h": 40,
+        }
+    ]
     # The scenario's data, not only its presence in the name census: a wrong
     # recover/hold declaration or a missing re-proof row would leave the
     # audit-change path measuring nothing while this file stayed green.

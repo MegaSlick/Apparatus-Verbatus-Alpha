@@ -69,6 +69,7 @@ from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR, PERLECTO
 from common.exemplar_boundary import verify_exemplar_crop_lineage  # noqa: E402
 from common.imaging import dimensions  # noqa: E402
 from common.native_witness import (  # noqa: E402
+    reported_geometry_overlaps,
     unpresented_region_ids,
     unrouted_observations,
     validate_native_witness_geometry,
@@ -588,7 +589,7 @@ def validate_page_testimonium_record(
 ) -> None:
     """Reconcile a page Testimonium's outcome, page, presentation, and inputs."""
     payload = record.get("payload")
-    validate_page_testimonium_payload(payload)
+    validate_page_testimonium_payload(payload, testimonium_id=record.get("artifact_id"))
     attempted = record["outcome"] in ATTEMPTED_WITNESS_OUTCOMES
     presented = payload["presented"]
     if payload["regions"] != []:
@@ -773,6 +774,7 @@ def act_attachment_view(
     act: dict[str, Any],
     testimonia: list[dict],
     bases: list[dict],
+    proposal_region_ids: set[str],
     page_testimonia_seen: dict[str, dict] | None = None,
     all_proposal_regions: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
@@ -830,6 +832,7 @@ def act_attachment_view(
         "page_ordinal",
         "testimonium_ref",
         "attached",
+        "attachment_basis",
         "content_health",
         "alignment",
         "span",
@@ -841,6 +844,8 @@ def act_attachment_view(
             or type(attachment.get("chair")) is not str
             or not isinstance(attachment.get("page_witness"), bool)
             or not isinstance(attachment.get("attached"), bool)
+            or attachment.get("attachment_basis")
+            not in {"presented-region", "anchor-line", "geometric-overlap", "unattached"}
             or not isinstance(attachment.get("content_health"), dict)
         ):
             raise SchemaRefusal("an act-attachment record has a malformed attachment")
@@ -881,9 +886,33 @@ def act_attachment_view(
     page_witness_chairs: set[str] = set()
     comparison_views: dict[str, str] = {}
     for attachment in attachments:
+        if (
+            not isinstance(attachment, dict)
+            or set(attachment)
+            != {
+                "chair",
+                "page_witness",
+                "page_ordinal",
+                "testimonium_ref",
+                "attached",
+                "attachment_basis",
+                "content_health",
+                "alignment",
+                "span",
+            }
+            or not isinstance(attachment.get("chair"), str)
+            or not isinstance(attachment.get("page_witness"), bool)
+            or not isinstance(attachment.get("attached"), bool)
+            or attachment.get("attachment_basis")
+            not in {"presented-region", "anchor-line", "geometric-overlap", "unattached"}
+            or not isinstance(attachment.get("content_health"), dict)
+        ):
+            raise SchemaRefusal("an act-attachment record has a malformed attachment")
         span = attachment["span"]
         characters = attachment["content_health"].get("characters")
         if attachment["attached"] and not attachment["page_witness"]:
+            if attachment["attachment_basis"] != "presented-region":
+                raise SchemaRefusal("an act-scoped attachment has no presented-region basis")
             expected_end = (
                 characters
                 if isinstance(characters, int) and not isinstance(characters, bool)
@@ -893,7 +922,9 @@ def act_attachment_view(
                 raise SchemaRefusal(
                     "an attached act view does not span its complete delivered reading"
                 )
-        elif not attachment["attached"] and span is not None:
+        elif not attachment["attached"] and (
+            attachment["attachment_basis"] != "unattached" or span is not None
+        ):
             raise SchemaRefusal("an unattached act view claims an alignment span")
         chair = attachment["chair"]
         attachment_page = attachment["page_ordinal"]
@@ -974,10 +1005,37 @@ def act_attachment_view(
             )
             page_payload = testimonium.get("payload")
             validate_page_testimonium_record(context, testimonium, all_proposal_regions)
-            # Page observations are judged once per (page, chair), not once per
-            # act on that page; collect them at this digest-checked read seam.
+            # Collected for the caller's routing sweep rather than examined here:
+            # a page Testimonium belongs to a (page, chair) pair, not to this act,
+            # so its observations must be judged once per run and not once per act
+            # that happens to sit on the page. This is the only digest-checked read
+            # of these records the Perlector makes, which is why the sink hangs
+            # here instead of a second walk of the Attestatores manifest -- a
+            # second walk would need its own current-attempt collapse and would be
+            # the third mirror of the Recensor's (see `current_page_testimonia`).
             if page_testimonia_seen is not None and isinstance(page_payload, dict):
                 page_testimonia_seen[testimonium["artifact_id"]] = testimonium
+            # A recovery crop postdates testimony and therefore cannot expand
+            # the sealed-proposal denominator used to attach that testimony.
+            page_bases = [
+                basis
+                for basis in bases
+                if basis["source_page_ordinal"] == attachment_page
+                and basis["region_id"] in proposal_region_ids
+            ]
+            geometrically_attached = chair_testimonium[
+                "outcome"
+            ] in WITNESS_READING_OUTCOMES and any(
+                reported_geometry_overlaps(
+                    page_payload.get("observed", []), basis["transform"]["bounds"]
+                )
+                for basis in page_bases
+            )
+            if attachment["attached"] != geometrically_attached:
+                raise SchemaRefusal(
+                    f"act {act_id} page attachment for chair {chair!r} does not derive from "
+                    "that witness's reported geometry against the sealed proposal"
+                )
             unjoined = (
                 page_payload.get("unjoined_act_attempts")
                 if isinstance(page_payload, dict)
@@ -1059,22 +1117,22 @@ def act_attachment_view(
                     "unjoined-attempt record"
                 )
             alignment = attachment["alignment"]
-            if attachment["attached"]:
-                if (
-                    not isinstance(alignment, dict)
-                    or set(alignment)
-                    != {
-                        "status",
-                        "anchor_basis",
-                        "anchor_span",
-                        "witness_span",
-                        "line_geometry",
-                        "loss",
-                        "offset_maps",
-                    }
-                    or alignment.get("status") != "aligned"
-                    or span != alignment.get("witness_span")
-                ):
+            if attachment["attached"] and attachment["attachment_basis"] != "geometric-overlap":
+                raise SchemaRefusal("an attached page witness has no geometric-overlap basis")
+            if (
+                attachment["attached"]
+                and isinstance(alignment, dict)
+                and alignment.get("status") == "aligned"
+            ):
+                if set(alignment) != {
+                    "status",
+                    "anchor_basis",
+                    "anchor_span",
+                    "witness_span",
+                    "line_geometry",
+                    "loss",
+                    "offset_maps",
+                } or span != alignment.get("witness_span"):
                     raise SchemaRefusal("an attached page witness has no computed alignment")
                 page_text = page_payload.get("reported")
                 witness_span = alignment["witness_span"]
@@ -1093,7 +1151,26 @@ def act_attachment_view(
                 # handed on unstripped would carry whatever markup it cut
                 # through. Found in audit; F-X3, recomposed by R6's F-G2.
                 comparison_views[chair] = act_comparison_view(page_text, witness_span)
+            elif attachment["attached"] and (
+                not isinstance(alignment, dict)
+                or set(alignment) != {"status", "reason"}
+                or alignment.get("status") != "unaligned"
+                or span is not None
+                or not (isinstance(alignment["reason"], str) and alignment["reason"].strip())
+            ):
+                raise SchemaRefusal(
+                    "a geometrically attached page witness has no explicit span limit"
+                )
             elif (
+                not attachment["attached"]
+                and isinstance(alignment, dict)
+                and alignment.get("status") == "aligned"
+            ):
+                # Text alignment survives independently but cannot authorize a
+                # geometric attachment or comparison view.
+                if span is not None:
+                    raise SchemaRefusal("an unattached page witness claims a comparison span")
+            elif not attachment["attached"] and (
                 not isinstance(alignment, dict)
                 or set(alignment) != {"status", "reason"}
                 or alignment.get("status") != "unaligned"
@@ -2435,6 +2512,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             act,
             testimonia,
             bases,
+            {region["payload"]["region_id"] for region in proposal_regions},
             page_testimonia_seen=page_testimonia,
             all_proposal_regions=all_proposal_regions,
         )
@@ -2447,15 +2525,18 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         )
         for finding in unrouted:
             reported_unrouted.add((finding["testimonium_id"], finding["ordinal"]))
-            # This pass is diagnostic only: record shapes are fixed, and only
-            # the Recensor may initiate recovery, so the finding remains stderr.
+            # Named on stderr before this stage seals, never silently normalized
+            # into the closest act. The Recensor independently re-derives the
+            # same finding from this observed geometry and the sealed proposal
+            # denominator, then may route it through bounded coverage recovery.
+            # It does not trust the page record's optional retained snapshot.
             print(f"non-fatal finding: {finding}", file=sys.stderr)
 
         # Which regions any witness actually saw. Ink uncovered by a recovery
         # recrop was never shown to a witness, and saying so is the difference
         # between a gap in the record and a gap nobody can see. It changes nothing
         # about the reading — the Perlector reads the ink either way.
-        witnessed = witnessed_region_ids(testimonia)
+        witnessed = witnessed_region_ids(testimonia, bases)
         for basis in bases:
             basis["witness_covered"] = basis["region_id"] in witnessed
 

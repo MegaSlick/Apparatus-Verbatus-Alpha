@@ -97,6 +97,8 @@ _PRIOR_READING_SCENARIOS = (
     "malformed-witness",
     "structured-witness",
     "malformed-capabilities",
+    # No declared recovery or hold may mask the geometry-triggered route.
+    "coverage-recovery",
 )
 PRIOR_READINGS = tuple(
     {"scenario": scenario, "act_key": act_key, "text": text}
@@ -147,8 +149,34 @@ CHANDRA_ANCHORS = (
 
 # Page 1's proposals both begin at x=12. This left-margin box is therefore the
 # unambiguous zero-overlap stimulus required by the deliberately unmeasured rule.
+# Fixture geometry is deterministic stimulus for an explicitly unmeasured
+# positive-area rule; it is neither a calibrated threshold nor act assignment.
 NATIVE_OBSERVATIONS = (
-    {"chair": "attestator_1", "page_ordinal": 1, "x": 0, "y": 200, "w": 10, "h": 40},
+    # Two independent reports must contain both page-1 proposals without
+    # treating anchor alignment as attachment authority.
+    {"chair": "attestator_1", "page_ordinal": 1, "x": 12, "y": 15, "w": 188, "h": 223},
+    {"chair": "attestator_3", "page_ordinal": 1, "x": 12, "y": 15, "w": 188, "h": 223},
+    # Review retains marginal ink outside every proposal for bounded recovery.
+    {
+        "scenario": "review",
+        "chair": "attestator_1",
+        "page_ordinal": 1,
+        "x": 0,
+        "y": 200,
+        "w": 10,
+        "h": 40,
+    },
+    # This scenario declares no competing route, so only marginal geometry can
+    # cause its recovery or hold.
+    {
+        "scenario": "coverage-recovery",
+        "chair": "attestator_1",
+        "page_ordinal": 1,
+        "x": 0,
+        "y": 200,
+        "w": 10,
+        "h": 40,
+    },
 )
 
 # The first two rows are the pair spec 07's `format_capabilities` exists for: "a
@@ -510,7 +538,9 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
 
     for observation in NATIVE_OBSERVATIONS:
         lines += ["", "[[native_observation]]"]
-        for key in ("chair", "page_ordinal", "x", "y", "w", "h"):
+        for key in ("scenario", "chair", "page_ordinal", "x", "y", "w", "h"):
+            if key not in observation:
+                continue
             value = observation[key]
             lines.append(f"{key} = {toml_string(value) if isinstance(value, str) else value}")
 
@@ -613,6 +643,15 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
         "[[scenario]]",
         'name = "continuation-recovery"',
         'recover_acts = ["a2"]',
+        "hold_acts = []",
+        "",
+        "# coverage-recovery declares neither a recovery nor a hold. Its only",
+        "# departure from `happy` is one page witness's native observation of ink",
+        "# outside every sealed proposal, so any recovery request or hold this",
+        "# scenario produces has exactly one possible origin.",
+        "[[scenario]]",
+        'name = "coverage-recovery"',
+        "recover_acts = []",
         "hold_acts = []",
         "",
         "[[scenario]]",

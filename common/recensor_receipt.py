@@ -15,6 +15,7 @@ from common.contracts.canonical import self_hash, verify_self_hash
 from common.contracts.errors import FatalAccounting, ReceiptVersionMismatch, SchemaRefusal
 from common.contracts.outcomes import (
     INTERIM_GRANULARITY_BASIS,
+    NATIVE_GRANULARITY_BASIS,
     WITNESS_READING_OUTCOMES,
     OutcomeClass,
     classify,
@@ -364,12 +365,12 @@ def _validate_coverage(
             raise SchemaRefusal(
                 "Recensor partition receipt counts more granularity facts than configured chairs"
             )
-        if "granularity_basis" in coverage and (
-            coverage["granularity_basis"] != INTERIM_GRANULARITY_BASIS
-        ):
+        if "granularity_basis" in coverage and coverage["granularity_basis"] not in {
+            INTERIM_GRANULARITY_BASIS,
+            NATIVE_GRANULARITY_BASIS,
+        }:
             raise SchemaRefusal(
-                "Recensor partition receipt v2 does not name R0's honest interim "
-                "granularity measurement basis"
+                "Recensor partition receipt v2 does not name an honest granularity measurement basis"
             )
         if shortfalls["failed"] != by_outcome.get("failed", 0):
             raise SchemaRefusal(

@@ -867,8 +867,15 @@ def test_perlector_refuses_a_forged_continuation_page_act_anchor(tmp_path):
     )
 
     assert result.returncode != 0
-    assert "continuation-page attachment" in result.stderr
-    assert "has no page-specific anchor" in result.stderr
+    # Two independent refusals guard this forgery and either may answer first:
+    # the anchor rule ("continuation-page attachment ... has no page-specific
+    # anchor", pipeline/4_perlector/run.py) and Unit 10C's geometric
+    # re-derivation, which notices the forged `attached` fact does not derive
+    # from the witness's reported geometry before the anchor rule is consulted.
+    assert (
+        "continuation-page attachment" in result.stderr
+        and "has no page-specific anchor" in result.stderr
+    ) or "does not derive from that witness's reported geometry" in result.stderr
 
 
 def test_the_recensor_refuses_a_page_role_only_the_whole_page_disproves(tmp_path):
@@ -1120,6 +1127,11 @@ def test_act_scoped_attachment_must_match_the_current_outcome_when_health_is_cur
     assert attachment["attached"] is False
     assert attachment["content_health"] == current["payload"]["content_health"]
     attachment["attached"] = True
+    # A positive act-scoped attachment must also name the presentation basis
+    # that the native-witness contract now closes over.  Keep the forgery
+    # coherent on that independent axis so this test reaches the outcome
+    # reconciliation it is meant to prove.
+    attachment["attachment_basis"] = "presented-region"
     # The span must stay consistent with the current health, or the Perlector
     # refuses on the span before it reaches the outcome guard this test is named
     # for: a non-integer character count skips that span check entirely, and 0

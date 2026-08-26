@@ -187,7 +187,9 @@ def test_an_unhashable_attachment_chair_is_refused_before_duplicate_accounting(m
             {"act_id": "act_0123456789abcdef", "act_key": "a1"},
             [{"payload": {"chair": "attestator_1"}}],
             # `bases` joined the signature with work/continuation-page-evidence's
-            # per-(chair, page) accounting; the refusal under test fires before
-            # any basis is read.
+            # per-(chair, page) accounting, and `proposal_region_ids` with
+            # Unit 10C's geometric attachment; the refusal under test fires
+            # before either is read.
             [],
+            set(),
         )

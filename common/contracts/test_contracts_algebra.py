@@ -28,6 +28,7 @@ from common.contracts.outcomes import (
     witness_coverage,
 )
 from common.contracts.stages import ARMARIUM, ATTESTATORES, DESIGNATOR, PERLECTOR, RECENSOR
+from common.recensor_receipt import _validate_coverage
 
 # The exact shape of the algebra as this spec defines it. Pinned as counts so that
 # adding a state without deciding its class and its terminal category fails here,
@@ -645,6 +646,24 @@ def test_an_unknown_granularity_basis_is_refused_never_guessed_from():
             {1: {"outcome": "sealed"}},
             act_pages={"act_a": [1]},
         )
+
+
+def test_granularity_identity_is_executable_for_interim_and_native_bases():
+    """The receipt's reading chairs minus page-only count equals the writer's attachments."""
+    coverage = witness_coverage(
+        {"s1": "read", "s2": "read", "s3": "genuinely-empty"},
+        3,
+        attachments={"s1": True, "s2": False, "s3": True},
+    )
+    assert coverage["granularity_basis"] == outcomes.NATIVE_GRANULARITY_BASIS
+    assert (
+        sum(coverage["by_outcome"].get(outcome, 0) for outcome in outcomes.WITNESS_READING_OUTCOMES)
+        - coverage["page_granularity_only"]
+        == 2
+    )
+    for basis in (outcomes.INTERIM_GRANULARITY_BASIS, outcomes.NATIVE_GRANULARITY_BASIS):
+        candidate = {**coverage, "granularity_basis": basis}
+        _validate_coverage(candidate, require_complete_granularity=True)
 
 
 # --- The established text's own status: damage the category cannot express ------

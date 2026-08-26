@@ -43,13 +43,13 @@ from common.fixture_identity import page_identity  # noqa: E402
 from common.imaging import dimensions  # noqa: E402
 from common.native_witness import (  # noqa: E402
     PAGE_TESTIMONIUM_REQUIRED_FIELDS,
+    partition_disagreement,
+    reported_geometry_overlaps,
     unpresented_region_ids,
     validate_native_witness_geometry,
+    validate_page_testimonium_payload,
     validate_presented_page_binding,
     validate_unpresented_regions,
-)
-from common.native_witness import (
-    validate_page_testimonium_payload as validate_shared_page_testimonium_payload,
 )
 from common.stage import (  # noqa: E402
     ATTEMPTED_WITNESS_OUTCOMES,
@@ -140,6 +140,28 @@ def proposed_regions(context, act_id: str) -> list[dict]:
     if not proposed:
         raise ContractError(f"act {act_id} has no proposed region for a witness to read")
     return sorted(proposed, key=_region_ordinal)
+
+
+def sealed_page_proposal_regions(context, page_ordinal: int) -> list[dict]:
+    """Every sealed Designator proposal on one page, independent of act state.
+
+    The page partition and unrouted-observation denominator is the page's whole
+    sealed proposal set (Unit 10C's rule): a held act's proposal was still
+    sealed on this page, and omitting it makes the retained snapshot contradict
+    the Recensor's independent re-derivation of the same denominator.
+    """
+    regions = []
+    for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]:
+        if entry["kind"] != "region":
+            continue
+        record = context.tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
+        payload = record.get("payload", {})
+        if (
+            payload.get("origin") == "proposal"
+            and payload.get("transform", {}).get("source_page_ordinal") == page_ordinal
+        ):
+            regions.append(record)
+    return sorted(regions, key=_region_ordinal)
 
 
 def _region_ordinal(record: dict) -> int:
@@ -241,28 +263,28 @@ def observed_from_presentation(presented: dict[str, Any]) -> list[dict[str, Any]
     ]
 
 
-def native_observed_for(
-    context, *, chair: str, page_ordinal: int, presented: dict[str, Any]
-) -> list[dict[str, Any]]:
-    """Read a declared fixture native box; absence means the exact presentation.
-
-    The declared disagreement is deliberately not calibrated.  It is only a
-    deterministic fixture stimulus for the routing rule, while the overlap
-    threshold stays recorded as unmeasured in that rule.
-    """
+def _fixture_native_observations(
+    context, *, chair: str, page_ordinal: int
+) -> list[dict[str, Any]] | None:
+    """Fixture geometry is a stimulus; its routing threshold remains unmeasured."""
     rows = [
         row
         for row in context.fixture.get("native_observation", [])
-        if row.get("chair") == chair and row.get("page_ordinal") == page_ordinal
+        if row.get("chair") == chair
+        and row.get("page_ordinal") == page_ordinal
+        and row.get("scenario") in (None, context.scenario)
     ]
     if not rows:
-        return observed_from_presentation(presented)
-    if len(rows) != 1:
-        raise SchemaRefusal(
-            f"fixture names {len(rows)} native observations for {(chair, page_ordinal)!r}"
-        )
-    bounds = {key: rows[0].get(key) for key in ("x", "y", "w", "h")}
-    return [{"ordinal": 0, "bounds": bounds, "bounds_source": "native", "span": None}]
+        return None
+    return [
+        {
+            "ordinal": ordinal,
+            "bounds": {key: row.get(key) for key in ("x", "y", "w", "h")},
+            "bounds_source": "native",
+            "span": None,
+        }
+        for ordinal, row in enumerate(rows)
+    ]
 
 
 def validate_testimonium_presentation(context, record: dict[str, Any]) -> None:
@@ -803,6 +825,7 @@ def testimonium_payload(
     unpresented_regions: list[str] | None = None,
     outcome: str,
     reason: str | None = None,
+    page_witness: bool = False,
 ) -> dict[str, Any]:
     """Build the stage schema without letting a compatibility field define it."""
     record: dict[str, Any] = {
@@ -821,6 +844,10 @@ def testimonium_payload(
     }
     if reason is not None:
         record["reason"] = reason
+    if page_witness:
+        # Set before validation: the geometry contract must know this act view
+        # restates a page witness's page-space geometry (see validate_observed).
+        record["page_witness"] = True
 
     # `reported` is only a compatibility projection of textual native payloads;
     # structured payloads must not acquire coerced substitute text.
@@ -850,6 +877,8 @@ def page_testimonium_payload(
     page_ordinal: int,
     page_role: str,
     unjoined_act_attempts: list[dict[str, Any]],
+    partition_disagreement: dict[str, Any] | None,
+    testimonium_id: str,
     **kwargs: Any,
 ) -> dict[str, Any]:
     """Page-scoped Testimonia admit only the producer's closed field set."""
@@ -881,13 +910,10 @@ def page_testimonium_payload(
         "page_role": page_role,
         "unjoined_act_attempts": unjoined_act_attempts,
     }
-    validate_page_testimonium_payload(record)
+    if partition_disagreement is not None:
+        record["partition_disagreement"] = partition_disagreement
+    validate_page_testimonium_payload(record, testimonium_id=testimonium_id)
     return record
-
-
-def validate_page_testimonium_payload(payload: Any) -> dict[str, Any]:
-    """The page-record seam is closed before publication and on later reads."""
-    return validate_shared_page_testimonium_payload(payload)
 
 
 AttemptHistory = dict[tuple[str, str], list[dict[str, Any]]]
@@ -1689,6 +1715,12 @@ def publish_attempt(
     unpresented_regions = unpresented_region_ids(presented, regions)
     if not presented:
         observed: list[dict[str, Any]] = []
+    elif (
+        fixture_observed := _fixture_native_observations(
+            context, chair=chair, page_ordinal=presented["source_page_ordinal"]
+        )
+    ) is not None:
+        observed = fixture_observed
     elif adapter is not None:
         observed = adapter.observe(presented, attempt.native_payload)
     else:
@@ -1707,20 +1739,13 @@ def publish_attempt(
         observed=observed,
         unpresented_regions=unpresented_regions,
         outcome=attempt.outcome,
+        # The interim act view of an immutable page witness carries the flag
+        # from construction so the geometry contract validates it correctly.
+        # Its attachment points at the retained page Testimonium; R4 replaces
+        # this view with alignment, not with another witness kind.
+        page_witness=chair in page_witness_chairs,
         reason=attempt.reason,
     )
-    # A top-level statement, deliberately, not inlined into the `if` test below:
-    # `test_every_testimonium_writer_has_a_dominating_declaration_call` proves by
-    # AST that every Testimonium writer validates sealed page-witness scope
-    # unconditionally before it publishes, and that proof can only see a direct
-    # top-level call. Unit 10A inlined this; the proof predates it on another
-    # branch and is the stricter shape, so the assignment stays.
-    page_witness_chairs = declared_page_witness_chairs(context)
-    if chair in page_witness_chairs:
-        # The interim act view of an immutable page witness. Its attachment
-        # points at the retained page Testimonium; R4 replaces this view with
-        # alignment, not with another witness kind.
-        payload["page_witness"] = True
     inputs = region_inputs(context, regions, presented) if attempted else []
     # Adapter output is untrusted. Reconcile it while refusal can still leave
     # the immutable Testimonium identity unwritten; tally/consumer validation
@@ -1961,6 +1986,7 @@ def act_scoped_attachment_entry(
             artifact_id(ATTESTATORES, "testimonium", act["act_id"], act_attempt),
         ),
         "attached": attached,
+        "attachment_basis": "presented-region" if attached else "unattached",
         "content_health": attempt.health,
         "alignment": None,
         "span": (
@@ -1998,6 +2024,7 @@ def publish_page_testimonia_and_attachments(
     limits, limits_digest = load_alignment_limits(context.args.alignment_config)
     context.require_sealed_config("alignment", limits_digest)
     page_records: dict[tuple[int, str], dict[str, str]] = {}
+    page_observations: dict[tuple[int, str], list[dict[str, Any]]] = {}
     page_texts: dict[tuple[int, str], str] = {}
     # The anchor is a page fact, not a chair's report, and it is kept in its own
     # map for that reason: parked in `page_texts` under a reserved chair slot it
@@ -2047,12 +2074,7 @@ def publish_page_testimonia_and_attachments(
 
     for page_ordinal, page_acts in sorted(by_page.items()):
         page_subject = page_identity(context.fixture, page_ordinal)
-        page_proposal_regions = [
-            region
-            for act in page_acts
-            for region in regions_by_act[act["act_id"]][0]
-            if region["payload"]["transform"]["source_page_ordinal"] == page_ordinal
-        ]
+        page_proposal_regions = sealed_page_proposal_regions(context, page_ordinal)
         for chair in sorted(page_chairs):
             join = page_join([(act, attempts_by_pair[(act["act_id"], chair)]) for act in page_acts])
             native_payload, outcome = join.native_payload, join.outcome
@@ -2080,29 +2102,53 @@ def publish_page_testimonia_and_attachments(
             page_role = roles.pop() if len(roles) == 1 else "mixed"
             if not presented:
                 observed: list[dict[str, Any]] = []
-            elif any(
-                row.get("chair") == chair and row.get("page_ordinal") == page_ordinal
-                for row in context.fixture.get("native_observation", [])
-            ):
-                observed = native_observed_for(
-                    context, chair=chair, page_ordinal=page_ordinal, presented=presented
+            elif (
+                fixture_observed := _fixture_native_observations(
+                    context, chair=chair, page_ordinal=page_ordinal
                 )
+            ) is not None:
+                observed = fixture_observed
             elif adapter is not None:
                 observed = adapter.observe(presented, native_payload)
             else:
-                # An absent chair normally cannot be attempted; keep its fallback
-                # inside the stage vocabulary if that invariant is ever violated.
+                # An absent chair cannot currently be attempted; keep its
+                # no-adapter fallback explicit if that invariant changes.
                 observed = observed_from_presentation(presented)
+            # The page Testimonium is the durable home for a witness's own
+            # partition.  Keep every proposal/observation pairing as geometry,
+            # including the common unrouted-observation finding; this stage does
+            # not choose an act for a marginal observation.
+            page_proposals = page_proposal_regions
+            page_artifact_id = artifact_id(
+                ATTESTATORES, "page-testimonium", page_subject, page_attempt
+            )
+            # A never-presented page has no witness geometry to partition, and a
+            # retained snapshot naming zero proposals on a page the Designator
+            # sealed proposals for would be a false fact the Recensor refuses.
+            # The optional field is honestly absent instead.
+            disagreement = (
+                partition_disagreement(
+                    {
+                        "artifact_id": page_artifact_id,
+                        "payload": {"presented": presented, "observed": observed},
+                    },
+                    page_proposals,
+                )
+                if presented
+                else None
+            )
             payload = page_testimonium_payload(
                 page_ordinal=page_ordinal,
                 page_role=page_role,
                 unjoined_act_attempts=unjoined_act_attempts,
+                partition_disagreement=disagreement,
+                testimonium_id=page_artifact_id,
                 chair=chair,
                 act_key=f"page-{page_ordinal}",
                 ordinal=ordinal,
                 regions=[],
-                # A failed response was still served; presentation and receipt
-                # therefore share the attempted gate rather than the reading gate.
+                # A failed attempted page still records the serving moment;
+                # every attempted witness outcome is receipt-backed.
                 provenance=provenance_for(context, resolved, attempted=attempted_page),
                 format_capabilities=DEFAULT_FORMAT_CAPABILITIES,
                 native_payload=native_payload if reading else None,
@@ -2129,8 +2175,9 @@ def publish_page_testimonia_and_attachments(
             page_records[(page_ordinal, chair)] = context.artifact_ref(
                 ATTESTATORES,
                 "page-testimonium",
-                artifact_id(ATTESTATORES, "page-testimonium", page_subject, page_attempt),
+                page_artifact_id,
             )
+            page_observations[(page_ordinal, chair)] = observed
         anchors = [
             row
             for row in context.fixture.get("chandra_anchor", [])
@@ -2258,7 +2305,6 @@ def publish_page_testimonia_and_attachments(
             attempt = attempts_by_pair[(act["act_id"], chair)]
             page_witness = chair in page_chairs and act["outcome"] == "proposed"
             alignment: dict[str, Any] | None = None
-            attached = act["outcome"] == "proposed" and attempt.outcome in WITNESS_READING_OUTCOMES
             if page_witness:
                 act_anchor = anchor_ranges.get((act["page_ordinal"], act["act_id"]))
                 if attempt.outcome not in WITNESS_READING_OUTCOMES:
@@ -2422,9 +2468,6 @@ def publish_page_testimonia_and_attachments(
                             result = {"status": "unaligned", "reason": "no-overlap-with-act-anchor"}
                     if result["status"] == "unaligned":
                         alignment = {"status": "unaligned", "reason": result["reason"]}
-                attached = (
-                    alignment["status"] == "aligned" and attempt.outcome in WITNESS_READING_OUTCOMES
-                )
             if page_witness:
                 # Derive each row from the primary alignment without mutating it:
                 # source-page ordinal does not determine primary-first act order,
@@ -2439,7 +2482,22 @@ def publish_page_testimonia_and_attachments(
                             "reason": "continuation-page-no-act-anchor",
                         }
                     )
-                    page_attached = attached and is_primary_page
+                    page_bounds = [
+                        region["payload"]["transform"]["bounds"]
+                        for region in regions_by_act[act["act_id"]][0]
+                        if region["payload"]["transform"]["source_page_ordinal"]
+                        == contributing_page
+                    ]
+                    # Alignment only supplies a span inside this witness's own
+                    # text.  The attachment itself is the page geometry this
+                    # chair reported against the sealed proposal; no anchor
+                    # selects a witness/proposal correspondence.
+                    page_attached = attempt.outcome in WITNESS_READING_OUTCOMES and any(
+                        reported_geometry_overlaps(
+                            page_observations[(contributing_page, chair)], bounds
+                        )
+                        for bounds in page_bounds
+                    )
                     reference = page_records[(contributing_page, chair)]
                     entries.append(
                         {
@@ -2448,6 +2506,9 @@ def publish_page_testimonia_and_attachments(
                             "page_ordinal": contributing_page,
                             "testimonium_ref": reference,
                             "attached": page_attached,
+                            "attachment_basis": (
+                                "geometric-overlap" if page_attached else "unattached"
+                            ),
                             "content_health": attempt.health,
                             "alignment": page_alignment,
                             "span": (
@@ -2455,7 +2516,7 @@ def publish_page_testimonia_and_attachments(
                                     "start": page_alignment["witness_span"]["start"],
                                     "end": page_alignment["witness_span"]["end"],
                                 }
-                                if page_attached
+                                if page_attached and page_alignment["status"] == "aligned"
                                 else None
                             ),
                         }

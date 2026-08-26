@@ -289,28 +289,36 @@ def test_a_continuation_act_states_which_of_its_crops_the_derived_layer_omits(tm
     assert single != continuation
 
 
-def test_page_native_geometry_is_not_copied_into_region_compatibility_records(tmp_path):
-    """A page observation belongs only to the page-scoped report that presented it."""
+def test_page_native_geometry_stays_with_page_witnesses_and_inside_witness_views(tmp_path):
+    """Native page-space geometry may ride only records owned by a page witness.
+
+    Unit 10C's coverage design lets a page witness's act view restate its
+    page-space geometry (boxes may exceed that record's one-crop presentation);
+    every other record's observed boxes must stay inside the exact presentation
+    the witness was shown, and no act-scoped chair may carry native geometry.
+    """
     tree = _happy_run(tmp_path, "native-page-scope")
     native = []
     for entry in tree.build_manifest(ATTESTATORES)["artifacts"]:
         if entry["kind"] not in {"testimonium", "page-testimonium"}:
             continue
         record = tree.read_artifact(ATTESTATORES, entry["kind"], entry["artifact_id"])
-        presented = record["payload"]["presented"]
-        for observation in record["payload"]["observed"]:
+        payload = record["payload"]
+        presented = payload["presented"]
+        page_witness_view = entry["kind"] == "testimonium" and payload.get("page_witness") is True
+        for observation in payload["observed"]:
             if observation["bounds_source"] == "native":
-                native.append((entry["kind"], record))
-            if presented:
+                native.append((entry["kind"], payload["chair"]))
+                assert entry["kind"] == "page-testimonium" or page_witness_view
+            if presented and not page_witness_view:
                 outer = presented["transform"]["bounds"]
                 inner = observation["bounds"]
                 assert outer["x"] <= inner["x"]
                 assert outer["y"] <= inner["y"]
                 assert outer["x"] + outer["w"] >= inner["x"] + inner["w"]
                 assert outer["y"] + outer["h"] >= inner["y"] + inner["h"]
-    assert [(kind, record["payload"]["chair"]) for kind, record in native] == [
-        ("page-testimonium", "attestator_1")
-    ]
+    assert ("page-testimonium", "attestator_1") in native
+    assert all(chair in {"attestator_1", "attestator_3"} for _kind, chair in native)
 
 
 def test_a_page_presentation_naming_another_page_s_blob_is_refused_at_the_tally_seam(tmp_path):

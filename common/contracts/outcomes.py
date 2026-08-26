@@ -74,6 +74,7 @@ _A = ArmariumCategory
 # that depends on it is a silent divergence waiting to happen.
 WITNESS_READING_OUTCOMES: Final = frozenset({"read", "genuinely-empty"})
 INTERIM_GRANULARITY_BASIS: Final = "computed-act-attachment-alignment"
+NATIVE_GRANULARITY_BASIS: Final = "native-observation-overlap"
 LEGACY_GRANULARITY_BASIS: Final = "legacy-class-only"
 
 # --- The vocabularies: outcome -> class, one closed set per stage ---------------
@@ -462,9 +463,9 @@ def witness_coverage(
         "health_unrecorded": health_unrecorded,
         "shortfalls": shortfalls,
         # Attachments are computed facts: page testimony counts only where its
-        # retained text aligned through Chandra's anchor into act geometry.
+        # reported geometry overlaps the act's sealed proposal geometry.
         "granularity_basis": (
-            INTERIM_GRANULARITY_BASIS if attachments is not None else LEGACY_GRANULARITY_BASIS
+            NATIVE_GRANULARITY_BASIS if attachments is not None else LEGACY_GRANULARITY_BASIS
         ),
     }
 
@@ -736,7 +737,7 @@ def run_aggregate(
             # against a floor of 3 flags at 2 and reported 1 -- the same class of
             # defect this branch exists to repair.
             basis = record.get("granularity_basis", LEGACY_GRANULARITY_BASIS)
-            if basis == INTERIM_GRANULARITY_BASIS:
+            if basis in {INTERIM_GRANULARITY_BASIS, NATIVE_GRANULARITY_BASIS}:
                 reading_chairs = sum(
                     record["by_outcome"].get(outcome, 0) for outcome in WITNESS_READING_OUTCOMES
                 )

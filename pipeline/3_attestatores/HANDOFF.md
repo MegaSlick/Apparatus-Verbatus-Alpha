@@ -119,6 +119,115 @@ layout, so its adapter returns only the excluded `bounds_source="presented"`
 fallback. A future layout adapter cannot be wired to an observation callable
 that never receives its own response.
 
+### What an adapter must produce (Units 11, 12, 13)
+
+Unit 10's contract is finished. An adapter-owning unit needs this page and no
+consult report.
+
+**Configuration.** Two rows on the occupant's own `[chairs.<role>]` table in
+`config/models.toml`: `witness_adapter` (an exact declared name — no default, no
+near match; a default adapter is a picker with one candidate) and `witness_scope`
+∈ `page | act`. Both enter `ChairIdentity.to_record()` and therefore
+`config_digest`. `witness_scope` is invocation granularity only: it says nothing
+about image kind, geometry, region identity, or coverage.
+
+**Registries move together.** The declared name joins
+`common/witness_adapters.KNOWN_WITNESS_ADAPTER_NAMES`; the callable joins
+`pipeline/3_attestatores/witness_adapters.RUNNABLE_ADAPTERS`. A configured chair
+whose adapter has no runnable binding is fatal by name; a declared name with no
+configured occupant is reported on stderr and is not fatal, because an adapter
+may land before its chair does.
+
+**Five roles, never merged.** `prompt` frames the request; `parse` turns one
+native response into its text; `retain` records the exact view and the raw bytes;
+`present` binds the image; `observe` derives geometry. Two of them are the intake
+contract:
+
+* `present(context, presentation)` returns the closed `presented` block —
+  `kind` ∈ `page | region | adapter-crop`, sealed page identity and ordinal, blob
+  path and digest, and an executable transform in **sealed-page pixel space**
+  (the only space anything downstream can verify: `verify_exemplar_crop_lineage`
+  re-derives there and the Recensor reconciles there). `kind="region"` may name a
+  Designator region whose `origin` is `proposal` and nothing else — a recovery
+  crop may never be presented as a witness basis. An `adapter-crop` is a
+  page-scoped occupant's own subdivision, not a third scope, and both read seams
+  regenerate its bytes from the sealed page and refuse a differing digest.
+* `observe(presentation, native_payload)` returns the closed `observed` list from
+  that exact image and response together — dense, unique, zero-based ordinal;
+  integer `x/y/w/h` in the pixel space of `presented.source_page_id`;
+  `bounds_source` ∈ `native | derived | presented`; and a span into this
+  Testimonium's own retained text, or null. No act identity, no confidence, no
+  authority, and no preference-shaped key anywhere in the payload — `primary`,
+  `canonical`, `best`, `preferred` and `superseded_by` are refused recursively.
+
+**The quantization rule — where a float goes.** The native layer is open and
+verbatim; the derived layer is integer. `retain` writes the raw response
+content-addressed as `raw_response_ref`, and **that blob is the authority: it
+never loses a float.** Real layout detectors emit float or normalized boxes, so
+an adapter quantizes them to integer sealed-page pixels **inside `observe`**, and
+the quantization rule is a property of the adapter, declared with it, with the
+raw digest beside it in the same record. Two things it may not be: a coercion
+nobody recorded, and a failed attempt. Note the wall this implies for `parse`:
+`_native_problem` refuses any float in the retained native payload and turns the
+attempt into a `failed` Testimonium with `content_health.recordable=false`, which
+would report a working layout model as a broken witness. Return text or
+integer-only structures from `parse`; put the geometry through `observe` and the
+floats in the blob.
+
+**Scope semantics.** A `page` occupant writes one page-scoped Testimonium per
+(page, chair) carrying `partition_disagreement`, and reaches an act only by
+**geometric overlap of its own reported `native`/`derived` geometry against the
+sealed proposal** — never through an anchor, never chair against chair. A
+`presented` box is an explicit no-geometry fallback and is excluded from both
+routing and coverage. An `act` occupant writes one Testimonium per (act, chair)
+with attachment basis `presented-region`. A page witness cannot be re-asked: a
+targeted reread reaches act-scoped chairs only.
+
+**What an adapter never does.** It never mints a region (crop lineage refuses a
+stage that is not the Designator), never expresses a preference, and never
+reports coverage. Ink it observed that no sealed proposal accounts for becomes a
+named non-fatal `unrouted-observation` finding, retained in
+`partition_disagreement.unclaimed_observations`; the Recensor alone may spend a
+bounded fallback-recrop on it, against one absolute cap of three shared with
+every other recovery origin.
+
+**Evidence.** Each adapter lands with one recorded specimen response read from
+the vendor's published source, with that source and its licence recorded, exactly
+as `feeding.churro_prompt` cites stanford-oval/churro.
+
+**Named obligations after Unit 10.** These are adapter/integration work, not
+unfinished choices in this contract:
+
+* **Unit 11 (Chandra)** adds Chandra's exact shared name and local runnable
+  binding, plus the shared adapter-metadata field that records an explicit
+  float-to-integer quantization rule beside `raw_response_ref` in the retained
+  model view. Its `observe` applies that declared rule to native layout; its
+  `parse` returns text or integer-only data. The unit carries one published
+  specimen response with source and licence.
+* **Unit 12 (Churro)** replaces the fixture-only Churro serve with the real
+  full-page XML boundary while keeping raw bytes, parse failure, truncation and
+  post-capture repetition visible. It declares whether it has any native
+  quantization to apply (rather than inheriting another adapter's rule) and
+  carries its own published specimen evidence.
+* **Unit 13 (DAI)** adds DAI's exact registry rows, records its detector's
+  float quantization beside the raw digest, and extends the closed transform for
+  its adapter-owned resize/crop so the shown pixels remain reproducible. Its
+  carried prompts, generation configuration, specimen, source and licence are
+  named; uncertainty tokens are retained unchanged.
+* **Unit 14 (native-testimony integration)** removes the temporary
+  `payload.reported` bridge below and teaches the Perlector/Recensor consumers to
+  use each adapter's native retained text and partition facts without choosing a
+  witness boundary. It also owns the explicit hold for an unproposed cross-page
+  half act and the ink-map/proposal coverage reconciliation already assigned to
+  that unit.
+
+For Units 11--13, the declared-name set, runnable mapping, parser/retention
+dispatch and occupant configuration move together. A special quantization
+error in `_native_problem` is deliberately **not** a Unit 10 mechanism: a float
+that leaks through `parse` has violated its adapter contract, and the current
+generic unsupported-native-type failure is accurate. The adapters instead keep
+the float in the raw blob and make the declared conversion in `observe`.
+
 ### Temporary textual bridge
 
 The prohibited-to-edit Perlector still consumes `payload.reported` as a string.
