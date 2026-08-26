@@ -555,6 +555,11 @@ def test_a_below_ink_occlusion_does_not_occlude_the_real_survey():
     [
         ([{"x": 0, "y": 0}] * 3, "above-ink", "malformed polygon"),
         (_rectangle(0, 0, 40, 40), "in-front-ish", "unknown z_relationship"),
+        (
+            _rectangle(0, 0, 40, 40) * 300,  # far past MAX_POLYGON_POINTS
+            "above-ink",
+            "malformed polygon",
+        ),
     ],
 )
 def test_malformed_sealed_occlusion_facts_are_named_accounting_refusals(

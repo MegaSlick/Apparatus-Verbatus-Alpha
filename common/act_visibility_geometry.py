@@ -12,6 +12,15 @@ from math import isclose
 
 GRID: int = 4
 
+# A page-pixel occlusion outline has no legitimate reason to carry more points
+# than this: real occluder boundaries (torn edges, fingers, folds) are simple
+# shapes with at most a few hundred vertices. Without a ceiling here, one
+# malformed occlusion record can force `_polygon_intersects_cell` to run its
+# edge-intersection test over an unbounded vertex count for every grid cell of
+# every capture that names it -- amplification the caller cannot see coming
+# from the record's own declared shape (a "polygon"), only from its size.
+MAX_POLYGON_POINTS: int = 1024
+
 
 def _validated_grid(grid: object) -> int:
     if not isinstance(grid, int) or isinstance(grid, bool) or grid <= 0:
@@ -25,6 +34,8 @@ def _validated_polygons(value: object) -> list[list[dict[str, int]]]:
     for polygon in value:
         if not isinstance(polygon, list) or len(polygon) < 3:
             raise ValueError("act-visibility occlusion is not a polygon")
+        if len(polygon) > MAX_POLYGON_POINTS:
+            raise ValueError(f"act-visibility occlusion has more than {MAX_POLYGON_POINTS} points")
         points: list[tuple[int, int]] = []
         for point in polygon:
             if (

@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from common.act_visibility_geometry import GRID, classify_capture_visibility, expected_surface_cells
+from common.act_visibility_geometry import (
+    GRID,
+    MAX_POLYGON_POINTS,
+    classify_capture_visibility,
+    expected_surface_cells,
+)
 
 BOUNDS = {"x": 0, "y": 0, "w": 40, "h": 40}
 
@@ -111,3 +116,25 @@ def test_bounds_refuse_non_integer_or_negative_page_coordinates(bounds):
 def test_malformed_occlusion_geometry_is_a_named_value_refusal(polygons):
     with pytest.raises(ValueError, match="occlusion"):
         classify_capture_visibility(bounds=BOUNDS, occlusion_polygons=polygons)
+
+
+def test_an_occlusion_polygon_over_the_point_ceiling_is_refused():
+    """One malformed record cannot force an unbounded edge-intersection scan.
+
+    Each extra point multiplies the work `_polygon_intersects_cell` does for
+    every grid cell of every capture that names this occlusion; the ceiling
+    is what keeps that cost bounded by the record's declared shape rather
+    than by whatever size a caller happened to write.
+    """
+    huge = [{"x": index, "y": 0} for index in range(MAX_POLYGON_POINTS + 1)]
+    with pytest.raises(ValueError, match=f"more than {MAX_POLYGON_POINTS} points"):
+        classify_capture_visibility(bounds=BOUNDS, occlusion_polygons=[huge])
+
+
+def test_an_occlusion_polygon_at_the_point_ceiling_is_accepted():
+    """The ceiling refuses what is over it, not the legitimate boundary."""
+    corners = _rectangle(0, 0, 1000, 1000)
+    at_ceiling = corners + [corners[-1]] * (MAX_POLYGON_POINTS - len(corners))
+    assert len(at_ceiling) == MAX_POLYGON_POINTS
+    result = classify_capture_visibility(bounds=BOUNDS, occlusion_polygons=[at_ceiling])
+    assert result["visibility_state"] == "occluded"

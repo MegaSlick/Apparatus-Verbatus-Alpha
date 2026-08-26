@@ -25,6 +25,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from common.act_visibility_geometry import (  # noqa: E402
+    MAX_POLYGON_POINTS,
     classify_capture_visibility,
     expected_surface_cells,
 )
@@ -289,6 +290,7 @@ def _page_occlusion_survey(context, page_id: str) -> dict:
         if (
             not isinstance(polygon, list)
             or len(polygon) < 3
+            or len(polygon) > MAX_POLYGON_POINTS
             or any(
                 not isinstance(point, dict)
                 or set(point) != {"x", "y"}
