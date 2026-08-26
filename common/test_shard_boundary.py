@@ -148,6 +148,14 @@ def test_a_boundary_refuses_a_partition_that_silently_omits_a_page():
         )
 
 
+def test_a_single_astronomical_ordinal_is_refused_without_allocating_its_range():
+    """A forged or malformed page_ordinals entry must not buy a cheap denial of
+    service: refusal cost is bounded by the shards actually submitted, not by
+    the size of the largest number one of them names."""
+    with pytest.raises(ContractError, match="omits more than 1000 page ordinal"):
+        boundary_records([{"membership_digest": ONE, "page_ordinals": [1, 1_000_000_000]}])
+
+
 def test_malformed_cluster_members_are_a_named_refusal_not_a_type_error():
     with pytest.raises(ContractError, match="positive integers"):
         boundary_records(
