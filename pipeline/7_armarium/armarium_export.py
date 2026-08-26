@@ -25,11 +25,16 @@ the data, which is carried to Tyrel rather than settled here.
 from __future__ import annotations
 
 import json
+import os
+import secrets
+import shutil
 import sqlite3
+import stat
 import tempfile
 import unicodedata
 from collections import Counter, defaultdict
 from dataclasses import dataclass, replace
+from functools import lru_cache
 from io import BytesIO
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Final
@@ -61,6 +66,9 @@ from common.contracts.uncertainty import utf8_round_trip
 from common.contracts.uncertainty import validate as validate_uncertainty
 from common.imaging import dimensions
 
+_atomic_replace = os.replace
+_unlink_at = os.unlink
+
 EXPORT_MANIFEST_NAME: Final = "EXPORT_MANIFEST.json"
 # The one name for the published archive, shared by run.py (which records it in the
 # export payload) and bundle.py (which writes the file under it), so the two cannot
@@ -78,6 +86,36 @@ EXPORT_MANIFEST_SCHEMA: Final = "armarium-export-manifest.v2"
 # silent-rename-under-one-id miss (CR W15, on the sqlite id below) is the
 # defect a version bump exists to prevent, so both ids move with the shape.
 ACT_RECORD_SCHEMA: Final = "armarium-act.v2"
+_ACT_RECORD_FIELDS: Final = frozenset(
+    {
+        "schema",
+        "act_id",
+        "act_key",
+        "category",
+        "canonical_clean_text",
+        "canonical_text_sha256",
+        "provenance",
+        "source_regions",
+        "uncertainty",
+        "uncertainty_status",
+        "text_status",
+        "transcription_annotations",
+        "semantic_annotations",
+        "semantic_annotation_status",
+        "witnesses",
+        "perlectio_ref",
+        "recensor_ref",
+        "dissent_ref",
+        "approval_ref",
+        "reason",
+        "evidence_refs",
+    }
+)
+_REVIEW_ITEM_FIELDS: Final = frozenset(
+    {"schema", "act_id", "act_key", "category", "reason", "evidence_refs"}
+)
+_SQLITE_SCHEMA: Final = "armarium-acts-sqlite.v2"
+_SQLITE_USER_VERSION: Final = 2
 # v2: every act-outcome row now REQUIRES `text_status` (exact-field-set
 # checked), so a v1 sources file and a v2 reader are mutually unreadable.
 SOURCES_SCHEMA: Final = "armarium-sources.v2"
@@ -130,6 +168,17 @@ _CONTAINER_GRANULARITY_LIMIT: Final = (
     "a multi-page PDF/TIFF container is represented by one unit per page or frame rather "
     "than one unit for the submitted file; the file's own single terminal category is not "
     "represented and cannot be counted off this ledger"
+)
+_ACT_PARTITION_DENOMINATOR: Final = "proposal-seal expected acts"
+_PAGE_CENSUS_DENOMINATOR: Final = "run.json source-page/frame rows"
+_SALVAGE_PROMOTION_CLAIM: Final = (
+    "recorded approval then pipeline re-entry; never export-time act promotion"
+)
+_SALVAGE_ABSENCE_REASON: Final = "this run has no sealed salvage inventory to account for"
+_DISPLAY_REASON: Final = (
+    "the rendering is not fed this package's canonical uncertainty layer, which travels "
+    "beside each literal instead; marking spans inside a displayed reading would exercise "
+    "a convention that remains Tyrel's choice at this gate"
 )
 _COMPLETED_CATEGORIES: Final = frozenset(
     {
@@ -329,47 +378,35 @@ def verify_export_bundle(data: bytes, clean_root) -> dict[str, Any]:
     the manifest adds a verifier-local ``verification`` report; that report is not
     represented as though it were part of the sealed package manifest.
     """
-    root = clean_root
-    root.mkdir(parents=True, exist_ok=True)
-    # "These bytes are not an archive at all" is one of the refusals this function
-    # exists to make, not an exception for its caller to work out.
+    root = Path(clean_root)
+    root_fd = _prepare_clean_root(root)
     try:
-        archive = ZipFile(BytesIO(data))
-    except (BadZipFile, LargeZipFile, OSError) as error:
-        raise SchemaRefusal("an Armarium package is not a readable ZIP archive") from error
-    with archive:
-        names = archive.namelist()
-        if not names or names[0] != EXPORT_MANIFEST_NAME:
-            raise SchemaRefusal("an Armarium package must begin with EXPORT_MANIFEST.json")
-        if len(set(names)) != len(names):
-            raise SchemaRefusal("an Armarium package repeats a member name")
-        for name in names:
-            _validate_member_name(name)
-        # Names are safe one at a time and still unextractable together: `a` beside
-        # `a/b` surfaces only as a `NotADirectoryError`, *after* part of the package
-        # has been written to the clean machine.
-        ancestors = {
-            parent.as_posix()
-            for name in names
-            for parent in PurePosixPath(name).parents
-            if parent.as_posix() != "."
-        }
-        shadowed = sorted(set(names) & ancestors)
-        if shadowed:
-            raise SchemaRefusal(
-                f"package member(s) {shadowed} are named as both a file and a directory"
-            )
-        # A stored member's extracted size cannot exceed the archive's own physical
-        # size, so refusing every other compression method -- before a byte is
-        # decompressed -- is what bounds a decompression bomb by construction rather
-        # than by an arbitrary cap. `_zip_bytes` never writes anything but stored.
-        for info in archive.infolist():
-            if info.compress_type != ZIP_STORED:
-                raise SchemaRefusal(
-                    f"package member {info.filename!r} is compressed; an Armarium "
-                    "package is only ever written stored, never compressed"
-                )
-        archive.extractall(root)
+        # "These bytes are not an archive at all" is one of the refusals this function
+        # exists to make, not an exception for its caller to work out.
+        try:
+            archive = ZipFile(BytesIO(data))
+        except (BadZipFile, LargeZipFile, OSError) as error:
+            raise SchemaRefusal("an Armarium package is not a readable ZIP archive") from error
+        with archive:
+            names = archive.namelist()
+            if not names or names[0] != EXPORT_MANIFEST_NAME:
+                raise SchemaRefusal("an Armarium package must begin with EXPORT_MANIFEST.json")
+            _validate_archive_member_names(names)
+            # A stored member's extracted size cannot exceed the archive's own physical
+            # size, so refusing every other compression method -- before a byte is
+            # decompressed -- is what bounds a decompression bomb by construction rather
+            # than by an arbitrary cap. `_zip_bytes` never writes anything but stored.
+            for info in archive.infolist():
+                if info.compress_type != ZIP_STORED:
+                    raise SchemaRefusal(
+                        f"package member {info.filename!r} is compressed; an Armarium "
+                        "package is only ever written stored, never compressed"
+                    )
+            _extract_archive_members(archive, root_fd, names)
+        actual_names = _ordinary_member_names(root_fd)
+        _require_root_identity(root, root_fd)
+    finally:
+        os.close(root_fd)
 
     try:
         manifest = json.loads((root / EXPORT_MANIFEST_NAME).read_text(encoding="utf-8"))
@@ -379,21 +416,22 @@ def verify_export_bundle(data: bytes, clean_root) -> dict[str, Any]:
         raise SchemaRefusal("the package has no recognized EXPORT_MANIFEST schema")
     if manifest.get("self_hash") != self_hash(manifest):
         raise SchemaRefusal("EXPORT_MANIFEST.json fails its self-hash")
-    run = manifest.get("run")
-    if not isinstance(run, dict):
-        raise SchemaRefusal("EXPORT_MANIFEST.json has no run binding")
+    # Before any claim is read: a self-hash proves the manifest was not edited after
+    # it was written, never that what it says is a thing this build writes.
+    _verify_manifest_field_closure(manifest)
+    run = manifest["run"]
     _require_sha256(run.get("config_digest"), "EXPORT_MANIFEST.json run configuration digest")
 
-    listed = manifest.get("members")
+    listed = manifest["members"]
     if not isinstance(listed, list) or not listed:
         raise SchemaRefusal("EXPORT_MANIFEST.json has no member digest inventory")
-    actual_names = {path.relative_to(root).as_posix() for path in root.rglob("*") if path.is_file()}
     expected_names = {EXPORT_MANIFEST_NAME}
     listed_names: set[str] = set()
     for item in listed:
-        if not isinstance(item, dict):
-            raise SchemaRefusal("a manifest member inventory row is not an object")
-        name, sha256, byte_count = item.get("path"), item.get("sha256"), item.get("bytes")
+        _require_exact_fields(
+            item, _MANIFEST_MEMBER_FIELDS, subject="a manifest member inventory row"
+        )
+        name, sha256, byte_count = item["path"], item["sha256"], item["bytes"]
         if not isinstance(name, str) or not isinstance(sha256, str):
             raise SchemaRefusal("a manifest member inventory row lacks path or digest")
         if not isinstance(byte_count, int) or isinstance(byte_count, bool) or byte_count < 0:
@@ -438,6 +476,313 @@ def verify_export_bundle(data: bytes, clean_root) -> dict[str, Any]:
     return {**manifest, "verification": verification}
 
 
+def _prepare_clean_root(root: Path) -> int:
+    """Permit a reusable extraction root, but no link or special-file branch.
+
+    Ordinary files may remain after a refusal; extraction replaces them atomically
+    so even a pre-existing hard link cannot redirect a write outside this tree. The
+    returned directory descriptor pins the root inode across preflight and extraction;
+    callers must close it.
+    """
+    try:
+        if root.is_symlink():
+            raise SchemaRefusal("the clean extraction root is a link, not a new package directory")
+        root.mkdir(parents=True, exist_ok=True)
+        root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError as error:
+        raise SchemaRefusal("the clean extraction root cannot be prepared") from error
+    try:
+        _ordinary_member_names(root_fd)
+        _require_root_identity(root, root_fd)
+    except BaseException:
+        os.close(root_fd)
+        raise
+    return root_fd
+
+
+def _same_inode(left: os.stat_result, right: os.stat_result) -> bool:
+    return (left.st_dev, left.st_ino) == (right.st_dev, right.st_ino)
+
+
+def _require_root_identity(root: Path, root_fd: int) -> None:
+    """Prove the path still names the directory descriptor opened at preflight."""
+    try:
+        named = os.stat(root, follow_symlinks=False)
+        opened = os.fstat(root_fd)
+    except OSError as error:
+        raise SchemaRefusal("the clean extraction root changed during verification") from error
+    if not stat.S_ISDIR(named.st_mode) or not _same_inode(named, opened):
+        raise SchemaRefusal("the clean extraction root changed during verification")
+
+
+def _ordinary_member_names(root_fd: int) -> set[str]:
+    """Inventory regular files through pinned directory descriptors only."""
+    names: set[str] = set()
+    root_device = os.fstat(root_fd).st_dev
+
+    def walk(directory_fd: int, prefix: PurePosixPath) -> None:
+        try:
+            with os.scandir(directory_fd) as iterator:
+                entries = sorted(iterator, key=lambda entry: entry.name)
+        except OSError as error:
+            raise SchemaRefusal("the clean extraction directory cannot be listed") from error
+        for entry in entries:
+            relative = (prefix / entry.name).as_posix()
+            try:
+                named = os.stat(entry.name, dir_fd=directory_fd, follow_symlinks=False)
+                if stat.S_ISLNK(named.st_mode):
+                    raise SchemaRefusal(
+                        f"the clean extraction tree contains a link at {relative!r}"
+                    )
+                if stat.S_ISDIR(named.st_mode):
+                    child_fd = os.open(
+                        entry.name,
+                        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                        dir_fd=directory_fd,
+                    )
+                    try:
+                        opened = os.fstat(child_fd)
+                        if opened.st_dev != root_device or not _same_inode(named, opened):
+                            raise SchemaRefusal(
+                                f"the clean extraction directory {relative!r} changed or "
+                                "crosses onto another device"
+                            )
+                        walk(child_fd, prefix / entry.name)
+                    finally:
+                        os.close(child_fd)
+                elif stat.S_ISREG(named.st_mode):
+                    names.add(relative)
+                else:
+                    raise SchemaRefusal(
+                        f"the clean extraction tree contains a non-regular entry at {relative!r}"
+                    )
+            except OSError as error:
+                raise SchemaRefusal(
+                    f"the clean extraction entry {relative!r} cannot be inspected"
+                ) from error
+
+    walk(root_fd, PurePosixPath())
+    return names
+
+
+def _open_member_parent(root_fd: int, parents: tuple[str, ...]) -> int:
+    """Open a member's parent from the pinned root, refusing links and mount crossings."""
+    directory_fd = os.dup(root_fd)
+    root_device = os.fstat(root_fd).st_dev
+    try:
+        for component in parents:
+            try:
+                os.mkdir(component, mode=0o700, dir_fd=directory_fd)
+            except FileExistsError:
+                pass
+            named = os.stat(component, dir_fd=directory_fd, follow_symlinks=False)
+            if not stat.S_ISDIR(named.st_mode):
+                raise SchemaRefusal("a package member parent is not an ordinary directory")
+            child_fd = os.open(
+                component,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=directory_fd,
+            )
+            opened = os.fstat(child_fd)
+            if opened.st_dev != root_device or not _same_inode(named, opened):
+                os.close(child_fd)
+                raise SchemaRefusal(
+                    "a package member parent changed during extraction or crosses onto "
+                    "another device"
+                )
+            os.close(directory_fd)
+            directory_fd = child_fd
+        return directory_fd
+    except BaseException:
+        os.close(directory_fd)
+        raise
+
+
+def _temporary_member(parent_fd: int, target_name: str) -> tuple[int, str]:
+    """Create one unpredictable no-follow temporary file relative to a pinned parent."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+    for _attempt in range(100):
+        temporary_name = f".{target_name}.extracting-{secrets.token_hex(16)}"
+        try:
+            return os.open(temporary_name, flags, 0o600, dir_fd=parent_fd), temporary_name
+        except FileExistsError:
+            continue
+    raise SchemaRefusal("a collision-free extraction temporary file could not be reserved")
+
+
+def _extract_archive_members(archive: ZipFile, root_fd: int, names: list[str]) -> None:
+    """Replace validated members atomically, never through an existing file link.
+
+    The preflight walk has refused symlinks and special entries in every existing
+    directory. Every later traversal is descriptor-relative and no-follow, so swapping
+    a checked directory path to a symlink cannot redirect the write. A new temporary
+    regular file plus descriptor-relative replace also breaks a pre-existing hard link
+    instead of modifying the inode it shares outside the tree. The caller has already
+    bounded every member by requiring stored ZIP entries.
+    """
+    for name in names:
+        parts = PurePosixPath(name).parts
+        parent_fd: int | None = None
+        temporary_name: str | None = None
+        try:
+            parent_fd = _open_member_parent(root_fd, parts[:-1])
+            temporary_fd, temporary_name = _temporary_member(parent_fd, parts[-1])
+            with os.fdopen(temporary_fd, "wb") as handle, archive.open(name, "r") as source:
+                shutil.copyfileobj(source, handle)
+            _atomic_replace(
+                temporary_name,
+                parts[-1],
+                src_dir_fd=parent_fd,
+                dst_dir_fd=parent_fd,
+            )
+            temporary_name = None
+        except (BadZipFile, OSError, RuntimeError) as error:
+            raise SchemaRefusal(f"package member {name!r} could not be extracted safely") from error
+        finally:
+            try:
+                if temporary_name is not None and parent_fd is not None:
+                    try:
+                        _unlink_at(temporary_name, dir_fd=parent_fd)
+                    except OSError as cleanup_error:
+                        raise SchemaRefusal(
+                            f"package member {name!r} could not be extracted safely, and its "
+                            f"temporary file {temporary_name} could not be removed; the clean "
+                            "root is incomplete and must not be used"
+                        ) from cleanup_error
+            finally:
+                if parent_fd is not None:
+                    os.close(parent_fd)
+
+
+_MANIFEST_FIELDS: Final = frozenset(
+    {
+        "schema",
+        "canonical_text",
+        "run",
+        "formats",
+        "claims",
+        "aggregate",
+        "aggregate_basis",
+        "witness_chairs",
+        "witness_floor",
+        "members",
+        "self_hash",
+    }
+)
+_MANIFEST_RUN_FIELDS: Final = frozenset({"fixture_id", "scenario", "config_digest"})
+_MANIFEST_MEMBER_FIELDS: Final = frozenset({"path", "sha256", "bytes"})
+_MANIFEST_CLAIM_FIELDS: Final = frozenset(
+    {
+        "status",
+        "partial_reasons",
+        "terminal_ledger",
+        "act_partition",
+        "submission_inventory",
+        "page_census",
+        "pixels",
+        "retained_run_references",
+        "semantic_annotations",
+        "transcription_annotations",
+        "uncertainty",
+        "display",
+        "salvage",
+    }
+)
+_CLAIM_SUBFIELDS: Final = {
+    "act_partition": frozenset(
+        {"denominator", "expected_count", "counted", "reconciles", "categories", "act_keys"}
+    ),
+    "submission_inventory": frozenset(
+        {
+            "status",
+            "granularity",
+            "limit",
+            "observed_source_page_rows",
+            "observed_distinct_declared_paths",
+        }
+    ),
+    "page_census": frozenset({"denominator", "counted", "status"}),
+    "pixels": frozenset({"embedded", "resolution_claim"}),
+    "display": frozenset(
+        {
+            "convention",
+            "status",
+            "alters_stored_text",
+            "renders_canonical_uncertainty",
+            "exercised_against_real_spans",
+            "reason",
+        }
+    ),
+}
+# Two shapes, because an unproduced salvage tier says why and an accounted one has
+# nothing to explain.  Named as two closed sets rather than one union: a package
+# claiming `accounted` while carrying the absence reason is describing neither.
+_SALVAGE_CLAIM_FIELDS: Final = {
+    "accounted": frozenset({"namespace", "status", "count", "promotion"}),
+    "not-produced-no-sealed-salvage-inventory": frozenset(
+        {"namespace", "status", "count", "reason", "promotion"}
+    ),
+}
+
+
+def _require_exact_fields(value: object, expected: frozenset[str], *, subject: str) -> dict:
+    if not isinstance(value, dict):
+        raise SchemaRefusal(f"{subject} is not an object")
+    if set(value) != expected:
+        unknown = sorted(set(value) - expected)
+        missing = sorted(expected - set(value))
+        raise SchemaRefusal(
+            f"{subject} has an unrecognized field set (unexpected {unknown}, missing {missing})"
+        )
+    return value
+
+
+def _verify_manifest_field_closure(manifest: dict[str, Any]) -> None:
+    """Reject unmeasured claims hidden in otherwise self-consistent JSON.
+
+    Blocks compared wholesale against recomputed values are already closed. Only
+    blocks read field by field need explicit key sets here; duplicating the other
+    shapes would create a second schema that could drift from their recomputation.
+    """
+    _require_exact_fields(manifest, _MANIFEST_FIELDS, subject="EXPORT_MANIFEST.json")
+    run = _require_exact_fields(
+        manifest["run"], _MANIFEST_RUN_FIELDS, subject="the manifest run binding"
+    )
+    if any(
+        not isinstance(run.get(field), str) or not run[field].strip()
+        for field in ("fixture_id", "scenario")
+    ):
+        raise SchemaRefusal(
+            "the manifest run binding has no non-blank fixture and scenario identities"
+        )
+    claims = _require_exact_fields(
+        manifest["claims"], _MANIFEST_CLAIM_FIELDS, subject="the manifest claims block"
+    )
+    for name, fields in _CLAIM_SUBFIELDS.items():
+        _require_exact_fields(claims[name], fields, subject=f"the manifest {name} claim")
+    salvage = claims["salvage"]
+    if not isinstance(salvage, dict):
+        raise SchemaRefusal("the manifest salvage claim is not an object")
+    status = salvage.get("status")
+    expected = _SALVAGE_CLAIM_FIELDS.get(status) if isinstance(status, str) else None
+    if expected is None:
+        raise SchemaRefusal("EXPORT_MANIFEST.json has an invalid salvage-tier status")
+    _require_exact_fields(salvage, expected, subject="the manifest salvage claim")
+    rows = claims["act_partition"]["categories"]
+    if not isinstance(rows, list):
+        raise SchemaRefusal("EXPORT_MANIFEST.json has no category rows")
+    for row in rows:
+        _require_exact_fields(
+            row,
+            frozenset({"category", "count", "act_ids"}),
+            subject="an act partition category row",
+        )
+    if claims["act_partition"]["denominator"] != _ACT_PARTITION_DENOMINATOR:
+        raise SchemaRefusal("the manifest act denominator is not this build's fixed claim")
+    if claims["page_census"]["denominator"] != _PAGE_CENSUS_DENOMINATOR:
+        raise SchemaRefusal("the manifest page denominator is not this build's fixed claim")
+
+
 def verify_projection_identity(data: bytes, clean_root) -> dict[str, str]:
     """Prove every selected literal-text format carries identical clean text.
 
@@ -446,10 +791,9 @@ def verify_projection_identity(data: bytes, clean_root) -> dict[str, str]:
     the literal differently; this compares the values and their UTF-8 hashes
     across the text bundle, SQLite literal column, and JSONL hand-off.
     """
-    root = clean_root
-    manifest = verify_export_bundle(data, root)
+    manifest = verify_export_bundle(data, clean_root)
     formats = _manifest_formats(manifest)
-    return _compare_literal_projections(root, formats)
+    return _compare_literal_projections(clean_root, formats)
 
 
 def verify_delivered_bundle(data: bytes, clean_root) -> dict[str, Any]:
@@ -1279,6 +1623,28 @@ def _verify_retained_references(value: Any) -> None:
             _verify_retained_references(item)
 
 
+def _verify_evidence_refs(evidence_refs: Any, *, subject: str) -> None:
+    """Require each act to retain its Recensor review and only real citations.
+
+    The generic retained-reference walk permits non-reference dictionaries. This
+    field is narrower: every entry must name a retained-run path, and production
+    guarantees at least the review reference even when no reading was established.
+    """
+    if not isinstance(evidence_refs, list) or not evidence_refs:
+        raise SchemaRefusal(
+            f"{subject} has no evidence citations; evidence_refs must retain at least the "
+            "Recensor review reference, and an empty list is refused rather than treated "
+            "as complete provenance"
+        )
+    for item in evidence_refs:
+        if (
+            not isinstance(item, dict)
+            or item.get("availability") != _RUN_ACCESS_REQUIRED
+            or not isinstance(item.get("run_relative_path"), str)
+        ):
+            raise SchemaRefusal(f"{subject} evidence_refs entry cites nothing")
+
+
 def _text_member_path(folder: str) -> str:
     """Map a logical source folder injectively into a product member name."""
     if not folder:
@@ -1298,48 +1664,8 @@ def _acts_database_bytes(acts: tuple[dict[str, Any], ...]) -> bytes:
             # 2, with the schema id: the row shape changed (damage-record columns
             # in, the bare annotations pair renamed apart), and a version the
             # id moved without is the CR W15 miss wearing a different hat.
-            connection.execute("PRAGMA user_version=2")
-            connection.executescript(
-                """
-                CREATE TABLE export_metadata (
-                    key TEXT PRIMARY KEY NOT NULL,
-                    value TEXT NOT NULL
-                ) WITHOUT ROWID;
-                CREATE TABLE acts (
-                    act_id TEXT PRIMARY KEY NOT NULL,
-                    act_key TEXT UNIQUE NOT NULL,
-                    category TEXT NOT NULL,
-                    canonical_clean_text TEXT,
-                    canonical_text_sha256 TEXT,
-                    provenance_json TEXT,
-                    source_regions_json TEXT,
-                    uncertainty_json TEXT,
-                    uncertainty_status TEXT NOT NULL,
-                    text_status TEXT,
-                    transcription_annotations_json TEXT,
-                    semantic_annotations_json TEXT NOT NULL,
-                    semantic_annotation_status TEXT NOT NULL,
-                    evidence_json TEXT NOT NULL,
-                    approval_ref TEXT,
-                    reason TEXT
-                );
-                CREATE TABLE act_search (
-                    rowid INTEGER PRIMARY KEY,
-                    act_id TEXT UNIQUE NOT NULL REFERENCES acts(act_id),
-                    derived_search_text TEXT NOT NULL,
-                    derived_text_sha256 TEXT NOT NULL,
-                    derived_from_canonical_sha256 TEXT NOT NULL,
-                    normalizer_revision TEXT NOT NULL,
-                    derived_kind TEXT NOT NULL
-                );
-                CREATE VIRTUAL TABLE acts_fts USING fts5(
-                    derived_search_text,
-                    content='act_search',
-                    content_rowid='rowid',
-                    tokenize='unicode61 remove_diacritics 2'
-                );
-                """
-            )
+            connection.execute(f"PRAGMA user_version={_SQLITE_USER_VERSION}")
+            connection.executescript(_ACTS_DATABASE_DDL)
             metadata = {
                 "canonical_text_encoding": CANONICAL_TEXT_ENCODING,
                 "canonical_text_field": CANONICAL_TEXT_FIELD,
@@ -1348,7 +1674,7 @@ def _acts_database_bytes(acts: tuple[dict[str, Any], ...]) -> bytes:
                 # R8's `annotations_json` → `uncertainty_json` rename (CR W15, a
                 # real versioning miss) and this change's damage-record columns
                 # (text_status, transcription_annotations_json, semantic_* pair).
-                "schema": "armarium-acts-sqlite.v2",
+                "schema": _SQLITE_SCHEMA,
                 "unidata_version": unicodedata.unidata_version,
             }
             connection.executemany(
@@ -1554,24 +1880,38 @@ def _package_lines(path, subject: str) -> list[str]:
 
 def _text_bundle_records(
     root, source_pages: list[dict[str, Any]] | None = None
-) -> dict[str, tuple[str, str, tuple[tuple[str, str], ...], dict[str, Any], str, list[Any]]]:
+) -> dict[
+    str,
+    tuple[str, str, tuple[tuple[str, str], ...], dict[str, Any], str, list[Any], str],
+]:
     """Parse literal records and their page/hash citations from the readable bundle."""
-    known_pages: set[tuple[str, str]] | None = None
-    if source_pages is not None:
-        known_pages = set()
-        for page in source_pages:
-            if not isinstance(page, dict):
-                raise SchemaRefusal("a text-bundle source citation has no page object")
-            path, digest = page.get("declared_path"), page.get("declared_sha256")
-            if not isinstance(path, str):
-                raise SchemaRefusal("a text-bundle source citation has no declared path")
-            _require_sha256(digest, "a text-bundle source citation digest")
-            known_pages.add((path, digest))
+    if source_pages is None:
+        source_pages = _load_sources(root)["pages"]
+    known_pages: set[tuple[str, str]] = set()
+    source_folders: set[str] = set()
+    for page in source_pages:
+        if not isinstance(page, dict):
+            raise SchemaRefusal("a text-bundle source citation has no page object")
+        path, digest = page.get("declared_path"), page.get("declared_sha256")
+        if not isinstance(path, str):
+            raise SchemaRefusal("a text-bundle source citation has no declared path")
+        _require_sha256(digest, "a text-bundle source citation digest")
+        known_pages.add((path, digest))
+        source_folders.add(_source_folder_for_declared_path(path))
 
-    records: dict[str, tuple[str, str, tuple[tuple[str, str], ...], dict[str, Any], str, list]] = {}
-    for path in sorted((root / "text").rglob("readings.txt")) if (root / "text").exists() else []:
+    records: dict[
+        str,
+        tuple[str, str, tuple[tuple[str, str], ...], dict[str, Any], str, list, str],
+    ] = {}
+    # The source graph authenticates the complete folder census, and the exact-member
+    # check has already proved these are the package's only text files. Enumerating
+    # those derived names is both directions of the promise; an `rglob` walk could
+    # silently omit a linked or unreadable subtree and has no additional authority.
+    for folder in sorted(source_folders):
+        path = root / _text_member_path(folder)
         lines = _package_lines(path, "text bundle")
         current_id: str | None = None
+        heading_key: str | None = None
         pending: tuple[str, str, tuple[tuple[str, str], ...]] | None = None
         pending_uncertainty: dict[str, Any] | None = None
         pending_text_status: str | None = None
@@ -1584,6 +1924,15 @@ def _text_bundle_records(
                 current_id = line.removeprefix("act-id: ")
                 if not current_id:
                     raise SchemaRefusal("a text-bundle section has an empty act identity")
+                heading = lines[index - 1] if index else ""
+                suffix = f" ({current_id})"
+                if not heading.startswith("## ") or not heading.endswith(suffix):
+                    raise SchemaRefusal(
+                        "a text-bundle act-id is not authenticated by its human heading"
+                    )
+                heading_key = heading.removeprefix("## ").removesuffix(suffix)
+                if not heading_key:
+                    raise SchemaRefusal("a text-bundle human heading has no act key")
                 citations = []
                 pending = None
                 pending_uncertainty = None
@@ -1747,13 +2096,16 @@ def _text_bundle_records(
                     raise SchemaRefusal(
                         "a text-bundle display does not strip back to its canonical clean text"
                     )
+                if _source_folder_for_declared_path(citations[0][0]) != folder:
+                    raise SchemaRefusal("a text-bundle act is enclosed by the wrong source folder")
                 records[current_id] = (
                     *pending,
                     pending_uncertainty,
                     pending_text_status,
                     pending_annotations,
+                    heading_key,
                 )
-                current_id, pending, pending_uncertainty = None, None, None
+                current_id, heading_key, pending, pending_uncertainty = None, None, None, None
                 pending_text_status, pending_annotations = None, None
         if current_id is not None:
             raise SchemaRefusal("a text-bundle section has no completed literal record")
@@ -1770,11 +2122,108 @@ def _text_bundle_literals(root) -> dict[str, tuple]:
             uncertainty,
             text_status,
             annotations,
+            _heading_key,
         ) in _text_bundle_records(root).items()
     }
 
 
 _STORED_ACTS_TABLES: Final = ("acts", "act_search", "export_metadata")
+_SQLITE_PRODUCT_TABLES: Final = (*_STORED_ACTS_TABLES, "acts_fts")
+# Writer and verifier share this DDL so the schema check includes FTS bindings,
+# shadow tables, and implicit indexes without maintaining a second schema spelling.
+_ACTS_DATABASE_DDL: Final = """
+                CREATE TABLE export_metadata (
+                    key TEXT PRIMARY KEY NOT NULL,
+                    value TEXT NOT NULL
+                ) WITHOUT ROWID;
+                CREATE TABLE acts (
+                    act_id TEXT PRIMARY KEY NOT NULL,
+                    act_key TEXT UNIQUE NOT NULL,
+                    category TEXT NOT NULL,
+                    canonical_clean_text TEXT,
+                    canonical_text_sha256 TEXT,
+                    provenance_json TEXT,
+                    source_regions_json TEXT,
+                    uncertainty_json TEXT,
+                    uncertainty_status TEXT NOT NULL,
+                    text_status TEXT,
+                    transcription_annotations_json TEXT,
+                    semantic_annotations_json TEXT NOT NULL,
+                    semantic_annotation_status TEXT NOT NULL,
+                    evidence_json TEXT NOT NULL,
+                    approval_ref TEXT,
+                    reason TEXT
+                );
+                CREATE TABLE act_search (
+                    rowid INTEGER PRIMARY KEY,
+                    act_id TEXT UNIQUE NOT NULL REFERENCES acts(act_id),
+                    derived_search_text TEXT NOT NULL,
+                    derived_text_sha256 TEXT NOT NULL,
+                    derived_from_canonical_sha256 TEXT NOT NULL,
+                    normalizer_revision TEXT NOT NULL,
+                    derived_kind TEXT NOT NULL
+                );
+                CREATE VIRTUAL TABLE acts_fts USING fts5(
+                    derived_search_text,
+                    content='act_search',
+                    content_rowid='rowid',
+                    tokenize='unicode61 remove_diacritics 2'
+                );
+                """
+
+
+@lru_cache(maxsize=1)
+def _expected_acts_schema() -> dict[str, tuple[str, str, str | None]]:
+    """Derive this SQLite runtime's complete schema from the writer's DDL."""
+    connection = sqlite3.connect(":memory:")
+    try:
+        connection.executescript(_ACTS_DATABASE_DDL)
+        return {
+            name: (kind, table, sql)
+            for kind, name, table, sql in connection.execute(
+                "SELECT type, name, tbl_name, sql FROM sqlite_master"
+            ).fetchall()
+        }
+    finally:
+        connection.close()
+
+
+def _verify_acts_schema(connection: sqlite3.Connection) -> None:
+    """Require the exact object graph and FTS content binding the writer declares.
+
+    FTS integrity alone cannot detect an index consistently repointed at a decoy
+    content table. Exact declarations close that gap; the runtime-derived schema
+    also closes shadow tables and implicit indexes without hard-coding them.
+    """
+    try:
+        expected = _expected_acts_schema()
+    except sqlite3.DatabaseError as error:
+        raise SchemaRefusal(
+            "the verifier's SQLite runtime cannot construct the expected acts database "
+            "schema; this package requires FTS5 support before its product identity can "
+            "be checked"
+        ) from error
+    try:
+        actual = {
+            name: (kind, table, sql)
+            for kind, name, table, sql in connection.execute(
+                "SELECT type, name, tbl_name, sql FROM sqlite_master"
+            ).fetchall()
+        }
+    except sqlite3.DatabaseError as error:
+        raise SchemaRefusal("the acts database has no readable schema") from error
+    for name in _SQLITE_PRODUCT_TABLES:
+        if actual.get(name) != expected[name]:
+            raise SchemaRefusal(
+                f"the acts database declares {name!r} with a definition this build never "
+                "wrote; a product table redefined after sealing is not the product"
+            )
+    unexpected = sorted(set(actual) - set(expected))
+    if unexpected:
+        raise SchemaRefusal(
+            f"the acts database carries unaccounted schema object(s) {unexpected}; an acts "
+            "database holds exactly what its export DDL creates"
+        )
 
 
 def _open_acts_database(path) -> sqlite3.Connection:
@@ -1800,19 +2249,35 @@ def _open_acts_database(path) -> sqlite3.Connection:
     except sqlite3.DatabaseError as error:
         raise SchemaRefusal("the acts database cannot be opened") from error
     try:
-        placeholders = ", ".join("?" for _name in _STORED_ACTS_TABLES)
+        placeholders = ", ".join("?" for _name in _SQLITE_PRODUCT_TABLES)
         kinds = dict(
             connection.execute(
                 f"SELECT name, type FROM sqlite_master WHERE name IN ({placeholders})",
-                _STORED_ACTS_TABLES,
+                _SQLITE_PRODUCT_TABLES,
             ).fetchall()
         )
+        user_version = connection.execute("PRAGMA user_version").fetchone()
+        schema = connection.execute(
+            "SELECT value FROM export_metadata WHERE key = 'schema'"
+        ).fetchone()
     except sqlite3.DatabaseError as error:
         connection.close()
         raise SchemaRefusal("the acts database has no readable schema") from error
     if any(kinds.get(name) != "table" for name in _STORED_ACTS_TABLES):
         connection.close()
         raise SchemaRefusal("the acts database does not carry acts and act_search as stored tables")
+    if (
+        kinds.get("acts_fts") != "table"
+        or user_version != (_SQLITE_USER_VERSION,)
+        or schema != (_SQLITE_SCHEMA,)
+    ):
+        connection.close()
+        raise SchemaRefusal("the acts database has no recognized SQLite product identity")
+    try:
+        _verify_acts_schema(connection)
+    except BaseException:
+        connection.close()
+        raise
     return connection
 
 
@@ -1869,7 +2334,12 @@ def _jsonl_literals(path) -> dict[str, tuple]:
     for line in _package_lines(path, "acts JSONL"):
         if not line:
             continue
-        record = json.loads(line)
+        # This reader is independently callable, so malformed JSON must remain a
+        # named package refusal regardless of validation order.
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError as error:
+            raise SchemaRefusal("an acts JSONL row is not JSON") from error
         if not isinstance(record, dict):
             raise SchemaRefusal("an acts JSONL row is not an object")
         literal = record.get(CANONICAL_TEXT_FIELD)
@@ -2092,15 +2562,15 @@ def _export_manifest(
             "namespace": "salvage",
             "status": "accounted",
             "count": len(projection.salvage_items),
-            "promotion": "recorded approval then pipeline re-entry; never export-time act promotion",
+            "promotion": _SALVAGE_PROMOTION_CLAIM,
         }
         if projection.salvage_items is not None
         else {
             "namespace": "salvage",
             "status": "not-produced-no-sealed-salvage-inventory",
             "count": None,
-            "reason": "this run has no sealed salvage inventory to account for",
-            "promotion": "recorded approval then pipeline re-entry; never export-time act promotion",
+            "reason": _SALVAGE_ABSENCE_REASON,
+            "promotion": _SALVAGE_PROMOTION_CLAIM,
         }
     )
     ledger = _terminal_ledger(
@@ -2141,7 +2611,7 @@ def _export_manifest(
             "partial_reasons": ledger["unresolved_reasons"],
             "terminal_ledger": ledger,
             "act_partition": {
-                "denominator": "proposal-seal expected acts",
+                "denominator": _ACT_PARTITION_DENOMINATOR,
                 "expected_count": projection.expected_acts,
                 "counted": len(projection.acts),
                 "reconciles": len(projection.acts) == projection.expected_acts,
@@ -2159,7 +2629,7 @@ def _export_manifest(
                 "observed_distinct_declared_paths": len(submission_paths),
             },
             "page_census": {
-                "denominator": "run.json source-page/frame rows",
+                "denominator": _PAGE_CENSUS_DENOMINATOR,
                 "counted": len(projection.pages),
                 "status": "accounted-in-the-terminal-ledger",
             },
@@ -2196,12 +2666,7 @@ def _export_manifest(
                 "alters_stored_text": False,
                 "renders_canonical_uncertainty": False,
                 "exercised_against_real_spans": False,
-                "reason": (
-                    "the rendering is not fed this package's canonical uncertainty "
-                    "layer, which travels beside each literal instead; marking spans "
-                    "inside a displayed reading would exercise a convention that "
-                    "remains Tyrel's choice at this gate"
-                ),
+                "reason": _DISPLAY_REASON,
             },
             "salvage": salvage_claim,
         },
@@ -2226,8 +2691,8 @@ def _zip_bytes(members: dict[str, bytes]) -> bytes:
         names = [EXPORT_MANIFEST_NAME] + sorted(
             name for name in members if name != EXPORT_MANIFEST_NAME
         )
+        _validate_archive_member_names(names)
         for name in names:
-            _validate_member_name(name)
             info = ZipInfo(name, date_time=_ZIP_EPOCH)
             info.compress_type = ZIP_STORED
             info.create_system = 3
@@ -2674,6 +3139,11 @@ def _act_citation_sources(sources: dict[str, list[dict[str, Any]]]) -> dict[str,
         if not isinstance(record.get("evidence"), dict):
             raise SchemaRefusal("a source act-citation has no witness evidence")
         _verify_retained_references(record["evidence"])
+        # sources.json is the only evidence-citation carrier common to every format
+        # selection, including a text-bundle-only package.
+        _verify_evidence_refs(
+            record["evidence"].get("evidence_refs"), subject="a source act-citation"
+        )
         records[act_id] = record
     return records
 
@@ -2694,7 +3164,10 @@ def _jsonl_act_records(
             raise SchemaRefusal("an acts JSONL row is not JSON") from error
         if not isinstance(record, dict) or record.get("schema") != ACT_RECORD_SCHEMA:
             raise SchemaRefusal("an acts JSONL row has no recognized schema")
+        if set(record) != _ACT_RECORD_FIELDS:
+            raise SchemaRefusal("an acts JSONL row has an unrecognized field set")
         _verify_retained_references(record)
+        _verify_evidence_refs(record.get("evidence_refs"), subject="an acts JSONL row")
         act_id, act_key, category = (
             record.get("act_id"),
             record.get("act_key"),
@@ -2926,6 +3399,8 @@ def _database_act_records(
                 ) from error
             _verify_retained_references(parsed)
             decoded.append(parsed)
+        evidence_refs = decoded[2].get("evidence_refs") if isinstance(decoded[2], dict) else None
+        _verify_evidence_refs(evidence_refs, subject="an acts database row")
         if category == ArmariumCategory.DELIVERED.value:
             _verify_delivered_product_provenance(
                 decoded[0], decoded[1], source_graph_regions, subject="acts database"
@@ -2984,9 +3459,10 @@ def _review_item_records(path: Path) -> dict[str, dict[str, str]]:
             record.get("category"),
             record.get("reason"),
         )
+        if record.get("schema") != "armarium-review-item.v1" or set(record) != _REVIEW_ITEM_FIELDS:
+            raise SchemaRefusal("a review-items JSONL row has an unrecognized field set")
         if (
-            record.get("schema") != "armarium-review-item.v1"
-            or not isinstance(act_id, str)
+            not isinstance(act_id, str)
             or not act_id
             or not isinstance(act_key, str)
             or not act_key
@@ -2996,7 +3472,14 @@ def _review_item_records(path: Path) -> dict[str, dict[str, str]]:
             or act_id in records
         ):
             raise SchemaRefusal("a review-items JSONL row has an invalid act identity or category")
-        records[act_id] = {"act_key": act_key, "category": category, "reason": reason}
+        evidence_refs = record.get("evidence_refs")
+        _verify_evidence_refs(evidence_refs, subject="a review-items JSONL row")
+        records[act_id] = {
+            "act_key": act_key,
+            "category": category,
+            "reason": reason,
+            "evidence_refs": evidence_refs,
+        }
     return records
 
 
@@ -3038,11 +3521,18 @@ def _verify_salvage_claim(
     if not isinstance(salvage, dict) or salvage.get("namespace") != "salvage":
         raise SchemaRefusal("EXPORT_MANIFEST.json has no salvage-tier claim")
     status, count = salvage.get("status"), salvage.get("count")
+    if salvage.get("promotion") != _SALVAGE_PROMOTION_CLAIM:
+        raise SchemaRefusal("the salvage-tier promotion claim is not this build's fixed claim")
     if status == "accounted":
         if not isinstance(count, int) or isinstance(count, bool) or count != len(records):
             raise SchemaRefusal("the salvage-tier count does not reconcile to its records")
     elif status == "not-produced-no-sealed-salvage-inventory":
-        if count is not None or records or sources["salvage_regions"]:
+        if (
+            count is not None
+            or records
+            or sources["salvage_regions"]
+            or salvage.get("reason") != _SALVAGE_ABSENCE_REASON
+        ):
             raise SchemaRefusal("an unproduced salvage tier claims or carries material")
     else:
         raise SchemaRefusal("EXPORT_MANIFEST.json has an invalid salvage-tier status")
@@ -3107,6 +3597,35 @@ def _verify_exact_delivered_citations(
             raise SchemaRefusal(f"the {subject} does not retain exact delivered provenance")
 
 
+def _verify_fts_index_integrity(path: Path) -> None:
+    """Verify every FTS term in both directions against ``act_search``.
+
+    External-content FTS5 does not constrain its index to the content table, and a
+    per-row MATCH probe cannot detect extra terms, ghost rowids, or tokenless rows.
+    SQLite's integrity command covers the whole index but writes through its handle,
+    so it must run on a private copy rather than mutate the delivered member.
+    """
+    with tempfile.TemporaryDirectory(prefix="armarium-fts-") as directory:
+        writable = Path(directory) / "acts.sqlite"
+        try:
+            shutil.copyfile(path, writable)
+            connection = sqlite3.connect(writable)
+        except (OSError, sqlite3.DatabaseError) as error:
+            raise SchemaRefusal(
+                "the acts database cannot be read for full-text index verification"
+            ) from error
+        try:
+            connection.execute("INSERT INTO acts_fts(acts_fts, rank) VALUES ('integrity-check', 1)")
+        except sqlite3.DatabaseError as error:
+            raise SchemaRefusal(
+                "the acts database full-text index does not carry exactly its verified search "
+                "folds; the index a recipient searches and the rows this package accounts for "
+                "are not the same text"
+            ) from error
+        finally:
+            connection.close()
+
+
 def _verify_search_fold_claim(path: Path, literals: dict[str, tuple[str, str]]) -> dict[str, str]:
     """Recompute the derived search column when its Unicode database is ours.
 
@@ -3136,6 +3655,40 @@ def _verify_search_fold_claim(path: Path, literals: dict[str, tuple[str, str]]) 
             "SELECT act_id, derived_search_text, derived_text_sha256, "
             "derived_from_canonical_sha256, normalizer_revision, derived_kind FROM act_search"
         ).fetchall()
+        recorded_version = metadata.get("unidata_version")
+        if (
+            metadata.get("normalizer_revision") != TEXTNORM_REVISION
+            or not isinstance(recorded_version, str)
+            or not recorded_version
+        ):
+            raise SchemaRefusal("the acts database has no recognized search normalizer metadata")
+        verifier_version = unicodedata.unidata_version
+        recompute = recorded_version == verifier_version
+        seen: set[str] = set()
+        for act_id, derived, derived_hash, source_hash, revision, kind in rows:
+            if (
+                not isinstance(act_id, str)
+                or act_id not in literals
+                or act_id in seen
+                or not isinstance(derived, str)
+                or revision != TEXTNORM_REVISION
+                or kind != "search-fold"
+            ):
+                raise SchemaRefusal("the acts database search projection has an invalid row")
+            seen.add(act_id)
+            literal, literal_hash = literals[act_id]
+            if derived_hash != canonical_text_sha256(derived) or source_hash != literal_hash:
+                raise SchemaRefusal(
+                    "the acts database search projection is not a fold of its act's literal"
+                )
+            if recompute and derived != search_fold(literal):
+                raise SchemaRefusal(
+                    "the acts database search projection is not a fold of its act's literal"
+                )
+        if seen != set(literals):
+            raise SchemaRefusal(
+                "the acts database search projection does not cover exactly the delivered literals"
+            )
     except sqlite3.DatabaseError as error:
         raise SchemaRefusal(
             "the acts database search projection cannot be read for verification"
@@ -3143,40 +3696,10 @@ def _verify_search_fold_claim(path: Path, literals: dict[str, tuple[str, str]]) 
     finally:
         if connection is not None:
             connection.close()
-    recorded_version = metadata.get("unidata_version")
-    if (
-        metadata.get("normalizer_revision") != TEXTNORM_REVISION
-        or not isinstance(recorded_version, str)
-        or not recorded_version
-    ):
-        raise SchemaRefusal("the acts database has no recognized search normalizer metadata")
-    verifier_version = unicodedata.unidata_version
-    recompute = recorded_version == verifier_version
-    seen: set[str] = set()
-    for act_id, derived, derived_hash, source_hash, revision, kind in rows:
-        if (
-            not isinstance(act_id, str)
-            or act_id not in literals
-            or act_id in seen
-            or not isinstance(derived, str)
-            or revision != TEXTNORM_REVISION
-            or kind != "search-fold"
-        ):
-            raise SchemaRefusal("the acts database search projection has an invalid row")
-        seen.add(act_id)
-        literal, literal_hash = literals[act_id]
-        if derived_hash != canonical_text_sha256(derived) or source_hash != literal_hash:
-            raise SchemaRefusal(
-                "the acts database search projection is not a fold of its act's literal"
-            )
-        if recompute and derived != search_fold(literal):
-            raise SchemaRefusal(
-                "the acts database search projection is not a fold of its act's literal"
-            )
-    if seen != set(literals):
-        raise SchemaRefusal(
-            "the acts database search projection does not cover exactly the delivered literals"
-        )
+    # After the read-only pass and outside it: the index check needs a writable
+    # handle, and the rows it is checked against have to be the ones already
+    # proved to be folds of their own literals.
+    _verify_fts_index_integrity(path)
     if recompute:
         return {
             "status": "verified",
@@ -3233,7 +3756,12 @@ def _verify_product_accounting(
             _uncertainty,
             _text_status,
             _annotations,
+            heading_key,
         ) in text_records.items():
+            if heading_key != act_keys[act_id]:
+                raise SchemaRefusal(
+                    "a text-bundle human heading does not authenticate its machine act identity"
+                )
             expected_citations = tuple(
                 (region["declared_path"], region["declared_sha256"])
                 for region in citations[act_id]["source_regions"]
@@ -3324,6 +3852,7 @@ def _verify_display_claim(manifest: dict[str, Any]) -> None:
         or display.get("alters_stored_text") is not False
         or display.get("renders_canonical_uncertainty") is not False
         or display.get("exercised_against_real_spans") is not False
+        or display.get("reason") != _DISPLAY_REASON
     ):
         raise SchemaRefusal("the package display claim is not the verified claim")
 
@@ -3465,8 +3994,15 @@ def _verify_source_references(sources: list[dict[str, Any]], root) -> None:
     for page in sources:
         if not isinstance(page, dict):
             raise SchemaRefusal("a package source row is not an object")
-        if page.get("outcome") not in {"sealed", "refused"}:
+        outcome, reason = page.get("outcome"), page.get("reason")
+        if outcome not in {"sealed", "refused"}:
             raise SchemaRefusal("a package source row has no recognized Exemplar outcome")
+        if not isinstance(reason, str):
+            raise SchemaRefusal("a package source row has an untyped terminal reason")
+        if outcome == "sealed" and reason:
+            raise SchemaRefusal("a sealed package source page carries a refusal reason")
+        if outcome == "refused" and not reason.strip():
+            raise SchemaRefusal("a refused package source page has no terminal reason")
         declared_path, declared_sha256 = page.get("declared_path"), page.get("declared_sha256")
         if not isinstance(declared_path, str):
             raise SchemaRefusal("a package source row has no declared path")
@@ -3475,9 +4011,9 @@ def _verify_source_references(sources: list[dict[str, Any]], root) -> None:
         if "ledger_sha256" in page:
             _require_sha256(page["ledger_sha256"], "a package source ledger digest")
         reference = page.get("page_image")
-        if page.get("outcome") == "sealed" and reference is None:
+        if outcome == "sealed" and reference is None:
             raise SchemaRefusal("a sealed package source page has no pixel reference")
-        if page.get("outcome") != "sealed" and reference is not None:
+        if outcome != "sealed" and reference is not None:
             raise SchemaRefusal("a non-sealed package source page carries a pixel reference")
         if reference is None:
             continue
@@ -3610,7 +4146,46 @@ def _validate_member_name(name: str) -> None:
     subject = f"package member path {name!r}" if isinstance(name, str) else "a package member path"
     if isinstance(name, str) and name.endswith("/"):
         raise SchemaRefusal(f"{subject} is unsafe")
-    _reject_unsafe_relative_path(name, subject=subject)
+    path = _reject_unsafe_relative_path(name, subject=subject)
+    if path.as_posix() != name:
+        # `PurePosixPath` removes `.` components and repeated separators. Distinct
+        # archive spellings that normalize to one filesystem path would otherwise
+        # replace one another during extraction.
+        raise SchemaRefusal(f"{subject} is not in canonical POSIX spelling")
+
+
+def _portable_member_key(name: str) -> str:
+    """Approximate the case/normalization identity used by default APFS."""
+    return unicodedata.normalize("NFD", name).casefold()
+
+
+def _validate_archive_member_names(names: list[str]) -> None:
+    """Refuse names that alias or shadow one another on recipient filesystems."""
+    if len(set(names)) != len(names):
+        raise SchemaRefusal("an Armarium package repeats a member name")
+    keyed: dict[str, str] = {}
+    for name in names:
+        _validate_member_name(name)
+        key = _portable_member_key(name)
+        previous = keyed.get(key)
+        if previous is not None:
+            raise SchemaRefusal(
+                f"package members {previous!r} and {name!r} collide after filesystem "
+                "case and Unicode normalization"
+            )
+        keyed[key] = name
+
+    ancestor_keys = {
+        _portable_member_key(parent.as_posix())
+        for name in names
+        for parent in PurePosixPath(name).parents
+        if parent.as_posix() != "."
+    }
+    shadowed = sorted(name for name in names if _portable_member_key(name) in ancestor_keys)
+    if shadowed:
+        raise SchemaRefusal(
+            f"package member(s) {shadowed} are named as both a file and a directory"
+        )
 
 
 def _validate_run_relative_path(path: object) -> None:

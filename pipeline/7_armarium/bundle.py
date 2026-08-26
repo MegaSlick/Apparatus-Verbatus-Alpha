@@ -67,9 +67,19 @@ def sealed_bundle(tree: RunTree) -> tuple[bytes, dict]:
     declared = record["payload"].get("bundle", {}).get("sha256")
     if not isinstance(reference, dict) or not isinstance(declared, str):
         raise ContractError("the export artifact names no sealed product bundle")
+    if record.get("inputs") != [reference]:
+        raise ContractError(
+            "the sealed product bundle reference is not the export artifact's sole "
+            "digest-checked input; publication refuses an unverified link in the product chain"
+        )
     relative_path = reference.get("relative_path")
     if not isinstance(relative_path, str):
         raise ContractError("the export artifact names no sealed product bundle")
+    if relative_path != tree.blob_path(ARMARIUM, declared):
+        raise ContractError(
+            "the sealed product bundle reference does not occupy the Armarium's "
+            "content-addressed blob path; publication refuses a package substituted by path"
+        )
     try:
         data = tree.read_bytes(relative_path)
     except OSError as error:
@@ -125,6 +135,60 @@ def publish(tree: RunTree, out_dir: Path) -> dict:
             # formats. The build checked that; this, the gate the product actually
             # leaves through, did not.
             manifest = verify_delivered_bundle(data, staging / EXTRACTION_NAME)
+            if aggregate != manifest.get("aggregate"):
+                raise ContractError(
+                    "the delivered bundle's aggregate disagrees with the sealed export artifact; "
+                    "nothing was published because the run tree and package no longer describe "
+                    "one result; restore the immutable run tree from an intact copy before "
+                    "retrying publication"
+                )
+            run = tree.read_run()
+            expected_run_binding = {
+                "fixture_id": payload.get("fixture_id"),
+                "scenario": payload.get("scenario"),
+                "config_digest": run.get("config_digest"),
+            }
+            if manifest.get("run") != expected_run_binding:
+                # A clean-machine verifier has no external record to compare these
+                # labels with. The publisher does: fixture/scenario come from the
+                # immutable export artifact, while config_digest comes from run.json.
+                # This is an internal-consistency check, not a signature over either
+                # file; authenticity beyond the run-tree immutability contract would
+                # require an external trust root this package does not claim to have.
+                raise ContractError(
+                    "the delivered bundle's run binding disagrees with the sealed export "
+                    "artifact or run configuration digest; nothing was published because the "
+                    "package is internally inconsistent with this run tree; restore the "
+                    "immutable run tree from an intact copy before retrying publication"
+                )
+            bundle_record = payload.get("bundle")
+            if (
+                not isinstance(bundle_record, dict)
+                or bundle_record.get("manifest_self_hash") != manifest.get("self_hash")
+                or bundle_record.get("claims_status") != manifest.get("claims", {}).get("status")
+            ):
+                raise ContractError(
+                    "the delivered bundle's manifest identity or status disagrees with the "
+                    "sealed export artifact; nothing was published because the package and its "
+                    "run-tree envelope are not one sealed result; restore the immutable run "
+                    "tree from an intact copy before retrying publication"
+                )
+            verification = manifest.get("verification", {})
+            search_fold_verification = verification.get("search_fold")
+            if (
+                search_fold_verification is not None
+                and search_fold_verification.get("status") != "verified"
+            ):
+                # The clean verifier can honestly report that a version-dependent
+                # recomputation was unavailable. Publication cannot turn that honest
+                # non-measurement into a successful terminal claim: a resealer can
+                # select this branch by changing only export_metadata.unidata_version.
+                raise ContractError(
+                    "the delivered bundle's search-fold recomputation was not run; "
+                    "a declined terminal measurement is a publication refusal, so nothing was "
+                    "published; use a verifier whose Unicode database matches the package's "
+                    "recorded version and retry"
+                )
             (staging / ARMARIUM_ARCHIVE_NAME).write_bytes(data)
             # `mkdtemp` creates at 0o700, so the published directory's permissions
             # would otherwise be whatever the staging call happened to make them —
@@ -167,7 +231,6 @@ def publish(tree: RunTree, out_dir: Path) -> dict:
     # a package built under a different Unicode database keeps its digest and
     # coverage checks and skips the recomputation -- and an operator told only
     # "published: complete" would never learn which of the two happened.
-    verification = manifest.get("verification", {})
     return {
         "archive": ARMARIUM_ARCHIVE_NAME,
         "extraction": EXTRACTION_NAME,

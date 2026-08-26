@@ -7,6 +7,7 @@ import sqlite3
 import unicodedata
 from dataclasses import replace
 from io import BytesIO
+from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZIP_STORED, ZipFile
 
 import pytest
@@ -16,6 +17,7 @@ from armarium_export import (
     ArmariumProjection,
     _page_ledger_category,
     _terminal_ledger,
+    _verify_acts_schema,
     _zip_bytes,
     build_armarium_bundle,
     canonical_text_sha256,
@@ -87,7 +89,12 @@ def _projection(*, salvage_items=()) -> ArmariumProjection:
                 "provenance": {"chair": "perlector"},
                 "source_regions": [region],
                 "reason": None,
-                "evidence_refs": [],
+                "evidence_refs": [
+                    {
+                        "relative_path": "5_recensor/artifacts/review/act-1.json",
+                        "sha256": "b" * 64,
+                    }
+                ],
                 "witnesses": [{"chair": "attestator_1"}],
             },
             {
@@ -98,7 +105,12 @@ def _projection(*, salvage_items=()) -> ArmariumProjection:
                 "provenance": None,
                 "source_regions": [],
                 "reason": "the review remains unresolved",
-                "evidence_refs": [],
+                "evidence_refs": [
+                    {
+                        "relative_path": "5_recensor/artifacts/review/act-2.json",
+                        "sha256": "c" * 64,
+                    }
+                ],
             },
         ),
         pages=(
@@ -616,6 +628,391 @@ def test_the_delivered_gate_says_when_there_was_nothing_to_compare(tmp_path):
     }
 
 
+def test_delivered_gate_requires_review_evidence_references(tmp_path):
+    """A resealed review row may not erase the evidence it promised to retain."""
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    rows = [json.loads(line) for line in members["review-items.jsonl"].decode("utf-8").splitlines()]
+    assert rows[0]["evidence_refs"]
+    del rows[0]["evidence_refs"]
+    members["review-items.jsonl"] = b"".join(canonical_bytes(row) + b"\n" for row in rows)
+    _refresh_manifest_member(members, "review-items.jsonl")
+
+    with pytest.raises(SchemaRefusal, match="field set"):
+        verify_delivered_bundle(_zip_bytes(members), tmp_path / "delivered")
+
+
+def test_an_evidence_reference_list_may_not_be_empty(tmp_path):
+    """Every act has a Recensor review citation, so empty means evidence was lost."""
+    projection = _projection()
+    uncited = {**projection.acts[0], "evidence_refs": []}
+
+    with pytest.raises(SchemaRefusal, match="must retain at least the Recensor review"):
+        build_armarium_bundle(
+            replace(projection, acts=(uncited, *projection.acts[1:])),
+            _formats(embed_pixels=False),
+            _source_bytes,
+        )
+
+
+def test_delivered_gate_refuses_retired_fields_on_an_act_v2_row(tmp_path):
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    rows = [json.loads(line) for line in members["acts.jsonl"].decode("utf-8").splitlines()]
+    rows[0]["retired_v1_evidence"] = []
+    members["acts.jsonl"] = b"".join(canonical_bytes(row) + b"\n" for row in rows)
+    _refresh_manifest_member(members, "acts.jsonl")
+
+    with pytest.raises(SchemaRefusal, match="field set"):
+        verify_delivered_bundle(_zip_bytes(members), tmp_path / "delivered")
+
+
+def test_delivered_gate_requires_sqlite_product_identity(tmp_path):
+    """Three ordinary tables are not proof of the requested SQLite product."""
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    database = tmp_path / "stripped.sqlite"
+    database.write_bytes(members["acts.sqlite"])
+    connection = sqlite3.connect(database)
+    try:
+        connection.execute("PRAGMA user_version=0")
+        connection.execute("DROP TABLE acts_fts")
+        connection.execute("DELETE FROM export_metadata WHERE key = 'schema'")
+        connection.commit()
+    finally:
+        connection.close()
+    members["acts.sqlite"] = database.read_bytes()
+    _refresh_manifest_member(members, "acts.sqlite")
+
+    with pytest.raises(SchemaRefusal, match="SQLite product identity"):
+        verify_delivered_bundle(_zip_bytes(members), tmp_path / "delivered")
+
+
+def test_a_verifier_without_fts5_names_why_sqlite_identity_cannot_be_checked(monkeypatch):
+    """A missing verifier capability is a refusal, not a raw sqlite traceback."""
+
+    def no_fts5():
+        raise sqlite3.OperationalError("no such module: fts5")
+
+    monkeypatch.setattr("armarium_export._expected_acts_schema", no_fts5)
+    connection = sqlite3.connect(":memory:")
+    try:
+        with pytest.raises(SchemaRefusal, match="requires FTS5 support"):
+            _verify_acts_schema(connection)
+    finally:
+        connection.close()
+
+
+def test_delivered_gate_requires_the_fts5_index_to_actually_carry_the_fold(tmp_path):
+    """A present, correctly-typed `acts_fts` table is not a populated one.
+
+    `INSERT INTO acts_fts(acts_fts) VALUES ('delete-all')` empties the FTS5
+    shadow index while leaving the table itself, `act_search`, and every
+    digest-checked column untouched -- `SELECT count(*)`/bare `SELECT rowid`
+    on an external-content FTS5 table still answer from the content table, so
+    only a `MATCH` query actually reads the index a client's full-text search
+    would use.
+    """
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    database = tmp_path / "emptied.sqlite"
+    database.write_bytes(members["acts.sqlite"])
+    connection = sqlite3.connect(database)
+    try:
+        connection.execute("INSERT INTO acts_fts(acts_fts) VALUES ('delete-all')")
+        connection.commit()
+    finally:
+        connection.close()
+    members["acts.sqlite"] = database.read_bytes()
+    _refresh_manifest_member(members, "acts.sqlite")
+
+    with pytest.raises(SchemaRefusal, match="full-text index"):
+        verify_delivered_bundle(_zip_bytes(members), tmp_path / "delivered")
+
+
+def _resealed_acts_database(tmp_path, mutate, *, name="resealed.sqlite"):
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    database = tmp_path / name
+    database.write_bytes(members["acts.sqlite"])
+    connection = sqlite3.connect(database)
+    try:
+        mutate(connection)
+        connection.commit()
+    finally:
+        connection.close()
+    members["acts.sqlite"] = database.read_bytes()
+    _refresh_manifest_member(members, "acts.sqlite")
+    return _zip_bytes(members)
+
+
+def test_a_full_text_index_poisoned_with_terms_no_act_carries_is_refused(tmp_path):
+    """A `MATCH` probe proves presence, and presence is only half the question.
+
+    Appending a document to an external-content FTS5 index leaves every digest,
+    every `act_search` column and the fold's own terms exactly as sealed, so a
+    per-row phrase probe still finds what it went looking for. The recipient's
+    search, meanwhile, now returns this act for words the Archetypus never
+    established -- a second reading of the act inside the same package, which is
+    what GOVERNANCE 5 forbids.
+    """
+    tampered = _resealed_acts_database(
+        tmp_path,
+        lambda connection: connection.execute(
+            "INSERT INTO acts_fts(rowid, derived_search_text) VALUES (1, 'fabricated terms')"
+        ),
+    )
+
+    with pytest.raises(SchemaRefusal, match="full-text index"):
+        verify_delivered_bundle(tampered, tmp_path / "delivered")
+
+
+def test_a_ghost_act_injected_into_the_full_text_index_is_refused(tmp_path):
+    """An indexed rowid that exists in no table the verifier reads at all.
+
+    Every projection check in this file enumerates `acts` or `act_search`, so a
+    document indexed under a rowid neither table holds was invisible to all of
+    them -- and perfectly visible to a client's `MATCH`.
+    """
+    tampered = _resealed_acts_database(
+        tmp_path,
+        lambda connection: connection.execute(
+            "INSERT INTO acts_fts(rowid, derived_search_text) VALUES (9001, 'an act never read')"
+        ),
+    )
+
+    with pytest.raises(SchemaRefusal, match="full-text index"):
+        verify_delivered_bundle(tampered, tmp_path / "delivered")
+
+
+def test_a_full_text_index_repointed_at_a_decoy_content_table_is_refused(tmp_path):
+    """FTS5 records what it indexes in its own declaration, so the declaration is checked.
+
+    Dropping `acts_fts` and recreating it over a table the resealer also added
+    leaves an index that is perfectly self-consistent and consistent with *its*
+    content table: an integrity check sees nothing wrong, because from inside
+    FTS5 nothing is. The decoy deliberately carries the true fold as a prefix, so
+    a phrase probe finds it too. Only the schema says which table `acts_fts` is
+    an index of.
+    """
+
+    def repoint(connection):
+        connection.executescript(
+            """
+            CREATE TABLE decoy(rowid INTEGER PRIMARY KEY, derived_search_text TEXT);
+            INSERT INTO decoy(rowid, derived_search_text)
+                VALUES (1, 'caesar damours and fabricated terms');
+            DROP TABLE acts_fts;
+            CREATE VIRTUAL TABLE acts_fts USING fts5(
+                derived_search_text,
+                content='decoy',
+                content_rowid='rowid',
+                tokenize='unicode61 remove_diacritics 2'
+            );
+            INSERT INTO acts_fts(acts_fts) VALUES ('rebuild');
+            """
+        )
+
+    with pytest.raises(SchemaRefusal, match="a definition this build never wrote"):
+        verify_delivered_bundle(_resealed_acts_database(tmp_path, repoint), tmp_path / "delivered")
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "CREATE TABLE side_channel(payload TEXT)",
+        "CREATE VIEW acts_shadow AS SELECT * FROM acts",
+    ],
+)
+def test_an_acts_database_carrying_an_unaccounted_schema_object_is_refused(statement, tmp_path):
+    """The database is a closed product, exactly as every JSONL row is a closed record."""
+    tampered = _resealed_acts_database(tmp_path, lambda connection: connection.execute(statement))
+
+    with pytest.raises(SchemaRefusal, match="unaccounted schema object"):
+        verify_delivered_bundle(tampered, tmp_path / "delivered")
+
+
+def test_an_established_reading_that_folds_to_no_search_token_still_publishes(tmp_path):
+    """The index check may not refuse a good package for a defect it does not have.
+
+    `search_fold` keeps every alphanumeric character Python knows about; FTS5's
+    `unicode61` tokenizer classifies from its own table, and the two do not agree
+    on every code point. A reading made only of characters in that gap folds to a
+    non-empty key that tokenizes to nothing, which a per-row phrase probe reads as
+    a missing index entry -- and the whole export died, naming a tampered index
+    that was never tampered with. GOALS 1: an act refused at the terminal gate for
+    an instrument's own disagreement is an act that does not leave the pipeline.
+    """
+    projection = _projection()
+    delivered = {**projection.acts[0], CANONICAL_TEXT_FIELD: "\u19b1\u19b2"}
+    tokenless = replace(projection, acts=(delivered, *projection.acts[1:]))
+    assert search_fold(delivered[CANONICAL_TEXT_FIELD]) != ""
+
+    bundle = build_armarium_bundle(tokenless, _formats(embed_pixels=False), _source_bytes)
+
+    assert (
+        verify_delivered_bundle(bundle.data, tmp_path / "delivered")["verification"]["search_fold"][
+            "status"
+        ]
+        == "verified"
+    )
+
+
+def _resealed_manifest(mutate):
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    manifest = json.loads(members[EXPORT_MANIFEST_NAME])
+    del manifest["self_hash"]
+    mutate(manifest)
+    _refresh_manifest(members, manifest)
+    return _zip_bytes(members)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        pytest.param(
+            lambda manifest: manifest.update(independent_audit="passed"),
+            id="a claim nothing in this package measures",
+        ),
+        pytest.param(
+            lambda manifest: manifest.update(verification={"search_fold": {"status": "verified"}}),
+            id="a forged report of checks nobody ran",
+        ),
+        pytest.param(
+            lambda manifest: manifest["claims"].update(accuracy="99.9% against the ink"),
+            id="a fabricated claims entry",
+        ),
+        pytest.param(
+            lambda manifest: manifest["run"].update(operator="nobody"),
+            id="an extra field on the run binding",
+        ),
+        pytest.param(
+            lambda manifest: manifest["claims"]["pixels"].update(verified_by="nobody"),
+            id="an extra field on a claim read field by field",
+        ),
+        pytest.param(
+            lambda manifest: manifest["claims"]["act_partition"].update(
+                denominator="whatever the editor chose to count"
+            ),
+            id="a substituted act denominator",
+        ),
+        pytest.param(
+            lambda manifest: manifest["claims"]["page_census"].update(
+                denominator="whatever the editor chose to count"
+            ),
+            id="a substituted page denominator",
+        ),
+        pytest.param(
+            lambda manifest: manifest["claims"]["display"].update(
+                reason="the rendering was exercised and approved"
+            ),
+            id="a substituted display rationale",
+        ),
+        pytest.param(
+            lambda manifest: manifest["claims"]["salvage"].update(
+                promotion="automatic export-time act promotion"
+            ),
+            id="a substituted salvage promotion claim",
+        ),
+    ],
+)
+def test_a_resealed_manifest_may_not_carry_a_field_this_build_never_writes(mutate, tmp_path):
+    """The package's claims document cannot carry a field nothing measured."""
+    with pytest.raises(
+        SchemaRefusal,
+        match="unrecognized field set|not this build's fixed claim|display claim",
+    ):
+        verify_delivered_bundle(_resealed_manifest(mutate), tmp_path / "delivered")
+
+
+def test_an_unhashable_salvage_status_is_a_named_refusal(tmp_path):
+    """Package-supplied JSON values may not escape the verifier as Python errors."""
+
+    def replace_status(manifest):
+        manifest["claims"]["salvage"]["status"] = ["accounted"]
+
+    with pytest.raises(SchemaRefusal, match="invalid salvage-tier status"):
+        verify_delivered_bundle(_resealed_manifest(replace_status), tmp_path / "delivered")
+
+
+@pytest.mark.parametrize("field", ["fixture_id", "scenario"])
+def test_a_manifest_run_binding_requires_string_identities(field, tmp_path):
+    """An exact key set is not a schema if package-supplied identity types are unchecked."""
+
+    def replace_identity(manifest):
+        manifest["run"][field] = ["not", "an", "identity"]
+
+    with pytest.raises(SchemaRefusal, match="non-blank fixture and scenario identities"):
+        verify_delivered_bundle(_resealed_manifest(replace_identity), tmp_path / "delivered")
+
+
+def test_a_source_graph_evidence_ref_that_cites_nothing_is_refused_in_every_format_set(tmp_path):
+    """sources.json is the citation carrier shared by every format selection."""
+    projection = _projection()
+    decoyed = {**projection.acts[0], "evidence_refs": [{"note": "evidence exists somewhere"}]}
+
+    with pytest.raises(SchemaRefusal, match="evidence_refs entry cites nothing"):
+        build_armarium_bundle(
+            replace(projection, acts=(decoyed, *projection.acts[1:])),
+            ArmariumFormats(("text-bundle",), False),
+            _source_bytes,
+        )
+
+
+@pytest.mark.parametrize("member", ["review-items.jsonl", "acts.jsonl"])
+def test_an_evidence_ref_that_cites_nothing_is_refused(member, tmp_path):
+    """Every entry in the required evidence list must cite a retained-run path."""
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    rows = [json.loads(line) for line in members[member].decode("utf-8").splitlines()]
+    rows[0]["evidence_refs"] = [{"note": "trust me, evidence exists somewhere"}]
+    members[member] = b"".join(canonical_bytes(row) + b"\n" for row in rows)
+    _refresh_manifest_member(members, member)
+
+    with pytest.raises(SchemaRefusal, match="evidence_refs entry cites nothing"):
+        verify_delivered_bundle(_zip_bytes(members), tmp_path / "delivered")
+
+
+def test_an_acts_database_evidence_ref_that_cites_nothing_is_refused(tmp_path):
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    database = tmp_path / "decoyed.sqlite"
+    database.write_bytes(members["acts.sqlite"])
+    connection = sqlite3.connect(database)
+    try:
+        evidence = json.loads(
+            connection.execute("SELECT evidence_json FROM acts WHERE act_id = 'act-1'").fetchone()[
+                0
+            ]
+        )
+        evidence["evidence_refs"] = [{"note": "trust me, evidence exists somewhere"}]
+        connection.execute(
+            "UPDATE acts SET evidence_json = ? WHERE act_id = 'act-1'",
+            (json.dumps(evidence),),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    members["acts.sqlite"] = database.read_bytes()
+    _refresh_manifest_member(members, "acts.sqlite")
+
+    with pytest.raises(SchemaRefusal, match="evidence_refs entry cites nothing"):
+        verify_delivered_bundle(_zip_bytes(members), tmp_path / "delivered")
+
+
+def test_text_bundle_human_heading_must_authenticate_the_machine_act_identity(tmp_path):
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    lines = members[TEXT_REGISTER].decode("utf-8").split("\n")
+    lines[lines.index("act-id: act-1") - 1] = "## forged key (act-1)"
+    members[TEXT_REGISTER] = "\n".join(lines).encode("utf-8")
+    _refresh_manifest_member(members, TEXT_REGISTER)
+
+    with pytest.raises(SchemaRefusal, match="human heading"):
+        verify_delivered_bundle(_zip_bytes(members), tmp_path / "delivered")
+
+
 def test_member_digest_guard_refuses_a_tampered_self_containment_claim(tmp_path):
     bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
     members = _members(bundle.data)
@@ -681,6 +1078,34 @@ def test_sealed_source_page_cannot_lose_its_pixel_reference(embed_pixels, tmp_pa
     _refresh_manifest_member(members, "sources.json")
 
     with pytest.raises(SchemaRefusal, match="sealed package source page has no pixel reference"):
+        verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
+
+
+def test_sealed_source_page_cannot_carry_a_resealed_refusal_reason(tmp_path):
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    sources = json.loads(members["sources.json"])
+    sources["pages"][0]["reason"] = "forged refusal despite a sealed page"
+    members["sources.json"] = canonical_bytes(sources)
+    _refresh_manifest_member(members, "sources.json")
+
+    with pytest.raises(SchemaRefusal, match="sealed package source page carries a refusal reason"):
+        verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
+
+
+def test_a_refused_source_page_requires_a_nonblank_terminal_reason(tmp_path):
+    """Whitespace does not name why a source failed to seal or what remains unresolved."""
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    sources = json.loads(members["sources.json"])
+    page = sources["pages"][0]
+    page["outcome"] = "refused"
+    page["reason"] = "   "
+    page.pop("page_image")
+    members["sources.json"] = canonical_bytes(sources)
+    _refresh_manifest_member(members, "sources.json")
+
+    with pytest.raises(SchemaRefusal, match="refused package source page has no terminal reason"):
         verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
 
 
@@ -1725,6 +2150,33 @@ def test_a_member_named_as_both_file_and_directory_is_refused_before_extraction(
     assert not [path for path in clean.rglob("*") if path.is_file()]
 
 
+@pytest.mark.parametrize(
+    ("alias", "message"),
+    [
+        ("SOURCES.JSON", "collide after filesystem case"),
+        ("./sources.json", "not in canonical POSIX spelling"),
+    ],
+)
+def test_member_names_that_alias_on_a_recipient_filesystem_are_refused_before_extraction(
+    alias, message, tmp_path
+):
+    """Distinct ZIP spellings can still name one extracted filesystem object."""
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    members[alias] = members["sources.json"]
+    buffer = BytesIO()
+    with ZipFile(buffer, "w", compression=ZIP_STORED) as archive:
+        for name in [EXPORT_MANIFEST_NAME] + sorted(
+            name for name in members if name != EXPORT_MANIFEST_NAME
+        ):
+            archive.writestr(name, members[name])
+
+    clean = tmp_path / "clean"
+    with pytest.raises(SchemaRefusal, match=message):
+        verify_export_bundle(buffer.getvalue(), clean)
+    assert not [path for path in clean.rglob("*") if path.is_file()]
+
+
 def test_a_compressed_member_is_refused_before_a_byte_is_decompressed(tmp_path):
     """The decompression bound is the refusal, so the refusal needs its own witness.
 
@@ -1746,6 +2198,98 @@ def test_a_compressed_member_is_refused_before_a_byte_is_decompressed(tmp_path):
     with pytest.raises(SchemaRefusal, match="is compressed"):
         verify_export_bundle(buffer.getvalue(), clean)
     assert not [path for path in clean.rglob("*") if path.is_file()]
+
+
+def test_a_directory_swapped_to_a_symlink_after_preflight_cannot_redirect_extraction(
+    tmp_path, monkeypatch
+):
+    """The no-link check and member write must be one descriptor-relative operation."""
+    import armarium_export as export_module
+
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    clean = tmp_path / "clean"
+    clean.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    real_extract = export_module._extract_archive_members
+
+    def swap_then_extract(archive, root_fd, names):
+        (clean / "text").symlink_to(outside, target_is_directory=True)
+        return real_extract(archive, root_fd, names)
+
+    monkeypatch.setattr(export_module, "_extract_archive_members", swap_then_extract)
+
+    with pytest.raises(SchemaRefusal, match="package member parent is not an ordinary directory"):
+        verify_export_bundle(bundle.data, clean)
+
+    assert not list(outside.rglob("*")), "no package byte may cross the clean-root boundary"
+
+
+def test_a_preexisting_file_symlink_is_refused_before_archive_extraction(tmp_path):
+    """A linked ambient entry is refused even when it occupies an expected path.
+
+    Ordinary files are safely replaced (including hard links, tested below), so the
+    refusal is specifically about a symlink that extraction would otherwise follow.
+    Refusing it before opening the archive proves neither member accounting nor
+    text-bundle reads can be redirected through the two former ``rglob`` walks.
+    """
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    outside = tmp_path / "outside.json"
+    outside.write_bytes(b"bytes outside the extraction root")
+    clean = tmp_path / "clean"
+    clean.mkdir()
+    (clean / EXPORT_MANIFEST_NAME).symlink_to(outside)
+
+    with pytest.raises(SchemaRefusal, match="contains a link"):
+        verify_export_bundle(bundle.data, clean)
+
+    assert outside.read_bytes() == b"bytes outside the extraction root"
+
+
+def test_a_preexisting_hard_link_is_replaced_without_writing_outside_the_clean_root(tmp_path):
+    """A hard link reports as a regular file, so link rejection alone is not containment."""
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    outside = tmp_path / "outside.json"
+    outside.write_bytes(b"bytes outside the extraction root")
+    clean = tmp_path / "clean"
+    clean.mkdir()
+    linked = clean / EXPORT_MANIFEST_NAME
+    linked.hardlink_to(outside)
+    shared_inode = linked.stat().st_ino
+
+    manifest = verify_export_bundle(bundle.data, clean)
+
+    assert manifest["schema"] == "armarium-export-manifest.v2"
+    assert outside.read_bytes() == b"bytes outside the extraction root"
+    assert linked.stat().st_ino != shared_inode
+
+
+def test_an_extraction_cleanup_failure_names_the_leftover_temporary_file(tmp_path, monkeypatch):
+    """A failed cleanup is part of the refusal, never a silently retained member."""
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    clean = tmp_path / "clean"
+    import armarium_export as export_module
+
+    real_unlink = export_module._unlink_at
+
+    monkeypatch.setattr(
+        "armarium_export._atomic_replace",
+        lambda _source, _target, **_kwargs: (_ for _ in ()).throw(
+            OSError("simulated replace failure")
+        ),
+    )
+
+    def fail_temporary_unlink(path, *args, **kwargs):
+        if ".extracting-" in Path(path).name:
+            raise OSError("simulated cleanup failure")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(export_module, "_unlink_at", fail_temporary_unlink)
+
+    with pytest.raises(SchemaRefusal, match="temporary file .* could not be removed"):
+        verify_export_bundle(bundle.data, clean)
+
+    assert list(clean.rglob("*.extracting-*")), "the test must exercise a real leftover file"
 
 
 @pytest.mark.parametrize(
