@@ -174,6 +174,30 @@ def test_clustered_logical_passes_make_one_establishing_call_and_no_capture_loca
     assert output["perlectio"]["dossier"]["prior_draft"] == {"text": "joint ink"}
 
 
+def test_a_withheld_prior_is_retained_after_but_not_delivered_to_the_reader():
+    reader = RecordingReader()
+    body = {"testimonia": []}
+    output = run_logical_passes(
+        reader,
+        autopsia=autopsia(),
+        dossier={**body, "dossier_digest": digest_of(body)},
+        read_bytes=READ_BYTES,
+        protocol_config={"max_images": 6},
+        nuda_sampled=False,
+        control_sampled=False,
+        draft_fed=False,
+    )
+    reader_dossier = next(call[0] for call in reader.calls if call[1] == "perlectio")
+    assert reader_dossier["prior_draft_view"] == "withheld"
+    assert "prior_draft" not in reader_dossier
+    reader_body = {key: value for key, value in reader_dossier.items() if key != "dossier_digest"}
+    assert reader_dossier["dossier_digest"] == digest_of(reader_body)
+
+    retained = output["perlectio"]["dossier"]
+    assert retained["prior_draft_view"] == "withheld"
+    assert retained["prior_draft"] == {"text": "joint ink"}
+
+
 def test_sealed_capacity_holds_a_cluster_before_any_logical_reader_call():
     reader = RecordingReader()
     with pytest.raises(SchemaRefusal, match=OVER_CAPACITY):

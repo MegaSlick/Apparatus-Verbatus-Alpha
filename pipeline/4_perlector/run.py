@@ -2681,9 +2681,11 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         primed_dossier = _reseal_dossier(passes["perlectio"]["dossier"])
         result = passes["perlectio"]["result"]
         prior = primed_dossier["prior_draft"]
-        # The prompt is reproduced from the dossier the reader was actually
-        # shown, so what is recorded is the prompt this reading was produced
-        # through rather than one reconstructed afterwards.
+        # The prompt is reproduced from the retained dossier. In the fed arm it
+        # is also the reader dossier; in the withheld arm `combined.py` removed
+        # the prior text before the call and restored it only on this separate
+        # evidence copy. The prompt builder ignores a withheld prior, so both
+        # objects render the same bytes without giving the reader a side channel.
         prompt = prompts.prompt_evidence(chair, primed_dossier, protocol_config, protocol_sha256)
 
         # The scenario's declared engine behaviour stands in for a real

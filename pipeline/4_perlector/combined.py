@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 from typing import Any, Callable
 
+from common.contracts.canonical import digest_of
 from common.cross_capture_autopsia import invoke_one_logical_read
 
 
@@ -113,7 +114,8 @@ def run_logical_passes(
         )
         output["primed-without-prior"] = {"dossier": control_dossier, "result": control}
     establishing = copy.deepcopy(dossier)
-    establishing["prior_draft"] = prior_draft
+    if draft_fed:
+        establishing["prior_draft"] = prior_draft
     establishing["prior_draft_view"] = "fed" if draft_fed else "withheld"
     final_dossier, _final_pixels, final = invoke_one_logical_read(
         reader,
@@ -123,5 +125,19 @@ def run_logical_passes(
         max_images=max_images,
         pass_kind="perlectio",
     )
+    if not draft_fed:
+        # The prior remains retained evidence for self-revision and prompt
+        # reproduction, but withheld means the reader cannot receive its text
+        # in a side channel beside the rendered prompt. Build a separate record
+        # copy after the synchronous call; never mutate the object the reader
+        # was handed (a capturing implementation may retain that reference).
+        retained_dossier = copy.deepcopy(final_dossier)
+        retained_dossier["prior_draft"] = prior_draft
+        if "dossier_digest" in retained_dossier:
+            body = {
+                key: value for key, value in retained_dossier.items() if key != "dossier_digest"
+            }
+            retained_dossier["dossier_digest"] = digest_of(body)
+        final_dossier = retained_dossier
     output["perlectio"] = {"dossier": final_dossier, "result": final}
     return output
