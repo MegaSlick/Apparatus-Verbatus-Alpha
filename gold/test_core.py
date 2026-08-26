@@ -1784,3 +1784,28 @@ def test_two_runs_agreeing_only_on_their_declarations_are_two_frames(tmp_path):
     assert frame_of("shard-one", _sha("b")) != frame_of("shard-two", _sha("d"))
     # The other direction, or the digest would not be describing content at all.
     assert frame_of("shard-three", _sha("b")) == frame_of("shard-four", _sha("b"))
+
+
+def test_gold_rederivation_honours_an_explicitly_absent_computed_digest(tmp_path):
+    """An unreadable page stores None, which means use its retained declaration."""
+    from common.runtree.store import RunTree
+
+    tree = RunTree.create(
+        tmp_path / "runs",
+        "r1",
+        source_manifest=[
+            {
+                "relative_path": "unreadable.png",
+                "sha256": _sha("a"),
+                "computed_sha256": None,
+                "ordinal": 1,
+            }
+        ],
+        config_digest=_sha("c"),
+        adapter_recipes={"designator": "fake-designator-v0"},
+        witness_chairs=["attestator_1"],
+    )
+
+    frame, source = load_run_frame(tmp_path / "runs" / "r1" / "run.json")
+    assert frame == tree.read_run()["corpus_frame_membership"]
+    assert source == [{"ordinal": 1, "sha256": _sha("a")}]

@@ -1509,13 +1509,17 @@ def test_the_pdf_pdfium_renders_is_the_descriptor_the_digest_was_taken_from(tmp_
         door.pdf_render.close_document(opened_original)
 
     original_digest_stream = door._source_digest_stream
-    replacements = 0
+    digest_passes = 0
 
     def replace_the_name_the_moment_its_digest_is_taken(handle):
-        nonlocal replacements
+        nonlocal digest_passes
         result = original_digest_stream(handle)
-        os.replace(replacement_path, source / "register.pdf")
-        replacements += 1
+        digest_passes += 1
+        # The first pass binds membership during expansion. The second is the
+        # descriptor PDFium will render during admission; replace the pathname at
+        # that exact point and prove the held descriptor still supplies the pixels.
+        if digest_passes == 2:
+            os.replace(replacement_path, source / "register.pdf")
         return result
 
     monkeypatch.setattr(
@@ -1535,7 +1539,7 @@ def test_the_pdf_pdfium_renders_is_the_descriptor_the_digest_was_taken_from(tmp_
     )
 
     record = admissions(RunTree(approved / "runs", "one-descriptor-pdf"))[1]
-    assert replacements == 1
+    assert digest_passes == 2
     assert (source / "register.pdf").read_bytes() == replacement
     assert record["outcome"] == "admitted"
     assert record["payload"]["admitted_source_sha256"] == digest_bytes(original)
@@ -3817,3 +3821,54 @@ def test_a_source_too_large_to_read_binds_no_digest_it_never_took(tmp_path):
     )
     assert source.computed_sha256 is None
     assert door._membership_sha256(source) == declared
+
+
+def test_streamed_pdf_membership_binds_inspected_bytes_not_a_shared_ledger_lie(tmp_path):
+    folder = tmp_path / "pdfs"
+    folder.mkdir()
+    first = single_gray_page_pdf()
+    second = content_page_pdf(b"", width=144, height=72)
+    (folder / "first.pdf").write_bytes(first)
+    (folder / "second.pdf").write_bytes(second)
+    lie = digest_bytes(b"neither PDF")
+
+    def unexpected_reader(relative_path: str) -> bytes:
+        raise AssertionError(f"streamed PDF {relative_path} was read into one bytes object")
+
+    def open_source(relative_path: str):
+        return door.inventory.open_submission_source(folder, relative_path)
+
+    expanded = []
+    for name in ("first.pdf", "second.pdf"):
+        (source,) = expand_sources(
+            [{"relative_path": name, "sha256": lie, "bytes": (folder / name).stat().st_size}],
+            unexpected_reader,
+            POLICY,
+            open_source=open_source,
+        )
+        expanded.append(source)
+
+    assert [source.computed_sha256 for source in expanded] == [
+        digest_bytes(first),
+        digest_bytes(second),
+    ]
+    assert door._membership_sha256(expanded[0]) != door._membership_sha256(expanded[1])
+
+
+def test_admission_refuses_bytes_that_differ_from_sealed_membership(tmp_path):
+    before, after = png(6, 4), png(8, 5)
+    sealed_digest = digest_bytes(before)
+    source = SourceEntry(
+        1,
+        "page.png",
+        None,
+        computed_sha256=sealed_digest,
+    )
+    tree, context = open_door(tmp_path, [source], computed_digests={1: sealed_digest})
+
+    assert process_sources(context, tree, [source], reader({"page.png": after}), policy=POLICY) == 0
+    context.finish(DOOR)
+
+    refusal = admissions(tree)[1]
+    assert reason_code(refusal["payload"]["reason"]) is RefusalReason.DIGEST_MISMATCH
+    assert "shard membership was sealed" in refusal["payload"]["reason"]

@@ -132,10 +132,10 @@ class SourceEntry(NamedTuple):
     # The digest `expand_sources` computed over the bytes it actually read for
     # this source file, as against `declared_sha256`, which is what the
     # submitted filename ledger claimed about them. `None` where there were no
-    # bytes to hash -- an unreadable or over-sized source, or a streamed PDF
-    # container, which is hashed once only and after this run seals. Those pages
-    # keep their ordinals and are refused by name in `process_sources`; see
-    # `_membership_sha256`.
+    # bytes to hash -- an unreadable or over-sized source. Those pages keep their
+    # ordinals and are refused by name in `process_sources`; see
+    # `_membership_sha256`. Streamed PDFs are hashed from their anchored descriptor
+    # during expansion so their inspected identity exists before the run seals.
     computed_sha256: str | None = None
 
 
@@ -166,23 +166,16 @@ def _membership_sha256(source: SourceEntry) -> str | None:
     binding; composing the container's inspected digest with this page's index
     inside it is what is knowable at seal time and still separates them.
 
-    Two kinds of source still fall back to the declaration, and both do so
-    rather than refusing the whole run -- each keeps its ordinal so the run's
-    denominator stays honest, and each is refused by name at `process_sources`
-    before it can become a reading:
+    A source whose bytes could not be read, or were over the size ceiling, still
+    falls back to the declaration rather than refusing the whole run. It keeps
+    its ordinal so the run's denominator stays honest and is refused by name at
+    `process_sources` before it can become a reading.
 
-    * one whose bytes could not be read, or were over the size ceiling, so
-      there is nothing to hash;
-    * a **streamed PDF container**, which is deliberately hashed once only,
-      from the descriptor PDFium renders, and that open happens after this
-      frame seals. Two shards each taking ordinal 1 from a PDF whose untrusted
-      ledger declares the same digest for genuinely different files therefore
-      still seal one membership. `process_sources` refuses both by name when
-      the bytes disagree with the declaration, so no reading escapes; what is
-      not closed is the frame identity itself. Closing it needs either a second
-      full pass over a file that may be gigabytes or a digest carried out of
-      `process_sources` back into a frame that has already sealed, and neither
-      is this seat's to choose alone -- it is recorded for the next.
+    A streamed PDF costs one extra sequential pass before sealing. That pass is
+    necessary: the run authority cannot honestly claim an inspected frame
+    identity using a digest that will only be computed after the authority is
+    immutable. Admission later hashes the descriptor it renders as before and
+    refuses if those bytes differ from the digest expansion sealed.
     """
     inspected = source.computed_sha256 or source.declared_sha256
     if inspected is None or source.container_page_index is None:
@@ -679,19 +672,14 @@ def expand_sources(
                 # reconstructed from the ledger would have a replacement window.
                 with open_source(path) as opened_source:
                     detected = _sniff_source_stream(opened_source.handle)
+                    if detected == "pdf":
+                        # Membership seals before `process_sources`, so the
+                        # inspected identity must exist now. This is an extra
+                        # sequential pass over a potentially large container, but
+                        # falling back to its untrusted declaration made two
+                        # different PDFs able to claim one shard membership.
+                        computed, _actual_size = _source_digest_stream(opened_source.handle)
                     opened_source.assert_unchanged(expected_sha256=declared_sha256)
-                    # Deliberately no digest here. A streamed PDF container is
-                    # hashed exactly once, from the descriptor PDFium then renders
-                    # (`test_the_pdf_pdfium_renders_is_the_descriptor_the_digest_
-                    # was_taken_from`), and that open happens in `process_sources`,
-                    # after this frame seals. Hashing it a second time here would
-                    # cost a full extra pass over a file that may be gigabytes and
-                    # would take the membership digest from a different open than
-                    # the pixels -- reopening the replacement window that test
-                    # exists to keep shut. The residual is named in
-                    # `_membership_sha256`: a streamed container's membership rests
-                    # on its ledger declaration, which `process_sources` refuses by
-                    # name if the bytes disagree.
             else:
                 # A caller with no anchored opener supplies bytes directly; there is
                 # no second, path-based way to classify a source (the door hands
@@ -1032,6 +1020,19 @@ def process_sources(
                         RefusalReason.DIGEST_MISMATCH,
                         f"the source now has {actual_size} bytes, but {source.declared_size} bytes "
                         "were recorded in its filename ledger",
+                    ),
+                )
+                continue
+
+            if source.computed_sha256 is not None and actual_digest != source.computed_sha256:
+                _publish(
+                    context,
+                    source,
+                    outcome="refused",
+                    reason=admission.reason(
+                        RefusalReason.DIGEST_MISMATCH,
+                        f"computed {actual_digest} at admission, but shard membership was "
+                        f"sealed from {source.computed_sha256} during source expansion",
                     ),
                 )
                 continue

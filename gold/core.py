@@ -151,7 +151,9 @@ def _frame_from_run(run: dict[str, Any]) -> tuple[dict[str, str], list[dict[str,
         # passed it while the run's own inspected bytes said something else. One
         # frame identity means one field; this is that field.
         ordinal = page.get("ordinal")
-        page_sha = page.get("computed_sha256", page.get("sha256"))
+        page_sha = page.get("computed_sha256")
+        if page_sha is None:
+            page_sha = page.get("sha256")
         _refuse(
             not isinstance(ordinal, int) or isinstance(ordinal, bool),
             "source page ordinal is not an integer",

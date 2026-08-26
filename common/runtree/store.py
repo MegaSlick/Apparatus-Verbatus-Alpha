@@ -1358,7 +1358,9 @@ def _default_corpus_frame_membership(source_manifest: list[dict[str, Any]]) -> d
     """
     pages = []
     for page in sorted(source_manifest, key=lambda page: page.get("ordinal", 0)):
-        computed = page.get("computed_sha256", page.get("sha256"))
+        computed = page.get("computed_sha256")
+        if computed is None:
+            computed = page.get("sha256")
         if not _is_sha256(computed):
             raise SchemaRefusal(
                 "corpus frame membership needs an inspected or declared sha256 for "

@@ -369,6 +369,24 @@ def test_membership_refuses_a_page_with_no_digest_of_any_kind(tmp_path):
         make_run(tmp_path, source_manifest=[{"relative_path": "page.png", "ordinal": 1}])
 
 
+def test_membership_uses_the_declaration_when_computed_digest_is_explicitly_absent(tmp_path):
+    manifest = [
+        {
+            "relative_path": "unreadable.png",
+            "sha256": "a" * 64,
+            "computed_sha256": None,
+            "ordinal": 1,
+        }
+    ]
+    tree = make_run(tmp_path, source_manifest=manifest)
+    without_optional_field = [
+        {key: value for key, value in manifest[0].items() if key != "computed_sha256"}
+    ]
+    assert tree.read_run()["corpus_frame_membership"] == _default_corpus_frame_membership(
+        without_optional_field
+    )
+
+
 def test_a_caller_cannot_name_a_frame_its_own_pages_do_not_derive(tmp_path):
     """The frame is derived, never asserted. There is no parameter for asserting it.
 
