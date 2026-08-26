@@ -17,6 +17,7 @@ from common.native_witness import (
     validate_partition_disagreement,
     validate_presented_page_binding,
     validate_retained_response_refs,
+    verify_native_capture_bytes,
 )
 
 
@@ -431,6 +432,156 @@ def test_page_retained_response_path_is_derived_from_its_digest():
     }
     with pytest.raises(SchemaRefusal, match="closed blob reference"):
         validate_retained_response_refs({"raw_response_refs": [reference]})
+
+
+def _page_with_churro_capture() -> dict:
+    value = payload()
+    text = value["payload"]
+    digest = digest_bytes(f"<output>{text}</output>".encode())
+    value.update(
+        {
+            "chair": "attestator_1",
+            "act_key": "page-1",
+            "attempt_ordinal": 1,
+            "regions": [],
+            "provenance": {},
+            "format_capabilities": {},
+            "witness_reported": None,
+            "reported": text,
+            "content_health": {
+                "native_type": "string",
+                "encoding": "utf-8-json-native",
+                "recordable": True,
+                "empty": False,
+                "blank": False,
+                "truncated": False,
+                "characters": len(text),
+                "truncation_basis": "trusted-response-boundary",
+            },
+            "unpresented_regions": [],
+            "scope": "page",
+            "page_ordinal": 1,
+            "page_role": "primary",
+            "unjoined_act_attempts": [],
+            "native_capture": {
+                "schema": "attestatores-model-view.v1",
+                "adapter": "churro.v1",
+                "view": {
+                    "prompt": {"system": "system prompt", "user": "user prompt"},
+                    "generation": {"max_new_tokens": 24_000},
+                },
+                "raw_response_ref": {
+                    "relative_path": f"3_attestatores/blobs/sha256/{digest}",
+                    "sha256": digest,
+                },
+                "transport_stop_reason": "eos",
+                "stop_reason": "eos",
+                "findings": [],
+                "parse": {"state": "parsed", "parser": "xml", "text": text},
+            },
+        }
+    )
+    return value
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        (
+            lambda value: value["native_capture"]["raw_response_ref"].update(
+                relative_path="3_attestatores/blobs/sha256/not-the-digest"
+            ),
+            "content-addressed",
+        ),
+        (
+            lambda value: value["native_capture"].update(schema="attestatores-model-view.v9"),
+            "unknown retained model-view schema",
+        ),
+        (
+            lambda value: value["native_capture"]["view"].update(unread="ignored"),
+            "exactly its prompt and generation",
+        ),
+        (
+            lambda value: value["native_capture"]["view"]["generation"].update(
+                max_new_tokens=10**100
+            ),
+            "24000-token bound",
+        ),
+        (
+            lambda value: value["native_capture"].update(stop_reason="partial-parse-failed"),
+            "disagrees with its parse and findings",
+        ),
+        (
+            lambda value: value["native_capture"].update(
+                parse={"state": "pending", "parser": "xml"}
+            ),
+            "terminal XML parse",
+        ),
+        (
+            lambda value: value["native_capture"]["findings"].extend(
+                [
+                    {
+                        "kind": "post-hoc-repetition-uninspected",
+                        "reason": "first",
+                        "inspected": "raw-response",
+                    },
+                    {
+                        "kind": "post-hoc-repetition-uninspected",
+                        "reason": "second",
+                        "inspected": "raw-response",
+                    },
+                ]
+            ),
+            "more than one repetition finding",
+        ),
+        (
+            lambda value: value["native_capture"]["parse"].update(text="different"),
+            "payload differs",
+        ),
+        (
+            lambda value: value["content_health"].update(characters=0),
+            "health differs",
+        ),
+    ],
+)
+def test_churro_native_capture_closes_its_evidence_reference_and_derived_facts(change, message):
+    value = _page_with_churro_capture()
+    change(value)
+    with pytest.raises(SchemaRefusal, match=message):
+        validate_page_testimonium_payload(value)
+
+
+def test_a_cut_off_empty_churro_capture_is_recordable_but_not_a_reported_absence():
+    value = _page_with_churro_capture()
+    value["payload"] = ""
+    value.pop("reported")
+    value["content_health"].update(
+        empty=True,
+        blank=True,
+        truncated=True,
+        characters=0,
+    )
+    value["native_capture"]["transport_stop_reason"] = "length"
+    value["native_capture"]["stop_reason"] = "length"
+    value["native_capture"]["parse"]["text"] = ""
+    value["observed"][0]["span"] = None
+    value["reason"] = "provider stopped at length; a cut-off response is not a confirmed blank"
+
+    assert validate_page_testimonium_payload(value) is value
+
+    value["reported"] = ""
+    with pytest.raises(SchemaRefusal, match="claims a reported absence"):
+        validate_page_testimonium_payload(value)
+
+
+def test_churro_capture_derivation_is_checked_against_its_authoritative_raw_bytes():
+    value = _page_with_churro_capture()
+    raw = f"<output>{value['payload']}</output>".encode()
+    assert verify_native_capture_bytes(value["native_capture"], raw) is value["native_capture"]
+
+    value["native_capture"]["parse"]["text"] = "a coherently resealed false projection"
+    with pytest.raises(SchemaRefusal, match="parse.*retained raw response"):
+        verify_native_capture_bytes(value["native_capture"], raw)
 
 
 def test_partition_disagreement_retains_all_ambiguous_geometry_without_a_winner():

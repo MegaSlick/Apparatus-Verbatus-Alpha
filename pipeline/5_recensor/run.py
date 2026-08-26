@@ -51,6 +51,7 @@ from common.native_witness import (  # noqa: E402
     unrouted_observations,
     validate_page_testimonium_payload,
     validate_partition_disagreement,
+    verify_native_capture_blob,
 )
 from common.perlector_audit import validate_chain  # noqa: E402
 from common.recensor_receipt import build_recensor_partition_receipt  # noqa: E402
@@ -372,7 +373,31 @@ def act_attachment_facts(context, act_id: str, outcomes: dict[str, str]) -> dict
                 raise FatalAccounting(
                     f"act {act_id} page witness {chair!r} points to a different page Testimonium"
                 )
-            geometrically_attached = outcomes.get(chair) in WITNESS_READING_OUTCOMES and any(
+            native_capture = page_payload.get("native_capture")
+            if native_capture is not None:
+                if native_capture["raw_response_ref"] not in page_testimonium.get("inputs", []):
+                    raise FatalAccounting(
+                        f"act {act_id} page witness {chair!r} does not bind its retained raw "
+                        "response as a verified input"
+                    )
+                if native_capture["adapter"] != context.registry.resolve(chair).witness_adapter:
+                    raise FatalAccounting(
+                        f"act {act_id} page witness {chair!r} attributes its native capture to "
+                        "an adapter other than that chair's configured boundary"
+                    )
+                try:
+                    verify_native_capture_blob(context.tree, native_capture)
+                except ContractError as error:
+                    raise FatalAccounting(
+                        f"act {act_id} page witness {chair!r} has a native capture that does "
+                        f"not derive from its retained raw response: {error}"
+                    ) from error
+            # Native page and compatibility act outcomes are independent; legacy
+            # page joins instead derive their outcome from the act attempts.
+            attachment_outcome = (
+                page_testimonium["outcome"] if native_capture is not None else outcomes.get(chair)
+            )
+            geometrically_attached = attachment_outcome in WITNESS_READING_OUTCOMES and any(
                 reported_geometry_overlaps(page_payload.get("observed", []), bounds)
                 for bounds in proposal_page["bounds"]
             )

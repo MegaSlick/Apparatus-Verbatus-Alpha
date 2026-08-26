@@ -10,7 +10,6 @@ complete when it reaches this module.  In particular, repetition is inspected
 from __future__ import annotations
 
 import re
-import xml.etree.ElementTree as ET
 from collections.abc import Iterable
 from contextlib import contextmanager
 from itertools import groupby
@@ -21,8 +20,15 @@ from common.chandra_custody import read_retained_chandra_response
 from common.contracts.canonical import digest_bytes, digest_of
 from common.contracts.errors import SchemaRefusal
 from common.contracts.stages import ATTESTATORES
+from common.native_witness import (
+    CHURRO_OUTPUT_TOKENS,
+    derive_churro_capture,
+    validate_churro_xml,
+)
+from common.native_witness import (
+    detect_churro_repetition as detect_repetition,
+)
 
-CHURRO_OUTPUT_TOKENS = 24_000
 DAI_MAX_WIDTH_PX = 1_500
 DAI_MAX_HEIGHT_PX = 4_096
 DAI_MAX_TOTAL_PIXELS = 2_359_296
@@ -53,8 +59,6 @@ _UNPLACED_ORDINAL = -1
 # The (adapter, parser) pairs `retain_model_view` can actually carry to a state.
 _RUNNABLE_PARSERS = frozenset({("chandra.v1", "json"), ("churro.v1", "xml")})
 _UNCERTAINTY_TOKENS = ("[UNCERTAIN]", "[CROSSED_OUT]")
-_REPETITION_WINDOW = 24
-_REPETITION_MIN_REPEATS = 3
 
 
 def churro_prompt() -> dict[str, str]:
@@ -103,67 +107,6 @@ def churro_prompt() -> dict[str, str]:
 def churro_generation() -> dict[str, int]:
     """The predeclared operational bound, not a content or repetition control."""
     return {"max_new_tokens": CHURRO_OUTPUT_TOKENS}
-
-
-def validate_churro_xml(raw: bytes) -> str:
-    """Validate the native Churro XML while retaining raw bytes on every failure."""
-    # Refused as a type before any content question: a str here would slip past
-    # the byte scan below and still parse, making the DOCTYPE refusal skippable
-    # by the caller's choice of type.
-    if not isinstance(raw, (bytes, bytearray)):
-        raise SchemaRefusal("Churro response is not raw bytes")
-    # A DOCTYPE is refused before the parser sees it: a legitimate Churro
-    # response is one plain <output> element, and a DTD is the door to entity
-    # tricks this validator has no reason to keep open. A whole-payload scan on
-    # purpose — a DOCTYPE may follow an XML declaration, and escaped text
-    # (&lt;!DOCTYPE) never contains these bytes, so honest transcriptions pass.
-    if b"<!DOCTYPE" in bytes(raw).upper():
-        raise SchemaRefusal("Churro response carries a DOCTYPE; a plain <output> element cannot")
-    try:
-        root = ET.fromstring(raw)
-    except (ET.ParseError, UnicodeDecodeError) as error:
-        raise SchemaRefusal(f"Churro response is not parseable XML: {error}") from error
-    if root.tag != "output" or set(root.attrib) or list(root):
-        raise SchemaRefusal("Churro response must be a plain <output> XML element")
-    return root.text or ""
-
-
-def detect_repetition(raw: bytes) -> dict[str, Any] | None:
-    """Report a repeated tail after capture; this function has no generation input."""
-    try:
-        text = raw.decode("utf-8")
-    except UnicodeDecodeError:
-        # Not silence: None below means "inspected, nothing to report", and an
-        # undecodable capture was never inspected at all. The record carries
-        # that fact as its own finding kind so nothing is lost silently, and
-        # `retain_model_view` knows not to call it a repetition.
-        return {"kind": "post-hoc-repetition-uninspected", "reason": "response is not UTF-8 text"}
-    normalized = re.sub(r"\s+", " ", text).strip()
-    if len(normalized) < _REPETITION_WINDOW * _REPETITION_MIN_REPEATS:
-        return None
-    for width in range(
-        _REPETITION_WINDOW, min(256, len(normalized) // _REPETITION_MIN_REPEATS) + 1
-    ):
-        unit = normalized[-width:]
-        repeats = 1
-        # One window back at a time, rather than `normalized.endswith(unit *
-        # (repeats + 1))`. That form rebuilds and re-compares the whole matched
-        # tail on every step, so counting a tail of n repetitions costs O(n^2)
-        # characters: measured on a wholly repeated response, 0.58 s at 0.9 MB
-        # and 16.5 s at 4.6 MB, against 0.04 s and 0.23 s here. Nothing bounds
-        # the size of a captured response, and the cost lands on exactly the
-        # degenerate runaway output this detector exists to find. The two forms
-        # accept the same tails and return the same count: the tail already ends
-        # with `unit * repeats`, so one further repetition is one further window
-        # equal to `unit` -- pinned in the R3 suite against the built-string
-        # reading it replaces.
-        while (repeats + 1) * width <= len(normalized) and (
-            normalized[-(repeats + 1) * width : -repeats * width] == unit
-        ):
-            repeats += 1
-        if repeats >= _REPETITION_MIN_REPEATS:
-            return {"kind": "post-hoc-repetition", "unit_characters": width, "repeats": repeats}
-    return None
 
 
 def dai_model_view(
@@ -322,22 +265,17 @@ def retain_model_view(
         "parse": {"state": "not-requested" if parser is None else "pending", "parser": parser},
     }
     if adapter == "churro.v1":
-        if finding := detect_repetition(raw_response):
-            record["findings"].append(finding)
-            # Only an actual repetition rewrites the stop reason; an
-            # uninspected capture is a recorded fact, not a detected failure.
-            if finding["kind"] == "post-hoc-repetition":
-                record["stop_reason"] = "partial-post-hoc-repetition-detected"
-        if parser == "xml":
-            try:
-                record["parse"] = {
-                    "state": "parsed",
-                    "parser": "xml",
-                    "text": validate_churro_xml(raw_response),
-                }
-            except SchemaRefusal as error:
-                record["parse"] = {"state": "failed", "parser": "xml", "reason": str(error)}
-                record["stop_reason"] = "partial-parse-failed"
+        # The blob is immutable before either derived operation. Pass these
+        # module bindings explicitly so a pinning test can observe that order.
+        record.update(
+            derive_churro_capture(
+                raw_response,
+                transport_stop_reason,
+                parser=parser,
+                xml_parser=validate_churro_xml,
+                repetition_detector=detect_repetition,
+            )
+        )
     elif adapter == "chandra.v1" and parser == "json":
         # Import locally: the runnable sibling module imports this retention
         # seam, while its parser must remain the one owner of Chandra's shape.

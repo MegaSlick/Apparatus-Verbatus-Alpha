@@ -28,6 +28,7 @@ from common.contracts.stages import PERLECTOR
 from common.imaging import decode_grayscale_png
 from proof.build_fixture import (
     ACTS,
+    CHURRO_PAGE_RESPONSES,
     RECOVERY_BOUNDS,
     SCENARIO_TESTIMONY,
     TESTIMONY,
@@ -39,6 +40,7 @@ from proof.build_fixture import (
     build_ingress_manifest,
     build_skeleton_fixture,
     render_all,
+    toml_string,
     toml_value,
 )
 from proof.synthetic_pages import ALL_PAGES, FIXTURE_ID, PAGES, render_page
@@ -50,6 +52,12 @@ MODELS_CONFIG = PROOF_ROOT.parent / "config" / "models.toml"
 def load(name: str) -> dict:
     with open(PROOF_ROOT / name, "rb") as handle:
         return tomllib.load(handle)
+
+
+def test_toml_string_round_trips_every_forbidden_basic_string_control():
+    value = 'quote=" slash=\\ controls=' + "".join(chr(code) for code in range(0x20)) + "\x7f"
+    decoded = tomllib.loads(f"value = {toml_string(value)}\n")
+    assert decoded["value"] == value
 
 
 @pytest.fixture(scope="module")
@@ -314,6 +322,78 @@ def test_the_review_scenario_exercises_the_repaired_failed_state(skeleton, model
     assert failures[1]["attempt_ordinal"] == 2
 
 
+def test_the_declared_churro_page_responses_reach_a_page_scoped_chair(skeleton, models_config):
+    """Every response must name a declared page and page-scoped chair."""
+    page_chairs = {
+        role
+        for role, chair in models_config.chairs.items()
+        if isinstance(chair, ChairIdentity) and chair.witness_scope == "page"
+    }
+    assert page_chairs, "the configuration seals no page witness at all"
+    declared_pages = {page["ordinal"] for page in skeleton["page"]}
+    rows = skeleton["churro_page_response"]
+    assert rows == [dict(row) for row in CHURRO_PAGE_RESPONSES]
+    assert rows, "no scenario exercises the Churro page capture path"
+    for row in rows:
+        assert set(row) == {
+            "scenario",
+            "page_ordinal",
+            "chair",
+            "raw_xml",
+            "transport_stop_reason",
+        }
+        assert row["chair"] in page_chairs
+        assert row["page_ordinal"] in declared_pages
+        assert row["transport_stop_reason"]
+    keys = [(row["scenario"], row["page_ordinal"], row["chair"]) for row in rows]
+    assert len(set(keys)) == len(keys), "two responses declared for one (scenario, page, chair)"
+
+
+def test_the_pinned_reference_run_exercises_the_churro_capture_path(skeleton):
+    """The pinned run exercises capture without moving its reading text."""
+    happy = [row for row in skeleton["churro_page_response"] if row["scenario"] == "happy"]
+    assert {(row["page_ordinal"], row["chair"]) for row in happy} == {
+        (1, "attestator_1"),
+        (1, "attestator_3"),
+        (2, "attestator_1"),
+        (2, "attestator_3"),
+    }
+    page_acts = {1: ("a1", "a2"), 2: ("a2",)}
+    for row in happy:
+        joined = "\n".join(
+            TESTIMONY[act_key][row["chair"]] for act_key in page_acts[row["page_ordinal"]]
+        )
+        assert row["raw_xml"] == f"<output>{joined}</output>"
+        assert row["transport_stop_reason"] == "eos"
+
+
+def test_the_churro_native_scenario_reaches_all_three_parse_states(skeleton):
+    """The scenario declares success, visible truncation, and parse failure."""
+    rows = {
+        (row["page_ordinal"], row["chair"]): row
+        for row in skeleton["churro_page_response"]
+        if row["scenario"] == "churro-native"
+    }
+    assert set(rows) == {
+        (1, "attestator_1"),
+        (1, "attestator_3"),
+        (2, "attestator_1"),
+        (2, "attestator_3"),
+    }
+    header = "[FOLIO RUBRIC 7 -- page furniture, belongs to no entry]"
+    complete = rows[(1, "attestator_1")]
+    assert complete["raw_xml"].startswith(f"<output>{header}")
+    assert complete["raw_xml"].endswith("</output>")
+    assert complete["transport_stop_reason"] == "eos"
+    assert header not in "".join(act["text"] for act in ACTS)
+    truncated = rows[(2, "attestator_1")]
+    assert truncated["raw_xml"].endswith("</output>")
+    assert truncated["transport_stop_reason"] == "length"
+    malformed = rows[(2, "attestator_3")]
+    assert not malformed["raw_xml"].endswith("</output>")
+    assert malformed["transport_stop_reason"] == "length"
+
+
 def test_fixture_declares_the_explicit_non_reading_and_malformed_attempts(skeleton):
     assert skeleton["witness_not_run"] == list(WITNESS_NOT_RUN)
     assert skeleton["witness_malformed"] == list(WITNESS_MALFORMED)
@@ -327,6 +407,7 @@ def test_the_scenarios_are_exactly_the_declared_ones(skeleton):
         "review",
         "continuation-recovery",
         "coverage-recovery",
+        "churro-native",
         "audit-change",
         "refused-page",
         "refused-first-page",
@@ -359,6 +440,9 @@ def test_the_scenarios_are_exactly_the_declared_ones(skeleton):
     # Any declared route here would re-conflate it with the unclaimed-geometry origin.
     assert by_name["coverage-recovery"]["recover_acts"] == []
     assert by_name["coverage-recovery"]["hold_acts"] == []
+    # Churro-native differs through response declarations, not recovery policy.
+    assert by_name["churro-native"]["recover_acts"] == []
+    assert by_name["churro-native"]["hold_acts"] == []
     assert [
         row for row in skeleton["native_observation"] if row.get("scenario") == "coverage-recovery"
     ] == [

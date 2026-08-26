@@ -742,6 +742,47 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # assigning it to either.  The final corrective pass separates its retained
 # recovery route from textual shortfall, so fresh canonical-id "r"
 # measurements are 84/0 (happy) and 109/3 (review).
+# Re-pinned for Unit 12 (Churro as its own stage), at the audit seat. THREE
+# things move here and they are different in kind, so they are separated.
+#
+# 1. `proof/skeleton_fixture.toml` gains eight `[[churro_page_response]]` rows
+#    and the `churro-native` scenario. `run_config_bindings` folds the whole
+#    fixture declaration into `config_digest`, so this alone moves BOTH pinned
+#    authorities even though only `happy` reads any of the new rows.
+# 2. `happy` now runs the real Churro page-capture boundary. Its four declared
+#    responses reproduce the previous synthetic join text EXACTLY, so no act's
+#    reading, span, alignment or dissent row moves; what moves is that each of
+#    the four page Testimonia gains a `native_capture` block, and each captured
+#    response is written content-addressed as its own retained blob. That is
+#    the file-count change: 84 -> 88, four raw responses, one per (page, chair).
+#    A capture path no pinned scenario runs is a page-witness mechanism a
+#    refactor can disable with every test still green, which is the Sol-S1
+#    failure; `happy` runs it now.
+# 3. `review` declares no Churro response, keeps the synthetic join, and writes
+#    no new file -- its count holds at 109. Its digest still moves, for reason 1
+#    alone.
+#
+# Also in the same seat and moving neither count: the page Testimonium writer now
+# validates its own `content_health` (the tally's read-back filters to
+# `kind == "testimonium"` and has never seen a page record), post-hoc repetition
+# detection inspects the parsed transcription rather than the raw bytes whose
+# closing `</output>` tag made every tail window differ, and a page-witness act
+# attachment resolves its outcome from the page attempt that produced the record
+# it names. None of the three alters a byte in either pinned scenario: happy and
+# review carry no repetition, no unparseable capture, and no failed page capture.
+#
+# Both values below were measured twice, in independent temporary roots, through
+# this module's own `orchestrate` and `semantic_snapshot_digest` helpers at
+# canonical run id "r", after the last byte of the candidate was in place.
+# Counts and exits: 88/0 (happy) and 109/3 (review).
+# Sol formal review binds each retained raw Churro response into its page
+# Testimonium envelope's `inputs`, so every consumer read verifies the bytes
+# against `raw_response_ref` rather than trusting a nested reference it never
+# opens. The same four files remain and every payload fact is unchanged; only
+# happy's four page-artifact envelopes and their downstream references move.
+# Re-measured through this module at canonical run id "r": 88/0. Review has no
+# native captures, so its 109 files and digest remain unchanged.
+#
 # Opus audit seat (10C, seat 3 of 4): the declared fixture gains one scenario,
 # `coverage-recovery`, and the single native observation that scenario needs.
 # Sonnet's recorded gap was that the coverage-triggered recovery origin had no
@@ -813,6 +854,7 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # counts and exits remain 86/0 and 111/3.  Both digests below reproduced twice
 # from independent canonical-id `r` runs after the correction.
 HAPPY_RUN_TREE_DIGEST = "2bdd0ef9f5d7ea63feaf2855793c0d9d2961700c125b3cb4efb108d4c8bc5de5"
+HAPPY_RUN_TREE_DIGEST = "553000b2fc5fb62dbbc11729d8d50654de121710c98be2c5c19294fec0c2f141"
 # Review only, once more in the same seat: a page witness invoked on every act
 # and unusable on all of them now records the serving moment that produced it
 # (`provenance_for(..., attempted=attempted_page)`), where the `reading` gate
@@ -839,8 +881,17 @@ HAPPY_RUN_TREE_DIGEST = "2bdd0ef9f5d7ea63feaf2855793c0d9d2961700c125b3cb4efb108d
 # Re-pinned at this merge (11 onto the composed pr tree): the pins bind the
 # merged tree alone; measured twice at two independent run roots through this
 # module's own helpers.
-HAPPY_RUN_TREE_DIGEST = "70c8c68ddf94fe3dfe24aacb1e0ec26c1d1a791efa31b45d71f8f91ce2597537"
-REVIEW_RUN_TREE_DIGEST = "06fc15d47afccbc8182d3031d8dfe8db76af06159d680861ae1667efd16e4211"
+# Re-pinned at this merge (12 onto the composed pr tree): the Churro fixture
+# seam now belongs only to the churro-adapter chair (attestator_3) - a
+# whole-page churro response attributed to the Chandra chair would be fixture
+# bytes wearing another model boundary's name, which 12's own review passes
+# refuse. The four capture-coverage cases survive across churro-native and the
+# new churro-truncation scenario. Happy gains attestator_3's two retained raw
+# responses (86 -> 88); a page record with a native capture binds exactly its
+# presented image AND its retained raw response as inputs. Measured twice at
+# two independent run roots through this module's own helpers.
+HAPPY_RUN_TREE_DIGEST = "29a47dd025ef6d988db80c25e1b10a6ce22feaee6d29c4be36ca3c90f85b22d1"
+REVIEW_RUN_TREE_DIGEST = "2969110fedaad3cbfa2e0a6fe99cc7dc4c113ce95ee6f63500aaf794fac6f469"
 
 
 def orchestrate(
@@ -4471,9 +4522,12 @@ def test_repeating_the_identical_command_leaves_every_byte_unchanged(tmp_path):
     assert orchestrate(root, "r", "happy").returncode == 0
     before = snapshot(root)
 
-    # The count includes two retained Chandra-response blobs; repeatability
-    # compares their bytes too.
-    assert len(before) == 86
+    # R0 adds two retained page Testimonia and two derived act attachments to
+    # the happy walking skeleton; repeatability still compares every byte.
+    # The count includes two retained Chandra-response blobs, and Unit 12 adds
+    # four more files: one content-addressed raw Churro response per
+    # (page, chair), retained before the XML is parsed at all.
+    assert len(before) == 88
     assert semantic_snapshot_digest(root) == HAPPY_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "happy").returncode == 0
     after = snapshot(root)

@@ -100,6 +100,9 @@ _PRIOR_READING_SCENARIOS = (
     "malformed-capabilities",
     # No declared recovery or hold may mask the geometry-triggered route.
     "coverage-recovery",
+    # Churro-native reaches the same Perlector seam and requires the same priors.
+    "churro-native",
+    "churro-truncation",
 )
 PRIOR_READINGS = tuple(
     {"scenario": scenario, "act_key": act_key, "text": text}
@@ -416,6 +419,86 @@ READING_FAILURES = (
 STOP_REASONS = ({"scenario": "engine-truncated-reading", "act_key": "a1", "stop_reason": "length"},)
 
 
+# Derive page-response bodies from the same act declarations to prevent drift.
+_PAGE_ACTS = {1: ("a1", "a2"), 2: ("a2",)}
+# `config/models.toml` remains the authority for page scope; tests reconcile it.
+_PAGE_CHAIRS = ("attestator_1", "attestator_3")
+
+
+def churro_xml(text: str) -> str:
+    """Frame fixture text as Churro XML; it is not a measured model response."""
+    if "<" in text or ">" in text or "&" in text:
+        raise ValueError("a declared Churro response text must not need XML escaping")
+    return f"<output>{text}</output>"
+
+
+def _joined_page_text(page_ordinal: int, chair: str) -> str:
+    """Keep the pinned happy page text derived from its act testimony."""
+    return "\n".join(TESTIMONY[act_key][chair] for act_key in _PAGE_ACTS[page_ordinal])
+
+
+# Page furniture makes assumed act-order attachment observably wrong.
+_CHURRO_NATIVE_HEADER = "[FOLIO RUBRIC 7 -- page furniture, belongs to no entry]"
+
+
+def _churro_native_page_text(page_ordinal: int, chair: str) -> str:
+    return f"{_CHURRO_NATIVE_HEADER}\n{_joined_page_text(page_ordinal, chair)}"
+
+
+# The Churro fixture seam belongs to the chair whose configured boundary IS
+# churro.v1: attestator_1 is the Chandra chair, and a whole-page churro
+# response attributed to it would be fixture bytes wearing another model
+# boundary's name (the exact misattribution the declared-response validation
+# refuses). Happy preserves attestator_3's pinned reading; churro-native
+# covers page furniture and retained parse failure; churro-truncation covers
+# a visibly cut response whose parsed text is kept. All four capture-coverage
+# cases that once rode two chairs survive on the one honest chair.
+_CHURRO_PAGE_CHAIRS = ("attestator_3",)
+CHURRO_PAGE_RESPONSES = tuple(
+    {
+        "scenario": "happy",
+        "page_ordinal": page_ordinal,
+        "chair": chair,
+        "raw_xml": churro_xml(_joined_page_text(page_ordinal, chair)),
+        "transport_stop_reason": "eos",
+    }
+    for page_ordinal in sorted(_PAGE_ACTS)
+    for chair in _CHURRO_PAGE_CHAIRS
+) + (
+    {
+        "scenario": "churro-native",
+        "page_ordinal": 1,
+        "chair": "attestator_3",
+        "raw_xml": churro_xml(_churro_native_page_text(1, "attestator_3")),
+        "transport_stop_reason": "eos",
+    },
+    {
+        "scenario": "churro-native",
+        "page_ordinal": 2,
+        "chair": "attestator_3",
+        # The missing closing tag is retained fixture evidence for parse failure.
+        "raw_xml": f"<output>{_churro_native_page_text(2, 'attestator_3')}",
+        "transport_stop_reason": "length",
+    },
+    {
+        "scenario": "churro-truncation",
+        "page_ordinal": 1,
+        "chair": "attestator_3",
+        "raw_xml": churro_xml(_churro_native_page_text(1, "attestator_3")),
+        "transport_stop_reason": "eos",
+    },
+    {
+        "scenario": "churro-truncation",
+        "page_ordinal": 2,
+        # Valid XML the transport cut at `length`: truncated is true and the
+        # parsed text is kept, with nothing completing or re-asking it.
+        "chair": "attestator_3",
+        "raw_xml": churro_xml(_churro_native_page_text(2, "attestator_3")),
+        "transport_stop_reason": "length",
+    },
+)
+
+
 def page_descriptor(ordinal):
     for page in ALL_PAGES:
         if page["ordinal"] == ordinal:
@@ -435,8 +518,9 @@ def render_all() -> dict[int, bytes]:
 
 
 def toml_string(value: str) -> str:
-    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
-    return f'"{escaped}"'
+    """Encode a TOML basic string without changing its Unicode text."""
+    # JSON escapes C0 controls; TOML additionally forbids a literal U+007F.
+    return json.dumps(value, ensure_ascii=False).replace("\x7f", "\\u007F")
 
 
 def toml_value(value) -> str:
@@ -671,6 +755,17 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
         if "attempt_ordinal" in row:
             lines.append(f"attempt_ordinal = {row['attempt_ordinal']}")
 
+    for row in CHURRO_PAGE_RESPONSES:
+        lines += [
+            "",
+            "[[churro_page_response]]",
+            f"scenario = {toml_string(row['scenario'])}",
+            f"page_ordinal = {row['page_ordinal']}",
+            f"chair = {toml_string(row['chair'])}",
+            f"raw_xml = {toml_string(row['raw_xml'])}",
+            f"transport_stop_reason = {toml_string(row['transport_stop_reason'])}",
+        ]
+
     lines += [
         "",
         "# The happy scenario establishes both acts. The review scenario recovers act",
@@ -709,6 +804,24 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
         "# scenario produces has exactly one possible origin.",
         "[[scenario]]",
         'name = "coverage-recovery"',
+        "recover_acts = []",
+        "hold_acts = []",
+        "",
+        "# churro-native declares neither a recovery nor a hold either. What it",
+        "# declares is four real-format Churro page responses, so the full-page",
+        "# capture boundary -- parse, visible truncation, and a retained",
+        "# unparseable response -- runs through the stage program rather than",
+        "# through unit tests alone.",
+        "[[scenario]]",
+        'name = "churro-native"',
+        "recover_acts = []",
+        "hold_acts = []",
+        "",
+        "# churro-truncation isolates the visibly cut, still-parseable response:",
+        "# the transport said `length`, the text is kept, truncated is true, and",
+        "# nothing completes or re-asks it (GOVERNANCE 7).",
+        "[[scenario]]",
+        'name = "churro-truncation"',
         "recover_acts = []",
         "hold_acts = []",
         "",
