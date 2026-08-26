@@ -53,7 +53,14 @@ class SpendSurface:
         assert policy.hard_lifetime_seconds is not None
         lines = [
             "Reviewed spend policy (read-only):",
-            f"- Policy record: {source} (SHA-256 {policy_digest})",
+            # `_recorded_text` here too: a path is the one value on this screen
+            # that reaches it as free text without passing through a receipt,
+            # and `cli._print` keeps newlines so a three-part refusal keeps its
+            # own. A policy path is a legal place for a newline on this
+            # platform, so without this the anchor line of the whole screen --
+            # the one that says which file every ceiling below came from --
+            # can carry a second line that nothing vouches for.
+            f"- Policy record: {_recorded_text(str(source))} (SHA-256 {policy_digest})",
             f"- Combined hourly ceiling: ${policy.max_hourly_usd} (policy SHA-256 {policy_digest})",
             "- Estimated metered-cost ceiling: "
             f"${policy.max_estimated_metered_cost_usd} (policy SHA-256 {policy_digest})",

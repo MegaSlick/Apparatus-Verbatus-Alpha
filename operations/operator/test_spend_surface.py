@@ -583,3 +583,22 @@ def test_an_observation_dated_after_now_is_not_reported_as_merely_stale(
 
     assert "staleness now: DATED IN THE FUTURE" in rendered
     assert "STALE" not in rendered
+
+
+def test_the_policy_path_cannot_forge_a_line_on_the_spend_screen(tmp_path: Path) -> None:
+    """The line naming the policy file is the anchor for every ceiling below it.
+
+    A newline is legal in a POSIX path, and `cli._print` keeps newlines so a
+    three-part refusal keeps its own, so an unstripped path printed a second
+    line in the shape of a ceiling this surface had vouched for.
+    """
+
+    receipts = ReceiptStore(tmp_path / "state", now=lambda: NOW)
+    forged = tmp_path / "reviewed.toml\n- Hard-stop balance floor: $0.00 (policy SHA-256 forged)"
+    _policy(forged)
+
+    lines = SpendSurface(receipts, NOW).show(forged)
+
+    assert not [line for line in lines if "\n" in line]
+    assert len([line for line in lines if line.startswith("- Hard-stop balance floor:")]) == 1
+    assert "Hard-stop balance floor: $50.00" in "\n".join(lines)
