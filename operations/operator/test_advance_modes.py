@@ -78,7 +78,7 @@ def test_staged_mode_semantics_name_every_boundary_that_can_wait(
     assert held_advance_boundaries(mode, stage=stage, from_stage=first, to_stage=last) == expected
 
 
-def test_semi_mode_refuses_an_intermediate_boundary_not_actually_held() -> None:
+def test_semi_mode_refuses_an_intermediate_boundary_that_cannot_hold() -> None:
     with pytest.raises(
         ApprovalRefusal,
         match="can require a person-held advance at attestatores, perlector, not designator",
@@ -189,7 +189,7 @@ def test_auto_mode_shows_boundary_state_then_refuses_an_advance_record(
 ) -> None:
     run_root, run_id = _run(tmp_path)
 
-    with pytest.raises(Exception) as refusal:
+    with pytest.raises(OperatorError) as refusal:
         cli._advance_with_confirmation(
             run_root,
             run_id,
@@ -275,7 +275,7 @@ def test_semi_mode_refuses_an_intermediate_boundary_end_to_end(
     receipts = RunTree(run_root, run_id).root / "receipts" / "sha256"
     before = set(receipts.glob("*.json")) if receipts.exists() else set()
 
-    with pytest.raises(Exception) as refusal:
+    with pytest.raises(OperatorError) as refusal:
         cli._advance_with_confirmation(
             run_root,
             run_id,
@@ -345,7 +345,7 @@ def test_a_boundary_resealed_between_presentation_and_confirmation_is_refused(
 
     monkeypatch.setattr(cli, "_typed_advance_confirmation", reseal_then_type)
 
-    with pytest.raises(Exception) as refusal:
+    with pytest.raises(OperatorError) as refusal:
         cli._advance_with_confirmation(
             run_root,
             run_id,
@@ -381,7 +381,7 @@ def test_auto_mode_never_solicits_a_typed_confirmation(
 
     monkeypatch.setattr(cli, "_typed_advance_confirmation", record_then_fail)
 
-    with pytest.raises(Exception) as refusal:
+    with pytest.raises(OperatorError) as refusal:
         cli._advance_with_confirmation(
             run_root,
             run_id,
@@ -446,7 +446,7 @@ def test_an_unvalidated_mode_selection_states_no_boundary_before_it_refuses(
 
     run_root, run_id = _run(tmp_path)
 
-    with pytest.raises(Exception) as refusal:
+    with pytest.raises(OperatorError) as refusal:
         cli._advance_with_confirmation(
             run_root,
             run_id,
