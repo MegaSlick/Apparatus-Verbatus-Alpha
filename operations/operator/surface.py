@@ -1140,7 +1140,17 @@ class OperatorSurface:
         # is not a receipt and was invisible to this verb. A state holding an
         # armed lease has never been empty, whatever the descriptor says.
         open_leases, lease_unreadable = self._open_leases()
-        if (descriptor is None or not descriptor["actions"]) and not open_leases:
+        # `lease_unreadable` counts as evidence too, and it is the half that
+        # matters most: an unreadable lease is where a pod is likeliest to be
+        # billing unwatched, so a state holding one is not empty either. Without
+        # it in this test, a descriptor with no actions and a corrupt lease
+        # reported "there are no saved operator records" and dropped the one
+        # record that said otherwise (GOVERNANCE 2).
+        if (
+            (descriptor is None or not descriptor["actions"])
+            and not open_leases
+            and not lease_unreadable
+        ):
             raise OperatorError(ErrorCode.STATUS_EMPTY)
         lines = ["Saved operator records (read-only; no new provider check was made):"]
         unreadable: list[str] = list(lease_unreadable)

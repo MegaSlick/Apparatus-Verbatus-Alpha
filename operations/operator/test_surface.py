@@ -559,6 +559,30 @@ def test_status_shows_the_open_lease_the_refusal_sends_the_operator_to_read(
     assert any("may still be billing" in line for line in lines)
 
 
+def test_status_never_calls_a_state_holding_an_unreadable_lease_empty(tmp_path: Path) -> None:
+    """The lease that cannot be read is the one status must not swallow.
+
+    `status` counts open leases as records so an armed lease is never invisible,
+    but an unreadable lease is neither open nor closed -- it is the case where a
+    pod is likeliest to be billing unwatched, and `_open_leases` returns it as a
+    reason rather than as a lease. Left out of the emptiness test, a state whose
+    descriptor holds no actions reported "there are no saved operator records"
+    and dropped the corrupt file entirely, which is the record that exists and
+    cannot be read by the person it is for (GOVERNANCE 2).
+    """
+
+    surface = _surface(tmp_path)
+    leases = surface.state_root / "leases"
+    leases.mkdir(parents=True)
+    (leases / "corrupt.json").write_text("{not json", encoding="utf-8")
+
+    with pytest.raises(OperatorError) as unreadable:
+        surface.status()
+
+    assert unreadable.value.code is ErrorCode.STATUS_UNREADABLE
+    assert "corrupt.json" in (unreadable.value.detail or "")
+
+
 def test_a_verified_close_releases_the_launch_the_open_lease_refused(
     tmp_path: Path,
 ) -> None:
