@@ -345,12 +345,23 @@ def build_cross_capture_dissent(**record: Any) -> dict[str, Any]:
     """Validate and seal the pair-complete Unit 19 evidence record."""
     candidate = dict(record)
     candidate.pop("self_hash", None)
-    _refuse_scalar_claim_keys(candidate)
-    # The fragment sweep above already subsumes these exact names at every
-    # depth.  This is the shared screen every producer of the §7 vocabulary
-    # runs, kept so that narrowing the fragment match can never silently retire
-    # the preference screen with it.
-    refuse_preference(candidate, what="cross-capture dissent")
+    try:
+        _refuse_scalar_claim_keys(candidate)
+        # The fragment sweep above already subsumes these exact names at every
+        # depth.  This is the shared screen every producer of the §7 vocabulary
+        # runs, kept so that narrowing the fragment match can never silently retire
+        # the preference screen with it.
+        refuse_preference(candidate, what="cross-capture dissent")
+    except RecursionError as error:
+        # `model_provenance` is accepted as any object at all (module docstring
+        # above), so an unvalidated caller can nest it past Python's recursion
+        # limit before either screen's own shape checks are reached. A record
+        # this machine cannot walk is refused, never crashed on -- the same
+        # boundary `self_hash` already holds for this record's own digest.
+        raise SchemaRefusal(
+            "cross-capture dissent: the record nests too deeply for this machine to walk, so "
+            "its preference and scalar-claim screens were never computable"
+        ) from error
     supplied_caveat = candidate.pop("caveat", CAVEAT)
     if supplied_caveat != CAVEAT or set(candidate) != _FIELDS - {"self_hash", "caveat"}:
         raise SchemaRefusal("cross-capture dissent: record is outside its closed schema")

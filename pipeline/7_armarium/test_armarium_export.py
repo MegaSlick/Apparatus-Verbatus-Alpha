@@ -2307,6 +2307,25 @@ def test_a_salvage_shaped_record_cannot_enter_the_acts_namespace(field, tmp_path
         )
 
 
+def test_a_deeply_nested_salvage_item_becomes_a_refusal_not_a_recursion_crash(tmp_path):
+    """`_reject_salvage_act_namespace` walks a harvested salvage item whole, before
+    any of its own field checks (`_validate_salvage_items`), so unvalidated
+    provenance can nest past Python's recursion limit. That must become a
+    `SchemaRefusal`, never an uncaught `RecursionError` that would crash the
+    whole export and take every other act down with it."""
+    nested: object = "leaf"
+    for _ in range(5000):
+        nested = {"nested": nested}
+    item = {**_salvage_item("scrap"), "provenance": {"collection": "tier", "detail": nested}}
+    base = _projection()
+    with pytest.raises(SchemaRefusal, match="nests too deeply"):
+        build_armarium_bundle(
+            replace(base, salvage_items=(item,)),
+            _formats(embed_pixels=False),
+            _source_bytes,
+        )
+
+
 def test_bytes_that_are_not_an_archive_are_refused_rather_than_raising_out_of_the_verifier(
     tmp_path,
 ):

@@ -159,6 +159,18 @@ def test_no_scalar_quality_claim_can_be_sealed_anywhere_in_the_record(carrier):
         _record(**carrier)
 
 
+def test_a_deeply_nested_model_provenance_becomes_a_refusal_not_a_recursion_crash():
+    """model_provenance is accepted as any object at all (module docstring), so
+    a witness response nested past Python's recursion limit must become a
+    `SchemaRefusal`, never an uncaught `RecursionError` that would crash the
+    whole stage process and take every other logical act down with it."""
+    nested: Any = "leaf"
+    for _ in range(5000):
+        nested = {"chair": "perlector", "nested": nested}
+    with pytest.raises(SchemaRefusal, match="nests too deeply"):
+        _record(model_provenance=nested)
+
+
 def test_no_capture_can_be_named_preferred_inside_the_record():
     """§7 shape 1, screened by the register's own shared preference vocabulary."""
     for field in ("preferred", "best_capture", "winner_view", "primary_observation"):

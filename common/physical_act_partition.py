@@ -62,7 +62,18 @@ def source_ledger_from_run(run: dict[str, Any]) -> set[str]:
 
 
 def _refuse_preference(value: Any) -> None:
-    refuse_preference(value, what="physical-act partition")
+    try:
+        refuse_preference(value, what="physical-act partition")
+    except RecursionError as error:
+        # Every call site below runs this screen on a caller-supplied structure
+        # before its own shape checks, so an unvalidated proposal or partition
+        # can nest past Python's recursion limit. A record this machine cannot
+        # walk is refused, never crashed on -- the same boundary `self_hash`
+        # already holds for the digest this module seals.
+        raise SchemaRefusal(
+            "physical-act partition: the record nests too deeply for this machine to walk, "
+            "so its preference screen was never computable"
+        ) from error
 
 
 def _dedupe_findings(findings: list[dict[str, str]]) -> list[dict[str, str]]:

@@ -1428,6 +1428,22 @@ def _reject_act_salvage_namespace(act: dict[str, Any]) -> None:
 
 def _reject_salvage_act_namespace(value: Any, *, subject: str) -> None:
     """The salvage firewall applies to nested provenance as well as record headers."""
+    try:
+        _reject_salvage_act_namespace_walk(value, subject=subject)
+    except RecursionError as error:
+        # Both call sites (`_validate_salvage_items`, `_validate_salvage_region`)
+        # run this screen on harvested, caller-supplied content before any of
+        # its own shape checks, so an unvalidated salvage item can nest past
+        # Python's recursion limit. A record this machine cannot walk is
+        # refused, never crashed on -- the same boundary `self_hash` already
+        # holds for the digests this package seals.
+        raise SchemaRefusal(
+            f"a salvage-tier {subject} nests too deeply for this machine to walk, so its "
+            "acts-namespace screen was never computable"
+        ) from error
+
+
+def _reject_salvage_act_namespace_walk(value: Any, *, subject: str) -> None:
     if isinstance(value, dict):
         forbidden = sorted(set(value) & _SALVAGE_RESERVED_FIELDS)
         if forbidden:
@@ -1436,10 +1452,10 @@ def _reject_salvage_act_namespace(value: Any, *, subject: str) -> None:
                 f"reserved field(s) {forbidden}"
             )
         for item in value.values():
-            _reject_salvage_act_namespace(item, subject=subject)
+            _reject_salvage_act_namespace_walk(item, subject=subject)
     elif isinstance(value, (list, tuple)):
         for item in value:
-            _reject_salvage_act_namespace(item, subject=subject)
+            _reject_salvage_act_namespace_walk(item, subject=subject)
 
 
 def _validate_cited_region(region: object, *, subject: str) -> None:

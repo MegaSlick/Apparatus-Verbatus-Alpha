@@ -251,6 +251,27 @@ def _autopsia(
     )
 
 
+def test_a_deeply_nested_autopsia_view_becomes_a_refusal_not_a_recursion_crash():
+    """`_reject_preference` walks `views` before `_view` proves its shape
+    (`common/cross_capture_autopsia.py`), so an unvalidated caller can nest it
+    past Python's recursion limit. That must become a `SchemaRefusal`, never an
+    uncaught `RecursionError` that would crash the whole stage process and take
+    every other logical act in the run down with it."""
+    nested: Any = "leaf"
+    for _ in range(5000):
+        nested = {"views": nested}
+    with pytest.raises(SchemaRefusal, match="nests too deeply"):
+        build_autopsia(
+            logical_act_id="pac_0123456789abcdef",
+            partition_ref={
+                "relative_path": "4_perlector/blobs/physical-act-partition.json",
+                "sha256": digest_bytes(b"partition"),
+            },
+            required_capture_sha256s=[digest_bytes(b"capture")],
+            views=[nested],
+        )
+
+
 class _JointReader:
     def __init__(self, established_text: str):
         self.established_text = established_text

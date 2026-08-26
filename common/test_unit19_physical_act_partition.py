@@ -219,6 +219,35 @@ def test_textual_evidence_and_preference_are_refused_at_correspondence_boundary(
         )
 
 
+def test_a_deeply_nested_local_act_becomes_a_refusal_not_a_recursion_crash():
+    """`_refuse_preference` walks `local_acts`/`components` before `_act` proves
+    their shape (module docstring), so an unvalidated caller can nest either
+    past Python's recursion limit. That must become a `SchemaRefusal`, never an
+    uncaught `RecursionError` that would crash the whole stage process."""
+    nested: object = "leaf"
+    for _ in range(5000):
+        nested = {"acts": nested}
+    with pytest.raises(SchemaRefusal, match="nests too deeply"):
+        build_physical_act_partition(
+            register=empty_register(),
+            register_digest=register_digest(empty_register()),
+            proposal_seal_ref={"relative_path": "x", "sha256": "0" * 64},
+            local_acts=[nested],
+            capture_alignments=[],
+            source_ledger=set(),
+        )
+    nested = "leaf"
+    for _ in range(5000):
+        nested = {"components": nested}
+    with pytest.raises(SchemaRefusal, match="nests too deeply"):
+        build_correspondence_proposal(
+            register=empty_register(),
+            register_digest=register_digest(empty_register()),
+            discovery_run_id="d",
+            components=[nested],
+        )
+
+
 @pytest.mark.parametrize(
     ("mutation", "message"),
     [
