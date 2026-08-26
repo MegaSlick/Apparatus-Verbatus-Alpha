@@ -2419,9 +2419,8 @@ def test_real_catalogue_resolves_every_real_chair_without_inventing_a_yolo_vllm_
     real_models = load_models_toml(root / "config/models-real.toml")
     real_catalogue = load_serving_recipes(root / "config/serving_recipes_real.toml")
 
-    # Keep the existing fixture coverage assertion on its unmodified default
-    # catalogue, then prove the flag-selected catalogue has the same complete
-    # one-chair/one-tier resolution property for the separate real roster.
+    # Each opt-in catalogue must reconcile only with its paired roster; real
+    # coverage cannot weaken or silently replace the fixture default.
     verify_recipes_cover_chairs(fixture_models, fixture_catalogue, tiers)
     verify_recipes_cover_chairs(real_models, real_catalogue, tiers)
     configured = [

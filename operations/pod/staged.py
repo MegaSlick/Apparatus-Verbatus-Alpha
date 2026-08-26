@@ -23,22 +23,17 @@ record the moment a pod exists, and then either a cost record or a named close
 failure. A close that raised is the case where a pod is most likely to be
 *still* billing, so it is the last case that may vanish behind an exception.
 
-**Create and close, not adoption, and that is a decision rather than an
-omission.** Recovering a pod a crashed stage left running goes through the
-lease-backed controllers and ``PodRuntime.adopt``, which is already gated by the
-same typed confirmation; wrapping it here would add a second paid seam with no
-caller and an unsettled question -- whether re-adopting the machine your own
-grant created spends that grant again -- decided in the abstract rather than
-against a real recovery.  What a recovering operator actually needs from this
-layer is the binding the lease cannot supply: which collection stage and which
-grant a pod id belonged to.  That is on the volume from the moment the pod
-exists, so an adoption performed elsewhere can still be reconciled to a stage.
+Adoption stays on the lease-backed ``PodRuntime.adopt`` path, which has its own
+typed confirmation gate. This layer supplies the binding that path cannot:
+which collection stage and grant a pod id belonged to. The binding is durable
+from the moment the pod exists, so recovery can reconcile an adopted pod
+without treating adoption as another stage boot.
 
 The schedule starts with volume ingest because transfer needs no pod or GPU
-hours.  GPU stages are closed in ``run``'s ``finally`` block: retaining a pod
-between stages is not an option in this API.  A real lifecycle remains gated by
-GOVERNANCE 8; the in-memory fake is the only provider used by this repository's
-tests.
+hours. ``run`` attempts the close even when stage work raises, and retaining a
+pod between stages is not an option in this API. A real lifecycle remains gated
+by GOVERNANCE 8; the in-memory fake is the only provider used by this
+repository's tests.
 """
 
 from __future__ import annotations
@@ -195,7 +190,7 @@ def render_boot_schedule(collection_id: str) -> str:
 
 
 def print_boot_schedule(collection_id: str) -> None:
-    """Print rather than silently retain the schedule an operator must see."""
+    """Expose the complete schedule before per-stage authorization is solicited."""
 
     print(render_boot_schedule(collection_id))
 
@@ -478,20 +473,23 @@ class PerStagePodLifecycle:
                     f"{cost.close.state.value} and its cost evidence was recorded"
                 ) from error
         if not result.green or record is None:
-            close_detail = ""
-            if record is not None:
-                try:
-                    close_detail = "; " + self._record_launcher_close(
-                        authorization, record.pod_id, result
-                    )
-                except BaseException as error:
-                    raise StageBootRefusal(
-                        f"stage {authorization.stage!r} launcher refused with "
-                        f"{result.state.value} after identifying pod {record.pod_id!r}, but its "
-                        f"close evidence could not be persisted: {error}; the write-ahead cost "
-                        "intent remains unknown and the pod may still bill; do not retry until "
-                        "provider state and the durable stage records are reconciled"
-                    ) from error
+            if record is None:
+                raise StageBootRefusal(
+                    f"stage {authorization.stage!r} did not boot a guarded pod: "
+                    f"{result.state.value}; {result.detail}"
+                )
+            try:
+                close_detail = "; " + self._record_launcher_close(
+                    authorization, record.pod_id, result
+                )
+            except BaseException as error:
+                raise StageBootRefusal(
+                    f"stage {authorization.stage!r} launcher refused with "
+                    f"{result.state.value} after identifying pod {record.pod_id!r}, but its "
+                    f"close evidence could not be persisted: {error}; the write-ahead cost "
+                    "intent remains unknown and the pod may still bill; do not retry until "
+                    "provider state and the durable stage records are reconciled"
+                ) from error
             raise StageBootRefusal(
                 f"stage {authorization.stage!r} did not boot a guarded pod: {result.state.value}; "
                 f"{result.detail}{close_detail}"

@@ -225,12 +225,7 @@ def test_non_green_billing_close_is_not_reported_as_a_completed_stage(tmp_path: 
 
 
 def test_lifecycle_refuses_construction_without_a_durable_cost_store(tmp_path: Path) -> None:
-    """A spend with no durable record is exactly what GOVERNANCE 2 forbids.
-
-    ``cost_store`` used to default to ``None``, so a boot that incurred a real
-    charge could leave its only cost record in an in-memory list that a crash
-    or an ordinary process exit throws away.  Construction must name a store.
-    """
+    """A required store keeps cost evidence from dying with the process."""
 
     _, _, runtime, _ = lifecycle(tmp_path)
     with pytest.raises(TypeError):
@@ -269,18 +264,7 @@ def boots(tmp_path: Path) -> list[dict[str, object]]:
 def test_a_grant_spent_before_a_restart_cannot_boot_a_second_pod_after_one(
     tmp_path: Path,
 ) -> None:
-    """The one-boot-per-grant rule outlives the process that made it.
-
-    Held in memory, this rule was true only of one `PerStagePodLifecycle`
-    object: a crash mid-schedule, an operator re-running the collection, or
-    simply a second lifecycle built over the same volume would each let one
-    recorded GOVERNANCE 8 grant stand behind two pods. The typed confirmation
-    underneath still gates the money either way
-    (`test_a_confirmation_spent_before_a_restart_authorizes_nothing_after_one`),
-    so what a durable claim protects is the *record* -- and a per-stage
-    authorization trail that cannot say how many pods a grant bought is not the
-    thing this unit exists to produce.
-    """
+    """The volume, not one lifecycle process, enforces one boot per grant."""
 
     clock, provider, _, subject = lifecycle(tmp_path)
     grant = StageAuthorization("parish-17", "designator", "grant-designator")

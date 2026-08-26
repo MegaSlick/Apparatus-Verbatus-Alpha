@@ -1244,16 +1244,12 @@ class ServingManager:
 def _launchable(
     profile: "ServingProfile | FixtureProfile | UnsupportedProfile", identity: ChairIdentity
 ) -> ServingProfile:
-    """Refuse a non-launchable profile by its real cause before anything else.
+    """Refuse non-launchable rows before snapshot and runtime checks.
 
-    The walking skeleton's chairs are answered by
-    ``common.stage.fixture_serving_details`` — declared values that say
-    ``fixture://`` out loud — and nothing in this package substitutes for that.
-    Refusing here rather than letting an unsatisfiable package pin do it keeps
-    the operator from chasing a runtime-version complaint that is true about the
-    wrong thing, and keeps the refusal from being an accident of one field's
-    value: edit that pin to match and the manager would try to serve a directory
-    of fixture bytes to a real engine.
+    Fixture chairs are answered from declared ``fixture://`` details, while an
+    unsupported row names a missing native engine. Deferring either refusal
+    would replace its configuration cause with a misleading pin or engine
+    failure.
     """
 
     if isinstance(profile, FixtureProfile):

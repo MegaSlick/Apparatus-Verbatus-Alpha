@@ -22,10 +22,11 @@ weights, or bumping its revision, leaves this row byte-identical — so the row
 digest alone cannot notice it, and ``manager._launchable`` refuses the
 mismatch at launch instead.
 
-A profile declares its ``kind``.  ``vllm`` is a complete flag profile for a
-chair that really is launched; ``fixture`` is the offline walking skeleton's
-stand-in and carries no flags at all.  ``manager._launchable`` refuses a
-fixture row by that name, and says there why that matters.
+A profile declares its ``kind``. ``vllm`` is a complete launch shape;
+``fixture`` is the offline walking skeleton's stand-in; and ``unsupported``
+keeps a configured real chair covered without inventing launch flags for an
+engine this package does not implement. The latter two carry no vLLM flags and
+must refuse by their actual cause before runtime checks.
 """
 
 from __future__ import annotations
@@ -424,7 +425,19 @@ def _parse_profile(raw: Any) -> "ServingProfile | FixtureProfile | UnsupportedPr
     if kind == "fixture":
         return _parse_fixture_profile(raw)
     if kind == "unsupported":
-        return _parse_unsupported_profile(raw)
+        unknown = sorted(set(raw) - _UNSUPPORTED_FIELDS)
+        missing = sorted(_UNSUPPORTED_FIELDS - set(raw))
+        if unknown or missing:
+            raise ServingConfigurationError(
+                f"unsupported serving profile has unknown field(s) {unknown} or missing field(s) "
+                f"{missing}; an unsupported row carries identity and its refusal reason only"
+            )
+        return UnsupportedProfile(
+            recipe=_text(raw["recipe"], "recipe"),
+            chair=_text(raw["chair"], "chair"),
+            tier=_text(raw["tier"], "tier"),
+            reason=_text(raw["reason"], "reason"),
+        )
     unknown = sorted(
         set(raw) - (_PROFILE_FIELDS | {_PREFLIGHT_DIGEST_FIELD, _PREFLIGHT_IDENTITY_FIELD})
     )
@@ -563,24 +576,6 @@ def _parse_fixture_profile(raw: Mapping[str, Any]) -> FixtureProfile:
     )
 
 
-def _parse_unsupported_profile(raw: Mapping[str, Any]) -> UnsupportedProfile:
-    """Keep an unimplemented real serving path explicit and non-launchable."""
-
-    unknown = sorted(set(raw) - _UNSUPPORTED_FIELDS)
-    missing = sorted(_UNSUPPORTED_FIELDS - set(raw))
-    if unknown or missing:
-        raise ServingConfigurationError(
-            f"unsupported serving profile has unknown field(s) {unknown} or missing field(s) "
-            f"{missing}; an unsupported row carries identity and its refusal reason only"
-        )
-    return UnsupportedProfile(
-        recipe=_text(raw["recipe"], "recipe"),
-        chair=_text(raw["chair"], "chair"),
-        tier=_text(raw["tier"], "tier"),
-        reason=_text(raw["reason"], "reason"),
-    )
-
-
 def _validate_catalogue(
     profiles: tuple["ServingProfile | FixtureProfile | UnsupportedProfile", ...],
 ) -> None:
@@ -590,8 +585,8 @@ def _validate_catalogue(
     endpoint_chairs: dict[tuple[str, int], set[str]] = {}
     served_chairs: dict[str, set[str]] = {}
     for profile in profiles:
-        # A fixture row owns no endpoint and no API alias, so it can collide
-        # with nothing; only launchable profiles are checked for conflicts.
+        # Fixture and unsupported rows own neither endpoint nor API alias;
+        # applying launch-only collision rules would invent serving claims.
         if not isinstance(profile, ServingProfile):
             continue
         endpoint_chairs.setdefault((profile.host, profile.port), set()).add(profile.chair)
