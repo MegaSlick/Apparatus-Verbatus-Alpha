@@ -410,6 +410,14 @@ def test_an_upstream_finding_this_unit_does_not_recognise_is_carried_not_curated
     }
 
 
+@pytest.mark.parametrize("code", (" ", "\n"))
+def test_an_upstream_finding_without_a_printable_name_is_refused_not_dropped(code):
+    dissent = _record(pairs=[_pair(["view:a", "view:b"], finding_codes=[code])])
+
+    with pytest.raises(SchemaRefusal, match="upstream pair finding"):
+        build_reshoot_delta_record(dissent)
+
+
 def test_the_condition_vocabulary_still_matches_unit_19s_own_failure_names():
     """Reconciliation in place of the constraint that was removed.
 
@@ -438,3 +446,29 @@ def test_the_denominator_caveat_binds_and_cannot_be_reworded_or_dropped():
     dropped = {key: value for key, value in record.items() if key != "denominator_caveat"}
     with pytest.raises(SchemaRefusal, match="closed shape"):
         validate_reshoot_delta_record(dropped, dissent)
+
+
+@pytest.mark.parametrize(
+    ("path", "value", "cause"),
+    (
+        (("pair_records",), None, "pair_records is not a list"),
+        (("review_flags",), None, "review_flags is not a list"),
+        (("pair_records", 0, "pair_id"), [], "pair rows are malformed"),
+        (("pair_records", 0, "comparison_state"), [], "whether it was compared"),
+        (("pair_records", 0, "delta_loci"), None, "delta_loci is not a list"),
+        (("pair_records", 0, "uncompared_loci"), None, "uncompared_loci is not a list"),
+        (("review_flags", 0, "pair_id"), [], "review flag is malformed"),
+    ),
+)
+def test_malformed_collections_and_unhashable_values_are_named_refusals(path, value, cause):
+    """A self-hashed malformed derivative is refused, never leaked as a Python error."""
+    dissent = _record()
+    record = build_reshoot_delta_record(dissent)
+    target = record
+    for segment in path[:-1]:
+        target = target[segment]
+    target[path[-1]] = value
+    record["self_hash"] = self_hash(record)
+
+    with pytest.raises(SchemaRefusal, match=cause):
+        validate_reshoot_delta_record(record, dissent)

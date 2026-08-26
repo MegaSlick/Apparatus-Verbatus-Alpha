@@ -169,7 +169,9 @@ def build_reshoot_delta_record(dissent_record: Any) -> dict[str, Any]:
     pair_records: list[dict[str, Any]] = []
     review_flags: list[dict[str, Any]] = []
     for pair in seam["pairs"]:
-        codes = sorted(set(pair["finding_codes"]))
+        codes = sorted(
+            {_named_code(code, "an upstream pair finding") for code in pair["finding_codes"]}
+        )
         compared = _conditions_hold(pair)
         deltas, uncompared = _locus_rows(dissent, pair["view_ids"]) if compared else ([], [])
         pair_records.append(
@@ -211,7 +213,7 @@ def build_reshoot_delta_record(dissent_record: Any) -> dict[str, Any]:
 
 def _named_code(value: Any, what: str) -> str:
     """A finding code is carried, not curated -- but it must be a name."""
-    if not isinstance(value, str) or not value or not value.isprintable():
+    if not isinstance(value, str) or not value.strip() or not value.isprintable():
         raise SchemaRefusal(f"reshoot delta record: {what} is not a printable finding name")
     return value
 
@@ -230,12 +232,26 @@ def validate_reshoot_delta_record(record: Any, dissent_record: Any) -> dict[str,
         )
     if not isinstance(record["dissent_digest"], str) or len(record["dissent_digest"]) != 64:
         raise SchemaRefusal("reshoot delta record: dissent digest is malformed")
+    if not isinstance(record["pair_records"], list):
+        raise SchemaRefusal(
+            "reshoot delta record: pair_records is not a list; the pair denominator cannot "
+            "be checked"
+        )
+    if not isinstance(record["review_flags"], list):
+        raise SchemaRefusal(
+            "reshoot delta record: review_flags is not a list; named findings cannot be checked"
+        )
     pair_ids: set[str] = set()
     for pair in record["pair_records"]:
-        if not isinstance(pair, dict) or set(pair) != _PAIR_FIELDS or pair["pair_id"] in pair_ids:
+        if not isinstance(pair, dict) or set(pair) != _PAIR_FIELDS:
+            raise SchemaRefusal("reshoot delta record: a pair row is outside its closed shape")
+        if not isinstance(pair["pair_id"], str) or pair["pair_id"] in pair_ids:
             raise SchemaRefusal("reshoot delta record: pair rows are malformed or repeated")
         pair_ids.add(pair["pair_id"])
-        if pair["comparison_state"] not in {COMPARED, NOT_COMPARED}:
+        if not isinstance(pair["comparison_state"], str) or pair["comparison_state"] not in {
+            COMPARED,
+            NOT_COMPARED,
+        }:
             raise SchemaRefusal(
                 "reshoot delta record: a pair does not say whether it was compared; an empty "
                 "delta list may not stand in for a pair that was never eligible for one"
@@ -244,24 +260,33 @@ def validate_reshoot_delta_record(record: Any, dissent_record: Any) -> dict[str,
             raise SchemaRefusal("reshoot delta record: pair findings are not a list")
         for code in pair["finding_codes"]:
             _named_code(code, "a pair finding")
+        if not isinstance(pair["delta_loci"], list):
+            raise SchemaRefusal("reshoot delta record: delta_loci is not a list")
         for delta in pair["delta_loci"]:
             if not isinstance(delta, dict) or set(delta) != _DELTA_FIELDS:
                 raise SchemaRefusal("reshoot delta record: delta is not a structural locus anchor")
+        if not isinstance(pair["uncompared_loci"], list):
+            raise SchemaRefusal("reshoot delta record: uncompared_loci is not a list")
         for row in pair["uncompared_loci"]:
             if (
                 not isinstance(row, dict)
                 or set(row) != _UNCOMPARED_FIELDS
+                or not isinstance(row["reason_codes"], list)
                 or not row["reason_codes"]
             ):
                 raise SchemaRefusal(
                     "reshoot delta record: an uncompared locus is not a structural anchor with "
                     "at least one named reason"
                 )
+            for code in row["reason_codes"]:
+                _named_code(code, "an uncompared-locus reason")
     for flag in record["review_flags"]:
         if (
             not isinstance(flag, dict)
             or set(flag) != _FLAG_FIELDS
+            or not isinstance(flag["pair_id"], str)
             or flag["pair_id"] not in pair_ids
+            or not isinstance(flag["locus_ids"], list)
         ):
             raise SchemaRefusal("reshoot delta record: review flag is malformed")
         _named_code(flag["code"], "a review flag code")
