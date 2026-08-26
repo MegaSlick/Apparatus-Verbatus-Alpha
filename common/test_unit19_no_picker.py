@@ -139,12 +139,12 @@ def test_the_component_designation_cannot_be_bent_into_a_ranking():
     the seed the physical act is named after.
     """
     ids = sorted([act_id(PG1, "proposal", {"x": 0, "y": y, "w": 10, "h": 10}) for y in (0, 20)])
-    assert physical_act_component_designation(PAGE, ids) == physical_act_component_designation(
-        PAGE, ids
-    )
-    for bad in (list(reversed(ids)), [*ids, ids[0]], []):
+    assert isinstance(physical_act_component_designation(PAGE, ids), str)
+    for bad in (list(reversed(ids)), [*ids, ids[0]], [], ["act_not-a-derived-identity"]):
         with pytest.raises(IdentityRefusal, match="sorted unique act ids"):
             physical_act_component_designation(PAGE, bad)
+    with pytest.raises(IdentityRefusal, match="physical page id"):
+        physical_act_component_designation("ppg_not-a-derived-identity", ids)
 
 
 def _adversarial_case(tmp_path):

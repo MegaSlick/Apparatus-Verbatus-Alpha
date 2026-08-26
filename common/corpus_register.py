@@ -331,7 +331,10 @@ def resolve_proposal(data: bytes, act_id: str) -> dict[str, str]:
     4) and stops resolving anything (GOVERNANCE 2). A proposal whose every
     correspondence has been retracted is a named finding, distinct from one that
     never had a correspondence at all, because the two ask a caller for
-    different things.
+    different things. A resolved row retains both the rendered page declared by
+    the correspondence and the physical page declared by its physical act, so a
+    consumer can prove both sides of the local act's lineage instead of dropping
+    the former during lookup.
     """
     reading = _read(data)[1]
     active = reading.correspondence_active.get(act_id, set())
@@ -346,6 +349,7 @@ def resolve_proposal(data: bytes, act_id: str) -> dict[str, str]:
         return {"outcome": "finding", "code": "ambiguous-physical-act", "act_id": act_id}
     # Exactly one, proven above rather than chosen.
     (physical_act,) = active
+    correspondence = reading.correspondence_records[f"{act_id}->{physical_act}"]
     # The physical page comes from the register's own declaration, never from a
     # caller's alignment table: a physical act is minted on exactly one physical
     # page (validation enforces it), so every match agrees and reading it here is
@@ -353,6 +357,7 @@ def resolve_proposal(data: bytes, act_id: str) -> dict[str, str]:
     return {
         "outcome": "resolved",
         "act_id": act_id,
+        "page_id": correspondence["page_id"],
         "physical_act_id": physical_act,
         "physical_page_id": reading.physical_act_pages[physical_act],
     }
