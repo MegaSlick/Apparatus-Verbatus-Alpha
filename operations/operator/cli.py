@@ -551,11 +551,34 @@ def _advance_with_confirmation(
         # checked: printed ahead of it, a `--mode semi` with no range announced
         # "it waits at None" and only then refused, which is the console
         # stating a boundary claim it had not established.
-        _print("Current boundary state (pipeline order; not a recommendation):")
+        boundary_states: list[dict[str, object] | None] = []
         for candidate in STAGES:
             try:
                 candidate_summary = boundary_summary(tree, candidate)
             except UnsealedBoundaryRefusal:
+                boundary_states.append(None)
+            else:
+                boundary_states.append(candidate_summary)
+        for ordinal, state in enumerate(boundary_states):
+            if state is not None:
+                continue
+            later = next(
+                (
+                    STAGES[index]
+                    for index in range(ordinal + 1, len(STAGES))
+                    if boundary_states[index] is not None
+                ),
+                None,
+            )
+            if later is not None:
+                raise ApprovalRefusal(
+                    f"advance refuses the stored boundary chain: {STAGES[ordinal]} has no "
+                    f"completion seal although later stage {later} is sealed; earlier evidence "
+                    "is missing, not merely unfinished"
+                )
+        _print("Current boundary state (pipeline order; not a recommendation):")
+        for candidate, candidate_summary in zip(STAGES, boundary_states, strict=True):
+            if candidate_summary is None:
                 _print(f"- {candidate}: no stored completion seal")
             else:
                 _print(

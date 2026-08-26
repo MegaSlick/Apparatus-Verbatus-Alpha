@@ -496,6 +496,38 @@ def test_unreadable_boundary_evidence_is_refused_not_reported_as_unsealed(
     assert "designator: no stored completion seal" not in rendered
 
 
+def test_missing_earlier_seal_in_a_later_sealed_chain_is_refused_as_lost_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A deleted seal in a completed chain is not an ordinary unstarted stage."""
+
+    run_root, run_id = _run(tmp_path)
+    tree = RunTree(run_root, run_id)
+    seal, _digest = advance.sealed_boundary(tree, "designator")
+    tree.resolve(tree.artifact_path("designator", "stage-seal", seal["artifact_id"])).unlink()
+    monkeypatch.setattr(
+        cli,
+        "_typed_advance_confirmation",
+        lambda phrase: pytest.fail(f"missing evidence reached confirmation: {phrase}"),
+    )
+
+    with pytest.raises(OperatorError) as refusal:
+        cli._advance_with_confirmation(
+            run_root,
+            run_id,
+            "armarium",
+            reason="operator must see the broken seal chain",
+            workspace=ROOT,
+            mode="manual",
+        )
+
+    assert refusal.value.code == ErrorCode.ADVANCE_REFUSED
+    detail = refusal.value.detail or ""
+    assert "designator has no completion seal although later stage attestatores is sealed" in detail
+    assert "evidence is missing, not merely unfinished" in detail
+    assert "designator: no stored completion seal" not in capsys.readouterr().out
+
+
 def test_the_advance_presentation_never_phrases_a_recommendation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

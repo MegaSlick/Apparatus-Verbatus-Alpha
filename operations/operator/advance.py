@@ -59,16 +59,19 @@ def sealed_boundary(tree: RunTree, stage: str) -> tuple[dict[str, Any], str]:
             for entry in manifest["artifacts"]
             if entry["kind"] == "stage-seal"
         ]
-    except (ContractError, KeyError, TypeError) as error:
+        if not seals:
+            raise UnsealedBoundaryRefusal(
+                f"advance refuses {stage}: it has no stored stage-seal, so there is no "
+                "witnessed boundary to pass"
+            )
+        seal = latest_attempt(seals, f"{stage} stage seal", operation="seal")
+        data = tree.read_bytes(tree.artifact_path(stage, "stage-seal", seal["artifact_id"]))
+    except UnsealedBoundaryRefusal:
+        raise
+    except (ContractError, KeyError, OSError, TypeError) as error:
         raise ApprovalRefusal(
             f"advance could not read {stage}'s stored completion seal; no boundary was advanced"
         ) from error
-    if not seals:
-        raise UnsealedBoundaryRefusal(
-            f"advance refuses {stage}: it has no stored stage-seal, so there is no witnessed boundary to pass"
-        )
-    seal = latest_attempt(seals, f"{stage} stage seal", operation="seal")
-    data = tree.read_bytes(tree.artifact_path(stage, "stage-seal", seal["artifact_id"]))
     return seal, digest_bytes(data)
 
 
