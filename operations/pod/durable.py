@@ -95,16 +95,21 @@ def exclusive_write(path: Path, payload: bytes, *, strict: bool = False) -> None
     """
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
         with os.fdopen(descriptor, "wb") as handle:
+            os.fchmod(handle.fileno(), 0o600)
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
-    except Exception:
+        # A hard link publishes the already-complete inode without replacing an
+        # existing target. Unlike opening the target with O_EXCL and then
+        # filling it, no reader can observe an empty or partially written final
+        # record, and a process death before this line leaves no false claim.
+        os.link(temporary, path)
+    finally:
         try:
-            os.unlink(path)
-        except OSError:
+            os.unlink(temporary)
+        except FileNotFoundError:
             pass
-        raise
     sync_directory(path.parent, strict=strict)

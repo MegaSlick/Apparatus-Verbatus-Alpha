@@ -90,3 +90,25 @@ def test_exclusive_write_strict_refuses_an_unproved_directory_entry(
 
     # The bytes may already exist, so the caller must still refuse the paid action.
     assert target.read_bytes() == b'{"grant":"one"}'
+
+
+def test_exclusive_write_publishes_only_after_the_payload_is_fsynced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A concurrent reader must never observe a half-written final record."""
+
+    target = tmp_path / "claims" / "grant.json"
+    real_fsync = durable.os.fsync
+    fsync_calls = 0
+
+    def observe_before_sync(descriptor: int) -> None:
+        nonlocal fsync_calls
+        fsync_calls += 1
+        if fsync_calls == 1:
+            assert not target.exists(), "the final path was visible before its bytes were durable"
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(durable.os, "fsync", observe_before_sync)
+    durable.exclusive_write(target, b'{"grant":"one"}')
+
+    assert target.read_bytes() == b'{"grant":"one"}'
