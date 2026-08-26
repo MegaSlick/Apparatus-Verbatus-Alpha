@@ -1,23 +1,8 @@
-"""Plan §20's capture-condition requirement, pinned before its producer exists.
+"""Pin capture comparability to Unit 5's real triage facts.
 
-§20 requires that "a hand-cropped frame against an auto-cropped one is itself a
-capture-condition difference" and makes this unit "a consumer of Unit 5's
-per-page mode/actor rows".  Unit 20 only reads the sealed ``comparably_captured``
-boolean; the wiring that computes it is Unit 19's, and the previous audit round
-recorded that no production code computes it from real triage rows at all.
-
-An unwired requirement degrades in one direction only: the first producer to
-need the field writes ``True`` and every pair becomes comparable, which silently
-turns the instrument's own gate off.  Nothing failed when that happened, because
-nothing named the derivation.  These two pins close that:
-
-* the derivation exists and is executable now (`common/capture_comparability.py`),
-  and it refuses rather than defaults when the triage facts are absent;
-* no production module outside the Unit 19 schema, the Unit 20 consumer, and
-  that derivation may name ``capture_condition`` or ``comparably_captured``.
-
-Together they mean a producer wired without consulting Unit 5's rows fails a
-test rather than reporting an always-satisfied condition.
+The condition must be derived through ``capture_comparability.py`` and must
+refuse missing facts; otherwise producer wiring could make the gate permanently
+true without detection.
 """
 
 from __future__ import annotations
@@ -41,9 +26,8 @@ from common.contracts.errors import SchemaRefusal
 ROOT = Path(__file__).resolve().parent.parent
 TRIAGE_MANIFEST = ROOT / "pipeline" / "0_triage" / "manifest.py"
 
-# The three files entitled to name the capture condition: the record that
-# declares it, the consumer that gates on it, and the derivation that produces
-# it.  A producer belongs in the third one.
+# The condition may be declared, consumed, and derived only at these seams; a
+# producer that computes it elsewhere would bypass the Unit 5 reconciliation.
 _CONDITION_AUTHORS = {
     Path("common/cross_capture_dissent.py"),
     Path("common/reshoot_delta.py"),
@@ -65,7 +49,6 @@ _SKIP_DIRECTORIES = {
 
 
 def _row(**overrides: Any) -> dict[str, Any]:
-    """A Unit 5 decision-manifest row, reduced to the facts read here."""
     row: dict[str, Any] = {
         "mode": "auto",
         "actor": {"kind": "producer", "identity": "verbatus-triage", "revision": "0.0.0"},
@@ -94,7 +77,6 @@ def _production_sources() -> list[Path]:
 
 
 def test_a_hand_cropped_capture_against_an_auto_cropped_one_is_not_comparably_captured():
-    """§20's own example, as the executable statement of the requirement."""
     hand = _row(
         mode="manual",
         actor={"kind": "human", "identity": "operator", "revision": None},
@@ -119,7 +101,6 @@ def test_two_captures_triaged_identically_are_comparably_captured_with_nothing_t
 
 
 def test_each_triage_fact_alone_is_enough_to_make_a_pair_not_comparably_captured():
-    """One differing fact is a capture-condition difference, not a near miss."""
     variants = (
         ({"mode": "semi"}, "triage-mode-differs"),
         (
@@ -153,7 +134,6 @@ def test_capture_argument_order_cannot_change_comparability_or_its_named_differe
 
 
 def test_an_absent_triage_fact_is_refused_rather_than_read_as_comparable():
-    """The always-true degradation, refused at the only place it could enter."""
     for missing in TRIAGE_FACT_FIELDS:
         partial = {key: value for key, value in _row().items() if key != missing}
         with pytest.raises(SchemaRefusal, match="triage decision facts"):
@@ -197,12 +177,7 @@ def test_malformed_triage_facts_are_refused_rather_than_compared_equal(overrides
 
 
 def test_the_facts_read_here_are_unit_5s_own_row_and_actor_fields():
-    """Reconciled against the real schema, so an upstream rename breaks loudly.
-
-    Without this the derivation could go on reading `mode` and `actor` from a
-    row that no longer has them, refuse every pair, and look like a working pin
-    while measuring nothing.
-    """
+    """Schema drift must fail rather than leave a derivation that refuses every pair."""
     manifest = _load_triage_manifest()
     assert set(TRIAGE_FACT_FIELDS) <= manifest._ROW_FIELDS
     assert TRIAGE_ACTOR_KINDS == manifest.ACTOR_KINDS
@@ -231,14 +206,7 @@ def test_the_facts_read_here_are_unit_5s_own_row_and_actor_fields():
 
 
 def test_no_production_module_outside_the_derivation_names_the_capture_condition():
-    """The pin that bites when Unit 19's producer is wired.
-
-    A wiring that sets `comparably_captured` from anything other than
-    `comparability_from_triage` has to name it somewhere, and naming it anywhere
-    else fails here. The scan is over production sources only: tests construct
-    the fixture condition freely, which is what lets the gate be exercised in
-    both directions.
-    """
+    """Production wiring must derive the condition from Unit 5 at the allowed seam."""
     offenders: dict[str, list[str]] = {}
     for relative in _production_sources():
         if relative in _CONDITION_AUTHORS:

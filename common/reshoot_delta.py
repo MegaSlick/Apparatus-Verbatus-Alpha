@@ -1,19 +1,9 @@
-"""Structural re-shoot deltas derived from sealed cross-capture dissent.
+"""Derive structural re-shoot deltas from sealed cross-capture dissent.
 
-This is an instability instrument, not an accuracy measure.  It deliberately
-keeps the Unit 19 caveat beside every derived record: matching observations do
-not establish that a reading is right, and different observations do not say
-which one is right.
-
-It carries a second caveat of its own, because it creates a temptation Unit 19's
-record does not.  Unit 19 holds observations; this record holds *rows that
-invite counting*, and the sentence "the re-shoot delta rate was N" is available
-to anyone holding it long before ground truth authorizes any such number
-(GOVERNANCE 10).  So the shape is built to make the honest sentence the only one
-the rows support: every capture pair is a row whether or not a delta could be
-computed for it, each pair says in a field of its own whether it was compared at
-all, and every locus a compared pair could not compare is named beside that
-pair's deltas rather than omitted from them.
+This instrument measures instability, not accuracy: agreement does not establish
+a correct reading, and difference does not identify one.  Every capture pair
+remains in the denominator, and every eligible locus is either a delta, a named
+non-comparison, or an observed agreement retained in the sealed input.
 """
 
 from __future__ import annotations
@@ -64,12 +54,9 @@ _UNCOMPARED_FIELDS: Final = frozenset(
 )
 _FLAG_FIELDS: Final = frozenset({"pair_id", "code", "locus_ids"})
 
-# The five names Unit 19 gives its failed capture conditions.  Held here as
-# vocabulary a reader can cite, and reconciled against Unit 19's own map by
-# test, NOT enforced as the closed set of codes a pair may carry: Unit 19
-# permits a pair to name findings beyond its condition failures, and an
-# instrument that refused to carry an upstream finding it did not recognise
-# would be deciding what may be reported to it.
+# This vocabulary must match Unit 19's condition failures, but it is not a
+# closed set for pair findings.  Closing it would discard upstream findings that
+# this consumer has no authority to curate.
 CONDITION_CODES: Final = frozenset(
     {
         "capture-occlusion-condition-failed",
@@ -98,31 +85,12 @@ _RECORDED_STATE_CODES: Final = {
 }
 
 
-def _conditions_hold(pair: dict[str, Any]) -> bool:
-    condition = pair["capture_condition"]
-    return (
-        condition["both_unoccluded"]
-        and condition["comparably_captured"]
-        and pair["same_ink"]
-        and pair["identical_run_configuration"]
-        and pair["act_match_correct"]
-    )
-
-
 def _locus_rows(dissent: dict[str, Any], view_ids: list[str]) -> tuple[list, list]:
-    """Account for every locus at one compared pair: a delta, or a named reason.
+    """Partition a compared pair's non-agreements into deltas and named gaps.
 
-    An earlier shape returned only the differing loci and dropped the rest by
-    ``continue``.  That made the most informative case in the instrument -- a
-    locus read in one capture and unreadable in the other -- indistinguishable
-    from a locus both captures read identically: no delta, no finding, no row.
-    A record that reads "these captures agreed" where one of them could not be
-    read is a claim, and it is the claim GOVERNANCE 10 and GOVERNANCE 2 both
-    forbid.  So every non-agreement remains visible here: loci divide into
-    deltas, named non-comparisons, and observed agreements.  Only the agreements
-    are omitted from both returned lists; the validated dissent input retains
-    the complete locus denominator, and the total-partition test pins that an
-    omitted locus can mean nothing else.
+    Observed agreements are the only loci omitted from both lists; the validated
+    dissent retains the complete denominator.  Unreadable or non-comparable
+    reader states must remain named instead of being inferred as agreement.
     """
     wanted = set(view_ids)
     deltas: list[dict[str, Any]] = []
@@ -183,7 +151,14 @@ def build_reshoot_delta_record(dissent_record: Any) -> dict[str, Any]:
                 f"{collisions} collide with Unit 20's derived review-flag names; the derivative "
                 "is refused because an upstream finding may not masquerade as a computed result"
             )
-        compared = _conditions_hold(pair)
+        condition = pair["capture_condition"]
+        compared = (
+            condition["both_unoccluded"]
+            and condition["comparably_captured"]
+            and pair["same_ink"]
+            and pair["identical_run_configuration"]
+            and pair["act_match_correct"]
+        )
         deltas, uncompared = _locus_rows(dissent, pair["view_ids"]) if compared else ([], [])
         pair_records.append(
             {

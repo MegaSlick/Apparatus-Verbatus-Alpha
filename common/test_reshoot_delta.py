@@ -57,13 +57,7 @@ def test_delta_emits_only_for_all_four_conditions_and_every_failed_pair_remains_
 
 
 def test_conditions_failing_in_combination_are_all_named_and_still_suppress_the_delta():
-    """Plan §20's four conditions probed together, not only one at a time.
-
-    The happy-path and single-failure cases above prove the gate opens and
-    closes correctly for one broken condition; they do not prove a pair with
-    *several* broken conditions keeps every one of them named rather than only
-    the first found, or the last written.
-    """
+    """Multiple failures must all remain named; the gate cannot short-circuit evidence."""
     codes = (
         "capture-occlusion-condition-failed",
         "capture-comparability-condition-failed",
@@ -95,13 +89,7 @@ def test_conditions_failing_in_combination_are_all_named_and_still_suppress_the_
 
 
 def test_three_views_keep_every_pair_including_the_one_that_fails_match():
-    """Plan §20's bias warning: a hard-to-match pair must not silently drop.
-
-    Two clean pairs and one match-failing pair over three views -- the failing
-    pair (the hardest one to reconcile, per the plan's own bias warning) must
-    remain a named row in the denominator beside the two that pass, not
-    disappear from it.
-    """
+    """A match-failing pair must remain named in the denominator beside clean pairs."""
     views = [_view("view:a", A), _view("view:b", B), _view("view:c", C)]
     pairs = [
         _pair(["view:a", "view:b"]),
@@ -207,7 +195,6 @@ def _locus(
     state: str = "different-across-views",
     view_ids: tuple[str, ...] = ("view:a", "view:b"),
 ) -> dict[str, Any]:
-    """One locus with an explicit per-view form; `None` form means unread there."""
     return {
         "locus_id": "locus:0",
         "established_span_or_gap_ref": {"start": 0, "end": 5},
@@ -225,16 +212,7 @@ def _locus(
 
 
 def test_a_pair_states_whether_it_was_compared_so_an_empty_delta_list_is_unambiguous():
-    """GOVERNANCE 10 at the seam a delta count is quoted from.
-
-    `delta_loci: []` carried two incompatible meanings -- "compared, and the
-    captures did not differ" and "never eligible for a comparison at all" --
-    and a reader was expected to recover which by inspecting `finding_codes`.
-    That inference is not merely awkward, it is *wrong* in a shape Unit 19
-    permits: a pair may name a finding while every one of the four conditions
-    holds, in which case non-empty findings sit beside a real delta. So the
-    pair states its own comparison state, and the ambiguous inference is gone.
-    """
+    """An empty delta list must distinguish agreement from ineligible comparison."""
     compared = _only_pair(build_reshoot_delta_record(_record()))
     assert compared["comparison_state"] == "compared"
     assert compared["delta_loci"] != []
@@ -256,7 +234,7 @@ def test_a_pair_states_whether_it_was_compared_so_an_empty_delta_list_is_unambig
     assert blocked["delta_loci"] == []
     assert blocked["uncompared_loci"] == []
 
-    # The case the old inference got wrong: findings present, conditions intact.
+    # Findings do not imply that a pair failed its comparison conditions.
     noted = _record(pairs=[_pair(["view:a", "view:b"], finding_codes=["capture-note-recorded"])])
     still_compared = _only_pair(build_reshoot_delta_record(noted))
     assert still_compared["comparison_state"] == "compared"
@@ -265,14 +243,7 @@ def test_a_pair_states_whether_it_was_compared_so_an_empty_delta_list_is_unambig
 
 
 def test_a_locus_one_capture_could_not_read_is_named_rather_than_read_as_agreement():
-    """The instrument may not filter what it measures (GOVERNANCE 10, 2).
-
-    A locus read at one capture and unread at the other is the single most
-    informative row this instrument can hold, and it used to produce nothing at
-    all: no delta, no finding, no flag -- a record identical to a pair whose two
-    captures agreed perfectly. Every way a compared pair can fail to compare a
-    locus now leaves a named row and a review flag behind.
-    """
+    """An unread form must leave a named row and flag, never imply agreement."""
     absent_form = _record(loci=[_locus(("Maria", None), state="unreadable")])
     pair = _only_pair(build_reshoot_delta_record(absent_form))
     assert pair["comparison_state"] == "compared"
@@ -308,13 +279,7 @@ def test_a_locus_one_capture_could_not_read_is_named_rather_than_read_as_agreeme
 
 
 def test_a_locus_the_reader_recorded_as_not_comparable_is_not_compared_here():
-    """The reader saw the ink; the consumer did not.
-
-    Both observed forms are present and they differ, so a naive string compare
-    would call this a delta. `comparison_state` says the joint reader could not
-    compare the locus across views, and the instrument does not overrule the
-    only party that performed the autopsia -- it names the locus instead.
-    """
+    """The consumer must not overrule the reader's non-comparable state."""
     record = build_reshoot_delta_record(
         _record(loci=[_locus(("Maria", "Marta"), state="not-comparable")])
     )
@@ -326,16 +291,7 @@ def test_a_locus_the_reader_recorded_as_not_comparable_is_not_compared_here():
 
 
 def test_at_a_compared_pair_every_locus_is_a_delta_a_named_reason_or_an_agreement():
-    """The locus rule is total, so an absent row can only mean one thing.
-
-    The record does not repeat a row for a locus both captures read identically
-    -- that would put a row for every locus under every pair and say nothing.
-    What makes the omission safe is that it is now exhaustive: after the
-    uncompared rows exist, a locus with no row at a compared pair is a locus
-    whose observed forms were present and equal at both views of that pair, and
-    nothing else. This pins that partition so a future edit cannot quietly
-    return a fourth outcome to it.
-    """
+    """Only observed agreement may omit a locus from both output partitions."""
     views = [_view("view:a", A), _view("view:b", B), _view("view:c", C)]
     triple = ("view:a", "view:b", "view:c")
     loci = [
@@ -368,8 +324,6 @@ def test_at_a_compared_pair_every_locus_is_a_delta_a_named_reason_or_an_agreemen
             else:
                 # No row: present and equal at both views of this pair.
                 assert None not in observed and len(set(observed)) == 1
-    # locus:1 is unread at view:b, so it is named at the two pairs containing
-    # view:b and is an ordinary agreement at the view:a/view:c pair.
     named_for_locus_one = {
         tuple(pair["view_ids"])
         for pair in record["pair_records"]
@@ -380,15 +334,7 @@ def test_at_a_compared_pair_every_locus_is_a_delta_a_named_reason_or_an_agreemen
 
 
 def test_an_upstream_finding_this_unit_does_not_recognise_is_carried_not_curated():
-    """The instrument may not decide what may be reported to it.
-
-    Unit 19 requires a pair to name its failed conditions and permits it to name
-    more. Validation used to require every code to be one of the five condition
-    codes, so `build_...` produced records `validate_...` refused, and the only
-    way to make one validate was for a producer to drop the finding it had
-    named. Dropping a named finding to satisfy a downstream vocabulary is
-    exactly what GOVERNANCE 2 forbids.
-    """
+    """The consumer must carry valid upstream findings it has no authority to curate."""
     dissent = _record(
         pairs=[
             _pair(
@@ -429,17 +375,11 @@ def test_an_upstream_finding_cannot_masquerade_as_a_unit20_derived_flag(code):
 
 
 def test_the_condition_vocabulary_still_matches_unit_19s_own_failure_names():
-    """Reconciliation in place of the constraint that was removed.
-
-    Dropping the closed-vocabulary check is what lets an unrecognised upstream
-    finding through; it must not also let the five names this unit documents
-    drift away from the five Unit 19 actually emits.
-    """
+    """Open pair findings must not let the documented condition names drift."""
     assert CONDITION_CODES == set(_FAILED_CONDITION_CODES.values())
 
 
 def test_the_denominator_caveat_binds_and_cannot_be_reworded_or_dropped():
-    """The second caveat is sealed exactly as the inherited one is."""
     dissent = _record()
     record = build_reshoot_delta_record(dissent)
     assert "counts nothing" in record["denominator_caveat"]

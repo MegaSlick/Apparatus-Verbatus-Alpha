@@ -1,19 +1,8 @@
-"""§7/§8.6 static guards for Unit 20's own consumer surface.
+"""Statically guard Unit 20's entire surface against picker idioms.
 
-`common/reshoot_delta.py` is exercised by `common/test_reshoot_delta.py`'s
-dynamic tests, but -- like Unit 19A before `common/test_unit19_no_picker.py`
-landed, and like 19B/19C before `pipeline/test_unit19d_no_picker.py` closed
-their own gap -- carried no source scan for the forbidden shapes §7 names as
-binding review vocabulary. Dynamic tests prove the mechanism for the inputs
-they construct; a source scan is what catches a selection idiom a future edit
-introduces before any test happens to exercise it (see
-`common/test_unit19_no_picker.py`'s own docstring: "neither is sufficient
-alone").
-
-The whole module is new Unit 20 surface with no unrelated legacy code to
-false-positive on, so this scans the whole file rather than a named function
-subset -- the same shape `common/test_unit19_no_picker.py` uses for
-`physical_act_partition.py`.
+Dynamic fixtures cannot prove that selection vocabulary and positional or
+extremal selectors are absent, so both owned production modules are scanned in
+full.
 """
 
 import ast
@@ -23,10 +12,8 @@ import pytest
 
 from common.test_unit19_no_picker import FORBIDDEN_CALLS, SHAPE_ONE_WORDS
 
-# `capture_comparability.py` joins the scan for the same reason: it decides
-# whether two captures are comparable, which is the nearest neighbour a
-# preference could disguise itself as -- "this capture is the comparable one" is
-# a picker with a euphemism for a name.
+# Comparability is included because preferring one capture could otherwise be
+# disguised as declaring only that capture comparable.
 SOURCES = (
     Path(__file__).with_name("reshoot_delta.py"),
     Path(__file__).with_name("capture_comparability.py"),
