@@ -37,9 +37,17 @@ from synthetic_sources import (
 
 from common.chairs import load_models_toml
 from common.contracts.approval import synthetic_fixture_ingress_record
-from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash, verify_self_hash
+from common.contracts.canonical import (
+    canonical_bytes,
+    digest_bytes,
+    digest_of,
+    self_hash,
+    verify_self_hash,
+)
 from common.contracts.errors import ContractError, IncompatibleReuse
+from common.contracts.identities import physical_page_id
 from common.contracts.stages import DESIGNATOR, DOOR, EXEMPLAR
+from common.corpus_register import members_of
 from common.runtree.store import RunTree
 from common.stage import (
     DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH,
@@ -49,6 +57,7 @@ from common.stage import (
     run_sealed_config_digests,
 )
 from operations.submit import gate, submit
+from operations.triage import instrument, producer
 from operations.triage.instrument import load_config as instrument_config
 from operations.triage.instrument import producer_recipe
 
@@ -3218,6 +3227,329 @@ def test_a_re_shoot_cluster_that_would_straddle_the_submitted_shard_is_refused(t
         )
     assert "cluster cannot be reconciled" in str(unresolved.value)
     assert "supply the matching corpus-scoped cluster record" in str(unresolved.value)
+
+
+# The insert covers the middle of the frame at its own angle; the page around it is
+# the exact complement, decomposed into four axis-aligned rectangles. Unit 5's
+# validator proves the partition, so these numbers are the whole geometry claim.
+_TAPED_FRAME = {"width": 64, "height": 48}
+_TAPED_INSERT = {"x": 20, "y": 12, "w": 24, "h": 16}
+_TAPED_PAGE_PARTS = (
+    {"x": 0, "y": 0, "w": 64, "h": 12},
+    {"x": 0, "y": 12, "w": 20, "h": 16},
+    {"x": 44, "y": 12, "w": 20, "h": 16},
+    {"x": 0, "y": 28, "w": 64, "h": 20},
+)
+
+
+def _taped_split():
+    """One rotated insert part plus the four page parts that complete the frame."""
+    parts = [
+        door.triage_manifest.make_part(
+            _TAPED_INSERT,
+            {"x": 0, "y": 0, "w": _TAPED_INSERT["w"], "h": _TAPED_INSERT["h"]},
+            3_500,
+            colour_mode="keep",
+        )
+    ]
+    parts += [
+        door.triage_manifest.make_part(
+            region,
+            {"x": 0, "y": 0, "w": region["w"], "h": region["h"]},
+            0,
+            colour_mode="keep",
+        )
+        for region in _TAPED_PAGE_PARTS
+    ]
+    return door.triage_manifest.make_split(parts)
+
+
+def _taped_frames():
+    frames = []
+    for index, tone in enumerate((90, 160)):
+        image = Image.new("L", (_TAPED_FRAME["width"], _TAPED_FRAME["height"]), tone)
+        # A little structure so the instrument's signature grid is not uniform.
+        image.paste(255 - tone, (20, 12, 44, 28))
+        encoded = BytesIO()
+        image.save(encoded, format="PNG")
+        frames.append(producer.SubmittedFrame(f"{index}.png", encoded.getvalue()))
+    return frames
+
+
+def _taped_confirmation(frames):
+    """A confirmation over the taped pair, traced to the real Unit 6A instrument."""
+    config = instrument_config()
+    proxies = [instrument.build_proxies_from_bytes(item.data, config) for item in frames]
+    evidence, evidence_manifest = instrument.candidate_evidence(proxies, config)
+    recipe = instrument.producer_recipe(config)
+    digests = sorted(digest_bytes(item.data) for item in frames)
+    confirmation = {
+        "schema": producer.CONFIRMATION_SCHEMA,
+        "corpus_id": "parish-a",
+        "appending_run": "triage-taped-1",
+        "authority": {"kind": "fixture", "identity": "taped-insert-fixture", "revision": "v1"},
+        "instrument_config_sha256": evidence_manifest["instrument_config_sha256"],
+        "evidence_manifest_sha256": digest_of(evidence_manifest),
+        "clusters": [
+            {
+                "pages": [
+                    {
+                        "volume_id": "v1",
+                        "designation": "opening-taped",
+                        "member_frame_sha256": digests,
+                    }
+                ],
+                "evidence_pairs": [digests],
+            }
+        ],
+    }
+    return confirmation, recipe, evidence_manifest, evidence
+
+
+def test_synthetic_63_64_65_plus_66_closes_instrument_confirmation_register_and_door(
+    tmp_path: Path,
+):
+    """The final DoD-3/4/5 walk: three linked frames, one independent frame, no loss."""
+    frames = []
+    for name, tone in (("63", 70), ("64", 100), ("65", 130), ("66", 160)):
+        image = Image.new("L", (64, 48), tone)
+        image.paste(255 - tone, (8, 8, 24, 24))
+        encoded = BytesIO()
+        image.save(encoded, format="PNG")
+        frames.append(producer.SubmittedFrame(f"{name}.png", encoded.getvalue()))
+    config = instrument_config()
+    proxies = [instrument.build_proxies_from_bytes(item.data, config) for item in frames]
+    evidence, evidence_manifest = instrument.candidate_evidence(proxies, config)
+    recipe = instrument.producer_recipe(config)
+    digests_by_name = {item.path: digest_bytes(item.data) for item in frames}
+    linked = sorted(digests_by_name[name] for name in ("63.png", "64.png", "65.png"))
+    independent = digests_by_name["66.png"]
+    confirmation = {
+        "schema": producer.CONFIRMATION_SCHEMA,
+        "corpus_id": "parish-a",
+        "appending_run": "triage-63-66-final",
+        "authority": {"kind": "fixture", "identity": "synthetic-63-66", "revision": "v1"},
+        "instrument_config_sha256": evidence_manifest["instrument_config_sha256"],
+        "evidence_manifest_sha256": digest_of(evidence_manifest),
+        "clusters": [
+            {
+                "pages": [
+                    {
+                        "volume_id": "v1",
+                        "designation": "opening-31-left",
+                        "member_frame_sha256": linked,
+                    },
+                    {
+                        "volume_id": "v1",
+                        "designation": "opening-31-right",
+                        "member_frame_sha256": [digests_by_name["65.png"]],
+                    },
+                ],
+                "evidence_pairs": [sorted(linked[:2])],
+            }
+        ],
+    }
+    register_path = tmp_path / "register.json"
+    produced, _register_head = producer.commit_confirmed_production(
+        frames,
+        corpus_id="parish-a",
+        mode="auto",
+        confirmation=confirmation,
+        instrument_recipe=recipe,
+        evidence_manifest=evidence_manifest,
+        evidence_records=evidence,
+        register_path=register_path,
+        manifest_path=tmp_path / "manifest.json",
+        clusters_path=tmp_path / "clusters.json",
+        authority_path=tmp_path / "confirmation.json",
+        max_pages_per_shard=3,
+    )
+    assert len(produced.manifest["records"]) == 4
+    assert set(produced.rows_by_digest) == set(digests_by_name.values())
+    assert produced.rows_by_digest[independent]["re_shoot_cluster_id"] is None
+    cluster_id, cluster = next(iter(produced.clusters.items()))
+    assert cluster["member_frame_sha256"] == linked
+    assert all(
+        produced.rows_by_digest[digest]["re_shoot_cluster_id"] == cluster_id for digest in linked
+    )
+    register_bytes = register_path.read_bytes()
+    left_page = physical_page_id("parish-a", "v1", "opening-31-left")
+    right_page = physical_page_id("parish-a", "v1", "opening-31-right")
+    assert members_of(register_bytes, left_page) == linked
+    assert members_of(register_bytes, right_page) == [digests_by_name["65.png"]]
+
+    sources = door.expand_sources(
+        [{"relative_path": item.path, "sha256": digests_by_name[item.path]} for item in frames],
+        reader({item.path: item.data for item in frames}),
+        POLICY,
+        triage_rows=produced.rows_by_digest,
+        triage_clusters=produced.clusters,
+    )
+    shards = door.content_aware_shards(sources, max_pages_per_shard=3)
+    assert [[source.ordinal for source in shard] for shard in shards] == [[1, 2, 3], [4]]
+
+
+def test_a_taped_insert_proposal_survives_produce_validation_and_the_door_fan_out():
+    """Unit 5's own structural case, carried end to end without a frame-level crop.
+
+    A document taped over the page at its own angle has no single gutter for
+    auto-split and no global deskew that straightens both surfaces. The proposal is
+    one rotated part for the insert and four axis-aligned parts for the page around
+    it. This asserts the whole path: the producer binds it to submitted bytes, Unit
+    5's validator proves it partitions the frame, and the Door fans one ordinal out
+    per part while keeping the confirmed cluster whole.
+    """
+    frames = _taped_frames()
+    digests = [digest_bytes(item.data) for item in frames]
+    proposals = {
+        item.path: door.triage_manifest.make_row(
+            corpus_id="parish-a",
+            source_frame_sha256=digest,
+            frame=dict(_TAPED_FRAME),
+            split=_taped_split(),
+            re_shoot_cluster_id=None,
+            confidence=0,
+            mode="manual",
+            # A deterministic offline producer cannot see a taped insert; the
+            # geometry is an operator's structural proposal, bound to these bytes.
+            actor={"kind": "human", "identity": "operator", "revision": None},
+            human_override=True,
+        )
+        for item, digest in zip(frames, digests, strict=True)
+    }
+    confirmation, recipe, evidence_manifest, evidence = _taped_confirmation(frames)
+    produced = producer.produce(
+        frames,
+        corpus_id="parish-a",
+        mode="manual",
+        confirmation=confirmation,
+        instrument_recipe=recipe,
+        evidence_manifest=evidence_manifest,
+        evidence_records=evidence,
+        transcribed_rows_by_path=proposals,
+        max_pages_per_shard=10,
+    )
+    rows = produced.rows_by_digest
+    assert len(produced.clusters) == 1
+    cluster_id, cluster = next(iter(produced.clusters.items()))
+    assert cluster["split_count"] == 5
+    for digest in digests:
+        parts = rows[digest]["split"]["parts"]
+        assert len(parts) == 5
+        assert [part["rotation"]["rotation_millidegrees"] for part in parts].count(0) == 4
+        assert rows[digest]["re_shoot_cluster_id"] == cluster_id
+
+    sources = door.expand_sources(
+        [
+            {"relative_path": item.path, "sha256": digest}
+            for item, digest in zip(frames, digests, strict=True)
+        ],
+        reader({item.path: item.data for item in frames}),
+        POLICY,
+        triage_rows=rows,
+        triage_clusters=produced.clusters,
+    )
+    assert [source.triage_part_index for source in sources] == [0, 1, 2, 3, 4] * 2
+    assert {source.ordinal for source in sources} == set(range(1, 11))
+
+    # The cluster spans every one of those ten ordinals, so no seam inside it is
+    # legal: one shard holds it or the submission is refused.
+    assert len(door.content_aware_shards(sources, max_pages_per_shard=10)) == 1
+    with pytest.raises(ContractError, match="content-aware shard refusal"):
+        door.content_aware_shards(sources, max_pages_per_shard=5)
+
+
+def test_the_producer_measures_a_cluster_span_in_door_ordinals_not_in_frames():
+    """Two taped frames are ten Door ordinals, and a five-page cap cannot hold them.
+
+    A span counted in frames would have called this cluster two pages and passed it
+    to a Door that then has no legal seam anywhere inside it — the whole submission
+    refused, at the stage that can no longer explain why.
+    """
+    frames = _taped_frames()
+    proposals = {
+        item.path: door.triage_manifest.make_row(
+            corpus_id="parish-a",
+            source_frame_sha256=digest_bytes(item.data),
+            frame=dict(_TAPED_FRAME),
+            split=_taped_split(),
+            re_shoot_cluster_id=None,
+            confidence=0,
+            mode="manual",
+            actor={"kind": "human", "identity": "operator", "revision": None},
+            human_override=True,
+        )
+        for item in frames
+    }
+    confirmation, recipe, evidence_manifest, evidence = _taped_confirmation(frames)
+    with pytest.raises(producer.ProducerRefusal, match="cluster-span-over-cap"):
+        producer.produce(
+            frames,
+            corpus_id="parish-a",
+            mode="manual",
+            confirmation=confirmation,
+            instrument_recipe=recipe,
+            evidence_manifest=evidence_manifest,
+            evidence_records=evidence,
+            transcribed_rows_by_path=proposals,
+            max_pages_per_shard=5,
+        )
+
+
+def test_a_submitted_frame_with_no_triage_row_is_refused_and_a_row_outside_the_shard_is_not():
+    """The Door's half of Unit 6B's coverage invariant, in both directions.
+
+    The producer proves exact coverage over what it was handed; the Door proves it
+    again over what was actually submitted, because the two sets are only the same
+    if nothing was added between them. A submitted frame with no row would be a
+    frame fanned out with no declared geometry — silently, since every other row
+    still expands. The reverse is not a defect and must not be refused: a decision
+    manifest is corpus-scoped and a submission is one shard of it, so rows for
+    frames outside this shard are the ordinary case.
+    """
+    submitted, absent = png(4, 3), png(4, 3, rows=None, bit_depth=8, color_type=2)
+    submitted_digest, absent_digest = digest_bytes(submitted), digest_bytes(absent)
+
+    def row(digest, width, height):
+        return door.triage_manifest.make_row(
+            corpus_id="parish-a",
+            source_frame_sha256=digest,
+            frame={"width": width, "height": height},
+            split=door.triage_manifest.make_split(
+                [
+                    door.triage_manifest.make_part(
+                        {"x": 0, "y": 0, "w": width, "h": height},
+                        {"x": 0, "y": 0, "w": width, "h": height},
+                        0,
+                        colour_mode="keep",
+                    )
+                ]
+            ),
+            re_shoot_cluster_id=None,
+            confidence=0,
+            mode="manual",
+            actor={"kind": "producer", "identity": "operations.triage.producer", "revision": "r1"},
+            human_override=False,
+        )
+
+    with pytest.raises(ContractError, match="no row for a submitted source frame"):
+        door.expand_sources(
+            [{"relative_path": "a.png", "sha256": submitted_digest}],
+            reader({"a.png": submitted}),
+            POLICY,
+            triage_rows={absent_digest: row(absent_digest, 4, 3)},
+        )
+
+    sources = door.expand_sources(
+        [{"relative_path": "a.png", "sha256": submitted_digest}],
+        reader({"a.png": submitted}),
+        POLICY,
+        triage_rows={
+            submitted_digest: row(submitted_digest, 4, 3),
+            absent_digest: row(absent_digest, 4, 3),
+        },
+    )
+    assert [source.declared_sha256 for source in sources] == [submitted_digest]
 
 
 def test_a_legal_seam_between_byte_identical_split_files_is_not_mistaken_for_a_pair():

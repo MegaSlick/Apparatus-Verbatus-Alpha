@@ -404,34 +404,6 @@ def test_a_membership_record_may_not_withdraw_a_capture():
         )
 
 
-def test_a_wrong_membership_can_be_retracted_without_deleting_its_evidence():
-    """Correction removes the assertion from current membership, not the record.
-
-    A later link repeats the cumulative historical member set, so retraction is
-    scoped to the page/capture assertion rather than to one link in the chain.
-    The later capture remains active and every membership record remains bytes in
-    the validated register.
-    """
-    first = _membership(["a" * 64])
-    second = _membership(["a" * 64, "b" * 64], predecessor=digest_of(first), run="triage-2")
-    assertion = f"membership:{PAGE}->{'a' * 64}"
-    retraction = {
-        "kind": "retraction",
-        "retracts": assertion,
-        "reason": "the first capture belongs to the facing physical page",
-        "appending_run": "triage-3",
-    }
-    register = canonical_bytes(
-        {"schema": SCHEMA, "records": [_declaration(), first, second, retraction]}
-    )
-
-    validated = validate_register_bytes(register)
-    assert first in validated["records"]
-    assert second in validated["records"]
-    assert retraction in validated["records"]
-    assert members_of(register, PAGE) == ["b" * 64]
-
-
 def test_membership_for_an_undeclared_physical_page_is_refused():
     with pytest.raises(SchemaRefusal, match="before any earlier record declares it"):
         validate_register_bytes(
@@ -517,7 +489,7 @@ def test_a_correspondence_cannot_pair_an_act_with_a_different_capture_page():
         validate_register_bytes(canonical_bytes(register))
 
 
-def test_a_retraction_may_only_name_an_earlier_retractable_assertion():
+def test_a_retraction_may_only_name_a_correspondence_or_a_membership_head():
     value = canonical_bytes(
         {
             "schema": SCHEMA,
@@ -597,6 +569,29 @@ def test_a_stale_writer_cannot_overwrite_a_concurrent_append(tmp_path):
     assert register_digest(before) == current
 
 
+def test_a_path_swap_after_predecessor_read_is_refused_by_device_and_inode(tmp_path, monkeypatch):
+    path = tmp_path / "register.json"
+    path.write_bytes(empty_register())
+    replacement = tmp_path / "replacement.json"
+    foreign = canonical_bytes({"schema": SCHEMA, "records": [_declaration()]})
+    replacement.write_bytes(foreign)
+    real_digest = corpus_register.register_digest
+    calls = 0
+
+    def swap_after_observed(data):
+        nonlocal calls
+        calls += 1
+        digest = real_digest(data)
+        if calls == 1:
+            corpus_register.os.replace(replacement, path)
+        return digest
+
+    monkeypatch.setattr(corpus_register, "register_digest", swap_after_observed)
+    with pytest.raises(IncompatibleReuse, match="path changed after its predecessor"):
+        append_records(path, [_declaration()], expected_digest=EMPTY_REGISTER_DIGEST)
+    assert path.read_bytes() == foreign
+
+
 def test_a_failed_atomic_publish_leaves_the_complete_predecessor(tmp_path, monkeypatch):
     path = tmp_path / "register.json"
     path.write_bytes(empty_register())
@@ -618,7 +613,7 @@ def test_a_register_symlink_is_never_read_or_replaced(tmp_path):
     linked = tmp_path / "register.json"
     linked.symlink_to(target)
 
-    with pytest.raises(SchemaRefusal, match="non-symlink"):
+    with pytest.raises(SchemaRefusal, match="direct, readable regular file"):
         append_records(linked, [_declaration()], expected_digest=EMPTY_REGISTER_DIGEST)
 
     assert linked.is_symlink()
@@ -654,8 +649,41 @@ def test_register_bytes_and_replay_counts_are_bounded_before_amplification(monke
 def test_pathologically_nested_json_is_a_named_schema_refusal():
     depth = 10_000
     data = b'{"schema":"corpus-register-v1","records":' + b"[" * depth + b"]" * depth + b"}"
-    with pytest.raises(SchemaRefusal, match="not UTF-8 JSON"):
+    # Depth refuses at parse time when C recursion headroom runs out first, or
+    # at record validation when the parser survives; either way it is a named
+    # SchemaRefusal, never an escaping crash.
+    with pytest.raises(SchemaRefusal, match="not UTF-8 JSON|record has no kind"):
         validate_register_bytes(data)
+
+
+def test_register_and_lock_paths_refuse_symlinks_without_touching_their_targets(tmp_path):
+    target = tmp_path / "outside.json"
+    target.write_bytes(empty_register())
+    register = tmp_path / "register.json"
+    register.symlink_to(target)
+    with pytest.raises(SchemaRefusal, match="corpus register path"):
+        append_records(register, [_declaration()], expected_digest=EMPTY_REGISTER_DIGEST)
+    assert target.read_bytes() == empty_register()
+
+    register.unlink()
+    (tmp_path / ".register.json.lock").unlink()
+    lock_target = tmp_path / "outside.lock"
+    lock_target.write_bytes(b"untouched")
+    (tmp_path / ".register.json.lock").symlink_to(lock_target)
+    with pytest.raises(SchemaRefusal, match="lock could not be opened"):
+        append_records(register, [_declaration()], expected_digest=EMPTY_REGISTER_DIGEST)
+    assert lock_target.read_bytes() == b"untouched"
+    assert not register.exists()
+
+
+def test_register_hardlink_is_refused_as_an_aliased_mutable_head(tmp_path):
+    target = tmp_path / "outside.json"
+    target.write_bytes(empty_register())
+    register = tmp_path / "register.json"
+    register.hardlink_to(target)
+    with pytest.raises(SchemaRefusal, match="unaliased regular file"):
+        append_records(register, [_declaration()], expected_digest=EMPTY_REGISTER_DIGEST)
+    assert target.read_bytes() == empty_register()
 
 
 # --- The sealed snapshot, and the check that cannot be skipped -------------------
@@ -761,3 +789,142 @@ def test_a_refused_register_reuse_leaves_no_bytes_in_the_existing_run(tmp_path):
         RunTree.create(tmp_path, "r1", register_bytes=foreign, **shared)
     assert sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*")) == before
     assert not (tree.root / tree.blob_path("door", register_digest(foreign))).exists()
+
+
+def _retraction(target, *, reason="a human confirmed two blank forms as one page", run="triage-2"):
+    return {"kind": "retraction", "retracts": target, "reason": reason, "appending_run": run}
+
+
+def test_a_wrong_membership_is_corrected_by_retracting_the_head_not_by_editing_it():
+    """The instrument's blindness case, made answerable.
+
+    Two blank forms agree everywhere because neither carries ink, so a human can
+    confirm them as one physical page and be wrong. Membership grows and is never
+    edited, so the correction is a retraction of the newest link: the record stays
+    in the register as evidence of what was declared, and stops being the answer
+    to what shows this page.
+    """
+    first = _membership(["a" * 64, "b" * 64])
+    second = _membership(["a" * 64, "b" * 64, "c" * 64], predecessor=digest_of(first))
+    retraction = _retraction(f"membership:{digest_of(second)}")
+    records = [_declaration(), first, second, retraction]
+    register = canonical_bytes({"schema": SCHEMA, "records": records})
+    validated = validate_register_bytes(register)
+    assert retraction in validated["records"]
+    assert second in validated["records"], "the retracted link is still present as evidence"
+    assert members_of(register, PAGE) == sorted(["a" * 64, "b" * 64])
+
+    # Unwinding continues link by link; a page back to no link at all is the empty
+    # list its declaration always meant, not a deleted page.
+    both = records + [_retraction(f"membership:{digest_of(first)}", run="triage-3")]
+    assert members_of(canonical_bytes({"schema": SCHEMA, "records": both}), PAGE) == []
+
+
+def test_a_membership_retraction_must_name_the_head_of_its_chain():
+    """Every successor contains its predecessor's captures, so only the head can go."""
+    first = _membership(["a" * 64, "b" * 64])
+    second = _membership(["a" * 64, "b" * 64, "c" * 64], predecessor=digest_of(first))
+    with pytest.raises(SchemaRefusal, match="not the current head"):
+        validate_register_bytes(
+            canonical_bytes(
+                {
+                    "schema": SCHEMA,
+                    "records": [
+                        _declaration(),
+                        first,
+                        second,
+                        _retraction(f"membership:{digest_of(first)}"),
+                    ],
+                }
+            )
+        )
+
+
+def test_a_membership_retraction_naming_no_link_in_this_register_is_refused():
+    with pytest.raises(SchemaRefusal, match="a retraction that corrects nothing"):
+        validate_register_bytes(
+            canonical_bytes(
+                {
+                    "schema": SCHEMA,
+                    "records": [_declaration(), _retraction(f"membership:{'0' * 64}")],
+                }
+            )
+        )
+
+
+def test_membership_grows_again_from_the_link_that_survived_a_retraction():
+    """A corrected page is not a frozen page: the chain continues from the survivor."""
+    first = _membership(["a" * 64, "b" * 64])
+    wrong = _membership(["a" * 64, "b" * 64, "c" * 64], predecessor=digest_of(first))
+    corrected = _membership(
+        ["a" * 64, "b" * 64, "d" * 64], predecessor=digest_of(first), run="triage-3"
+    )
+    register = canonical_bytes(
+        {
+            "schema": SCHEMA,
+            "records": [
+                _declaration(),
+                first,
+                wrong,
+                _retraction(f"membership:{digest_of(wrong)}"),
+                corrected,
+            ],
+        }
+    )
+    assert members_of(register, PAGE) == sorted(["a" * 64, "b" * 64, "d" * 64])
+    # A successor that still names the retracted link as its predecessor is refused:
+    # the chain is what makes the correction visible rather than an edit.
+    with pytest.raises(SchemaRefusal, match="does not name the digest"):
+        validate_register_bytes(
+            canonical_bytes(
+                {
+                    "schema": SCHEMA,
+                    "records": [
+                        _declaration(),
+                        first,
+                        wrong,
+                        _retraction(f"membership:{digest_of(wrong)}"),
+                        _membership(
+                            ["a" * 64, "b" * 64, "c" * 64, "e" * 64],
+                            predecessor=digest_of(wrong),
+                            run="triage-3",
+                        ),
+                    ],
+                }
+            )
+        )
+
+
+def test_retracting_one_link_twice_names_that_it_was_already_retracted():
+    """The withdrawn record stays evidence but is neither a head nor reusable identity."""
+    first = _membership(["a" * 64, "b" * 64])
+    withdrawal = _retraction(f"membership:{digest_of(first)}")
+    twice = canonical_bytes(
+        {
+            "schema": SCHEMA,
+            "records": [
+                _declaration(),
+                first,
+                withdrawal,
+                _retraction(f"membership:{digest_of(first)}", run="triage-3"),
+            ],
+        }
+    )
+    with pytest.raises(SchemaRefusal, match="already retracted"):
+        validate_register_bytes(twice)
+
+
+def test_a_fresh_act_may_reappend_the_members_of_a_retracted_link():
+    first = _membership(["a" * 64, "b" * 64])
+    withdrawal = _retraction(f"membership:{digest_of(first)}")
+
+    # Reasserting the same members is a new operator act, not resurrection of the
+    # withdrawn immutable link, so its appending-run identity makes a new record.
+    reasserted = _membership(["a" * 64, "b" * 64], run="triage-3")
+    register = canonical_bytes(
+        {
+            "schema": SCHEMA,
+            "records": [_declaration(), first, withdrawal, reasserted],
+        }
+    )
+    assert members_of(register, PAGE) == sorted(["a" * 64, "b" * 64])
