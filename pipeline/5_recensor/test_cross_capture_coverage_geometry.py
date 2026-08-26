@@ -32,6 +32,7 @@ from pathlib import Path
 import pytest
 
 from common.contracts.errors import FatalAccounting
+from common.cross_capture_autopsia import build_autopsia
 
 ROOT = Path(__file__).resolve().parents[2]
 RECENSOR = ROOT / "pipeline/5_recensor/run.py"
@@ -105,19 +106,27 @@ class _FakeContext:
 
 
 def _autopsia_dossier(*, logical_act_id, views):
-    return {
-        "dossier": {"logical_act_id": logical_act_id, "cross_capture_autopsia": {"views": views}}
-    }
+    autopsia = build_autopsia(
+        logical_act_id=logical_act_id,
+        partition_ref={"relative_path": "partition.json", "sha256": "0" * 64},
+        required_capture_sha256s=[view["source_sha256"] for view in views],
+        views=views,
+    )
+    return {"dossier": {"logical_act_id": logical_act_id, "cross_capture_autopsia": autopsia}}
 
 
 def _view(*, view_id, physical_page_id, source_sha256, page_id, local_act_id):
+    image_ref = {"relative_path": f"fixture/{view_id}.png", "sha256": "0" * 64}
     return {
         "view_id": view_id,
         "physical_page_id": physical_page_id,
         "source_sha256": source_sha256,
         "page_ids": [page_id],
         "local_act_ids": [local_act_id],
+        "region_refs": [image_ref],
+        "page_render_refs": [image_ref],
         "alignment_ref": f"identity-alignment:{page_id}",
+        "visibility_evidence_refs": [image_ref],
     }
 
 
@@ -407,8 +416,8 @@ def test_two_captures_of_one_physical_page_cannot_union_without_a_registration()
     assert result["findings"] == [
         {"code": "capture-visibility-unresolved", "physical_page_id": "ppg_shared"}
     ]
-    # Nothing was measured in one frame, so the act holds on a real cause
-    # rather than routing like an absent instrument.
+    # Nothing was measured in one shared frame, so the missing registration is
+    # recorded as an absent instrument rather than restated as a measured gap.
     assert module.cross_capture_review_causes(result) == (False, None)
 
 
@@ -602,6 +611,53 @@ def test_a_below_ink_occlusion_does_not_occlude_the_real_survey():
     assert result["act_state"] == "full"
 
 
+@pytest.mark.parametrize(
+    ("polygon", "z_relationship", "message"),
+    [
+        ([{"x": 0, "y": 0}] * 3, "above-ink", "malformed polygon"),
+        (_rectangle(0, 0, 40, 40), "in-front-ish", "unknown z_relationship"),
+    ],
+)
+def test_malformed_sealed_occlusion_facts_are_named_accounting_refusals(
+    polygon, z_relationship, message
+):
+    module = _recensor()
+    context = _FakeContext(
+        {
+            "region_1": (
+                "region",
+                "act_x",
+                _region_record(
+                    region_id="region_1",
+                    image_path="fixture/act_x.png",
+                    page_id="pg_a",
+                    ordinal=1,
+                    bounds={"x": 0, "y": 0, "w": 20, "h": 20},
+                ),
+            ),
+            "occ_1": (
+                "occlusion",
+                "occ_1",
+                _occlusion_record(page_id="pg_a", polygon=polygon, z_relationship=z_relationship),
+            ),
+        }
+    )
+    latest_payload = _autopsia_dossier(
+        logical_act_id="act_x",
+        views=[
+            _view(
+                view_id="view_1",
+                physical_page_id="ppg_local_pg_a",
+                source_sha256=A,
+                page_id="pg_a",
+                local_act_id="act_x",
+            )
+        ],
+    )
+    with pytest.raises(FatalAccounting, match=message):
+        module.act_cross_capture_coverage(context, "act_x", latest_payload)
+
+
 def test_an_act_absent_from_its_own_readings_autopsia_refuses():
     module = _recensor()
     context = _FakeContext({})
@@ -618,6 +674,26 @@ def test_an_act_absent_from_its_own_readings_autopsia_refuses():
         ],
     )
     with pytest.raises(FatalAccounting, match="does not name it"):
+        module.act_cross_capture_coverage(context, "act_x", latest_payload)
+
+
+def test_dossier_and_autopsia_cannot_name_different_logical_acts():
+    module = _recensor()
+    context = _FakeContext({})
+    latest_payload = _autopsia_dossier(
+        logical_act_id="pac_sealed",
+        views=[
+            _view(
+                view_id="view_1",
+                physical_page_id="ppg_local_pg_a",
+                source_sha256=A,
+                page_id="pg_a",
+                local_act_id="act_x",
+            )
+        ],
+    )
+    latest_payload["dossier"]["logical_act_id"] = "pac_other"
+    with pytest.raises(FatalAccounting, match="refuses to attribute"):
         module.act_cross_capture_coverage(context, "act_x", latest_payload)
 
 

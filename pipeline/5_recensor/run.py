@@ -47,6 +47,7 @@ from common.contracts.stages import (  # noqa: E402
     RECENSOR,
 )
 from common.corpus_register import refuse_preference  # noqa: E402
+from common.cross_capture_autopsia import validate_autopsia  # noqa: E402
 from common.cross_capture_coverage import (  # noqa: E402
     build_cross_capture_coverage,
     capture_specific_recovery,
@@ -318,18 +319,29 @@ def _page_occlusion_survey(context, page_id: str) -> dict:
             or len(polygon) < 3
             or any(
                 not isinstance(point, dict)
+                or set(point) != {"x", "y"}
                 or not isinstance(point.get("x"), int)
                 or not isinstance(point.get("y"), int)
                 or isinstance(point.get("x"), bool)
                 or isinstance(point.get("y"), bool)
+                or point["x"] < 0
+                or point["y"] < 0
                 for point in polygon
             )
+            or len({(point["x"], point["y"]) for point in polygon}) < 3
         ):
             raise FatalAccounting(
                 f"Designator occlusion {record['artifact_id']} names page {page_id!r} "
                 "with a malformed polygon"
             )
-        if payload.get("z_relationship") == "below-ink":
+        z_relationship = payload.get("z_relationship")
+        if z_relationship not in {"unknown", "above-ink", "below-ink"}:
+            raise FatalAccounting(
+                f"Designator occlusion {record['artifact_id']} names page {page_id!r} with "
+                f"unknown z_relationship {z_relationship!r}; the Recensor refuses to infer "
+                "visibility from an occlusion relationship it cannot interpret"
+            )
+        if z_relationship == "below-ink":
             continue
         polygons.append([{"x": point["x"], "y": point["y"]} for point in polygon])
         # The evidence an `occluded` classification rests on, carried into the
@@ -389,8 +401,14 @@ def act_cross_capture_coverage(context, act_id: str, latest_payload: dict) -> di
     dossier = latest_payload.get("dossier")
     if not isinstance(dossier, dict) or "cross_capture_autopsia" not in dossier:
         return None
-    autopsia = dossier["cross_capture_autopsia"]
-    logical_act_id = dossier["logical_act_id"]
+    autopsia = validate_autopsia(dossier["cross_capture_autopsia"])
+    logical_act_id = dossier.get("logical_act_id")
+    if logical_act_id != autopsia["logical_act_id"]:
+        raise FatalAccounting(
+            f"act {act_id}'s current Perlectio names logical act {logical_act_id!r}, but its "
+            f"sealed cross-capture autopsia names {autopsia['logical_act_id']!r}; the Recensor "
+            "refuses to attribute one logical act's visibility evidence to another"
+        )
     if not any(act_id in view["local_act_ids"] for view in autopsia["views"]):
         raise FatalAccounting(
             f"act {act_id}'s current Perlectio's cross-capture autopsia does not name it "
