@@ -1216,3 +1216,26 @@ def test_shared_chain_refuses_a_page_set_forged_back_to_the_primary_page(tmp_pat
 
     with pytest.raises(SchemaRefusal, match="page set.*sealed region basis"):
         audit.validate_chain(ForgedTree(), forged_final, final["subject_id"])
+
+
+def test_an_audit_page_set_cannot_carry_traversal_order_as_durable_state(tmp_path):
+    root = tmp_path / "runs"
+    result = _run(root)
+    assert result.returncode == 0, result.stderr
+    tree = RunTree(root, "r")
+    final = next(
+        record
+        for record in _records(tree, "perlectio")
+        if len({region["source_page_id"] for region in record["payload"]["basis"]["regions"]}) > 1
+    )
+    draft = tree.read_artifact_reference(
+        final["payload"]["audit"]["draft_ref"],
+        stage=PERLECTOR,
+        kind="audit-draft",
+        subject_id=final["subject_id"],
+    )["payload"]
+    assert len(draft["page_ids"]) > 1
+    reordered = copy.deepcopy(draft)
+    reordered["page_ids"].reverse()
+    with pytest.raises(SchemaRefusal, match="canonical page set"):
+        audit.validate_draft(reordered)

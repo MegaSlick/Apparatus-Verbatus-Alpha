@@ -300,8 +300,9 @@ def _validate_common(value: dict[str, Any], *, text_length: int) -> None:
         or not value["page_ids"]
         or any(not isinstance(page_id, str) or not page_id for page_id in value["page_ids"])
         or len(value["page_ids"]) != len(set(value["page_ids"]))
+        or value["page_ids"] != sorted(value["page_ids"])
     ):
-        raise SchemaRefusal("an audit record has no act or page identity")
+        raise SchemaRefusal("an audit record has no act identity or canonical page set")
     if (
         not isinstance(value["attempt_ordinal"], int)
         or isinstance(value["attempt_ordinal"], bool)
@@ -533,7 +534,7 @@ def validate_chain(tree, reading: dict[str, Any], act_id: str) -> dict[str, Any]
                 f"reading of {act_id} has an unusable source page in its region basis"
             )
         pages_by_ordinal[ordinal] = page_id
-    basis_page_ids = [pages_by_ordinal[ordinal] for ordinal in sorted(pages_by_ordinal)]
+    basis_page_ids = sorted(set(pages_by_ordinal.values()))
     if draft_payload["page_ids"] != basis_page_ids:
         raise SchemaRefusal(
             f"audit page set for {act_id} disagrees with the reading's sealed region basis"
