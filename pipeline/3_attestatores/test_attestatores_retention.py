@@ -75,7 +75,7 @@ def test_page_testimonium_role_with_an_unhashable_value_is_a_named_refusal():
         }
     )
 
-    with pytest.raises(SchemaRefusal, match="invalid page-scope facts.*cannot be placed"):
+    with pytest.raises(SchemaRefusal, match="invalid page scope facts"):
         attestatores.validate_page_testimonium_payload(payload)
 
 

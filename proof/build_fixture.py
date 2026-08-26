@@ -145,6 +145,12 @@ CHANDRA_ANCHORS = (
     },
 )
 
+# Page 1's proposals both begin at x=12. This left-margin box is therefore the
+# unambiguous zero-overlap stimulus required by the deliberately unmeasured rule.
+NATIVE_OBSERVATIONS = (
+    {"chair": "attestator_1", "page_ordinal": 1, "x": 0, "y": 200, "w": 10, "h": 40},
+)
+
 # The first two rows are the pair spec 07's `format_capabilities` exists for: "a
 # witness that cannot say 'unsure' must not be read as confident". Their own
 # `witness-capabilities` scenario keeps that distinction exercised without
@@ -501,6 +507,12 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
                 }
             )
         lines.append("lines = " + toml_value(anchor_lines))
+
+    for observation in NATIVE_OBSERVATIONS:
+        lines += ["", "[[native_observation]]"]
+        for key in ("chair", "page_ordinal", "x", "y", "w", "h"):
+            value = observation[key]
+            lines.append(f"{key} = {toml_string(value) if isinstance(value, str) else value}")
 
     for prior in PRIOR_READINGS:
         lines += [

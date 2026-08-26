@@ -65,8 +65,16 @@ from common.contracts.errors import (  # noqa: E402
     SchemaRefusal,
 )
 from common.contracts.identities import artifact_id, perlector_attempt_id  # noqa: E402
-from common.contracts.stages import ATTESTATORES, DESIGNATOR, PERLECTOR  # noqa: E402
+from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR, PERLECTOR  # noqa: E402
 from common.exemplar_boundary import verify_exemplar_crop_lineage  # noqa: E402
+from common.imaging import dimensions  # noqa: E402
+from common.native_witness import (  # noqa: E402
+    unpresented_region_ids,
+    unrouted_observations,
+    validate_native_witness_geometry,
+    validate_page_testimonium_payload,
+    validate_presented_page_binding,
+)
 from common.runtree.store import RECEIPTS_DIR  # noqa: E402
 from common.stage import (  # noqa: E402
     ATTEMPTED_WITNESS_OUTCOMES,
@@ -470,35 +478,212 @@ def _region_reference(region: dict) -> dict[str, str]:
     }
 
 
-def _testimonium_inputs(context, regions: list[dict]) -> list[dict[str, str]]:
-    """The crop blobs that a witness attempt must directly bind."""
+def validate_testimonium_regions(context, record: dict, proposal_regions: list[dict]) -> None:
+    """Validate native presentation, rather than the retired shared-crop premise."""
+    payload = record["payload"]
+    presented = payload.get("presented") if isinstance(payload, dict) else None
+    if not isinstance(presented, dict):
+        raise SchemaRefusal("a Testimonium has no presented native witness block")
+    validate_native_witness_geometry(payload)
+    unpresented = payload.get("unpresented_regions")
+    attempted = record["outcome"] in ATTEMPTED_WITNESS_OUTCOMES
+    if not attempted:
+        if (
+            payload.get("regions") != []
+            or presented != {}
+            or payload.get("observed") != []
+            or unpresented != []
+            or record.get("inputs") != []
+        ):
+            raise SchemaRefusal(
+                "a non-attempted Testimonium carries proposal or image evidence. The record "
+                "would say a chair saw pixels when its outcome says it was not served. Remove "
+                "the evidence or record the attempted outcome that actually occurred"
+            )
+        return
+    if presented == {}:
+        raise SchemaRefusal(
+            "an attempted Testimonium has no image presentation. Its reading or failure cannot "
+            "be traced to pixels the chair received. Retain the exact presentation before "
+            "publishing the attempted record"
+        )
+    expected_regions = [_region_reference(region) for region in proposal_regions]
+    if payload.get("regions") != expected_regions:
+        raise SchemaRefusal(
+            "an attempted Testimonium does not bind exactly its original proposal regions. "
+            "Its act association could omit or acquire evidence silently. Restore the sealed "
+            "proposal references without substituting a recovery crop"
+        )
+    page_id = presented.get("source_page_id")
+    page = context.tree.read_artifact(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", page_id))
+    page_bytes = context.tree.read_bytes(page["payload"]["image_path"])
+    page_size = dimensions(page_bytes)
+    validate_native_witness_geometry(payload, page_size=page_size)
+    validate_presented_page_binding(
+        presented,
+        page_ordinal=page["payload"]["ordinal"],
+        page_image_path=page["payload"]["image_path"],
+        page_sha256=page["payload"]["source_sha256"],
+        page_size=page_size,
+        page_bytes=page_bytes,
+    )
     inputs = {}
-    for region in regions:
+    for region in proposal_regions:
         reference = context.input_ref(region["payload"]["image_path"])
         inputs[reference["relative_path"]] = reference
-    return sorted(inputs.values(), key=lambda item: (item["relative_path"], item["sha256"]))
-
-
-def validate_testimonium_regions(context, record: dict, proposal_regions: list[dict]) -> None:
-    """Bind a witness's claimed regions to the actual original proposal.
-
-    A Testimonium's direct blob references prove its pixels have not changed, but
-    not by themselves that the `regions` payload names the proposal it was shown.
-    Without this comparison, a resealed record could add a recovery crop and make
-    Perlector mark newly uncovered ink as witnessed.  Recovery must stay visible
-    as recovery, not become retrospective witness coverage.
-    """
-    payload = record["payload"]
-    attempted = record["outcome"] in ATTEMPTED_WITNESS_OUTCOMES
-    expected_regions = (
-        [_region_reference(region) for region in proposal_regions] if attempted else []
+    reference = context.input_ref(presented["image_path"])
+    inputs[reference["relative_path"]] = reference
+    expected_inputs = sorted(
+        inputs.values(), key=lambda item: (item["relative_path"], item["sha256"])
     )
-    expected_inputs = _testimonium_inputs(context, proposal_regions) if attempted else []
-    if payload.get("regions") != expected_regions or record.get("inputs") != expected_inputs:
+    # Re-derive the explicit limit for every presentation kind so a kind change
+    # cannot understate which bound crops its one page-space image omits.
+    if unpresented != unpresented_region_ids(presented, proposal_regions):
         raise SchemaRefusal(
-            "a Testimonium does not bind exactly the original proposal regions and pixel "
-            "inputs it claims its witness saw"
+            "a Testimonium does not name exactly the bound proposal regions its presentation "
+            "does not speak for"
         )
+    if presented["kind"] != "region":
+        if record.get("inputs") != expected_inputs:
+            raise SchemaRefusal(
+                "an attempted Testimonium does not bind exactly its proposal and presentation "
+                "blobs. The consumer cannot prove which immutable pixels produced the report. "
+                "Restore the complete digest-bound input set and remove unrelated inputs"
+            )
+        return
+    matches = [
+        region
+        for region in regions_of(context, record["subject_id"])
+        if region.get("payload", {}).get("region_id") == presented["region_ref"]["region_id"]
+    ]
+    if len(matches) != 1:
+        raise SchemaRefusal("a Testimonium region_ref names no unique sealed region")
+    region = matches[0]
+    if region["payload"].get("origin") != "proposal":
+        raise SchemaRefusal(
+            "a recovery region cannot be presented as a witness basis; origin is not proposal"
+        )
+    if (
+        _region_reference(region)
+        != {
+            "region_id": presented["region_ref"]["region_id"],
+            "image_path": presented["image_path"],
+            "image_sha256": presented["image_sha256"],
+        }
+        or region["payload"].get("transform") != presented["transform"]
+    ):
+        raise SchemaRefusal("a Testimonium region presentation disagrees with its sealed proposal")
+    if record.get("inputs") != expected_inputs:
+        raise SchemaRefusal(
+            "an attempted Testimonium does not bind exactly its proposal and presentation "
+            "blobs. The consumer cannot prove which immutable pixels produced the report. "
+            "Restore the complete digest-bound input set and remove unrelated inputs"
+        )
+
+
+def validate_page_testimonium_record(
+    context,
+    record: dict[str, Any],
+    proposal_regions: list[dict[str, Any]],
+) -> None:
+    """Reconcile a page Testimonium's outcome, page, presentation, and inputs."""
+    payload = record.get("payload")
+    validate_page_testimonium_payload(payload)
+    attempted = record["outcome"] in ATTEMPTED_WITNESS_OUTCOMES
+    presented = payload["presented"]
+    if payload["regions"] != []:
+        raise SchemaRefusal(
+            "a page Testimonium carries act-region references. Its page evidence would acquire "
+            "an act identity the page record does not own. Keep act associations in the "
+            "digest-bound attachments"
+        )
+    if not attempted:
+        if presented != {} or payload["observed"] != [] or record.get("inputs") != []:
+            raise SchemaRefusal(
+                "a non-attempted page Testimonium carries image evidence. The record would say "
+                "a chair saw pixels when its outcome says it was not served. Remove the image "
+                "evidence or record the attempted outcome that actually occurred"
+            )
+    else:
+        if presented == {}:
+            raise SchemaRefusal(
+                "an attempted page Testimonium has no image presentation. Its outcome cannot be "
+                "traced to pixels the chair received. Retain the exact presentation before "
+                "publishing the attempted record"
+            )
+        if (
+            presented["source_page_id"] != record["subject_id"]
+            or presented["source_page_ordinal"] != payload["page_ordinal"]
+        ):
+            raise SchemaRefusal(
+                "wrong page Testimonium: its presentation names a different page than its "
+                "record. Its observations would be attributed to the wrong sealed ink. Restore "
+                "the page identity and ordinal of the presentation actually served"
+            )
+        page = context.tree.read_artifact(
+            EXEMPLAR,
+            "page",
+            artifact_id(EXEMPLAR, "page", presented["source_page_id"]),
+        )
+        page_bytes = context.tree.read_bytes(page["payload"]["image_path"])
+        page_size = dimensions(page_bytes)
+        validate_native_witness_geometry(payload, page_size=page_size)
+        validate_presented_page_binding(
+            presented,
+            page_ordinal=page["payload"]["ordinal"],
+            page_image_path=page["payload"]["image_path"],
+            page_sha256=page["payload"]["source_sha256"],
+            page_size=page_size,
+            page_bytes=page_bytes,
+        )
+        expected_inputs = [
+            {"relative_path": presented["image_path"], "sha256": presented["image_sha256"]}
+        ]
+        if record.get("inputs") != expected_inputs:
+            raise SchemaRefusal(
+                "a page Testimonium does not bind exactly its presented image. The consumer "
+                "cannot prove which immutable pixels produced the page report. Restore the one "
+                "digest-bound presentation input and remove unrelated inputs"
+            )
+    page_proposals = [
+        region
+        for region in proposal_regions
+        if region["payload"]["transform"]["source_page_id"] == record["subject_id"]
+    ]
+    if payload["unpresented_regions"] != unpresented_region_ids(presented, page_proposals):
+        raise SchemaRefusal(
+            "a page Testimonium does not name exactly the proposal regions outside its "
+            "presentation. Its derived layer would look more complete than the pixels shown. "
+            "Re-derive unpresented_regions from the sealed page proposals"
+        )
+    validate_serving_provenance(
+        context,
+        payload["provenance"],
+        producer_stage=ATTESTATORES,
+        require_receipt=attempted,
+    )
+
+
+def sealed_proposal_regions(context) -> list[dict]:
+    """Every verified proposal in the run-wide routing denominator."""
+    regions = []
+    for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]:
+        if entry["kind"] != "region":
+            continue
+        record = context.tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
+        # Keep the origin-specific refusal ahead of the general lineage refusal;
+        # callers rely on the shared recovery-denominator vocabulary.
+        recovery_region_count(record.get("subject_id", "unidentified act"), [record])
+        validate_serving_provenance(
+            context,
+            record.get("payload", {}).get("provenance"),
+            producer_stage=DESIGNATOR,
+            require_receipt=True,
+        )
+        verify_region(context, record)
+        if record["payload"]["origin"] == "proposal":
+            regions.append(record)
+    return regions
 
 
 def testimonia_of(context, act_id: str, proposal_regions: list[dict]) -> list[dict]:
@@ -584,7 +769,12 @@ def declared_page_witness_chairs(context) -> set[str]:
 
 
 def act_attachment_view(
-    context, act: dict[str, Any], testimonia: list[dict], bases: list[dict]
+    context,
+    act: dict[str, Any],
+    testimonia: list[dict],
+    bases: list[dict],
+    page_testimonia_seen: dict[str, dict] | None = None,
+    all_proposal_regions: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Validate the R0 attachment that makes a page witness act-addressable.
 
@@ -662,6 +852,8 @@ def act_attachment_view(
         if not attachment["page_witness"] and page_ordinal is not None:
             raise SchemaRefusal("an act-scoped witness carries a page ordinal")
     attachment_chairs = [attachment["chair"] for attachment in attachments]
+    if all_proposal_regions is None:
+        all_proposal_regions = sealed_proposal_regions(context)
     if any(chair not in configured for chair in attachment_chairs):
         raise FatalAccounting(
             f"act {act_id} attachment chairs do not equal this run's configured witnesses"
@@ -781,6 +973,11 @@ def act_attachment_view(
                 subject_id=page_ids[attachment_page],
             )
             page_payload = testimonium.get("payload")
+            validate_page_testimonium_record(context, testimonium, all_proposal_regions)
+            # Page observations are judged once per (page, chair), not once per
+            # act on that page; collect them at this digest-checked read seam.
+            if page_testimonia_seen is not None and isinstance(page_payload, dict):
+                page_testimonia_seen[testimonium["artifact_id"]] = testimonium
             unjoined = (
                 page_payload.get("unjoined_act_attempts")
                 if isinstance(page_payload, dict)
@@ -2160,6 +2357,11 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     read = 0
     acknowledged = 0
     pending: list[dict[str, Any]] = []
+    # Walked once for the whole run: the routing denominator is every sealed
+    # proposal, and `reported_unrouted` keeps one observation's finding from being
+    # restated by every act that reaches the same page Testimonium.
+    all_proposal_regions = sealed_proposal_regions(context)
+    reported_unrouted: set[tuple[str, int]] = set()
     chair = perlector_chair(context)
     for act in wanted:
         act_id = act["act_id"]
@@ -2227,7 +2429,27 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         # up to the fold would be truncated, which is a failure and not an output.
         bases = [verify_region(context, region) for region in regions]
         testimonia = testimonia_of(context, act_id, proposal_regions)
-        attachment_view = act_attachment_view(context, act, testimonia, bases)
+        page_testimonia: dict[str, dict] = {}
+        attachment_view = act_attachment_view(
+            context,
+            act,
+            testimonia,
+            bases,
+            page_testimonia_seen=page_testimonia,
+            all_proposal_regions=all_proposal_regions,
+        )
+        # Both witness scopes use the run-wide proposal denominator. Deduplicate
+        # page testimony so an observation is named once, not once per act.
+        unrouted = unrouted_observations(
+            testimonia + list(page_testimonia.values()),
+            all_proposal_regions,
+            prior_findings=reported_unrouted,
+        )
+        for finding in unrouted:
+            reported_unrouted.add((finding["testimonium_id"], finding["ordinal"]))
+            # This pass is diagnostic only: record shapes are fixed, and only
+            # the Recensor may initiate recovery, so the finding remains stderr.
+            print(f"non-fatal finding: {finding}", file=sys.stderr)
 
         # Which regions any witness actually saw. Ink uncovered by a recovery
         # recrop was never shown to a witness, and saying so is the difference

@@ -288,7 +288,10 @@ def test_sampling_approval_scan_names_deep_json_as_a_refusal(tmp_path):
     context = _context(tmp_path, "a" * 64)
     _write_unchecked_receipt(context.tree, b'{"nested":' * 10_000 + b"0" + b"}" * 10_000)
 
-    with pytest.raises(ContractError, match="malformed JSON"):
+    # Depth beyond the canonical encoder's recursion bound surfaces as a
+    # canonicalization refusal, not a decode error: the scan proves the exact
+    # immutable bytes cannot be re-derived, which is the same fact said louder.
+    with pytest.raises(ContractError, match="cannot be represented as canonical receipt bytes"):
         _resolve(context, SUBJECTS[0])
 
 

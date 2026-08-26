@@ -683,8 +683,20 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # through this module's own `orchestrate` and `semantic_snapshot_digest` helpers,
 # twice, at two independent run roots, and the file counts below were re-measured
 # the same way. The host re-measures at integration.
-HAPPY_RUN_TREE_DIGEST = "ce416af2db55abe89fa1599c66f9cfaf66cdaafd77421a17842a2a5e01740689"
-REVIEW_RUN_TREE_DIGEST = "d4b6a3558f2ad9a6d1cbc7bde8a771e9b0346a77f2ac190607f216aeb1b75296"
+#
+# Re-pinned for Unit 10B, the witness intake contract: the pins bind closed
+# witness presentations, observations, and explicit absence/continuation scope
+# at canonical run id "r"; the review pin also binds a serving receipt for
+# attempted page testimony whose response was unusable — presentation and
+# receipt must describe the same event. Changing those facts requires
+# remeasurement even when artifact counts and exits stay fixed.
+#
+# Re-pinned at this merge (10B onto the composed pr tree): every contributing
+# branch moved these pins on its own, so no branch's own pin describes this
+# tree. Both values measured through this module's own `orchestrate` and
+# `semantic_snapshot_digest` helpers, twice, at two independent run roots.
+HAPPY_RUN_TREE_DIGEST = "0a6c3fb7c509284ec06132e96c814d4894286aa432f3e77f398e4d5c6702ec4b"
+REVIEW_RUN_TREE_DIGEST = "ceed8ec9d991172688bcbfdda2116edcf46527b6cae9a00c3cc763f2163b92c3"
 
 
 def orchestrate(
@@ -2570,7 +2582,11 @@ def test_an_undeclared_fallback_witness_holds_the_act_instead_of_reporting_it_bl
     ]
     page_three = [row for row in page_records if row["payload"]["page_ordinal"] == 3]
     assert len(page_three) == 2, "both declared page witnesses must still be accounted for"
-    assert all(row["outcome"] == "failed" for row in page_three)
+    # No underlying request reached either configured page chair. `failed` is
+    # receipt-bearing attempted failure; preserving the same word here would
+    # force consumers to guess from another field whether it means attempted.
+    assert all(row["outcome"] == "not-run" for row in page_three)
+    assert all(row["payload"]["presented"] == {} for row in page_three)
     assert all(row["payload"]["provenance"]["receipt_ref"] is None for row in page_three)
 
     reading = next(
