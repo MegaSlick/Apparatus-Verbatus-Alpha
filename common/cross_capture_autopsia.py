@@ -236,9 +236,7 @@ def _load(ref: dict[str, str], read_bytes: Callable[[str], bytes]) -> bytes:
     return image
 
 
-def over_capacity_reason(autopsia: dict[str, Any], max_images: int | None) -> str | None:
-    """Return a finding before loading; an unsealed ceiling cannot authorize a call."""
-    record = validate_autopsia(autopsia)
+def _capacity_reason(record: dict[str, Any], max_images: int | None) -> str | None:
     needed = sum(
         len(view["region_refs"]) + len(view["page_render_refs"]) for view in record["views"]
     )
@@ -257,12 +255,17 @@ def over_capacity_reason(autopsia: dict[str, Any], max_images: int | None) -> st
     return None
 
 
+def over_capacity_reason(autopsia: dict[str, Any], max_images: int | None) -> str | None:
+    """Return a finding before loading; an unsealed ceiling cannot authorize a call."""
+    return _capacity_reason(validate_autopsia(autopsia), max_images)
+
+
 def atomic_delivered_pixels(
     autopsia: dict[str, Any], *, read_bytes: Callable[[str], bytes], max_images: int | None
 ) -> dict[str, list[bytes]]:
     """Refuse instead of chunking when all pixels cannot fit in one reader request."""
     record = validate_autopsia(autopsia)
-    reason = over_capacity_reason(record, max_images)
+    reason = _capacity_reason(record, max_images)
     if reason is not None:
         raise SchemaRefusal(reason)
     regions = [_load(ref, read_bytes) for view in record["views"] for ref in view["region_refs"]]
