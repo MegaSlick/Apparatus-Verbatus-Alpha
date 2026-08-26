@@ -333,6 +333,34 @@ def test_an_observation_on_a_page_with_no_ink_map_entry_is_refused_by_name():
         recensor.unclaimed_ink_observations(maps, [observation], 1, {})
 
 
+@pytest.mark.parametrize(
+    "observation",
+    [
+        {"kind": "unrouted-observation"},
+        {"kind": "unrouted-observation", "bounds": None},
+        {"kind": "unrouted-observation", "bounds": [0, 0, 5, 5]},
+        "not-even-a-mapping",
+    ],
+    ids=["missing-bounds", "null-bounds", "list-bounds", "non-mapping-observation"],
+)
+def test_a_retained_observation_with_no_readable_bounds_is_refused_not_skipped(observation):
+    """A malformed pointer is a fatal accounting gap, exactly like a missing map row.
+
+    Silently skipping it would let a corrupted or mis-shaped witness record
+    disappear behind an empty result -- the same silent loss GOVERNANCE 2
+    refuses, and the one this gate exists to catch for every other malformed
+    shape it reads (dimensions, rows, runs, missing map).
+    """
+    recensor = _recensor()
+    box = {"x": 0, "y": 0, "w": 5, "h": 5}
+    maps = recensor.ink_map_by_page(_FakeContext({1: _ink_map(20, 20, [box])}))
+    with pytest.raises(
+        FatalAccounting,
+        match="retained unclaimed witness observation with no .x, y, w, h. bounds",
+    ):
+        recensor.unclaimed_ink_observations(maps, [observation], 1, {})
+
+
 def test_one_observation_funds_one_request_on_its_page():
     """Page-scoped evidence funds one act-scoped grant on that page."""
     confirmed = [{"page_ordinal": 1, "outside_ink_pixels": 40}]

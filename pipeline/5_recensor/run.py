@@ -1326,6 +1326,12 @@ def unclaimed_ink_observations(
     as a measurement of zero ink. With no observations there is no pointer to
     confirm, so an absent row remains inert here; the Armarium later reconciles
     the complete page denominator independently.
+
+    A retained observation whose own ``bounds`` is missing or not the closed
+    ``{x, y, w, h}`` shape is the same kind of gap, not a pointer that happens
+    to point at nothing: silently skipping it would let a malformed witness
+    record disappear behind an empty result instead of the fatal refusal every
+    other malformed-evidence path in this module raises.
     """
     evidence = maps.get(page_ordinal)
     if evidence is None:
@@ -1343,7 +1349,13 @@ def unclaimed_ink_observations(
     for observation in unclaimed_observations:
         bounds = observation.get("bounds") if isinstance(observation, dict) else None
         if not isinstance(bounds, dict):
-            continue
+            raise FatalAccounting(
+                f"page {page_ordinal} has a retained unclaimed witness observation with no "
+                "{x, y, w, h} bounds. Skipping it would read a malformed pointer as one that "
+                "never pointed at ink, the same silent loss this gate exists to refuse. Restore "
+                "the page's sealed Testimonium evidence or restart the run before rerunning the "
+                "Recensor."
+            )
         ink_pixels = _ink_outside_cuts_in_box(evidence, bounds, covered)
         if ink_pixels >= MINIMUM_INK_PIXELS:
             requests.append({"page_ordinal": page_ordinal, "outside_ink_pixels": ink_pixels})
