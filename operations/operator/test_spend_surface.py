@@ -427,3 +427,91 @@ def test_the_saved_balance_history_is_shown_oldest_first_not_in_digest_order(
     assert len(positions) == 2
     assert "observed at: 2026-08-24T08:59:30+00:00" in lines[positions[0]]
     assert "observed at: 2026-08-24T11:59:30+00:00" in lines[positions[1]]
+
+
+def test_one_malformed_field_does_not_delete_the_whole_balance_observation(
+    tmp_path: Path,
+) -> None:
+    """Amount, source and stamp were shown only if all three were strings.
+
+    An observation whose amount was saved as a number therefore vanished with
+    its source and its stamp, and vanished silently — on the one screen that
+    exists to account for observed money (GOVERNANCE 2).
+    """
+
+    receipts = ReceiptStore(tmp_path / "state", now=lambda: NOW)
+    preview = _preview(observed_at="2026-08-24T11:59:30+00:00", alerts=[], deliveries=[])
+    preview["spend"]["ceilings"]["account_balance_observation"]["available_usd"] = 60
+    receipts.write("launch-confirmation", {"summary": "recorded preview", "preview": preview})
+
+    rendered = "\n".join(SpendSurface(receipts, NOW).show(_policy(tmp_path / "reviewed.toml")))
+
+    assert "Observed balance: $not readable: this value was not saved as text" in rendered
+    assert "source: fixture balance ledger" in rendered
+    assert "observed at: 2026-08-24T11:59:30+00:00" in rendered
+    assert "staleness now: CURRENT" in rendered
+
+
+def test_an_alert_saved_as_something_other_than_text_is_named_at_its_position(
+    tmp_path: Path,
+) -> None:
+    """Skipping it dropped its delivery outcome too, one warning short of the record."""
+
+    receipts = ReceiptStore(tmp_path / "state", now=lambda: NOW)
+    receipts.write(
+        "launch-confirmation",
+        {
+            "summary": "recorded preview",
+            "preview": _preview(
+                observed_at="2026-08-24T11:59:30+00:00",
+                alerts=["first threshold crossed", 7],
+                deliveries=["Phone notification: sent.", "Phone notification: NOT DELIVERED."],
+            ),
+        },
+    )
+
+    rendered = "\n".join(SpendSurface(receipts, NOW).show(_policy(tmp_path / "reviewed.toml")))
+
+    assert "Alert: first threshold crossed; delivery record: Phone notification: sent." in rendered
+    assert (
+        "Alert: not readable: this value was not saved as text (saved alert 2); "
+        "delivery record: Phone notification: NOT DELIVERED." in rendered
+    )
+    assert "not attributable" not in rendered
+
+
+def test_an_unreadable_alert_record_is_named_and_the_rest_of_the_view_survives(
+    tmp_path: Path,
+) -> None:
+    receipts = ReceiptStore(tmp_path / "state", now=lambda: NOW)
+    preview = _preview(observed_at="2026-08-24T11:59:30+00:00", alerts=[], deliveries=[])
+    preview["spend"]["ceilings"]["alerts"] = {"first threshold crossed": True}
+    receipt = receipts.write("launch-confirmation", {"summary": "preview", "preview": preview})
+
+    rendered = "\n".join(SpendSurface(receipts, NOW).show(_policy(tmp_path / "reviewed.toml")))
+
+    assert f"{receipt.name}: its saved alerts and delivery outcomes are not both lists" in rendered
+    assert "Observed balance: $60.00" in rendered
+    assert "Hard-stop balance floor: $50.00" in rendered
+
+
+def test_a_confirmed_paid_action_whose_receipt_kept_no_ceilings_is_still_named(
+    tmp_path: Path,
+) -> None:
+    """A launch confirmation records a paid action that was taken.
+
+    Dropping it because its ceilings will not read shows fewer confirmed paid
+    actions than the receipts hold, which is the one thing a money screen may
+    not do quietly.
+    """
+
+    receipts = ReceiptStore(tmp_path / "state", now=lambda: NOW)
+    receipt = receipts.write(
+        "launch-confirmation",
+        {"summary": "recorded preview", "preview": {"spend": {"allowed": True}}},
+    )
+
+    rendered = "\n".join(SpendSurface(receipts, NOW).show(_policy(tmp_path / "reviewed.toml")))
+
+    assert f"{receipt.name}: its saved preview carries no readable spend ceilings" in rendered
+    assert "Recorded balance observations: none" in rendered

@@ -67,7 +67,7 @@ class SpendSurface:
         observations, alerts, unreadable = self._recorded_balance_history()
         if unreadable:
             lines.append(
-                "Saved launch confirmations that could not be read "
+                "Saved launch confirmations that could not be read in full "
                 "(named, not skipped; no number below came from them):"
             )
             lines.extend(f"- {_recorded_text(note)}" for note in unreadable)
@@ -116,35 +116,37 @@ class SpendSurface:
         for path, record in sorted(
             records, key=lambda item: (item[1]["recorded_at"], item[0].name)
         ):
-            preview = record["payload"].get("preview")
-            if not isinstance(preview, dict):
-                continue
-            spend = preview.get("spend")
-            if not isinstance(spend, dict):
-                continue
-            ceilings = spend.get("ceilings")
-            if not isinstance(ceilings, dict):
-                continue
             digest = _receipt_digest(path)
+            preview = record["payload"].get("preview")
+            if preview is None:
+                # A launch confirmation is written with a preview; one without
+                # a preview holds no spend fact either to show or to lose.
+                continue
+            spend = preview.get("spend") if isinstance(preview, dict) else None
+            ceilings = spend.get("ceilings") if isinstance(spend, dict) else None
+            if not isinstance(ceilings, dict):
+                # Reached by a receipt whose ceilings are absent as well as by
+                # one whose ceilings are malformed. Both are worth a line: this
+                # receipt records a *confirmed paid action*, and a money screen
+                # that drops it shows fewer paid actions than were taken.
+                unreadable.append(
+                    f"{path.name}: its saved preview carries no readable spend ceilings, "
+                    "so no number from this confirmed paid action is shown below"
+                )
+                continue
             observation = ceilings.get("account_balance_observation")
             if isinstance(observation, dict):
-                available = observation.get("available_usd")
-                observed_at = observation.get("observed_at")
-                source_name = observation.get("source")
-                if (
-                    isinstance(available, str)
-                    and isinstance(observed_at, str)
-                    and isinstance(source_name, str)
-                ):
-                    observations.append(
-                        {
-                            "available_usd": available,
-                            "observed_at": observed_at,
-                            "source": source_name,
-                            "digest": digest,
-                        }
-                    )
-            alerts.extend(_alert_rows(ceilings, digest))
+                observations.append(
+                    {
+                        "available_usd": _recorded_field(observation.get("available_usd")),
+                        "observed_at": _recorded_field(observation.get("observed_at")),
+                        "source": _recorded_field(observation.get("source")),
+                        "digest": digest,
+                    }
+                )
+            rows, notes = _alert_rows(ceilings, digest)
+            alerts.extend(rows)
+            unreadable.extend(f"{path.name}: {note}" for note in notes)
         return observations, alerts, unreadable
 
     def _balance_line(self, observation: dict[str, str]) -> str:
@@ -184,8 +186,11 @@ def _receipt_digest(path: Path) -> str:
     return path.name.rsplit("-", 1)[-1].removesuffix(".json")
 
 
-def _alert_rows(ceilings: dict[str, object], digest: str) -> list[dict[str, str]]:
+def _alert_rows(ceilings: dict[str, object], digest: str) -> tuple[list[dict[str, str]], list[str]]:
     """Project one receipt's alert episodes without inventing a pairing.
+
+    Returns the rows to show and, separately, any note the caller must print
+    about what this receipt would not read.
 
     The record keeps two flat lists, `alerts` and `alert_notifications`, not
     pairs. The writer appends a delivery line only for an episode it actually
@@ -206,10 +211,16 @@ def _alert_rows(ceilings: dict[str, object], digest: str) -> list[dict[str, str]
     both sides unattributed -- neither list is dropped (GOVERNANCE 2).
     """
 
-    recorded = ceilings.get("alerts")
-    deliveries = ceilings.get("alert_notifications")
+    recorded = ceilings.get("alerts", [])
+    deliveries = ceilings.get("alert_notifications", [])
     if not isinstance(recorded, list) or not isinstance(deliveries, list):
-        return []
+        # Returning nothing here dropped whatever alert history the receipt did
+        # keep, and dropped it without a word; the caller names the receipt
+        # instead (GOVERNANCE 2).
+        return [], [
+            "its saved alerts and delivery outcomes are not both lists, "
+            "so no alert episode from it is shown below"
+        ]
     paired = len(recorded) == len(deliveries)
     unpaired = (
         f"not attributable: the receipt saved {len(recorded)} alert(s) "
@@ -218,7 +229,9 @@ def _alert_rows(ceilings: dict[str, object], digest: str) -> list[dict[str, str]
     rows: list[dict[str, str]] = []
     for position, alert in enumerate(recorded):
         if not isinstance(alert, str):
-            continue
+            # Named, not skipped: a skipped entry took its delivery outcome
+            # down with it and left the screen one paid-action warning short.
+            alert = f"{NOT_RECORDED_AS_TEXT} (saved alert {position + 1})"
         if not paired:
             rows.append({"alert": alert, "delivery": unpaired, "digest": digest})
             continue
@@ -239,7 +252,24 @@ def _alert_rows(ceilings: dict[str, object], digest: str) -> list[dict[str, str]
             }
             for delivery in deliveries
         )
-    return rows
+    return rows, []
+
+
+NOT_RECORDED_AS_TEXT = "not readable: this value was not saved as text"
+"""Shown in place of one malformed field, never in place of the record holding it."""
+
+
+def _recorded_field(value: object) -> str:
+    """Keep a malformed field visible as one missing field, not a missing fact.
+
+    Requiring all of an observation's fields to be strings dropped the whole
+    observation -- amount, source and stamp together -- when any one of them
+    was not, and dropped it with nothing said. The receipt keeps the bytes it
+    was given (GOVERNANCE 4); the screen says which part of them will not read
+    and leaves the rest legible (GOVERNANCE 2).
+    """
+
+    return value if isinstance(value, str) else NOT_RECORDED_AS_TEXT
 
 
 def _recorded_text(value: str) -> str:
