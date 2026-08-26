@@ -1270,12 +1270,47 @@ def current_page_testimonia(context) -> dict[tuple[int, str], dict]:
     }
 
 
-def uncovered_non_whitespace_ranges(text: str, covered: list[bool]) -> dict:
-    """Losslessly compact uncovered non-whitespace offsets into half-open ranges."""
+def _covered_intervals(
+    spans: list[tuple[int, int, str]], text_length: int
+) -> list[tuple[int, int]]:
+    """Validate and merge coverage without allocating one slot per character."""
+    intervals = []
+    for start, end, _ in spans:
+        if start < 0 or end < start or end > text_length:
+            raise FatalAccounting("act attachment span lies outside its page Testimonium")
+        if start != end:
+            intervals.append((start, end))
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(intervals):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def uncovered_non_whitespace_ranges(text: str, covered_intervals: list[tuple[int, int]]) -> dict:
+    """Losslessly compact uncovered non-whitespace offsets into half-open ranges.
+
+    Page testimony crosses an untrusted boundary and can be much larger than a
+    normal reading.  Coverage therefore stays proportional to the number of
+    retained attachment spans, not to the response length; the text itself is
+    scanned once without materializing a page-sized boolean bitmap.
+    """
     ranges = []
     count = 0
+    interval_index = 0
     for index, char in enumerate(text):
-        if covered[index] or char.isspace():
+        while (
+            interval_index < len(covered_intervals)
+            and covered_intervals[interval_index][1] <= index
+        ):
+            interval_index += 1
+        covered = (
+            interval_index < len(covered_intervals)
+            and covered_intervals[interval_index][0] <= index
+        )
+        if covered or char.isspace():
             continue
         count += 1
         if ranges and ranges[-1]["end"] == index:
@@ -1440,6 +1475,10 @@ def testimony_content_findings(context) -> dict[int, dict]:
                         presented.get("source_page_id") if isinstance(presented, dict) else None
                     ),
                     testimonium_id=record["artifact_id"],
+                    proposal_boxes=[
+                        region["payload"]["transform"]["bounds"]
+                        for region in proposal_regions_by_page.get(ordinal, [])
+                    ],
                 )
             except ContractError as error:
                 raise FatalAccounting(
@@ -1522,13 +1561,8 @@ def testimony_content_findings(context) -> dict[int, dict]:
                     ):
                         raise FatalAccounting("attached page witness has malformed alignment span")
                     spans.append((span["start"], span["end"], act["act_id"]))
-        covered = [False] * len(text)
-        for start, end, _ in spans:
-            if start < 0 or end < start or end > len(text):
-                raise FatalAccounting("act attachment span lies outside its page Testimonium")
-            for index in range(start, end):
-                covered[index] = True
-        uncovered = uncovered_non_whitespace_ranges(text, covered)
+        covered_intervals = _covered_intervals(spans, len(text))
+        uncovered = uncovered_non_whitespace_ranges(text, covered_intervals)
         finding = findings.setdefault(
             ordinal,
             {"by_chair": {}, "shortfall": False},

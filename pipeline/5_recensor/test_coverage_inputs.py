@@ -1,6 +1,7 @@
 """Focused audit tests for R6's new geometry and testimony coverage inputs."""
 
 import importlib.util
+import tracemalloc
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -8,6 +9,7 @@ import pytest
 
 from common.contracts.errors import FatalAccounting
 from common.contracts.identities import attempt_id
+from common.native_witness import partition_disagreement
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -253,6 +255,82 @@ def test_missing_retained_partition_cannot_suppress_a_rederived_coverage_finding
             "overlap_rule": {"rule": "positive-area", "status": "unmeasured"},
         }
     ]
+
+
+def test_retained_partition_is_bound_to_the_current_sealed_proposals(monkeypatch):
+    """An internally consistent stale snapshot is still false evidence."""
+    observed = [
+        {
+            "ordinal": 0,
+            "bounds": {"x": 0, "y": 0, "w": 10, "h": 10},
+            "bounds_source": "native",
+        }
+    ]
+    page = _page_testimonium(outcome="read", reported="ink")
+    page["payload"].update(
+        {
+            "presented": {"source_page_id": "page-1"},
+            "observed": observed,
+        }
+    )
+    stale_proposal = {
+        "payload": {
+            "origin": "proposal",
+            "transform": {
+                "source_page_id": "page-1",
+                "source_page_ordinal": 1,
+                "bounds": {"x": 20, "y": 20, "w": 5, "h": 5},
+            },
+        }
+    }
+    page["payload"]["partition_disagreement"] = partition_disagreement(page, [stale_proposal])
+    context = _context(page)
+    context.tree.records["attachment-1"] = _attachment(context, end=3)
+    monkeypatch.setattr(
+        RUN,
+        "expected_acts",
+        lambda unused: [{"act_id": "act-1", "act_key": "a1", "page_ordinal": 1}],
+    )
+    sealed_proposal = {
+        "payload": {
+            "origin": "proposal",
+            "transform": {
+                "source_page_id": "page-1",
+                "source_page_ordinal": 1,
+                "bounds": {"x": 0, "y": 0, "w": 10, "h": 10},
+            },
+        }
+    }
+    monkeypatch.setattr(RUN, "artifacts_for", lambda *unused: [sealed_proposal])
+
+    with pytest.raises(FatalAccounting, match="false partition facts.*sealed proposals"):
+        RUN.testimony_content_findings(context)
+
+
+def test_large_untrusted_page_text_does_not_allocate_a_character_bitmap(monkeypatch):
+    """Coverage memory stays bounded by attachment spans, not response length."""
+    text = "x" * 1_000_000
+    page = _page_testimonium(outcome="read", reported=text)
+    context = _context(page)
+    context.tree.records["attachment-1"] = _attachment(context, end=0)
+    monkeypatch.setattr(
+        RUN,
+        "expected_acts",
+        lambda unused: [{"act_id": "act-1", "act_key": "a1", "page_ordinal": 1}],
+    )
+
+    tracemalloc.start()
+    try:
+        finding = RUN.testimony_content_findings(context)[1]["by_chair"]["attestator_1"]
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert finding["uncovered_non_whitespace"] == {
+        "ranges": [{"start": 0, "end": len(text)}],
+        "count": len(text),
+    }
+    assert peak < 2_000_000
 
 
 def test_an_attached_page_witness_requires_its_current_page_testimonium(monkeypatch):
