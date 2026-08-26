@@ -856,6 +856,50 @@ def test_confirmed_digest_changed_before_worker_launch_is_refused_without_a_reco
     assert {path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")} == before
 
 
+def test_boundary_changed_during_worker_append_is_retained_but_not_reported_as_success(
+    tmp_path, monkeypatch
+):
+    """A newly stale immutable record is a refusal with a recovery location."""
+
+    run_root, run_id = _make_run(tmp_path)
+    tree = RunTree(run_root, run_id)
+    reviewed_digest = _armarium_digest(run_root, run_id)
+    original_run_confined = advance.run_confined
+
+    def reseal_after_worker(*args, **kwargs):
+        result = original_run_confined(*args, **kwargs)
+        seal, _digest = advance.sealed_boundary(tree, "armarium")
+        record = tree.read_artifact("armarium", "stage-seal", seal["artifact_id"])
+        record["payload"] = {
+            **record["payload"],
+            "census": [*record["payload"]["census"], {"kind": "post-append-change", "count": 1}],
+        }
+        record["self_hash"] = self_hash(record)
+        tree.resolve(
+            tree.artifact_path("armarium", "stage-seal", seal["artifact_id"])
+        ).write_bytes(canonical_bytes(record))
+        return result
+
+    monkeypatch.setattr(advance, "run_confined", reseal_after_worker)
+
+    with pytest.raises(OperatorError) as refusal:
+        advance.trigger_advance(
+            run_root,
+            run_id,
+            "armarium",
+            reason="operator reviewed the pre-append boundary",
+            workspace=ROOT,
+            expected_digest=reviewed_digest,
+        )
+
+    assert refusal.value.code == ErrorCode.ADVANCE_REFUSED
+    assert "wrote checked decision record receipts/sha256/" in (refusal.value.detail or "")
+    projected = review.ReadOnlyRun(run_root, run_id).projection().advance_records
+    stale = [row for row in projected if row["reason"] == "operator reviewed the pre-append boundary"]
+    assert len(stale) == 1
+    assert stale[0]["boundary_current"] is False
+
+
 # --- The trigger: a hostile run tree can lie to a person, never to evidence. -----------
 
 

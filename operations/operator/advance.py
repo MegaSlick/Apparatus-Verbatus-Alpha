@@ -137,11 +137,11 @@ def record_advance(
     `sealed_boundary` above and the write below leaves a record binding a
     digest that is already stale. No number of re-reads closes that: there is
     no cross-process lock over a run tree, and GOVERNANCE 4 forbids retracting
-    the record once it is written, so a post-write check could only report
-    what the binding already reports. What the binding buys instead is that
-    the staleness is permanent and visible — `verify_advance` refuses such a
-    record, and `review._still_binds` names it stale on the one surface a
-    person reads, every time they read it.
+    the record once it is written. What the binding buys instead is that the
+    staleness is permanent and visible: `trigger_advance` checks again after
+    the append and refuses to report an already-stale record as success,
+    `verify_advance` refuses such a record, and `review._still_binds` names it
+    stale on the one surface a person reads, every time they read it.
 
     ``expected_digest`` is required, not merely checked when given: this is
     the one function that can append an advance record, so it is the one
@@ -207,7 +207,9 @@ def trigger_advance(
     The CLI reaches this only after a typed confirmation naming the exact seal
     digest observed before launch. The worker rechecks that digest, so a seal
     changed between display and execution is refused rather than silently
-    advancing a boundary the operator did not review.
+    advancing a boundary the operator did not review. The parent checks the
+    returned record against the current seal once more, so a change during the
+    worker's append window is reported before this call can return success.
 
     ``expected_digest`` is required for the same reason it is required in
     `record_advance`: an omitted value used to fall back to whatever digest
@@ -291,6 +293,17 @@ def trigger_advance(
             or record["reason"] != reason
         ):
             raise ApprovalRefusal("the advance worker returned a different decision record")
+        try:
+            verify_advance(tree, stage, reference)
+        except ApprovalRefusal as error:
+            raise OperatorError(
+                ErrorCode.ADVANCE_REFUSED,
+                detail=(
+                    f"the advance worker wrote checked decision record {reference.relative_path}, "
+                    "but the stage seal changed before the result was verified; the immutable "
+                    "record remains visible as stale, so inspect advance_records before retrying"
+                ),
+            ) from error
         return reference
     except (ApprovalRefusal, ContractError, KeyError, OSError, TypeError, ValueError) as error:
         raise OperatorError(
