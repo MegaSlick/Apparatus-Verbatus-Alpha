@@ -614,6 +614,34 @@ def test_acceptance_refuses_one_path_for_state_and_confirmation(tmp_path: Path):
     assert not shared.exists()
 
 
+def test_acceptance_refuses_case_variant_state_and_confirmation_paths(tmp_path: Path):
+    """APFS is case-insensitive by default; two spellings must not alias silently.
+
+    Neither `Path.resolve()` (which does not correct case) nor `samefile()`
+    (which needs both paths to already exist) can see this collision before
+    either file exists, so an operator naming the state journal `STATE.JSON`
+    and the confirmation `state.json` would otherwise journal the acceptance
+    to one directory entry and then have the confirmation's unconditional
+    `os.replace` silently clobber it -- destroying the just-written journal
+    with no refusal.
+    """
+    batch = _Batch(tmp_path)
+    draft = batch.draft()
+    state_path = tmp_path / "STATE.JSON"
+    confirmation_path = tmp_path / "state.json"
+    with pytest.raises(triage.TriageRefusal, match="acceptance-paths-alias"):
+        triage.accept_candidate(
+            state_path,
+            batch.queue,
+            item_digest=batch.item,
+            draft=draft,
+            confirmation_path=confirmation_path,
+            preview_sha256=digest_of(draft),
+        )
+    assert not state_path.exists()
+    assert not confirmation_path.exists()
+
+
 def test_uncreatable_write_and_lock_resources_are_named_refusals(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

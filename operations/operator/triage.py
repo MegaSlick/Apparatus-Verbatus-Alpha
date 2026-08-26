@@ -592,8 +592,22 @@ def accept_candidate(
     state_target = Path(state_path)
     target = Path(confirmation_path)
     try:
-        paths_alias = state_target.resolve() == target.resolve() or (
-            state_target.exists() and target.exists() and state_target.samefile(target)
+        state_resolved = state_target.resolve()
+        target_resolved = target.resolve()
+        paths_alias = (
+            state_resolved == target_resolved
+            # `Path.resolve` does not correct case, and APFS -- the default
+            # filesystem this console ships to (see `backup.py`'s `_contains`)
+            # -- is case-insensitive. Two spellings that name no file yet are
+            # one directory entry the moment both writes land, and neither the
+            # exact-text check above nor `samefile` below (which needs both
+            # paths to already exist) can see that collision before it
+            # happens: the journal write would durably publish, and the
+            # unconditional `os.replace` behind the confirmation write would
+            # then silently clobber it, with no schema check on that path to
+            # catch the loss. Checked on normalized text instead.
+            or state_resolved.as_posix().casefold() == target_resolved.as_posix().casefold()
+            or (state_target.exists() and target.exists() and state_target.samefile(target))
         )
     except OSError as error:
         raise TriageRefusal(
