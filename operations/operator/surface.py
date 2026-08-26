@@ -8,7 +8,11 @@ surface.
 
 from __future__ import annotations
 
+import errno
 import fcntl
+import json
+import os
+import stat
 import subprocess
 import sys
 import time
@@ -73,7 +77,14 @@ from . import notify_bridge
 from .errors import ErrorCode, OperatorError, strip_control_bytes
 from .fakes import LocalFixtureObjectStore, OperatorFakeProvider
 from .notify_bridge import Notifier
-from .records import DescriptorStore, ReceiptStore, RecordError, sha256_file, utc_stamp
+from .records import (
+    MAX_RECORD_BYTES,
+    DescriptorStore,
+    ReceiptStore,
+    RecordError,
+    sha256_file,
+    utc_stamp,
+)
 from .volume_cost import volume_cost_lines
 from .volume_s3 import S3VolumeTarget, VolumeSpec, VolumeTransferRefusal
 
@@ -441,6 +452,11 @@ class OperatorSurface:
             # This re-check must remain inside the cross-process claim: the active
             # receipt does not exist until after the provider call returns.
             self._refuse_if_active_pod()
+            # Read first, so a prepared launch carrying no preview leaves through
+            # this property's own three-part refusal. Reached inside the payload
+            # below it would instead be an attribute error on `None` — a raw
+            # traceback on the money path, which this surface never shows.
+            review = prepared.review_record
             # Only PodRuntime may validate and consume a challenge. This durable
             # receipt commits to the input bytes without retaining a spendable phrase.
             confirmation_receipt = self._write_action(
@@ -450,8 +466,8 @@ class OperatorSurface:
                     "action": prepared.action,
                     "adopted_pod_id": prepared.adopted_pod_id,
                     "request": _request_record(prepared.request),
-                    "preview": phraseless(prepared.result.preview).to_record(),
-                    "review": prepared.review_record,
+                    "preview": review["preview"],
+                    "review": review,
                     "review_sha256": prepared.review_digest,
                     "confirmation_sha256": (
                         None if confirmation is None else digest_bytes(confirmation.encode("utf-8"))
@@ -1415,6 +1431,11 @@ class OperatorSurface:
 
         Unreadable leases are returned as evidence rather than skipped because
         neither caller may infer a verified close from an unreadable record.
+        A symlink is one of those: `operations/pod/launch.py` refuses to read a
+        lease through one at the paid gate, and the console reader that decides
+        whether `status` says "a pod may still be billing" cannot be the lenient
+        one — a lease replaced by a link to some closed record would otherwise
+        report an open pod as absent.
         """
 
         root = self.state_root / "leases"
@@ -1425,8 +1446,11 @@ class OperatorSurface:
             return [], [f"the lease directory {root} could not be listed: {error}"]
         open_leases: list[tuple[Path, PodLease]] = []
         for path in paths:
+            if path.is_symlink():
+                unreadable.append(f"lease {path} is a symlink")
+                continue
             try:
-                lease = LeaseStore(path).load()
+                lease = _read_published_lease(path)
             except Exception as error:
                 unreadable.append(f"lease {path} could not be read: {error}")
                 continue
@@ -1954,6 +1978,42 @@ def _load_policy(path: str | Path) -> SpendPolicy:
         return load_spend_policy(path)
     except Exception as error:
         raise OperatorError(ErrorCode.SPEND_POLICY_REQUIRED, detail=str(error)) from error
+
+
+def _read_published_lease(path: Path) -> PodLease | None:
+    """Read one published lease without writing anything beside it.
+
+    `LeaseStore.load()` takes the writer's advisory lock, and taking it *creates*
+    `.<name>.lock` in the lease directory. `status` is documented — here, in
+    `records.py`, and in this package's README — as reading only, and it is the
+    one verb an operator runs to find a pod that may still be billing: a state
+    directory that cannot be written must not turn every lease into UNREADABLE
+    and hide exactly that (GOVERNANCE 2). A lease is only ever published whole
+    (`os.link` of an fsynced temporary, or `os.replace`), so a lock-free read
+    sees one complete version or another, never a torn one, and
+    `PodLease.from_record` still refuses any record whose seal does not
+    recompute. The authority over a second paid action remains the gate's own
+    locked read in `operations/pod/launch.py`.
+
+    Opened the way `records.sha256_file` opens evidence, and for its reasons:
+    no-follow, so the caller's symlink check cannot be raced between the look
+    and the open; non-blocking and refused unless the open descriptor says
+    regular, so a FIFO planted at a lease name cannot hang `status` forever
+    having printed nothing; and bounded, because a file this tool did not write
+    is the only way one of these reaches a mebibyte.
+    """
+
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return None
+    with os.fdopen(descriptor, "rb") as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            raise OSError(errno.EINVAL, "a lease needs a regular file", str(path))
+        data = handle.read(MAX_RECORD_BYTES + 1)
+    if len(data) > MAX_RECORD_BYTES:
+        raise RecordError(f"lease {path} is larger than {MAX_RECORD_BYTES} bytes and was not read")
+    return PodLease.from_record(json.loads(data.decode("utf-8")))
 
 
 def _request_record(request: PodCreateRequest) -> dict[str, Any]:

@@ -520,6 +520,102 @@ def test_status_shows_the_open_lease_the_refusal_sends_the_operator_to_read(
     assert any("may still be billing" in line for line in lines)
 
 
+def _open_lease_path(surface: OperatorSurface, provider: OperatorFakeProvider, spend: Path) -> Path:
+    """Leave exactly one open lease in `surface`'s state and return its path."""
+
+    provider.inject_post_create_failure(ProviderFailure("connection reset after POST"))
+    prepared = surface.prepare_launch(_request(name="lost-response"), policy_path=spend)
+    with pytest.raises(OperatorError):
+        surface.launch(prepared, prepared.confirmation_phrase)
+    return next(iter(sorted((surface.state_root / "leases").glob("*.json"))))
+
+
+def test_a_lease_that_is_a_symlink_is_never_read_as_evidence(tmp_path: Path) -> None:
+    """The console reader refuses a linked lease exactly as the paid gate does.
+
+    `operations/pod/launch.py` treats a symlinked lease as a root it cannot
+    prove clear. Following one here would let a record outside this operator's
+    state decide whether a pod may be billing -- and a link onto anything
+    already closed would report an open pod as absent, in the one verb an
+    operator runs to find a machine that is still costing money.
+    """
+
+    provider = OperatorFakeProvider(now=lambda: START)
+    spend = _spend_policy(tmp_path)
+    surface = _surface(tmp_path, provider=provider)
+    lease = _open_lease_path(surface, provider, spend)
+    stash = tmp_path / "outside-this-state"
+    stash.mkdir()
+    moved = stash / lease.name
+    lease.rename(moved)
+    lease.symlink_to(moved)
+
+    with pytest.raises(OperatorError) as unreadable:
+        _surface(tmp_path, provider=provider).status()
+    assert unreadable.value.code is ErrorCode.STATUS_UNREADABLE
+    assert "is a symlink" in (unreadable.value.detail or "")
+
+    with pytest.raises(OperatorError) as refused:
+        _surface(tmp_path, provider=provider).prepare_launch(
+            _request(name="second-attempt"), policy_path=spend
+        )
+    assert refused.value.code is ErrorCode.SAFETY_CHECK_FAILED
+    assert "is a symlink" in (refused.value.detail or "")
+    assert len(provider.pods) == 1, "a second pod was created past a linked lease"
+
+
+def test_status_reads_an_open_lease_without_writing_beside_it(tmp_path: Path) -> None:
+    """`status` is documented as making no record of its own, leases included.
+
+    Taking the lease writer's advisory lock creates `.<name>.lock` in the lease
+    directory, so a state directory this tool cannot write would turn every
+    lease into UNREADABLE -- hiding the pod that may still be billing behind
+    the very lock nothing here needs. The writer's own lock files are cleared
+    first: this is the state a restore, a sync, or a read-only medium presents,
+    carrying the lease records and nothing else.
+    """
+
+    provider = OperatorFakeProvider(now=lambda: START)
+    spend = _spend_policy(tmp_path)
+    surface = _surface(tmp_path, provider=provider)
+    lease = _open_lease_path(surface, provider, spend)
+    leases = lease.parent
+    for stale in leases.iterdir():
+        if stale.name.startswith("."):
+            stale.unlink()
+    before = {entry.name for entry in leases.iterdir()}
+
+    lines = _surface(tmp_path, provider=provider).status()
+
+    assert any(lease.name in line for line in lines), lines
+    assert {entry.name for entry in leases.iterdir()} == before
+
+
+def test_a_prepared_launch_without_a_preview_refuses_in_plain_language(tmp_path: Path) -> None:
+    """No money-path input reaches the operator as a raw attribute error.
+
+    `PreparedLaunch` guards both of its derived screens on a missing preview.
+    The confirmation receipt has to consult that guard before it reads the
+    preview, or the guard never runs.
+    """
+
+    surface = _surface(tmp_path)
+    policy = load_spend_policy(_spend_policy(tmp_path))
+    prepared = surface_module.PreparedLaunch(
+        _request(),
+        "create",
+        None,
+        LaunchResult(LaunchState.PREVIEW),
+        policy,
+        surface._runtime(policy),
+    )
+
+    with pytest.raises(OperatorError) as refused:
+        surface.launch(prepared, "anything at all")
+
+    assert refused.value.code is ErrorCode.CONFIRMATION_REQUIRED
+
+
 def test_status_never_calls_a_state_holding_an_unreadable_lease_empty(tmp_path: Path) -> None:
     """Unreadable lease evidence prevents both an empty and a closed claim."""
 
