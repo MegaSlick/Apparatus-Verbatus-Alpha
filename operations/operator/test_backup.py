@@ -450,6 +450,24 @@ def test_backup_child_refuses_a_source_with_a_different_parent_observed_identity
     assert not list((mac / "snapshots" / "sha256").glob("*.json"))
 
 
+def test_backup_preserves_a_run_tree_contract_refusal_as_a_named_backup_refusal(
+    tmp_path: Path, monkeypatch
+) -> None:
+    volume, run_id = _run_tree(tmp_path)
+    mac = tmp_path / "mac"
+
+    class RefusingRunTree:
+        def __init__(self, *args, **kwargs):
+            raise backup_module.ContractError("run tree identity drifted")
+
+    monkeypatch.setattr(backup_module, "RunTree", RefusingRunTree)
+
+    with pytest.raises(BackupRefusal, match="could not be bound.*identity drifted"):
+        sync_run_tree(volume, run_id, mac)
+
+    assert not list((mac / "snapshots" / "sha256").glob("*.json"))
+
+
 def test_backup_child_refuses_a_replaced_layout_directory_identity(tmp_path: Path) -> None:
     volume, run_id = _run_tree(tmp_path)
     mac = tmp_path / "mac"
