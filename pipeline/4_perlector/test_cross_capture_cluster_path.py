@@ -531,11 +531,10 @@ def test_composed_two_capture_path_establishes_one_logical_record_and_projects_o
     source_b = fixture["captures"][1]
     # Capture B's own declared source-page ordinal, read off the fixture rather
     # than asserted here: a source-page ordinal indexes the run's submission
-    # manifest, so two distinct captures cannot share one. The fixture gave both
-    # captures ordinal 1 and this test quietly substituted a 2 of its own, which
-    # made every downstream page attribution for capture B unfalsifiable -- the
-    # census said page 2 while the partition row the export derives membership
-    # from said page 1, and nothing compared the two.
+    # manifest, so two distinct captures cannot share one. An ordinal invented
+    # by this test makes every downstream page attribution for capture B
+    # unfalsifiable -- the census would say one page while the partition row the
+    # export derives membership from says another, with nothing comparing them.
     source_b_ordinal = source_b["page_ordinal"]
     assert source_a["page_ordinal"] != source_b_ordinal
     regions = _joint_basis_regions(fixture, autopsia)
@@ -768,11 +767,11 @@ def test_composed_two_capture_path_establishes_one_logical_record_and_projects_o
         armarium_export._text_bundle_records(verification_root, list(pages))
 
     # The bundle's own act denominator, under the name of what was counted.
-    # Exporting one logical act under the manifest's fixed "proposal-seal
-    # expected acts" claim reported a number nobody measured -- the seal held
-    # two rows -- and dropped the count a reader needs to reconcile the bundle
-    # against that seal (GOVERNANCE 2, 10; consult §5.2's "the terminal ledger
-    # reports both counts explicitly").
+    # One logical act exported under the manifest's fixed "proposal-seal
+    # expected acts" claim would report a number nobody measured -- the seal
+    # here holds two rows -- and would drop the count a reader needs to
+    # reconcile the bundle against that seal (GOVERNANCE 2, 10; consult §5.2's
+    # "the terminal ledger reports both counts explicitly").
     with ZipFile(BytesIO(bundle.data)) as archive:
         manifest = json.loads(archive.read("EXPORT_MANIFEST.json"))
     claim = manifest["claims"]["act_partition"]

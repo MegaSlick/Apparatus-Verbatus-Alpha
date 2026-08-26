@@ -83,6 +83,16 @@ def _sha(value: Any, what: str) -> str:
     return value
 
 
+def _is_derived_id(value: Any, prefix: str) -> bool:
+    """A derived identity of one kind: the right shape *and* the right prefix.
+
+    `is_well_formed` accepts every derived-identity prefix, so the prefix test
+    is what pins which kind of thing a field names. Shape alone would let a page
+    id stand where an act id belongs.
+    """
+    return is_well_formed(value) and value.startswith(prefix)
+
+
 def _act(row: Any) -> dict[str, Any]:
     required = {"act_id", "act_key", "page_id", "page_ordinal", "source_sha256", "proposal_refs"}
     if not isinstance(row, dict) or set(row) != required:
@@ -91,12 +101,7 @@ def _act(row: Any) -> dict[str, Any]:
         isinstance(row[name], str) and row[name] for name in ("act_id", "act_key", "page_id")
     ):
         raise SchemaRefusal("physical-act partition: local act lacks immutable identity lineage")
-    if (
-        not is_well_formed(row["act_id"])
-        or not row["act_id"].startswith("act_")
-        or not is_well_formed(row["page_id"])
-        or not row["page_id"].startswith("pg_")
-    ):
+    if not _is_derived_id(row["act_id"], "act_") or not _is_derived_id(row["page_id"], "pg_"):
         raise SchemaRefusal(
             "physical-act partition: local act_id or page_id is not a recognized derived "
             "identity; the partition is refused because free-form or normalization-variant "
@@ -139,11 +144,8 @@ def _alignment(row: Any) -> dict[str, Any]:
         raise SchemaRefusal("physical-act partition: capture alignment must use its closed shape")
     if not all(isinstance(row[name], str) and row[name] for name in required):
         raise SchemaRefusal("physical-act partition: capture alignment is incomplete")
-    if (
-        not is_well_formed(row["page_id"])
-        or not row["page_id"].startswith("pg_")
-        or not is_well_formed(row["physical_page_id"])
-        or not row["physical_page_id"].startswith("ppg_")
+    if not _is_derived_id(row["page_id"], "pg_") or not _is_derived_id(
+        row["physical_page_id"], "ppg_"
     ):
         raise SchemaRefusal(
             "physical-act partition: capture alignment page_id or physical_page_id is not a "
@@ -523,8 +525,7 @@ def validate_physical_act_partition(payload: dict[str, Any]) -> dict[str, Any]:
             page = component["physical_page_id"]
             required_captures = component["required_capture_sha256s"]
             if (
-                not is_well_formed(page)
-                or not page.startswith("ppg_")
+                not _is_derived_id(page, "ppg_")
                 or not isinstance(required_captures, list)
                 or not required_captures
                 or required_captures != sorted(set(required_captures))
@@ -564,7 +565,7 @@ def validate_physical_act_partition(payload: dict[str, Any]) -> dict[str, Any]:
             page_ids = presentation["page_ids"]
             local_ids = presentation["local_act_ids"]
             projected = presentation["projected_view_refs"]
-            if not is_well_formed(page) or not page.startswith("ppg_"):
+            if not _is_derived_id(page, "ppg_"):
                 raise SchemaRefusal(
                     "physical-act partition: capture presentation physical_page_id is not a "
                     "recognized derived identity; the partition is refused because capture "
@@ -575,10 +576,10 @@ def validate_physical_act_partition(payload: dict[str, Any]) -> dict[str, Any]:
                 not isinstance(page_ids, list)
                 or not page_ids
                 or page_ids != sorted(set(page_ids))
-                or not all(is_well_formed(item) and item.startswith("pg_") for item in page_ids)
+                or not all(_is_derived_id(item, "pg_") for item in page_ids)
                 or not isinstance(local_ids, list)
                 or local_ids != sorted(set(local_ids))
-                or not all(is_well_formed(item) and item.startswith("act_") for item in local_ids)
+                or not all(_is_derived_id(item, "act_") for item in local_ids)
                 or not isinstance(presentation["alignment_ref"], str)
                 or not presentation["alignment_ref"]
                 or not isinstance(projected, list)
@@ -615,8 +616,7 @@ def validate_physical_act_partition(payload: dict[str, Any]) -> dict[str, Any]:
         elif scope == "physical-act":
             if (
                 physical != logical
-                or not is_well_formed(logical)
-                or not logical.startswith("pac_")
+                or not _is_derived_id(logical, "pac_")
                 or not components
                 or presentation_pairs != component_pairs
             ):

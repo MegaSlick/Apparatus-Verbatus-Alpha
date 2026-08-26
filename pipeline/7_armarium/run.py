@@ -95,20 +95,13 @@ _SOURCE_CITATION_FIELDS = frozenset(
         "container_page_index",
     }
 )
-
-
-def logical_act_projection_entry(
-    record: dict, *, category: str, source_regions: list[dict], witnesses: list[dict]
-) -> dict:
-    """Project one clustered Archetypus record without selecting a member act.
-
-    The mature bundle codecs call their stable identity columns ``act_id`` and
-    ``act_key``.  For a logical record both are derived solely from
-    ``logical_act_id``; neither may contain a capture-local member key.  This
-    compatibility spelling is at the export edge only, while the immutable
-    Archetypus record and its index retain the explicit logical field.
-    """
-    required = {
+# Respelled rather than imported from `pipeline/6_archetypus/run.py`: stages talk
+# only through `common/` (`pipeline/test_stage_import_boundaries.py`), and the
+# export edge is meant to re-prove the producer's shape independently rather than
+# inherit it. `test_cross_capture_cluster_path.py` drives a real Archetypus record
+# through this projection, so the two spellings cannot drift unnoticed.
+_LOGICAL_RECORD_FIELDS = frozenset(
+    {
         "logical_act_id",
         "physical_page_components",
         "member_local_acts",
@@ -126,20 +119,35 @@ def logical_act_projection_entry(
         "recensor_ref",
         "self_hash",
     }
-    if not isinstance(record, dict) or set(record) != required:
+)
+_LOGICAL_COMPONENT_FIELDS = frozenset({"physical_page_id", "required_capture_sha256s"})
+_LOGICAL_MEMBER_FIELDS = frozenset(
+    {"act_id", "act_key", "page_id", "page_ordinal", "source_sha256", "proposal_refs"}
+)
+
+
+def logical_act_projection_entry(
+    record: dict, *, category: str, source_regions: list[dict], witnesses: list[dict]
+) -> dict:
+    """Project one clustered Archetypus record without selecting a member act.
+
+    The mature bundle codecs call their stable identity columns ``act_id`` and
+    ``act_key``.  For a logical record both are derived solely from
+    ``logical_act_id``; neither may contain a capture-local member key.  This
+    compatibility spelling is at the export edge only, while the immutable
+    Archetypus record and its index retain the explicit logical field.
+    """
+    if not isinstance(record, dict) or set(record) != _LOGICAL_RECORD_FIELDS:
         raise SchemaRefusal(
             "logical Armarium projection received an Archetypus outside its closed schema; "
             "the projection is refused because added or missing fields can bypass conservation"
         )
-    # The image-local export boundary re-derives the same integrity proof over
-    # its Archetypus record before trusting it (`_archetypus_rows`'s
-    # `validate_record`, and `verify_established_record`'s own self-hash and
-    # text_hash checks) rather than projecting a field set that merely matches.
-    # This logical entry point had none of that: closing the field set alone
-    # does not prove the record is the one its own self_hash and text_hash
-    # claim, or that it retains at least one physical page component and one
-    # member local act -- a forged, truncated, or memberless record passed
-    # every check here and was projected as an established logical act.
+    # A matching field set proves nothing about the bytes inside it, so this
+    # boundary re-derives the record's own integrity the way the image-local one
+    # does (`_archetypus_rows`'s `validate_record`, and
+    # `verify_established_record`'s self-hash and text_hash checks). Without the
+    # checks that follow, a forged, truncated, or memberless record projects as
+    # an established logical act.
     if not verify_self_hash(record):
         raise SchemaRefusal(
             "logical Armarium projection record fails its self_hash; the projection is "
@@ -159,12 +167,11 @@ def logical_act_projection_entry(
         raise SchemaRefusal("logical Armarium projection has no retained physical page components")
     if not isinstance(record["member_local_acts"], list) or not record["member_local_acts"]:
         raise SchemaRefusal("logical Armarium projection has no retained local members")
-    component_fields = {"physical_page_id", "required_capture_sha256s"}
     components = record["physical_page_components"]
     component_pages = []
     component_sources: set[str] = set()
     for component in components:
-        if not isinstance(component, dict) or set(component) != component_fields:
+        if not isinstance(component, dict) or set(component) != _LOGICAL_COMPONENT_FIELDS:
             raise SchemaRefusal(
                 "logical Armarium projection has a component outside its closed schema; the "
                 "projection is refused because its capture denominator cannot be verified"
@@ -195,19 +202,11 @@ def logical_act_projection_entry(
             "logical Armarium projection repeats or misorders a physical-page component; the "
             "projection is refused because one component cannot count twice"
         )
-    member_fields = {
-        "act_id",
-        "act_key",
-        "page_id",
-        "page_ordinal",
-        "source_sha256",
-        "proposal_refs",
-    }
     members = record["member_local_acts"]
     member_ids = []
     member_keys = []
     for member in members:
-        if not isinstance(member, dict) or set(member) != member_fields:
+        if not isinstance(member, dict) or set(member) != _LOGICAL_MEMBER_FIELDS:
             raise SchemaRefusal(
                 "logical Armarium projection has a member outside its closed lineage schema; "
                 "the projection is refused because every local proposal must remain named"
@@ -216,7 +215,6 @@ def logical_act_projection_entry(
         act_key_value = member["act_key"]
         page_id_value = member["page_id"]
         ordinal = member["page_ordinal"]
-        source = member["source_sha256"]
         proposal_refs = member["proposal_refs"]
         if (
             not is_well_formed(act_id_value)
@@ -230,7 +228,6 @@ def logical_act_projection_entry(
             or not isinstance(ordinal, int)
             or isinstance(ordinal, bool)
             or ordinal < 0
-            or source not in component_sources
             or not isinstance(proposal_refs, list)
             or not proposal_refs
             or proposal_refs != sorted(set(proposal_refs))
@@ -238,8 +235,8 @@ def logical_act_projection_entry(
         ):
             raise SchemaRefusal(
                 "logical Armarium projection has malformed member identity, key, ordinal, "
-                "capture, or proposal evidence; the projection is refused because member "
-                "lineage is not canonical"
+                "or proposal evidence; the projection is refused because member lineage is "
+                "not canonical"
             )
         member_ids.append(act_id_value)
         member_keys.append(act_key_value)
@@ -320,38 +317,23 @@ def logical_act_projection_entry(
     if category != ArmariumCategory.DELIVERED.value:
         raise SchemaRefusal("logical Armarium projection only projects an established record")
     # Consult §5.2: "every member local act and every capture/page attribution
-    # retained under that one logical entry."  The entry carried neither, so a
-    # clustered bundle exported one act row whose member captures existed
-    # nowhere in it -- the second capture's local act was simply gone from the
-    # export, which is GOVERNANCE 2's silent loss at the last boundary.  Every
-    # member is carried, in canonical set order; none is promoted to the row's
-    # identity (that stays derived from `logical_act_id` alone), and §7.15's
-    # duplicate export -- a member act beside its own logical act -- is refused
-    # against exactly this list by `armarium_export._validate_projection`.
-    members = record["member_local_acts"]
+    # retained under that one logical entry."  Without it a clustered bundle
+    # exports one act row whose member captures appear nowhere in it, and the
+    # second capture's local act is simply gone -- GOVERNANCE 2's silent loss at
+    # the last boundary.  Every member is carried, in canonical set order; none
+    # is promoted to the row's identity, which stays derived from
+    # `logical_act_id` alone.  §7.15's duplicate export -- a member act beside
+    # its own logical act -- is refused against exactly this list by
+    # `armarium_export._validate_projection`, so a member dropped here would
+    # also drop out of that check.  The loop above has already proved every
+    # member's id, key and ordinal, so this projects checked rows rather than
+    # validating them again.
     membership = {
-        "member_local_act_ids": sorted(
-            member["act_id"] for member in members if isinstance(member.get("act_id"), str)
-        ),
-        "member_act_keys": sorted(
-            member["act_key"] for member in members if isinstance(member.get("act_key"), str)
-        ),
-        "member_source_page_ordinals": sorted(
-            {
-                member["page_ordinal"]
-                for member in members
-                if isinstance(member.get("page_ordinal"), int)
-            }
-        ),
+        "member_local_act_ids": sorted(member["act_id"] for member in members),
+        "member_act_keys": sorted(member["act_key"] for member in members),
+        "member_source_page_ordinals": sorted({member["page_ordinal"] for member in members}),
         "physical_page_components": record["physical_page_components"],
     }
-    if len(membership["member_local_act_ids"]) != len(members) or len(
-        membership["member_act_keys"]
-    ) != len(members):
-        raise SchemaRefusal(
-            "logical Armarium projection has a member local act with no act_id/act_key; a "
-            "member that cannot be named cannot be proved absent from the act rows"
-        )
     return {
         "act_id": logical_id,
         "act_key": f"logical:{logical_id}",
@@ -474,9 +456,8 @@ def logical_cross_capture_review_entry(
         for component in logical_act["physical_page_components"]
     }
     measured_components = {
-        component.get("physical_page_id"): component.get("required_capture_sha256s")
+        component["physical_page_id"]: component["required_capture_sha256s"]
         for component in checked_coverage["components"]
-        if isinstance(component, dict)
     }
     if measured_components != expected_components:
         raise SchemaRefusal(
@@ -490,8 +471,12 @@ def logical_cross_capture_review_entry(
             "row is refused because cross-capture coverage cannot replace the chair denominator"
         )
     members = logical_act["member_local_acts"]
+    # Canonical set order, which `armarium_export._validate_logical_act_conservation`
+    # requires of every membership list it is handed. A validated partition row is
+    # already sorted-unique by act id, so sorting here changes nothing and keeps the
+    # requirement visible where the list is built.
     membership = {
-        "member_local_act_ids": [member["act_id"] for member in members],
+        "member_local_act_ids": sorted(member["act_id"] for member in members),
         "member_act_keys": sorted(member["act_key"] for member in members),
         "member_source_page_ordinals": sorted({member["page_ordinal"] for member in members}),
         "physical_page_components": logical_act["physical_page_components"],
@@ -504,6 +489,9 @@ def logical_cross_capture_review_entry(
             "dissent reference; the review row is refused because a visibility hold must "
             "retain both the reading and its sibling evidence"
         )
+    # Two passes on purpose: each reference alone first, so a malformed one is
+    # named as malformed, then the three together, so a repeated path is named as
+    # a repeat. Collapsing them reports the wrong fault for one of the two.
     evidence_refs = [review_ref]
     for reference in (perlectio_ref, dissent_ref):
         try:

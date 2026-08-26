@@ -62,20 +62,20 @@ _CONDITION_FIELDS: Final = frozenset({"both_unoccluded", "comparably_captured"})
 _SPAN_FIELDS: Final = frozenset({"start", "end"})
 # Consult §6, made mechanical rather than described: "The record contains
 # structural observations and exact image anchors, not a quality score,
-# confidence, rank, severity, or scalar variance."  Nothing in this file's
-# field-by-field checks could see one -- `model_provenance` was accepted as any
-# object at all, so a caller could seal a variance number inside it and every
-# check here still passed, and the Unit 20 handoff's "neither owns a scalar
-# variance number" was a sentence in a report rather than a property of the
-# record.
+# confidence, rank, severity, or scalar variance."  The field-by-field checks
+# below cannot enforce that on their own -- `model_provenance` is accepted as
+# any object at all -- so the whole candidate is swept for these keys first, at
+# every depth.
 #
 # Matched as key fragments, not exact names, because this vocabulary is the one
 # a builder spells slightly differently (`iou_score`, `mean_variance`,
 # `capture_confidence`) while meaning exactly the thing §6 forbids.  §7 shape
-# 1's preference vocabulary is screened separately by the corpus register's own
-# shared `refuse_preference`, so the two spellings of "forbidden" cannot drift.
-# The sweep is over keys only: `observed_form` is legitimately a witness-shaped
-# string and must stay readable as evidence.
+# 1's preference vocabulary is swept the same way, from the corpus register's
+# own list rather than a second copy here, so the two spellings of "forbidden"
+# cannot drift; `refuse_preference` then matches those names exactly and names
+# the producing record in its refusal.  The sweep is over keys only:
+# `observed_form` is legitimately a witness-shaped string and must stay
+# readable as evidence.
 _FORBIDDEN_CLAIM_FRAGMENTS: Final = (
     "variance",
     "score",
@@ -135,14 +135,12 @@ def _refuse_scalar_claim_keys(value: Any) -> None:
 def _span_or_gap_ref(value: Any) -> Any:
     """Where in the one established text a locus sits -- never the text itself.
 
-    This field was accepted unchecked, which put an arbitrary free-form value
-    inside the one record whose whole purpose is to hold evidence *beside* the
-    established text and never a second copy of it (consult §6, GOVERNANCE 5).
-    A caller could seal the established string here and a later consumer would
-    find text in a text-free record.  So it is closed to exactly the two things
-    its name allows: an offset span into the established text, or a digest-bound
-    reference to the gap artifact that stands where the reading declined to
-    place either observed form.
+    Closed to exactly the two things its name allows: an offset span into the
+    established text, or a digest-bound reference to the gap artifact that
+    stands where the reading declined to place either observed form.  Anything
+    free-form here could carry the established string itself, and this record's
+    whole purpose is to hold evidence *beside* that text and never a second
+    copy of it (consult §6, GOVERNANCE 5).
     """
     if value is None:
         return None
@@ -348,6 +346,10 @@ def build_cross_capture_dissent(**record: Any) -> dict[str, Any]:
     candidate = dict(record)
     candidate.pop("self_hash", None)
     _refuse_scalar_claim_keys(candidate)
+    # The fragment sweep above already subsumes these exact names at every
+    # depth.  This is the shared screen every producer of the §7 vocabulary
+    # runs, kept so that narrowing the fragment match can never silently retire
+    # the preference screen with it.
     refuse_preference(candidate, what="cross-capture dissent")
     supplied_caveat = candidate.pop("caveat", CAVEAT)
     if supplied_caveat != CAVEAT or set(candidate) != _FIELDS - {"self_hash", "caveat"}:

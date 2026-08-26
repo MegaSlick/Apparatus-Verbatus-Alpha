@@ -210,7 +210,7 @@ def _logical_sha(value, label: str) -> str:
     ):
         raise SchemaRefusal(
             f"the logical Archetypus {label} is not a lowercase SHA-256; the record is "
-            "refused because capture provenance must retain a digest identity"
+            "refused because every capture and crop it cites must retain a digest identity"
         )
     return value
 
@@ -948,20 +948,18 @@ def _require_the_partition_this_reading_was_made_over(
 
     ``logical_act`` decides what this record says about the ink behind its one
     text: which captures were required, which local acts are members, which
-    physical pages the act sits on. Checked only by ``logical_act_id`` string
-    equality, that provenance was the caller's assertion rather than the
-    reading's -- a row naming five captures could be stapled to a joint
-    autopsia that only ever presented two, and the established record would
-    claim evidence its own reading never demonstrated (consult §5.1, hard
-    rule 6).
+    physical pages the act sits on. Matching it to the reading by
+    ``logical_act_id`` alone would make that provenance the caller's assertion
+    rather than the reading's -- a row naming five captures stapled to a joint
+    autopsia that only ever presented two, and an established record claiming
+    evidence its own reading never demonstrated (consult §5.1, hard rule 6).
 
-    The landed 19B dossier already carries everything needed to close that.
-    ``cross_capture_autopsia`` is a full ``cross-capture-autopsia.v1``
-    (``common/cross_capture_autopsia.py::assemble_reader_input`` puts the
-    validated record into the delivered dossier, and the Perlector's own
-    reading schema admits the pair or neither), and it names both the
-    ``partition_ref`` the read was made over and the exact
-    ``required_capture_sha256s`` that reached the reader in one call. So:
+    The dossier's ``cross_capture_autopsia`` closes it. It is a full
+    ``cross-capture-autopsia.v1`` (``assemble_reader_input`` puts the validated
+    record into the delivered dossier, and the Perlector's own reading schema
+    admits the pair or neither), and it names both the ``partition_ref`` the
+    read was made over and the exact ``required_capture_sha256s`` that reached
+    the reader in one call. So:
 
     1. the partition object must be the bytes that reference names;
     2. ``logical_act`` must be *the* row that partition publishes for this
@@ -1111,11 +1109,9 @@ def _require_joint_evidence_binding(
     presented_region_refs = [
         reference for view in autopsia["views"] for reference in view["region_refs"]
     ]
-
-    def ref_key(reference):
-        return (reference["relative_path"], reference["sha256"])
-
-    if sorted(retained_region_refs, key=ref_key) != sorted(presented_region_refs, key=ref_key):
+    if sorted(retained_region_refs, key=_reference_key) != sorted(
+        presented_region_refs, key=_reference_key
+    ):
         raise SchemaRefusal(
             "logical establishment's Perlectio region basis does not equal every crop in its "
             "joint autopsia; the Archetypus is refused because a capture used to establish "
@@ -1200,9 +1196,8 @@ def establish_logical_record(
     Both are proved against the reading's own sealed
     ``cross_capture_autopsia.partition_ref`` rather than taken on the caller's
     word: the member and capture provenance this record carries is a claim
-    about *which* ink was read, and until it was checked a caller could staple
-    a five-capture partition row onto a reading that only ever demonstrated
-    two.
+    about *which* ink was read, so an unproved row could staple five required
+    captures onto a reading that only ever demonstrated two.
     """
     if not isinstance(logical_act, dict):
         raise SchemaRefusal("logical establishment has no partition row")
@@ -1215,21 +1210,17 @@ def establish_logical_record(
         or not _is_ref_shaped(cross_capture_dissent_ref)
     ):
         raise SchemaRefusal("logical establishment has malformed parent references")
-    # The image-local constructor never accepts a reading or review as a bare
-    # argument -- it resolves both itself through `context.tree.read_artifact_
-    # reference`, so what it establishes from is provably the exact sealed
-    # bytes a digest-checked reference names (`reviewed_reading`,
-    # `accepted_primed_perlectio`). This constructor takes its evidence as
-    # plain dicts instead, and until this check existed nothing tied
-    # `accepted_perlectio`/`accepted_review` to `perlectio_ref`/`recensor_ref`
-    # at all beyond the review's own claim about the Perlectio it reviewed --
-    # a caller could name one sealed reading in the reference and establish
-    # the text of a different object entirely. Every artifact in this tree is
-    # written as exactly `canonical_bytes(envelope)`
+    # The image-local constructor resolves its reading and review itself through
+    # `context.tree.read_artifact_reference` (`reviewed_reading`,
+    # `accepted_primed_perlectio`), so its evidence is provably the sealed bytes
+    # a digest-checked reference names. This constructor takes them as plain
+    # dicts, so it must make that proof itself or nothing ties
+    # `accepted_perlectio`/`accepted_review` to their references at all. Every
+    # artifact in this tree is written as exactly `canonical_bytes(envelope)`
     # (`RunTree.publish_artifact`), so a genuine `read_artifact_reference`
-    # result reproduces its own reference's digest here for free; this is the
-    # same proof `read_artifact_reference`'s own `verify_input_bytes` makes,
-    # made again because this function does not call it.
+    # result reproduces its own reference's digest here for free -- the same
+    # proof `verify_input_bytes` makes, made again because this function does
+    # not call it.
     if (
         not isinstance(accepted_perlectio, dict)
         or digest_of(accepted_perlectio) != perlectio_ref["sha256"]
@@ -1257,8 +1248,8 @@ def establish_logical_record(
             "digest-bound reference names; the Archetypus is refused because sibling "
             "evidence cannot be substituted beside a valid reference"
         )
-    payload = accepted_perlectio.get("payload") if isinstance(accepted_perlectio, dict) else None
-    review_payload = accepted_review.get("payload") if isinstance(accepted_review, dict) else None
+    payload = accepted_perlectio.get("payload")
+    review_payload = accepted_review.get("payload")
     if accepted_perlectio.get("outcome") != "read":
         reason = payload.get("reason") if isinstance(payload, dict) else None
         raise SchemaRefusal(
@@ -1325,13 +1316,13 @@ def establish_logical_record(
     uncertainty = from_perlectio(payload)
     record = {
         "logical_act_id": logical_id,
-        "physical_page_components": logical_act.get("physical_page_components"),
-        "member_local_acts": logical_act.get("member_local_acts"),
+        "physical_page_components": logical_act["physical_page_components"],
+        "member_local_acts": logical_act["member_local_acts"],
         "text": text,
         "text_hash": digest_of(text),
         "status": "established",
         "text_status": derive_record_text_status(text, annotations, uncertainty),
-        "regions": payload.get("basis", {}).get("regions", []),
+        "regions": payload["basis"]["regions"],
         "provenance": payload.get("provenance"),
         "annotations": annotations,
         "uncertainty": uncertainty,

@@ -985,14 +985,14 @@ def _validate_logical_act_conservation(
 ) -> None:
     """Every local proposal row is counted once: under a logical act, or alone.
 
-    Two things a clustered export could do silently, and now cannot.
+    Two things a clustered export could otherwise do silently.
 
-    **Double-count (consult §7.15).** Nothing refused a projection that carried
-    a logical act *and* its own member local acts as separate rows. Both would
-    have passed every check in this file -- distinct ids, distinct keys, one
-    terminal category each -- and the same ink would have left the pipeline as
-    three delivered acts. The check is exact-identity, not heuristic: a member
-    act_id or act_key that also names a row of this projection is the duplicate.
+    **Double-count (consult §7.15).** A projection carrying a logical act *and*
+    its own member local acts as separate rows passes every other check in this
+    file -- distinct ids, distinct keys, one terminal category each -- and the
+    same ink leaves the pipeline as three delivered acts. The check is
+    exact-identity, not heuristic: a member act_id or act_key that also names a
+    row of this projection is the duplicate.
 
     **Vanish (GOVERNANCE 2, invariant 8).** A clustered run's act denominator
     is `logical_expected_count`, which is smaller than the proposal seal's row
@@ -1027,21 +1027,18 @@ def _validate_logical_act_conservation(
             not isinstance(ids, list)
             or not ids
             or any(not _is_line_safe_identity(member_id) for member_id in ids)
-            or ids != sorted(ids)
-            or len(ids) != len(set(ids))
+            or ids != sorted(set(ids))
             or not isinstance(keys, list)
             or len(keys) != len(ids)
             or any(not _is_line_safe_identity(member_key) for member_key in keys)
-            or keys != sorted(keys)
-            or len(keys) != len(set(keys))
+            or keys != sorted(set(keys))
             or not isinstance(ordinals, list)
             or not ordinals
             or any(
                 not isinstance(ordinal, int) or isinstance(ordinal, bool) or ordinal < 0
                 for ordinal in ordinals
             )
-            or ordinals != sorted(ordinals)
-            or len(ordinals) != len(set(ordinals))
+            or ordinals != sorted(set(ordinals))
             or not isinstance(components, list)
             or not components
         ):
