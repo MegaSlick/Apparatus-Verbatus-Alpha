@@ -593,6 +593,7 @@ def test_only_a_completed_reading_may_establish_text(outcome):
             _perlectio(outcome),
             _READING_REF,
             "act_0000000000000001",
+            page_id="page_0000000000000001",
         )
 
 
@@ -610,6 +611,7 @@ def test_a_completed_reading_is_not_refused_by_that_guard():
             _perlectio("read"),
             _READING_REF,
             "act_0000000000000001",
+            page_id="page_0000000000000001",
         )
     assert "may only come" not in str(caught.value)
 
@@ -660,4 +662,5 @@ def test_a_primed_reading_without_its_act_attachment_view_may_not_establish_text
             _primed_perlectio_without_an_attachment_view(),
             _READING_REF,
             "act_0000000000000001",
+            page_id="page_0000000000000001",
         )

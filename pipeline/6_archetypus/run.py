@@ -39,6 +39,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from common.alignment import markup_text_view  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.annotations import (  # noqa: E402, F401  (re-export)
     ANNOTATION_KINDS,
@@ -73,6 +74,7 @@ from common.contracts.uncertainty import validate as validate_uncertainty
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
     EXIT_HELD,
+    WITNESS_CONTEXT_REGIMES,
     WITNESS_READING_OUTCOMES,
     expected_acts,
     latest_attempt,
@@ -84,6 +86,7 @@ from common.stage import (  # noqa: E402
     stage_parser,
     validate_serving_provenance,
 )
+from common.witness_regime import witness_label  # noqa: E402
 
 # The three silences, kept apart, and the derivation over them, both imported
 # from `common/contracts/outcomes.py` rather than spelled here. The Armarium
@@ -169,6 +172,158 @@ def _is_ref_shaped(value) -> bool:
 
 def _reference_key(reference: dict) -> tuple[str, str]:
     return (reference["relative_path"], reference["sha256"])
+
+
+def _verify_comparison_views(
+    context, act_id: str, derived: dict[str, str], embedded: dict, dossier: dict
+) -> None:
+    """Bind every displayed witness label to its retained Testimonium slice.
+
+    The dossier keys views by chair under ``named`` and by a run-scoped pseudonym
+    under ``blinded``. Comparing only the text multiset would let two authentic
+    slices exchange pseudonyms and silently corrupt their attribution.
+    """
+    if not isinstance(embedded, dict):
+        raise SchemaRefusal(f"act {act_id} embedded comparison views are not a mapping")
+    regime = dossier.get("witness_regime")
+    if regime not in WITNESS_CONTEXT_REGIMES:
+        raise SchemaRefusal(
+            f"act {act_id} embeds a dossier under witness regime {regime!r}, which is not one "
+            f"of {sorted(WITNESS_CONTEXT_REGIMES)}; an unrecognized regime is refused, never "
+            "checked as though it were the default"
+        )
+    rows = dossier.get("testimonia")
+    if not isinstance(rows, list):
+        raise SchemaRefusal(f"act {act_id} embeds a dossier with no testimonium rows")
+    labels = [row.get("witness_label") for row in rows if isinstance(row, dict)]
+    if (
+        len(labels) != len(rows)
+        or any(not isinstance(label, str) or not label for label in labels)
+        or len(set(labels)) != len(labels)
+    ):
+        raise SchemaRefusal(f"act {act_id} embeds malformed or repeated witness labels")
+    try:
+        expected = {
+            witness_label(
+                chair,
+                regime=regime,
+                run_id=context.tree.run_id,
+                config_digest=context.config_digest,
+            ): text
+            for chair, text in derived.items()
+        }
+    except ValueError as error:
+        raise SchemaRefusal(
+            f"act {act_id} attachment names a witness that cannot be labelled"
+        ) from error
+    if len(expected) != len(derived):
+        raise SchemaRefusal(
+            f"act {act_id} attachment witness labels collide; one comparison view would "
+            "silently replace another"
+        )
+    if not set(expected).issubset(labels):
+        raise SchemaRefusal(
+            f"act {act_id} embeds comparison view(s) that name no witness this dossier carries"
+        )
+    if embedded != expected:
+        raise SchemaRefusal(f"act {act_id} embedded comparison views disagree with its attachment")
+
+
+def _verify_act_attachment_view(
+    context, act_id: str, page_id: str, regions: list[dict], dossier: dict
+) -> None:
+    """Re-derive a Perlectio's page-witness facts from retained evidence.
+
+    ``page_id`` is the act roster's attachment subject. Basis regions may span
+    pages, so their first entry cannot supply that identity, but at least one basis
+    region must cite it.
+    """
+    attachment_view = dossier.get("act_attachment")
+    if (
+        not isinstance(attachment_view, dict)
+        or set(attachment_view) != {"reference", "page_witness_count", "comparison_views"}
+        or not isinstance(attachment_view["page_witness_count"], int)
+        or isinstance(attachment_view["page_witness_count"], bool)
+        or attachment_view["page_witness_count"] < 0
+        or not isinstance(attachment_view["comparison_views"], dict)
+    ):
+        raise SchemaRefusal(f"act {act_id} has malformed embedded act-attachment facts")
+    reference = attachment_view["reference"]
+    if not _is_ref_shaped(reference):
+        raise SchemaRefusal(f"act {act_id} has no direct act-attachment reference")
+    attachment_record = context.tree.read_artifact_reference(
+        reference, stage=ATTESTATORES, kind="act-attachment", subject_id=act_id
+    )
+    payload = attachment_record.get("payload")
+    attachments = payload.get("attachments") if isinstance(payload, dict) else None
+    if not isinstance(attachments, list):
+        raise SchemaRefusal(f"act {act_id} referenced act-attachment has no attachment list")
+    if not isinstance(page_id, str) or not page_id:
+        raise SchemaRefusal(f"act {act_id} has no source page for attachment verification")
+    if page_id not in {region.get("source_page_id") for region in regions}:
+        raise SchemaRefusal(
+            f"act {act_id} is accounted to page {page_id!r}, which none of its basis regions "
+            "cites; a record's page identity and the ink it was read from are one fact"
+        )
+    count = 0
+    views: dict[str, str] = {}
+    seen_chairs: set[str] = set()
+    for item in attachments:
+        if (
+            not isinstance(item, dict)
+            or not isinstance(item.get("page_witness"), bool)
+            or not isinstance(item.get("attached"), bool)
+            or not isinstance(item.get("chair"), str)
+            or not item["chair"]
+        ):
+            raise SchemaRefusal(
+                f"act {act_id} referenced act-attachment has malformed witness scope"
+            )
+        if item["chair"] in seen_chairs:
+            raise SchemaRefusal(
+                f"act {act_id} referenced act-attachment repeats witness {item['chair']!r}; "
+                "a repeated chair would silently replace a comparison view"
+            )
+        seen_chairs.add(item["chair"])
+        if not item["page_witness"]:
+            continue
+        count += 1
+        if not item.get("attached"):
+            continue
+        chair, alignment, testimony_ref = (
+            item.get("chair"),
+            item.get("alignment"),
+            item.get("testimonium_ref"),
+        )
+        span = alignment.get("witness_span") if isinstance(alignment, dict) else None
+        if not _is_ref_shaped(testimony_ref):
+            raise SchemaRefusal(f"act {act_id} referenced act-attachment has malformed witness")
+        testimony = context.tree.read_artifact_reference(
+            testimony_ref, stage=ATTESTATORES, kind="page-testimonium", subject_id=page_id
+        )
+        reported = testimony.get("payload", {}).get("reported")
+        if (
+            not isinstance(reported, str)
+            or not isinstance(span, dict)
+            or set(span) != {"start", "end"}
+            or any(not isinstance(value, int) or isinstance(value, bool) for value in span.values())
+            or span["start"] < 0
+            or span["end"] < span["start"]
+            or span["end"] > len(reported)
+        ):
+            raise SchemaRefusal(
+                f"act {act_id} referenced act-attachment has no valid comparison view"
+            )
+        views[chair] = markup_text_view(reported[span["start"] : span["end"]])["text"]
+    if count != attachment_view["page_witness_count"]:
+        raise SchemaRefusal(
+            f"act {act_id} embedded page-witness count disagrees with its attachment"
+        )
+    _verify_comparison_views(context, act_id, views, attachment_view["comparison_views"], dossier)
+    if dossier.get("dossier_digest") != digest_of(
+        {key: value for key, value in dossier.items() if key != "dossier_digest"}
+    ):
+        raise SchemaRefusal(f"act {act_id} embedded dossier digest disagrees with its dossier")
 
 
 def validate_text_status(text: str, text_status: str, evidence_ref) -> None:
@@ -280,7 +435,7 @@ def reviewed_reading(context, review: dict, act_id: str) -> tuple[dict, dict[str
 
 
 def accepted_primed_perlectio(
-    context, review, reading, reading_ref, act_id
+    context, review, reading, reading_ref, act_id, *, page_id
 ) -> tuple[dict, dict, list]:
     """The only material permitted to reach the establishing constructor.
 
@@ -385,12 +540,6 @@ def accepted_primed_perlectio(
         raise SchemaRefusal(
             f"act {act_id} carries an act-attachment dossier view without a direct input reference"
         )
-    context.tree.read_artifact_reference(
-        reference,
-        stage=ATTESTATORES,
-        kind="act-attachment",
-        subject_id=act_id,
-    )
     # Unconditional: `lectio_kind` is already proved to be `primed-with-prior`
     # above, and nothing below it reassigns the name. Guarding these checks on
     # the value again read as though some other kind reached them, which would
@@ -423,6 +572,7 @@ def accepted_primed_perlectio(
         raise SchemaRefusal(
             f"act {act_id} embeds prior-draft text that disagrees with its referenced lectio-prior"
         )
+    _verify_act_attachment_view(context, act_id, page_id, regions, claimed_dossier)
     # The reference is bound to stage, kind, subject and digest above -- and
     # not, until here, to the attempt. A recovered act carries one Pass-A
     # draft per attempt, and a Perlectio citing a superseded one would
@@ -719,7 +869,7 @@ def establish_from_accepted_primed_perlectio(
     )
     reading, reading_ref = reviewed_reading(context, review, act["act_id"])
     payload, witnesses, regions = accepted_primed_perlectio(
-        context, review, reading, reading_ref, act["act_id"]
+        context, review, reading, reading_ref, act["act_id"], page_id=act.get("page_id")
     )
     # Before the record exists, not after: these regions are about to be
     # self-hashed into something write-once.
