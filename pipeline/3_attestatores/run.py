@@ -2665,6 +2665,14 @@ def publish_page_testimonia_and_attachments(
             page_role = roles.pop() if len(roles) == 1 else "mixed"
             page_response_refs: list[dict[str, str]] = []
             page_edge_overshoots: list[dict[str, Any]] = []
+            # Two acts on one page legitimately share one chair's raw response
+            # (the comment below dedupes `page_response_refs` for exactly this
+            # reason), so re-deriving that response's overshoots once per act
+            # would re-add the identical (response_sha256, ordinal) finding more
+            # than once. `validate_partition_disagreement` refuses that as one
+            # rejected block counted twice, aborting the whole page publish over
+            # ordinary shared testimony rather than a malformed record.
+            seen_page_edge_overshoots: set[tuple[str, int]] = set()
             has_declared_native_observation = any(
                 row.get("chair") == chair
                 and row.get("page_ordinal") == page_ordinal
@@ -2707,7 +2715,11 @@ def publish_page_testimonia_and_attachments(
                         page_size=_sealed_source_page(context, presented)[1],
                         raw_response_ref=reference,
                     )
-                    page_edge_overshoots.extend(overshoots)
+                    for overshoot in overshoots:
+                        overshoot_key = (overshoot["response_sha256"], overshoot["ordinal"])
+                        if overshoot_key not in seen_page_edge_overshoots:
+                            seen_page_edge_overshoots.add(overshoot_key)
+                            page_edge_overshoots.append(overshoot)
                     for item in source_observed:
                         observed.append({**item, "ordinal": len(observed)})
                 if needs_default_observation or not captured_geometry:

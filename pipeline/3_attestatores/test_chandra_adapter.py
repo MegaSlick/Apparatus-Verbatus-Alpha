@@ -383,6 +383,96 @@ def test_a_page_edge_overshoot_is_named_per_block_without_clamping_or_losing_nei
         )
 
 
+def test_two_acts_sharing_one_chandra_response_do_not_double_count_its_overshoot():
+    """Two acts on one page legitimately re-derive the same chair's response.
+
+    `publish_page_testimonia_and_attachments` calls `chandra_page_partition_entries`
+    once per act on a page for a page-scoped Chandra chair, and two acts commonly
+    share one raw response (the page record already dedupes `raw_response_refs` for
+    exactly this reason). Re-deriving an out-of-page block from that same response
+    twice must not double-count it: `validate_partition_disagreement` refuses one
+    page-edge finding named twice, so an unrefined concatenation would abort the
+    whole page's publish over ordinary shared testimony rather than a malformed
+    record. The page writer must dedupe by the finding's own identity --
+    `(response_sha256, ordinal)` -- exactly as it already dedupes response refs.
+    """
+    chandra = _load_chandra()
+    attestatores = _load_stage_module("run")
+    raw = b'{"markdown":"two","blocks":[{"bbox":[10,10,100,100]},{"bbox":[0,0,200.2,260.0]}]}'
+    raw_ref = {
+        "relative_path": "3_attestatores/blobs/sha256/" + digest_bytes(raw),
+        "sha256": digest_bytes(raw),
+    }
+
+    # Two acts on the page independently re-derive the identical response.
+    first_survivors, first_overshoots = attestatores.chandra_page_partition_entries(
+        chandra.observe(_presented(), raw), page_size=(200, 260), raw_response_ref=raw_ref
+    )
+    second_survivors, second_overshoots = attestatores.chandra_page_partition_entries(
+        chandra.observe(_presented(), raw), page_size=(200, 260), raw_response_ref=raw_ref
+    )
+    assert first_overshoots == second_overshoots
+
+    # Mirrors the page writer's own renumbering of the aggregate `observed`
+    # list across every act contributing to this page/chair
+    # (`observed.append({**item, "ordinal": len(observed)})`), so this test
+    # isolates the overshoot-identity question from ordinary survivor
+    # renumbering, which the writer already gets right.
+    merged_observed = []
+    for item in [*first_survivors, *second_survivors]:
+        merged_observed.append({**item, "ordinal": len(merged_observed)})
+
+    def _build(overshoots):
+        disagreement = partition_disagreement(
+            {
+                "artifact_id": "page-testimonium",
+                "payload": {"presented": _presented(), "observed": merged_observed},
+            },
+            [],
+            page_edge_overshoots=overshoots,
+        )
+        return attestatores.page_testimonium_payload(
+            page_ordinal=1,
+            page_role="primary",
+            unjoined_act_attempts=[],
+            partition_disagreement=disagreement,
+            raw_response_refs=[raw_ref],
+            adapter_metadata={"geometry_quantization": chandra.QUANTIZATION_RULE},
+            chair="attestator_1",
+            act_key="page-1",
+            ordinal=1,
+            regions=[],
+            provenance={"chair": "attestator_1"},
+            format_capabilities=attestatores.DEFAULT_FORMAT_CAPABILITIES,
+            native_payload="two",
+            witness_reported=None,
+            health=attestatores.content_health("two", completed=True),
+            presented=_presented(),
+            observed=merged_observed,
+            unpresented_regions=[],
+            outcome="read",
+        )
+
+    # Naively concatenating both acts' re-derivations names one page-edge
+    # finding twice -- the exact crash this defect let a normal, shared page
+    # response trigger mid-publish.
+    with pytest.raises(SchemaRefusal, match="names one page-edge finding twice"):
+        _build([*first_overshoots, *second_overshoots])
+
+    # Deduplicated by the finding's own identity -- exactly what the page
+    # writer now does before it extends `page_edge_overshoots` -- the shared
+    # response's overshoot is retained exactly once.
+    seen: set[tuple[str, int]] = set()
+    deduped = []
+    for overshoot in [*first_overshoots, *second_overshoots]:
+        key = (overshoot["response_sha256"], overshoot["ordinal"])
+        if key not in seen:
+            seen.add(key)
+            deduped.append(overshoot)
+    durable = _build(deduped)
+    assert durable["partition_disagreement"]["page_edge_overshoots"] == first_overshoots
+
+
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     [

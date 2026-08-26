@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any, Final
 
-from common.contracts.canonical import digest_bytes
+from common.contracts.canonical import digest_bytes, is_sha256
 from common.contracts.errors import SchemaRefusal
 from common.corpus_register import refuse_preference
 from common.imaging import crop_png, dimensions, resize_png_lanczos
@@ -831,7 +831,16 @@ def validate_native_capture(value: Any) -> dict[str, Any]:
     reference = value["raw_response_ref"]
     if not isinstance(reference, dict) or set(reference) != {"relative_path", "sha256"}:
         raise SchemaRefusal("a page Testimonium native capture has no raw-response reference")
-    if not all(isinstance(reference[key], str) and reference[key] for key in reference):
+    # A shape check alone (any two non-empty strings) let a malformed or
+    # forged reference stand as this record's own claim to be traceable back
+    # to retained bytes (ARCHITECTURE invariant 2, GOALS 5) -- the same
+    # `{relative_path, sha256}` shape is held to `is_sha256` everywhere else
+    # this pipeline closes a blob reference; this was the one place it was not.
+    if (
+        not isinstance(reference["relative_path"], str)
+        or not reference["relative_path"]
+        or not is_sha256(reference["sha256"])
+    ):
         raise SchemaRefusal(
             "a page Testimonium native capture has an invalid raw-response reference"
         )

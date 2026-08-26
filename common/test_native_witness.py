@@ -12,11 +12,28 @@ from common.imaging import crop_png
 from common.native_witness import (
     partition_disagreement,
     unpresented_region_ids,
+    validate_native_capture,
     validate_native_witness_geometry,
     validate_page_testimonium_payload,
     validate_presented,
     validate_presented_page_binding,
 )
+
+
+def _native_capture() -> dict:
+    return {
+        "schema": "churro-native-capture.v1",
+        "adapter": "churro.v1",
+        "view": {},
+        "raw_response_ref": {
+            "relative_path": "3_attestatores/blobs/sha256/" + "a" * 64,
+            "sha256": "a" * 64,
+        },
+        "transport_stop_reason": "stop",
+        "stop_reason": "stop",
+        "findings": [],
+        "parse": {"state": "parsed", "parser": "xml", "text": "read"},
+    }
 
 
 def payload():
@@ -529,3 +546,36 @@ def test_a_resize_dimension_is_typed_before_the_aspect_identity_reads_it():
     presented["transform"]["resize"]["target_width_px"] = "20"
     with pytest.raises(SchemaRefusal, match="resize dimensions are invalid"):
         validate_presented(presented)
+
+
+def test_native_capture_accepts_a_genuine_blob_reference():
+    validate_native_capture(_native_capture())
+
+
+@pytest.mark.parametrize(
+    "sha256",
+    [
+        "b" * 63,  # too short
+        "b" * 65,  # too long
+        "g" * 64,  # non-hex character
+        ("B" * 64),  # uppercase is not this pipeline's lowercase-hex shape
+        "not-a-digest-but-still-non-empty-and-sixty-four-characters-long",
+    ],
+)
+def test_native_capture_refuses_a_raw_response_reference_that_is_not_a_real_sha256(sha256):
+    """A shape check alone (any two non-empty strings) let a malformed or
+    forged digest stand as this record's claim to trace back to retained
+    bytes (ARCHITECTURE invariant 2, GOALS 5) -- the same gap `is_sha256`
+    closes everywhere else this pipeline validates a blob reference.
+    """
+    value = _native_capture()
+    value["raw_response_ref"]["sha256"] = sha256
+    with pytest.raises(SchemaRefusal, match="invalid raw-response reference"):
+        validate_native_capture(value)
+
+
+def test_native_capture_refuses_a_blank_relative_path():
+    value = _native_capture()
+    value["raw_response_ref"]["relative_path"] = ""
+    with pytest.raises(SchemaRefusal, match="invalid raw-response reference"):
+        validate_native_capture(value)
