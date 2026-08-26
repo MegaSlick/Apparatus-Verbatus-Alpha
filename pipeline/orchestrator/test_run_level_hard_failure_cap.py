@@ -26,19 +26,29 @@ from pathlib import Path
 
 import pytest
 
-from common.contracts.canonical import canonical_bytes
+from common.contracts.canonical import canonical_bytes, self_hash
 from common.contracts.envelope import build_envelope
 from common.contracts.identities import artifact_id
-from common.contracts.stages import ARCHETYPUS, ARMARIUM, PERLECTOR, RECENSOR
+from common.contracts.stages import ARCHETYPUS, ARMARIUM, DOOR, PERLECTOR, RECENSOR
 from common.runtree.store import RunTree
+from common.stage import _stage_seal_payload, latest_attempt
 
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
 FIXTURE = "synthetic-two-page-v0"
+STAGES_THROUGH_PERLECTOR = (
+    "pipeline/1_exemplar/door.py",
+    "pipeline/1_exemplar/run.py",
+    "pipeline/2_designator/run.py",
+    "pipeline/3_attestatores/run.py",
+    "pipeline/4_perlector/run.py",
+)
 
 
-def invoke_stage(run_root: Path, run_id: str, scenario: str, program: str) -> None:
-    result = subprocess.run(
+def call_stage(
+    run_root: Path, run_id: str, scenario: str, program: str
+) -> subprocess.CompletedProcess:
+    return subprocess.run(
         [
             sys.executable,
             str(ROOT / program),
@@ -53,7 +63,12 @@ def invoke_stage(run_root: Path, run_id: str, scenario: str, program: str) -> No
         capture_output=True,
         text=True,
     )
-    assert result.returncode == 0, f"{program}: {result.stderr}"
+
+
+def run_through_perlector(run_root: Path, run_id: str, scenario: str) -> None:
+    for program in STAGES_THROUGH_PERLECTOR:
+        result = call_stage(run_root, run_id, scenario, program)
+        assert result.returncode == 0, f"{program}: {result.stderr}"
 
 
 def orchestrate(run_root: Path, run_id: str, scenario: str) -> subprocess.CompletedProcess:
@@ -102,20 +117,44 @@ def forge_perlector_failure(tree: RunTree, fake_subject: str) -> None:
     tree.write_manifest(PERLECTOR)
 
 
+def rebind_perlector_seal(tree: RunTree) -> None:
+    """Model a coherent sealed predecessor after the cap evidence was retained."""
+    seals = [
+        tree.read_artifact(PERLECTOR, "stage-seal", entry["artifact_id"])
+        for entry in tree.build_manifest(PERLECTOR, verify_inputs=False)["artifacts"]
+        if entry["kind"] == "stage-seal"
+    ]
+    seal = latest_attempt(seals, "perlector stage seal", operation="seal")
+    payload = seal["payload"]
+    seal["payload"] = _stage_seal_payload(
+        tree,
+        PERLECTOR,
+        payload["attempt_ordinal"],
+        seal["attempt_id"],
+        payload["decode_environment_artifact_id"],
+    )
+    seal["self_hash"] = self_hash(seal)
+    tree.resolve(tree.artifact_path(PERLECTOR, "stage-seal", seal["artifact_id"])).write_bytes(
+        canonical_bytes(seal)
+    )
+    tree.write_manifest(PERLECTOR)
+
+
 def has_any_artifact(tree: RunTree, stage: str) -> bool:
     return bool(tree.build_manifest(stage)["artifacts"])
 
 
+def snapshot(root: Path) -> dict[str, bytes]:
+    return {
+        str(path.relative_to(root)): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
 def test_more_than_two_hard_failures_halts_the_run_at_the_next_checkpoint(tmp_path):
     root = tmp_path / "runs"
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/2_designator/run.py",
-        "pipeline/3_attestatores/run.py",
-        "pipeline/4_perlector/run.py",
-    ):
-        invoke_stage(root, "r", "truncated-reading", program)
+    run_through_perlector(root, "r", "truncated-reading")
 
     tree = RunTree(root, "r")
     # a1's `truncated` Perlectio is real but does not count (see module
@@ -144,14 +183,7 @@ def test_more_than_two_hard_failures_halts_the_run_at_the_next_checkpoint(tmp_pa
 def test_re_running_a_halted_orchestration_halts_again_the_same_way(tmp_path):
     """Idempotent: recomputed from disk, so a retry without a real fix repeats it."""
     root = tmp_path / "runs"
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/2_designator/run.py",
-        "pipeline/3_attestatores/run.py",
-        "pipeline/4_perlector/run.py",
-    ):
-        invoke_stage(root, "r", "truncated-reading", program)
+    run_through_perlector(root, "r", "truncated-reading")
     tree = RunTree(root, "r")
     forge_perlector_failure(tree, "fake-hard-failure-subject-1")
     forge_perlector_failure(tree, "fake-hard-failure-subject-2")
@@ -168,14 +200,7 @@ def test_re_running_a_halted_orchestration_halts_again_the_same_way(tmp_path):
 
 def test_exactly_two_hard_failures_is_only_a_warning_and_the_run_continues(tmp_path):
     root = tmp_path / "runs"
-    for program in (
-        "pipeline/1_exemplar/door.py",
-        "pipeline/1_exemplar/run.py",
-        "pipeline/2_designator/run.py",
-        "pipeline/3_attestatores/run.py",
-        "pipeline/4_perlector/run.py",
-    ):
-        invoke_stage(root, "r", "truncated-reading", program)
+    run_through_perlector(root, "r", "truncated-reading")
     tree = RunTree(root, "r")
     # a1's real `truncated` Perlectio does not count; two forged failures is
     # exactly two, Tyrel's named "early warning" -- the run must not stop early.
@@ -196,6 +221,58 @@ def test_zero_hard_failures_never_mentions_the_cap(tmp_path):
     assert result.returncode == 0, result.stderr
     assert "hard failure" not in result.stdout
     assert "halted" not in result.stdout
+
+
+def test_a_direct_stage_refuses_a_halted_run_before_it_writes(tmp_path):
+    """Direct entry shares the run cap and must refuse before writes."""
+    root = tmp_path / "runs"
+    run_through_perlector(root, "r", "truncated-reading")
+    tree = RunTree(root, "r")
+    forge_perlector_failure(tree, "fake-hard-failure-subject-1")
+    forge_perlector_failure(tree, "fake-hard-failure-subject-2")
+    forge_perlector_failure(tree, "fake-hard-failure-subject-3")
+    rebind_perlector_seal(tree)
+
+    result = call_stage(root, "r", "truncated-reading", "pipeline/5_recensor/run.py")
+
+    assert result.returncode == 4
+    assert "RunHalted" in result.stderr
+    assert "recensor refuses to start" in result.stderr
+    assert not has_any_artifact(tree, RECENSOR)
+
+
+def test_the_direct_door_also_refuses_a_halted_run_without_replaying_bytes(tmp_path):
+    """Door bypasses ``open_context``, so it must apply the same gate explicitly."""
+    root = tmp_path / "runs"
+    run_through_perlector(root, "r", "truncated-reading")
+    tree = RunTree(root, "r")
+    forge_perlector_failure(tree, "fake-hard-failure-subject-1")
+    forge_perlector_failure(tree, "fake-hard-failure-subject-2")
+    forge_perlector_failure(tree, "fake-hard-failure-subject-3")
+    before = snapshot(root)
+
+    result = call_stage(root, "r", "truncated-reading", "pipeline/1_exemplar/door.py")
+
+    assert result.returncode == 4
+    assert "door refuses to start" in result.stderr
+    assert snapshot(root) == before
+
+
+def test_an_unmeasurable_direct_entry_cap_refuses_instead_of_writing(tmp_path):
+    """A damaged tally is a failed measurement, never an implicit zero count."""
+    root = tmp_path / "runs"
+    run_through_perlector(root, "r", "happy")
+    tree = RunTree(root, "r")
+    admission = next(
+        entry for entry in tree.build_manifest(DOOR)["artifacts"] if entry["kind"] == "admission"
+    )
+    tree.resolve(admission["relative_path"]).write_bytes(b"not an artifact")
+
+    result = call_stage(root, "r", "happy", "pipeline/5_recensor/run.py")
+
+    assert result.returncode == 2
+    assert "could not be read as an artifact" in result.stderr
+    assert not has_any_artifact(tree, RECENSOR)
 
 
 def test_a_real_truncated_reading_alone_never_mentions_the_cap(tmp_path):

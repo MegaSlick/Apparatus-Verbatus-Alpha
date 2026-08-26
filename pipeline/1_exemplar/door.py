@@ -101,6 +101,7 @@ from common.stage import (  # noqa: E402
     adapter_recipe_for,
     load_corpus_frame_policy,
     load_fixture,
+    refuse_halted_run,
     require_corpus_frame_shard,
     run_config_bindings,
     run_stage,
@@ -1033,6 +1034,9 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         help="the data-handling policy naming this run's approved storage locations",
     )
     args = parser.parse_args()
+    existing_tree = RunTree(Path(args.run_root), args.run_id)
+    if existing_tree.resolve("run.json").exists():
+        refuse_halted_run(existing_tree, DOOR, args.hard_failure_config)
     registry = registry_factory(args.models_config)
 
     if args.submission_folder is not None:

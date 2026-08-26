@@ -35,6 +35,7 @@ from common.armarium_formats import (
 from common.chairs.models import AbsentChair, ChairIdentity, ModelsConfig, ServingDetails, is_sha256
 from common.chairs.protocol import ChairProtocol
 from common.chairs.registry import ChairRegistry
+from common.contracts.approval import REAL_INGRESS, parse_ingress_record
 from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of, verify_self_hash
 from common.contracts.envelope import build_envelope
 from common.contracts.errors import (
@@ -56,6 +57,7 @@ from common.contracts.outcomes import (
 )
 from common.contracts.serving import SERVING_CONFIG_INPUTS_FIELDS, SERVING_CONFIG_INPUTS_SCHEMA
 from common.contracts.stages import (
+    ARMARIUM,
     DESIGNATOR,
     EXEMPLAR,
     PERLECTOR,
@@ -64,7 +66,11 @@ from common.contracts.stages import (
 )
 from common.corpus_register import read_snapshot, verify_snapshot_is_current
 from common.exemplar_boundary import verify_sealed_page_pixels
-from common.hard_failure import DEFAULT_HARD_FAILURE_CONFIG_PATH, load_hard_failure_policy
+from common.hard_failure import (
+    DEFAULT_HARD_FAILURE_CONFIG_PATH,
+    load_hard_failure_policy,
+    tally_hard_failures,
+)
 from common.imaging import dimensions
 from common.recovery import (
     DEFAULT_RECOVERY_CONFIG_PATH,
@@ -83,12 +89,17 @@ EXIT_COMPLETE = 0
 EXIT_FATAL = 2
 EXIT_HELD = 3
 
-# Never a stage's own exit code, only the orchestrator's: only that process
-# decides whether to invoke another stage, so only it can halt a run for the
-# run-level hard-failure cap. Defined beside the three above, not in the
-# orchestrator module, so nothing can silently pick a fourth value that
-# collides with one of these.
+# A stage returns this only when it refuses to start a run whose durable failure
+# evidence already breaches the cap.  The orchestrator also returns it when a
+# checkpoint after a completed member breaches the cap.  Defined beside the three
+# ordinary stage exits so direct invocation cannot silently choose a colliding
+# fourth value.
 EXIT_RUN_HALTED = 4
+
+
+class RunHalted(ContractError):
+    """The run-level hard-failure cap refuses another stage entry."""
+
 
 DEFAULT_PDF_RENDER_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "pdf_render.toml"
 DEFAULT_WITNESS_CONTEXT_CONFIG_PATH = (
@@ -673,10 +684,35 @@ def _boundary_outcome(stage: str, kind: str) -> str:
         raise SchemaRefusal(f"{stage} cannot publish unknown boundary kind {kind!r}") from None
 
 
-def _stage_records(tree: RunTree, stage: str, kind: str) -> list[dict[str, Any]]:
+def _manifest_artifact(tree: RunTree, stage: str, entry: Mapping[str, Any]) -> dict[str, Any]:
+    """Read the exact artifact bytes one manifest snapshot witnessed.
+
+    ``build_manifest`` records a content digest, but a later consumer used to
+    discard it and reopen the path by identity.  A replacement between those two
+    reads was therefore valid evidence in isolation yet not the evidence the
+    manifest and completion seal had checked.  Compare the bytes represented by
+    the validated record to the snapshot digest before returning the record.
+    """
+    record = tree.read_artifact(stage, entry["kind"], entry["artifact_id"])
+    if digest_bytes(canonical_bytes(record)) != entry.get("sha256"):
+        raise SchemaRefusal(
+            f"{stage} artifact {entry.get('artifact_id')!r} changed between its manifest "
+            "snapshot and use; a completion seal cannot authorize replacement bytes"
+        )
+    return record
+
+
+def _stage_records(
+    tree: RunTree,
+    stage: str,
+    kind: str,
+    *,
+    manifest: Mapping[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    snapshot = tree.build_manifest(stage, verify_inputs=False) if manifest is None else manifest
     return [
-        tree.read_artifact(stage, kind, entry["artifact_id"])
-        for entry in tree.build_manifest(stage, verify_inputs=False)["artifacts"]
+        _manifest_artifact(tree, stage, entry)
+        for entry in snapshot["artifacts"]
         if entry["kind"] == kind
     ]
 
@@ -807,13 +843,20 @@ def _stage_seal_payload(
     *,
     verify_inputs: bool = True,
     verify_blob_addresses: bool = True,
+    manifest: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     # A completion boundary is the last point at which this producer can prove
     # every link it records still reaches the bytes it consumed.  Skipping input
     # verification here let a changed upstream blob be sealed into a locally
     # self-consistent inventory: the artifact bytes had not changed, only the
     # evidence their input digest named had.
-    manifest = tree.build_manifest(stage, verify_inputs=verify_inputs)
+    #
+    # `manifest` is the caller's already-built inventory, passed so one reader
+    # does not walk the same stage twice. A supplied manifest carries whatever
+    # verification its builder asked for; `verify_inputs` governs the one built
+    # here, and its default stays the verifying one.
+    if manifest is None:
+        manifest = tree.build_manifest(stage, verify_inputs=verify_inputs)
     artifacts = [
         entry for entry in manifest["artifacts"] if entry["kind"] not in _SEAL_EXCLUDED_KINDS
     ]
@@ -884,8 +927,36 @@ def _stage_blob_inventory(
         with os.scandir(directory_fd) as entries:
             names = sorted(entry.name for entry in entries)
         inventory = []
+        folded_names: dict[str, str] = {}
         for name in names:
+            # Case-fold collisions are judged before anything else: two names that
+            # differ only by case give one tree two different inventories on a
+            # case-sensitive and a case-insensitive filesystem, and neither name can
+            # be trusted once both are present.
+            folded = name.casefold()
+            previous = folded_names.get(folded)
+            if previous is not None:
+                raise SchemaRefusal(
+                    f"{stage} blob inventory names {previous!r} and {name!r}, which collide "
+                    "on a case-insensitive filesystem"
+                )
+            folded_names[folded] = name
+            if name != folded and is_sha256(folded):
+                raise SchemaRefusal(
+                    f"{stage} blob inventory name {name!r} is a non-canonical case variant "
+                    "of a sha256; a seal witnesses no noncanonical content address"
+                )
             if not is_sha256(name):
+                if _is_unpublished_blob_temporary(name):
+                    # `RunTree.put_blob` writes `.<digest>.tmp-<unique>` and then
+                    # hard-links it to its evidence name. SIGKILL between the two
+                    # leaves the private name behind. That orphan is interrupted
+                    # writer state, not published evidence for a completion seal to
+                    # witness -- but it is skipped only after it is proven to be a
+                    # plain regular file, so the exception is never a way to smuggle
+                    # a link past the no-follow rule.
+                    _refuse_unpublishable_temporary(directory_fd, name, stage)
+                    continue
                 raise SchemaRefusal(
                     f"{stage} blob inventory contains noncanonical content address {name!r}"
                 )
@@ -908,6 +979,40 @@ def _stage_blob_inventory(
         ) from error
     finally:
         os.close(directory_fd)
+
+
+def _is_unpublished_blob_temporary(name: str) -> bool:
+    """True only for the store's private, same-directory blob-write name.
+
+    ``RunTree.put_blob`` publishes a sha256-named file through
+    ``.<digest>.tmp-<unique>`` and an atomic hard link.  SIGKILL can leave the
+    private name behind before the link gives those bytes their evidence name.
+    Every other unexpected name stays a refusal, so this exception can never be
+    the route by which something unexplained sits in the evidence directory.
+    """
+    if not name.startswith("."):
+        return False
+    target, separator, unique = name[1:].partition(".tmp-")
+    return bool(separator and unique and is_sha256(target))
+
+
+def _refuse_unpublishable_temporary(directory_fd: int, name: str, stage: str) -> None:
+    """Prove one entry is a plain regular file before the exception skips it."""
+    try:
+        inspected = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+    except OSError as error:
+        raise SchemaRefusal(
+            f"{stage} blob inventory entry {name!r} changed while it was inspected: {error}"
+        ) from error
+    if stat.S_ISLNK(inspected.st_mode):
+        raise SchemaRefusal(
+            f"{stage} blob inventory entry {name!r} is a symlink; evidence blobs are no-follow"
+        )
+    if not stat.S_ISREG(inspected.st_mode):
+        raise SchemaRefusal(
+            f"{stage} blob inventory entry {name!r} wears the publisher's private temporary "
+            "name but is not a regular file"
+        )
 
 
 def _digest_regular_file_at(directory_fd: int, name: str, stage: str) -> str:
@@ -954,10 +1059,44 @@ def verify_predecessor_seal(tree: RunTree, stage: str) -> None:
     predecessor = SEAL_PREDECESSORS.get(stage)
     if predecessor is None:
         return
-    seals = _stage_records(tree, predecessor, "stage-seal")
+    _verify_stage_seal(tree, predecessor, stage, "predecessor")
+
+
+def verify_final_seal(tree: RunTree) -> dict[str, Any]:
+    """Prove the Armarium boundary, whose lack of a successor leaves no stage reader.
+
+    ``SEAL_PREDECESSORS`` is consumer-keyed, so asking it about Armarium would
+    re-prove the Archetypus boundary instead of reading Armarium's own seal.
+    """
+    manifest = tree.build_manifest(ARMARIUM, verify_inputs=False)
+    _verify_stage_seal(tree, ARMARIUM, "the orchestrator", "final boundary", manifest=manifest)
+    expected_id = artifact_id(ARMARIUM, "export", "export", None)
+    exports = [
+        entry
+        for entry in manifest["artifacts"]
+        if entry["kind"] == "export" and entry["artifact_id"] == expected_id
+    ]
+    if len(exports) != 1:
+        raise SchemaRefusal(
+            "the orchestrator refuses armarium final boundary: its manifest does not name "
+            "exactly one derived export artifact"
+        )
+    return _manifest_artifact(tree, ARMARIUM, exports[0])
+
+
+def _verify_stage_seal(
+    tree: RunTree,
+    producer: str,
+    reader: str,
+    role: str,
+    *,
+    manifest: Mapping[str, Any] | None = None,
+) -> None:
+    """Keep stage consumers and the final orchestrator reader on one seal contract."""
+    seals = _stage_records(tree, producer, "stage-seal", manifest=manifest)
     if not seals:
         raise SchemaRefusal(
-            f"{stage} refuses: predecessor {predecessor} has no stage-seal; "
+            f"{reader} refuses: {role} {producer} has no stage-seal; "
             "a missing witnessed statement is never re-derived"
         )
     # The producer refuses a seal its own stored inventory names and disk no
@@ -965,65 +1104,66 @@ def verify_predecessor_seal(tree: RunTree, stage: str) -> None:
     # tree reaches without ever invoking the producer again. Without this,
     # deleting the latest of several seals and reverting the change it witnessed
     # leaves the earlier seal answering for a boundary it never saw.
-    _refuse_deleted_seal(tree, predecessor, {record["artifact_id"] for record in seals})
-    seal = latest_attempt(seals, f"{predecessor} stage seal", operation="seal")
+    _refuse_deleted_seal(tree, producer, {record["artifact_id"] for record in seals})
+    seal = latest_attempt(seals, f"{producer} stage seal", operation="seal")
     payload = seal["payload"]
-    expected_id = artifact_id(predecessor, "decode-environment", predecessor, seal["attempt_id"])
+    expected_id = artifact_id(producer, "decode-environment", producer, seal["attempt_id"])
     if payload.get("decode_environment_artifact_id") != expected_id:
         raise SchemaRefusal(
-            f"{stage} refuses {predecessor} stage-seal: wrong decode environment name"
+            f"{reader} refuses {producer} stage-seal: wrong decode environment name"
         )
     if payload.get("config_digest") != tree.read_run().get("config_digest"):
         raise SchemaRefusal(
-            f"{stage} refuses {predecessor} stage-seal: config_digest differs from run authority"
+            f"{reader} refuses {producer} stage-seal: config_digest differs from run authority"
         )
     if payload.get("register_digest") != tree.read_run().get("register_digest"):
         raise SchemaRefusal(
-            f"{stage} refuses {predecessor} stage-seal: register_digest differs from run authority"
+            f"{reader} refuses {producer} stage-seal: register_digest differs from run authority"
         )
     try:
-        environment = tree.read_artifact(predecessor, "decode-environment", expected_id)
+        environment = tree.read_artifact(producer, "decode-environment", expected_id)
         environment_bytes = tree.read_bytes(
-            tree.artifact_path(predecessor, "decode-environment", expected_id)
+            tree.artifact_path(producer, "decode-environment", expected_id)
         )
     except (ContractError, OSError) as error:
         raise SchemaRefusal(
-            f"{stage} refuses {predecessor} stage-seal: its decode-environment is missing or damaged"
+            f"{reader} refuses {producer} stage-seal: its decode-environment is missing or damaged"
         ) from error
     previous_environment = _validate_decode_environment(
-        environment.get("payload"), f"{predecessor} stored"
+        environment.get("payload"), f"{producer} stored"
     )
     actual_environment_sha256 = digest_bytes(environment_bytes)
     if payload.get("decode_environment_sha256") != actual_environment_sha256:
         raise SchemaRefusal(
-            f"{stage} refuses {predecessor} stage-seal: its decode-environment digest "
+            f"{reader} refuses {producer} stage-seal: its decode-environment digest "
             "differs from the witnessed bytes"
         )
     try:
         expected = _stage_seal_payload(
             tree,
-            predecessor,
+            producer,
             payload.get("attempt_ordinal"),
             seal["attempt_id"],
+            manifest=manifest,
         )
     except (ContractError, OSError) as error:
         raise SchemaRefusal(
-            f"{stage} refuses {predecessor} stage-seal: its named inventory no longer "
+            f"{reader} refuses {producer} stage-seal: its named inventory no longer "
             f"matches disk: {error}"
         ) from error
     if payload != expected:
         raise SchemaRefusal(
-            f"{stage} refuses {predecessor} stage-seal: its named inventory no longer matches disk"
+            f"{reader} refuses {producer} stage-seal: its named inventory no longer matches disk"
         )
     current_environment = _validate_decode_environment(
-        _decode_environment(stage), f"{stage} current"
+        _decode_environment(reader), f"{reader} current"
     )
     differences = _decode_difference(previous_environment, current_environment)
     if differences:
         # This is intentionally an observation only. Unit 17 decides when a
         # decoder difference becomes fatal; silently omitting it is not allowed.
         print(
-            f"decode environment differs by name from {predecessor}: {differences}",
+            f"decode environment differs by name from {producer}: {differences}",
             file=sys.stderr,
         )
 
@@ -2440,6 +2580,7 @@ def open_context(
             "may not run against an unsealed configuration"
         )
     verify_predecessor_seal(tree, stage)
+    refuse_halted_run(tree, stage, args.hard_failure_config)
     return StageContext(
         tree=tree,
         run=run,
@@ -2459,6 +2600,36 @@ def open_context(
     )
 
 
+def refuse_halted_run(tree: RunTree, stage: str, hard_failure_config_path: str | Path) -> None:
+    """Apply the sealed run-level cap when no orchestrator guards stage entry."""
+    run = tree.read_run()
+    sealed_digests = run.get(SEALED_CONFIG_DIGESTS_FIELD)
+    # Hand-built stage-seal fixtures predate named policies and carry no ingress;
+    # synthetic-ingress fixtures may also construct one narrow boundary by hand.
+    # A real run always names this policy: losing that name is a failed proof,
+    # never permission to continue without the cap.
+    if not isinstance(sealed_digests, Mapping) or "hard-failure" not in sealed_digests:
+        if "ingress" in run and parse_ingress_record(run["ingress"]) == REAL_INGRESS:
+            raise ContractError(
+                f"{stage} refuses to start: this real run authority seals no hard-failure "
+                "configuration digest, so its run-level cap cannot be proven"
+            )
+        return
+    policy = load_hard_failure_policy(hard_failure_config_path)
+    require_sealed_config(run_sealed_config_digests(run), "hard-failure", policy["config_sha256"])
+    # An unreadable tally record is a failed measurement, not permission to
+    # enter. Input-byte consistency belongs to each stage's consumer boundary,
+    # though: recursively checking every tally artifact here can intercept
+    # unrelated lineage damage before the owning boundary names it. The tally
+    # still validates every record whose outcome and subject it measures.
+    tally = tally_hard_failures(tree, policy, verify_inputs=False)
+    if tally["breached"]:
+        raise RunHalted(
+            f"{stage} refuses to start: {tally['count']} hard failure(s) exceed the run-level "
+            f"cap of {tally['threshold']}; no stage writes after a halted run"
+        )
+
+
 def run_stage(main) -> int:
     """Run a stage's main and turn a contract refusal into an honest exit code.
 
@@ -2468,6 +2639,9 @@ def run_stage(main) -> int:
     """
     try:
         return int(main() or EXIT_COMPLETE)
+    except RunHalted as error:
+        print(f"{type(error).__name__}: {error}", file=sys.stderr)
+        return EXIT_RUN_HALTED
     except ContractError as error:
         print(f"{type(error).__name__}: {error}", file=sys.stderr)
         return EXIT_FATAL

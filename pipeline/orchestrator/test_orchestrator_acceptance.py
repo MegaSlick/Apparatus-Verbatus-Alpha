@@ -59,7 +59,7 @@ from common.stage import (
     open_context,
     run_config_bindings,
     stage_parser,
-    verify_predecessor_seal,
+    verify_final_seal,
 )
 from conftest import rebind_stage_seal_artifact as rebind_stage_seal
 
@@ -4507,6 +4507,7 @@ def test_each_handoff_corruption_stops_its_named_real_consumer(
 def test_each_stage_seal_corruption_stops_its_named_consumer(
     happy_run, tmp_path, producer, consumer
 ):
+    """Every seal has a downstream reader; Armarium's reader is the orchestrator."""
     source_root, _ = happy_run
     root = tmp_path / "runs"
     shutil.copytree(source_root, root)
@@ -4519,13 +4520,20 @@ def test_each_stage_seal_corruption_stops_its_named_consumer(
 
     if consumer == "orchestrator":
         # Do not rerun Armarium: that would let the producer's own scan refuse
-        # first and would not exercise the final consumer this row names.
+        # first and would not exercise the final consumer this row names. The
+        # orchestrator now reaches that boundary through `verify_final_seal`,
+        # which is the same seal contract plus the export check, so that is what
+        # this row drives. `SchemaRefusal` is a `ContractError`, and the message
+        # match is kept so the refusal still has to name the forged config.
         with pytest.raises(ContractError, match="skeleton.v99|schema"):
-            verify_predecessor_seal(tree, consumer)
-    else:
-        result = invoke_stage(root, "r", "happy", CONSUMER_PROGRAMS[consumer])
-        assert result.returncode != 0
-        assert "skeleton.v99" in result.stderr or "SchemaRefusal" in result.stderr
+            verify_final_seal(tree)
+        assert snapshot(root) == before
+        return
+
+    result = invoke_stage(root, "r", "happy", CONSUMER_PROGRAMS[consumer])
+
+    assert result.returncode != 0
+    assert "skeleton.v99" in result.stderr or "SchemaRefusal" in result.stderr
     assert snapshot(root) == before
 
 
