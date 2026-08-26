@@ -335,6 +335,62 @@ def test_a_page_with_no_ink_is_published_as_mapped(monkeypatch):
     assert context.finished is True
 
 
+def test_the_ink_map_refuses_a_page_whose_verified_pixels_will_not_decode(monkeypatch):
+    """A digest-verified page this module's own decoder still cannot read is a
+    named refusal, not a bare traceback.
+
+    `measured_page_bytes` proves the bytes match the digest the Exemplar sealed;
+    it says nothing about whether `page_residual_ink`/`page_edge_ink` can decode
+    them. `run_stage` only catches `RunHalted` and `ContractError`
+    (`common/stage.py`), so an uncaught decoder `ValueError` here would escape as
+    an unhandled traceback with `seal_boundary`/`finish` never reached -- GOVERNANCE
+    2's silent loss with extra steps.
+    """
+    page = _sealed_page(1)
+
+    class _PublishingContext:
+        def __init__(self):
+            self.tree = object()
+            self.published = []
+            self.sealed = False
+            self.finished = False
+
+        def input_ref(self, path):
+            return {"relative_path": path, "sha256": "0" * 64}
+
+        def publish(self, **record):
+            self.published.append(record)
+
+        def seal_boundary(self):
+            self.sealed = True
+
+        def finish(self):
+            self.finished = True
+
+    context = _PublishingContext()
+
+    class _Parser:
+        @staticmethod
+        def parse_args():
+            return SimpleNamespace()
+
+    monkeypatch.setattr(INK_MAP_RUN, "stage_parser", lambda *_args: _Parser())
+    monkeypatch.setattr(INK_MAP_RUN, "_open", lambda *_args: context)
+    monkeypatch.setattr(
+        INK_MAP_RUN,
+        "sealed_pages",
+        lambda _context: [(1, page, "1_exemplar/artifacts/page/page.json")],
+    )
+    monkeypatch.setattr(INK_MAP_RUN, "measured_page_bytes", lambda *_args: b"not an image")
+
+    with pytest.raises(FatalAccounting, match="cannot measure sealed Exemplar page 1"):
+        INK_MAP_RUN.main(registry_factory=None)
+
+    assert context.published == []
+    assert context.sealed is False
+    assert context.finished is False
+
+
 def test_a_one_pixel_wide_page_records_its_whole_width_as_edge():
     """The smallest legal width has an edge even though ``width // 2`` is zero."""
     rows = [bytearray([170 if y < 25 else 230]) for y in range(100)]

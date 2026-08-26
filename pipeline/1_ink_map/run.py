@@ -145,9 +145,24 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     context = _open(args, registry_factory)
     for ordinal, page, page_path in sealed_pages(context):
         image_bytes = measured_page_bytes(context.tree, ordinal, page)
-        # Empty coverage is intentional: this is the pre-proposal denominator.
-        ink_map = page_residual_ink(image_bytes, covered=[])
-        edge = page_edge_ink(image_bytes)
+        try:
+            # Empty coverage is intentional: this is the pre-proposal denominator.
+            ink_map = page_residual_ink(image_bytes, covered=[])
+            edge = page_edge_ink(image_bytes)
+        except ValueError as error:
+            # `measured_page_bytes` proves these bytes match the digest the
+            # Exemplar sealed; it proves nothing about whether this module's own
+            # independent decoder can read them. An uncaught decoder ValueError
+            # here would escape `run_stage`'s refusal handling as a bare
+            # traceback, with `seal_boundary`/`finish` never reached and earlier
+            # pages already published -- GOVERNANCE 2's silent loss with extra
+            # steps. Named and stopped instead, like every other census failure
+            # this stage refuses.
+            raise FatalAccounting(
+                f"the ink map cannot measure sealed Exemplar page {ordinal}: its own "
+                f"digest-verified pixels do not decode ({error}); no ink-map record "
+                "was written"
+            ) from error
         context.publish(
             kind="ink-map",
             subject_id=page["subject_id"],
