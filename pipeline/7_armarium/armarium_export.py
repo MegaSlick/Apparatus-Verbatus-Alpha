@@ -74,7 +74,11 @@ ARMARIUM_ARCHIVE_NAME: Final = "armarium-export.zip"
 # beside the new measured `claims.transcription_annotations` — a rename under
 # one id is the versioning miss the act-row bump below refuses, so the
 # manifest's id moves with its claims.
-EXPORT_MANIFEST_SCHEMA: Final = "armarium-export-manifest.v2"
+# v3: `claims.ink_map` joins the closed claim set. A v2 verifier cannot answer
+# that page-level hold question and a v3 verifier refuses a v2 claim set that
+# omits it, so keeping the v2 id would give two mutually unreadable shapes one
+# name -- exactly the silent schema drift the v2 bump above exists to prevent.
+EXPORT_MANIFEST_SCHEMA: Final = "armarium-export-manifest.v3"
 # v2: the damage record. `text_status` and `transcription_annotations` joined
 # the row, and the bare `annotations`/`annotation_status` pair was renamed
 # apart into `semantic_annotations`/`semantic_annotation_status`. A consumer
@@ -830,22 +834,46 @@ def _validate_ink_map_pages(rows: Any, subject: str) -> list[dict[str, Any]]:
     (GOVERNANCE 10). The absence is recorded as absence.
     """
     if not isinstance(rows, list | tuple):
-        raise SchemaRefusal(f"{subject} has no ink-map page rows")
+        raise SchemaRefusal(
+            f"{subject} does not carry its ink-map page rows as a list. Its page-level edge "
+            "holds cannot be derived or checked. Rebuild the export from an Armarium v3 source "
+            "graph."
+        )
     ordinals: set[int] = set()
     validated: list[dict[str, Any]] = []
     for row in rows:
         if not isinstance(row, dict) or set(row) != _INK_MAP_ROW_FIELDS:
-            raise SchemaRefusal(f"{subject} has an ink-map row that is not its closed shape")
+            raise SchemaRefusal(
+                f"{subject} has an ink-map row that is not its closed shape. The verifier cannot "
+                "tell which page measurement the row states. Rebuild the export from an intact "
+                "Armarium v3 source graph."
+            )
         ordinal, outcome, remeasured = row["ordinal"], row["initial_outcome"], row["remeasured"]
-        if not isinstance(ordinal, int) or isinstance(ordinal, bool) or ordinal in ordinals:
-            raise SchemaRefusal(f"{subject} repeats or omits an ink-map page ordinal")
+        if not isinstance(ordinal, int) or isinstance(ordinal, bool):
+            raise SchemaRefusal(
+                f"{subject} has an ink-map row without an integer page ordinal. The verifier "
+                "cannot bind its measurement to a sealed page. Rebuild the export from the "
+                "sealed page inventory."
+            )
+        if ordinal in ordinals:
+            raise SchemaRefusal(
+                f"{subject} repeats ink-map page ordinal {ordinal}. Continuing would select one "
+                "of two page findings by row order. Rebuild the export from the sealed page "
+                "inventory."
+            )
         ordinals.add(ordinal)
         if outcome not in _INK_MAP_OUTCOMES:
-            raise SchemaRefusal(f"{subject} has an unknown ink-map page outcome")
+            raise SchemaRefusal(
+                f"{subject} has an unknown ink-map page outcome. The verifier cannot determine "
+                "whether that page is held or released. Rebuild the export with this Armarium "
+                "version before using it."
+            )
         if outcome == _UNCLAIMED_EDGE_INK:
             if not isinstance(remeasured, dict) or set(remeasured) != _INK_MAP_REMEASURE_FIELDS:
                 raise SchemaRefusal(
-                    f"{subject} has a flagged ink-map page with no re-measurement to release it"
+                    f"{subject} has a flagged ink-map page with no re-measurement to resolve it. "
+                    "The page's terminal hold cannot be derived from an absent measurement. "
+                    "Rebuild the export from the retained Ink Map and Designator evidence."
                 )
             if any(
                 not isinstance(remeasured[field], int)
@@ -853,13 +881,23 @@ def _validate_ink_map_pages(rows: Any, subject: str) -> list[dict[str, Any]]:
                 or remeasured[field] < 0
                 for field in sorted(_INK_MAP_REMEASURE_FIELDS)
             ):
-                raise SchemaRefusal(f"{subject} has a non-integer ink-map re-measurement")
+                raise SchemaRefusal(
+                    f"{subject} has an invalid ink-map re-measurement. The shared coverage "
+                    "gate cannot evaluate those counts. Rebuild the export from the retained Ink "
+                    "Map evidence."
+                )
             if remeasured["outside_ink_pixels"] > remeasured["total_ink_pixels"]:
                 raise SchemaRefusal(
-                    f"{subject} re-measures more outside ink than the page carries at all"
+                    f"{subject} re-measures more outside ink than the page carries at all. The "
+                    "counts are internally impossible and cannot decide a page hold. Rebuild the "
+                    "export from the retained Ink Map evidence."
                 )
         elif remeasured is not None:
-            raise SchemaRefusal(f"{subject} re-measures an ink-map page its own map never flagged")
+            raise SchemaRefusal(
+                f"{subject} re-measures an ink-map page its own map never flagged. That records a "
+                "measurement the stage did not need or claim to take. Rebuild the export without "
+                "inventing a re-measurement for a mapped page."
+            )
         validated.append(row)
     return validated
 
@@ -911,7 +949,9 @@ def _validate_projection(projection: ArmariumProjection) -> None:
     }
     if {row["ordinal"] for row in ink_map_rows} != sealed:
         raise SchemaRefusal(
-            "an Armarium projection's ink-map denominator is not exactly its sealed page census"
+            "an Armarium projection's ink-map denominator is not exactly its sealed page census. "
+            "At least one sealed page finding would be lost or one unsealed page would be counted. "
+            "Rebuild the projection from the reconciled stage inventories."
         )
     for source in projection.source_manifest:
         if not isinstance(source, dict):
@@ -3052,7 +3092,9 @@ def _verify_honest_status_claims(
     }
     if {row["ordinal"] for row in ink_map_rows} != sealed_ordinals:
         raise SchemaRefusal(
-            "the package's ink-map denominator is not exactly its own sealed page census"
+            "the package's ink-map denominator is not exactly its own sealed page census. At "
+            "least one page finding is missing or extra, so its terminal ledger cannot balance. "
+            "Discard this extraction and rebuild the package from the intact run tree."
         )
     derived_edge_holds = edge_hold_pages_from_rows(ink_map_rows)
     ink_map_claim = claims.get("ink_map")
@@ -3064,7 +3106,8 @@ def _verify_honest_status_claims(
     ):
         raise SchemaRefusal(
             "the exported ink-map hold claim does not match the pages its own re-measured "
-            "evidence still flags"
+            "evidence still flags. The manifest and source graph disagree about which pages need "
+            "review. Discard this extraction and rebuild the package from the intact run tree."
         )
     must_be_partial = must_be_partial or bool(derived_edge_holds)
     # The third way a run can be incomplete, and the one a category-only reading

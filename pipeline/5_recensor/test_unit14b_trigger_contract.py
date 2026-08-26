@@ -254,6 +254,23 @@ def test_ink_below_the_minimum_pixel_floor_still_refuses():
     assert recensor.unclaimed_ink_observations(maps, [observation], 1, {}) == []
 
 
+def test_a_box_wholly_above_the_page_cannot_claim_ink_through_a_negative_slice():
+    """Out-of-page geometry contains no page pixels and funds no recovery.
+
+    Clipping only the near edge turned y=-10..-5 into ``rows[0:-5]``, which
+    Python reads as nearly the whole page. A full ink map then made a witness
+    pointer that touches no page pixel clear the recovery threshold.
+    """
+    recensor = _recensor()
+    page = {"x": 0, "y": 0, "w": 40, "h": 40}
+    maps = recensor.ink_map_by_page(_FakeContext({1: _ink_map(40, 40, [page])}))
+    observation = {
+        "kind": "unrouted-observation",
+        "bounds": {"x": 0, "y": -10, "w": 40, "h": 5},
+    }
+    assert recensor.unclaimed_ink_observations(maps, [observation], 1, {}) == []
+
+
 def test_ink_already_inside_a_cut_region_is_not_an_outside_part():
     """§4.5 condition (2) measures the OUTSIDE part, and §4.3 fixes the mask.
 
@@ -317,13 +334,43 @@ def test_unordered_ink_runs_are_refused_rather_than_double_counted():
         recensor.unclaimed_ink_observations(maps, [observation], 1, {})
 
 
-def test_an_observation_on_a_page_with_no_ink_map_entry_is_never_a_pointer():
-    """A page Unit 9 never mapped supplies no evidence; the gate refuses, not guesses."""
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        {"schema": "ink-runs.v1", "width": 0, "height": 1, "rows": [[]]},
+        {"schema": "ink-runs.v1", "width": 1, "height": False, "rows": []},
+    ],
+)
+def test_invalid_ink_map_dimensions_are_refused_instead_of_read_as_empty(evidence):
+    """Zero and boolean dimensions cannot turn malformed evidence into no ink."""
+    recensor = _recensor()
+    maps = recensor.ink_map_by_page(_FakeContext({1: evidence}))
+    observation = {"kind": "unrouted-observation", "bounds": {"x": 0, "y": 0, "w": 1, "h": 1}}
+    with pytest.raises(
+        FatalAccounting,
+        match=(
+            "invalid dimensions.*cannot be measured against a witness pointer.*"
+            "Restore the sealed Ink Map artifact"
+        ),
+    ):
+        recensor.unclaimed_ink_observations(maps, [observation], 1, {})
+
+
+def test_an_observation_on_a_page_with_no_ink_map_entry_is_refused_by_name():
+    """Missing evidence is an accounting refusal, never silently read as zero ink."""
     recensor = _recensor()
     box = {"x": 0, "y": 0, "w": 5, "h": 5}
     observation = {"kind": "unrouted-observation", "bounds": box}
     maps = recensor.ink_map_by_page(_FakeContext({2: _ink_map(20, 20, [box])}))
-    assert recensor.unclaimed_ink_observations(maps, [observation], 1, {}) == []
+    with pytest.raises(
+        FatalAccounting,
+        match=(
+            "retained unclaimed witness observations but no ink-map page-space evidence.*"
+            "cannot determine whether those pointers cover real ink.*"
+            "Restore the page's sealed Ink Map artifact"
+        ),
+    ):
+        recensor.unclaimed_ink_observations(maps, [observation], 1, {})
 
 
 def test_one_observation_funds_one_request_on_its_page():

@@ -217,7 +217,10 @@ def ink_map_page_rows(
     bare list of held ordinals would be a claim it could only check against
     itself. A page the map never flagged is re-measured by nobody and records
     `remeasured: None`, because writing zeros for it would put a measurement
-    that was never taken into the record (GOVERNANCE 10).
+    that was never taken into the record (GOVERNANCE 10). Every initial outcome
+    is first reconciled with the retained runs against the original empty crop
+    set; that verifies Unit 9's existing measurement and is distinct from the
+    later re-measurement against Designator cuts.
     """
     found: dict[int, dict] = {}
     for entry in context.tree.build_manifest(INK_MAP)["artifacts"]:
@@ -226,20 +229,60 @@ def ink_map_page_rows(
         record = context.tree.read_artifact(INK_MAP, "ink-map", entry["artifact_id"])
         payload = record.get("payload", {})
         ordinal = payload.get("page_ordinal") if isinstance(payload, dict) else None
-        # A second record for one page is refused rather than resolved: an ink
-        # map re-sealed while this release was being computed would otherwise
-        # let whichever copy the walk reached last decide the hold.
-        if not isinstance(ordinal, int) or isinstance(ordinal, bool) or ordinal in found:
-            raise FatalAccounting("ink-map has no unique page finding for the Armarium")
+        # A second retained record for one page is refused rather than resolved:
+        # otherwise whichever copy the manifest walk reached last would decide
+        # the hold. Upstream inventories are static during an Armarium run; this
+        # is duplicate-accounting protection, not a claim of an atomic race guard.
+        if not isinstance(ordinal, int) or isinstance(ordinal, bool):
+            raise FatalAccounting(
+                "ink-map has a record without an integer page ordinal. The Armarium cannot bind "
+                "its finding to a sealed page. Restore the sealed Ink Map inventory or restart "
+                "the run before exporting."
+            )
+        if ordinal in found:
+            raise FatalAccounting(
+                f"ink-map repeats page ordinal {ordinal}. The Armarium cannot choose which page "
+                "record decides the edge hold. Restore the sealed Ink Map inventory or restart "
+                "the run before exporting."
+            )
         if record["outcome"] not in {"mapped", "unclaimed-edge-ink"}:
-            raise FatalAccounting("ink-map has an unknown page finding outcome")
+            raise FatalAccounting(
+                "ink-map has an unknown page finding outcome. The Armarium cannot determine "
+                "whether the page remains held. Rebuild the Ink Map under this version before "
+                "exporting."
+            )
         evidence = payload.get("edge_findings")
         if not isinstance(evidence, dict):
-            raise FatalAccounting("ink-map has no reusable page-space edge evidence")
+            raise FatalAccounting(
+                "ink-map has no reusable page-space edge evidence. The Armarium cannot verify "
+                "or release the page finding from a bare outcome. Restore the sealed Ink Map "
+                "artifact or restart the run before exporting."
+            )
+        try:
+            initial_measure = edge_ink_from_runs(evidence, [])
+        except (KeyError, TypeError, ValueError) as error:
+            raise FatalAccounting(
+                f"ink-map page {ordinal} has unreadable retained page-space edge evidence. "
+                "The Armarium cannot verify the page finding that decides whether edge ink "
+                "must remain held. Restore the sealed Ink Map artifact or restart the run "
+                "before exporting."
+            ) from error
+        measured_outcome = "unclaimed-edge-ink" if initial_measure["flagged"] else "mapped"
+        if record["outcome"] != measured_outcome:
+            raise FatalAccounting(
+                f"ink-map page {ordinal} records outcome {record['outcome']!r}, but its retained "
+                f"page-space evidence measures {measured_outcome!r}. The Armarium cannot choose "
+                "between a page finding and the evidence meant to prove it. Repair or restart "
+                "the Ink Map stage before exporting."
+            )
         found[ordinal] = {"outcome": record["outcome"], "evidence": evidence}
     sealed = {ordinal for ordinal, page in census.items() if page.get("outcome") == "sealed"}
     if set(found) != sealed:
-        raise FatalAccounting("ink-map page denominator does not match the Armarium page census")
+        raise FatalAccounting(
+            "ink-map page denominator does not match the Armarium page census. At least one "
+            "sealed page lacks a finding or an unsealed page gained one, so page coverage cannot "
+            "reconcile. Restore the sealed stage inventories or restart the run before exporting."
+        )
     rows = []
     for ordinal in sorted(found):
         finding = found[ordinal]
@@ -249,7 +292,9 @@ def ink_map_page_rows(
                 measure = edge_ink_from_runs(finding["evidence"], claimed_bounds.get(ordinal, []))
             except (KeyError, TypeError, ValueError) as error:
                 raise FatalAccounting(
-                    "ink-map page-space edge evidence cannot be re-measured"
+                    "ink-map page-space edge evidence cannot be re-measured. The Armarium cannot "
+                    "decide whether later crops released the page hold. Restore the sealed Ink "
+                    "Map artifact or restart the run before exporting."
                 ) from error
             remeasured = {
                 "total_ink_pixels": measure["total_ink_pixels"],
@@ -333,12 +378,18 @@ def claimed_bounds_by_page(context, manifest_cache: dict[str, dict]) -> dict[int
         except ContractError as error:
             raise FatalAccounting(
                 f"the Designator region {entry['artifact_id']} cannot be verified as a crop of "
-                "the Exemplar page it claims to mark out"
+                "the Exemplar page it claims to mark out. Its bounds therefore cannot release "
+                "any page ink. Restore the sealed Designator artifact or restart the run before "
+                "exporting."
             ) from error
         transform = region.get("payload", {}).get("transform")
         bounds = transform.get("bounds") if isinstance(transform, dict) else None
         if not isinstance(bounds, dict):
-            raise FatalAccounting("a verified Designator region has no crop bounds")
+            raise FatalAccounting(
+                "a verified Designator region has no crop bounds. It cannot claim any page ink, "
+                "so using it to release an edge hold would be unsupported. Restore the sealed "
+                "Designator artifact or restart the run before exporting."
+            )
         claimed.setdefault(verified["source_page_ordinal"], []).append(bounds)
     return claimed
 

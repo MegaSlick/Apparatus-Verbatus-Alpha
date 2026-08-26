@@ -1897,9 +1897,10 @@ def flag_location_basis(
     if raised != len(basis):
         raise FatalAccounting(
             f"the audit raised {raised} testimony-diff flag(s) over this act's retained "
-            f"testimony but {len(basis)} chair(s) of it depart from the reading; a "
-            "flag-location basis may not be counted on a different denominator than "
-            "the flags it explains"
+            f"testimony but {len(basis)} chair(s) of it depart from the reading. The "
+            "flag-location basis is counted on a different denominator than the flags it "
+            "explains, so the audit draft cannot be trusted. Rebuild the draft from the "
+            "unchanged dossier before continuing the Perlector."
         )
     return basis
 

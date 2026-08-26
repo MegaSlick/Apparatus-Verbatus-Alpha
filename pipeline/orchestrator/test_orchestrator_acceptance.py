@@ -900,7 +900,12 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # denominator than its writer counted on). The two producers are now held to
 # the same count. Counts and exits unchanged (happy 97/0, review 106/3); both
 # re-measured twice in independent roots at run id "r".
-HAPPY_RUN_TREE_DIGEST = "e37df7cd50df862eaf556236fd5fafc81c308aa0a31c38ba8b7f86060f9b9a35"
+# Unit 14B Phase-2 Sol review: `claims.ink_map` made the manifest's closed
+# shape incompatible with v2, so its schema id now honestly moves to v3 just
+# as the squash already moved `sources.json`. Only the exported schema byte and
+# its derived hashes change; happy remains 97 files at exit 0. Re-measured at
+# canonical run id "r" through this module's own helpers.
+HAPPY_RUN_TREE_DIGEST = "da138676ace7893653d0f9c6697173c833402f1d33b979a13d04d120ae24674e"
 # Review only, once more in the same seat: a page witness invoked on every act
 # and unusable on all of them now records the serving moment that produced it
 # (`provenance_for(..., attempted=attempted_page)`), where the `reading` gate
@@ -957,7 +962,11 @@ HAPPY_RUN_TREE_DIGEST = "e37df7cd50df862eaf556236fd5fafc81c308aa0a31c38ba8b7f860
 # witness pointer at all -- and review stays at 106 files, exit 3. Measured
 # twice in independent temporary roots at canonical run id "r" through this
 # module's own `orchestrate` and `semantic_snapshot_digest` helpers.
-REVIEW_RUN_TREE_DIGEST = "e2b06456788dffb26ab81cac2ed0e23759344cabe2d75453642a6a9e82920c75"
+# Unit 14B Phase-2 Sol review: the manifest v3 correction described above the
+# happy pin changes the same exported schema byte and derived hashes here;
+# review remains 106 files at exit 3. Re-measured at canonical run id "r"
+# through this module's own helpers.
+REVIEW_RUN_TREE_DIGEST = "528b45f837e68578287533d47b3ef74883e6f38d05da91a7a6cb43f82a2c1920"
 
 
 def orchestrate(
@@ -1555,7 +1564,7 @@ def _armarium_bundle_semantics(data: bytes) -> tuple[str, dict[str, str]] | None
             manifest = json.loads(manifest_data)
             if (
                 not isinstance(manifest, dict)
-                or manifest.get("schema") != "armarium-export-manifest.v2"
+                or manifest.get("schema") != "armarium-export-manifest.v3"
                 or canonical_bytes(manifest) != manifest_data
                 or manifest.get("self_hash") != self_hash(manifest)
             ):
@@ -2370,7 +2379,7 @@ def _write_acceptance_bundle_tree(root: Path, database_data: bytes, damage=None)
     """
     members = {"acts.sqlite": database_data, "acts.jsonl": b'{"act_id":"a1"}\n'}
     package_manifest = {
-        "schema": "armarium-export-manifest.v2",
+        "schema": "armarium-export-manifest.v3",
         "members": [
             {"path": name, "sha256": digest_bytes(content), "bytes": len(content)}
             for name, content in sorted(members.items())

@@ -9,9 +9,9 @@ stage half: which run-tree evidence `ink_map_page_rows` and
 Consult §4.4: release is by ink, not by decision. The corollary is that every
 input to that re-measurement has to be the one the run actually sealed. A crop
 whose pixels no longer verify against the Exemplar page it claims cannot
-release anything, and an Ink Map re-sealed while the release is being computed
-is refused rather than resolved -- otherwise whichever copy the manifest walk
-reached last would decide the hold.
+release anything, and two retained Ink Map findings for one page are refused
+rather than resolved -- otherwise whichever copy the manifest walk reached
+last would decide the hold.
 """
 
 import importlib.util
@@ -117,11 +117,11 @@ def test_a_partial_claim_releases_nothing_it_did_not_actually_cover():
     assert armarium.edge_hold_pages_from_rows(list(rows)) == (1,)
 
 
-def test_an_ink_map_re_sealed_mid_release_is_refused_rather_than_resolved():
-    """Two records for one page: the walk order must not decide the hold."""
+def test_two_ink_map_records_for_one_page_are_refused_rather_than_resolved():
+    """A duplicate in the settled inventory cannot make walk order decide the hold."""
     armarium = _armarium()
     context = _context({INK_MAP: [_ink_record("a", 1), _ink_record("b", 1)]})
-    with pytest.raises(FatalAccounting, match="no unique page finding"):
+    with pytest.raises(FatalAccounting, match="repeats page ordinal 1"):
         armarium.ink_map_page_rows(context, SEALED_ONE, {})
 
 
@@ -140,10 +140,49 @@ def test_an_unknown_ink_map_outcome_is_refused_rather_than_read_as_mapped():
         armarium.ink_map_page_rows(context, SEALED_ONE, {})
 
 
+@pytest.mark.parametrize(
+    ("outcome", "evidence", "measured"),
+    [
+        ("mapped", _FLAGGED_RUNS, "unclaimed-edge-ink"),
+        ("unclaimed-edge-ink", _RUNS, "mapped"),
+    ],
+)
+def test_an_ink_map_outcome_must_match_its_retained_ink_runs(outcome, evidence, measured):
+    """A contradictory outcome cannot release or hold a page by assertion.
+
+    The retained runs are the immutable page-space evidence introduced by this
+    unit. Trusting ``mapped`` without reading them made malformed evidence and
+    real flagging ink equally disappear from the export boundary.
+    """
+    armarium = _armarium()
+    context = _context({INK_MAP: [_ink_record("a", 1, outcome, evidence)]})
+    with pytest.raises(
+        FatalAccounting,
+        match=rf"records outcome {outcome!r}, but its retained.*measures {measured!r}",
+    ):
+        armarium.ink_map_page_rows(context, SEALED_ONE, {})
+
+
+def test_a_mapped_page_with_unreadable_retained_runs_is_refused_by_name():
+    """The clear outcome has the same evidence-validation duty as a hold."""
+    armarium = _armarium()
+    malformed = {"schema": "ink-runs.v1", "width": 40, "height": 2, "rows": [[]]}
+    context = _context({INK_MAP: [_ink_record("a", 1, "mapped", malformed)]})
+    with pytest.raises(
+        FatalAccounting,
+        match=(
+            "unreadable retained page-space edge evidence.*"
+            "cannot verify the page finding.*"
+            "Restore the sealed Ink Map artifact"
+        ),
+    ):
+        armarium.ink_map_page_rows(context, SEALED_ONE, {})
+
+
 def test_a_page_ordinal_that_is_not_an_integer_is_refused():
     armarium = _armarium()
     context = _context({INK_MAP: [_ink_record("a", True)]})
-    with pytest.raises(FatalAccounting, match="no unique page finding"):
+    with pytest.raises(FatalAccounting, match="without an integer page ordinal"):
         armarium.ink_map_page_rows(context, SEALED_ONE, {})
 
 

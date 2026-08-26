@@ -302,6 +302,28 @@ def test_an_otherwise_complete_export_is_complete_without_an_edge_hold():
     assert manifest["claims"]["ink_map"]["held_pages"] == []
 
 
+def test_the_required_ink_map_claim_moves_the_manifest_schema_to_v3(tmp_path):
+    """A v2 identity may not describe the new closed claim set.
+
+    Unit 14B made ``claims.ink_map`` mandatory. Keeping the old schema id would
+    leave old and new readers mutually unable to read objects that both call
+    v2, the versioning defect the source-graph side already avoided by moving
+    ``sources.json`` to v3.
+    """
+    members = _members(
+        build_armarium_bundle(
+            _otherwise_complete(), _formats(embed_pixels=False), _source_bytes
+        ).data
+    )
+    manifest = json.loads(members[EXPORT_MANIFEST_NAME])
+    assert manifest["schema"] == "armarium-export-manifest.v3"
+
+    manifest["schema"] = "armarium-export-manifest.v2"
+    _refresh_manifest(members, manifest)
+    with pytest.raises(SchemaRefusal, match="no recognized EXPORT_MANIFEST schema"):
+        verify_export_bundle(_zip_bytes(members), tmp_path / "stale-v2")
+
+
 def test_an_unreleased_edge_finding_forces_a_partial_export_and_rejects_complete(tmp_path):
     """A page-level hold is not erased because its acts happen to be complete.
 
@@ -447,7 +469,7 @@ def test_a_page_the_map_never_flagged_may_not_carry_a_re_measurement():
 
 def test_a_flagged_page_with_no_re_measurement_cannot_reach_an_export():
     """A hold may not be released by a row that never says it was re-measured."""
-    with pytest.raises(SchemaRefusal, match="no re-measurement to release it"):
+    with pytest.raises(SchemaRefusal, match="no re-measurement to resolve it"):
         build_armarium_bundle(
             replace(
                 _otherwise_complete(),
@@ -2390,7 +2412,7 @@ def test_a_preexisting_hard_link_is_replaced_without_writing_outside_the_clean_r
 
     manifest = verify_export_bundle(bundle.data, clean)
 
-    assert manifest["schema"] == "armarium-export-manifest.v2"
+    assert manifest["schema"] == "armarium-export-manifest.v3"
     assert outside.read_bytes() == b"bytes outside the extraction root"
     assert linked.stat().st_ino != shared_inode
 

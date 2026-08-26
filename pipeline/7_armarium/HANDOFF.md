@@ -110,8 +110,9 @@ projection configuration. The bundle may contain these plainly specified formats
   `armarium-sources.v3` for the same reason twice over: at v2 its act-outcome
   rows began to REQUIRE `text_status` under exact-field-set validation, and at
   v3 `ink_map_pages` joins the source graph, so a v2 file cannot answer a v3
-  reader's question at all. The manifest is `armarium-export-manifest.v2` for
-  its renamed-apart annotation claims.
+  reader's question at all. The manifest is `armarium-export-manifest.v3`: v2
+  renamed the annotation claims apart, and v3 adds the required `ink_map`
+  claim to the closed claim set.
 - `review-items.jsonl` — held and refused act records with reasons and
   digest-checked evidence references.
 - `salvage/items.jsonl` — a structurally separate salvage namespace. It has no
