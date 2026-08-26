@@ -27,8 +27,9 @@ def _cells(value: object, what: str) -> frozenset[tuple[int, int]]:
             not isinstance(cell, list)
             or len(cell) != 2
             or any(not isinstance(axis, int) or isinstance(axis, bool) for axis in cell)
+            or any(axis < 0 for axis in cell)
         ):
-            raise SchemaRefusal(f"{what} has a non-integer cell")
+            raise SchemaRefusal(f"{what} has a malformed cell")
         result.add((cell[0], cell[1]))
     if len(result) != len(value):
         raise SchemaRefusal(f"{what} repeats a cell")
@@ -74,7 +75,10 @@ def build_cross_capture_coverage(
         if (
             not isinstance(required, list)
             or not required
-            or any(not isinstance(x, str) or not x for x in required)
+            or any(
+                not isinstance(x, str) or len(x) != 64 or set(x) - set("0123456789abcdef")
+                for x in required
+            )
         ):
             raise SchemaRefusal("cross-capture component has invalid required captures")
         if len(required) != len(set(required)) or required != sorted(required):
@@ -96,7 +100,14 @@ def build_cross_capture_coverage(
             if not isinstance(row, dict) or set(row) != fields:
                 raise SchemaRefusal("cross-capture capture survey is not closed")
             source, state = row["source_sha256"], row["visibility_state"]
-            if not isinstance(source, str) or source in by_source or state not in _STATES:
+            if (
+                not isinstance(source, str)
+                or len(source) != 64
+                or set(source) - set("0123456789abcdef")
+                or source in by_source
+                or not isinstance(state, str)
+                or state not in _STATES
+            ):
                 raise SchemaRefusal("cross-capture capture survey has invalid source or state")
             if not isinstance(row["alignment_ref"], str) or not row["alignment_ref"]:
                 raise SchemaRefusal("cross-capture capture survey lacks alignment")
@@ -193,9 +204,18 @@ def same_chair_witness_floor(
     rows: list[dict[str, Any]], *, components: set[str], floor: int
 ) -> dict[str, Any]:
     """Count a chair once only after its own comparable rows cover every component."""
-    if not isinstance(floor, int) or floor < 0 or not components:
+    if (
+        not isinstance(rows, list)
+        or not isinstance(components, set)
+        or not components
+        or any(not isinstance(component, str) or not component for component in components)
+        or not isinstance(floor, int)
+        or isinstance(floor, bool)
+        or floor < 0
+    ):
         raise SchemaRefusal("same-chair witness floor has invalid denominator")
     covered: dict[str, set[str]] = defaultdict(set)
+    seen_rows: set[tuple[str, str]] = set()
     for row in rows:
         if not isinstance(row, dict) or set(row) != {
             "chair",
@@ -205,10 +225,27 @@ def same_chair_witness_floor(
             "components",
         }:
             raise SchemaRefusal("witness-floor row is not closed")
-        if not isinstance(row["chair"], str) or not isinstance(row["capture"], str):
+        if (
+            not isinstance(row["chair"], str)
+            or not row["chair"]
+            or not isinstance(row["capture"], str)
+            or not row["capture"]
+        ):
             raise SchemaRefusal("witness-floor row lacks chair/capture provenance")
         if not isinstance(row["attached"], bool) or not isinstance(row["comparable"], bool):
             raise SchemaRefusal("witness-floor row lacks attachment/comparability facts")
+        if (
+            not isinstance(row["components"], list)
+            or any(
+                not isinstance(component, str) or not component for component in row["components"]
+            )
+            or len(row["components"]) != len(set(row["components"]))
+        ):
+            raise SchemaRefusal("witness-floor row has malformed components")
+        identity = (row["chair"], row["capture"])
+        if identity in seen_rows:
+            raise SchemaRefusal("witness-floor repeats a chair/capture fact")
+        seen_rows.add(identity)
         row_components = set(row["components"])
         if not row_components <= components:
             raise SchemaRefusal("witness-floor row names an unknown component")
@@ -242,7 +279,8 @@ def capture_specific_recovery(
         not isinstance(logical_act_id, str)
         or not logical_act_id
         or not isinstance(source_sha256, str)
-        or not source_sha256
+        or len(source_sha256) != 64
+        or set(source_sha256) - set("0123456789abcdef")
     ):
         raise SchemaRefusal("capture-specific recovery lacks logical-act/capture identity")
     if not isinstance(page_ordinal, int) or isinstance(page_ordinal, bool) or page_ordinal < 0:
@@ -253,6 +291,15 @@ def capture_specific_recovery(
     ):
         raise SchemaRefusal("capture-specific recovery gate is not boolean")
     admitted = ink_confirmed and page_observation_grant_available and act_budget_available
+    missing = [
+        label
+        for available, label in (
+            (ink_confirmed, "this capture has no Unit 14B ink-confirmed observation"),
+            (page_observation_grant_available, "the page observation grant is unavailable"),
+            (act_budget_available, "the act recovery budget is unavailable"),
+        )
+        if not available
+    ]
     return {
         "logical_act_id": logical_act_id,
         "source_sha256": source_sha256,
@@ -262,6 +309,6 @@ def capture_specific_recovery(
         "reason": (
             "this capture's Unit 14B ink-confirmed observation and both bounded grants admit recovery"
             if admitted
-            else "cross-capture visibility alone cannot fund recovery; this capture lacks an ink-confirmed observation or a bounded grant"
+            else "cross-capture visibility alone cannot fund recovery: " + "; ".join(missing)
         ),
     }

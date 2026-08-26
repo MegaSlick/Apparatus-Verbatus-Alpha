@@ -235,6 +235,73 @@ def test_same_chair_counts_once_only_after_its_comparable_rows_cover_every_compo
     }
 
 
+@pytest.mark.parametrize(
+    ("rows", "components", "floor"),
+    [
+        (None, {"whole"}, 1),
+        ([], {"whole"}, True),
+        (
+            [
+                {
+                    "chair": "attestator_1",
+                    "capture": A,
+                    "attached": True,
+                    "comparable": True,
+                    "components": 1,
+                }
+            ],
+            {"whole"},
+            1,
+        ),
+        (
+            [
+                {
+                    "chair": "attestator_1",
+                    "capture": A,
+                    "attached": True,
+                    "comparable": True,
+                    "components": [{}],
+                }
+            ],
+            {"whole"},
+            1,
+        ),
+    ],
+)
+def test_malformed_witness_floor_inputs_are_named_schema_refusals(rows, components, floor):
+    with pytest.raises(SchemaRefusal):
+        same_chair_witness_floor(rows, components=components, floor=floor)
+
+
+def test_duplicate_chair_capture_facts_refuse_instead_of_keeping_the_positive_row():
+    rows = [
+        {
+            "chair": "attestator_1",
+            "capture": A,
+            "attached": attached,
+            "comparable": attached,
+            "components": ["whole"],
+        }
+        for attached in (False, True)
+    ]
+    with pytest.raises(SchemaRefusal, match="repeats a chair/capture fact"):
+        same_chair_witness_floor(rows, components={"whole"}, floor=1)
+
+
+def test_unhashable_visibility_state_is_a_named_schema_refusal():
+    component = _component()
+    component["captures"][0]["visibility_state"] = []
+    with pytest.raises(SchemaRefusal, match="invalid source or state"):
+        build_cross_capture_coverage(logical_act_id="pac_fixture", components=[component])
+
+
+def test_negative_cell_coordinates_are_named_schema_refusals():
+    component = _component()
+    component["expected_cells"][0] = [-1, 0]
+    with pytest.raises(SchemaRefusal, match="malformed cell"):
+        build_cross_capture_coverage(logical_act_id="pac_fixture", components=[component])
+
+
 def test_cross_capture_visibility_cannot_be_passed_to_unit14b_page_denominators():
     spec = importlib.util.spec_from_file_location(
         "recensor_19c", ROOT / "pipeline/5_recensor/run.py"
@@ -264,8 +331,38 @@ def test_capture_specific_recovery_requires_its_own_ink_confirmed_unit14b_trigge
         act_budget_available=True,
     )
     assert denied["admitted"] is False
+    assert "no Unit 14B ink-confirmed observation" in denied["reason"]
+    assert "grant is unavailable" not in denied["reason"]
     assert admitted["admitted"] is True
     assert admitted["source_sha256"] == A and admitted["page_ordinal"] == 1
+
+
+def test_capture_specific_recovery_names_every_missing_conjunct():
+    denied = capture_specific_recovery(
+        logical_act_id="pac_fixture",
+        source_sha256=A,
+        page_ordinal=1,
+        ink_confirmed=False,
+        page_observation_grant_available=False,
+        act_budget_available=False,
+    )
+    assert denied["reason"] == (
+        "cross-capture visibility alone cannot fund recovery: this capture has no Unit 14B "
+        "ink-confirmed observation; the page observation grant is unavailable; the act "
+        "recovery budget is unavailable"
+    )
+
+
+def test_capture_specific_recovery_refuses_a_non_digest_capture_identity():
+    with pytest.raises(SchemaRefusal, match="lacks logical-act/capture identity"):
+        capture_specific_recovery(
+            logical_act_id="pac_fixture",
+            source_sha256="not-a-digest",
+            page_ordinal=1,
+            ink_confirmed=True,
+            page_observation_grant_available=True,
+            act_budget_available=True,
+        )
 
 
 def test_incomplete_measured_survey_refuses_instead_of_guessing_occlusion():
