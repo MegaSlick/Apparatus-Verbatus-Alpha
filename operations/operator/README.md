@@ -39,7 +39,7 @@ submitted masters remain the Exemplar.
 
 ## The ten words
 
-Eight things this tool can do, in the order a normal run uses them, plus one you can run
+Nine things this tool can do, in the order a normal run uses them, plus one you can run
 any time to check on things.
 
 | Word | What the real run does | Real-run cost |

@@ -29,6 +29,15 @@ _REQUEST = {"operation", "project", "output_dir", "expected_project_sha256"}
 # corrupt file exhaust memory before this module ever gets to refuse its shape.
 _MAX_PROJECT_BYTES: Final = 64 * 1024 * 1024
 
+# ElementTree accepts UTF-16 and UTF-32 XML as well as UTF-8. Looking for only
+# the ASCII byte spelling leaves a doctype (and its entities) invisible in those
+# encodings even though the parser still processes it. ScanTailor writes no
+# doctype in any encoding, so refuse every XML byte spelling we accept.
+_DOCTYPE_MARKERS: Final = tuple(
+    "<!DOCTYPE".encode(encoding)
+    for encoding in ("utf-8", "utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be")
+)
+
 # ScanTailor writes coordinates as Qt-serialized doubles. This is the decimal
 # spelling of one, and nothing else: the value is kept as the exact string it
 # was written as (see `_point`), so without a vocabulary the file decides what
@@ -76,7 +85,7 @@ def _coordinate(value: str, what: str) -> str:
 
 
 def parse(project_bytes: bytes, project_path: Path) -> dict[str, Any]:
-    if b"<!DOCTYPE" in project_bytes:
+    if any(marker in project_bytes for marker in _DOCTYPE_MARKERS):
         # Named explicitly rather than left to the parser's own defences: a real
         # ScanTailor Advanced project never declares a doctype or an entity, so
         # refusing the byte pattern outright is a refusal that holds regardless
@@ -134,6 +143,7 @@ def parse(project_bytes: bytes, project_path: Path) -> dict[str, Any]:
             "file_image": _integer(image.attrib["fileImage"], "file image index"),
             "width": _integer(image[0].attrib["width"], "image width"),
             "height": _integer(image[0].attrib["height"], "image height"),
+            "removed_half": _removed_half(image.attrib.get("removed")),
         }
     if filters.tag != "filters" or filters.attrib:
         raise _refuse("filters have an unsupported shape")
@@ -183,12 +193,15 @@ def parse(project_bytes: bytes, project_path: Path) -> dict[str, Any]:
         if kind not in {"single-uncut", "single-cut", "two-pages"}:
             raise _refuse("page-split geometry names an unknown layout type")
         outline = pages[0]
-        if outline.tag != "outline" or len(outline) != 4 or set(outline.attrib):
-            raise _refuse("page-split outline is not exactly four points")
+        if outline.tag != "outline" or len(outline) != 5 or set(outline.attrib):
+            raise _refuse("page-split outline is not exactly four closed sides")
+        outline_points = [_point(point, "outline") for point in outline]
+        if outline_points[-1] != outline_points[0]:
+            raise _refuse("page-split outline does not close at its first point")
         record = {
             "image": image_paths[entry.attrib["id"]],
             "layout_type": kind,
-            "outline": [_point(point, "outline") for point in outline],
+            "outline": outline_points,
             "cutters": [],
         }
         for cutter in pages[1:]:
@@ -217,6 +230,17 @@ def parse(project_bytes: bytes, project_path: Path) -> dict[str, Any]:
         "source_image_count": len(image_paths),
         "geometry": geometry,
     }
+
+
+def _removed_half(value: str | None) -> str | None:
+    """Preserve ScanTailor's page removal as geometry, without applying it."""
+
+    if value is None:
+        return None
+    try:
+        return {"L": "left", "R": "right"}[value]
+    except KeyError as error:
+        raise _refuse("image removed-half marker is neither L nor R") from error
 
 
 def _bounded_bytes(path: Path, what: str, *, follow: bool = True) -> bytes:
@@ -255,13 +279,12 @@ def _bounded_bytes(path: Path, what: str, *, follow: bool = True) -> bytes:
 
 
 def _persisted(document: dict[str, Any]) -> bytes:
-    """The exact bytes a commit would publish, reparsed and checked as a fixed point.
+    """The exact bytes a commit would publish, checked as a serialized fixed point.
 
     The 21B write boundary this seam must land through: serialize once, reparse,
-    validate the reparsed form is still the document, and require the bytes to
-    be a fixed point before anything is written. A dict built entirely from this
-    module's own parsing has no tuple or dict-subclass smuggling channel today,
-    but the boundary is a property of the write, not a bet on today's callers.
+    and require the bytes to be a fixed point before anything is written. A dict
+    built entirely from this module's own parsing has no tuple channel today;
+    the byte-form check also refuses dict subclasses that emit duplicate keys.
     """
     encoded = canonical_bytes(document) + b"\n"
     try:
@@ -318,7 +341,7 @@ def main() -> int:
                 # The one atomic writer: fsync's the bytes and, strictly, the
                 # directory entry that names them, so a "committed" reply is
                 # never printed for a write a power cut could still lose.
-                exclusive_write(path, encoded, strict=True)
+                exclusive_write(path, encoded, strict=True, create_parent=False)
             except FileExistsError as error:
                 if _bounded_bytes(path, "existing geometry document", follow=False) != encoded:
                     raise _refuse(

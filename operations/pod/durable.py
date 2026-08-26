@@ -78,7 +78,9 @@ def sync_directory(path: Path, *, strict: bool = False) -> None:
         os.close(descriptor)
 
 
-def exclusive_write(path: Path, payload: bytes, *, strict: bool = False) -> None:
+def exclusive_write(
+    path: Path, payload: bytes, *, strict: bool = False, create_parent: bool = True
+) -> None:
     """Create ``path`` with ``payload`` durably, or raise if it already exists.
 
     ``atomic_write`` replaces whatever was there.  A record whose *existence* is
@@ -92,9 +94,15 @@ def exclusive_write(path: Path, payload: bytes, *, strict: bool = False) -> None
     directory entry too wherever ``sync_directory`` can open and sync it.
     ``strict=True`` is for money evidence and other callers that must refuse a
     paid action unless the directory entry itself is proved durable.
+
+    ``create_parent=False`` serves operator flows whose contract requires an
+    existing approved folder. If that folder disappears before the open, the
+    write refuses instead of silently recreating a directory the operator did
+    not approve.
     """
 
-    path.parent.mkdir(parents=True, exist_ok=True)
+    if create_parent:
+        path.parent.mkdir(parents=True, exist_ok=True)
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
         with os.fdopen(descriptor, "wb") as handle:

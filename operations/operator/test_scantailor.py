@@ -16,7 +16,7 @@ PROJECT = b"""<project version="4" outputDirectory="out" layoutDirection="LTR">
 <directories><directory id="1" path="masters"/></directories>
 <files><file id="2" dirId="1" name="spread.tif"/></files>
 <images><image id="3" subPages="2" fileId="2" fileImage="0"><size width="1200" height="800"/><dpi horizontal="300" vertical="300"/></image></images>
-<pages/><file-name-disambiguation/><filters><page-split defaultLayoutType="two-pages"><image id="3" layoutType="two-pages"><params mode="manual"><pages type="two-pages"><outline><point x="0" y="0"/><point x="1200" y="0"/><point x="1200" y="800"/><point x="0" y="800"/></outline><cutter1><p1 x="600" y="0"/><p2 x="600" y="800"/></cutter1></pages><dependencies/></params></image></page-split></filters>
+<pages><page id="4" imageId="3" subPage="left"/><page id="5" imageId="3" subPage="right"/></pages><file-name-disambiguation/><filters><page-split defaultLayoutType="two-pages"><image id="3" layoutType="two-pages"><params mode="manual"><pages type="two-pages"><outline><point x="0" y="0"/><point x="1200" y="0"/><point x="1200" y="800"/><point x="0" y="800"/><point x="0" y="0"/></outline><cutter1><p1 x="600" y="0"/><p2 x="600" y="800"/></cutter1></pages><dependencies><rotation degrees="0"/><size width="1200" height="800"/><layoutType>two-pages</layoutType></dependencies></params></image></page-split></filters>
 </project>"""
 
 
@@ -26,6 +26,8 @@ def test_real_project_shape_round_trips_geometry_without_reducing_it(tmp_path: P
     parsed = scantailor_worker.parse(PROJECT, project)
     assert parsed["project_version"] == 4
     assert parsed["geometry"][0]["layout_type"] == "two-pages"
+    assert len(parsed["geometry"][0]["outline"]) == 5
+    assert parsed["geometry"][0]["outline"][0] == parsed["geometry"][0]["outline"][-1]
     assert parsed["geometry"][0]["cutters"][0]["p1"] == {"x": "600", "y": "0"}
     assert "winner" not in json.dumps(parsed)
 
@@ -40,6 +42,23 @@ def test_entity_laden_project_refuses_by_name(tmp_path: Path) -> None:
     bomb = b'<?xml version="1.0"?>\n<!DOCTYPE project [<!ENTITY a "x">]>\n' + PROJECT
     with pytest.raises(ValueError, match="DOCTYPE or entity"):
         scantailor_worker.parse(bomb, tmp_path / "bomb.ScanTailor")
+
+
+def test_utf16_entity_laden_project_refuses_before_xml_parsing(tmp_path: Path) -> None:
+    text = PROJECT.decode("utf-8")
+    bomb = (
+        '<?xml version="1.0" encoding="UTF-16"?>\n<!DOCTYPE project [<!ENTITY a "x">]>\n' + text
+    ).encode("utf-16")
+    with pytest.raises(ValueError, match="DOCTYPE or entity"):
+        scantailor_worker.parse(bomb, tmp_path / "utf16-bomb.ScanTailor")
+
+
+def test_removed_half_is_retained_as_geometry_without_being_applied(tmp_path: Path) -> None:
+    removed = PROJECT.replace(b'fileImage="0"', b'fileImage="0" removed="L"').replace(
+        b'<page id="4" imageId="3" subPage="left"/>', b""
+    )
+    parsed = scantailor_worker.parse(removed, tmp_path / "removed.ScanTailor")
+    assert parsed["geometry"][0]["image"]["removed_half"] == "left"
 
 
 def test_oversized_project_refuses_by_name(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -78,6 +97,11 @@ def test_surface_names_the_external_gap_and_imports_only_through_the_worker(
     document = next(output.glob("scantailor-geometry-*.json"))
     assert json.loads(document.read_text())["geometry"][0]["layout_type"] == "two-pages"
     assert "not a selected or applied result" in messages[-1]
+
+
+def test_instruction_anchors_a_relative_project_to_the_selected_workspace(tmp_path: Path) -> None:
+    rendered = scantailor.instruction(Path("projects/scan.ScanTailor"), workspace=tmp_path)
+    assert str(tmp_path / "projects" / "scan.ScanTailor") in rendered
 
 
 def _invoke_main(
@@ -327,6 +351,105 @@ def test_a_boundary_that_never_came_up_is_not_reported_as_a_project_refusal(
             printer=lambda _: None,
         )
     assert raised.value.code is ErrorCode.CONSOLE_CUSTODY_REFUSED
+
+
+@pytest.mark.parametrize(
+    ("returncode", "response"),
+    (
+        (2, {"status": "refusal", "reason": "directory fsync failed after publication"}),
+        (0, {"status": "preview", "summary": {}}),
+    ),
+)
+def test_a_commit_without_an_exact_committed_result_is_reported_as_unresolved(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    returncode: int,
+    response: dict,
+) -> None:
+    from subprocess import CompletedProcess
+
+    from operations.operator.errors import ErrorCode, OperatorError
+
+    class _Backend:
+        def launcher_failure(self, completed):
+            return None
+
+    monkeypatch.setattr(
+        scantailor,
+        "run_confined",
+        lambda command, **kwargs: (
+            _Backend(),
+            CompletedProcess(command, returncode, json.dumps(response), ""),
+        ),
+    )
+    with pytest.raises(OperatorError) as raised:
+        scantailor._call({}, "commit", writable=tmp_path, workspace=tmp_path)
+    assert raised.value.code is ErrorCode.SCANTAILOR_UNRESOLVED
+    assert "may have been written" in raised.value.render()
+
+
+def test_parent_refuses_a_commit_summary_that_cannot_name_the_written_document(
+    tmp_path: Path,
+) -> None:
+    from operations.operator.errors import ErrorCode, OperatorError
+
+    invalid = {
+        "status": "committed",
+        "summary": {
+            "project_sha256": "a" * 64,
+            "image_count": 1,
+            "geometry_count": 1,
+            "document_path": str(tmp_path / "not-the-content-addressed-name.json"),
+            "document_sha256": "b" * 64,
+        },
+    }
+    with pytest.raises(OperatorError) as raised:
+        scantailor._summary(invalid, operation="commit", output_dir=tmp_path)
+    assert raised.value.code is ErrorCode.SCANTAILOR_UNRESOLVED
+
+
+def test_a_vanished_output_folder_is_not_recreated_by_the_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    from operations.pod import durable
+
+    project = tmp_path / "scan.ScanTailor"
+    project.write_bytes(PROJECT)
+    output = tmp_path / "geometry"
+    output.mkdir()
+    request = {
+        "operation": "preview",
+        "project": str(project),
+        "output_dir": str(output),
+        "expected_project_sha256": None,
+    }
+    _, preview = _invoke_main(monkeypatch, capsys, request)
+    real_exclusive_write = durable.exclusive_write
+
+    def vanish_then_write(path, payload, **kwargs):
+        output.rmdir()
+        return real_exclusive_write(path, payload, **kwargs)
+
+    monkeypatch.setattr(scantailor_worker, "exclusive_write", vanish_then_write)
+    code, response = _invoke_main(
+        monkeypatch,
+        capsys,
+        {
+            **request,
+            "operation": "commit",
+            "expected_project_sha256": preview["summary"]["project_sha256"],
+        },
+    )
+    assert code == 2 and response["status"] == "refusal"
+    assert not output.exists()
+
+
+def test_documented_word_count_matches_the_scantailor_extended_table() -> None:
+    readme = Path(__file__).with_name("README.md").read_text(encoding="utf-8")
+    words = [line for line in readme.splitlines() if line.startswith("| `")]
+    assert "## The ten words" in readme
+    assert "Nine things this tool can do" in readme
+    assert len(words) == 10
 
 
 def _worker(command: list[str], *, writable: Path | None, cwd: Path, input_text: str):
