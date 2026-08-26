@@ -379,6 +379,23 @@ def test_the_condition_vocabulary_still_matches_unit_19s_own_failure_names():
     assert CONDITION_CODES == set(_FAILED_CONDITION_CODES.values())
 
 
+def test_a_same_length_non_hex_dissent_digest_is_refused_as_malformed():
+    """A digest-shaped field must be checked as a digest, not merely as 64 characters.
+
+    A 64-character string that is not lowercase hex can never equal a real
+    ``digest_of`` result, but the record must be refused for naming a malformed
+    digest rather than falling through to the reproduction check for its reason.
+    """
+    dissent = _record()
+    record = build_reshoot_delta_record(dissent)
+    tampered = {**record, "dissent_digest": "g" * 64}
+    tampered["self_hash"] = self_hash(
+        {key: value for key, value in tampered.items() if key != "self_hash"}
+    )
+    with pytest.raises(SchemaRefusal, match="dissent digest is malformed"):
+        validate_reshoot_delta_record(tampered, dissent)
+
+
 def test_the_denominator_caveat_binds_and_cannot_be_reworded_or_dropped():
     dissent = _record()
     record = build_reshoot_delta_record(dissent)

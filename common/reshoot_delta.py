@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any, Final
 
-from common.contracts.canonical import digest_of, self_hash, verify_self_hash
+from common.contracts.canonical import digest_of, is_sha256, self_hash, verify_self_hash
 from common.contracts.errors import SchemaRefusal
 from common.corpus_register import refuse_preference
 from common.cross_capture_dissent import (
@@ -216,7 +216,7 @@ def validate_reshoot_delta_record(record: Any, dissent_record: Any) -> dict[str,
             "reshoot delta record: the denominator caveat is not the binding wording; a delta "
             "count may not be released from the rows that make it readable"
         )
-    if not isinstance(record["dissent_digest"], str) or len(record["dissent_digest"]) != 64:
+    if not is_sha256(record["dissent_digest"]):
         raise SchemaRefusal("reshoot delta record: dissent digest is malformed")
     if not isinstance(record["pair_records"], list):
         raise SchemaRefusal(
