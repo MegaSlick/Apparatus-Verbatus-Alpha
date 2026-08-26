@@ -153,7 +153,18 @@ class SpendSurface:
         try:
             observed_at = datetime.fromisoformat(observation["observed_at"].replace("Z", "+00:00"))
             age = (self.now - observed_at).total_seconds()
-            staleness = "CURRENT" if 0 <= age <= MAX_BALANCE_OBSERVATION_AGE_SECONDS else "STALE"
+            if age < 0:
+                # The gate this projects keeps a future-dated observation apart
+                # from a stale one and refuses it under its own reason
+                # (`operations/pod/spend.py`). The distinction is the whole
+                # point of the line: "STALE" tells a reader the balance is
+                # merely old, when a stamp ahead of now says the clock or the
+                # record is wrong and the number cannot be aged at all.
+                staleness = "DATED IN THE FUTURE"
+            elif age <= MAX_BALANCE_OBSERVATION_AGE_SECONDS:
+                staleness = "CURRENT"
+            else:
+                staleness = "STALE"
         # TypeError as well as ValueError: `fromisoformat` accepts a stamp with no
         # offset and returns a naive datetime, and subtracting one from this
         # surface's aware `now` raises TypeError, not ValueError. The saved

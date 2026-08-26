@@ -515,3 +515,28 @@ def test_a_confirmed_paid_action_whose_receipt_kept_no_ceilings_is_still_named(
 
     assert f"{receipt.name}: its saved preview carries no readable spend ceilings" in rendered
     assert "Recorded balance observations: none" in rendered
+
+
+def test_an_observation_dated_after_now_is_not_reported_as_merely_stale(
+    tmp_path: Path,
+) -> None:
+    """The gate refuses a future-dated observation under its own reason.
+
+    Collapsing it into "STALE" tells the reader the balance is old when the
+    record says the clock or the receipt is wrong (GOVERNANCE 10: report the
+    reading, not a tidier one).
+    """
+
+    receipts = ReceiptStore(tmp_path / "state", now=lambda: NOW)
+    receipts.write(
+        "launch-confirmation",
+        {
+            "summary": "recorded preview",
+            "preview": _preview(observed_at="2026-08-25T12:00:00+00:00", alerts=[], deliveries=[]),
+        },
+    )
+
+    rendered = "\n".join(SpendSurface(receipts, NOW).show(_policy(tmp_path / "reviewed.toml")))
+
+    assert "staleness now: DATED IN THE FUTURE" in rendered
+    assert "STALE" not in rendered
