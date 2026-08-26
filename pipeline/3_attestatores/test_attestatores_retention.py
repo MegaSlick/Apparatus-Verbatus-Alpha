@@ -272,6 +272,87 @@ def test_an_unsealed_whole_pass_resumes_over_what_it_already_sealed(tmp_path, mo
         assert result.returncode == 0, f"{program}: {result.stderr}"
 
 
+def test_resume_does_not_ask_an_already_sealed_pair_to_decode_again(tmp_path, monkeypatch):
+    """A changed second answer cannot collide because the second call never happens."""
+    run_root, tree = run_to_designator(tmp_path, "happy")
+    real_publish = attestatores.publish_attempt
+    real_resolve = attestatores.resolve_attempt
+    calls: dict[tuple[str, str], int] = {}
+
+    def changing_resolve(context, act, chair, resolved, declarations, *, reread=False):
+        key = (act["act_key"], chair)
+        calls[key] = calls.get(key, 0) + 1
+        attempt = real_resolve(
+            context,
+            act,
+            chair,
+            resolved,
+            declarations,
+            reread=reread,
+        )
+        if calls[key] > 1 and isinstance(attempt.native_payload, str):
+            changed = attempt.native_payload + " [different resumed decode]"
+            return attempt._replace(
+                native_payload=changed,
+                health=attestatores.content_health(changed, completed=True),
+            )
+        return attempt
+
+    def crash_after_first_real_chair(*args, **kwargs):
+        real_publish(*args, **kwargs)
+        raise RuntimeError("simulated process crash after one real chair response")
+
+    monkeypatch.setattr(attestatores, "resolve_attempt", changing_resolve)
+    monkeypatch.setattr(attestatores, "publish_attempt", crash_after_first_real_chair)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run.py",
+            "--run-root",
+            str(run_root),
+            "--run-id",
+            "retention",
+            "--scenario",
+            "happy",
+            "--fixture-root",
+            str(ROOT / "proof"),
+        ],
+    )
+    with pytest.raises(RuntimeError, match="simulated process crash"):
+        attestatores.main()
+
+    (sealed,) = _testimonia(tree)
+    sealed_key = (sealed["payload"]["act_key"], sealed["payload"]["chair"])
+    sealed_bytes = tree.resolve(
+        tree.artifact_path(ATTESTATORES, "testimonium", sealed["artifact_id"])
+    ).read_bytes()
+
+    monkeypatch.setattr(attestatores, "publish_attempt", real_publish)
+    assert attestatores.main() == 0
+
+    # Preflight resolved every pair before the injected publication crash. On
+    # resume the unfinished pairs are resolved again and may honestly differ;
+    # the sealed pair alone is recovered from its retained record.
+    assert calls[sealed_key] == 1
+    assert all(count == 2 for key, count in calls.items() if key != sealed_key)
+    assert (
+        tree.resolve(
+            tree.artifact_path(ATTESTATORES, "testimonium", sealed["artifact_id"])
+        ).read_bytes()
+        == sealed_bytes
+    )
+
+    for program in (
+        "pipeline/4_perlector/run.py",
+        "pipeline/5_recensor/run.py",
+        "pipeline/6_archetypus/run.py",
+        "pipeline/7_armarium/run.py",
+    ):
+        result = invoke_stage(run_root, "retention", "happy", program)
+        assert result.returncode == 0, f"{program}: {result.stderr}"
+
+
 def test_a_whole_pass_resolves_designator_inputs_once_per_act_not_once_per_chair(
     tmp_path, monkeypatch
 ):
