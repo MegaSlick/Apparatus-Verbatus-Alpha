@@ -91,18 +91,8 @@ def test_ink_thresholds_remain_explicitly_unmeasured_without_a_calibration_claim
     assert "calibrated" not in handoff.lower()
 
 
-# --- Opus audit seat: the stage's own refusals, and the route it declares ------
-
-
 class _StubTree:
-    """The two reads `sealed_pages` and `measured_page_bytes` make, and nothing else.
-
-    Hand-built rather than driven through a real run: every refusal below is a
-    statement about malformed Exemplar evidence, and a real run cannot produce
-    malformed Exemplar evidence without first defeating the Exemplar's own
-    boundary. Testing them through a tampered tree would prove the Exemplar's
-    refusal a second time and leave these ones unproved.
-    """
+    """Minimal malformed evidence that production Exemplar checks reject earlier."""
 
     def __init__(self, pages, blobs=None):
         self._pages = pages
@@ -281,14 +271,7 @@ def test_the_ink_map_declares_the_decode_route_it_actually_takes():
 
 
 def test_the_edge_band_is_a_bounded_instrument_and_says_it_is_not_calibrated():
-    """The one number this unit added, held to the same standard as the three.
-
-    `EDGE_BAND_PIXELS` decides how far from the page break the detector looks,
-    so an unremarked edit to it silently changes what `unclaimed-edge-ink`
-    means. The unit's seat chain reserves a threshold change for Sol; the
-    declaration that this is not a calibrated one is what keeps that reservation
-    readable.
-    """
+    """The edge width must remain visibly proposed until corpus calibration."""
     from common.residual_ink import EDGE_BAND_PIXELS
 
     source = (ROOT / "common/residual_ink.py").read_text(encoding="utf-8")
@@ -297,17 +280,7 @@ def test_the_edge_band_is_a_bounded_instrument_and_says_it_is_not_calibrated():
 
 
 def test_a_page_with_no_ink_at_all_still_measures_clean_rather_than_flagging():
-    """The gap this unit exists to close, at the measure the stage publishes.
-
-    A page carrying nothing is exactly the shape that had no evidence path
-    before: the Designator proposes nothing on it, so the late reconciliation
-    has no region to read an absence against. The stage enumerates sealed pages
-    rather than proposals, so such a page gets a record either way -- what this
-    pins is that the record is an honest `mapped`, not an `unclaimed-edge-ink`
-    alarm manufactured out of an empty page. (That every sealed page gets
-    exactly one record is proved end to end above; this is the measure that
-    decides which outcome it carries.)
-    """
+    """A zero-ink page still needs evidence, but must not manufacture an alarm."""
     blank = encode_grayscale_png(200, 200, [bytearray([230] * 200) for _ in range(200)])
     edge = INK_MAP_RUN.page_edge_ink(blank)
     ink = INK_MAP_RUN.page_residual_ink(blank, covered=[])
@@ -318,7 +291,6 @@ def test_a_page_with_no_ink_at_all_still_measures_clean_rather_than_flagging():
 
 
 def test_a_page_with_no_ink_is_published_as_mapped(monkeypatch):
-    """Exercise the stage branch the inked fixture cannot reach."""
     blank = encode_grayscale_png(200, 200, [bytearray([230] * 200) for _ in range(200)])
     page = _sealed_page(1)
 
@@ -381,9 +353,8 @@ def test_the_fixture_geometry_is_degenerate_and_every_fixture_page_flags():
     A 64-pixel band on a 200x260 page leaves a 72x132 centre, so every page of
     both pinned scenarios flags and no run in the suite produces `mapped` at
     all. That is a fact about the specimen, not about the instrument, and it is
-    pinned here rather than left for a later seat to infer from a green suite:
-    if the fixture pages ever grow a quiet perimeter, this test says so and the
-    handoff paragraph it belongs to needs rewriting.
+    pinned here because a green suite otherwise says nothing about selectivity.
+    If the fixture pages gain a quiet perimeter, the handoff must change too.
     """
     from common.imaging import dimensions
     from common.residual_ink import EDGE_BAND_PIXELS, page_edge_ink

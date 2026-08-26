@@ -773,17 +773,9 @@ def _decode_environment(stage: str) -> dict[str, Any]:
     paths = {
         "door": {"pillow", "pdfium"},
         "exemplar": {"project-png"},
-        # The ink map decodes through `common/imaging.py::grayscale_rows`, whose
-        # own lossless codec is the fast path and Pillow only its fallback --
-        # the identical call the Recensor makes for the identical measure two
-        # rows below. Declaring a bare `pillow` here named a route this stage
-        # does not take, and the census read it as real drift: an honest run
-        # printed "decode environment differs by name" at BOTH the
-        # Exemplar->ink-map and ink-map->Designator boundaries, so the one
-        # signal that exists to expose a genuine decoder difference fired twice
-        # per run over a difference that was never there. Unit 9's own
-        # definition of done is one implementation, not two; one implementation
-        # may not declare two routes.
+        # `grayscale_rows` owns its Pillow fallback inside the project-PNG route.
+        # Naming that fallback as a second route would manufacture decoder drift
+        # at both boundaries around the Ink Map.
         "ink-map": {"project-png"},
         "designator": {"project-png"},
         # `project-png` and not a bare `pillow`: the Attestatores' DAI crop and

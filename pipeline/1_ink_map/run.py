@@ -88,14 +88,9 @@ def sealed_pages(context):
 def measured_page_bytes(tree, ordinal: int, page: dict) -> bytes:
     """The page pixels this stage measures, digested as the bytes it measures.
 
-    `verify_sealed_page_pixels` proves the sealed blob against a read of its
-    own. This is a second read, and measuring a second read on the strength of
-    the first one's proof records a finding derived from pixels nobody checked
-    -- a metric that was not measured passing as one (GOVERNANCE 10). The
-    Recensor already states exactly this guard for exactly this measure at the
-    late boundary (`pipeline/5_recensor/run.py::page_coverage_findings`); the
-    early map is the pre-proposal evidence baseline and is the last place in
-    the pipeline that may be the weaker of the two.
+    `verify_sealed_page_pixels` proves a separate read of the sealed blob. This
+    read must therefore verify its own digest or the measurement would describe
+    unchecked pixels (GOVERNANCE 10).
 
     Read one page at a time rather than accumulated with the census, because
     this stage measures EVERY sealed page of a shard and a shard runs to 1,000
@@ -124,7 +119,7 @@ def artifact_finding(finding: dict) -> dict:
 
 
 def _open(args, registry_factory) -> StageContext:
-    """Keep real ingress on its sealed authority, as the Exemplar does."""
+    """Real ingress skips fixture loading but retains every run-integrity guard."""
     tree = RunTree(Path(args.run_root), args.run_id)
     run = tree.read_run()
     if parse_ingress_record(run.get("ingress")) != REAL_INGRESS:

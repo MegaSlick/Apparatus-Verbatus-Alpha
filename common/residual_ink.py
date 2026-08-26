@@ -1,41 +1,15 @@
-"""Residual-ink page coverage: the deterministic core's cheapest instrument.
+"""Shared residual-ink measurement for the early Ink Map and late Recensor.
 
-ARCHITECTURE's candidate list, spec 09's own words: "coverage vs the proposal-set
-seal **plus a residual-ink check whose input is the page image itself, never the
-proposal set** -- a denominator derived only from proposals cannot see an act
-nobody proposed (GOALS 1)." This is that check.
+Ink is derived from the sealed page independently of stage claims. Coverage is
+the Designator's declared ``transform.bounds`` rather than geometry re-derived
+here; ``crop_png`` has already refused out-of-page crop bounds before they can
+become honest coverage. Bounds are still clipped here so a later geometry
+refusal is not pre-empted by this independent measurement.
 
-It reads the sealed page's own pixels and asks whether any of the ink found in
-them sits outside every region actually cut for it -- proposal or recovery, for
-every act that touches that page. The ink itself is measured independently of
-what any stage claimed to find; the coverage mask it is measured against is the
-Designator's own declared `transform.bounds`, a stage claim this module trusts
-rather than re-derives. That trust rests on `crop_png` refusing a rectangle that
-reaches outside the page before a region is ever cut (`common/imaging.py`,
-pinned against this module's own bound by
-`test_this_modules_pixel_bound_matches_the_door_that_admits_the_pages`), so an
-honest run cannot hand this check an over-declared rectangle that masks real
-ink. A successful recovery crop that reaches the missed ink clears the finding
-on the very next Recensor pass, with no code here that requests one: there is
-no act to request a recrop for when the ink belongs to nobody's proposal at
-all, and this module never invents an act identity merely to attach recovery to
-it. The later explicit hold belongs to Unit 14.
-
-The measured justification (window pass, 2026-08-05): in the old pipeline, 218
-of 29,950 pages (0.73%) claimed success while producing nothing -- the silent
-failure class outnumbering the loud one 218 to 1. That old ladder confirmed a
-suspect page by rereading it independently with witness models; this check asks
-a narrower, purely geometric question a page with at least one proposed region
-can answer with no reading capability at all: does the ink on this page fit
-inside what was cut for it?
-
-A page with *zero* proposed acts has no finding on this late path: there are no
-regions, so there is nothing to read a region's absence against. Its pixels are
-no longer unexamined -- Unit 9 runs this same measure over every sealed page
-before any proposal exists (`pipeline/1_ink_map/run.py`) -- but the early map
-records evidence and holds nothing, and Unit 14 owns the hold outcome. What
-remains of the gap is named, not papered over, in
-`pipeline/5_recensor/HANDOFF.md`.
+The early Ink Map passes empty coverage to record the pre-proposal denominator;
+the Recensor passes every proposal and recovery region for the page. This module
+must not invent an act identity, request recovery, or hold a run. Unit 14 owns
+the explicit hold for unproposed edge ink.
 """
 
 from collections import Counter
@@ -45,15 +19,9 @@ from common.imaging import Bounds, grayscale_rows
 
 # PROPOSED, NOT YET MEASURED. There is no real corpus in this walking skeleton
 # to calibrate against, so these three numbers are reasoned defaults, not
-# alpha-tested ones -- the same epistemic status `config/recovery.toml`'s
-# starting budget carries, and flagged the same way. They deliberately do not
-# reuse a blank-page threshold (industry practice sits at roughly 0.5%-5%
-# dark-pixel ratio) or the old pipeline's own unmeasured 0.005 density gate:
-# both answer "is this page blank", which is a different question from "does ink
-# exist that no currently-cut region covers". They are the order of magnitude a
-# careful reader would expect routine scan noise (a fold shadow, a stray mark, a
-# punch hole) to sit under. Tyrel raises or lowers them once alpha testing
-# against a real corpus gives a real number.
+# alpha-tested ones. A blank-page density threshold cannot substitute for them:
+# "is this page blank" and "is any ink outside coverage" are different questions.
+# Change them only when real-corpus calibration supplies a measured value.
 
 #: Below this many outside-coverage ink pixels, a residual mark is treated as
 #: noise regardless of what fraction of the page's (possibly tiny) total ink
@@ -86,13 +54,9 @@ MINIMUM_FRACTION_OUTSIDE_COVERAGE = 0.02
 #: that page's total ink it is. The fraction gate alone has a hole at the dense
 #: end: a page carrying 500,000 ink pixels can leave 9,000 of them — several
 #: words, plainly real text — outside every cut region and still sit under 2%.
-#: That is a missed act reported as a clean page, which is GOALS 1's worst
-#: failure ("a missed act is worse than a poorly read act") and Tyrel's own
-#: 2026-08-11 ruling ("Missing text is the worst failure"). Set well above any
-#: plausible non-text artifact — a heavy fold shadow or a punch hole runs to
-#: hundreds of pixels, not thousands — and deliberately below one line of
-#: 300-DPI text (roughly 8,000 ink pixels), because flagging costs a human
-#: glance at a page and missing an act costs the act.
+#: That would report a missed act as a clean page, contrary to GOALS 1. The
+#: proposed value is above plausible isolated scan artifacts and below the
+#: estimated ink in one line of 300-DPI text.
 SUBSTANTIAL_INK_PIXELS = 2_000
 
 # A bounded strip on every page edge.  This is an instrument boundary, not a
@@ -100,20 +64,6 @@ SUBSTANTIAL_INK_PIXELS = 2_000
 # ink thresholds above remain PROPOSED, NOT YET MEASURED.  It keeps the signal
 # local to the page break while Unit 14 decides the explicit hold outcome.
 EDGE_BAND_PIXELS = 64
-
-
-def _ink_table(background: int) -> bytes:
-    """A 256-entry translation table mapping every pixel value to 1 (ink) or 0.
-
-    Precomputed once per page so the per-pixel ink test becomes a single
-    C-level `bytes.translate` over each row rather than an interpreted
-    comparison per pixel. The predicate is exactly the one the old loop
-    applied: ink is a value at least `MINIMUM_CONTRAST_BELOW_BACKGROUND`
-    levels below this page's own inferred background.
-    """
-    return bytes(
-        1 if background - value >= MINIMUM_CONTRAST_BELOW_BACKGROUND else 0 for value in range(256)
-    )
 
 
 def _background_level(rows: list[bytearray]) -> int:
@@ -127,13 +77,9 @@ def _background_level(rows: list[bytearray]) -> int:
     calling ink the background. True of every register page this project has
     described so far; worth revisiting if a real corpus contradicts it.
     """
-    # `Counter.update` over each row counts in C rather than one interpreted
-    # loop iteration per pixel; on a 300-DPI page that is ~8.4 million
-    # iterations saved per page, and this check runs on every page of every
-    # run. `max(range(256), ...)` reproduces `list.index(max(...))`'s tie-break
-    # exactly -- both scan upward from 0 and return the lowest value holding
-    # the maximum count, which matters because a page with two equally common
-    # tones must infer the same background as it always did.
+    # Counter avoids an interpreted iteration per pixel. Iterating the key range
+    # upward also fixes ties at the lowest modal value, which is part of the
+    # deterministic background inference.
     histogram: Counter[int] = Counter()
     for row in rows:
         histogram.update(row)
@@ -160,24 +106,18 @@ def residual_ink(
         y0 = max(0, min(bounds["y"], height))
         x1 = max(x0, min(bounds["x"] + bounds["w"], width))
         y1 = max(y0, min(bounds["y"] + bounds["h"], height))
-        # Filled by row slice, not pixel by pixel. The number of regions on a
-        # page is the number of acts touching it and each one's declared width
-        # and height are its own, so a per-pixel fill makes this check cost the
-        # SUM of the declared areas -- which a page of overlapping full-page
-        # rectangles multiplies by the act count.
+        # Slice assignment keeps overlapping full-page regions from multiplying
+        # Python-level work by every pixel in every act's declared area.
         span = b"\x01" * (x1 - x0)
         for y in range(y0, y1):
             covered_mask[y * width + x0 : y * width + x1] = span
 
-    # Both counts per row in C rather than per pixel in interpreted Python.
-    # `translate` maps each pixel to 1 (ink) or 0; `count` totals them. For the
-    # outside count, every byte of both the ink row and the mask row is 0 or 1,
-    # so `ink & ~covered` is a per-byte "ink here, covered nowhere" and
-    # `bit_count` totals exactly those positions -- the same predicate the
-    # per-pixel branch applied, without materialising an intermediate list.
-    # Equivalence against the straightforward implementation is pinned by
+    # Values in both translated rows and mask rows are restricted to 0 or 1, so
+    # integer `ink & ~covered` preserves the per-pixel predicate. Equivalence is pinned by
     # `test_the_fast_counts_agree_with_a_straightforward_implementation`.
-    ink_table = _ink_table(background)
+    ink_table = bytes(
+        1 if background - value >= MINIMUM_CONTRAST_BELOW_BACKGROUND else 0 for value in range(256)
+    )
     total_ink = 0
     outside_ink = 0
     for y, row in enumerate(rows):
@@ -190,12 +130,8 @@ def residual_ink(
         ).bit_count()
 
     fraction_outside = (outside_ink / total_ink) if total_ink else 0.0
-    # Either gate flags on its own. The fraction gate catches a miss that is
-    # large *relative to* what the page carries; the absolute gate catches one
-    # that is large *full stop*, which on a dense page the fraction gate alone
-    # would let through (see `SUBSTANTIAL_INK_PIXELS`). This can only ever add
-    # a flag, never remove one — every page flagged before this second gate
-    # existed is still flagged by the first.
+    # The relative gate catches sparse pages; the absolute gate prevents dense
+    # pages from hiding substantial ink below the fraction threshold.
     flagged = outside_ink >= SUBSTANTIAL_INK_PIXELS or (
         outside_ink >= MINIMUM_INK_PIXELS and fraction_outside >= MINIMUM_FRACTION_OUTSIDE_COVERAGE
     )
@@ -209,20 +145,12 @@ def residual_ink(
 
 
 def page_residual_ink(image_bytes: bytes, covered: list[Bounds]) -> dict[str, Any]:
-    """`residual_ink`, decoding the sealed page bytes first."""
     width, height, rows = grayscale_rows(image_bytes)
     return residual_ink(width, height, rows, covered)
 
 
 def page_edge_ink(image_bytes: bytes) -> dict[str, Any]:
-    """Measure unclaimed ink in the bounded perimeter of one sealed page.
-
-    The central rectangle is the only covered area, so this delegates the ink
-    predicate and both existing flag gates to ``residual_ink`` rather than
-    creating a second detector with slightly different arithmetic.  Its finding
-    is evidence only: Unit 14 owns the hold outcome for a possible unproposed
-    cross-page half act.
-    """
+    """Measure the bounded perimeter as evidence; Unit 14 owns any resulting hold."""
     width, height, rows = grayscale_rows(image_bytes)
     # A one-pixel-wide or one-pixel-high image has no centre, but it still has
     # an edge. ``max(1, ...)`` keeps the recorded band honest for that smallest

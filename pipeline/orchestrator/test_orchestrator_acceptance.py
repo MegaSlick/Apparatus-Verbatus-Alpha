@@ -821,32 +821,12 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # Artifact counts and exits stay 86/0 and 111/3; only the Testimonium transform
 # records and their derived bindings move. Both digests below reproduced twice
 # in independent temporary roots at canonical run id "r".
-# Unit 9: the ink map becomes a stage of its own between the Exemplar and the
-# Designator, so both canonical runs gain a stage directory. Every partial
-# setup tree in this file and its neighbours runs ink-map before opening a
-# Designator context, because the predecessor stage-seal is what production
-# requires; that part is test preparation only. The counts are not: each run
-# gains FIVE files -- one `ink-map` record per sealed page (two), the stage
-# seal, its decode-environment record, and the stage manifest -- so happy goes
-# 92 -> 97 and review 113 -> 118, at unchanged exits 0 and 3.
-#
-# Correction, Opus audit seat. Terra's entry for this unit recorded the counts
-# as "retain 86/0 and 111/3" in the same commit that moved the two count
-# assertions by five. 86/111 were Unit 11's numbers, left standing in the prose
-# when the union commit (`48d04c8`) measured 92/113; repeating them as a
-# positive claim about a commit that changed them made the ledger state the one
-# thing it exists to prevent -- the next re-pin reading a wrong baseline as the
-# measured one (GOVERNANCE 10). The numbers above are the assertions in this
-# file, which is where a later seat should read them from.
-#
-# Opus audit seat, this candidate: the ink map's declared decode route moves
-# from `pillow` to `project-png` (`common/stage.py::_decode_environment`). It
-# moves NEITHER pin, and that is by construction rather than by luck --
-# `_semantic_decode_environment` above normalizes every decode-environment
-# payload out of the semantic snapshot so the pins stay portable across
-# platforms. Both digests were nevertheless re-measured twice each, in
-# independent temporary roots at canonical run id "r", after the candidate's
-# final byte, and both reproduced the values below.
+# The Ink Map adds five files to both canonical trees: two page records, its
+# stage seal, its decode-environment record, and its manifest. Happy therefore
+# has 97 files and review 118, with unchanged exits 0 and 3.
+# `_semantic_decode_environment` excludes route labels from the portable
+# snapshot, so the Ink Map's project-PNG declaration cannot move these pins.
+# Both digests reproduced twice in independent roots at canonical run id "r".
 HAPPY_RUN_TREE_DIGEST = "01336a0fa9644d0d7266380e16ccf95c601c59969eff9dca5819e417b05b74ed"
 # Review only, once more in the same seat: a page witness invoked on every act
 # and unusable on all of them now records the serving moment that produced it
@@ -5225,19 +5205,7 @@ def test_next_stage_refuses_artifact_added_after_the_named_boundary(happy_run, t
 
 @pytest.mark.full
 def test_next_stage_refuses_an_ink_map_artifact_added_after_the_named_boundary(happy_run, tmp_path):
-    """The Ink-Map-to-Designator addition case, completing the battery's square.
-
-    Before Unit 9 the Designator was the Exemplar's consumer and this file
-    proved all four corruption classes -- blob changed, artifact added, artifact
-    removed, seal forged or deleted -- at that one link. Unit 9 split it in two,
-    and the retarget carried `added` to the new Exemplar-to-Ink-Map link while
-    `removed` and the forged seal stayed on the Designator, so the audit seat
-    before this one restored the two Exemplar-side siblings. `added` at the
-    Designator's own boundary was the fourth and last corner, still uncovered:
-    the two links are proved by the same generic recompute, and a claim covered
-    "by construction" is a claim nothing would report if the construction
-    changed.
-    """
+    """Each predecessor link needs its own added-artifact corruption proof."""
     source_root, _ = happy_run
     root = tmp_path / "runs"
     shutil.copytree(source_root, root)
@@ -5273,15 +5241,7 @@ def test_next_stage_refuses_an_ink_map_artifact_added_after_the_named_boundary(h
 
 @pytest.mark.full
 def test_next_stage_refuses_an_exemplar_artifact_removed_after_the_boundary(happy_run, tmp_path):
-    """The removal counterpart to the addition test above, at the same boundary.
-
-    Both prove the identical recompute -- Ink Map refusing an Exemplar
-    inventory that no longer matches disk -- for the two ways that mismatch
-    can happen. This must stand on its own rather than share the sibling
-    removal test below: that one proves removal one stage later, at
-    Ink-Map-to-Designator, and a regression confined to the Exemplar link
-    would leave that later test green.
-    """
+    """A later boundary can stay green while Exemplar removal checks regress."""
     source_root, _ = happy_run
     root = tmp_path / "runs"
     shutil.copytree(source_root, root)
@@ -5345,13 +5305,7 @@ def test_next_stage_refuses_an_artifact_removed_after_the_named_boundary(happy_r
 def test_next_stage_refuses_an_exemplar_seal_forged_or_deleted_without_rederiving(
     happy_run, tmp_path
 ):
-    """The Exemplar-to-Ink-Map link, sibling to the Ink-Map-to-Designator test below.
-
-    Both prove the same two branches -- a forged config_digest and a missing
-    seal entirely -- each at the boundary the artifact actually crosses first.
-    A regression confined to the Exemplar link would leave the later test
-    green, so it needs its own proof rather than sharing the sibling's.
-    """
+    """Forged and missing seals must be proved independently at each link."""
     source_root, _ = happy_run
     forged_root = tmp_path / "forged"
     missing_root = tmp_path / "missing"

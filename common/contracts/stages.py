@@ -52,9 +52,8 @@ STAGE_DIRECTORIES: Final = {
     ARMARIUM: "7_armarium",
 }
 
-# The seven boundaries spec 01 names, in order. Every one of these is driven by the
-# table-driven boundary test: the consumer must refuse a corrupted schema, a
-# malformed identity, a mismatched input digest, and a duplicate accounting entry.
+# Every boundary is driven by the table-based corruption tests: its consumer must
+# refuse a malformed schema or identity, a mismatched digest, and duplicate accounting.
 HANDOFFS: Final = (
     (DOOR, EXEMPLAR),
     (EXEMPLAR, INK_MAP),

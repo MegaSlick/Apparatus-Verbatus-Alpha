@@ -2125,12 +2125,10 @@ def _regions_of(context, act_id: str) -> list[dict]:
 def _open(args, registry_factory) -> tuple[object, bool]:
     """Open either a fixture stage context or the honest real-input boundary.
 
-    System 03 owns the Designator's independent Exemplar reconciliation behind
-    the Ink Map boundary, but it does not own a real structural-proposal model.
-    A real run therefore proves that immediate boundary, reaches the underlying
-    Exemplar check, and then stops; it must not fabricate fixture acts, successful
-    no-op work, or a synthetic hold that could make an unproposed corpus look
-    exported.
+    Real ingress must verify the immediate Ink Map boundary and the underlying
+    Exemplar ledger before refusing the unimplemented structural-proposal work.
+    It must not fabricate fixture acts, successful no-op work, or a synthetic
+    hold that could make an unproposed corpus look exported.
     """
     tree = RunTree(Path(args.run_root), args.run_id)
     run = tree.read_run()

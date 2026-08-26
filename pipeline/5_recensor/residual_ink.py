@@ -1,9 +1,4 @@
-"""Compatibility import for the one shared residual-ink implementation.
-
-The measurement moved to ``common.residual_ink`` when the early ink-map stage
-became its first consumer.  Keeping this import surface preserves the Recensor
-tests while making two implementations impossible.
-"""
+"""Stable Recensor import surface for the shared residual-ink implementation."""
 
 from common.residual_ink import (  # noqa: F401
     EDGE_BAND_PIXELS,
