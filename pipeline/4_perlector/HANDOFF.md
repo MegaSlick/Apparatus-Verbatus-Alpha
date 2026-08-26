@@ -618,21 +618,24 @@ test that fails if the two ever part again.
   `unresolved = bool(flags) and audit_policy["round_cap"] == 0`
   (`pipeline/4_perlector/run.py:2713`): the spans are published when the sealed audit
   policy allows *no* re-proof round at all, not when a round was spent and left the flag
-  standing. When it does fire, each frozen flag location becomes a low-confidence span
-  with reason `audit-round-cap-exhausted` on the audit finding and on the Perlectio
-  (`:2864-2870`, `:2901-2904`). **The committed policy cannot fire it**:
+  standing. When it does fire, each non-empty frozen flag location becomes a
+  low-confidence span with reason `audit-round-cap-exhausted` on the audit finding and
+  on the Perlectio (`:2864-2870`, `:2901-2904`). A zero-width flag cannot become a span;
+  it remains explicit in the frozen flags and `unresolved` state, which Recensor routes
+  to review. **The committed policy cannot fire this path**:
   `config/perlector_audit.toml:12` sets `round_cap = 1`, so a flagged act gets its one
   delivered re-proof round and every reading carries an empty `uncertain_spans` list.
-  Only a run under a sealed `round_cap = 0` — permitted, and the path
-  `test_audit_pass.py:469-481` exercises — produces one.
+  Only a run under a sealed `round_cap = 0` can produce one; the focused assertions are
+  in `test_raised_cap_needs_tyrels_reference_and_exhaustion_routes_review`
+  (`pipeline/4_perlector/test_audit_pass.py:964-993`).
 - **`gaps` and `uncertain_spans` have downstream consumers.** Archetypus validates the
   uncertainty layer and derives `text_status` from it with annotations
   (`pipeline/6_archetypus/run.py:808-815`). Armarium independently re-derives that status
   before projection (`pipeline/7_armarium/run.py:1129-1142`) and carries the checked status
-  and transcription annotations into delivered entries and the aggregate
-  (`pipeline/7_armarium/run.py:1307-1315`, `:1350-1359`). The product still does not render
-  canonical uncertainty inside `display:`; that explicit presentation convention remains
-  outside the implemented export contract.
+  and transcription annotations into delivered entries, then carries the checked status
+  into the aggregate (`pipeline/7_armarium/run.py:1307-1315`, `:1350-1359`). The product
+  still does not render canonical uncertainty inside `display:`; that explicit presentation
+  convention remains outside the implemented export contract.
 - **Spec 08's contextual-suggestion flag is not built.** "A contextual suggestion (a year
   that must be 1805) may ride as a flag while the text stays what the pixels support" —
   the closed `_PERLECTIO_FIELDS` set has no field that could carry one, and nothing here

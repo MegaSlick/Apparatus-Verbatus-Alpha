@@ -993,6 +993,40 @@ def test_raised_cap_needs_tyrels_reference_and_exhaustion_routes_review(tmp_path
         ]
 
 
+def test_a_zero_width_exhausted_flag_stays_unresolved_without_inventing_a_span():
+    """A point insertion is a real flag, but cannot become a non-empty text span."""
+
+    finding = audit.validate_finding(
+        {
+            "act_key": "a1",
+            "attempt_ordinal": 1,
+            "page_ids": ["p1"],
+            "round_cap": 0,
+            "policy": {
+                "schema": "perlector-audit.v1",
+                "sha256": "0" * 64,
+                "approval_ref": "",
+            },
+            "flags": [{"class": "testimony-diff", "location": {"start": 3, "end": 3}}],
+            "change_record": [],
+            "uncertain_spans": [],
+            "unresolved": True,
+        },
+        text="abc",
+        flag_text="abc",
+    )
+
+    assert finding["flags"] and finding["uncertain_spans"] == []
+    outcome, reason = _recensor().review_route_from_findings(
+        testimony_shortfall=False,
+        audit_unresolved=finding["unresolved"],
+        under_witnessed=False,
+        unreconciled=False,
+    )
+    assert outcome == "held-for-review"
+    assert "audit re-proof cap" in reason
+
+
 def test_recensor_refuses_a_forged_audit_reference(tmp_path):
     result = _run(tmp_path / "runs")
     assert result.returncode == 0, result.stderr

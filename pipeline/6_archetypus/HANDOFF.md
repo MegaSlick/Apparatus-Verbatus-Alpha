@@ -262,10 +262,11 @@ normalized (an `illegible` note always carries `witness_evidence`, defaulted to
 would refuse a correct record; the validated forms must be identical. It then
 *recomputes* `text_status` from that layer and the canonical `uncertainty`
 beside it, using the shared `derive_record_text_status`. A record claiming
-`established` over its own recorded gap is fatal at export. Both fields then travel:
-into the manifest entry, the projection, every selected literal format, the package's
-text-free source graph, and the run aggregate, where a non-`established` status
-contributes its own named reason and the run reports `partial`. A run whose acts are
+`established` over its own recorded gap is fatal at export. Both fields then travel
+into the manifest entry, the projection, and every selected literal format.
+`text_status` additionally enters the package's text-free source graph and the run
+aggregate, where a non-`established` status contributes its own named reason and the
+run reports `partial`. A run whose acts are
 all delivered but damaged therefore exits `EXIT_HELD` at the Armarium rather than 0 —
 the act is delivered, and the run did not read all of it.
 
