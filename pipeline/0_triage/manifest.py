@@ -37,6 +37,11 @@ COLOUR_MODES: Final = ("keep", "grayscale", "rgb", "bitonal")
 ACTOR_KINDS: Final = ("human", "model", "scantailor", "producer")
 SCANTAILOR_IDENTITY: Final = "ScanTailor Advanced"
 SPLIT_OPERATION_ORDER: Final = "region-crop-rotate"
+# A single frame's parts must remain in one content-aware shard. The shared
+# corpus-frame policy refuses any configured shard limit above 1,000, so a frame
+# declaring more parts can never be ingested and must not reach the quadratic
+# pairwise-disjointness proof below.
+MAX_SPLIT_PARTS: Final = 1000
 
 _ROW_FIELDS: Final = {
     "corpus_id",
@@ -140,6 +145,10 @@ def _validate_split(split: Any, frame: Mapping[str, int]) -> None:
         raise SchemaRefusal("triage split must be a non-empty closed operation_order/parts record")
     if split["operation_order"] != SPLIT_OPERATION_ORDER:
         raise SchemaRefusal(f"triage split operation_order must be {SPLIT_OPERATION_ORDER}")
+    if len(split["parts"]) > MAX_SPLIT_PARTS:
+        raise SchemaRefusal(
+            f"triage split has more than the {MAX_SPLIT_PARTS}-part ingestible maximum"
+        )
     whole = {"x": 0, "y": 0, "w": frame["width"], "h": frame["height"]}
     regions = []
     for part in split["parts"]:

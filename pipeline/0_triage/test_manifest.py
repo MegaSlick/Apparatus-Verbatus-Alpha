@@ -451,6 +451,19 @@ def test_partition_validation_does_not_scale_with_the_pixels_of_a_master():
     assert time.monotonic() - started < 10
 
 
+def test_split_part_count_refuses_before_quadratic_overlap_validation():
+    parts = [
+        make_part(
+            {"x": index, "y": 0, "w": 1, "h": 1},
+            {"x": 0, "y": 0, "w": 1, "h": 1},
+            0,
+        )
+        for index in range(1001)
+    ]
+    with pytest.raises(SchemaRefusal, match="more than the 1000-part ingestible maximum"):
+        row(frame={"width": 1001, "height": 1}, split=make_split(parts))
+
+
 def cluster(members, split_count=1, cluster_id="opening-35"):
     return {
         "schema": CLUSTER_SCHEMA,
