@@ -62,10 +62,11 @@ confined child and no pod is started, confirmed, or billed.
 The preview and the write are two separate confined launches, so each reads the submitted
 folder, the confirmation file, the triage instrument settings, and the caller-selected
 data-handling policy fresh. The write is pinned
-to the exact digests the preview just showed: if any of them changes underneath it — a
-source file rewritten, a confirmation swapped for a different one, the instrument settings
-edited, or the policy replaced — the write refuses rather than commit something other than
-what was shown and approved on screen.
+to the exact digests and output-folder identity the preview just showed: if any of them
+changes underneath it — a source file rewritten, a confirmation swapped for a different
+one, the instrument settings edited, the policy replaced, or the selected empty folder
+exchanged for another directory at the same path — the write refuses rather than commit
+something other than what was shown and approved on screen.
 
 The output folder must be **beside** the submitted folder, never inside it. Records written
 inside a submitted folder would be counted as submitted files by the next thing that reads
@@ -76,6 +77,10 @@ Every submitted file must be an image the triage instrument can decode. A stray 
 a text file, or a PDF makes ingest refuse the whole folder — and say how many files could not
 be decoded and where they sit in the ledger's path order, so you can find and move them. A
 PDF or other container reaches the Door through `upload`, which needs no triage pass.
+One ingest accepts at most 1,500 masters and 20,000 reached candidate pairs. Those ceilings
+sit above the instrument suite's 1,200-frame corpus-order case and turn a larger or unusually
+dense pass into a named refusal before proxy retention or full comparisons can grow without
+a bound; prepare that material as smaller submitted folders.
 
 **`upload` needs no rented machine**, so a normal order is: `upload` your images first
 (zero machine cost while you do), then `launch` when you are ready to actually process

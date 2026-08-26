@@ -152,6 +152,17 @@ def test_a_symlink_cannot_walk_material_into_an_approved_root(tmp_path, policy):
         gate.require_approved_storage_location(approved / "link", roots, "folder")
 
 
+def test_an_intermediate_symlink_below_the_approved_root_is_also_refused(tmp_path, policy):
+    approved = tmp_path / "approved"
+    actual = approved / "actual"
+    (actual / "batch").mkdir(parents=True)
+    (approved / "redirect").symlink_to(actual, target_is_directory=True)
+    roots = gate.approved_storage_roots(dict(policy, storage_roots=[str(approved)]))
+
+    with pytest.raises(gate.GateRefusal, match="crosses a symlink"):
+        gate.require_approved_storage_location(approved / "redirect" / "batch", roots, "folder")
+
+
 def test_containment_is_judged_by_filesystem_identity_not_spelling(tmp_path):
     """Case variants must remain contained when text comparison disagrees."""
     source = tmp_path / "masters"

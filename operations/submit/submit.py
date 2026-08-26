@@ -46,6 +46,7 @@ verifier; it makes observable claims only.
 import argparse
 import json
 import os
+import stat
 import sys
 import tempfile
 from pathlib import Path
@@ -304,7 +305,7 @@ def _atomic_create(target: Path, data: bytes) -> bool:
         try:
             os.link(temporary, target)
         except FileExistsError:
-            if _read_or_none(target) == data:
+            if _existing_regular_file_matches(target, data):
                 completed = True
                 return False
             raise ExistingRecordRefusal(
@@ -338,11 +339,25 @@ def _atomic_create(target: Path, data: bytes) -> bool:
                 ) from error
 
 
-def _read_or_none(path: Path) -> bytes | None:
+def _existing_regular_file_matches(path: Path, expected: bytes) -> bool:
+    """Compare one held regular-file descriptor without following a redirect."""
+
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    if no_follow is None:
+        return False
+    descriptor: int | None = None
     try:
-        return path.read_bytes()
+        descriptor = os.open(path, os.O_RDONLY | no_follow | getattr(os, "O_NONBLOCK", 0))
+        details = os.fstat(descriptor)
+        if not stat.S_ISREG(details.st_mode) or details.st_size != len(expected):
+            return False
+        with os.fdopen(descriptor, "rb", closefd=False) as handle:
+            return handle.read(len(expected) + 1) == expected
     except OSError:
-        return None
+        return False
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
 
 
 def _is_sha256(value: Any) -> bool:

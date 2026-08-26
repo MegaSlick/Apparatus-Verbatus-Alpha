@@ -7,9 +7,9 @@ beneath that folder.  It has no provider environment and no network route.
 Preview and commit are two independent launches of this module, so each reads the
 source folder, confirmation file, triage instrument configuration and caller-selected
 data-handling policy fresh from disk rather than sharing any state. A commit request
-therefore carries the exact digests its preceding preview showed, and this module
-refuses to write unless all four of what it reads now still hash to those — otherwise
-the shown-before-written promise is only true when nothing raced it.
+therefore carries the exact digests and output-directory identity its preceding preview
+showed, and this module refuses to write unless all five still match — otherwise the
+shown-before-written promise is only true when nothing raced it.
 
 The pin is an equality test and nothing more.  It can only ever refuse: no branch
 here lets a supplied digest cause a write that would not otherwise happen, and no
@@ -22,35 +22,27 @@ re-derives every value from disk and only compares.
 from __future__ import annotations
 
 import json
+import stat
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
+from common import corpus_register
 from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of, is_sha256
 from common.contracts.errors import ContractError
 from operations.submit import gate, inventory, submit
 from operations.triage import instrument, producer
 
-_REQUEST_FIELDS = {
-    "operation",
-    "source",
-    "output_dir",
-    "policy",
-    "corpus_id",
-    "mode",
-    "confirmation_file",
-    "expected_submission_manifest_sha256",
-    "expected_confirmation_sha256",
-    "expected_instrument_config_sha256",
-    "expected_data_handling_policy_sha256",
-}
-_EXPECTED_DIGEST_FIELDS = (
-    "expected_submission_manifest_sha256",
-    "expected_confirmation_sha256",
-    "expected_instrument_config_sha256",
-    "expected_data_handling_policy_sha256",
+from .ingest_protocol import (
+    EXPECTED_DIGEST_FIELDS,
+    EXPECTED_OUTPUT_IDENTITY_FIELDS,
+    MAX_CORPUS_ID_CHARACTERS,
+    MAX_INGEST_CANDIDATE_PAIRS,
+    MAX_INGEST_FRAMES,
+    REQUEST_FIELDS,
 )
+
 # How many undecodable frames a refusal lists before it summarises the rest. A
 # folder of holiday photographs would otherwise produce a refusal longer than the
 # 2000 characters `errors.sanitize_detail` keeps, and a truncated list reads as a
@@ -61,6 +53,7 @@ _MAX_LISTED_REFUSALS = 10
 @dataclass(frozen=True)
 class PreparedIngest:
     output_dir: Path
+    output_identity: tuple[int, int]
     manifest: dict[str, Any]
     frames: tuple[producer.SubmittedFrame, ...]
     recipe: dict[str, Any]
@@ -80,19 +73,31 @@ def main() -> int:
         _reply({"status": "refusal", "reason": str(error)})
         return 2
     if request["operation"] == "preview":
-        _reply({"status": "preview", "summary": _summary(prepared)})
+        _reply(
+            {
+                "status": "preview",
+                "summary": _summary(prepared),
+                "output_identity": _identity_record(prepared.output_identity),
+            }
+        )
         return 0
     try:
         _commit(prepared)
     except (ContractError, OSError, TypeError, ValueError, UnicodeError) as error:
         _reply({"status": "uncertain", "reason": str(error)})
         return 3
-    _reply({"status": "committed", "summary": _summary(prepared)})
+    _reply(
+        {
+            "status": "committed",
+            "summary": _summary(prepared),
+            "output_identity": _identity_record(prepared.output_identity),
+        }
+    )
     return 0
 
 
 def _request(value: Any) -> dict[str, Any]:
-    if not isinstance(value, dict) or set(value) != _REQUEST_FIELDS:
+    if not isinstance(value, dict) or set(value) != REQUEST_FIELDS:
         raise ValueError("ingest request has an invalid shape")
     if value["operation"] not in {"preview", "commit"}:
         raise ValueError("ingest request names an unknown operation")
@@ -101,20 +106,37 @@ def _request(value: Any) -> dict[str, Any]:
         for name in ("source", "output_dir", "policy", "corpus_id")
     ):
         raise ValueError("ingest request has a missing path or corpus id")
+    if len(value["corpus_id"]) > MAX_CORPUS_ID_CHARACTERS:
+        raise ValueError(f"ingest corpus id is longer than {MAX_CORPUS_ID_CHARACTERS} characters")
     if value["mode"] not in {"manual", "semi", "auto"}:
         raise ValueError("ingest request names an undeclared triage mode")
     if value["confirmation_file"] is not None and not isinstance(value["confirmation_file"], str):
         raise ValueError("ingest confirmation file path is invalid")
-    for name in _EXPECTED_DIGEST_FIELDS:
+    for name in EXPECTED_DIGEST_FIELDS:
         if value[name] is not None and not is_sha256(value[name]):
             raise ValueError(f"ingest request field {name!r} must be a lowercase sha256 or null")
+    for name in EXPECTED_OUTPUT_IDENTITY_FIELDS:
+        identity_part = value[name]
+        if identity_part is not None and (
+            not isinstance(identity_part, int)
+            or isinstance(identity_part, bool)
+            or identity_part < 0
+        ):
+            raise ValueError(
+                f"ingest request field {name!r} must be a non-negative integer or null"
+            )
     if value["operation"] == "preview" and any(
-        value[name] is not None for name in _EXPECTED_DIGEST_FIELDS
+        value[name] is not None
+        for name in (*EXPECTED_DIGEST_FIELDS, *EXPECTED_OUTPUT_IDENTITY_FIELDS)
     ):
         # A preview is what *establishes* the digests a later commit is pinned to; a
         # preview request that already carries one is not a preview, it is a caller
         # trying to seed the very check meant to catch it changing its mind.
         raise ValueError("a preview request may not already carry an expected digest")
+    if value["operation"] == "commit" and any(
+        value[name] is None for name in EXPECTED_OUTPUT_IDENTITY_FIELDS
+    ):
+        raise ValueError("a commit request must carry the previewed output directory identity")
     return value
 
 
@@ -127,8 +149,15 @@ def _prepare(request: Mapping[str, Any]) -> PreparedIngest:
     output_dir = gate.require_approved_storage_location(
         Path(request["output_dir"]), roots, "ingest output folder"
     )
-    if not output_dir.is_dir():
-        raise ValueError("the ingest output location is not a directory")
+    output_identity = _directory_identity(output_dir)
+    if request["operation"] == "commit" and output_identity != (
+        request["expected_output_device"],
+        request["expected_output_inode"],
+    ):
+        raise ValueError(
+            "the ingest output folder changed after the preview was shown; nothing was "
+            "written. Choose a new empty approved folder and run ingest again."
+        )
     if gate.same_or_inside(source, output_dir):
         # Filesystem identity, not spelling: a case-variant path on default
         # (case-insensitive) APFS defeats a textual `is_relative_to` here.
@@ -144,10 +173,16 @@ def _prepare(request: Mapping[str, Any]) -> PreparedIngest:
             "the ingest output folder is not empty; choose a new empty approved folder"
         )
     manifest = submit.build_manifest(submit.walk_folder(source))
+    if len(manifest["files"]) > MAX_INGEST_FRAMES:
+        raise ValueError(
+            f"this submission holds more than {MAX_INGEST_FRAMES} image masters, which is "
+            "more than one bounded triage pass accepts; nothing was written. Prepare it as "
+            "smaller submitted folders."
+        )
     frames = _frames(source, manifest)
     config = instrument.load_config()
     proxies = _proxies(frames, manifest, config)
-    evidence, evidence_manifest = instrument.candidate_evidence(proxies, config)
+    evidence, evidence_manifest = _candidate_evidence(proxies, config)
     recipe = instrument.producer_recipe(config)
     confirmation = (
         None
@@ -156,7 +191,8 @@ def _prepare(request: Mapping[str, Any]) -> PreparedIngest:
     )
     # These four reads determine authorization, generated evidence, and written
     # records. Commit may only compare their freshly derived digests with preview's;
-    # the supplied digests never skip validation or authorize another write.
+    # the supplied digests never skip validation or authorize another write. The
+    # output directory's device/inode check above is the fifth pin.
     if request["operation"] == "commit":
         for expected, observed, changed in (
             (
@@ -201,8 +237,14 @@ def _prepare(request: Mapping[str, Any]) -> PreparedIngest:
         raise producer.ProducerRefusal(
             "confirmation names no cluster; no manifest documents were written"
         )
+    if _directory_identity(output_dir) != output_identity:
+        raise ValueError(
+            "the ingest output folder changed while the plan was being prepared; nothing "
+            "was written. Choose a new empty approved folder and run ingest again."
+        )
     return PreparedIngest(
         output_dir=output_dir,
+        output_identity=output_identity,
         manifest=manifest,
         frames=frames,
         recipe=recipe,
@@ -213,6 +255,20 @@ def _prepare(request: Mapping[str, Any]) -> PreparedIngest:
         produced=produced,
         data_handling_policy_sha256=policy_binding.config_sha256,
     )
+
+
+def _directory_identity(path: Path) -> tuple[int, int]:
+    try:
+        status = path.stat(follow_symlinks=False)
+    except OSError as error:
+        raise ValueError("the ingest output location is not a readable directory") from error
+    if not stat.S_ISDIR(status.st_mode):
+        raise ValueError("the ingest output location is not a directory")
+    return (status.st_dev, status.st_ino)
+
+
+def _identity_record(identity: tuple[int, int]) -> dict[str, int]:
+    return {"device": identity[0], "inode": identity[1]}
 
 
 def _frames(source: Path, manifest: Mapping[str, Any]) -> tuple[producer.SubmittedFrame, ...]:
@@ -271,9 +327,19 @@ def _proxies(
     total = len(manifest["files"])
     for position, (frame, row) in enumerate(zip(frames, manifest["files"], strict=True), start=1):
         try:
-            proxies.append(instrument.build_proxies_from_bytes(frame.data, config))
+            proxy = instrument.build_proxies_from_bytes(frame.data, config)
         except instrument.InstrumentRefusal:
             undecodable.append(f"file {position} (digest {row['sha256'][:12]})")
+            continue
+        if (
+            digest_bytes(proxy.signature_png) != proxy.signature_png_sha256
+            or digest_bytes(proxy.review_png) != proxy.review_png_sha256
+        ):
+            raise instrument.InstrumentRefusal(
+                "a triage proxy does not match the digest computed while it was prepared; "
+                "nothing was written"
+            )
+        proxies.append(proxy)
     if undecodable:
         listed = ", ".join(undecodable[:_MAX_LISTED_REFUSALS])
         remainder = len(undecodable) - _MAX_LISTED_REFUSALS
@@ -287,6 +353,26 @@ def _proxies(
             "through `verbatus upload` instead."
         )
     return tuple(proxies)
+
+
+def _candidate_evidence(
+    proxies: tuple[instrument.ProxySet, ...], config: instrument.InstrumentConfig
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Bound both expensive comparisons and the refused-pair evidence list."""
+
+    selection = instrument.select_candidate_pairs([proxy.signature for proxy in proxies], config)
+    reached = len(selection.pairs) + len(selection.dimension_refused)
+    if reached > MAX_INGEST_CANDIDATE_PAIRS:
+        raise instrument.InstrumentRefusal(
+            f"the triage instrument selected or explicitly refused {reached} candidate "
+            f"pairs, above the {MAX_INGEST_CANDIDATE_PAIRS}-pair ceiling for one ingest; "
+            "nothing was written. Prepare the submission as smaller folders."
+        )
+    evidence = [
+        instrument.compare_signatures(proxies[left].signature, proxies[right].signature, config)
+        for left, right in selection.pairs
+    ]
+    return evidence, instrument.evidence_manifest(proxies, selection, evidence, config)
 
 
 def _paths(prepared: PreparedIngest) -> list[str]:
@@ -378,6 +464,12 @@ def _cluster_lines(confirmation: Mapping[str, Any] | None) -> list[str]:
 
 
 def _commit(prepared: PreparedIngest) -> None:
+    _assert_output_identity(prepared)
+    if any(prepared.output_dir.iterdir()):
+        raise ValueError(
+            "the ingest output folder changed after it was prepared; no existing entry was "
+            "reused or overwritten"
+        )
     # The generic submission helper logs to stdout.  This worker's stdout is a
     # closed JSON protocol, so write the already-built ledger through its same
     # immutable atomic-create primitive instead.
@@ -400,7 +492,7 @@ def _commit(prepared: PreparedIngest) -> None:
         _write(prepared.output_dir / "triage-decision-manifest.json", prepared.produced.manifest)
         _write(prepared.output_dir / "triage-clusters.json", prepared.produced.clusters)
     else:
-        producer.commit_confirmed_production(
+        committed_production, register_sha256 = producer.commit_confirmed_production(
             prepared.frames,
             corpus_id=prepared.produced.manifest["corpus_id"],
             mode=prepared.produced.manifest["records"][0]["mode"],
@@ -413,7 +505,39 @@ def _commit(prepared: PreparedIngest) -> None:
             clusters_path=prepared.output_dir / "triage-clusters.json",
             authority_path=prepared.output_dir / "triage-confirmation.json",
         )
+        if committed_production != prepared.produced:
+            raise ValueError(
+                "confirmed triage production changed between preparation and publication"
+            )
+        register_path = prepared.output_dir / "corpus-register.json"
+        if corpus_register.register_digest(register_path.read_bytes()) != register_sha256:
+            raise ValueError(
+                "the published corpus register does not match the verified chain digest"
+            )
+    _assert_output_identity(prepared)
+    _assert_pre_ready_entries(prepared)
     _write(prepared.output_dir / "ingest-ready.json", _ready_record(prepared))
+
+
+def _assert_output_identity(prepared: PreparedIngest) -> None:
+    if _directory_identity(prepared.output_dir) != prepared.output_identity:
+        raise ValueError(
+            "the ingest output folder changed after the preview was shown; the ready record "
+            "was not published"
+        )
+
+
+def _assert_pre_ready_entries(prepared: PreparedIngest) -> None:
+    expected = set(_paths(prepared))
+    expected.remove("ingest-ready.json")
+    entries = list(prepared.output_dir.iterdir())
+    if {entry.name for entry in entries} != expected or any(
+        entry.is_symlink() or not entry.is_file() for entry in entries
+    ):
+        raise ValueError(
+            "the ingest output folder does not contain exactly the regular files in the "
+            "previewed plan; the ready record was not published"
+        )
 
 
 def _ready_record(prepared: PreparedIngest) -> dict[str, Any]:
@@ -439,8 +563,14 @@ def _write(path: Path, record: Mapping[str, Any]) -> None:
 
 
 def _write_bytes(path: Path, data: bytes) -> None:
-    # This seam may reuse identical bytes but never replaces different evidence.
-    submit._atomic_create(path, data)
+    # This flow requires a freshly empty folder.  An identical existing target is
+    # therefore a concurrent change, not an idempotent retry: accepting it could
+    # follow a planted symlink and call an output record written when it was not.
+    if not submit._atomic_create(path, data):
+        raise ValueError(
+            "an ingest output entry appeared after the empty-folder check; no existing "
+            "entry was accepted as this commit's evidence"
+        )
 
 
 def _reply(value: Mapping[str, Any]) -> None:

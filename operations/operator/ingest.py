@@ -14,8 +14,15 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from common.contracts.canonical import is_sha256
+
 from .custody import python_module_command, run_confined
 from .errors import ErrorCode, OperatorError, strip_control_bytes
+from .ingest_protocol import (
+    MAX_INGEST_CANDIDATE_PAIRS,
+    MAX_INGEST_FRAMES,
+    MAX_PREVIEW_LINE_CHARACTERS,
+)
 
 
 def ingest_in_custody(
@@ -53,18 +60,24 @@ def ingest_in_custody(
         "expected_confirmation_sha256": None,
         "expected_instrument_config_sha256": None,
         "expected_data_handling_policy_sha256": None,
+        "expected_output_device": None,
+        "expected_output_inode": None,
     }
     preview = _call_worker(request, "preview", writable=None, workspace=workspace)
     preview_summary = _summary(preview, ErrorCode.INGEST_PREVIEW_UNRESOLVED)
+    preview_output_identity = _output_identity(preview, ErrorCode.INGEST_PREVIEW_UNRESOLVED)
     _print_preview(preview_summary, printer)
-    # The second confined launch re-reads four mutable inputs. Pin their bytes to
-    # the preview; corpus id, mode, and paths already stay identical in this request.
+    # The second confined launch re-reads four mutable inputs. Pin their bytes and
+    # the selected output directory's identity to the preview; corpus id, mode,
+    # and path spellings already stay identical in this request.
     commit_request = {
         **request,
         "expected_submission_manifest_sha256": preview_summary["submission_manifest_sha256"],
         "expected_confirmation_sha256": preview_summary["confirmation_sha256"],
         "expected_instrument_config_sha256": preview_summary["instrument_config_sha256"],
         "expected_data_handling_policy_sha256": preview_summary["data_handling_policy_sha256"],
+        "expected_output_device": preview_output_identity[0],
+        "expected_output_inode": preview_output_identity[1],
     }
     # The preview's gate check has already rejected a symlinked output path.
     # Resolve only for the kernel allowance, and make the worker recheck the
@@ -73,6 +86,11 @@ def ingest_in_custody(
         commit_request, "commit", writable=output_path.resolve(), workspace=workspace
     )
     summary = _summary(committed, ErrorCode.INGEST_UNRESOLVED)
+    if _output_identity(committed, ErrorCode.INGEST_UNRESOLVED) != preview_output_identity:
+        raise OperatorError(
+            ErrorCode.INGEST_UNRESOLVED,
+            detail="the confined worker reported a different output directory identity",
+        )
     printer(
         "Ready-to-submit folder: "
         f"{strip_control_bytes(str(output_path))}\n"
@@ -130,7 +148,12 @@ def _call_worker(
         )
         raise OperatorError(unresolved, detail=detail)
     response = _decode_response(completed.stdout)
-    if response is None or response.get("status") not in {"preview", "committed"}:
+    expected_status = "preview" if operation == "preview" else "committed"
+    if (
+        response is None
+        or set(response) != {"status", "summary", "output_identity"}
+        or response.get("status") != expected_status
+    ):
         raise OperatorError(
             unresolved,
             detail="the confined ingest worker returned an invalid result",
@@ -147,6 +170,8 @@ def _decode_response(value: str) -> dict[str, Any] | None:
 
 
 def _summary(response: dict[str, Any], unresolved: ErrorCode) -> dict[str, Any]:
+    """Validate every child-controlled value before display or commit reuse."""
+
     summary = response.get("summary")
     required = {
         "submission_files",
@@ -164,7 +189,79 @@ def _summary(response: dict[str, Any], unresolved: ErrorCode) -> dict[str, Any]:
     }
     if not isinstance(summary, dict) or set(summary) != required:
         raise OperatorError(unresolved, detail="the ingest summary has an invalid shape")
+    counts = (
+        summary["submission_files"],
+        summary["candidate_count"],
+        summary["confirmed_cluster_count"],
+    )
+    if any(not isinstance(value, int) or isinstance(value, bool) or value < 0 for value in counts):
+        raise OperatorError(unresolved, detail="the ingest summary has an invalid count")
+    submission_files, candidate_count, confirmed_cluster_count = counts
+    if (
+        not 1 <= submission_files <= MAX_INGEST_FRAMES
+        or candidate_count > MAX_INGEST_CANDIDATE_PAIRS
+        or confirmed_cluster_count > submission_files // 2
+    ):
+        raise OperatorError(unresolved, detail="the ingest summary exceeds its bounded counts")
+    for name in (
+        "submission_manifest_sha256",
+        "submission_ledger_self_hash",
+        "instrument_config_sha256",
+        "data_handling_policy_sha256",
+    ):
+        if not is_sha256(summary[name]):
+            raise OperatorError(unresolved, detail=f"the ingest summary has an invalid {name}")
+    confirmation_sha256 = summary["confirmation_sha256"]
+    if confirmation_sha256 is not None and not is_sha256(confirmation_sha256):
+        raise OperatorError(
+            unresolved, detail="the ingest summary has an invalid confirmation digest"
+        )
+    if (confirmation_sha256 is None) != (confirmed_cluster_count == 0):
+        raise OperatorError(
+            unresolved, detail="the ingest summary confirmation count and digest disagree"
+        )
+    if summary["mode"] not in {"manual", "semi", "auto"}:
+        raise OperatorError(unresolved, detail="the ingest summary has an invalid triage mode")
+    candidates = summary["candidates"]
+    clusters = summary["confirmed_clusters"]
+    planned = summary["planned_files"]
+    if (
+        not isinstance(candidates, list)
+        or len(candidates) != candidate_count
+        or not isinstance(clusters, list)
+        or len(clusters) != confirmed_cluster_count
+        or not isinstance(planned, list)
+    ):
+        raise OperatorError(unresolved, detail="the ingest summary list counts do not reconcile")
+    expected_planned = 6 + 2 * submission_files + candidate_count
+    if confirmation_sha256 is not None:
+        expected_planned += 3
+    if len(planned) != expected_planned or len(planned) != len(set(planned)):
+        raise OperatorError(unresolved, detail="the ingest summary planned files do not reconcile")
+    if any(
+        not isinstance(value, str) or not value or len(value) > MAX_PREVIEW_LINE_CHARACTERS
+        for value in (*candidates, *clusters)
+    ):
+        raise OperatorError(unresolved, detail="the ingest summary carries an invalid preview line")
+    if any(
+        not isinstance(value, str)
+        or not value
+        or len(value) > MAX_PREVIEW_LINE_CHARACTERS
+        or Path(value).name != value
+        for value in planned
+    ):
+        raise OperatorError(unresolved, detail="the ingest summary carries an unsafe planned name")
     return summary
+
+
+def _output_identity(response: dict[str, Any], unresolved: ErrorCode) -> tuple[int, int]:
+    value = response.get("output_identity")
+    if not isinstance(value, dict) or set(value) != {"device", "inode"}:
+        raise OperatorError(unresolved, detail="the ingest result has no output directory identity")
+    identity = (value["device"], value["inode"])
+    if any(not isinstance(part, int) or isinstance(part, bool) or part < 0 for part in identity):
+        raise OperatorError(unresolved, detail="the ingest result has an invalid output identity")
+    return identity
 
 
 def _print_preview(summary: dict[str, Any], printer: Callable[[str], None]) -> None:
