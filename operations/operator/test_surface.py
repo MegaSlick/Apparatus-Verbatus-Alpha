@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import errno
 import hashlib
 import json
 import os
@@ -36,6 +37,7 @@ from operations.submit import gate
 from operations.submit.submit import build_manifest, walk_folder
 
 from . import cli, dry_run, entry, notify_bridge
+from . import surface as surface_module
 from .dry_run import make_transcript
 from .errors import ErrorCode, OperatorError
 from .fakes import LocalFixtureObjectStore, OperatorFakeProvider
@@ -249,9 +251,12 @@ def test_no_saved_operator_record_carries_a_spendable_confirmation_phrase(
     the value the operator typed -- which, on the path that matters, *is* the
     phrase. What the receipt keeps is a commitment to the exact bytes received.
 
-    The phrase, the challenge and the digest of the phrase are all searched for,
-    because redacting the field a reader looks at first while leaving the same
-    secret in a neighbouring one would pass a narrower check.
+    Every file under the state root is searched for the phrase and for its
+    challenge on its own, because redacting the field a reader looks at first
+    while leaving the same secret in a neighbouring one would pass a narrower
+    check. The sha256 of the phrase is deliberately not among the things
+    withheld -- it is the commitment this receipt exists to make, and it is
+    asserted below rather than searched for.
     """
 
     surface = _surface(tmp_path)
@@ -581,6 +586,41 @@ def test_status_never_calls_a_state_holding_an_unreadable_lease_empty(tmp_path: 
 
     assert unreadable.value.code is ErrorCode.STATUS_UNREADABLE
     assert "corrupt.json" in (unreadable.value.detail or "")
+
+
+def test_a_paid_launch_claim_that_cannot_be_taken_is_not_called_another_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Say what was established: this window has no claim, not that someone else has one.
+
+    `LOCK_NB` reports a claim another window holds as `BlockingIOError` and
+    nothing else does. A filesystem with no working `flock` raises a different
+    errno, and reading that as `LAUNCH_ALREADY_IN_FLIGHT` tells the operator to
+    wait for a window that does not exist -- advice that never comes true, and
+    the wrong half of the fact besides: what failed is this console's ability to
+    prove it is the only one launching. `_unproven_lease_root` draws the same
+    line on the durable lease (GOVERNANCE 10).
+    """
+
+    surface = _surface(tmp_path)
+    prepared = surface.prepare_launch(_request(), policy_path=_spend_policy(tmp_path))
+
+    def no_locking(fileno: int, operation: int) -> None:
+        raise OSError(errno.ENOLCK, "no locks available")
+
+    monkeypatch.setattr(surface_module.fcntl, "flock", no_locking)
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.launch(prepared, prepared.confirmation_phrase)
+
+    assert refusal.value.code is ErrorCode.SAFETY_CHECK_FAILED
+    assert "could not be taken" in (refusal.value.detail or "")
+    assert "no locks available" in (refusal.value.detail or "")
+    assert not any(verb == "create" for verb, _ in surface.provider.calls)
+    # A refusal here spends nothing, so the phrase the operator was shown still
+    # works once the claim can be taken again.
+    monkeypatch.undo()
+    assert surface.launch(prepared, prepared.confirmation_phrase).green
 
 
 def test_a_verified_close_releases_the_launch_the_open_lease_refused(

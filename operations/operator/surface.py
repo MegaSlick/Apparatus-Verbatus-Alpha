@@ -1551,12 +1551,30 @@ class OperatorSurface:
         with handle:
             try:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except OSError as error:
+            except BlockingIOError as error:
                 raise OperatorError(
                     ErrorCode.LAUNCH_ALREADY_IN_FLIGHT,
                     detail=(
                         f"another process holds the paid-launch claim {path} ({error}); "
                         "no paid action was sent from this window"
+                    ),
+                ) from error
+            except OSError as error:
+                # `LOCK_NB` reports a held claim as `BlockingIOError` and nothing
+                # else does. Every other errno -- a filesystem with no working
+                # `flock`, a lost descriptor -- means this window never took the
+                # claim at all, which is not the same fact as another window
+                # holding it and does not have the same remedy: the copy for
+                # `LAUNCH_ALREADY_IN_FLIGHT` tells the operator to wait for a
+                # window that may not exist, and would keep telling them so
+                # forever. `_unproven_lease_root` draws exactly this line on the
+                # durable lease; this is the same line on the claim (GOVERNANCE 10).
+                raise OperatorError(
+                    ErrorCode.SAFETY_CHECK_FAILED,
+                    detail=(
+                        f"the paid-launch claim {path} could not be taken, so this window "
+                        f"cannot prove it is the only one launching: {error}; no paid "
+                        "action was sent from this window"
                     ),
                 ) from error
             try:
