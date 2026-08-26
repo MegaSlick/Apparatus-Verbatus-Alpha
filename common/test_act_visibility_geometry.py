@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from common.act_visibility_geometry import GRID, classify_capture_visibility
+from common.act_visibility_geometry import GRID, classify_capture_visibility, expected_surface_cells
 
 BOUNDS = {"x": 0, "y": 0, "w": 40, "h": 40}
 
@@ -59,12 +59,11 @@ def test_expected_cells_are_grid_indices_not_pixel_coordinates():
     """Two different-sized bounds still publish the identical grid index set.
 
     This is the adapter's explicit, documented projection: no real image
-    registration exists in this repository, so cross-capture cell identity is
-    normalized position within each capture's own AABB, never a shared
-    absolute pixel frame. `cross_capture_coverage.build_cross_capture_coverage`
-    requires exactly this -- every capture in one component must publish the
-    same `expected_cells` -- so this is the invariant that makes union
-    arithmetic possible across two differently framed photographs.
+    registration exists in this repository, so cell identity is normalized
+    position within each capture's own AABB, never a shared absolute pixel
+    frame. The identical index set therefore does *not* make two captures'
+    cells comparable; the Recensor refuses that union until a sealed
+    registration exists.
     """
     small = classify_capture_visibility(
         bounds={"x": 5, "y": 5, "w": 8, "h": 8}, occlusion_polygons=[]
@@ -80,3 +79,35 @@ def test_bounds_must_be_a_closed_positive_rectangle():
         classify_capture_visibility(bounds={"x": 0, "y": 0, "w": 0, "h": 10}, occlusion_polygons=[])
     with pytest.raises(ValueError):
         classify_capture_visibility(bounds={"x": 0, "y": 0, "w": 10}, occlusion_polygons=[])
+
+
+@pytest.mark.parametrize("grid", [0, -1, True, 1.5])
+def test_grid_must_be_a_positive_non_boolean_integer(grid):
+    with pytest.raises(ValueError, match="positive integer"):
+        expected_surface_cells(grid)
+
+
+@pytest.mark.parametrize(
+    "bounds",
+    [
+        {"x": 0, "y": 0, "w": "10", "h": 10},
+        {"x": False, "y": 0, "w": 10, "h": 10},
+        {"x": -1, "y": 0, "w": 10, "h": 10},
+    ],
+)
+def test_bounds_refuse_non_integer_or_negative_page_coordinates(bounds):
+    with pytest.raises(ValueError, match="bounds"):
+        classify_capture_visibility(bounds=bounds, occlusion_polygons=[])
+
+
+@pytest.mark.parametrize(
+    "polygons",
+    [
+        None,
+        [[{"x": 0}]],
+        [[{"x": 0, "y": 0}, {"x": 0, "y": 0}, {"x": 0, "y": 0}]],
+    ],
+)
+def test_malformed_occlusion_geometry_is_a_named_value_refusal(polygons):
+    with pytest.raises(ValueError, match="occlusion"):
+        classify_capture_visibility(bounds=BOUNDS, occlusion_polygons=polygons)

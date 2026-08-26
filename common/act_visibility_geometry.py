@@ -44,6 +44,35 @@ from math import isclose
 GRID: int = 4
 
 
+def _validated_grid(grid: object) -> int:
+    if not isinstance(grid, int) or isinstance(grid, bool) or grid <= 0:
+        raise ValueError("act-visibility grid must be a positive integer")
+    return grid
+
+
+def _validated_polygons(value: object) -> list[list[dict[str, int]]]:
+    if not isinstance(value, list):
+        raise ValueError("act-visibility occlusions must be a polygon list")
+    for polygon in value:
+        if not isinstance(polygon, list) or len(polygon) < 3:
+            raise ValueError("act-visibility occlusion is not a polygon")
+        points: list[tuple[int, int]] = []
+        for point in polygon:
+            if (
+                not isinstance(point, dict)
+                or set(point) != {"x", "y"}
+                or not isinstance(point["x"], int)
+                or isinstance(point["x"], bool)
+                or not isinstance(point["y"], int)
+                or isinstance(point["y"], bool)
+            ):
+                raise ValueError("act-visibility occlusion has a malformed point")
+            points.append((point["x"], point["y"]))
+        if len(set(points)) < 3:
+            raise ValueError("act-visibility occlusion has fewer than three distinct points")
+    return value
+
+
 def _point_in_polygon(x: float, y: float, polygon: list[dict[str, int]]) -> bool:
     """Even-odd ray-casting membership test over a closed polygon ring."""
     inside = False
@@ -129,7 +158,8 @@ def expected_surface_cells(grid: int = GRID) -> list[list[int]]:
     expected surface came from whichever capture happened to be measured first
     would be a silent collapse (consult §7.14).
     """
-    return [[col, row] for row in range(grid) for col in range(grid)]
+    checked_grid = _validated_grid(grid)
+    return [[col, row] for row in range(checked_grid) for col in range(checked_grid)]
 
 
 def classify_capture_visibility(
@@ -143,22 +173,31 @@ def classify_capture_visibility(
     (``above-ink``, ``unknown``) is treated as occluding here, exactly as
     conservatively as the existing page-wide rule treats any occlusion at all.
     """
+    checked_grid = _validated_grid(grid)
+    polygons = _validated_polygons(occlusion_polygons)
     if not isinstance(bounds, dict) or set(bounds) != {"x", "y", "w", "h"}:
         raise ValueError("act-visibility bounds must be a closed x/y/w/h rectangle")
+    if any(
+        not isinstance(bounds[axis], int) or isinstance(bounds[axis], bool)
+        for axis in ("x", "y", "w", "h")
+    ):
+        raise ValueError("act-visibility bounds must use integer page coordinates")
+    if bounds["x"] < 0 or bounds["y"] < 0:
+        raise ValueError("act-visibility bounds must have a non-negative page origin")
     if bounds["w"] <= 0 or bounds["h"] <= 0:
         raise ValueError("act-visibility bounds must have positive extent")
-    expected = expected_surface_cells(grid)
+    expected = expected_surface_cells(checked_grid)
     visible: list[list[int]] = []
     occluded: list[list[int]] = []
-    for row in range(grid):
-        for col in range(grid):
-            x0 = bounds["x"] + col * bounds["w"] / grid
-            y0 = bounds["y"] + row * bounds["h"] / grid
-            x1 = bounds["x"] + (col + 1) * bounds["w"] / grid
-            y1 = bounds["y"] + (row + 1) * bounds["h"] / grid
+    for row in range(checked_grid):
+        for col in range(checked_grid):
+            x0 = bounds["x"] + col * bounds["w"] / checked_grid
+            y0 = bounds["y"] + row * bounds["h"] / checked_grid
+            x1 = bounds["x"] + (col + 1) * bounds["w"] / checked_grid
+            y1 = bounds["y"] + (row + 1) * bounds["h"] / checked_grid
             hit = any(
                 _polygon_intersects_cell(polygon, x0=x0, y0=y0, x1=x1, y1=y1)
-                for polygon in occlusion_polygons
+                for polygon in polygons
             )
             (occluded if hit else visible).append([col, row])
     return {
