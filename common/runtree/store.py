@@ -701,9 +701,24 @@ class RunTree:
     # --- Reading ----------------------------------------------------------------
 
     def read_artifact(self, stage: str, kind: str, artifact_id: str) -> dict[str, Any]:
+        record, _ = self.read_artifact_snapshot(stage, kind, artifact_id)
+        return record
+
+    def read_artifact_snapshot(
+        self, stage: str, kind: str, artifact_id: str
+    ) -> tuple[dict[str, Any], bytes]:
+        """Read and validate one artifact, retaining the exact bytes decoded.
+
+        Callers that publish a digest beside decoded fields must derive both
+        from one filesystem read.  Returning the bytes from that read prevents
+        a concurrent replacement from pairing one record body with another
+        record's immutable address.
+        """
+
         relative = self.artifact_path(stage, kind, artifact_id)
         with _naming(relative):
-            record = validate_envelope(_read_json(self.resolve(relative)))
+            record, artifact_bytes = _read_json_with_bytes(self.resolve(relative))
+            record = validate_envelope(record)
             self._verify_artifact_run(record)
         if (
             record["stage"] != stage
@@ -716,7 +731,7 @@ class RunTree:
             )
         self._verify_artifact_path(relative, record)
         self._verify_artifact_inputs(record)
-        return record
+        return record, artifact_bytes
 
     def read_artifact_reference(
         self,

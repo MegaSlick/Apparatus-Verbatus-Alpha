@@ -15,7 +15,7 @@ import pytest
 
 from common.contracts.approval import ApprovalRecordReference
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
-from common.contracts.errors import ApprovalRefusal
+from common.contracts.errors import ApprovalRefusal, SchemaRefusal
 from common.contracts.identities import artifact_id
 from common.contracts.stages import ARMARIUM
 from common.runtree.store import RunTree
@@ -1399,3 +1399,22 @@ def test_opening_a_run_for_review_changes_no_byte_and_no_timestamp_in_the_tree(t
     after = census()
     assert set(after) == set(before), "reviewing a run created or removed a path"
     assert after == before, "reviewing a run rewrote evidence it was only meant to read"
+
+
+def test_a_stage_record_changed_after_inventory_is_not_paired_with_the_old_digest(tmp_path: Path):
+    """The displayed body and address must describe the same filesystem read."""
+    run_root, run_id = _make_run(tmp_path)
+    tree = RunTree(run_root, run_id)
+    manifest_row = next(
+        row
+        for row in tree.build_manifest(ARMARIUM, verify_inputs=False)["artifacts"]
+        if row["kind"] == "export"
+    )
+    target = tree.resolve(manifest_row["relative_path"])
+    changed = json.loads(target.read_bytes().decode("utf-8"))
+    changed["payload"] = {**changed["payload"], "scenario": "changed-during-review"}
+    changed["self_hash"] = self_hash(changed)
+    target.write_bytes(canonical_bytes(changed))
+
+    with pytest.raises(SchemaRefusal, match="changed while the review inventory was being read"):
+        review._record_row(tree, ARMARIUM, manifest_row)

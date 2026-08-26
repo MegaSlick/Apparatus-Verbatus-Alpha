@@ -11,7 +11,7 @@ from typing import Any
 
 from common.contracts.approval import validate_approval_record
 from common.contracts.canonical import digest_bytes
-from common.contracts.errors import ContractError
+from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.identities import artifact_id
 from common.contracts.stages import ARMARIUM, STAGES
 from common.runtree.store import RunTree
@@ -123,7 +123,15 @@ def _record_row(tree: RunTree, stage: str, manifest_row: dict[str, Any]) -> dict
     every copied header and the complete record is available to the renderer.
     """
 
-    record = tree.read_artifact(stage, manifest_row["kind"], manifest_row["artifact_id"])
+    record, record_bytes = tree.read_artifact_snapshot(
+        stage, manifest_row["kind"], manifest_row["artifact_id"]
+    )
+    record_digest = digest_bytes(record_bytes)
+    if record_digest != manifest_row["sha256"]:
+        raise SchemaRefusal(
+            f"{manifest_row['relative_path']}: changed while the review inventory was being "
+            "read; its record body and immutable address cannot be paired safely"
+        )
     return {
         "stage": stage,
         "artifact_id": record["artifact_id"],
@@ -132,7 +140,7 @@ def _record_row(tree: RunTree, stage: str, manifest_row: dict[str, Any]) -> dict
         "outcome": record["outcome"],
         "record_ref": {
             "relative_path": manifest_row["relative_path"],
-            "sha256": manifest_row["sha256"],
+            "sha256": record_digest,
         },
         "record": record,
     }
