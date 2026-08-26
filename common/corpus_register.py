@@ -242,7 +242,8 @@ class _Reading:
         self.physical_pages: set[str] = set()
         self.physical_acts: set[str] = set()
         self.physical_act_pages: dict[str, str] = {}
-        # `act->pac` -> the record, while it is declared and not retracted.
+        # Retracted links must leave this lookup so the same link can later be
+        # reasserted as a new operator act.
         self.correspondence_records: dict[str, dict[str, Any]] = {}
         # Every act any correspondence ever named, so a proposal whose links were
         # all withdrawn reads differently from one that never had any.

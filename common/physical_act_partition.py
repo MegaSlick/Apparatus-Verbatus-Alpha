@@ -65,6 +65,10 @@ def _dedupe_findings(findings: list[dict[str, str]]) -> list[dict[str, str]]:
     return list(seen.values())
 
 
+def _finding_sort_key(row: dict[str, str]) -> tuple[str, str]:
+    return row["act_id"], row["code"]
+
+
 def _sha(value: Any, what: str) -> str:
     if (
         not isinstance(value, str)
@@ -173,6 +177,15 @@ def _presentation(
     return row
 
 
+def _accepted_record_sort_key(row: dict[str, Any]) -> tuple[int, str, str, str]:
+    return (
+        0 if row["kind"] == "physical-act" else 1,
+        row["physical_page_id"],
+        row["physical_act_id"],
+        row.get("act_id", ""),
+    )
+
+
 def build_physical_act_partition(
     *,
     register: bytes,
@@ -233,18 +246,15 @@ def build_physical_act_partition(
             "physical-act partition: a capture page has more than one physical alignment"
         )
     index = _presentation_index(alignments)
-    # Which physical pages currently declare each capture. A local act on a capture
-    # the register clusters, but which this run's alignment table says nothing about,
-    # is not an image-local act: it is an act whose alignment is missing. Reading it
-    # as a singleton would republish it beside the logical act it belongs to, which
-    # is the duplicate the whole correspondence step exists to prevent.
+    # A local act on a clustered capture absent from this run's alignment table is
+    # missing alignment, not an image-local singleton. Publishing it as a singleton
+    # would duplicate the logical act it belongs to.
     clustered_sources = {
         source
         for _page, (_digest, members) in membership_heads(register).items()
         for source in members
     }
     groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    # logical act -> (identity scope, physical act or None, physical page or None)
     scopes: dict[str, tuple[str, str | None, str | None]] = {}
     findings: list[dict[str, str]] = []
     for act in acts:
@@ -278,8 +288,7 @@ def build_physical_act_partition(
                     {"code": "capture-page-alignment-unresolved", "act_id": act["act_id"]}
                 )
                 continue
-            missing = [member for member in members if member not in source_ledger]
-            if missing:
+            if any(member not in source_ledger for member in members):
                 findings.append({"code": "cluster-member-absent", "act_id": act["act_id"]})
                 continue
             resolved = resolve_proposal(register, act["act_id"])
@@ -319,8 +328,7 @@ def build_physical_act_partition(
             # already checked against every member's alignment above -- never read
             # off whichever member sorted first.
             required = members_of(register, physical_page)
-            absent = [source for source in required if (physical_page, source) not in index]
-            if absent:
+            if any((physical_page, source) not in index for source in required):
                 findings.extend(
                     {"code": "capture-page-alignment-unresolved", "act_id": row["act_id"]}
                     for row in members
@@ -365,9 +373,7 @@ def build_physical_act_partition(
             for group in logical_acts
             for row in group["member_local_acts"]
         ],
-        "findings": sorted(
-            _dedupe_findings(findings), key=lambda row: (row["act_id"], row["code"])
-        ),
+        "findings": sorted(_dedupe_findings(findings), key=_finding_sort_key),
     }
     payload["self_hash"] = self_hash(payload)
     # The builder is held to the same conservation arithmetic its consumers are.
@@ -742,10 +748,8 @@ def build_correspondence_proposal(
     def ambiguous(acts: list[dict[str, Any]]) -> list[dict[str, str]]:
         return [{"code": "ambiguous-physical-act", "act_id": row["act_id"]} for row in acts]
 
-    # First pass: what each component would resolve to, before anything is emitted.
-    # Emitting as it goes would let the component that happened to be listed first
-    # take a physical act and leave the second to be held -- a decision made by
-    # listing order, which is the shape this whole operation exists to refuse.
+    # Resolution must finish before emission: emitting as it goes would let the
+    # component listed first take a physical act and leave the second held.
     plans: list[dict[str, Any]] = []
     target_count: dict[str, int] = defaultdict(int)
     for component in parsed:
@@ -916,34 +920,16 @@ def build_correspondence_proposal(
     # Mints sort ahead of the correspondences that name them because the register
     # reads a record only after something declares it; within each, the sort is a
     # serialization of the whole set, never a choice among it.
-    accepted.sort(
-        key=lambda row: (
-            0 if row["kind"] == "physical-act" else 1,
-            row["physical_page_id"],
-            row["physical_act_id"],
-            row.get("act_id", ""),
-        )
-    )
+    accepted.sort(key=_accepted_record_sort_key)
     payload = {
         "schema": PROPOSAL_SCHEMA,
         "register_digest": register_digest,
         "discovery_run_id": discovery_run_id,
         "accepted_records": accepted,
-        "findings": sorted(
-            _dedupe_findings(findings), key=lambda row: (row["act_id"], row["code"])
-        ),
+        "findings": sorted(_dedupe_findings(findings), key=_finding_sort_key),
     }
     payload["self_hash"] = self_hash(payload)
     return validate_correspondence_proposal(payload)
-
-
-def _accepted_record_sort_key(row: dict[str, Any]) -> tuple[int, str, str, str]:
-    return (
-        0 if row["kind"] == "physical-act" else 1,
-        row["physical_page_id"],
-        row["physical_act_id"],
-        row.get("act_id", ""),
-    )
 
 
 def validate_correspondence_proposal(payload: dict[str, Any]) -> dict[str, Any]:

@@ -241,7 +241,7 @@ def test_a_hard_reshoot_unions_two_captures_shared_act_into_one_physical_act():
     # than guessing one. Unit 18 declares this shape; deciding *whether* a
     # single-capture act needs resolving at all -- so it is never asked in the
     # first place, and "single-capture" never reads as "unresolved" -- is the
-    # caller-side policy Unit 19 supplies. No such caller exists yet.
+    # caller-side policy the physical-act partition builder owns.
     for solo_act in (*acts_a[:3], act_q1):
         assert resolve_proposal(register, solo_act)["outcome"] == "finding"
 
@@ -812,11 +812,7 @@ def test_a_retracted_correspondence_is_reasserted_by_a_new_run_not_resurrected()
     resolution = resolve_proposal(restored, act)
     assert resolution["outcome"] == "resolved"
     assert resolution["physical_act_id"] == ACT
-    # Nothing was deleted: the withdrawn declaration and its reason are still in
-    # the register beside the one that reasserted it.
     assert json.loads(restored)["records"][-3:] == [declaration, withdrawal, reasserted]
-    # Retracting the already-withdrawn declaration a second time corrects nothing,
-    # exactly as retracting one membership link twice does.
     with pytest.raises(SchemaRefusal, match="a retraction that corrects nothing"):
         validate_register_bytes(
             _register(

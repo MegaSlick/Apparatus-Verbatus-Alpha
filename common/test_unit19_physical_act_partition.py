@@ -92,7 +92,6 @@ def test_discovery_append_uses_sealed_predecessor_then_the_old_run_is_stale(tmp_
     )
     assert successor == register_digest(path.read_bytes())
     with pytest.raises(IncompatibleReuse, match="changed after this run"):
-        # This is exactly the common stage-entry guard: discovery cannot continue.
         from common.corpus_register import verify_snapshot_is_current
 
         verify_snapshot_is_current({"register_digest": predecessor}, str(path))
@@ -337,9 +336,6 @@ def test_unhashable_artifact_values_are_refused_by_cause(validator, schema, subj
     payload = {"schema": schema, "unsupported_number": 1.5, "self_hash": "0" * 64}
     with pytest.raises(SchemaRefusal, match=rf"{subject}: self hash.*float at"):
         validator(payload)
-
-
-# --- Sonnet audit seat: driving the identity-totality edges ---------------------
 
 
 def test_an_alignment_naming_a_capture_outside_the_cluster_is_a_named_finding(tmp_path):
@@ -686,7 +682,6 @@ def test_append_racing_a_retraction_is_refused_and_a_retried_retraction_is_preci
     )
     correspondence_identity = f"{ACT_A}->{minted_a}"
 
-    # A second, unrelated discovery run appends first -- the race.
     proposal_b = build_correspondence_proposal(
         register=path.read_bytes(),
         register_digest=after_first,
@@ -705,7 +700,6 @@ def test_append_racing_a_retraction_is_refused_and_a_retried_retraction_is_preci
         register_path=str(path), proposal=proposal_b, discovery_register_digest=after_first
     )
 
-    # A retraction that only ever observed `after_first` is stale now.
     with pytest.raises(IncompatibleReuse, match="changed after"):
         append_records(
             path,
@@ -879,8 +873,6 @@ def test_partition_mapping_must_equal_the_members_its_logical_groups_publish():
                 "capture_presentations": [],
             }
         ],
-        # The target exists and the arithmetic is 1 == 1, but ACT_B is not the
-        # member the published group contains.  The old validator accepted it.
         "local_to_logical": [{"act_id": ACT_B, "logical_act_id": ACT_A}],
         "findings": [],
     }
@@ -920,8 +912,6 @@ def test_partition_validator_refuses_a_dropped_required_capture_presentation(tmp
         validate_physical_act_partition(partition)
 
 
-# --- Opus audit seat: quiet identity failures and register lifecycle ------------
-
 SOURCE_C = "c" * 64
 PAGE_13R = physical_page_id("fixture", "book", "13r")
 PG1 = "pg_" + "1" * 16
@@ -951,7 +941,6 @@ def _align(page_id, source, physical_page, ref):
 
 
 def _mint(path, page, acts, run="discovery", existing=None):
-    """Append one component's correspondence records and return the physical act."""
     predecessor = register_digest(path.read_bytes())
     proposal = build_correspondence_proposal(
         register=path.read_bytes(),
@@ -1784,13 +1773,11 @@ def test_the_register_lifecycle_closes_proposal_append_retraction_reproposal(tmp
     ]
     ledger = {SOURCE_A, SOURCE_B, SOURCE_C}
 
-    # 1. Proposal and append.
     minted = _mint(path, PAGE, local_acts)
     first = _partition(path.read_bytes(), local_acts, alignments, ledger)
     assert first["findings"] == []
     assert first["logical_acts"][0]["logical_act_id"] == minted
 
-    # 2. Retraction: the act on capture B was declared against the wrong capture.
     withdrawal = {
         "kind": "retraction",
         "retracts": f"{ACT_B}->{minted}",
@@ -1803,8 +1790,6 @@ def test_the_register_lifecycle_closes_proposal_append_retraction_reproposal(tmp
     assert held["logical_acts"][0]["logical_act_id"] == minted, "A keeps its identity"
     validate_physical_act_partition(held)
 
-    # 3. Re-proposal by the resolver is refused: geometry does not overrule a
-    #    person, and the component's other member is named rather than dropped.
     register_bytes = path.read_bytes()
     reproposal = build_correspondence_proposal(
         register=register_bytes,
@@ -1823,8 +1808,6 @@ def test_the_register_lifecycle_closes_proposal_append_retraction_reproposal(tmp
     assert reproposal["accepted_records"] == []
     assert reproposal["findings"] == [{"code": "retracted-physical-act", "act_id": ACT_B}]
 
-    # 4. The person reasserts it. The physical act is the one that already
-    #    exists, never a second one minted for the same members.
     append_records(
         path,
         [
@@ -1844,7 +1827,6 @@ def test_the_register_lifecycle_closes_proposal_append_retraction_reproposal(tmp
     assert restored["findings"] == []
     assert restored["logical_acts"][0]["logical_act_id"] == minted
     assert restored["logical_expected_count"] == 1
-    # The correction and its reason are still in the register, unmodified.
     assert withdrawal in json.loads(path.read_bytes())["records"]
 
 
@@ -1874,7 +1856,6 @@ def test_a_correspondence_appended_without_its_physical_act_is_refused(tmp_path)
             ],
             expected_digest=register_digest(path.read_bytes()),
         )
-    # The refused append left the register exactly as it was.
     assert resolve_proposal(path.read_bytes(), ACT_A)["code"] == "unresolved-physical-act"
 
 
@@ -1937,7 +1918,6 @@ def test_one_source_split_into_two_pages_resolves_each_page_to_its_own_physical_
                 "designation": "13r",
                 "physical_page_id": PAGE_13R,
             },
-            # One capture, declared a member of both physical pages it depicts.
             {
                 "kind": "membership",
                 "physical_page_id": PAGE,
@@ -1974,6 +1954,4 @@ def test_one_source_split_into_two_pages_resolves_each_page_to_its_own_physical_
         for component in group["physical_page_components"]
     )
     assert pages == sorted([PAGE, PAGE_13R])
-    # Each logical act names one physical page: one capture depicting two pages
-    # never merges them.
     assert all(len(group["physical_page_components"]) == 1 for group in partition["logical_acts"])
