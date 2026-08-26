@@ -33,6 +33,7 @@ from __future__ import annotations
 from typing import Any, Final
 
 from common.contracts.errors import SchemaRefusal
+from common.contracts.stages import TRIAGE_MODES
 
 # The exact Unit 5 decision-manifest row fields this derivation reads.  A test
 # reconciles these names against `pipeline/0_triage/manifest.py`'s own closed
@@ -40,6 +41,7 @@ from common.contracts.errors import SchemaRefusal
 # every pair comparable.
 TRIAGE_FACT_FIELDS: Final = ("mode", "actor", "human_override")
 ACTOR_FACT_FIELDS: Final = ("kind", "identity", "revision")
+TRIAGE_ACTOR_KINDS: Final = ("human", "model", "scantailor", "producer")
 
 MODE_DIFFERS: Final = "triage-mode-differs"
 ACTOR_KIND_DIFFERS: Final = "triage-actor-kind-differs"
@@ -79,14 +81,34 @@ def _triage_facts(row: Any, label: str) -> dict[str, Any]:
             f"{list(TRIAGE_FACT_FIELDS)}; comparability is refused rather than assumed, "
             "because an unread capture condition is not a satisfied one"
         )
+    mode = row["mode"]
+    if mode not in TRIAGE_MODES:
+        raise SchemaRefusal(
+            f"capture comparability: {label} triage mode is not one of {TRIAGE_MODES}"
+        )
     actor = row["actor"]
-    if not isinstance(actor, dict) or not set(ACTOR_FACT_FIELDS) <= set(actor):
+    if not isinstance(actor, dict) or set(actor) != set(ACTOR_FACT_FIELDS):
         raise SchemaRefusal(
             f"capture comparability: {label} triage actor does not carry {list(ACTOR_FACT_FIELDS)}"
         )
+    if actor["kind"] not in TRIAGE_ACTOR_KINDS:
+        raise SchemaRefusal(
+            f"capture comparability: {label} triage actor kind is not one of {TRIAGE_ACTOR_KINDS}"
+        )
+    if not isinstance(actor["identity"], str) or not actor["identity"].strip():
+        raise SchemaRefusal(
+            f"capture comparability: {label} triage actor identity is not a resolved name"
+        )
+    if actor["kind"] == "human":
+        if actor["revision"] is not None:
+            raise SchemaRefusal(
+                f"capture comparability: {label} human triage actor revision is not null"
+            )
+    elif not isinstance(actor["revision"], str) or not actor["revision"].strip():
+        raise SchemaRefusal(f"capture comparability: {label} triage actor revision is not resolved")
     if not isinstance(row["human_override"], bool):
         raise SchemaRefusal(f"capture comparability: {label} human_override is not boolean")
-    return {"mode": row["mode"], "actor": actor, "human_override": row["human_override"]}
+    return {"mode": mode, "actor": actor, "human_override": row["human_override"]}
 
 
 def comparability_from_triage(row_a: Any, row_b: Any) -> dict[str, Any]:

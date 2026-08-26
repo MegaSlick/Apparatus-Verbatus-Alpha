@@ -32,6 +32,7 @@ import pytest
 from common.capture_comparability import (
     ACTOR_FACT_FIELDS,
     COMPARABILITY_DIFFERENCE_CODES,
+    TRIAGE_ACTOR_KINDS,
     TRIAGE_FACT_FIELDS,
     comparability_from_triage,
 )
@@ -140,6 +141,17 @@ def test_each_triage_fact_alone_is_enough_to_make_a_pair_not_comparably_captured
         assert result == {"comparably_captured": False, "difference_codes": [code]}
 
 
+def test_capture_argument_order_cannot_change_comparability_or_its_named_differences():
+    hand = _row(
+        mode="manual",
+        actor={"kind": "human", "identity": "operator", "revision": None},
+        human_override=True,
+    )
+    auto = _row()
+
+    assert comparability_from_triage(hand, auto) == comparability_from_triage(auto, hand)
+
+
 def test_an_absent_triage_fact_is_refused_rather_than_read_as_comparable():
     """The always-true degradation, refused at the only place it could enter."""
     for missing in TRIAGE_FACT_FIELDS:
@@ -154,6 +166,36 @@ def test_an_absent_triage_fact_is_refused_rather_than_read_as_comparable():
         comparability_from_triage(_row(), _row(human_override="no"))
 
 
+@pytest.mark.parametrize(
+    ("overrides", "cause"),
+    (
+        ({"mode": None}, "triage mode"),
+        ({"mode": "unknown"}, "triage mode"),
+        (
+            {"actor": {"kind": None, "identity": "verbatus-triage", "revision": "0.0.0"}},
+            "actor kind",
+        ),
+        (
+            {"actor": {"kind": "producer", "identity": " ", "revision": "0.0.0"}},
+            "actor identity",
+        ),
+        (
+            {"actor": {"kind": "producer", "identity": "verbatus-triage", "revision": None}},
+            "actor revision",
+        ),
+        (
+            {"actor": {"kind": "human", "identity": "operator", "revision": "invented"}},
+            "actor revision",
+        ),
+    ),
+)
+def test_malformed_triage_facts_are_refused_rather_than_compared_equal(overrides, cause):
+    malformed = _row(**overrides)
+
+    with pytest.raises(SchemaRefusal, match=cause):
+        comparability_from_triage(malformed, malformed)
+
+
 def test_the_facts_read_here_are_unit_5s_own_row_and_actor_fields():
     """Reconciled against the real schema, so an upstream rename breaks loudly.
 
@@ -163,6 +205,7 @@ def test_the_facts_read_here_are_unit_5s_own_row_and_actor_fields():
     """
     manifest = _load_triage_manifest()
     assert set(TRIAGE_FACT_FIELDS) <= manifest._ROW_FIELDS
+    assert TRIAGE_ACTOR_KINDS == manifest.ACTOR_KINDS
     row = manifest.make_row(
         corpus_id="montebello",
         source_frame_sha256="a" * 64,
