@@ -267,6 +267,14 @@ class FixtureBootstrapActions:
             return {"state": "no-upload-recorded", "mode": "fixture-only"}
         return {"state": "recorded-upload", "receipt": str(self.transfer_receipt)}
 
+    def materialize_model_store(self) -> dict[str, object]:
+        """Report the required step without fetching weights from this fake-only surface.
+
+        Real acquisition belongs to pod launch; fixture bootstrap must still
+        account for the step explicitly so a green journal cannot omit it.
+        """
+        return {"state": "no-materialization", "mode": "fixture-only; no weights are fetched"}
+
     def verify_chair_cache(self) -> dict[str, object]:
         return {"state": "fixture-cache-check", "mode": "no download"}
 

@@ -4,12 +4,14 @@ import copy
 import hashlib
 import json
 import os
+import re
 import shutil
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+from common.chairs import model_store
 from common.chairs.config import load_models_toml
 from common.chairs.errors import DigestMismatchRefusal
 from common.chairs.manifests import build_manifest, write_manifest
@@ -19,8 +21,11 @@ from common.chairs.model_store import (
     REQUIRED_ARTIFACTS,
     STORE_SCHEMA,
     SURYA_OCR_2_REFUSAL,
+    UNDECLARED_LICENCE_SNAPSHOT,
+    UNTEXTED_LICENCE_SNAPSHOT,
     derived_inventory,
     load_download_record,
+    materialize_real_roster,
     pod_materialization_plan,
     promote_verified_snapshot,
     read_derived_inventory,
@@ -371,6 +376,37 @@ def test_active_record_symlink_is_not_accepted_as_in_store_custody(tmp_path):
         load_download_record(tmp_path)
 
 
+def test_active_record_fifo_is_refused_before_any_blocking_read(tmp_path):
+    os.mkfifo(tmp_path / "download_record.json")
+
+    with pytest.raises(DigestMismatchRefusal, match="regular in-store active copy"):
+        load_download_record(tmp_path)
+
+
+def test_immutable_record_version_cannot_hide_behind_an_internal_symlink(tmp_path):
+    record = _store(tmp_path)
+    digest = digest_bytes(canonical_bytes(record))
+    archive = tmp_path / "records" / f"{digest}.json"
+    backing = archive.with_name("mutable-backing.json")
+    archive.replace(backing)
+    archive.symlink_to(backing.name)
+
+    with pytest.raises(DigestMismatchRefusal, match="must not traverse symlink component"):
+        load_download_record(tmp_path)
+
+
+def test_verified_snapshot_root_cannot_hide_behind_an_internal_symlink(tmp_path):
+    record = _store(tmp_path)
+    entry = next(item for item in record["artifacts"] if item["artifact"] == "churro-3B")
+    snapshot = tmp_path / entry["snapshot"]
+    backing = snapshot.with_name("churro-3B-mutable-backing")
+    snapshot.replace(backing)
+    snapshot.symlink_to(backing.name, target_is_directory=True)
+
+    with pytest.raises(DigestMismatchRefusal, match="must not traverse symlink component"):
+        verify_store(tmp_path)
+
+
 def test_writer_archives_the_legacy_host_record_before_migration(tmp_path):
     record = _store(tmp_path)
     (tmp_path / "download_record.json").unlink()
@@ -424,6 +460,110 @@ def test_promote_verified_snapshot_accepts_a_legitimate_nested_staging_path(tmp_
     assert digest == digest_bytes(published)
 
 
+def test_materializer_refuses_a_staging_root_symlink_before_fetching_outside_store(tmp_path):
+    store = tmp_path / "store"
+    store.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (store / "staging").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(DigestMismatchRefusal, match="escapes configured root"):
+        materialize_real_roster(
+            store, _FakeMaterializationFetcher(), capacity=dict(_MATERIALIZATION_CAPACITY)
+        )
+
+    assert sorted(outside.iterdir()) == []
+
+
+def test_materializer_refuses_a_fetcher_that_replaces_its_staging_directory(tmp_path):
+    store = tmp_path / "store"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "model.safetensors").write_bytes(b"outside weights")
+    (outside / "README.md").write_text("---\nlicense: openrail\n---\n", encoding="utf-8")
+
+    class _ReplacesDestination:
+        def fetch(self, repo: str, revision: str, destination: Path) -> None:
+            destination.rmdir()
+            destination.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(DigestMismatchRefusal, match="replaced the materialization destination"):
+        materialize_real_roster(
+            store, _ReplacesDestination(), capacity=dict(_MATERIALIZATION_CAPACITY)
+        )
+
+    assert not (outside / UNTEXTED_LICENCE_SNAPSHOT).exists()
+    assert sorted((store / "staging").iterdir()) == []
+
+
+def test_materializer_names_a_cleanup_failure_without_losing_the_fetch_failure(
+    tmp_path, monkeypatch
+):
+    class _FailsAfterWriting:
+        def fetch(self, repo: str, revision: str, destination: Path) -> None:
+            (destination / "partial.safetensors").write_bytes(b"partial")
+            raise RuntimeError("fetch transport failed")
+
+    def refuse_cleanup(path, **kwargs):
+        raise PermissionError("cleanup denied")
+
+    monkeypatch.setattr(model_store.shutil, "rmtree", refuse_cleanup)
+
+    with pytest.raises(
+        DigestMismatchRefusal,
+        match="fetch transport failed.*staging cleanup also failed.*cleanup denied",
+    ):
+        materialize_real_roster(
+            tmp_path, _FailsAfterWriting(), capacity=dict(_MATERIALIZATION_CAPACITY)
+        )
+
+
+def test_materializer_refuses_a_staged_symlink_before_reading_its_target(tmp_path, monkeypatch):
+    outside_index = tmp_path / "outside-index.json"
+    outside_index.write_text(
+        json.dumps({"weight_map": {"layer": "model.safetensors"}}), encoding="utf-8"
+    )
+
+    class _SymlinkedShardIndex:
+        def fetch(self, repo: str, revision: str, destination: Path) -> None:
+            (destination / "model.safetensors").write_bytes(b"weights")
+            (destination / "LICENSE").write_text("terms", encoding="utf-8")
+            (destination / "model.safetensors.index.json").symlink_to(outside_index)
+
+    real_read_text = Path.read_text
+
+    def refuse_external_read(path, *args, **kwargs):
+        if path.resolve() == outside_index:
+            raise AssertionError("the external shard index was read")
+        return real_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", refuse_external_read)
+
+    with pytest.raises(DigestMismatchRefusal, match="symlink"):
+        materialize_real_roster(
+            tmp_path, _SymlinkedShardIndex(), capacity=dict(_MATERIALIZATION_CAPACITY)
+        )
+
+
+def test_materializer_refuses_a_hard_link_to_bytes_owned_outside_staging(tmp_path):
+    outside = tmp_path / "outside-operator-file"
+    outside.write_bytes(b"not repository evidence")
+    store = tmp_path / "store"
+
+    class _HardLinksExternalBytes:
+        def fetch(self, repo: str, revision: str, destination: Path) -> None:
+            del repo, revision
+            os.link(outside, destination / "model.safetensors")
+
+    with pytest.raises(DigestMismatchRefusal, match="hard-linked file"):
+        materialize_real_roster(
+            store, _HardLinksExternalBytes(), capacity=dict(_MATERIALIZATION_CAPACITY)
+        )
+
+    assert outside.read_bytes() == b"not repository evidence"
+    assert outside.stat().st_nlink == 1
+
+
 def test_promote_verified_snapshot_refuses_a_manifest_name_no_record_may_reference(tmp_path):
     record = _store(tmp_path)
     entry = next(item for item in record["artifacts"] if item["artifact"] == "churro-3B")
@@ -446,6 +586,25 @@ def test_verify_store_refuses_a_manifest_tampered_after_it_was_written(tmp_path)
     manifest_path.write_bytes(canonical_bytes(raw))
 
     with pytest.raises(DigestMismatchRefusal, match="manifest differs"):
+        verify_store(tmp_path)
+
+
+def test_download_record_read_is_bounded_before_json_deserialization(tmp_path, monkeypatch):
+    monkeypatch.setattr(model_store, "MAX_DOWNLOAD_RECORD_BYTES", 32)
+    (tmp_path / "download_record.json").write_bytes(b"{" + b"x" * 32)
+
+    with pytest.raises(DigestMismatchRefusal, match="32-byte control-artifact limit"):
+        load_download_record(tmp_path)
+
+
+def test_verify_store_refuses_a_manifest_fifo_before_any_blocking_read(tmp_path):
+    record = _store(tmp_path)
+    entry = next(item for item in record["artifacts"] if item["artifact"] == "churro-3B")
+    manifest = tmp_path / entry["manifest"]
+    manifest.unlink()
+    os.mkfifo(manifest)
+
+    with pytest.raises(DigestMismatchRefusal, match="must be a regular file"):
         verify_store(tmp_path)
 
 
@@ -770,16 +929,10 @@ def test_the_live_roster_never_disagrees_with_the_store_about_an_artifact():
 
 
 def test_a_huggingface_roster_must_name_the_store_s_exact_repo_and_revision():
-    """The reconciliation, exercised against a roster that actually has a repo.
+    """Store pins must reconcile with the sole chair-to-model authority.
 
-    `models.toml` is the sole chair-to-model authority (GLOSSARY, "chair"); this
-    store is a materialization inventory an operator fetches against *before* any
-    chair resolves, which is why it names the same pins a second time rather than
-    deriving them, and why they need reconciling rather than trusting.
-
-    Built from the store's own Perlector entry so the agreeing case cannot rot into
-    a second hard-coded pin that drifts alongside the first — the only literals here
-    are the mutations.
+    The agreeing case derives from the store entry so only deliberate mutations
+    are independent pin literals.
     """
 
     perlector = next(item for item in REQUIRED_ARTIFACTS if item.chair == "perlector")
@@ -807,7 +960,557 @@ def test_a_huggingface_roster_must_name_the_store_s_exact_repo_and_revision():
     assert unknown_chair == ["annotator: resolves to a fetched repository, store names no artifact"]
 
 
-# --- O3: the pod-sharing contract, encoded rather than described ----------------
+def test_real_roster_and_materialization_inventory_name_the_same_pinned_repositories():
+    """The selectable real roster cannot drift from the launch-time fetch list."""
+
+    real = load_models_toml(ROOT / "config" / "models-real.toml")
+    assert _artifact_disagreements(real.chairs) == []
+    expected = {
+        item.chair: (item.repo, item.revision)
+        for item in REQUIRED_ARTIFACTS
+        if item.source == "huggingface"
+    }
+    observed = {
+        role: (identity.repo, identity.revision)
+        for role, identity in real.chairs.items()
+        if isinstance(identity, ChairIdentity) and identity.source == "huggingface"
+    }
+    assert observed == expected
+
+
+_MATERIALIZATION_CAPACITY = {
+    "snapshot_bytes": 100,
+    "promotion_headroom_bytes": 100,
+    "available_bytes": 200,
+    "cleanup_owner": "pod operator",
+}
+
+
+class _FakeMaterializationFetcher:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    def fetch(self, repo: str, revision: str, destination: Path) -> None:
+        self.calls.append((repo, revision))
+        destination.mkdir(parents=True, exist_ok=True)
+        (destination / "model.safetensors").write_bytes(f"weights {repo}@{revision}".encode())
+        requirement = next(item for item in REQUIRED_ARTIFACTS if item.repo == repo)
+        metadata = ""
+        if requirement.license_declaration is not None:
+            license_id, separator, license_name = requirement.license_declaration.partition(": ")
+            metadata = f"license: {license_id}\n"
+            if separator:
+                metadata += f"license_name: {license_name}\n"
+        (destination / "README.md").write_text(f"---\n{metadata}---\n", encoding="utf-8")
+        if "RecordGold" in repo:
+            (destination / "system.txt").write_text("system prompt", encoding="utf-8")
+            (destination / "query.txt").write_text("query prompt", encoding="utf-8")
+        else:
+            (destination / "LICENSE").write_text("upstream licence", encoding="utf-8")
+
+
+def test_pod_materializer_fetches_each_real_pin_once_and_records_measured_evidence(tmp_path):
+    fetcher = _FakeMaterializationFetcher()
+    capacity = dict(_MATERIALIZATION_CAPACITY)
+
+    receipt = materialize_real_roster(tmp_path, fetcher, capacity=capacity)
+
+    expected = {
+        (item.repo, item.revision) for item in REQUIRED_ARTIFACTS if item.source == "huggingface"
+    }
+    assert sorted(fetcher.calls) == sorted(expected)
+    assert {row["artifact"] for row in receipt["artifacts"]} == {
+        item.artifact for item in REQUIRED_ARTIFACTS if item.source == "huggingface"
+    }
+    assert all(len(row["digest_manifest"]) == 64 for row in receipt["artifacts"])
+    record = load_download_record(tmp_path)
+    dai = next(item for item in record["artifacts"] if item["artifact"] == "dai-recordgold-atr")
+    assert dai["license"] == UNDECLARED_LICENCE_SNAPSHOT
+    assert (
+        (tmp_path / dai["snapshot"] / dai["license"])
+        .read_text(encoding="utf-8")
+        .startswith("No licence file and no licence declaration were present")
+    )
+    assert receipt["complete"] is False  # Surya remains an explicit non-real-roster pending item.
+    assert receipt["real_roster_complete"] is True
+
+
+def test_pod_materializer_reuses_verified_present_snapshots_without_refetching(tmp_path):
+    fetcher = _FakeMaterializationFetcher()
+    capacity = dict(_MATERIALIZATION_CAPACITY)
+    materialize_real_roster(tmp_path, fetcher, capacity=capacity)
+    calls = list(fetcher.calls)
+
+    materialize_real_roster(tmp_path, fetcher, capacity=capacity)
+
+    assert fetcher.calls == calls
+
+
+def test_materializer_joins_a_loaded_record_to_the_roster_before_indexing_it(tmp_path):
+    record = _store(tmp_path)
+    entry = next(item for item in record["artifacts"] if item["artifact"] == "churro-3B")
+    entry["artifact"] = "churro-3B-renamed"
+    entry["snapshot"] = "hf/churro-3B-renamed"
+    entry["manifest"] = "manifests/churro-3B-renamed.json"
+    payload = canonical_bytes(record)
+    (tmp_path / "download_record.json").write_bytes(payload)
+    (tmp_path / "records" / f"{digest_bytes(payload)}.json").write_bytes(payload)
+
+    with pytest.raises(DigestMismatchRefusal, match="required artifact 'churro-3B' is absent"):
+        materialize_real_roster(
+            tmp_path, _FakeMaterializationFetcher(), capacity=dict(_MATERIALIZATION_CAPACITY)
+        )
+
+
+def test_materializer_does_not_call_another_writers_staging_entry_an_orphan(tmp_path):
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    (staging / ".other-materializer.fetch-live").mkdir()
+
+    receipt = materialize_real_roster(
+        tmp_path, _FakeMaterializationFetcher(), capacity=dict(_MATERIALIZATION_CAPACITY)
+    )
+
+    assert receipt["unattributed_staging_entries"] == [".other-materializer.fetch-live"]
+    assert "staging_orphans" not in receipt
+
+
+def test_a_second_boot_verifies_the_whole_store_once_not_once_per_artifact(tmp_path, monkeypatch):
+    """A populated boot re-verifies once because each call hashes the whole store."""
+
+    fetcher = _FakeMaterializationFetcher()
+    materialize_real_roster(tmp_path, fetcher, capacity=dict(_MATERIALIZATION_CAPACITY))
+    present = {item["artifact"] for item in load_download_record(tmp_path)["artifacts"]} - {
+        "surya2-detection"
+    }
+    assert len(present) == 5
+
+    calls = []
+    real = model_store.verify_store
+    monkeypatch.setattr(
+        model_store, "verify_store", lambda root: (calls.append(root), real(root))[1]
+    )
+    receipt = materialize_real_roster(tmp_path, fetcher, capacity=dict(_MATERIALIZATION_CAPACITY))
+
+    assert len(calls) == 1
+    assert {row["artifact"] for row in receipt["artifacts"]} == present
+
+
+def test_materializer_receipt_digest_names_the_record_whole_store_verification_checked(
+    tmp_path, monkeypatch
+):
+    """A concurrent valid active-record update cannot relabel verified evidence."""
+
+    fetcher = _FakeMaterializationFetcher()
+    capacity = dict(_MATERIALIZATION_CAPACITY)
+    materialize_real_roster(tmp_path, fetcher, capacity=capacity)
+    verify = model_store.verify_store
+    observed: dict[str, str] = {}
+
+    def verify_then_advance_active_record(root):  # type: ignore[no-untyped-def]
+        inventory = verify(root)
+        observed["verified"] = inventory["download_record_sha256"]
+        replacement = load_download_record(root)
+        replacement["capacity"]["available_bytes"] += 1
+        observed["advanced"] = write_download_record(replacement, root)
+        return inventory
+
+    monkeypatch.setattr(model_store, "verify_store", verify_then_advance_active_record)
+
+    receipt = materialize_real_roster(tmp_path, fetcher, capacity=capacity)
+
+    assert observed["verified"] != observed["advanced"]
+    assert receipt["download_record_sha256"] == observed["verified"]
+    assert digest_bytes(canonical_bytes(load_download_record(tmp_path))) == observed["advanced"]
+
+
+def _die_on_call(monkeypatch, name, ordinal):
+    """Kill the materializer inside one named step, the way a pod dies."""
+
+    real = getattr(model_store, name)
+    calls = {"n": 0}
+
+    def interrupted(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == ordinal:
+            raise KeyboardInterrupt("pod died mid-materialization")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(model_store, name, interrupted)
+
+
+@pytest.mark.parametrize(
+    ("killed_at", "ordinal", "expected_evidence"),
+    [
+        # Between publishing the second artifact's manifest and moving its
+        # snapshot into place: a manifest with no snapshot beside it.
+        (
+            "_promote_materialized_snapshot",
+            2,
+            ["manifests/dai-recordgold-atr.json"],
+        ),
+        # Between moving the first artifact's snapshot into place and recording
+        # it present — the second record write, the first being the all-pending
+        # record this store opened with: a full snapshot the record denies.
+        (
+            "write_download_record",
+            2,
+            ["hf/chandra-ocr-2", "manifests/chandra-ocr-2.json"],
+        ),
+    ],
+)
+def test_a_boot_killed_mid_materialization_resumes_without_hand_repair(
+    tmp_path, monkeypatch, killed_at, ordinal, expected_evidence
+):
+    """Every fetch-to-record interruption window must recover by re-fetching its pin."""
+
+    capacity = dict(_MATERIALIZATION_CAPACITY)
+    _die_on_call(monkeypatch, killed_at, ordinal)
+    with pytest.raises(KeyboardInterrupt):
+        materialize_real_roster(tmp_path, _FakeMaterializationFetcher(), capacity=capacity)
+    monkeypatch.undo()
+
+    with pytest.raises(DigestMismatchRefusal) as refusal:
+        verify_store(tmp_path)
+    assert str(expected_evidence) in str(refusal.value)
+    # Interrupts outside `Exception` must still release their staged capacity.
+    assert sorted((tmp_path / "staging").iterdir()) == []
+
+    receipt = materialize_real_roster(tmp_path, _FakeMaterializationFetcher(), capacity=capacity)
+
+    assert {row["artifact"] for row in receipt["artifacts"]} == {
+        item.artifact for item in REQUIRED_ARTIFACTS if item.source == "huggingface"
+    }
+    assert receipt["unattributed_staging_entries"] == []
+    verify_store(tmp_path)
+
+
+def test_a_resumed_boot_still_refuses_bytes_that_differ_from_the_first_fetch(tmp_path, monkeypatch):
+    """Resuming is a re-fetch that must agree with the orphan, never a repin.
+
+    The recovery above works because a pinned revision fetched twice yields the
+    same bytes, so the orphaned manifest is republished identically and reused.
+    If it does not, the orphan is the pin and the new bytes lose: publication
+    never overwrites existing evidence (GOVERNANCE 4).
+    """
+
+    capacity = dict(_MATERIALIZATION_CAPACITY)
+
+    class _Drifted(_FakeMaterializationFetcher):
+        def fetch(self, repo: str, revision: str, destination: Path) -> None:
+            super().fetch(repo, revision, destination)
+            (destination / "model.safetensors").write_bytes(b"different weights")
+
+    _die_on_call(monkeypatch, "_promote_materialized_snapshot", 2)
+    with pytest.raises(KeyboardInterrupt):
+        materialize_real_roster(tmp_path, _FakeMaterializationFetcher(), capacity=capacity)
+    monkeypatch.undo()
+
+    with pytest.raises(DigestMismatchRefusal, match="already exists with different bytes"):
+        materialize_real_roster(tmp_path, _Drifted(), capacity=capacity)
+
+
+def test_a_repository_that_ships_no_licence_file_may_still_have_declared_one(tmp_path):
+    """No licence file and no licence declaration are distinct observations."""
+
+    class _NoLicenceFiles(_FakeMaterializationFetcher):
+        def fetch(self, repo: str, revision: str, destination: Path) -> None:
+            super().fetch(repo, revision, destination)
+            (destination / "LICENSE").unlink(missing_ok=True)
+
+    materialize_real_roster(tmp_path, _NoLicenceFiles(), capacity=dict(_MATERIALIZATION_CAPACITY))
+
+    record = load_download_record(tmp_path)
+    stored = {item["artifact"]: item for item in record["artifacts"]}
+    for requirement in REQUIRED_ARTIFACTS:
+        if requirement.source != "huggingface":
+            continue
+        entry = stored[requirement.artifact]
+        text = (tmp_path / entry["snapshot"] / entry["license"]).read_text(encoding="utf-8")
+        if requirement.license_declaration is None:
+            assert entry["license"] == UNDECLARED_LICENCE_SNAPSHOT
+            assert "no licence declaration" in text
+        else:
+            assert entry["license"] == UNTEXTED_LICENCE_SNAPSHOT
+            assert requirement.license_declaration in text
+    # Synthetic evidence must be inside the manifest's custody boundary.
+    yolo = stored["yolo26-detection"]
+    assert yolo["license"] in yolo["required_files"]
+    assert "README.md" in yolo["required_files"]
+    (tmp_path / yolo["snapshot"] / yolo["license"]).write_text("agpl-3.0", encoding="utf-8")
+    with pytest.raises(DigestMismatchRefusal, match=UNTEXTED_LICENCE_SNAPSHOT):
+        verify_store(tmp_path)
+
+
+def test_declared_licence_observation_requires_the_model_card_it_cites(tmp_path):
+    """A short fetch cannot make a synthetic observation about absent evidence."""
+
+    requirement = next(item for item in REQUIRED_ARTIFACTS if item.artifact == "yolo26-detection")
+    (tmp_path / "model.pt").write_bytes(b"weights")
+
+    with pytest.raises(DigestMismatchRefusal, match="no regular README.md"):
+        model_store._snapshot_licence(tmp_path, requirement)
+
+    assert not (tmp_path / UNTEXTED_LICENCE_SNAPSHOT).exists()
+
+
+def test_declared_licence_observation_must_match_the_fetched_model_card(tmp_path):
+    requirement = next(item for item in REQUIRED_ARTIFACTS if item.artifact == "yolo26-detection")
+    (tmp_path / "model.pt").write_bytes(b"weights")
+    (tmp_path / "README.md").write_text("---\nlicense: apache-2.0\n---\n", encoding="utf-8")
+
+    with pytest.raises(
+        DigestMismatchRefusal,
+        match="model card declares 'apache-2.0'.*roster policy expects 'agpl-3.0'",
+    ):
+        model_store._snapshot_licence(tmp_path, requirement)
+
+    assert not (tmp_path / UNTEXTED_LICENCE_SNAPSHOT).exists()
+
+
+def test_undeclared_licence_observation_requires_the_model_card_it_describes(tmp_path):
+    requirement = next(item for item in REQUIRED_ARTIFACTS if item.artifact == "dai-recordgold-atr")
+    (tmp_path / "model.safetensors").write_bytes(b"weights")
+
+    with pytest.raises(DigestMismatchRefusal, match="no regular README.md"):
+        model_store._snapshot_licence(tmp_path, requirement)
+
+    assert not (tmp_path / UNDECLARED_LICENCE_SNAPSHOT).exists()
+
+
+def test_nested_third_party_licence_is_not_called_the_repository_licence(tmp_path):
+    requirement = next(item for item in REQUIRED_ARTIFACTS if item.artifact == "dai-recordgold-atr")
+    (tmp_path / "README.md").write_text("---\nbase_model: example/base\n---\n", encoding="utf-8")
+    nested = tmp_path / "vendor"
+    nested.mkdir()
+    (nested / "LICENSE").write_text("third-party terms", encoding="utf-8")
+
+    assert model_store._snapshot_licence(tmp_path, requirement) == UNDECLARED_LICENCE_SNAPSHOT
+
+
+@pytest.mark.parametrize(
+    ("artifact", "reserved_name"),
+    [
+        ("yolo26-detection", UNTEXTED_LICENCE_SNAPSHOT),
+        ("dai-recordgold-atr", UNDECLARED_LICENCE_SNAPSHOT),
+    ],
+)
+def test_synthetic_licence_observation_never_overwrites_repository_bytes(
+    tmp_path, artifact, reserved_name
+):
+    requirement = next(item for item in REQUIRED_ARTIFACTS if item.artifact == artifact)
+    metadata = ""
+    if requirement.license_declaration is not None:
+        metadata = f"license: {requirement.license_declaration}\n"
+    (tmp_path / "README.md").write_text(f"---\n{metadata}---\n", encoding="utf-8")
+    reserved = tmp_path / reserved_name
+    reserved.write_bytes(b"upstream repository bytes")
+
+    with pytest.raises(DigestMismatchRefusal, match="upstream bytes are never overwritten"):
+        model_store._snapshot_licence(tmp_path, requirement)
+
+    assert reserved.read_bytes() == b"upstream repository bytes"
+
+
+def test_declared_and_undeclared_synthetic_licence_records_cannot_be_swapped(tmp_path):
+    record = _store(tmp_path)
+    yolo = next(item for item in record["artifacts"] if item["artifact"] == "yolo26-detection")
+    yolo["license"] = UNDECLARED_LICENCE_SNAPSHOT
+    yolo["required_files"] = [UNDECLARED_LICENCE_SNAPSHOT, "model.safetensors"]
+
+    with pytest.raises(DigestMismatchRefusal, match="must be 'LICENSE-DECLARED-WITHOUT-TEXT.txt'"):
+        derived_inventory(record)
+
+
+def test_declared_without_text_record_keeps_its_model_card_required(tmp_path):
+    record = _store(tmp_path)
+    yolo = next(item for item in record["artifacts"] if item["artifact"] == "yolo26-detection")
+    yolo["license"] = UNTEXTED_LICENCE_SNAPSHOT
+    yolo["required_files"] = [UNTEXTED_LICENCE_SNAPSHOT, "model.safetensors"]
+
+    with pytest.raises(DigestMismatchRefusal, match="README.md.*required file"):
+        derived_inventory(record)
+
+
+def test_undeclared_record_keeps_the_model_card_that_proves_absence_required(tmp_path):
+    record = _store(tmp_path)
+    dai = next(item for item in record["artifacts"] if item["artifact"] == "dai-recordgold-atr")
+    dai["license"] = UNDECLARED_LICENCE_SNAPSHOT
+    dai["required_files"] = [
+        UNDECLARED_LICENCE_SNAPSHOT,
+        "model.safetensors",
+        "query.txt",
+        "system.txt",
+    ]
+
+    with pytest.raises(DigestMismatchRefusal, match="README.md.*required file"):
+        derived_inventory(record)
+
+
+def test_store_rechecks_synthetic_licence_text_against_roster_policy(tmp_path):
+    record = _store(tmp_path)
+    dai = next(item for item in record["artifacts"] if item["artifact"] == "dai-recordgold-atr")
+    snapshot = tmp_path / dai["snapshot"]
+    (snapshot / "LICENSE").unlink()
+    (snapshot / UNDECLARED_LICENCE_SNAPSHOT).write_text(
+        "a different claim about the pinned repository\n", encoding="utf-8"
+    )
+    (snapshot / "README.md").write_text("---\nbase_model: example/base\n---\n", encoding="utf-8")
+    dai["license"] = UNDECLARED_LICENCE_SNAPSHOT
+    dai["required_files"] = sorted(
+        {
+            UNDECLARED_LICENCE_SNAPSHOT,
+            "README.md",
+            "model.safetensors",
+            *(entry["path"] for entry in dai["carried"]),
+        }
+    )
+    dai["digest_manifest"] = write_manifest(build_manifest(snapshot), tmp_path / dai["manifest"])
+    write_download_record(record, tmp_path)
+
+    with pytest.raises(DigestMismatchRefusal, match="does not match the pinned repository"):
+        verify_store(tmp_path)
+
+
+class _ShardedFetcher(_FakeMaterializationFetcher):
+    """A repository that publishes its checkpoint as a shard index plus shards."""
+
+    def __init__(self, *, drop: str | None = None) -> None:
+        super().__init__()
+        self.drop = drop
+
+    def fetch(self, repo: str, revision: str, destination: Path) -> None:
+        super().fetch(repo, revision, destination)
+        (destination / "model.safetensors").unlink()
+        shards = ("model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors")
+        (destination / "model.safetensors.index.json").write_text(
+            json.dumps({"weight_map": {f"layer.{n}": name for n, name in enumerate(shards)}}),
+            encoding="utf-8",
+        )
+        for name in shards:
+            if name == self.drop:
+                continue
+            (destination / name).write_bytes(f"{name} of {repo}@{revision}".encode())
+
+
+def test_a_fetch_that_stops_short_of_its_shard_index_is_refused_not_measured(tmp_path):
+    """A short fetch must not become the pin that later verifications agree with.
+
+    The manifest of a first materialization is derived from the bytes that
+    landed rather than checked against a pin, so a fetch that ends early is
+    otherwise measured, recorded `present`, reported `complete`, and agrees with
+    itself at every later verification. A sharded repository states its own
+    completeness in `weight_map`, and that is inside the pinned revision.
+    """
+
+    fetcher = _ShardedFetcher(drop="model-00002-of-00002.safetensors")
+
+    with pytest.raises(DigestMismatchRefusal, match="the fetch is incomplete"):
+        materialize_real_roster(tmp_path, fetcher, capacity=dict(_MATERIALIZATION_CAPACITY))
+
+    assert not (tmp_path / "hf").exists()
+    assert sorted((tmp_path / "staging").iterdir()) == []
+
+
+def test_shard_index_refuses_a_non_text_path_instead_of_coercing_it(tmp_path):
+    (tmp_path / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"layer": 7}}), encoding="utf-8"
+    )
+    (tmp_path / "7").write_bytes(b"not a valid shard name")
+
+    with pytest.raises(DigestMismatchRefusal, match="nonblank relative POSIX paths"):
+        model_store._indexed_shards(tmp_path, "fixture-artifact")
+
+
+def test_shard_index_read_is_bounded_before_json_deserialization(tmp_path, monkeypatch):
+    monkeypatch.setattr(model_store, "MAX_SHARD_INDEX_BYTES", 32)
+    (tmp_path / "model.safetensors.index.json").write_bytes(b"{" + b"x" * 32)
+
+    with pytest.raises(DigestMismatchRefusal, match="32-byte control-artifact limit"):
+        model_store._indexed_shards(tmp_path, "fixture-artifact")
+
+
+def test_shard_index_refuses_parent_traversal_inside_the_named_taxonomy(tmp_path):
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    (tmp_path / "outside.safetensors").write_bytes(b"outside")
+    (snapshot / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"layer": "../outside.safetensors"}}), encoding="utf-8"
+    )
+
+    with pytest.raises(DigestMismatchRefusal, match="unsafe shard paths"):
+        model_store._indexed_shards(snapshot, "fixture-artifact")
+
+
+def test_a_complete_sharded_fetch_keeps_reconciling_after_the_boot_that_made_it(tmp_path):
+    """The index and its shards are required files, so the check outlives the fetch."""
+
+    materialize_real_roster(tmp_path, _ShardedFetcher(), capacity=dict(_MATERIALIZATION_CAPACITY))
+
+    record = load_download_record(tmp_path)
+    entry = next(item for item in record["artifacts"] if item["artifact"] == "churro-3B")
+    assert "model.safetensors.index.json" in entry["required_files"]
+    assert "model-00002-of-00002.safetensors" in entry["required_files"]
+    (tmp_path / entry["snapshot"] / "model-00002-of-00002.safetensors").unlink()
+
+    with pytest.raises(DigestMismatchRefusal, match="model-00002-of-00002.safetensors"):
+        verify_store(tmp_path)
+
+
+def test_the_real_roster_carries_the_licence_notes_it_was_drafted_with():
+    """A licence note is Tyrel's acceptance, and a copy of it is not a paraphrase.
+
+    `config/models.toml` holds the drafted real roster commented out, one
+    `license_note` per row recording what that repository licenses and that it
+    was accepted under the research track on 2026-08-20.
+    `config/models-real.toml` is that roster made selectable, so its notes must
+    be those notes and not a session's rewording of them.
+    """
+
+    drafted = _commented_licence_notes(ROOT / "config" / "models.toml")
+    real = load_models_toml(ROOT / "config" / "models-real.toml")
+    carried = {
+        role: identity.license_note
+        for role, identity in real.chairs.items()
+        if isinstance(identity, ChairIdentity)
+    }
+
+    assert carried == {role: drafted[role] for role in carried}
+    assert len(carried) == 6
+
+
+def test_the_store_agrees_with_the_roster_about_which_repository_declares_nothing():
+    """The store's `license_declaration` and the roster's note are one fact.
+
+    The store column decides which sentinel a fetch without a licence file
+    writes; the roster note is what Tyrel accepted. If they disagree the store
+    records a licence position nobody took, so the disagreement is caught here
+    rather than at a pod launch.
+    """
+
+    real = load_models_toml(ROOT / "config" / "models-real.toml")
+    for requirement in REQUIRED_ARTIFACTS:
+        if requirement.source != "huggingface":
+            continue
+        note = real.chairs[requirement.chair].license_note.lower()
+        declares_nothing = "no licence declared" in note
+        assert declares_nothing == (requirement.license_declaration is None), requirement.chair
+
+
+def _commented_licence_notes(path: Path) -> dict[str, str]:
+    """The `license_note` of each chair in a roster that is commented out."""
+
+    notes: dict[str, str] = {}
+    role = None
+    for line in path.read_text(encoding="utf-8").splitlines():
+        chair = re.fullmatch(r"# \[chairs\.(\w+)\]", line)
+        if chair:
+            role = chair.group(1)
+            continue
+        note = re.fullmatch(r'# license_note = "(.*)"', line)
+        if note and role is not None:
+            notes[role] = note.group(1)
+    return notes
 
 
 def test_pod_materialization_plan_splits_verified_store_halves(tmp_path):
@@ -870,11 +1573,8 @@ def test_verify_store_refuses_a_snapshot_used_directly_as_a_cache_entry(tmp_path
         verify_store(tmp_path)
 
 
-# --- O4: a licence snapshot with no text, and publication failures ---------------
-
-
 def test_store_refuses_a_licence_snapshot_with_no_text(tmp_path):
-    """U17 pins the licence text of the revision, not a file with the right name."""
+    """The pinned evidence is licence text, not an empty file with the right name."""
 
     record = _store(tmp_path)
     entry = next(item for item in record["artifacts"] if item["artifact"] == "churro-3B")
@@ -907,13 +1607,7 @@ def test_store_names_a_licence_missing_from_its_manifest_as_the_licence(tmp_path
 
 @pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root ignores file modes")
 def test_publication_into_a_read_only_store_refuses_inside_the_taxonomy(tmp_path):
-    """A full disk or a locked store is what this writer exists to fail on.
-
-    Sonnet's S4 argument leaves `_publish_once` as the real backstop against a
-    store that cannot be written. A bare OSError escaping it would leave a
-    caller that catches ChairRefusal — the complete public taxonomy — with an
-    unhandled crash naming no chair.
-    """
+    """Write failures must remain inside the complete public refusal taxonomy."""
 
     record = _store(tmp_path)
     locked = tmp_path / "locked"
@@ -932,9 +1626,6 @@ def test_publication_onto_a_name_already_taken_by_a_directory_refuses(tmp_path):
 
     with pytest.raises(DigestMismatchRefusal, match="cannot publish"):
         write_derived_inventory(record, tmp_path / "inventory.json")
-
-
-# --- O5: the refusals an operator migrating the real store will actually meet ----
 
 
 def test_the_ad_hoc_download_record_refusal_names_what_the_v1_record_needs(tmp_path):
@@ -981,7 +1672,7 @@ def test_a_capacity_refusal_names_the_four_fields_a_migrating_operator_must_writ
 
 
 def test_a_digest_manifest_must_live_under_the_declared_manifests_root(tmp_path):
-    """The record declares named roots; snapshots obeyed them and manifests did not."""
+    """The record's named-root layout constrains both snapshots and manifests."""
 
     record = _store(tmp_path)
     entry = next(item for item in record["artifacts"] if item["artifact"] == "churro-3B")
@@ -1008,9 +1699,6 @@ def test_artifact_cannot_claim_another_artifacts_verified_snapshot(tmp_path):
 def test_exported_never_required_policy_cannot_be_mutated():
     with pytest.raises(TypeError):
         SURYA_OCR_2_REFUSAL["state"] = "pending-fetch"
-
-
-# --- L2: required files constrain a fetch, not merely the bytes that arrived -------
 
 
 def test_store_refuses_a_required_weight_absent_from_a_rewritten_manifest(tmp_path):
@@ -1050,3 +1738,45 @@ def test_store_refuses_an_empty_required_model_payload(tmp_path):
 
     with pytest.raises(DigestMismatchRefusal, match="required file 'model.safetensors' is empty"):
         verify_store(tmp_path)
+
+
+def test_a_fetcher_that_leaves_client_state_behind_is_refused_not_measured(tmp_path):
+    """The store checks the fetcher's contract rather than trusting it.
+
+    `HuggingFaceMaterializationFetcher` removes what its client writes, but the
+    cost of that being wrong is a pin no second fetch can reproduce, published
+    into the config through a reviewed edit that has no way to see the problem.
+    So the measurement refuses it too.
+    """
+
+    class _LeavesClientState(_FakeMaterializationFetcher):
+        def fetch(self, repo: str, revision: str, destination: Path) -> None:
+            super().fetch(repo, revision, destination)
+            cache = destination / ".cache" / "huggingface" / "download"
+            cache.mkdir(parents=True)
+            (cache / "model.safetensors.metadata").write_text("commit\netag\n1787288876.2\n")
+
+    with pytest.raises(DigestMismatchRefusal, match="client bookkeeping"):
+        materialize_real_roster(
+            tmp_path, _LeavesClientState(), capacity=dict(_MATERIALIZATION_CAPACITY)
+        )
+    assert not (tmp_path / "hf").exists()
+
+
+def test_repository_owned_cache_path_is_manifested_not_deleted_or_called_client_state(tmp_path):
+    class _RepositoryCacheFile(_FakeMaterializationFetcher):
+        def fetch(self, repo: str, revision: str, destination: Path) -> None:
+            super().fetch(repo, revision, destination)
+            cache = destination / ".cache"
+            cache.mkdir()
+            (cache / "repository-owned.json").write_text("pinned bytes", encoding="utf-8")
+
+    materialize_real_roster(
+        tmp_path, _RepositoryCacheFile(), capacity=dict(_MATERIALIZATION_CAPACITY)
+    )
+
+    record = load_download_record(tmp_path)
+    for entry in record["artifacts"]:
+        if entry["state"] != "present":
+            continue
+        assert (tmp_path / entry["snapshot"] / ".cache/repository-owned.json").is_file()

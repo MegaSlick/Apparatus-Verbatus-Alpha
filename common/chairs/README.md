@@ -78,8 +78,11 @@ its serving details.
 
 The durable host model store is intentionally outside this repository. Its
 caller-supplied root contains canonical `download_record.json`, `records/`,
-`hf/`, `local/`, `manifests/`, and `staging/`; `model_store.py` only verifies
-existing bytes and never fetches. Each canonical record version is immutable at
+`hf/`, `local/`, `manifests/`, and `staging/`; `model_store.py` verifies existing
+bytes, and its explicit `materialize_real_roster` workflow is the only
+acquisition writer. It receives an injected fetcher at pod boot; the network
+adapter is isolated in `registry.py`.
+Each canonical record version is immutable at
 `records/<sha256>.json`; `download_record.json` is an atomically moved copy
 to the active version, so a pending artifact can later become present without
 erasing its earlier state. A present artifact cannot return to pending: missing
