@@ -1,11 +1,9 @@
-"""The explicit, custody-confined ScanTailor handoff.
+"""The custody-confined boundary to the external ScanTailor Advanced app.
 
-ScanTailor Advanced is a separate desktop application.  This module deliberately
-does not pretend to launch or control it: it gives the operator the exact project
-file to open, then imports only the saved split geometry.  The
-import is a preview followed by a digest-pinned confined commit, like the other
-operator writes.  No geometry is preferred, completed, or converted to output
-pixels here.
+Verbatus may name a project for the operator and import its saved split geometry;
+it may not launch ScanTailor, prefer or complete geometry, or turn that geometry
+into output pixels. Publication requires a preview followed by a digest-pinned
+confined commit.
 """
 
 from __future__ import annotations
@@ -23,7 +21,7 @@ from .errors import ErrorCode, OperatorError, strip_control_bytes
 
 
 def instruction(project: Path, *, workspace: Path | None = None) -> str:
-    """Describe the desktop seam without claiming an executable is available."""
+    """The surface must not imply that Verbatus can launch the external app."""
 
     if workspace is not None:
         project = _absolute_path(project, workspace)
@@ -40,7 +38,7 @@ def instruction(project: Path, *, workspace: Path | None = None) -> str:
 def import_in_custody(
     *, project: Path, output_dir: Path, workspace: Path, printer: Callable[[str], None]
 ) -> None:
-    """Preview then append one immutable geometry document through the write boundary."""
+    """Publication requires the confined commit to replay the previewed project digest."""
 
     project = _absolute_path(project, workspace)
     output_dir = _absolute_path(output_dir, workspace)
@@ -88,10 +86,8 @@ def _call(
         input_text=json.dumps({"operation": operation, **request}),
     )
     if completed.returncode:
-        # A boundary that never came up is not a ScanTailor refusal, and telling
-        # the operator to correct their project file would send them to fix
-        # something that was never read. `ingest._call_worker` separates the two
-        # the same way; this path did not.
+        # A failed custody launcher never read the project, so its recovery path
+        # must not tell the operator to repair ScanTailor input.
         launcher = backend.launcher_failure(completed)
         if launcher is not None:
             raise OperatorError(ErrorCode.CONSOLE_CUSTODY_REFUSED, detail=launcher)
@@ -132,8 +128,8 @@ def _summary(response: dict[str, Any], *, operation: str, output_dir: Path) -> d
         or set(value) != required
         or not is_sha256(value.get("project_sha256"))
         or not is_sha256(value.get("document_sha256"))
-        or not _count(value.get("image_count"), minimum=1)
-        or not _count(value.get("geometry_count"), minimum=1)
+        or not _positive_int(value.get("image_count"))
+        or not _positive_int(value.get("geometry_count"))
         or value["geometry_count"] > value["image_count"]
         or not isinstance(value.get("document_path"), str)
         or Path(value["document_path"])
@@ -150,5 +146,5 @@ def _absolute_path(path: Path, workspace: Path) -> Path:
     return Path(os.path.normpath(anchored))
 
 
-def _count(value: Any, *, minimum: int) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool) and value >= minimum
+def _positive_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 1

@@ -107,7 +107,6 @@ def test_instruction_anchors_a_relative_project_to_the_selected_workspace(tmp_pa
 def _invoke_main(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture, request: dict
 ) -> tuple[int, dict]:
-    """Drive the closed worker's stdin/stdout protocol exactly as the confined child does."""
     import sys
 
     monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(request)))
@@ -139,10 +138,7 @@ def test_commit_lands_through_the_write_boundary_durably_and_as_a_fixed_point(
     assert code == 0 and committed["status"] == "committed"
     document = Path(committed["summary"]["document_path"])
     data = document.read_bytes()
-    # The published bytes are exactly the canonical, reparsed fixed point the
-    # 21B write boundary requires -- not merely the first serialization.
     assert scantailor_worker.canonical_bytes(json.loads(data)) + b"\n" == data
-    # A retried commit against the same, unchanged project is idempotent.
     code, recommitted = _invoke_main(monkeypatch, capsys, commit_request)
     assert code == 0 and recommitted["status"] == "committed"
     assert recommitted["summary"] == committed["summary"]
@@ -175,11 +171,11 @@ def test_commit_refuses_when_an_existing_document_does_not_match_its_own_digest(
 
 
 def test_two_ids_naming_one_physical_page_refuses_rather_than_picking(tmp_path: Path) -> None:
-    """Rule 8 through the door the image-id check does not cover.
+    """Distinct project ids for one file frame must not become competing records.
 
     Two `<image>` rows on one `fileId`/`fileImage` are two labels for one physical
-    page. Each may carry its own outline, and the ids differ, so keying the refusal
-    on the id alone let the pair through as two competing records.
+    page. Each may carry its own outline, so id-only uniqueness cannot enforce the
+    prohibition on selecting between geometries.
     """
     twin = (
         b'<image id="9" subPages="2" fileId="2" fileImage="0">'
@@ -453,7 +449,6 @@ def test_documented_word_count_matches_the_scantailor_extended_table() -> None:
 
 
 def _worker(command: list[str], *, writable: Path | None, cwd: Path, input_text: str):
-    """Execute the closed worker directly; custody itself is covered separately."""
     from subprocess import CompletedProcess
 
     request = json.loads(input_text)

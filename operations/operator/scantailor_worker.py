@@ -7,7 +7,6 @@ source inspected 2026-08-25): ``project`` v4, its image table, and the
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import os
@@ -23,10 +22,8 @@ from operations.pod.durable import exclusive_write
 
 _REQUEST = {"operation", "project", "output_dir", "expected_project_sha256"}
 
-# A real ScanTailor Advanced project XML is a few pages of attributes per image;
-# even an archive of thousands of pages stays well under this. Generous on
-# purpose, and bounded on purpose: an unbounded read lets a hostile or merely
-# corrupt file exhaust memory before this module ever gets to refuse its shape.
+# Real projects remain well below this bound even at thousands of pages; an
+# unbounded read would let corrupt input exhaust memory before shape validation.
 _MAX_PROJECT_BYTES: Final = 64 * 1024 * 1024
 
 # ElementTree accepts UTF-16 and UTF-32 XML as well as UTF-8. Looking for only
@@ -38,11 +35,8 @@ _DOCTYPE_MARKERS: Final = tuple(
     for encoding in ("utf-8", "utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be")
 )
 
-# ScanTailor writes coordinates as Qt-serialized doubles. This is the decimal
-# spelling of one, and nothing else: the value is kept as the exact string it
-# was written as (see `_point`), so without a vocabulary the file decides what
-# text lands in a geometry record. `x="not-a-number"` and `x="1e999"` both
-# reached the published document before this pattern existed.
+# Coordinate spelling is preserved for stable digests, so the accepted text must
+# be limited to finite Qt-serialized decimal doubles before publication.
 _DECIMAL: Final = re.compile(r"[-+]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][-+]?[0-9]+)?\Z")
 
 
@@ -71,10 +65,6 @@ def _integer(value: str, what: str) -> int:
 
 def _point(element: ET.Element, what: str, *, tag: str = "point") -> dict[str, str]:
     _closed(element, tag, {"x", "y"}, [])
-    # ScanTailor stores decimal coordinates. Preserve their exact spelling; turning
-    # them into floats would make a claimed digest machine-dependent. Checking the
-    # spelling is not converting it: the string that lands in the record is the
-    # string that was in the file, and it is a number.
     return {axis: _coordinate(element.attrib[axis], f"{what} {axis}") for axis in ("x", "y")}
 
 
@@ -86,11 +76,6 @@ def _coordinate(value: str, what: str) -> str:
 
 def parse(project_bytes: bytes, project_path: Path) -> dict[str, Any]:
     if any(marker in project_bytes for marker in _DOCTYPE_MARKERS):
-        # Named explicitly rather than left to the parser's own defences: a real
-        # ScanTailor Advanced project never declares a doctype or an entity, so
-        # refusing the byte pattern outright is a refusal that holds regardless
-        # of which XML library version is installed, instead of depending on
-        # expat's amplification-limit heuristics to catch an entity bomb.
         raise _refuse("file declares a DOCTYPE or entity, which a real project never needs")
     try:
         root = ET.fromstring(project_bytes)
@@ -151,7 +136,7 @@ def parse(project_bytes: bytes, project_path: Path) -> dict[str, Any]:
     if len(split_candidates) != 1:
         raise _refuse("project does not contain exactly one page-split record")
     split = split_candidates[0]
-    if split.tag != "page-split" or set(split.attrib) != {"defaultLayoutType"}:
+    if set(split.attrib) != {"defaultLayoutType"}:
         raise _refuse("page-split settings have an unsupported shape")
     geometry: list[dict[str, Any]] = []
     claimed_images: set[str] = set()
@@ -164,18 +149,12 @@ def parse(project_bytes: bytes, project_path: Path) -> dict[str, Any]:
         if entry.attrib["id"] not in image_paths:
             raise _refuse("page-split geometry names an unknown image")
         if entry.attrib["id"] in claimed_images:
-            # Rule 8: nothing selects among geometries. Two page-split records
-            # for the same image are two competing claims on one page, and nothing
-            # downstream is a picker that may choose between them.
+            # Governance forbids selecting among competing geometries for one image.
             raise _refuse("page-split offers more than one geometry for the same image")
         claimed_images.add(entry.attrib["id"])
         image = image_paths[entry.attrib["id"]]
-        # The same rule, reached through the other door. An image *id* is the
-        # project's own label; the page is the file and the frame within it. Two
-        # distinct ids may name one physical page -- two `<image>` rows on one
-        # `fileId`/`fileImage`, or two `<file>` rows resolving to one path -- and
-        # each may carry its own outline. Keying only on the id let that pair
-        # through as two records, which is the picker the id check refuses.
+        # Distinct project ids can name the same file frame; accepting both would
+        # leave downstream code to choose between competing physical-page claims.
         page = (image["source_path"], image["file_image"])
         if page in claimed_pages:
             raise _refuse("page-split offers more than one geometry for the same physical page")
@@ -199,7 +178,7 @@ def parse(project_bytes: bytes, project_path: Path) -> dict[str, Any]:
         if outline_points[-1] != outline_points[0]:
             raise _refuse("page-split outline does not close at its first point")
         record = {
-            "image": image_paths[entry.attrib["id"]],
+            "image": image,
             "layout_type": kind,
             "outline": outline_points,
             "cutters": [],
@@ -220,13 +199,8 @@ def parse(project_bytes: bytes, project_path: Path) -> dict[str, Any]:
         "schema": "scantailor-geometry.v1",
         "project_sha256": digest_bytes(project_bytes),
         "project_version": 4,
-        # A fact about the project this document describes, and not the same
-        # number as `len(geometry)`: a project may hold forty images and have
-        # saved geometry for three. The summary reported the geometry count under
-        # both names, so a preview claimed the project held as many images as it
-        # had splits. The label stays v1: nothing reads this schema yet, and
-        # `common/contracts/canonical.py` records that these first labels are
-        # deliberately disposable before alpha.
+        # Source coverage and saved-geometry coverage remain distinct when only
+        # some project images have a saved split.
         "source_image_count": len(image_paths),
         "geometry": geometry,
     }
@@ -244,25 +218,13 @@ def _removed_half(value: str | None) -> str | None:
 
 
 def _bounded_bytes(path: Path, what: str, *, follow: bool = True) -> bytes:
-    """Read a file this module trusts nothing about, or refuse it by name.
+    """Bound untrusted reads and refuse non-regular files without blocking.
 
-    Every read here is one of these: the project file the operator names, and the
-    existing document a repeated commit compares itself against, which sits in an
-    operator-named folder and is no more trustworthy than the project.
-
-    The open carries `records._bounded_bytes`'s protections, and carries them for
-    the reason that module already gives. `O_NONBLOCK` is the load-bearing one: a
-    FIFO left at either path takes the *open* itself, not the read, so without it
-    the confined child hangs having printed nothing and the console waits on a
-    subprocess that will never speak. Refusing on the open descriptor's own
-    `st_mode`, rather than on the name, is what survives a swap between the two.
-
-    `O_NOFOLLOW` is applied only where a symlink would mean something. The
-    existing-document read decides whether a repeated commit is the same evidence
-    or a collision, so it must read the file the write allowance covers and not
-    one a link points at. The project file is a path a person typed, with no
-    earlier check for a link to race, and refusing a symlinked project would cost
-    them a legitimate spelling to protect nothing.
+    `O_NONBLOCK` keeps a planted FIFO from hanging the confined child before it can
+    report a refusal. The descriptor's mode closes the name-to-open race.
+    Existing-document comparisons also use `O_NOFOLLOW` so an idempotence check
+    cannot escape the write allowance through a symlink; operator-selected project
+    paths may legitimately be symlinks and have no earlier link check to race.
     """
     flags = os.O_RDONLY | os.O_NONBLOCK | (0 if follow else os.O_NOFOLLOW)
     try:
@@ -279,12 +241,10 @@ def _bounded_bytes(path: Path, what: str, *, follow: bool = True) -> bytes:
 
 
 def _persisted(document: dict[str, Any]) -> bytes:
-    """The exact bytes a commit would publish, checked as a serialized fixed point.
+    """Require publication bytes to survive JSON parse and serialization unchanged.
 
-    The 21B write boundary this seam must land through: serialize once, reparse,
-    and require the bytes to be a fixed point before anything is written. A dict
-    built entirely from this module's own parsing has no tuple channel today;
-    the byte-form check also refuses dict subclasses that emit duplicate keys.
+    The byte-form check also refuses dict subclasses that emit duplicate keys,
+    which comparing the in-memory mapping alone would miss.
     """
     encoded = canonical_bytes(document) + b"\n"
     try:
@@ -314,14 +274,8 @@ def main() -> int:
             raise _refuse("expected project digest is invalid")
         project = Path(request["project"])
         output_dir = Path(request["output_dir"])
-        # Checked on both launches, and checked here rather than in the caller.
-        # The preview runs with no write allowance at all, so a folder that
-        # cannot receive the document has to be named *before* the operator is
-        # shown a digest and told the commit is pinned to it -- otherwise the
-        # only report of a mistyped folder is the kernel refusing to build a
-        # Landlock rule over a path that is not there, which reads as a custody
-        # fault rather than as "that folder does not exist". Repeating it on the
-        # commit launch is what catches a folder swapped in between the two.
+        # Preview must refuse an unusable folder before promising a pinned commit;
+        # repeating the check on commit catches replacement between launches.
         if output_dir.is_symlink() or not output_dir.is_dir():
             raise _refuse(
                 "output folder does not exist, is not a directory, or is a symbolic link; "
@@ -334,13 +288,12 @@ def main() -> int:
         ):
             raise _refuse("project changed after the preview; nothing was written")
         encoded = _persisted(document)
-        document_digest = hashlib.sha256(encoded).hexdigest()
+        document_digest = digest_bytes(encoded)
         path = output_dir / f"scantailor-geometry-{document_digest}.json"
         if request["operation"] == "commit":
             try:
-                # The one atomic writer: fsync's the bytes and, strictly, the
-                # directory entry that names them, so a "committed" reply is
-                # never printed for a write a power cut could still lose.
+                # A committed reply requires a durable directory entry and must
+                # never recreate the operator-approved parent folder.
                 exclusive_write(path, encoded, strict=True, create_parent=False)
             except FileExistsError as error:
                 if _bounded_bytes(path, "existing geometry document", follow=False) != encoded:
