@@ -1223,13 +1223,19 @@ def test_a_crop_broken_after_the_designator_sealed_it_stops_at_that_boundary(tmp
 
 
 def test_one_refused_crop_records_its_chairs_and_leaves_the_other_act_intact(
-    tmp_path, rebind_stage_seal
+    tmp_path, rewitness_boundary
 ):
     """Spec 07's isolation rule: one unreadable crop never kills the folder.
 
     The Designator seals the crop it actually wrote, so a crop a real detector
-    cut badly reaches the Attestatores *inside* a coherent boundary. The rebind
-    models that state; without it the test exercises the corruption refusal above.
+    cut badly reaches the Attestatores *inside* a coherent boundary. Modelling
+    that means planting a *correctly addressed* bad crop: the broken bytes go in
+    as their own content-addressed blob and the region record is repointed to it,
+    exactly as the Designator would have written it had the detector cut badly.
+    Overwriting the existing blob in place instead would leave a blob whose name
+    no longer matches its content, which both the Designator's seal and the
+    Attestatores' reading of that seal refuse by name — that is the neighbouring
+    test above, a different tree state and a different claim.
     """
     run_root, tree = run_to_designator(tmp_path, "happy")
     entry = next(
@@ -1238,8 +1244,15 @@ def test_one_refused_crop_records_its_chairs_and_leaves_the_other_act_intact(
     region = tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
     refused_key = region["payload"]["act_key"]
     intact_key = "a2" if refused_key == "a1" else "a1"
-    tree.resolve(region["payload"]["image_path"]).write_bytes(b"broken crop bytes")
-    rebind_stage_seal(tree, DESIGNATOR)
+    digest, stored = tree.put_blob(DESIGNATOR, b"broken crop bytes")
+    region["payload"]["image_path"] = stored.relative_path
+    region["payload"]["image_sha256"] = digest
+    region["self_hash"] = self_hash(region)
+    tree.resolve(entry["relative_path"]).write_bytes(canonical_bytes(region))
+    # A sibling Designator artifact retained a reference to the region record's
+    # pre-repoint bytes, so the seal rebind alone leaves the Designator's own
+    # boundary self-contradictory and the Attestatores stops there.
+    rewitness_boundary(tree, DESIGNATOR)
 
     result = invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py")
 

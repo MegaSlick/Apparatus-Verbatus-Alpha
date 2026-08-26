@@ -37,6 +37,7 @@ from common.stage import (
     run_config_bindings,
 )
 from conftest import rebind_stage_seal_artifact as _rebind_stage_seal
+from conftest import rewitness_stage_boundary as _rewitness_stage_boundary
 
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
@@ -671,6 +672,22 @@ def _reseal(tree: RunTree, path: Path, record: dict) -> None:
     _rebind_stage_seal(tree, record["stage"])
 
 
+def _rewitness_perlector_boundary(tree: RunTree) -> None:
+    """Carry an Attestatores forgery through a Perlector boundary already sealed over it.
+
+    A test that needs *both* consumers to refuse the same damaged record has to
+    let the Perlector seal its boundary first: a Perlector that never sealed
+    sends the Recensor to the missing-boundary refusal instead of to the
+    contradiction. But that earlier successful Perlector run retained an input
+    reference to the Attestatores record's pre-forgery bytes, so once the record
+    is rewritten the Recensor stops at `the bytes changed under a sealed
+    reference` — the Perlector's own boundary, not the Attestatores contradiction
+    the calling test is named for. `rewitness_stage_boundary` settles that
+    boundary without touching the Attestatores contradiction itself.
+    """
+    _rewitness_stage_boundary(tree, PERLECTOR)
+
+
 def _page_testimonium_on(tree: RunTree, manifest: dict, page_ordinal: int) -> tuple[dict, dict]:
     for entry in manifest["artifacts"]:
         if entry["kind"] != "page-testimonium":
@@ -1035,6 +1052,10 @@ def test_the_witness_floor_is_not_counted_from_a_superseded_attachment(tmp_path)
     assert perlector.returncode != 0, (
         "the Perlector read on over an act-attachment describing a superseded attempt"
     )
+    # The refused Perlector run wrote nothing, so its earlier seal still names the
+    # record's pre-forgery bytes; without this the Recensor stops on that boundary
+    # instead of on the staleness this test measures.
+    _rewitness_perlector_boundary(tree)
     recensor = invoke_stage(root, "stale-floor", "reread-failure", "pipeline/5_recensor/run.py")
     assert recensor.returncode != 0, (
         "the Recensor counted the witness floor from an act-attachment describing a "
@@ -1107,8 +1128,9 @@ def test_act_scoped_attachment_must_match_the_current_outcome_when_health_is_cur
     # before the forgery. Otherwise its refusal below leaves no Perlector seal at
     # all and the Recensor stops on the missing boundary instead of on the
     # contradiction — which is the check this test is named for and the one half
-    # of "each must refuse" that would then be proven nowhere. The forgery is in
-    # the Attestatores' folder, so the Perlector's own sealed boundary stays true.
+    # of "each must refuse" that would then be proven nowhere. That first run
+    # retains an input reference to the record's pre-forgery bytes, so its
+    # boundary is re-witnessed below before the Recensor is asked to read.
     assert (
         invoke_stage(root, "act-scoped-stale", "happy", "pipeline/4_perlector/run.py").returncode
         == 0
@@ -1119,6 +1141,10 @@ def test_act_scoped_attachment_must_match_the_current_outcome_when_health_is_cur
     assert perlector.returncode != 0
     assert "disagrees with that chair's current Testimonium outcome" in perlector.stderr
 
+    # The refused Perlector run wrote nothing, so its earlier seal still names the
+    # attachment's pre-forgery bytes; without this the Recensor stops on that
+    # boundary instead of on the outcome contradiction this test is named for.
+    _rewitness_perlector_boundary(tree)
     recensor = invoke_stage(root, "act-scoped-stale", "happy", "pipeline/5_recensor/run.py")
     assert recensor.returncode != 0
     assert "disagrees with the current Testimonium outcome" in recensor.stderr
