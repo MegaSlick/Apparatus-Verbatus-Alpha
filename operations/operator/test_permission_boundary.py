@@ -875,9 +875,9 @@ def test_boundary_changed_during_worker_append_is_retained_but_not_reported_as_s
             "census": [*record["payload"]["census"], {"kind": "post-append-change", "count": 1}],
         }
         record["self_hash"] = self_hash(record)
-        tree.resolve(
-            tree.artifact_path("armarium", "stage-seal", seal["artifact_id"])
-        ).write_bytes(canonical_bytes(record))
+        tree.resolve(tree.artifact_path("armarium", "stage-seal", seal["artifact_id"])).write_bytes(
+            canonical_bytes(record)
+        )
         return result
 
     monkeypatch.setattr(advance, "run_confined", reseal_after_worker)
@@ -895,7 +895,9 @@ def test_boundary_changed_during_worker_append_is_retained_but_not_reported_as_s
     assert refusal.value.code == ErrorCode.ADVANCE_REFUSED
     assert "wrote checked decision record receipts/sha256/" in (refusal.value.detail or "")
     projected = review.ReadOnlyRun(run_root, run_id).projection().advance_records
-    stale = [row for row in projected if row["reason"] == "operator reviewed the pre-append boundary"]
+    stale = [
+        row for row in projected if row["reason"] == "operator reviewed the pre-append boundary"
+    ]
     assert len(stale) == 1
     assert stale[0]["boundary_current"] is False
 

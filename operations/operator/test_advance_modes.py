@@ -456,10 +456,7 @@ def test_auto_mode_can_advance_the_boundary_that_may_hold_in_every_mode(
     )
 
     rendered = capsys.readouterr().out
-    assert (
-        "This declared selection can require a person-held advance at: attestatores."
-        in rendered
-    )
+    assert "This declared selection can require a person-held advance at: attestatores." in rendered
     assert "This invocation waits" not in rendered
     assert "Advance record:" in rendered
 
