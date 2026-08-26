@@ -7,7 +7,9 @@ import pytest
 from common import witness_adapters
 from common.chairs import load_models_toml
 from common.chairs.config import parse_models_config
-from common.chairs.models import ModelsConfig
+from common.chairs.errors import ConfigurationRefusal, ReceiptRefusal
+from common.chairs.models import ModelsConfig, ServingDetails
+from common.chairs.receipts import build_receipt, receipt_record, validate_receipt
 from common.contracts.errors import ContractError, IncompatibleReuse
 from common.runtree.store import RunTree
 from common.stage import load_fixture, run_config_bindings
@@ -24,6 +26,38 @@ def _with_witness(**changes: object) -> ModelsConfig:
     chairs = dict(models.chairs)
     chairs["attestator_1"] = replace(chairs["attestator_1"], **changes)
     return replace(models, chairs=chairs)
+
+
+def _configured_chair(*, source="huggingface", **changes):
+    row = {
+        "state": "configured",
+        "source": source,
+        "digest_manifest": "b" * 64,
+        "manifest": "manifests/example.json",
+        "serving_recipe": "fixture",
+        "license_note": "fixture",
+    }
+    if source == "huggingface":
+        row.update(repo="fixture/example", revision="a" * 40)
+    else:
+        row["path"] = "example"
+    row.update(changes)
+    return row
+
+
+def _serving_details() -> ServingDetails:
+    return ServingDetails(
+        tokenizer_revision="c" * 40,
+        seed=1,
+        context_cap=1024,
+        pixel_cap=1024,
+        engine="fixture",
+        engine_version="1",
+        dtype="fixture",
+        adapter_identity=None,
+        endpoint="http://127.0.0.1:8000",
+        started_at="2026-08-26T00:00:00Z",
+    )
 
 
 def test_a_configured_witness_without_an_adapter_refuses_by_chair_before_a_run_exists():
@@ -52,6 +86,37 @@ def test_an_unknown_adapter_name_refuses_at_run_binding_by_that_name():
     message = str(caught.value)
     assert "No adapter code can run for its chair" in message
     assert "add the new shared declaration and runnable binding together" in message
+
+
+def test_a_string_subclass_cannot_replace_the_adapter_refusal_with_its_hooks():
+    class HostileString(str):
+        def strip(self, *args, **kwargs):
+            raise RuntimeError("strip hook ran")
+
+        def __hash__(self):
+            raise RuntimeError("hash hook ran")
+
+        def __repr__(self):
+            raise RuntimeError("repr hook ran")
+
+    name = HostileString("churro.v1")
+    with pytest.raises(witness_adapters.AdapterRefusal) as caught:
+        witness_adapters.resolve_witness_adapter_name(name)
+
+    assert caught.value.name is name
+    assert "<HostileString>" in str(caught.value)
+
+
+def test_an_oversized_adapter_name_is_bounded_before_hashing_or_reporting():
+    name = "x" * (witness_adapters.MAX_WITNESS_ADAPTER_NAME_LENGTH + 1_000_000)
+
+    with pytest.raises(witness_adapters.AdapterRefusal) as caught:
+        witness_adapters.resolve_witness_adapter_name(name)
+
+    message = str(caught.value)
+    assert "exceeds the 128-character name bound" in message
+    assert f"({len(name)} characters)" in message
+    assert len(message) < 500
 
 
 def test_a_known_adapter_name_with_no_configured_occupant_is_reported(monkeypatch, capsys):
@@ -175,6 +240,47 @@ def test_a_non_witness_chair_may_not_declare_a_witness_boundary(rows):
     assert "Remove both fields or move them" in message
 
 
+def test_case_variant_chair_roles_are_refused_before_they_alias_a_cache_directory():
+    raw = {
+        "witness_floor": 0,
+        "chairs": {
+            "Reader": _configured_chair(),
+            "reader": _configured_chair(),
+        },
+    }
+
+    with pytest.raises(ConfigurationRefusal, match="case-variant chair roles"):
+        parse_models_config(raw)
+
+
+@pytest.mark.parametrize(
+    ("first", "second", "label"),
+    (
+        (
+            _configured_chair(manifest="manifests/Reader.json"),
+            _configured_chair(manifest="manifests/reader.json"),
+            "manifest paths",
+        ),
+        (
+            _configured_chair(source="local-repository", path="Reader"),
+            _configured_chair(source="local-repository", path="reader"),
+            "local-repository paths",
+        ),
+    ),
+)
+def test_case_variant_configured_paths_are_refused_before_filesystem_resolution(
+    first, second, label
+):
+    raw = {
+        "witness_floor": 0,
+        "model_root": "models",
+        "chairs": {"first": first, "second": second},
+    }
+
+    with pytest.raises(ConfigurationRefusal, match=f"case-variant {label}"):
+        parse_models_config(raw)
+
+
 def test_the_live_roster_declares_the_rows_on_witness_chairs_and_nowhere_else():
     for role, chair in _models().chairs.items():
         carries = getattr(chair, "witness_adapter", None) is not None
@@ -185,6 +291,24 @@ def test_adapter_rows_travel_in_the_resolved_provenance_record():
     record = _models().chairs["attestator_1"].to_record()
     assert record["witness_adapter"] == "churro.v1"
     assert record["witness_scope"] == "page"
+
+
+@pytest.mark.parametrize(
+    ("role", "changes", "message"),
+    (
+        ("perlector", {"witness_adapter": "churro.v1", "witness_scope": "page"}, "non-Attestator"),
+        ("attestator_1", {"witness_adapter": "unknown.v1"}, "exact declared"),
+        ("attestator_1", {"witness_scope": "crop"}, "exactly 'page' or 'act'"),
+    ),
+)
+def test_receipt_reader_validates_witness_fields_inside_a_nested_identity(role, changes, message):
+    models = _models()
+    record = receipt_record(build_receipt(models.chairs["attestator_1"], _serving_details()))
+    nested = {**models.chairs[role].to_record(), **changes}
+    record["adapter_identity"] = nested
+
+    with pytest.raises(ReceiptRefusal, match=message):
+        validate_receipt(record)
 
 
 def test_witness_scope_is_inside_the_sealed_config_digest():

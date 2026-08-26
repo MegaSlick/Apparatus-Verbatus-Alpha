@@ -11,7 +11,14 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from .errors import ReceiptRefusal
-from .models import ChairIdentity, ServingDetails, ServingReceipt, is_hf_revision, is_sha256
+from .models import (
+    ChairIdentity,
+    ServingDetails,
+    ServingReceipt,
+    is_hf_revision,
+    is_sha256,
+    is_witness_role,
+)
 
 RECEIPT_SCHEMA = "chair-serving-receipt.v1"
 _REQUIRED = {
@@ -132,6 +139,29 @@ def _validate_identity(identity: ChairIdentity) -> None:
         raise ReceiptRefusal(identity.role, f"identity has unknown source {identity.source!r}")
     if not is_sha256(identity.digest_manifest):
         raise ReceiptRefusal(identity.role, "identity has no valid digest-manifest hash")
+    witness_adapter = identity.witness_adapter
+    witness_scope = identity.witness_scope
+    if witness_adapter is None and witness_scope is None:
+        # Older value-level chair fixtures do not cross the runnable witness
+        # boundary.  A real run separately requires both fields before pixels are
+        # fed; when either field is present in a receipt identity, however, this
+        # reader must validate the claim rather than merely require its key.
+        return
+    if not is_witness_role(identity.role):
+        raise ReceiptRefusal(
+            identity.role,
+            "identity carries witness_adapter or witness_scope on a non-Attestator chair",
+        )
+    # Imported at validation time to keep the generic chair value package from
+    # creating a module-import cycle with the shared adapter declarations.
+    from common.witness_adapters import KNOWN_WITNESS_ADAPTER_NAMES
+
+    if type(witness_adapter) is not str or witness_adapter not in KNOWN_WITNESS_ADAPTER_NAMES:
+        raise ReceiptRefusal(identity.role, "identity has no exact declared witness_adapter name")
+    if type(witness_scope) is not str or witness_scope not in {"page", "act"}:
+        raise ReceiptRefusal(
+            identity.role, "identity witness_scope must be exactly 'page' or 'act'"
+        )
 
 
 def _validate_details(identity: ChairIdentity, details: ServingDetails) -> None:

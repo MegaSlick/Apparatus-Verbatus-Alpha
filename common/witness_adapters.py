@@ -16,6 +16,11 @@ from common.contracts.errors import ContractError, SchemaRefusal
 
 WITNESS_SCOPES: Final = frozenset({"page", "act"})
 KNOWN_WITNESS_ADAPTER_NAMES: Final = frozenset({"churro.v1"})
+# Adapter names are configuration keys, not model output.  The current names are
+# short, and a longer spelling cannot resolve exactly; bounding it before
+# whitespace scanning or set hashing keeps a malformed config from multiplying a
+# large string into its refusal message.
+MAX_WITNESS_ADAPTER_NAME_LENGTH: Final = 128
 
 
 class AdapterRefusal(SchemaRefusal):
@@ -23,13 +28,16 @@ class AdapterRefusal(SchemaRefusal):
 
     def __init__(self, name: object, happened: str, meaning: str, next_step: str):
         self.name = name
-        if isinstance(name, str) or name is None:
-            display = repr(name)
+        if type(name) is str or name is None:
+            if isinstance(name, str) and len(name) > MAX_WITNESS_ADAPTER_NAME_LENGTH:
+                display = f"{name[:MAX_WITNESS_ADAPTER_NAME_LENGTH]!r}... ({len(name)} characters)"
+            else:
+                display = repr(name)
         else:
-            # A non-string is refused for its type, before its representation is
-            # trusted. In particular, repr(10**5000) raises under Python's
-            # integer-rendering safety limit, and an object's custom __repr__
-            # can raise anything at all. Neither may replace the named refusal.
+            # Exact built-in strings are the only string values accepted by the
+            # resolver.  A str subclass may override strip, hash, equality, or
+            # repr; none of those hooks may replace this refusal with its own
+            # exception.
             display = f"<{type(name).__name__}>"
         super().__init__(f"witness adapter {display} {happened}. {meaning}. {next_step}")
 
@@ -37,10 +45,25 @@ class AdapterRefusal(SchemaRefusal):
 def resolve_witness_adapter_name(name: object) -> str:
     """Require one exact declared adapter name, never a default or near match."""
 
-    if not isinstance(name, str) or not name.strip():
+    if type(name) is not str or not name:
         raise AdapterRefusal(
             name,
             "is blank or not a string",
+            "No exact adapter can be resolved for its chair",
+            f"Set witness_adapter in the models configuration to one of "
+            f"{sorted(KNOWN_WITNESS_ADAPTER_NAMES)!r}",
+        )
+    if len(name) > MAX_WITNESS_ADAPTER_NAME_LENGTH:
+        raise AdapterRefusal(
+            name,
+            f"exceeds the {MAX_WITNESS_ADAPTER_NAME_LENGTH}-character name bound",
+            "No exact adapter key can require an unbounded comparison or refusal message",
+            f"Set witness_adapter to one of {sorted(KNOWN_WITNESS_ADAPTER_NAMES)!r}",
+        )
+    if not name.strip():
+        raise AdapterRefusal(
+            name,
+            "is blank",
             "No exact adapter can be resolved for its chair",
             f"Set witness_adapter in the models configuration to one of "
             f"{sorted(KNOWN_WITNESS_ADAPTER_NAMES)!r}",

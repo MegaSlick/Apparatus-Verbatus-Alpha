@@ -77,6 +77,8 @@ def parse_models_config(raw: Any, *, source_path: str | Path | None = None) -> M
         _role(role)
         chairs[role] = _parse_chair(role, values)
 
+    _refuse_case_variant_collisions(chairs)
+
     if (
         any(
             isinstance(value, ChairIdentity) and value.source == "local-repository"
@@ -225,6 +227,47 @@ def _parse_adapter_recipes(value: Any) -> dict[str, str]:
     for name, recipe in value.items():
         parsed[_role(name)] = _text("adapter_recipes", str(name), recipe)
     return parsed
+
+
+def _refuse_case_variant_collisions(
+    chairs: Mapping[str, ChairIdentity | AbsentChair],
+) -> None:
+    """Refuse distinct spellings that alias on default case-insensitive APFS.
+
+    Chair roles become cache directory names, manifests become files below the
+    configuration root, and local paths become snapshot directories.  Exact
+    sharing is deliberate and remains legal; two different spellings for the
+    same case-folded path are ambiguous across supported filesystems.
+    """
+
+    _refuse_case_variants(((role, role) for role in chairs), "chair roles")
+    configured = [
+        (role, identity) for role, identity in chairs.items() if isinstance(identity, ChairIdentity)
+    ]
+    _refuse_case_variants(
+        ((role, identity.manifest) for role, identity in configured), "manifest paths"
+    )
+    _refuse_case_variants(
+        (
+            (role, identity.path)
+            for role, identity in configured
+            if identity.source == "local-repository" and identity.path is not None
+        ),
+        "local-repository paths",
+    )
+
+
+def _refuse_case_variants(rows: Any, label: str) -> None:
+    first_by_folded: dict[str, tuple[str, str]] = {}
+    for role, spelling in rows:
+        folded = spelling.casefold()
+        first = first_by_folded.setdefault(folded, (role, spelling))
+        if first[1] != spelling:
+            raise ConfigurationRefusal(
+                "models.toml",
+                f"case-variant {label} alias on a case-insensitive filesystem: "
+                f"{first[0]!r} names {first[1]!r}, while {role!r} names {spelling!r}",
+            )
 
 
 def _only_keys(role: str, values: Mapping[str, Any], allowed: set[str]) -> None:
