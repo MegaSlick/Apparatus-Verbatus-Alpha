@@ -113,8 +113,18 @@ def _atomic_bytes(path: Path, data: bytes) -> None:
     "was not published" and "was published but is not proven durable": the
     second must not be reported as a failed write, because the bytes are there.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.tmp-", dir=path.parent)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        raise TriageRefusal(
+            f"triage refusal write-failed: {path} parent directory could not be prepared"
+        ) from error
+    try:
+        descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.tmp-", dir=path.parent)
+    except OSError as error:
+        raise TriageRefusal(
+            f"triage refusal write-failed: {path} temporary file could not be created"
+        ) from error
     temporary = Path(temporary_name)
     published = False
     try:
@@ -138,7 +148,12 @@ def _atomic_bytes(path: Path, data: bytes) -> None:
 @contextmanager
 def _write_lock(path: Path, what: str) -> Iterator[None]:
     """Serialize one pathname's whole check-and-publish transaction."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        raise TriageRefusal(
+            f"triage refusal {what}-lock-failed: lock directory could not be prepared"
+        ) from error
     lock_path = path.with_name(f".{path.name}.lock")
     try:
         handle = lock_path.open("a+b")
@@ -188,7 +203,7 @@ def _check_mode_declaration(value: Mapping[str, Any]) -> None:
 
 def declare_mode(mode: str, *, batch_id: str, operator: str) -> dict[str, Any]:
     """Return the durable declaration of a batch invocation word, not a config edit."""
-    if mode not in _MODES:
+    if not isinstance(mode, str) or mode not in _MODES:
         raise TriageRefusal("triage refusal mode-not-declared: mode must be manual, semi, or auto")
     if (
         not isinstance(batch_id, str)
@@ -248,19 +263,24 @@ def build_queue(
     candidate is retained even if its rows have already appeared.  The queue's
     order is digest order solely for stable stop/resume addressing, never a score.
     """
+    manifest_bytes, persisted_manifest = _persisted_form(manifest, "manifest")
+    _proxy_bytes, persisted_proxy_paths = _persisted_form(proxy_paths, "proxy-paths")
     try:
-        triage_manifest.validate_manifest(dict(manifest))
+        triage_manifest.validate_manifest(persisted_manifest)
     except SchemaRefusal as error:
         raise TriageRefusal(f"triage refusal manifest-invalid: {error}") from error
     _mode_bytes, persisted_mode = _persisted_form(mode_declaration, "mode-declaration")
     _check_mode_declaration(persisted_mode)
     mode = persisted_mode["mode"]
-    rows = {row["source_frame_sha256"]: row for row in manifest["records"]}
+    rows = {row["source_frame_sha256"]: row for row in persisted_manifest["records"]}
     if any(row["mode"] != mode for row in rows.values()):
         raise TriageRefusal("triage refusal mode-mismatch: declaration and producer rows disagree")
     checked_evidence: list[dict[str, Any]] = []
-    config = instrument.load_config()
-    known_blindness = instrument.producer_recipe(config)["comparison_recipe"]["known_blindness"]
+    try:
+        config = instrument.load_config()
+        known_blindness = instrument.producer_recipe(config)["comparison_recipe"]["known_blindness"]
+    except instrument.InstrumentRefusal as error:
+        raise TriageRefusal(f"triage refusal instrument-config-invalid: {error}") from error
     for record in evidence_records:
         try:
             checked = instrument.validate_candidate_evidence(dict(record), config)
@@ -286,9 +306,9 @@ def build_queue(
             raise TriageRefusal(f"triage refusal review-routing-invalid: {error}") from error
         if routed:
             if (
-                digest not in proxy_paths
-                or not isinstance(proxy_paths[digest], str)
-                or not proxy_paths[digest]
+                digest not in persisted_proxy_paths
+                or not isinstance(persisted_proxy_paths.get(digest), str)
+                or not persisted_proxy_paths[digest].strip()
             ):
                 raise TriageRefusal(
                     "triage refusal proxy-path-missing: every review row needs a proxy file path"
@@ -298,24 +318,29 @@ def build_queue(
                     "kind": "review-row",
                     "source_frame_sha256": digest,
                     "manifest_row_sha256": row["manifest_row_sha256"],
-                    "proxy_path": proxy_paths[digest],
+                    "proxy_path": persisted_proxy_paths[digest],
                     "evidence": sorted(evidence_by_frame[digest], key=digest_of),
                     "known_blindness": known_blindness,
                 }
             )
     for record in candidates:
         key = digest_of(record)
-        if any(digest not in proxy_paths for digest in record["both_digests"]):
+        if any(
+            digest not in persisted_proxy_paths
+            or not isinstance(persisted_proxy_paths[digest], str)
+            or not persisted_proxy_paths[digest].strip()
+            for digest in record["both_digests"]
+        ):
             raise TriageRefusal(
                 "triage refusal proxy-path-missing: every candidate needs proxy file paths"
             )
         items.append(
             {
                 "kind": "cluster-candidate",
-                "corpus_id": manifest["corpus_id"],
+                "corpus_id": persisted_manifest["corpus_id"],
                 "evidence_sha256": key,
                 "both_digests": record["both_digests"],
-                "proxy_paths": [proxy_paths[digest] for digest in record["both_digests"]],
+                "proxy_paths": [persisted_proxy_paths[digest] for digest in record["both_digests"]],
                 "evidence": record,
                 "known_blindness": known_blindness,
             }
@@ -325,7 +350,7 @@ def build_queue(
     queue = {
         "schema": QUEUE_SCHEMA,
         "mode_declaration": persisted_mode,
-        "manifest_sha256": digest_of(manifest),
+        "manifest_sha256": digest_bytes(manifest_bytes),
         "items": items,
     }
     _refuse_preference_named(queue, "queue")
@@ -473,6 +498,10 @@ def recorded_decision(
     state_path: str | Path, queue: Mapping[str, Any], *, item_digest: str
 ) -> dict[str, Any] | None:
     """The decision already journalled for this queue item, or None."""
+    if not is_sha256(item_digest):
+        raise TriageRefusal(
+            "triage refusal queue-item-invalid: decision lookup needs an item SHA-256 digest"
+        )
     state = _load_journal(state_path, queue)
     if state is None:
         return None
@@ -491,8 +520,12 @@ def append_decision(
 ) -> dict[str, Any]:
     """Append one irreversible visible decision; earlier decisions are never rewritten."""
     queue_bytes, persisted_queue = _checked_queue(queue)
-    if decision not in {"accept", "decline"}:
+    if not isinstance(decision, str) or decision not in {"accept", "decline"}:
         raise TriageRefusal("triage refusal decision-invalid: decision must be accept or decline")
+    if not is_sha256(item_digest):
+        raise TriageRefusal(
+            "triage refusal queue-item-invalid: decision needs an item SHA-256 digest"
+        )
     items = {digest_of(item): item for item in persisted_queue["items"]}
     if item_digest not in items:
         raise TriageRefusal("triage refusal queue-item-missing: decision does not name this queue")
@@ -584,8 +617,26 @@ def accept_candidate(
     # irreversible journal half. `write_shown_confirmation` repeats it at the
     # publication seam, after a possible interruption, but it must not be the
     # first place a mismatch is discovered.
-    draft_bytes, _persisted = _confirmation_form(draft, preview_sha256)
+    state_target = Path(state_path)
     target = Path(confirmation_path)
+    try:
+        paths_alias = state_target.resolve() == target.resolve() or (
+            state_target.exists() and target.exists() and state_target.samefile(target)
+        )
+    except OSError as error:
+        raise TriageRefusal(
+            "triage refusal acceptance-paths-unresolved: queue state and confirmation paths "
+            "could not be distinguished"
+        ) from error
+    if paths_alias:
+        # The acceptance takes the confirmation lock and then appends under the
+        # queue-state lock. If both names resolve to one file, POSIX flock waits
+        # on the lock this process already holds and the console hangs forever.
+        raise TriageRefusal(
+            "triage refusal acceptance-paths-alias: queue state and confirmation must be "
+            "different files"
+        )
+    draft_bytes, _persisted = _confirmation_form(draft, preview_sha256)
     with _write_lock(target, "confirmation-target"):
         _existing_confirmation_matches(target, draft_bytes)
         state = _load_journal(state_path, queue)
@@ -622,6 +673,10 @@ def draft_confirmation(
     pages: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any]:
     """Render the exact 6B confirmation object before an acceptance may write it."""
+    if not is_sha256(item_digest):
+        raise TriageRefusal(
+            "triage refusal queue-item-invalid: confirmation needs an item SHA-256 digest"
+        )
     _queue_bytes, persisted_queue = _checked_queue(queue)
     candidates = {
         digest_of(item): item
@@ -733,6 +788,7 @@ def _check_confirmation(value: Mapping[str, Any]) -> None:
     clusters = value["clusters"]
     if not isinstance(clusters, list) or not clusters:
         raise TriageRefusal("triage refusal draft-invalid: draft declares no cluster")
+    used_members: set[str] = set()
     for cluster in clusters:
         if not isinstance(cluster, dict) or set(cluster) != {"pages", "evidence_pairs"}:
             raise TriageRefusal(
@@ -741,6 +797,7 @@ def _check_confirmation(value: Mapping[str, Any]) -> None:
         pages = cluster["pages"]
         if not isinstance(pages, list) or not pages:
             raise TriageRefusal("triage refusal draft-invalid: cluster declares no physical page")
+        cluster_members: set[str] = set()
         for page in pages:
             members = page.get("member_frame_sha256") if isinstance(page, dict) else None
             if (
@@ -756,6 +813,12 @@ def _check_confirmation(value: Mapping[str, Any]) -> None:
                 raise TriageRefusal(
                     "triage refusal draft-invalid: physical page is not a closed declaration"
                 )
+            cluster_members.update(members)
+        if used_members & cluster_members:
+            raise TriageRefusal(
+                "triage refusal draft-invalid: confirmation clusters overlap in frame membership"
+            )
+        used_members.update(cluster_members)
         pairs = cluster["evidence_pairs"]
         if (
             not isinstance(pairs, list)
@@ -763,12 +826,22 @@ def _check_confirmation(value: Mapping[str, Any]) -> None:
             or not all(
                 isinstance(pair, list)
                 and len(pair) == 2
+                and pair == sorted(pair)
+                and pair[0] != pair[1]
                 and all(is_sha256(member) for member in pair)
                 for pair in pairs
             )
         ):
             raise TriageRefusal(
-                "triage refusal draft-invalid: cluster retains no candidate evidence pair"
+                "triage refusal draft-invalid: cluster retains no canonical candidate evidence pair"
+            )
+        canonical_pairs = [tuple(pair) for pair in pairs]
+        if len(set(canonical_pairs)) != len(canonical_pairs) or any(
+            not set(pair) <= cluster_members for pair in pairs
+        ):
+            raise TriageRefusal(
+                "triage refusal draft-invalid: evidence pairs must be distinct pairs of declared "
+                "cluster members"
             )
 
 

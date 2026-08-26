@@ -256,8 +256,8 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
     ),
     ErrorCode.TRIAGE_REFUSED: ErrorCopy(
         "Triage could not safely record or show that review step.",
-        "No cluster was selected, no evidence was changed, and any earlier queue decisions remain visible.",
-        "Read the saved detail, repair the named triage document or path, then resume the queue; this is safe.",
+        "Evidence was not changed. A mode declaration, queue decision, or confirmation may already have been written; this refusal did not silently roll recorded state back.",
+        "Read the saved detail and inspect the named mode, journal, and confirmation files; repair the named problem, then resume the same step when the detail permits it.",
     ),
     ErrorCode.INTERRUPTED: ErrorCopy(
         "The Verbatus command was interrupted before it reported an end state.",

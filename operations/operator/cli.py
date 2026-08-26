@@ -230,8 +230,13 @@ def build_parser() -> PlainParser:
     triage.add_argument("--operator", required=True)
     triage.add_argument("--mode-record", type=Path, required=True)
     triage.add_argument("--queue-state", type=Path, help="append-only decision journal")
-    triage.add_argument("--decline", metavar="ITEM_SHA256", help="record a visible decline")
-    triage.add_argument("--accept", metavar="ITEM_SHA256", help="accept this cluster candidate")
+    triage_decision = triage.add_mutually_exclusive_group()
+    triage_decision.add_argument(
+        "--decline", metavar="ITEM_SHA256", help="record a visible decline"
+    )
+    triage_decision.add_argument(
+        "--accept", metavar="ITEM_SHA256", help="accept this cluster candidate"
+    )
     triage.add_argument(
         "--draft", type=Path, help="canonical confirmation draft shown to the operator"
     )

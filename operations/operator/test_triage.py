@@ -9,6 +9,7 @@ from PIL import Image
 
 from common.contracts.canonical import canonical_bytes, digest_of
 from operations.operator import triage
+from operations.operator.errors import ERRORS, ErrorCode
 from operations.triage import instrument
 from operations.triage.producer import (
     ProducerRefusal,
@@ -89,10 +90,14 @@ def _queue(tmp_path: Path) -> dict:
 
 
 def test_mode_is_recorded_and_every_producer_row_is_in_the_queue(tmp_path: Path):
-    queue = _queue(tmp_path)
+    batch = _Batch(tmp_path)
+    queue = batch.queue
     assert queue["mode_declaration"]["mode"] == "semi"
-    assert len([item for item in queue["items"] if item["kind"] == "review-row"]) == 2
-    assert all("proxy_path" in item for item in queue["items"] if item["kind"] == "review-row")
+    review_rows = [item for item in queue["items"] if item["kind"] == "review-row"]
+    assert {item["source_frame_sha256"] for item in review_rows} == {
+        row["source_frame_sha256"] for row in batch.produced.manifest["records"]
+    }
+    assert all("proxy_path" in item for item in review_rows)
 
 
 def test_queue_order_is_invariant_to_evidence_and_mapping_insertion_order(tmp_path: Path):
@@ -107,6 +112,55 @@ def test_queue_order_is_invariant_to_evidence_and_mapping_insertion_order(tmp_pa
     )
     assert reversed_queue == batch.queue
     assert reversed_queue["items"] == sorted(reversed_queue["items"], key=digest_of)
+
+
+def test_queue_derives_from_the_same_input_forms_it_validates(tmp_path: Path):
+    """Mapping subclasses cannot validate one input and present another."""
+    batch = _Batch(tmp_path)
+    forged_row = {**batch.produced.manifest["records"][0], "manifest_row_sha256": "f" * 64}
+
+    class DivergentManifest(dict):
+        def __getitem__(self, key):
+            if key == "records":
+                return [forged_row, *super().__getitem__(key)[1:]]
+            return super().__getitem__(key)
+
+    class DivergentPaths(dict):
+        def __getitem__(self, key):
+            return "   "
+
+    manifest = DivergentManifest(batch.produced.manifest)
+    queue = triage.build_queue(
+        manifest,
+        batch.evidence,
+        proxy_paths=DivergentPaths(batch.paths),
+        mode_declaration=triage.declare_mode("semi", batch_id="batch-1", operator="Tyrel"),
+        triage_modes_path=MODES,
+    )
+    review_rows = [item for item in queue["items"] if item["kind"] == "review-row"]
+    assert queue["manifest_sha256"] == digest_of(batch.produced.manifest)
+    assert {item["manifest_row_sha256"] for item in review_rows} == {
+        row["manifest_row_sha256"] for row in batch.produced.manifest["records"]
+    }
+
+
+def test_instrument_configuration_failure_is_a_named_triage_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    batch = _Batch(tmp_path)
+
+    def refuse_config():
+        raise instrument.InstrumentRefusal("fixture configuration failure")
+
+    monkeypatch.setattr(instrument, "load_config", refuse_config)
+    with pytest.raises(triage.TriageRefusal, match="instrument-config-invalid"):
+        triage.build_queue(
+            batch.produced.manifest,
+            batch.evidence,
+            proxy_paths=batch.paths,
+            mode_declaration=triage.declare_mode("semi", batch_id="batch-1", operator="Tyrel"),
+            triage_modes_path=MODES,
+        )
 
 
 def test_stop_resume_appends_without_rewriting_and_declines_stay_visible(tmp_path: Path):
@@ -145,14 +199,66 @@ def test_preview_digest_binds_the_confirmation_write(tmp_path: Path):
     assert (tmp_path / "confirmation.json").read_bytes() == canonical_bytes(pinned)
 
 
-def test_preference_fields_are_refused_from_queue_and_draft(tmp_path: Path):
+def test_preference_fields_are_refused_from_queue(tmp_path: Path):
     queue = _queue(tmp_path)
     queue["preferred"] = 1
     candidate = next(item for item in queue["items"] if item["kind"] == "cluster-candidate")
-    with pytest.raises(Exception, match="preference"):
+    with pytest.raises(triage.TriageRefusal, match="queue-expresses-preference"):
         triage.append_decision(
             tmp_path / "state.json", queue, item_digest=digest_of(candidate), decision="decline"
         )
+
+
+def test_triage_refusal_copy_does_not_deny_a_journalled_decision():
+    copy = ERRORS[ErrorCode.TRIAGE_REFUSED]
+    assert "mode declaration, queue decision, or confirmation may already" in copy.what_it_means
+    assert "No cluster was selected" not in copy.what_it_means
+
+
+@pytest.mark.parametrize(
+    ("operation", "reason"),
+    [
+        ("mode", "mode-not-declared"),
+        ("decision", "decision-invalid"),
+        ("decision-item", "queue-item-invalid"),
+        ("recorded-item", "queue-item-invalid"),
+        ("draft-item", "queue-item-invalid"),
+    ],
+)
+def test_unhashable_public_inputs_are_named_refusals(tmp_path: Path, operation: str, reason: str):
+    batch = _Batch(tmp_path)
+    with pytest.raises(triage.TriageRefusal, match=reason):
+        if operation == "mode":
+            triage.declare_mode([], batch_id="batch-1", operator="Tyrel")
+        elif operation == "decision":
+            triage.append_decision(
+                tmp_path / "state.json",
+                batch.queue,
+                item_digest=batch.item,
+                decision=[],
+            )
+        elif operation == "decision-item":
+            triage.append_decision(
+                tmp_path / "state.json",
+                batch.queue,
+                item_digest=[],
+                decision="decline",
+            )
+        elif operation == "recorded-item":
+            triage.recorded_decision(
+                tmp_path / "state.json",
+                batch.queue,
+                item_digest=[],
+            )
+        else:
+            triage.draft_confirmation(
+                batch.queue,
+                item_digest=[],
+                corpus_id="c",
+                appending_run="pass-1",
+                authority_identity="Tyrel",
+                pages=[],
+            )
 
 
 def test_write_mode_declaration_refuses_a_field_smuggled_inside_a_non_string(tmp_path: Path):
@@ -503,6 +609,98 @@ def test_preview_refusal_happens_before_acceptance_is_journalled(tmp_path: Path)
     assert not confirmation_path.exists()
 
 
+def test_acceptance_refuses_one_path_for_state_and_confirmation(tmp_path: Path):
+    """A path alias is refused before nested POSIX locks can self-deadlock."""
+    batch = _Batch(tmp_path)
+    shared = tmp_path / "shared.json"
+    draft = batch.draft()
+    with pytest.raises(triage.TriageRefusal, match="acceptance-paths-alias"):
+        triage.accept_candidate(
+            shared,
+            batch.queue,
+            item_digest=batch.item,
+            draft=draft,
+            confirmation_path=shared,
+            preview_sha256=digest_of(draft),
+        )
+    assert not shared.exists()
+
+
+def test_uncreatable_write_and_lock_resources_are_named_refusals(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    batch = _Batch(tmp_path)
+    blocked_parent = tmp_path / "not-a-directory"
+    blocked_parent.write_text("occupied", encoding="utf-8")
+    with pytest.raises(triage.TriageRefusal, match="queue-state-lock-failed"):
+        triage.append_decision(
+            blocked_parent / "state.json",
+            batch.queue,
+            item_digest=batch.item,
+            decision="decline",
+        )
+    with pytest.raises(triage.TriageRefusal, match="write-failed"):
+        triage._atomic_bytes(blocked_parent / "record.json", b"{}")
+
+    def refuse_temporary(*_args, **_kwargs):
+        raise OSError("fixture temporary-file refusal")
+
+    monkeypatch.setattr(triage.tempfile, "mkstemp", refuse_temporary)
+    with pytest.raises(triage.TriageRefusal, match="temporary file could not be created"):
+        triage._atomic_bytes(tmp_path / "record.json", b"{}")
+
+
+@pytest.mark.parametrize("routed", [True, False], ids=("review-row", "candidate"))
+def test_queue_items_require_usable_proxy_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, routed: bool
+):
+    batch = _Batch(tmp_path)
+    paths = dict(batch.paths)
+    paths[batch.candidate["both_digests"][0]] = "   "
+    monkeypatch.setattr(triage, "routes_to_review", lambda _row, _path: routed)
+    with pytest.raises(triage.TriageRefusal, match="proxy-path-missing"):
+        triage.build_queue(
+            batch.produced.manifest,
+            batch.evidence,
+            proxy_paths=paths,
+            mode_declaration=triage.declare_mode("semi", batch_id="batch-1", operator="Tyrel"),
+            triage_modes_path=MODES,
+        )
+
+
+@pytest.mark.parametrize("pair_edit", ["unsorted", "duplicate", "non-member"])
+def test_confirmation_writer_refuses_producer_invalid_evidence_pairs(
+    tmp_path: Path, pair_edit: str
+):
+    batch = _Batch(tmp_path)
+    draft = batch.draft()
+    pair = draft["clusters"][0]["evidence_pairs"][0]
+    if pair_edit == "unsorted":
+        edited_pair = list(reversed(pair))
+    elif pair_edit == "duplicate":
+        edited_pair = [pair[0], pair[0]]
+    else:
+        edited_pair = [pair[0], "f" * 64]
+    edited = {
+        **draft,
+        "clusters": [{**draft["clusters"][0], "evidence_pairs": [edited_pair]}],
+    }
+    target = tmp_path / "confirmation.json"
+    with pytest.raises(triage.TriageRefusal, match="draft-invalid"):
+        triage.write_shown_confirmation(target, edited, preview_sha256=digest_of(edited))
+    assert not target.exists()
+
+
+def test_confirmation_writer_refuses_overlapping_clusters(tmp_path: Path):
+    batch = _Batch(tmp_path)
+    draft = batch.draft()
+    edited = {**draft, "clusters": [draft["clusters"][0], draft["clusters"][0]]}
+    target = tmp_path / "confirmation.json"
+    with pytest.raises(triage.TriageRefusal, match="clusters overlap"):
+        triage.write_shown_confirmation(target, edited, preview_sha256=digest_of(edited))
+    assert not target.exists()
+
+
 def test_occupied_confirmation_target_is_refused_before_journalling(tmp_path: Path):
     batch = _Batch(tmp_path)
     target = tmp_path / "confirmation.json"
@@ -810,6 +1008,44 @@ def _cli_files(tmp_path: Path, batch: "_Batch") -> dict[str, Path]:
         )
     )
     return files
+
+
+def test_the_triage_verb_refuses_accept_and_decline_as_one_operator_act(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    from operations.operator import cli
+
+    mode_record = tmp_path / "mode.json"
+    result = cli.main(
+        [
+            "--workspace",
+            str(MODES.parents[1]),
+            "--state-dir",
+            str(tmp_path / "receipts"),
+            "triage",
+            "--manifest",
+            str(tmp_path / "missing-manifest.json"),
+            "--evidence",
+            str(tmp_path / "missing-evidence.json"),
+            "--proxy-paths",
+            str(tmp_path / "missing-proxies.json"),
+            "--mode",
+            "semi",
+            "--batch-id",
+            "batch-1",
+            "--operator",
+            "Tyrel",
+            "--mode-record",
+            str(mode_record),
+            "--decline",
+            "a" * 64,
+            "--accept",
+            "b" * 64,
+        ]
+    )
+    assert result == 2
+    assert "not allowed with argument" in capsys.readouterr().out
+    assert not mode_record.exists()
 
 
 def test_the_triage_verb_accepts_and_resumes_from_the_command_line(tmp_path: Path):
