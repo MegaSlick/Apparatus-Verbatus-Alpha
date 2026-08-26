@@ -362,7 +362,9 @@ def act_attachment_facts(
                 )
             if entry["comparable"] and not entry["attached"]:
                 raise FatalAccounting(
-                    f"act {act_id} has comparable text without an attached witness"
+                    f"act {act_id} has comparable text without an attached witness. "
+                    "The witness floor could count text that geometry did not place in the act. "
+                    "Rebuild the attachment facts from the retained witness geometry."
                 )
             alignment = entry.get("alignment")
             if not isinstance(alignment, dict) or alignment.get("status") not in {
@@ -440,7 +442,9 @@ def act_attachment_facts(
             ):
                 raise FatalAccounting(
                     f"act {act_id} page attachment for chair {chair!r} claims a comparability "
-                    "its own retained page testimony does not support"
+                    "its own retained page testimony does not support. The witness floor could "
+                    "count text the page record cannot supply for this act. Rebuild the attachment "
+                    "from the referenced page Testimonium and alignment."
                 )
         else:
             # The act-scoped half. The floor may not be counted from a boolean
@@ -453,7 +457,9 @@ def act_attachment_facts(
             reference = entry.get("testimonium_ref")
             if not isinstance(reference, dict):
                 raise FatalAccounting(
-                    f"act {act_id} act-scoped witness {chair!r} has no Testimonium reference"
+                    f"act {act_id} act-scoped witness {chair!r} has no Testimonium reference. "
+                    "Its attachment and comparability cannot be checked against immutable evidence. "
+                    "Rebuild the attachment with a reference to the current Testimonium."
                 )
             try:
                 testimonium = context.tree.read_artifact_reference(
@@ -465,13 +471,15 @@ def act_attachment_facts(
             except ContractError as error:
                 raise FatalAccounting(
                     f"act {act_id} act-scoped witness {chair!r} names no readable "
-                    f"Testimonium: {error}"
+                    f"Testimonium: {error}. Its witness-floor contribution is unverifiable. "
+                    "Restore the referenced artifact and retry the Recensor."
                 ) from error
             act_payload = testimonium.get("payload")
             if not isinstance(act_payload, dict) or act_payload.get("chair") != chair:
                 raise FatalAccounting(
                     f"act {act_id} act-scoped attachment for chair {chair!r} points to "
-                    "another chair's Testimonium"
+                    "another chair's Testimonium. One witness's evidence would be attributed "
+                    "to another chair. Rebuild the attachment from the named chair's own record."
                 )
             current = current_attempts.get(chair)
             if not isinstance(current, dict) or testimonium.get("artifact_id") != current.get(
@@ -480,32 +488,39 @@ def act_attachment_facts(
                 raise FatalAccounting(
                     f"act {act_id} act-scoped attachment for chair {chair!r} does not point "
                     "to that chair's current Testimonium; its referenced witness basis has "
-                    "since superseded"
+                    "since superseded. The witness floor would be computed from stale evidence. "
+                    "Rebuild the attachment against the current immutable attempt."
                 )
             derived_attached = testimonium.get("outcome") in WITNESS_READING_OUTCOMES
             if entry["attached"] != derived_attached:
                 raise FatalAccounting(
                     f"act {act_id}'s derived act-attachment disagrees with the current "
                     f"Testimonium outcome for chair {chair!r}; the witness floor may not be "
-                    "counted from a superseded attempt"
+                    "counted from a superseded attempt. The attachment is stale or malformed. "
+                    "Rebuild it from the current Testimonium before retrying."
                 )
             if entry.get("page_ordinal") is not None or entry.get("alignment") is not None:
                 raise FatalAccounting(
                     f"act {act_id} act-scoped attachment for chair {chair!r} carries page "
-                    "alignment evidence"
+                    "alignment evidence. The record mixes witness scopes with different "
+                    "derivations. Rebuild it without page alignment fields."
                 )
             expected_basis = "presented-region" if derived_attached else "unattached"
             if attachment_basis != expected_basis:
                 raise FatalAccounting(
                     f"act {act_id} act-scoped attachment for chair {chair!r} names "
-                    f"{attachment_basis!r} instead of its derived {expected_basis!r} basis"
+                    f"{attachment_basis!r} instead of its derived {expected_basis!r} basis. "
+                    "The stated cause contradicts the current Testimonium outcome. "
+                    "Rebuild the basis from that current outcome."
                 )
             if entry["comparable"] != (
                 derived_attached and isinstance(act_payload.get("payload"), str)
             ):
                 raise FatalAccounting(
                     f"act {act_id} attachment for chair {chair!r} claims a comparability its "
-                    "own retained derived testimony does not support"
+                    "own retained derived testimony does not support. The witness floor could "
+                    "count a structured or absent report as act text. Rebuild comparability "
+                    "from the current referenced Testimonium."
                 )
         fact = {
             "attached": entry["attached"],

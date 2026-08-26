@@ -420,7 +420,9 @@ def witness_coverage(
                 or not isinstance(fact.get("comparable"), bool)
             ):
                 raise FatalAccounting(
-                    f"act attachment fact for {chair!r} has no boolean attached/comparable pair"
+                    f"act attachment fact for {chair!r} has no boolean attached/comparable pair. "
+                    "The act-level witness floor cannot be derived from an ambiguous attachment. "
+                    "Rebuild the attachment from the retained Testimonia before retrying."
                 )
             if fact.get("health_unrecorded") is True:
                 health_unrecorded += 1

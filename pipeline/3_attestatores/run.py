@@ -318,7 +318,11 @@ def chandra_page_partition_entries(
         or not isinstance(raw_response_ref.get("sha256"), str)
         or len(raw_response_ref["sha256"]) != 64
     ):
-        raise SchemaRefusal("a Chandra page-edge finding has no retained response reference")
+        raise SchemaRefusal(
+            "a Chandra page-edge finding has no retained response reference. "
+            "The rejected block cannot be traced to the response that produced it. "
+            "Retain the raw Chandra response before deriving the page partition."
+        )
     return survivors, [
         {**finding, "response_sha256": raw_response_ref["sha256"]} for finding in overshoots
     ]
@@ -2103,7 +2107,7 @@ def declared_page_witness_chairs(context) -> set[str]:
 
 
 def declared_chandra_anchor_chair(context) -> str:
-    """The sole chair whose retained text supplies Chandra anchor lines."""
+    """The sole configured Chandra chair named as the alignment anchor."""
     chairs = [
         chair
         for chair in context.witness_chairs
@@ -2113,7 +2117,9 @@ def declared_chandra_anchor_chair(context) -> str:
     if len(chairs) != 1:
         raise SchemaRefusal(
             "anchor-line alignment requires exactly one configured Chandra chair; "
-            "the Designator has no text and may not be used as an anchor"
+            "the Designator has no text and may not be used as an anchor. "
+            "The alignment's textual anchor identity is therefore unresolved. "
+            "Configure exactly one Chandra witness chair before running Attestatores."
         )
     return chairs[0]
 
@@ -2529,7 +2535,9 @@ def non_reading_alignment_reason(outcome: str, *, native_page_capture: bool) -> 
     """
     if outcome in WITNESS_READING_OUTCOMES:
         raise FatalAccounting(
-            f"a reading outcome {outcome!r} cannot explain a non-reading page alignment"
+            f"a reading outcome {outcome!r} cannot explain a non-reading page alignment. "
+            "The unaligned reason would contradict the outcome it names. "
+            "Derive this reason only from the non-reading record that blocked alignment."
         )
     subject = "page-testimonium" if native_page_capture else "act-attempt"
     return f"non-reading-{subject}-{outcome}"

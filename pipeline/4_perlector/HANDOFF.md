@@ -193,9 +193,10 @@ records `presented: region` for its act-scoped channel beside
 box to a **sealed proposal** region: `{ordinal, region_id, offsets:{left, top,
 right, bottom}}`, one row per overlapping sealed region, ordered by
 `(ordinal, region_id)`. They are never chair-vs-chair, they are never ranked,
-and nothing thresholds them (`test_edge_delta_evidence.py` refuses an ordering
-comparison over them anywhere in the reading stages). A `presented` box
-contributes none: only reported geometry counts. Page-scoped
+and nothing thresholds them. `test_edge_delta_evidence.py` combines behavioral
+derivation checks with a narrow AST guard against direct ordering expressions
+that still name `edge_delta` or `offsets`; aliases remain a code-review concern.
+A `presented` box contributes none: only reported geometry counts. Page-scoped
 unclaimed/unobserved/ambiguous partition facts remain on the page Testimonium
 for the Recensor; the dossier carries only act-scoped correspondences.
 

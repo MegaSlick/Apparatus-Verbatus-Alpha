@@ -357,7 +357,25 @@ def validate_draft(payload: Any) -> dict[str, Any]:
         or row["derivation"] not in {"own-report", "page-slice"}
         for row in basis
     ):
-        raise SchemaRefusal("an audit draft has no closed witness-derived flag-location basis")
+        raise SchemaRefusal(
+            "the audit draft has no closed witness-derived flag-location basis. "
+            "A testimony-diff location cannot be traced to the testimony that located it. "
+            "Rebuild the draft with class, chair, and derivation for each such flag."
+        )
+    identities = [(row["class"], row["chair"], row["derivation"]) for row in basis]
+    if len(identities) != len(set(identities)):
+        raise SchemaRefusal(
+            "the audit draft repeats a witness-derived flag-location basis. "
+            "One witness would be recorded twice as the source of one location. "
+            "Remove the duplicate basis row and rebuild the draft."
+        )
+    testimony_diff_count = sum(flag["class"] == "testimony-diff" for flag in value["flags"])
+    if len(basis) != testimony_diff_count:
+        raise SchemaRefusal(
+            "the audit draft's testimony-diff flags and witness-derived location basis disagree. "
+            "At least one witness-derived flag or its source would be unaccounted. "
+            "Rebuild both lists from the same frozen dossier comparison."
+        )
     return value
 
 

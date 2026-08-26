@@ -32,6 +32,69 @@ def test_witness_derived_location_classes_remain_the_one_open_class():
     assert audit.WITNESS_DERIVED_LOCATION_CLASSES == frozenset({"testimony-diff"})
 
 
+def test_flag_location_basis_names_only_witnesses_that_located_a_frozen_diff():
+    """An agreeing witness is evidence, but it did not locate the diff flag."""
+    perlector = _perlector()
+    text = "alpha beta"
+    flags = [{"class": "testimony-diff", "location": {"start": 6, "end": 10}}]
+    dossier = {
+        "testimonia": [
+            {
+                "witness_label": "agreeing",
+                "reported": text,
+                "reported_basis": "own-report",
+            },
+            {
+                "witness_label": "departing",
+                "reported": "alpha xxxx",
+                "reported_basis": "page-slice",
+            },
+            {
+                "witness_label": "other-departure",
+                "reported": "omega beta",
+                "reported_basis": "own-report",
+            },
+        ]
+    }
+
+    assert perlector.flag_location_basis(dossier, flags, semi_final_text=text) == [
+        {"class": "testimony-diff", "chair": "departing", "derivation": "page-slice"}
+    ]
+
+
+def test_audit_draft_requires_location_basis_exactly_when_testimony_located_a_flag():
+    perlector = _perlector()
+    policy = {"schema": audit.SCHEMA, "sha256": "a" * 64, "approval_ref": "approved"}
+    draft = {
+        "act_key": "a1",
+        "attempt_ordinal": 1,
+        "semi_final_text": "alpha beta",
+        "page_id": "page-1",
+        "page_ids": ["page-1"],
+        "round_cap": 1,
+        "policy": policy,
+        "flags": [{"class": "testimony-diff", "location": {"start": 6, "end": 10}}],
+        "flag_location_basis": [],
+    }
+    with pytest.raises(SchemaRefusal, match="flags and witness-derived location basis disagree"):
+        perlector.audit.validate_draft(draft)
+
+    draft["flags"] = []
+    draft["flag_location_basis"] = [
+        {"class": "testimony-diff", "chair": "witness-1", "derivation": "own-report"}
+    ]
+    with pytest.raises(SchemaRefusal, match="flags and witness-derived location basis disagree"):
+        perlector.audit.validate_draft(draft)
+
+    draft["flags"] = [
+        {"class": "testimony-diff", "location": {"start": 0, "end": 5}},
+        {"class": "testimony-diff", "location": {"start": 6, "end": 10}},
+    ]
+    draft["flag_location_basis"] *= 2
+    with pytest.raises(SchemaRefusal, match="repeats a witness-derived flag-location basis"):
+        perlector.audit.validate_draft(draft)
+
+
 # Everything ahead of the Perlector, run as real programs. The Pass-C delivery
 # proof needs the stage's own `main()` in this process — that is the only way to
 # hold the reader object it actually called — so the evidence it reads must be

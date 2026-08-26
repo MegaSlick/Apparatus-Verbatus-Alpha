@@ -162,14 +162,12 @@ def test_departures_are_an_alignment_and_expose_no_similarity_number():
     )
 
 
-def test_only_witness_coverage_may_count_across_chairs():
-    """The Perlector and Archetypus may carry chairs, never total them.
+def test_perlector_and_archetypus_have_no_direct_sum_call_over_a_chair_expression():
+    """Catch the direct cross-chair counter this narrow AST guard recognizes.
 
-    Counting the roster anywhere other than the receipt's `witness_coverage`
-    creates a second denominator that can quietly disagree with the floor.
-    This deliberately narrow structural guard catches the natural Python
-    spelling of such a counter while leaving per-chair equality comparison
-    intact.
+    A direct ``sum(...)`` whose expression names a chair would create a second
+    denominator beside `witness_coverage`.  More indirect data flow still needs
+    code review; this test does not claim to prove a whole-program property.
     """
     sources = [
         ROOT / "pipeline" / "4_perlector" / "run.py",
@@ -189,8 +187,8 @@ def test_only_witness_coverage_may_count_across_chairs():
     assert not offenders, f"cross-chair counters belong only in witness_coverage: {offenders}"
 
 
-def test_downstream_stages_do_not_branch_on_dissent_rows():
-    """Dissent travels as a Perlectio reference; it is not downstream input."""
+def test_downstream_stages_do_not_directly_subscript_a_dissent_field():
+    """Catch direct ``[\"dissent\"]`` reads; indirect data flow remains review work."""
     sources = [
         ROOT / "pipeline" / "5_recensor" / "run.py",
         ROOT / "pipeline" / "6_archetypus" / "run.py",
@@ -371,12 +369,21 @@ def test_dissent_never_drops_an_unknown_chair_from_the_record():
 
 def test_a_completed_structured_witness_stays_visible_but_cannot_be_compared():
     assert dissent.dissent_against(
-        "reading", [{"outcome": "read", "payload": {"chair": "attestator_1"}}]
+        "reading",
+        [
+            {
+                "outcome": "read",
+                "payload": {
+                    "chair": "attestator_1",
+                    "payload": {"blocks": [{"text": "retained without coercion"}]},
+                },
+            }
+        ],
     ) == [
         {
             "chair": "attestator_1",
             "compared": "unknown",
-            "reason": "no comparable text for this act: retained derived testimony is structured",
+            "reason": "no comparable text for this act: retained derived testimony is not text",
         }
     ]
 

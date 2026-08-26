@@ -383,6 +383,54 @@ def test_a_page_edge_overshoot_is_named_per_block_without_clamping_or_losing_nei
         )
 
 
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("ordinal", 7, "ordinals that are not dense"),
+        ("bounds_source", "presented", "not reported witness geometry"),
+        ("bounds_source", [], "not reported witness geometry"),
+        ("span", {"start": 0, "end": 1}, "would lose evidence"),
+    ],
+)
+def test_an_overshoot_cannot_hide_malformed_observation_facts(field, value, message):
+    """Removing a bad box must not sanitize fields the finding does not retain."""
+    chandra = _load_chandra()
+    attestatores = _load_stage_module("run")
+    observed = chandra.observe(
+        _presented(), b'{"markdown":"one","blocks":[{"bbox":[0,0,200.2,260.0]}]}'
+    )
+    observed[0][field] = value
+
+    with pytest.raises(SchemaRefusal, match=message):
+        attestatores.chandra_page_partition_entries(
+            observed,
+            page_size=(200, 260),
+            raw_response_ref={"relative_path": "retained", "sha256": "a" * 64},
+        )
+
+
+def test_an_in_page_observation_keeps_its_supported_text_span():
+    """Only converting an overshoot loses the span; an in-page box survives intact."""
+    attestatores = _load_stage_module("run")
+    observed = [
+        {
+            "ordinal": 0,
+            "bounds": {"x": 10, "y": 10, "w": 20, "h": 20},
+            "bounds_source": "native",
+            "span": {"start": 0, "end": 4},
+        }
+    ]
+
+    survivors, findings = attestatores.chandra_page_partition_entries(
+        observed,
+        page_size=(200, 260),
+        raw_response_ref={"relative_path": "retained", "sha256": "a" * 64},
+    )
+
+    assert survivors == observed
+    assert findings == []
+
+
 def test_a_parse_failure_keeps_its_bytes_and_its_name_through_the_written_record(tmp_path):
     """DoD bullet two, re-derived at the seam that actually publishes.
 

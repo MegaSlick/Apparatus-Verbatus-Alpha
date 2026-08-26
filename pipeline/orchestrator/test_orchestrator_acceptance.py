@@ -831,7 +831,14 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # exits 0. Both values were measured twice in independent roots by this
 # module's `orchestrate` and `semantic_snapshot_digest` helpers at canonical
 # run id "r".
-HAPPY_RUN_TREE_DIGEST = "f2d9455b822dde859025d85b27af3c02aeb1dba5aeda3682820ce9de73762ca7"
+# Sol review re-pin: audit location provenance now names only reports whose
+# exact comparison produced a frozen testimony-diff location; agreeing
+# witnesses are no longer falsely attributed as sources. Multi-page edge-delta
+# rows are also normalized to their declared `(ordinal, region_id)` order after
+# all page contributions are combined. Counts and exits remain unchanged. The
+# two repeatability tests below each measure the candidate before and after an
+# identical rerun at canonical run id "r".
+HAPPY_RUN_TREE_DIGEST = "c182c72071ec3fbe68f2d395220fad33964eb673de5cf71b8b211d6f9bd2986f"
 # Review only, once more in the same seat: a page witness invoked on every act
 # and unusable on all of them now records the serving moment that produced it
 # (`provenance_for(..., attempted=attempted_page)`), where the `reading` gate
@@ -851,7 +858,7 @@ HAPPY_RUN_TREE_DIGEST = "f2d9455b822dde859025d85b27af3c02aeb1dba5aeda3682820ce9d
 # files and exit 3, and happy never carried that reason so its digest above is
 # untouched. Measured twice in independent temporary roots at canonical run id
 # "r" by this module's `orchestrate` and `semantic_snapshot_digest` helpers.
-REVIEW_RUN_TREE_DIGEST = "06aa418d3c3778a45e6b0cab882a8fc6aba70245fed7a166875e8be9f9d0c818"
+REVIEW_RUN_TREE_DIGEST = "e809fb5b24eb7f6c2845161d4ad56c69de1e6a8dbd4073e52382c111d087e800"
 
 
 def orchestrate(
@@ -3770,7 +3777,7 @@ def test_a_structured_testimonium_is_retained_and_carried_as_an_incomparable_wit
     assert unknown_row == {
         "chair": "attestator_1",
         "compared": "unknown",
-        "reason": "no comparable text for this act: retained derived testimony is structured",
+        "reason": "no comparable text for this act: retained derived testimony is not text",
     }
 
     # The mechanism, asserted rather than described, so the docstring above

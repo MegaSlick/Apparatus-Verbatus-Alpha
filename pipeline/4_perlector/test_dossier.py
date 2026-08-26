@@ -222,6 +222,18 @@ def test_the_no_order_bearing_sweep_is_not_vacuous(evidence):
         dossier.assert_no_order_bearing_field(tampered)
 
 
+@pytest.mark.parametrize("field", ["consensus", "majority", "vote", "quorum"])
+def test_voting_synonyms_are_refused_at_the_dossier_boundary_before_reading(evidence, field):
+    """Every durable voting synonym is also blocked before a reader sees it."""
+    context, act_id, act_key, regions, testimonia = evidence
+    built = _build(context, act_id, act_key, regions, testimonia)
+    tampered = copy.deepcopy(built)
+    tampered["testimonia"][0][field] = True
+
+    with pytest.raises(ContractError, match="names a preference"):
+        dossier.assert_no_order_bearing_field(tampered)
+
+
 def test_edge_deltas_refuse_a_colliding_witness_label(evidence, monkeypatch):
     """The new per-label geometry map may not overwrite one chair with another.
 

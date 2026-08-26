@@ -10,16 +10,18 @@ delta magnitude; per-chair weights; ANY two-chair disagreement".
 
 The recovery gate itself is already fenced structurally by
 `pipeline/5_recensor/test_quality_firewall.py`, which pins the names the gate may
-consult and the whole derivation of `wants_recovery`.  What that firewall cannot
+consult and the whole derivation of `wants_recovery`. What that firewall cannot
 see is a magnitude thresholded *before* it reaches the gate, in the stage that
-records these numbers.  So this module fences the numbers themselves:
+records these numbers. This module combines behavioral checks with narrow
+syntax tripwires around the direct spellings of those mistakes:
 
 - one chair at a time, against sealed geometry, with no second chair in reach;
 - recorded, never ranked -- an ordering comparison is the one thing a threshold
   cannot be written without.
 
-A reviewer reading a change here should refuse anything that puts an offset on
-either side of `<`, `>`, or `abs()`, exactly as `dissent.py` refuses a ratio.
+A reviewer reading a change here should still trace aliases and refuse anything
+that puts an offset on either side of `<`, `>`, or `abs()`, exactly as
+`dissent.py` refuses a ratio.
 """
 
 import ast
@@ -128,6 +130,27 @@ def test_every_overlapping_proposal_is_retained_and_none_is_chosen():
     assert [row["region_id"] for row in rows] == ["rgn-1", "rgn-2"]
 
 
+def test_multi_page_rows_are_ordered_across_attachment_contributions():
+    """Per-page ordinals restart; concatenating page groups is not the declared order."""
+
+    def row(ordinal, region_id):
+        return {
+            "ordinal": ordinal,
+            "region_id": region_id,
+            "offsets": {"left": 0, "top": 0, "right": 0, "bottom": 0},
+        }
+
+    ordered = perlector.ordered_edge_deltas(
+        {"attestator_1": [row(0, "page-1-a"), row(2, "page-1-b"), row(0, "page-2-a")]}
+    )
+
+    assert [(item["ordinal"], item["region_id"]) for item in ordered["attestator_1"]] == [
+        (0, "page-1-a"),
+        (0, "page-2-a"),
+        (2, "page-1-b"),
+    ]
+
+
 def test_a_presented_box_contributes_no_delta_at_all():
     """Only reported geometry counts; a crop echo is not an observation."""
     payload = _payload({"x": 12, "y": 8, "w": 40, "h": 30}, bounds_source="presented")
@@ -140,7 +163,7 @@ def test_a_presented_box_contributes_no_delta_at_all():
     )
 
 
-def test_this_derivation_has_no_room_for_a_second_chair_or_a_threshold():
+def test_derivation_signature_exposes_neither_a_second_chair_nor_a_threshold():
     """Pinned like `dissent.comparison_view`'s missing similarity parameter.
 
     A chair-vs-chair delta or a tolerance would have to arrive through this
@@ -153,8 +176,8 @@ def test_this_derivation_has_no_room_for_a_second_chair_or_a_threshold():
     assert all(parameter.default is inspect.Parameter.empty for parameter in parameters.values())
 
 
-def test_n_of_m_agreement_has_no_chair_denominator_to_count():
-    """Forbidden trigger 1: no collection of chairs reaches the derivation."""
+def test_derivation_has_no_direct_sum_or_len_call_for_an_n_of_m_denominator():
+    """Forbidden trigger 1's direct spelling is absent from this derivation."""
     parameters = inspect.signature(perlector.sealed_proposal_edge_deltas).parameters
     assert list(parameters) == ["payload", "bases"]
     assert not any(
@@ -165,8 +188,8 @@ def test_n_of_m_agreement_has_no_chair_denominator_to_count():
     )
 
 
-def test_iou_or_similarity_is_not_computed_from_edge_offsets():
-    """Forbidden trigger 2: the evidence has no ratio-shaped computation."""
+def test_derivation_has_no_division_or_named_iou_similarity_call():
+    """Catch the direct ratio-shaped spellings of forbidden trigger 2."""
     tree = _derivation_tree()
     assert not any(
         isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div) for node in ast.walk(tree)
@@ -196,8 +219,8 @@ def test_delta_magnitude_never_filters_a_reported_overlap():
     assert rows[0]["offsets"] != rows[1]["offsets"]
 
 
-def test_per_chair_weights_have_neither_an_input_nor_a_multiplication():
-    """Forbidden trigger 4: no chair worth can scale a recorded offset."""
+def test_derivation_has_no_weight_parameter_or_direct_multiplication():
+    """Catch the signature and multiplication spellings of forbidden trigger 4."""
     parameters = inspect.signature(perlector.sealed_proposal_edge_deltas).parameters
     assert not set(parameters) & {"chair", "chairs", "weight", "weights"}
     assert not any(
@@ -206,8 +229,8 @@ def test_per_chair_weights_have_neither_an_input_nor_a_multiplication():
     )
 
 
-def test_two_chair_disagreement_has_no_second_chair_operand():
-    """Forbidden trigger 5: one report is compared only with sealed proposals."""
+def test_derivation_signature_and_names_expose_no_second_chair_operand():
+    """Catch explicit second-chair spellings of forbidden trigger 5."""
     parameters = inspect.signature(perlector.sealed_proposal_edge_deltas).parameters
     assert list(parameters) == ["payload", "bases"]
     assert not any(
@@ -217,16 +240,15 @@ def test_two_chair_disagreement_has_no_second_chair_operand():
     )
 
 
-def test_no_stage_ranks_an_edge_delta():
-    """No ordering comparison anywhere may mention an offset or a delta.
+def test_no_stage_directly_ranks_an_expression_named_for_edge_deltas_or_offsets():
+    """No direct ordering comparison may mention an offset or delta expression.
 
     Scoped to the stages that can hold this evidence (see `_EVIDENCE_SOURCES`).
-    Deliberately narrow and deliberately structural: a threshold, an IoU, a
-    weight and a "closest chair" all need one of `<`, `<=`, `>`, `>=` (or an
-    `abs()` to make a magnitude out of a signed number), and none of them can be
-    written about geometry this pipeline never compares. Shape checks --
-    `isinstance`, exact key sets, equality against a recorded value -- are
-    untouched, because they are how the record is validated rather than judged.
+    Deliberately narrow and structural: this catches `<`, `<=`, `>`, `>=`, or
+    `abs()` when that expression still carries the field's name.  An alias can
+    obscure that syntax and remains review work. Shape checks -- `isinstance`,
+    exact key sets, equality against a recorded value -- are untouched, because
+    they validate the record rather than judge it.
     """
     ranked: list[str] = []
     scanned: list[str] = []

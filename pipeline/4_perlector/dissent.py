@@ -255,7 +255,7 @@ def dissent_against(reading: str, testimonia: list[dict]) -> list[dict]:
         )
         if not isinstance(reported, str):
             # Native testimony is retained in its derived layer, not coerced into
-            # a string-shaped compatibility bridge.  A structured report is
+            # a string-shaped compatibility bridge.  A non-text report is
             # therefore visible as incomparable.  The witness-floor seam counts
             # attached AND comparable in the same change, so this cannot turn a
             # complete run into an apparently witnessed one.
@@ -263,7 +263,9 @@ def dissent_against(reading: str, testimonia: list[dict]) -> list[dict]:
                 {
                     "chair": chair,
                     "compared": "unknown",
-                    "reason": "no comparable text for this act: retained derived testimony is structured",
+                    "reason": (
+                        "no comparable text for this act: retained derived testimony is not text"
+                    ),
                 }
             )
             continue

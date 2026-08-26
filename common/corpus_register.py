@@ -334,7 +334,11 @@ def refuse_preference(value: Any, *, what: str) -> None:
     if isinstance(value, dict):
         forbidden = set(value) & _FORBIDDEN_PREFERENCE_FIELDS
         if forbidden:
-            raise SchemaRefusal(f"{what} may not express preference: {sorted(forbidden)}")
+            raise SchemaRefusal(
+                f"{what} expresses preference through field(s) {sorted(forbidden)}. "
+                "A witness-selection field would make the record a picker. "
+                "Remove the preference field and rebuild the record from unranked evidence."
+            )
         for child in value.values():
             refuse_preference(child, what=what)
     elif isinstance(value, list):

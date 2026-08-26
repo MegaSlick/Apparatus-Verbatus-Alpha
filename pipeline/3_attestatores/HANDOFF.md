@@ -547,16 +547,15 @@ claim a page the ink does not support, or drop one the ink does.
 
 - aligned: the closed key set `{status, anchor_basis, anchor_chair,
   anchor_span, witness_span, line_geometry, loss, offset_maps}`, with
-  `anchor_chair` naming the chair whose retained text supplied the anchor line
-  — a string exactly when `anchor_basis` is `act-anchor`, and null otherwise,
-  refused either way round by both readers. There is exactly one configured
-  Chandra chair to name (`declared_chandra_anchor_chair`); the Designator is
-  structurally out of reach because it is not a witness role and has no
-  retained text to anchor on. Whether the anchor should instead be taken from
-  the lectio prior is a real question and is NOT settled by this field: the
-  prior is written after this stage runs, so nothing here could read it, and
-  recording which chair was used is what keeps that open rather than
-  invisible. `anchor_basis` is one of
+  `anchor_chair` naming the sole configured Chandra witness associated with the
+  fixture's sealed Chandra anchor declaration — a string exactly when
+  `anchor_basis` is `act-anchor`, and null otherwise, refused either way round
+  by both readers. The field identifies that configured association; it does
+  not claim the anchor declaration was re-derived from this run's retained
+  Testimonium. The Designator is structurally out of reach because it is not a
+  witness role. Whether the anchor should instead be taken from live testimony
+  or the lectio prior is NOT settled by this field: the prior is written after
+  this stage runs, so nothing here could read it. `anchor_basis` is one of
   `act-anchor` (computed through Chandra's located anchor line),
   `no-page-anchor` (a genuinely-empty witness's trivial zero-length attach on
   a page with no Chandra anchor at all — the ink-free/fallback path; blank

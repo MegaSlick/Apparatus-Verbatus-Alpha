@@ -62,6 +62,10 @@ _FORBIDDEN_KEY_FRAGMENTS: Final = (
     "better",
     "best",
     "picker",
+    "consensus",
+    "majority",
+    "vote",
+    "quorum",
 )
 
 
@@ -425,7 +429,11 @@ def build_dossier(
             relabeled_views[label] = text
         deltas = act_attachment.get("edge_deltas", {})
         if not isinstance(deltas, dict):
-            raise SchemaRefusal("an act attachment reached the dossier with no edge-deltas mapping")
+            raise SchemaRefusal(
+                "an act attachment reached the dossier with no edge-deltas mapping. "
+                "The dossier cannot account for the witness geometry it was meant to carry. "
+                "Rebuild the attachment view with one list for every contributing chair."
+            )
         for chair, rows in deltas.items():
             label = witness_label(
                 chair,
@@ -434,11 +442,17 @@ def build_dossier(
                 config_digest=context.config_digest,
             )
             if not isinstance(rows, list):
-                raise SchemaRefusal("an act attachment edge-deltas entry is not a list")
+                raise SchemaRefusal(
+                    "an act attachment edge-deltas entry is not a list. "
+                    "The chair's geometry evidence cannot be carried in the dossier. "
+                    "Rebuild that entry as the ordered list derived from sealed proposals."
+                )
             if label in relabeled_deltas:
                 raise SchemaRefusal(
                     f"two edge-deltas entries relabel to the same witness label {label!r}; "
-                    "a colliding pseudonym would silently replace one chair's geometry"
+                    "a colliding pseudonym would silently replace one chair's geometry. "
+                    "The dossier would lose witness evidence under a valid-looking label. "
+                    "Choose a collision-free witness label derivation and rebuild the dossier."
                 )
             relabeled_deltas[label] = copy.deepcopy(rows)
         for row in testimonia_rows:
@@ -551,8 +565,9 @@ def assert_no_order_bearing_field(value: Any, path: str = "$") -> None:
             lowered = key.lower()
             if any(fragment in lowered for fragment in _FORBIDDEN_KEY_FRAGMENTS):
                 raise ContractError(
-                    f"{path}.{key} names a preference among witnesses; GOVERNANCE 3 forbids "
-                    "any order-bearing or trust-bearing field in a dossier"
+                    f"{path}.{key} names a preference among witnesses. "
+                    "An order-bearing or trust-bearing dossier field would make the reader a "
+                    "picker. Remove the field and rebuild the dossier from unranked testimony."
                 )
             assert_no_order_bearing_field(item, f"{path}.{key}")
     elif isinstance(value, list):

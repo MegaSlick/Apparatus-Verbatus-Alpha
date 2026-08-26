@@ -547,7 +547,11 @@ def act_attachment_view(
                     "an attached act view does not span its complete delivered reading"
                 )
         if attachment["comparable"] and not attachment["attached"]:
-            raise SchemaRefusal("an unattached act view cannot claim comparable text")
+            raise SchemaRefusal(
+                "an unattached act view cannot claim comparable text. "
+                "Text cannot count for an act when witness geometry did not attach to it. "
+                "Rebuild both facts from the retained Testimonium."
+            )
         elif not attachment["attached"] and (
             attachment["attachment_basis"] != "unattached" or span is not None
         ):
@@ -884,7 +888,9 @@ def act_attachment_view(
             ):
                 raise SchemaRefusal(
                     f"act {act_id} page attachment for chair {chair!r} claims a comparability "
-                    "its own recorded alignment does not support"
+                    "its own recorded alignment does not support. The witness floor could count "
+                    "text that was never placed in this act. Rebuild comparability from the "
+                    "referenced page Testimonium and alignment."
                 )
             page_witness_count += 1
         else:
@@ -913,7 +919,9 @@ def act_attachment_view(
             ):
                 raise SchemaRefusal(
                     f"act {act_id} attachment for chair {chair!r} claims a comparability its "
-                    "own retained derived testimony does not support"
+                    "own retained derived testimony does not support. The witness floor could "
+                    "count a structured or absent report as act text. Rebuild comparability "
+                    "from the current referenced Testimonium."
                 )
             edge_deltas.setdefault(chair, []).extend(
                 sealed_proposal_edge_deltas(
@@ -939,7 +947,17 @@ def act_attachment_view(
         # so R5a/R5b, which own the dossier's reference-based act views, can
         # weigh it deliberately. R4 audit, F-X5.
         "comparison_views": comparison_views,
-        "edge_deltas": edge_deltas,
+        "edge_deltas": ordered_edge_deltas(edge_deltas),
+    }
+
+
+def ordered_edge_deltas(
+    rows_by_chair: dict[str, list[dict[str, Any]]],
+) -> dict[str, list[dict[str, Any]]]:
+    """Keep each chair's multi-page delta evidence in its declared stable order."""
+    return {
+        chair: sorted(rows, key=lambda row: (row["ordinal"], row["region_id"]))
+        for chair, rows in rows_by_chair.items()
     }
 
 
@@ -1707,7 +1725,11 @@ def _audit_semi_final(
         if reported is None:
             continue
         if not isinstance(reported, str):
-            raise FatalAccounting("a dossier reported value is neither text nor null")
+            raise FatalAccounting(
+                "a dossier reported value is neither text nor null. "
+                "The audit cannot compare it without coercing witness evidence. "
+                "Rebuild the dossier from retained derived testimony before running the audit."
+            )
         reports.append(reported)
     return {
         "act_id": act_id,
@@ -1860,14 +1882,22 @@ def _sealed_sibling_semi_finals(
 
 
 def flag_location_basis(
-    dossier: dict[str, Any], flags: list[dict[str, Any]]
+    dossier: dict[str, Any], flags: list[dict[str, Any]], *, semi_final_text: str
 ) -> list[dict[str, str]]:
     """Name the chair and retained-text derivation behind testimony-diff flags.
 
-    This records a location basis only; it does not promote testimony into a
-    reading or make boundary geometry a text flag.
+    Only a report whose exact comparison with the semi-final produced one of
+    the frozen testimony-diff locations is named.  An agreeing witness is
+    evidence in the dossier, but it did not locate that flag and must not be
+    attributed as though it did.  This records a location basis only; it does
+    not promote testimony into a reading or make boundary geometry a text flag.
     """
-    if not any(flag.get("class") == "testimony-diff" for flag in flags):
+    testimony_diff_locations = {
+        (flag["location"]["start"], flag["location"]["end"])
+        for flag in flags
+        if flag.get("class") == "testimony-diff"
+    }
+    if not testimony_diff_locations:
         return []
     rows = dossier.get("testimonia", [])
     return sorted(
@@ -1879,8 +1909,10 @@ def flag_location_basis(
             }
             for row in rows
             if isinstance(row, dict)
-            and row.get("reported") is not None
+            and isinstance(row.get("reported"), str)
             and row.get("reported_basis") in {"own-report", "page-slice"}
+            and row["reported"] != semi_final_text
+            and audit.text_change_span(semi_final_text, row["reported"]) in testimony_diff_locations
         ],
         key=lambda row: (row["chair"], row["derivation"]),
     )
@@ -2564,7 +2596,9 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             "round_cap": audit_policy["round_cap"],
             "policy": policy_record,
             "flags": flags,
-            "flag_location_basis": flag_location_basis(payload["dossier"], flags),
+            "flag_location_basis": flag_location_basis(
+                payload["dossier"], flags, semi_final_text=payload["text"]
+            ),
         }
         audit.validate_draft(draft_payload)
         draft = context.publish(
