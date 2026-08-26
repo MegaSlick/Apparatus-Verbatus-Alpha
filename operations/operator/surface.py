@@ -8,9 +8,14 @@ surface.
 
 from __future__ import annotations
 
+import hashlib
+import os
+import secrets
+import stat
 import subprocess
 import sys
 import time
+import unicodedata
 import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -66,6 +71,9 @@ from .volume_s3 import S3VolumeTarget, VolumeSpec, VolumeTransferRefusal
 UTC = timezone.utc
 OPERATOR_CLOSE_PREFIX = "CLOSE"
 DEFAULT_FIXTURE = "synthetic-two-page-v0"
+DOOR_PROGRAM = "pipeline/1_exemplar/door.py"
+_TRANSFER_CREDENTIAL_ENV = frozenset({"RUNPOD_S3_ACCESS_KEY", "RUNPOD_S3_SECRET_KEY"})
+_COPY_CHUNK_BYTES = 1024 * 1024
 # `FakeProvider.bill()` always stamps its cutoff exactly one hour **ahead** of
 # its own clock -- `fake_provider.py`'s `cutoff_at=self.now() + timedelta(hours=1)`
 # -- so a frozen test clock still opens a valid, non-empty billing window. This
@@ -638,47 +646,98 @@ class OperatorSurface:
     # -- run ------------------------------------------------------------------
 
     def run(
-        self, *, run_id: str, scenario: str = "happy", fixture: str = DEFAULT_FIXTURE
+        self,
+        *,
+        run_id: str,
+        scenario: str = "happy",
+        fixture: str = DEFAULT_FIXTURE,
+        submission_folder: str | Path | None = None,
+        submission_manifest: str | Path | None = None,
+        data_gate_policy: str | Path | None = None,
     ) -> RunOutcome:
-        """Drive the current tree's actual fixture orchestrator, with resumable evidence."""
+        if submission_folder is None:
+            if submission_manifest is not None:
+                raise OperatorError(
+                    ErrorCode.INVALID_COMMAND,
+                    detail=("--submission-manifest is meaningful only with --submission-folder"),
+                )
+            if data_gate_policy is not None:
+                raise OperatorError(
+                    ErrorCode.INVALID_COMMAND,
+                    detail="--data-gate-policy is meaningful only with --submission-folder",
+                )
 
         run_root = self.state_root / "runs"
-        pages, acts, declared_ok = _declared_work(self.workspace)
-        if not declared_ok:
-            self.present(
-                "The declared fixture could not be read; naming pages and acts generically."
-            )
+        ingress_mode = "real" if submission_folder is not None else "synthetic-fixture"
         prior_state = self._prior_run_state(run_id)
+        if submission_folder is None:
+            pages, acts, declared_ok = _declared_work(self.workspace)
+            if not declared_ok:
+                self.present(
+                    "The declared fixture could not be read; naming pages and acts generically."
+                )
+            extent = f"Checking {', '.join(pages)}."
+        else:
+            # The operator must not read or name real material before the Door
+            # applies its storage and logging policy.
+            extent = (
+                "Its extent is recorded by the submitted filename ledger, which the Door "
+                "checks against the data-handling policy."
+            )
+
         if prior_state == "interrupted-recoverable":
-            self.present(f"Resuming run {run_id}. Checking {', '.join(pages)}.")
+            opening = f"Resuming run {run_id}. {extent}"
         elif prior_state is not None:
-            self.present(
-                f"Run {run_id} already has saved state {prior_state}; checking its recorded pages again."
+            opening = (
+                f"Run {run_id} already has saved state {prior_state}; "
+                f"checking its recorded work again. {extent}"
             )
         else:
-            self.present(f"Run started. Checking {', '.join(pages)}.")
-        self.present(f"Working next: {', '.join(acts)}.")
-        self.present(
-            "This rehearsal uses declared synthetic pages, not an uploaded real submission."
-        )
+            opening = f"Run started. {extent}"
+        self.present(opening)
+
+        if submission_folder is None:
+            self.present(f"Working next: {', '.join(acts)}.")
+            self.present(
+                "This rehearsal uses declared synthetic pages, not an uploaded real submission."
+            )
+        else:
+            self.present("This run sends the recorded real submission to the Door's data gate.")
         if self.faults.laptop_crash:
             self.faults.laptop_crash = False
-            self._run_one_stage(run_root, run_id, scenario, "pipeline/1_exemplar/door.py")
+            ingress_label = "real submission" if submission_folder is not None else "fixture"
+            observed_work = (
+                "The real submission's pages reached the Door."
+                if submission_folder is not None
+                else "The fixture pages reached the Door."
+            )
+            self._run_door_stage(
+                run_root,
+                run_id,
+                scenario,
+                submission_folder=submission_folder,
+                submission_manifest=submission_manifest,
+                data_gate_policy=data_gate_policy,
+            )
             receipt = self._write_action(
                 "run",
                 {
-                    "summary": "Run interrupted after the door recorded its page evidence; it can resume.",
+                    "summary": (
+                        f"Run interrupted after the Door recorded the {ingress_label}'s page "
+                        "evidence; it can resume."
+                    ),
                     "state": "interrupted-recoverable",
+                    "ingress": ingress_mode,
                     "run_root": str(run_root),
                     "run_id": run_id,
                     "scenario": scenario,
                     "fixture": fixture,
-                    "last_observed_work": "The fixture pages reached the door.",
+                    "last_observed_work": observed_work,
                 },
                 descriptor_action="run",
             )
             self.present(
-                "The laptop-crash drill interrupted after the fixture pages reached the door."
+                f"The laptop-crash drill interrupted after the {ingress_label} reached the Door."
             )
             raise OperatorError(ErrorCode.RUN_INTERRUPTED, detail=f"Saved run receipt: {receipt}")
         command = [
@@ -693,8 +752,20 @@ class OperatorSurface:
             "--run-root",
             str(run_root),
         ]
+        command.extend(
+            _real_ingress_argv(
+                submission_folder=submission_folder,
+                submission_manifest=submission_manifest,
+                data_gate_policy=data_gate_policy,
+            )
+        )
         completed = self.runner(
-            command, cwd=self.workspace, capture_output=True, text=True, check=False
+            command,
+            cwd=self.workspace,
+            capture_output=True,
+            text=True,
+            check=False,
+            env=_stage_environment(),
         )
         if completed.returncode not in {0, 3}:
             receipt = self._write_action(
@@ -702,6 +773,7 @@ class OperatorSurface:
                 {
                     "summary": "Run ended before its Armarium record was available.",
                     "state": "failed",
+                    "ingress": ingress_mode,
                     "run_root": str(run_root),
                     "run_id": run_id,
                     "scenario": scenario,
@@ -715,6 +787,12 @@ class OperatorSurface:
             export_payload = self._armarium_export(run_root, run_id)
             aggregate = export_payload["aggregate"]
             state = str(aggregate["status"])
+            page_records = export_payload.get("pages", [])
+            # A list, or the count is refused: `pages` arrives from an artifact
+            # on disk. Keep this validation inside the read/validation block so
+            # a malformed record cannot publish the happy-path receipt first.
+            if not isinstance(page_records, list):
+                raise ValueError("the Armarium export's page record is not a list")
         except Exception as error:
             self._record_failure("run", "armarium-record-unreadable", str(error))
             raise OperatorError(ErrorCode.RUN_FAILED, detail=str(error)) from error
@@ -723,6 +801,7 @@ class OperatorSurface:
             {
                 "summary": f"Run finished with recorded state: {state}.",
                 "state": state,
+                "ingress": ingress_mode,
                 "run_root": str(run_root),
                 "run_id": run_id,
                 "scenario": scenario,
@@ -731,27 +810,25 @@ class OperatorSurface:
             },
             descriptor_action="run",
         )
-        page_records = export_payload.get("pages", [])
-        # A list, or the count is refused: `pages` arrives from an artifact on
-        # disk, and len() of a string or mapping is a confident wrong page
-        # count on the one line that says whether a parish was accounted for.
-        if not isinstance(page_records, list):
-            raise OperatorError(
-                ErrorCode.RUN_FAILED,
-                detail="the Armarium export's page record is not a list; the page count "
-                "cannot be reported from it",
-            )
         expected = export_payload.get("expected_acts")
         expected_on_screen = f"{expected} total" if expected is not None else "total not recorded"
         expected_in_notice = (
             f"{expected} act(s) accounted for" if expected is not None else "act total not recorded"
         )
-        self.present(
-            f"Pages accounted for: {', '.join(pages)} ({len(page_records)} total). "
-            f"Acts accounted for: {', '.join(acts)} ({expected_on_screen})."
-        )
+        if submission_folder is None:
+            pages, acts, _declared_ok = _declared_work(self.workspace)
+            self.present(
+                f"Pages accounted for: {', '.join(pages)} ({len(page_records)} total). "
+                f"Acts accounted for: {', '.join(acts)} ({expected_on_screen})."
+            )
+        else:
+            # The data-handling policy permits counts here, not real names.
+            self.present(
+                f"Pages accounted for: {len(page_records)} total. "
+                f"Acts accounted for: {expected_on_screen}."
+            )
         if state == "complete":
-            self.present("Run complete. The named pages and acts reached the Armarium record.")
+            self.present("Run complete. Its pages and acts reached the Armarium record.")
             self.present(f"Saved run receipt: {receipt}")
             self._notify(
                 "milestone",
@@ -802,7 +879,7 @@ class OperatorSurface:
         except Exception as error:
             raise OperatorError(ErrorCode.EXPORT_MISSING, detail=str(error)) from error
         exports_dir = self.state_root / "exports"
-        staged = exports_dir / f".{recorded_id}-armarium-base.staged"
+        staged = exports_dir / (f".{recorded_id}-armarium-base-{secrets.token_hex(16)}.staged")
         try:
             exports_dir.mkdir(parents=True, exist_ok=True)
             self._write_base_armarium_bundle(run_root, recorded_id, staged)
@@ -814,10 +891,15 @@ class OperatorSurface:
             # receipt still vouches for (GOVERNANCE 4's argument, applied to the
             # bundle this stage itself produces).
             destination = exports_dir / f"{recorded_id}-armarium-base-{digest}.zip"
-            if destination.exists():
-                staged.unlink()
-            else:
-                staged.replace(destination)
+            try:
+                os.link(staged, destination, follow_symlinks=False)
+            except FileExistsError:
+                if _sha256_regular_file_nofollow(destination) != digest:
+                    raise OSError(
+                        "the existing content-addressed export does not contain "
+                        "the bytes its name claims"
+                    ) from None
+            staged.unlink()
         except (OSError, zipfile.BadZipFile) as error:
             staged.unlink(missing_ok=True)
             self._record_failure("export", "local-copy-failed", str(error))
@@ -1317,10 +1399,19 @@ class OperatorSurface:
             for line in record_error.render().splitlines():
                 self.present(line)
 
-    def _run_one_stage(self, run_root: Path, run_id: str, scenario: str, program: str) -> None:
+    def _run_door_stage(
+        self,
+        run_root: Path,
+        run_id: str,
+        scenario: str,
+        *,
+        submission_folder: str | Path | None = None,
+        submission_manifest: str | Path | None = None,
+        data_gate_policy: str | Path | None = None,
+    ) -> None:
         command = [
             sys.executable,
-            str(self.workspace / program),
+            str(self.workspace / DOOR_PROGRAM),
             "--run-root",
             str(run_root),
             "--run-id",
@@ -1328,11 +1419,29 @@ class OperatorSurface:
             "--scenario",
             scenario,
         ]
+        command.extend(
+            _real_ingress_argv(
+                submission_folder=submission_folder,
+                submission_manifest=submission_manifest,
+                data_gate_policy=data_gate_policy,
+            )
+        )
         completed = self.runner(
-            command, cwd=self.workspace, capture_output=True, text=True, check=False
+            command,
+            cwd=self.workspace,
+            capture_output=True,
+            text=True,
+            check=False,
+            env=_stage_environment(),
         )
         if completed.returncode not in {0, 3}:
             raise OperatorError(ErrorCode.RUN_FAILED, detail=completed.stderr or completed.stdout)
+        # Match the orchestrator's normal Door path: an admitted-but-partial
+        # Door reports its private refusal record on stderr even when its exit
+        # is accepted. The crash drill must not replace that security result
+        # with only its generic interruption message.
+        for line in completed.stderr.rstrip().splitlines():
+            self.present(line)
 
     def _armarium_export(self, run_root: Path, run_id: str) -> dict[str, Any]:
         tree = RunTree(run_root, run_id)
@@ -1353,9 +1462,6 @@ class OperatorSurface:
     def _write_base_armarium_bundle(self, run_root: Path, run_id: str, destination: Path) -> None:
         tree = RunTree(run_root, run_id)
         source = tree.root
-        run_authority = source / "run.json"
-        armarium = source / "7_armarium"
-        selected = [run_authority, armarium]
         # **A member of the wrong kind was written as complete, same as a missing one.**
         # The loop below is `if is_file() ... elif is_dir()`, so an absent `run.json`
         # matched neither arm, contributed nothing, and the receipt still recorded
@@ -1372,60 +1478,49 @@ class OperatorSurface:
         #
         # GOVERNANCE 2: "a partial result is visibly partial; 'complete' is refused
         # unless everything reconciles."
-        wrong = []
-        if run_authority.is_symlink():
-            wrong.append("run.json is a symbolic link, not a regular file")
-        elif not run_authority.is_file():
-            wrong.append(
-                "run.json is missing"
-                if not run_authority.exists()
-                else "run.json is not a regular file"
-            )
-        if armarium.is_symlink():
-            wrong.append("7_armarium is a symbolic link, not a directory")
-        elif not armarium.is_dir():
-            wrong.append(
-                "7_armarium is missing"
-                if not armarium.exists()
-                else "7_armarium is not a directory"
-            )
-        if wrong:
-            raise OperatorError(
-                ErrorCode.EXPORT_FAILED,
-                detail=(
-                    "the Armarium evidence bundle cannot be written as complete: "
-                    + "; ".join(wrong)
-                ),
-            )
-        temporary = destination.with_name(f".{destination.name}.tmp")
+        temporary = destination.with_name(f".{destination.name}.tmp-{secrets.token_hex(16)}")
+        root_descriptor: int | None = None
+        run_descriptor: int | None = None
+        armarium_descriptor: int | None = None
         try:
-            refused: list[str] = []
-            with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
-                for entry in selected:
-                    if entry.is_file():
-                        bundle.write(entry, arcname=f"{run_id}/{entry.relative_to(source)}")
-                    elif entry.is_dir():
-                        for member in sorted(entry.rglob("*")):
-                            if member.is_symlink():
-                                refused.append(str(member.relative_to(source)))
-                            elif member.is_dir():
-                                continue
-                            elif member.is_file():
-                                bundle.write(
-                                    member, arcname=f"{run_id}/{member.relative_to(source)}"
-                                )
-                            else:
-                                refused.append(str(member.relative_to(source)))
-            if refused:
+            root_descriptor = _open_bundle_root(source)
+            run_descriptor = _open_expected_member(
+                root_descriptor, "run.json", directory=False, label="run.json"
+            )
+            armarium_descriptor = _open_expected_member(
+                root_descriptor, "7_armarium", directory=True, label="7_armarium"
+            )
+            descriptor = os.open(
+                temporary,
+                os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+            )
+            archive_names: dict[str, str] = {}
+            with (
+                os.fdopen(descriptor, "w+b") as temporary_handle,
+                zipfile.ZipFile(temporary_handle, "w", compression=zipfile.ZIP_DEFLATED) as bundle,
+            ):
+                _write_bundle_descriptor(
+                    bundle, run_descriptor, f"{run_id}/run.json", archive_names
+                )
+                _write_bundle_directory(
+                    bundle,
+                    armarium_descriptor,
+                    f"{run_id}/7_armarium",
+                    "7_armarium",
+                    archive_names,
+                )
+            try:
+                os.link(temporary, destination, follow_symlinks=False)
+            except FileExistsError as error:
                 raise OperatorError(
                     ErrorCode.EXPORT_FAILED,
-                    detail=(
-                        "the Armarium evidence bundle cannot be written as complete: "
-                        + "; ".join(f"{name} is not a regular file" for name in sorted(refused))
-                    ),
-                )
-            temporary.replace(destination)
+                    detail=f"the evidence bundle destination already exists: {destination}",
+                ) from error
         finally:
+            for open_descriptor in (armarium_descriptor, run_descriptor, root_descriptor):
+                if open_descriptor is not None:
+                    os.close(open_descriptor)
             temporary.unlink(missing_ok=True)
 
     def _provider_for_record(
@@ -1865,6 +1960,273 @@ def _pod_from_record(value: dict[str, Any]) -> PodRecord:
         ) from error
 
 
+def _stage_environment() -> dict[str, str]:
+    """Pass the ordinary runtime environment, but never upload-only credentials.
+
+    The S3 keys authorize the operator's separate transfer verb. Pipeline stages
+    neither upload nor inspect a network volume, so inheriting those keys only
+    widens their reach while they decode caller-supplied material.
+    """
+
+    environment = dict(os.environ)
+    for name in _TRANSFER_CREDENTIAL_ENV:
+        environment.pop(name, None)
+    return environment
+
+
+def _sha256_regular_file_nofollow(path: Path) -> str:
+    """Hash one anchored regular file, refusing a link or a concurrent rewrite."""
+
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    except OSError as error:
+        raise OSError(
+            f"the existing content-addressed export is not a readable file: {path}"
+        ) from error
+    digest = hashlib.sha256()
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise OSError(f"the existing content-addressed export is not a regular file: {path}")
+        with os.fdopen(descriptor, "rb", closefd=False) as handle:
+            while chunk := handle.read(_COPY_CHUNK_BYTES):
+                digest.update(chunk)
+        after = os.fstat(descriptor)
+        observed_before = (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+        )
+        observed_after = (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        )
+        if observed_after != observed_before:
+            raise OSError(f"the existing content-addressed export changed while read: {path}")
+        return digest.hexdigest()
+    finally:
+        os.close(descriptor)
+
+
+def _open_bundle_root(source: Path) -> int:
+    """Anchor the run root itself before opening either required member."""
+
+    try:
+        named = os.stat(source, follow_symlinks=False)
+        if not stat.S_ISDIR(named.st_mode):
+            raise OSError("not a directory")
+        descriptor = os.open(
+            source,
+            os.O_RDONLY | os.O_NONBLOCK | os.O_DIRECTORY | os.O_NOFOLLOW,
+        )
+    except OSError as error:
+        raise OperatorError(
+            ErrorCode.EXPORT_FAILED,
+            detail=f"the Armarium evidence run root cannot be opened safely: {source}: {error}",
+        ) from error
+    opened = os.fstat(descriptor)
+    if (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino):
+        os.close(descriptor)
+        raise OperatorError(
+            ErrorCode.EXPORT_FAILED,
+            detail="the Armarium evidence run root changed between check and open",
+        )
+    return descriptor
+
+
+def _open_expected_member(
+    parent_descriptor: int,
+    name: str,
+    *,
+    directory: bool,
+    label: str,
+) -> int:
+    """Open one member relative to an anchored directory, without following links."""
+
+    expected_kind = "directory" if directory else "regular file"
+    try:
+        named = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
+    except FileNotFoundError as error:
+        raise OperatorError(
+            ErrorCode.EXPORT_FAILED,
+            detail=(
+                f"the Armarium evidence bundle cannot be written as complete: {label} is missing"
+            ),
+        ) from error
+    if stat.S_ISLNK(named.st_mode):
+        raise OperatorError(
+            ErrorCode.EXPORT_FAILED,
+            detail=(
+                "the Armarium evidence bundle cannot be written as complete: "
+                f"{label} is a symbolic link, not a {expected_kind}"
+            ),
+        )
+    expected = stat.S_ISDIR(named.st_mode) if directory else stat.S_ISREG(named.st_mode)
+    if not expected:
+        raise OperatorError(
+            ErrorCode.EXPORT_FAILED,
+            detail=(
+                "the Armarium evidence bundle cannot be written as complete: "
+                f"{label} is not a {expected_kind}"
+            ),
+        )
+    flags = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW
+    if directory:
+        flags |= os.O_DIRECTORY
+    try:
+        descriptor = os.open(name, flags, dir_fd=parent_descriptor)
+    except OSError as error:
+        raise OperatorError(
+            ErrorCode.EXPORT_FAILED,
+            detail=(
+                "the Armarium evidence bundle cannot be written as complete: "
+                f"{label} changed before it could be opened safely"
+            ),
+        ) from error
+    opened = os.fstat(descriptor)
+    if (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino):
+        os.close(descriptor)
+        raise OperatorError(
+            ErrorCode.EXPORT_FAILED,
+            detail=(
+                "the Armarium evidence bundle cannot be written as complete: "
+                f"{label} changed between check and open"
+            ),
+        )
+    return descriptor
+
+
+def _register_archive_name(archive_name: str, archive_names: dict[str, str]) -> None:
+    """Refuse byte-distinct members that extract to one default-APFS name."""
+
+    collision_key = unicodedata.normalize("NFD", archive_name).casefold()
+    prior = archive_names.get(collision_key)
+    if prior is not None and prior != archive_name:
+        raise OperatorError(
+            ErrorCode.EXPORT_FAILED,
+            detail=(
+                "the Armarium evidence bundle has names that collide on the default "
+                f"macOS filesystem: {prior!r} and {archive_name!r}"
+            ),
+        )
+    archive_names[collision_key] = archive_name
+
+
+def _write_bundle_descriptor(
+    bundle: zipfile.ZipFile,
+    descriptor: int,
+    archive_name: str,
+    archive_names: dict[str, str],
+) -> None:
+    """Copy one already-anchored regular file and reject an in-place rewrite."""
+
+    _register_archive_name(archive_name, archive_names)
+    opened = os.fstat(descriptor)
+    with (
+        os.fdopen(os.dup(descriptor), "rb") as input_handle,
+        bundle.open(archive_name, "w", force_zip64=True) as output_handle,
+    ):
+        while chunk := input_handle.read(_COPY_CHUNK_BYTES):
+            output_handle.write(chunk)
+    after = os.fstat(descriptor)
+    observed_opened = (
+        opened.st_dev,
+        opened.st_ino,
+        opened.st_size,
+        opened.st_mtime_ns,
+        opened.st_ctime_ns,
+    )
+    observed_after = (
+        after.st_dev,
+        after.st_ino,
+        after.st_size,
+        after.st_mtime_ns,
+        after.st_ctime_ns,
+    )
+    if observed_after != observed_opened:
+        raise OperatorError(
+            ErrorCode.EXPORT_FAILED,
+            detail=f"the Armarium evidence member changed while copied: {archive_name}",
+        )
+
+
+def _write_bundle_directory(
+    bundle: zipfile.ZipFile,
+    directory_descriptor: int,
+    archive_prefix: str,
+    source_prefix: str,
+    archive_names: dict[str, str],
+) -> None:
+    """Walk one anchored directory using only descriptor-relative opens."""
+
+    before = os.fstat(directory_descriptor)
+    try:
+        names = sorted(os.listdir(directory_descriptor))
+    except OSError as error:
+        raise OperatorError(
+            ErrorCode.EXPORT_FAILED,
+            detail=f"the Armarium evidence bundle cannot read {source_prefix}: {error}",
+        ) from error
+    for name in names:
+        label = f"{source_prefix}/{name}"
+        try:
+            named = os.stat(name, dir_fd=directory_descriptor, follow_symlinks=False)
+        except OSError as error:
+            raise OperatorError(
+                ErrorCode.EXPORT_FAILED,
+                detail=f"the Armarium evidence bundle cannot read {label}: {error}",
+            ) from error
+        if stat.S_ISDIR(named.st_mode):
+            child = _open_expected_member(directory_descriptor, name, directory=True, label=label)
+            try:
+                _write_bundle_directory(
+                    bundle,
+                    child,
+                    f"{archive_prefix}/{name}",
+                    label,
+                    archive_names,
+                )
+            finally:
+                os.close(child)
+        elif stat.S_ISREG(named.st_mode):
+            child = _open_expected_member(directory_descriptor, name, directory=False, label=label)
+            try:
+                _write_bundle_descriptor(bundle, child, f"{archive_prefix}/{name}", archive_names)
+            finally:
+                os.close(child)
+        else:
+            raise OperatorError(
+                ErrorCode.EXPORT_FAILED,
+                detail=(
+                    "the Armarium evidence bundle cannot be written as complete: "
+                    f"{label} is not a regular file"
+                ),
+            )
+    after = os.fstat(directory_descriptor)
+    observed_before = (
+        before.st_dev,
+        before.st_ino,
+        before.st_mtime_ns,
+        before.st_ctime_ns,
+    )
+    observed_after = (
+        after.st_dev,
+        after.st_ino,
+        after.st_mtime_ns,
+        after.st_ctime_ns,
+    )
+    if observed_after != observed_before:
+        raise OperatorError(
+            ErrorCode.EXPORT_FAILED,
+            detail=f"the Armarium evidence directory changed while copied: {source_prefix}",
+        )
+
+
 def _repository_commit(workspace: Path) -> str:
     try:
         result = subprocess.run(
@@ -1902,6 +2264,24 @@ def _armarium_reference(run_root: Path, run_id: str) -> str:
 
 def _run_program(*args, **kwargs) -> subprocess.CompletedProcess[str]:  # type: ignore[no-untyped-def]
     return subprocess.run(*args, **kwargs)
+
+
+def _real_ingress_argv(
+    *,
+    submission_folder: str | Path | None,
+    submission_manifest: str | Path | None,
+    data_gate_policy: str | Path | None,
+) -> list[str]:
+    """Bind paths to the operator's cwd without hiding symlinks from the Door."""
+    argv: list[str] = []
+    for flag, value in (
+        ("--submission-folder", submission_folder),
+        ("--submission-manifest", submission_manifest),
+        ("--data-gate-policy", data_gate_policy),
+    ):
+        if value is not None:
+            argv.extend((flag, str(Path(value).absolute())))
+    return argv
 
 
 def _display_usd(amount: Decimal) -> str:

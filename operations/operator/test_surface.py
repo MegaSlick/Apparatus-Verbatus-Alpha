@@ -30,6 +30,7 @@ from operations.pod.models import (
 from operations.pod.shutdown import CloseReport, VerifiedShutdown
 from operations.pod.spend import load_spend_policy
 from operations.submit import gate
+from operations.submit import submit as submission_door
 from operations.submit.submit import build_manifest, walk_folder
 
 from . import cli, dry_run, entry, notify_bridge
@@ -38,10 +39,12 @@ from .errors import ErrorCode, OperatorError
 from .fakes import LocalFixtureObjectStore, OperatorFakeProvider
 from .records import MAX_RECORD_BYTES, DescriptorStore, ReceiptStore, RecordError, sha256_file
 from .surface import (
+    DOOR_PROGRAM,
     FIXTURE_BILLING_CUTOFF_MARGIN_SECONDS,
     OPERATOR_CLOSE_PREFIX,
     Faults,
     OperatorSurface,
+    _declared_work,
     _pod_from_record,
     _pod_record,
     _repository_commit,
@@ -1288,6 +1291,317 @@ def test_sealed_manifest_upload_refuses_a_new_policy_instead_of_ignoring_it(
     assert "existing sealed record already carries the policy" in capsys.readouterr().out
 
 
+def test_cli_run_carries_real_ingress_options_to_the_operator_surface(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    observed: dict[str, object] = {}
+
+    class ObservedSurface:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def run(self, **kwargs) -> None:  # type: ignore[no-untyped-def]
+            observed.update(kwargs)
+
+    monkeypatch.setattr(cli, "OperatorSurface", ObservedSurface)
+    source = tmp_path / "approved" / "source"
+    ledger = tmp_path / "approved" / "ledger.json"
+    policy = tmp_path / "policy.json"
+
+    assert (
+        cli.main(
+            [
+                "--workspace",
+                str(tmp_path),
+                "run",
+                "--run-id",
+                "real-run",
+                "--submission-folder",
+                str(source),
+                "--submission-manifest",
+                str(ledger),
+                "--data-gate-policy",
+                str(policy),
+            ]
+        )
+        == 0
+    )
+    assert observed["submission_folder"] == source
+    assert observed["submission_manifest"] == ledger
+    assert observed["data_gate_policy"] == policy
+
+
+@pytest.mark.parametrize("orphan", ["submission_manifest", "data_gate_policy"])
+def test_run_refuses_a_real_ingress_control_without_a_submission_folder(
+    tmp_path: Path, orphan: str
+) -> None:
+    surface, observed = _recording_surface(tmp_path, faults=Faults(laptop_crash=True))
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.run(run_id="orphan-real-option", **{orphan: tmp_path / "value"})
+
+    assert refusal.value.code is ErrorCode.INVALID_COMMAND
+    assert f"--{orphan.replace('_', '-')}" in str(refusal.value.detail)
+    assert "--submission-folder" in str(refusal.value.detail)
+    assert not observed, "the fault drill launched the Door before validating its option shape"
+
+
+def _recording_surface(
+    tmp_path: Path, *, faults: Faults | None = None, output: list[str] | None = None
+) -> tuple[OperatorSurface, list[tuple[list[str], Path | None]]]:
+    """Record child launches; successful stubs let crash drills reach interruption."""
+
+    observed: list[tuple[list[str], Path | None]] = []
+
+    def runner(command, **kwargs):  # type: ignore[no-untyped-def]
+        observed.append((command, kwargs.get("cwd")))
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    surface = OperatorSurface(
+        ROOT,
+        tmp_path / "operator-state",
+        provider=OperatorFakeProvider(now=lambda: START),
+        now=lambda: START,
+        present=(output if output is not None else []).append,
+        faults=faults,
+        runner=runner,
+    )
+    return surface, observed
+
+
+def _argv_value(command: list[str], flag: str) -> str:
+    assert flag in command, f"{flag} never reached the child's argv"
+    return command[command.index(flag) + 1]
+
+
+def test_real_ingress_paths_are_made_absolute_against_the_operators_own_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Relative input paths bind before the child changes cwd to the workspace."""
+
+    elsewhere = tmp_path / "operator-home"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    surface, observed = _recording_surface(tmp_path)
+
+    with pytest.raises(OperatorError):
+        surface.run(
+            run_id="relative-real",
+            submission_folder=Path("approved/submitted-pages"),
+            submission_manifest=Path("approved/submission-ledger.json"),
+            data_gate_policy=Path("data-gate-policy.json"),
+        )
+
+    command, cwd = observed[0]
+    assert cwd == ROOT, "the child no longer runs from the workspace; re-read this test's premise"
+    assert _argv_value(command, "--submission-folder") == str(
+        elsewhere / "approved" / "submitted-pages"
+    )
+    assert _argv_value(command, "--submission-manifest") == str(
+        elsewhere / "approved" / "submission-ledger.json"
+    )
+    assert _argv_value(command, "--data-gate-policy") == str(elsewhere / "data-gate-policy.json")
+
+
+def test_real_ingress_absolutization_preserves_a_symlink_for_the_doors_gate(
+    tmp_path: Path,
+) -> None:
+    """The operator must not erase a redirect before the Door inspects it."""
+
+    approved = tmp_path / "approved"
+    actual = approved / "actual-pages"
+    actual.mkdir(parents=True)
+    submitted_link = approved / "submitted-link"
+    submitted_link.symlink_to(actual, target_is_directory=True)
+    surface, observed = _recording_surface(tmp_path)
+
+    with pytest.raises(OperatorError):
+        surface.run(run_id="symlink-real", submission_folder=submitted_link)
+
+    command, _cwd = observed[0]
+    assert Path(_argv_value(command, "--submission-folder")) == submitted_link
+    assert Path(_argv_value(command, "--submission-folder")).is_symlink()
+
+
+def test_the_laptop_crash_drill_still_carries_real_ingress_to_the_door(tmp_path: Path) -> None:
+    """A real-route fault drill must not fall back to fixture ingress."""
+
+    source = tmp_path / "approved" / "submitted-pages"
+    manifest = tmp_path / "approved" / "submission-ledger.json"
+    policy = tmp_path / "data-gate-policy.json"
+    messages: list[str] = []
+    surface, observed = _recording_surface(
+        tmp_path, faults=Faults(laptop_crash=True), output=messages
+    )
+
+    with pytest.raises(OperatorError) as interruption:
+        surface.run(
+            run_id="crash-real",
+            submission_folder=source,
+            submission_manifest=manifest,
+            data_gate_policy=policy,
+        )
+
+    assert interruption.value.code is ErrorCode.RUN_INTERRUPTED
+    command, _cwd = observed[0]
+    assert command[1] == str(ROOT / DOOR_PROGRAM), "the drill no longer runs the Door"
+    assert _argv_value(command, "--submission-folder") == str(source)
+    assert _argv_value(command, "--submission-manifest") == str(manifest)
+    assert _argv_value(command, "--data-gate-policy") == str(policy)
+    interrupted = surface.receipts.read(surface._descriptor_receipt("run"))["payload"]
+    assert interrupted["ingress"] == "real"
+    assert interrupted["last_observed_work"] == "The real submission's pages reached the Door."
+    assert any("real submission reached the Door" in line for line in messages)
+    assert not any("fixture pages" in line for line in messages)
+
+
+def test_the_laptop_crash_drill_does_not_mask_the_doors_refusal_report(
+    tmp_path: Path,
+) -> None:
+    messages: list[str] = []
+
+    def partial_door(command, **_kwargs):  # type: ignore[no-untyped-def]
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            "",
+            "Private named refusal report: 1_exemplar/artifacts/refusal-report/report.json\n",
+        )
+
+    surface = OperatorSurface(
+        ROOT,
+        tmp_path / "operator-state",
+        present=messages.append,
+        faults=Faults(laptop_crash=True),
+        runner=partial_door,
+    )
+
+    with pytest.raises(OperatorError) as interruption:
+        surface.run(
+            run_id="partial-door-crash",
+            submission_folder=tmp_path / "approved" / "submitted-pages",
+        )
+
+    assert interruption.value.code is ErrorCode.RUN_INTERRUPTED
+    assert any("Private named refusal report:" in line for line in messages)
+    assert any("laptop-crash drill interrupted" in line for line in messages)
+
+
+def test_pipeline_children_do_not_receive_upload_only_credentials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    observed_environment: dict[str, str] = {}
+    monkeypatch.setenv("RUNPOD_S3_ACCESS_KEY", "upload-access-secret")
+    monkeypatch.setenv("RUNPOD_S3_SECRET_KEY", "upload-secret-secret")
+    monkeypatch.setenv("VERBATUS_STAGE_TEST_SENTINEL", "preserved")
+
+    def record_environment(command, **kwargs):  # type: ignore[no-untyped-def]
+        observed_environment.update(kwargs["env"])
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    surface = OperatorSurface(
+        ROOT,
+        tmp_path / "operator-state",
+        present=lambda _line="": None,
+        faults=Faults(laptop_crash=True),
+        runner=record_environment,
+    )
+
+    with pytest.raises(OperatorError) as interruption:
+        surface.run(run_id="credential-boundary")
+
+    assert interruption.value.code is ErrorCode.RUN_INTERRUPTED
+    assert "RUNPOD_S3_ACCESS_KEY" not in observed_environment
+    assert "RUNPOD_S3_SECRET_KEY" not in observed_environment
+    assert observed_environment["VERBATUS_STAGE_TEST_SENTINEL"] == "preserved"
+
+
+def test_a_failed_real_run_receipt_names_real_ingress(tmp_path: Path) -> None:
+    """A receipt may retain fixture configuration without calling it the input."""
+
+    observed: list[list[str]] = []
+
+    def fail_after_recording(command, **_kwargs):  # type: ignore[no-untyped-def]
+        observed.append(command)
+        return subprocess.CompletedProcess(command, 2, "", "the real Designator refused")
+
+    surface = OperatorSurface(
+        ROOT,
+        tmp_path / "operator-state",
+        present=lambda _line="": None,
+        runner=fail_after_recording,
+    )
+    with pytest.raises(OperatorError) as failure:
+        surface.run(
+            run_id="failed-real",
+            submission_folder=tmp_path / "approved" / "submitted-pages",
+            submission_manifest=tmp_path / "approved" / "submission-ledger.json",
+        )
+
+    assert failure.value.code is ErrorCode.RUN_FAILED
+    assert observed
+    receipt = surface.receipts.read(surface._descriptor_receipt("run"))["payload"]
+    assert receipt["ingress"] == "real"
+
+
+def test_a_real_run_is_never_narrated_with_the_declared_fixtures_pages(tmp_path: Path) -> None:
+    """Fixture names are false for real runs; policy also keeps real names off-screen."""
+
+    folder = tmp_path / "approved" / "submitted-pages"
+    folder.mkdir(parents=True)
+    for name in ("page-1.png", "page-2.png"):
+        (folder / name).write_bytes(b"not really a page, and never opened here")
+    manifest = tmp_path / "approved" / "submission-ledger.json"
+    manifest.write_bytes(canonical_bytes(build_manifest(walk_folder(folder))))
+    messages: list[str] = []
+    surface, _observed = _recording_surface(tmp_path, output=messages)
+
+    with pytest.raises(OperatorError):
+        surface.run(
+            run_id="narration",
+            submission_folder=folder,
+            submission_manifest=manifest,
+            data_gate_policy=tmp_path / "data-gate-policy.json",
+        )
+
+    declared_pages, declared_acts, declared_ok = _declared_work(ROOT)
+    assert declared_ok, "the declared fixture is unreadable; this test proves nothing"
+    for name in declared_pages + declared_acts:
+        assert not any(name in line for line in messages), (
+            f"a real run was narrated with the declared fixture's {name!r}"
+        )
+    assert any("extent is recorded by the submitted filename ledger" in line for line in messages)
+    for name in ("page-1.png", "page-2.png"):
+        assert not any(name in line for line in messages), (
+            "a submitted filename reached the terminal; the policy's logging rule allows "
+            "counts and the private report location there, not real names"
+        )
+
+
+def test_the_operator_does_not_read_the_ledger_before_the_door(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Door checks storage policy before any operator-path ledger read."""
+
+    folder = tmp_path / "approved" / "submitted-pages"
+    folder.mkdir(parents=True)
+    manifest = tmp_path / "approved" / "submission-ledger.json"
+    manifest.write_text("{not canonical json", encoding="utf-8")
+    monkeypatch.setattr(
+        submission_door,
+        "load_manifest",
+        lambda _path: pytest.fail("the operator read the ledger before the Door's gate"),
+    )
+    messages: list[str] = []
+    surface, observed = _recording_surface(tmp_path, output=messages)
+
+    with pytest.raises(OperatorError):
+        surface.run(run_id="bad-ledger", submission_folder=folder, submission_manifest=manifest)
+
+    assert any("Door checks against the data-handling policy" in line for line in messages)
+    assert observed, "the run never reached the Door, which is the only thing that can refuse it"
+
+
 def test_console_interrupt_never_prints_a_raw_traceback(
     capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1572,6 +1886,9 @@ def test_a_non_list_pages_record_is_a_named_run_failure_not_a_character_count(
 
     assert failure.value.code is ErrorCode.RUN_FAILED
     assert "not a list" in (failure.value.detail or "")
+    receipt = surface.receipts.read(surface._descriptor_receipt("run"))["payload"]
+    assert receipt["state"] == "armarium-record-unreadable"
+    assert receipt["state"] != "complete"
 
 
 @pytest.mark.parametrize("member", ("pages", "non_delivered"))
@@ -1728,6 +2045,53 @@ def test_re_exporting_a_run_after_the_tree_changed_does_not_overwrite_the_first_
     assert first_receipt["sha256"] == hashlib.sha256(b"first export bytes").hexdigest()
     assert first_receipt["sha256"] == sha256_file(first_bundle)
     assert second_receipt["sha256"] == sha256_file(second_bundle)
+
+
+def test_export_refuses_a_symlink_at_an_existing_content_addressed_bundle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    surface = _surface(tmp_path)
+    run_root = tmp_path / "runs"
+    run_id = "linked-content-address"
+    surface._write_action(
+        "run",
+        {
+            "summary": "test run",
+            "state": "complete",
+            "run_root": str(run_root),
+            "run_id": run_id,
+        },
+        descriptor_action="run",
+    )
+    surface._armarium_export = lambda _root, _run_id: {  # type: ignore[method-assign]
+        "aggregate": {"status": "complete", "reasons": []},
+        "pages": [],
+        "delivered": [],
+        "non_delivered": [],
+    }
+    bundle_bytes = b"new evidence bundle"
+
+    def fake_bundle(self, _root, _run_id, destination):  # type: ignore[no-untyped-def]
+        del self
+        destination.write_bytes(bundle_bytes)
+
+    monkeypatch.setattr(OperatorSurface, "_write_base_armarium_bundle", fake_bundle)
+    exports = surface.state_root / "exports"
+    exports.mkdir(parents=True)
+    digest = hashlib.sha256(bundle_bytes).hexdigest()
+    destination = exports / f"{run_id}-armarium-base-{digest}.zip"
+    outside = tmp_path / "outside-existing-file"
+    outside.write_bytes(b"not the evidence bundle")
+    destination.symlink_to(outside)
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.export(run_id=run_id)
+
+    assert refusal.value.code is ErrorCode.EXPORT_FAILED
+    assert outside.read_bytes() == b"not the evidence bundle"
+    assert destination.is_symlink()
+    failure = surface.receipts.read(surface._descriptor_receipt("export"))["payload"]
+    assert failure["state"] == "local-copy-failed"
 
 
 def test_exporting_a_run_record_with_no_saved_run_root_fails_as_export_missing_not_unexpected(
@@ -2399,6 +2763,85 @@ def test_an_evidence_bundle_refuses_a_symlinked_armarium_member(tmp_path: Path) 
     assert "7_armarium/export.json is not a regular file" in (refusal.value.detail or "")
     assert not destination.exists(), "a refused bundle must not leave a file behind"
     assert not destination.with_name(f".{destination.name}.tmp").exists()
+
+
+def test_evidence_bundle_does_not_follow_its_old_predictable_temporary_name(
+    tmp_path: Path,
+) -> None:
+    surface = _surface(tmp_path)
+    run_root = tmp_path / "runs"
+    run_id = "temporary-link-race"
+    root = run_root / run_id
+    armarium = root / "7_armarium"
+    armarium.mkdir(parents=True)
+    (root / "run.json").write_text("{}", encoding="utf-8")
+    (armarium / "export.json").write_text("{}", encoding="utf-8")
+    destination = tmp_path / "bundle.zip"
+    victim = tmp_path / "must-not-be-truncated"
+    victim.write_bytes(b"outside bytes")
+    predictable = destination.with_name(f".{destination.name}.tmp")
+    predictable.symlink_to(victim)
+
+    surface._write_base_armarium_bundle(run_root, run_id, destination)
+
+    assert destination.is_file()
+    assert victim.read_bytes() == b"outside bytes"
+    assert predictable.is_symlink()
+
+
+def test_evidence_bundle_refuses_case_variant_archive_members(tmp_path: Path) -> None:
+    surface = _surface(tmp_path)
+    run_root = tmp_path / "runs"
+    run_id = "case-variant-members"
+    root = run_root / run_id
+    armarium = root / "7_armarium"
+    armarium.mkdir(parents=True)
+    (root / "run.json").write_text("{}", encoding="utf-8")
+    (armarium / "Result.json").write_text("{}", encoding="utf-8")
+    (armarium / "result.json").write_text("{}", encoding="utf-8")
+    destination = tmp_path / "case-collision.zip"
+
+    with pytest.raises(OperatorError) as refusal:
+        surface._write_base_armarium_bundle(run_root, run_id, destination)
+
+    assert refusal.value.code is ErrorCode.EXPORT_FAILED
+    assert "collide on the default macOS filesystem" in (refusal.value.detail or "")
+    assert not destination.exists()
+
+
+def test_evidence_bundle_refuses_a_member_replaced_between_check_and_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    surface = _surface(tmp_path)
+    run_root = tmp_path / "runs"
+    run_id = "member-open-race"
+    root = run_root / run_id
+    armarium = root / "7_armarium"
+    armarium.mkdir(parents=True)
+    (root / "run.json").write_text("{}", encoding="utf-8")
+    member = armarium / "export.json"
+    member.write_text('{"first": true}', encoding="utf-8")
+    replacement = tmp_path / "replacement.json"
+    replacement.write_text('{"replacement": true}', encoding="utf-8")
+    destination = tmp_path / "raced-bundle.zip"
+    real_open = os.open
+    swapped = False
+
+    def replace_before_open(path, flags, *args, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal swapped
+        if path == "export.json" and kwargs.get("dir_fd") is not None and not swapped:
+            swapped = True
+            member.unlink()
+            replacement.replace(member)
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", replace_before_open)
+
+    with pytest.raises(OperatorError) as refusal:
+        surface._write_base_armarium_bundle(run_root, run_id, destination)
+
+    assert "changed between check and open" in (refusal.value.detail or "")
+    assert not destination.exists()
 
 
 def test_the_top_of_the_reviewed_margin_range_passes_through_unchanged(tmp_path: Path) -> None:
