@@ -1,12 +1,4 @@
-"""Over-capacity presentations become explicit holds without killing the stage.
-
-Consult §3.1 makes an over-capacity cluster a named finding plus a ``not-run``
-Perlectio for that logical act. Before this test existed the transport's
-refusal escaped the read loop, so the Perlector exited fatal and *no* act in
-the run was read at all -- a hold shaped like a stage crash, which GOALS 1
-counts as the worse loss. This drives the whole pipeline with a sealed
-capacity of one image, which every act in the fixture exceeds.
-"""
+"""Over-capacity presentations become explicit holds without killing the stage."""
 
 import json
 import subprocess
@@ -62,7 +54,7 @@ def _perlectiones(root):
 
 def test_an_over_capacity_presentation_holds_its_act_without_killing_the_stage(over_capacity_run):
     result, root = over_capacity_run
-    # 2 is this project's fatal exit. A hold is a run outcome, not a crash.
+    # Exit 2 is fatal; a capacity hold is a run outcome rather than a crash.
     assert result.returncode != 2, result.stderr
     records = _perlectiones(root)
     assert records, "the Perlector published nothing at all"
@@ -77,16 +69,13 @@ def test_an_over_capacity_presentation_holds_its_act_without_killing_the_stage(o
         )
         partition_ref = record["payload"]["cross_capture_autopsia"]["partition_ref"]
         assert partition_ref in record["inputs"]
-        # A not-run act names its absence rather than carrying half a reading.
         assert record["payload"]["basis"] == {"regions": [], "testimonia": []}
         assert record["payload"]["dissent"] == []
         assert "text" not in record["payload"]
 
 
 def test_no_reader_pass_is_published_for_an_act_that_never_fit(over_capacity_run):
-    """The capacity question is asked before the dossier is built, so the hold
-    lands ahead of every arm -- not after a lectio-prior has already been read
-    and published from a presentation the establishing pass could not receive."""
+    """Capacity refusal must precede every arm, including the retained prior."""
     _result, root = over_capacity_run
     stage = root / "r" / "4_perlector" / "artifacts"
     assert not (stage / "lectio-prior").exists()

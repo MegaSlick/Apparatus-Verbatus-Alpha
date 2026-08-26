@@ -1,23 +1,9 @@
-"""Unit 19B's first production caller of the Unit 19A partition builder.
+"""Build the run partition and atomic presentation before any Perlector call.
 
-``common/physical_act_partition.py``'s own module docstring records that no
-production stage calls it: 19A left ``build_physical_act_partition`` and
-``source_ledger_from_run`` with no run-tree producer, and a missing active
-member was loud only in theory. This module is that caller for the Perlector.
-
-No run this repository's fixtures produce registers a physical page yet, so
-``capture_alignments`` is always empty here and every local act resolves as
-``image-local-singleton`` (``logical_act_id == act_id``, consult §2.1). Nothing
-here invents multi-capture correspondence; it wires the real 19A builder with
-real run data so a genuinely clustered register -- once a discovery run has
-appended one -- resolves through this exact call, unmodified. Consult §9.1
-assigns the production partition artifact to the Designator; it is built here,
-under the Perlector's own stage, because 19A did not wire a Designator-side
-producer and that wiring is outside this slice's charge. This is recorded as a
-deviation from the consult's final ownership, not a silent relocation: the
-artifact this module publishes is self-contained (register digest, proposal
-seal reference, and every local act, all independently re-verifiable) and
-moving its producer to the Designator later changes nothing it asserts.
+The partition covers the complete proposal seal even when recovery selects one
+act. This read loop has no capture-alignment input, so it refuses any resolved
+physical-act group before publishing a reading rather than reading its local
+members separately.
 """
 
 from __future__ import annotations
@@ -44,16 +30,7 @@ def _source_sha256_of_page(context, page_id: str) -> str:
 
 
 def _verified_source_ledger(context) -> set[str]:
-    """Every submitted capture that has immutable Exemplar page lineage.
-
-    ``run.json`` is the complete submission denominator, not proof that the
-    Exemplar admitted a page from every row: a door refusal remains in that
-    denominator deliberately. The physical-act partition needs the narrower
-    fact "this run can present this capture". Each digest returned here comes
-    from a page artifact re-read through ``RunTree.read_artifact``; a registered
-    cluster member that was submitted but never admitted therefore remains
-    absent and becomes ``cluster-member-absent`` before any Perlectio.
-    """
+    """Exclude submitted captures without immutable Exemplar page lineage."""
     submitted = source_ledger_from_run(context.run)
     verified: set[str] = set()
     for entry in context.tree.build_manifest(EXEMPLAR)["artifacts"]:
@@ -99,36 +76,15 @@ def _local_act_row(context, act: dict[str, Any]) -> dict[str, Any]:
 def build_run_partition(
     context, expected: list[dict[str, Any]]
 ) -> tuple[dict[str, Any] | None, dict[str, str] | None]:
-    """The run's total local-to-logical denominator, sealed as a content-addressed blob.
+    """Seal the complete readable local-to-logical denominator once per run.
 
-    Built once, from every expected act the proposal seal names with a region
-    to partition -- never only the acts one recovery invocation asked to
-    reread -- because the partition's own conservation check
-    (``local_expected_count``) is over that complete set (consult §2.1.7). A
-    ``held`` act's ``evidence`` names its Designator hold record, not a
-    proposal region: its page may never have sealed at all (a door refusal
-    upstream), and the main read loop already acknowledges it as ``not-run``
-    before ever asking this partition for its logical identity (consult
-    §4.7's held-act short circuit). Feeding it in here would ask
-    ``_source_sha256_of_page`` to read a page that was never sealed, over an
-    act nothing downstream needs a logical identity for. The register has no
-    active physical-page members in any run this repository's fixtures
-    produce, so ``capture_alignments`` is empty and every act resolves as a
-    singleton; that path is exercised by 19A's own suite
-    (``common/test_unit19_physical_act_partition.py``) and is not reproduced
-    here.
+    Held acts have hold evidence rather than a sealed source page, so they
+    cannot supply the source digest required by a partition row.
     """
     held = sorted(act["act_id"] for act in expected if act["outcome"] == "held")
     if held:
-        # Consult §2.1.7 defines `local_expected_count` as the number of local
-        # proposal-seal rows, and this partition's is the number of *readable*
-        # ones. The gap is forced -- a held act's page may never have sealed,
-        # so it has no `source_sha256` to give -- but a denominator that is
-        # quietly narrower than the one its contract names is exactly the
-        # silence GOVERNANCE 2 forbids, so the run says which rows it left out
-        # and how many. The consumer that turns this count into an act census
-        # is Unit 19D's Armarium; it reconciles against the proposal seal, and
-        # this line is what tells a reader of the run why the two differ.
+        # The partition count is necessarily narrower than the proposal seal when
+        # held acts have no source page; name the omitted rows instead of hiding it.
         print(
             "non-fatal finding: physical-act partition excludes "
             f"{len(held)} held act(s) from local_expected_count: {', '.join(held)}",
@@ -136,16 +92,8 @@ def build_run_partition(
         )
     local_acts = [_local_act_row(context, act) for act in expected if act["outcome"] != "held"]
     if not local_acts:
-        # Every expected act is held (a whole page refused at the door holds
-        # every act it carried, consult §4.7). Nothing reaches
-        # `logical_act_id_for`/`act_autopsia` in that run -- the read loop's
-        # held branch continues before either is called -- so there is no
-        # logical act here for a partition to denominate, and
-        # `build_physical_act_partition` refuses an empty `local_acts` by
-        # design (consult §2.1.7's "no local expected acts are not a
-        # denominator"). Returning nothing is that same rule, not a bypass of
-        # it: a caller that dereferences either return value with no acts to
-        # read would fail loudly, exactly as it should.
+        # The partition schema refuses an empty denominator, and the read loop
+        # short-circuits every held act before dereferencing these sentinels.
         return None, None
     register_bytes = read_snapshot(context.tree, context.run)
     proposal_seal_ref = context.artifact_ref(
@@ -167,34 +115,11 @@ def build_run_partition(
 
 
 def _refuse_a_partition_this_loop_cannot_read(partition: dict[str, Any]) -> None:
-    """Stop before any Perlectio when the read loop cannot honour the partition.
+    """Stop before publication if the local-act loop cannot honor the denominator.
 
-    Two distinct stops, both required before publication rather than at the act
-    that trips over them, because ``run.py``'s loop publishes each act as it
-    reads it: by the time an unresolvable act is reached, earlier acts already
-    have Perlectiones, and consult §2.1 requires the run to stop *before*
-    Perlector publication, not partway through it.
-
-    1. Any finding at all. §2.1 gives the partition builder ``unresolved-``,
-       ``retracted-`` and ``ambiguous-physical-act`` plus the two lineage codes
-       precisely so an unresolved equivalence relation holds the run; a
-       partition that names one and is then read anyway would publish acts over
-       a denominator it has already said is not total.
-
-    2. Any logical act this loop would read once per member. ``run.py`` walks
-       *local* acts and builds one presentation from one local act's own
-       regions, so a logical act with several members would get one
-       establishing call and one Perlectio per member -- capture-local
-       Perlectiones over one logical act, forbidden shapes §7.9 and §7.15 --
-       and a single-member ``physical-act`` group would present only the
-       captures that member happens to have proposals on rather than every
-       capture the register declares for the component. Neither is reachable
-       today (``capture_alignments`` is empty, so every act resolves as an
-       ``image-local-singleton``), and 19B's charge is the one combined
-       autopsia, not the cross-capture read loop 19C/19D restructure. What this
-       refuses is the *silent* version of that gap: the first run whose
-       register actually clusters would otherwise duplicate the act instead of
-       saying it cannot yet read it.
+    Findings make the partition non-total. Physical-act groups would be visited
+    once per local member, producing capture-local Perlectiones for one logical
+    act even when the group currently has only one proposed member.
     """
     if partition["findings"]:
         codes = sorted({f"{row['code']}:{row['act_id']}" for row in partition["findings"]})
@@ -221,10 +146,8 @@ def _refuse_a_partition_this_loop_cannot_read(partition: dict[str, Any]) -> None
 def logical_act_id_for(partition: dict[str, Any], act_id: str) -> str:
     """This local act's resolved logical identity, or a named refusal.
 
-    A local act absent from ``local_to_logical`` is not a singleton by
-    default (consult §2.1.4): the partition builder already turned every
-    unresolved clustered row into a finding and held, so reaching this call
-    with a genuinely missing row means the caller skipped that hold.
+    A local act absent from ``local_to_logical`` cannot default to a singleton;
+    doing so would bypass the partition's unresolved-cluster findings.
     """
     for row in partition["local_to_logical"]:
         if row["act_id"] == act_id:
@@ -243,16 +166,10 @@ def act_autopsia(
     bases: list[dict[str, Any]],
     page_renders: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """The complete cross-capture presentation for one logical act's captures.
+    """Group every touched page by source capture without asserting visibility.
 
-    One view per distinct capture the act's own regions touch -- exactly one
-    for an ordinary act, and one per page for a far-page continuation, since a
-    continuation's second page is its own submitted capture even though it
-    shares the one local ``act_id``. ``visibility_evidence_refs`` names the
-    same page render every view already presents: the complete act-level
-    occlusion survey producer is Unit 19C's (consult §10.7), so this is
-    provenance a later audit can look at, never a completed visibility claim
-    read by anything downstream today.
+    ``visibility_evidence_refs`` retains page-render provenance only; no
+    downstream consumer treats it as a completed occlusion survey.
     """
     renders_by_page: dict[str, dict[str, Any]] = {}
     for render in page_renders:
@@ -262,15 +179,13 @@ def act_autopsia(
                 f"act {act['act_id']!r} has two different page renders for {page_id!r}"
             )
         renders_by_page[page_id] = render
-    pages = sorted({basis["source_page_id"] for basis in bases})
     pages_by_capture: dict[str, list[str]] = {}
-    for page_id in pages:
+    for page_id in sorted({basis["source_page_id"] for basis in bases}):
         pages_by_capture.setdefault(_source_sha256_of_page(context, page_id), []).append(page_id)
     views = []
-    required: list[str] = []
-    for source_sha256 in sorted(pages_by_capture):
+    required = sorted(pages_by_capture)
+    for source_sha256 in required:
         capture_pages = pages_by_capture[source_sha256]
-        required.append(source_sha256)
         capture_renders = []
         for page_id in capture_pages:
             render = renders_by_page.get(page_id)
@@ -288,21 +203,8 @@ def act_autopsia(
                 "source_sha256": source_sha256,
                 "page_ids": capture_pages,
                 "local_act_ids": [act["act_id"]],
-                # Not deduplicated by content: a recovery crop and its
-                # original proposal can cut different rectangles of an
-                # ink-free page that encode to byte-identical PNGs, and
-                # `dossier.regions`/the delivered pixel list stay one row per
-                # region regardless (consult §3.1) -- collapsing the pair
-                # here would under-deliver a region the reader is still owed
-                # its own image slot for.
-                # The digest the Designator sealed on the region, not one
-                # re-derived from whatever is on disk now: `input_ref` hashes
-                # the bytes it finds, so a reference built that way agrees with
-                # the file by construction and can never disagree with it.
-                # `atomic_delivered_pixels` checks a delivered image against
-                # this reference, and that check is only worth making against
-                # the upstream claim (`verify_region` has already proved the
-                # two agree at this point in the loop).
+                # Preserve one slot per region even when different crops encode
+                # identically, and retain the upstream digest for delivery recheck.
                 "region_refs": [
                     {"relative_path": basis["image_path"], "sha256": basis["image_sha256"]}
                     for basis in bases

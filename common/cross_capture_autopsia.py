@@ -53,20 +53,7 @@ def _ref(value: Any, what: str) -> dict[str, str]:
 
 
 def _ref_list(value: Any, what: str) -> list[dict[str, str]]:
-    """Every image reference a view names, kept at its delivered cardinality.
-
-    Two distinct regions can legitimately cut byte-identical crops -- an
-    ink-free page's several recovery attempts over blank ground are the case
-    this exists for -- and content-addressed storage then gives them the same
-    ``relative_path``/``sha256``. That is not a caller repeating one
-    reference; it is two references that happen to match, and each still
-    names a real basis the reader must receive its own image slot for
-    (``dossier.regions`` and the delivered pixel list stay one-to-one with
-    the region set upstream of this schema, consult §3.1). Collapsing or
-    refusing the pair would either under-deliver a region or turn an honest
-    coincidence into a refusal, so every reference here is retained exactly
-    as given; only its shape is checked.
-    """
+    """Keep duplicate references because distinct regions may encode to identical bytes."""
     if not isinstance(value, list) or not value:
         raise SchemaRefusal(f"cross-capture autopsia: {what} must retain every image reference")
     refs = [_ref(item, what) for item in value]
@@ -232,16 +219,7 @@ def validate_autopsia(value: dict[str, Any]) -> dict[str, Any]:
 
 
 def _load(ref: dict[str, str], read_bytes: Callable[[str], bytes]) -> bytes:
-    """One view image, proved to be the bytes its sealed reference names.
-
-    The reference carries the digest the Designator/Exemplar boundary sealed
-    upstream, so checking it here is what makes "every view image is a direct
-    digest-bound input" (consult §3.1) a check rather than a description.  The
-    per-pass reader dossier this transport replaced verified every delivered
-    crop the same way (``dossier.py::_delivered_images``); a transport that
-    handed a reader whatever bytes now sit at the path would have quietly
-    dropped that guard on the way through.
-    """
+    """Recheck bytes here because a sealed path may change before reader delivery."""
     try:
         image = read_bytes(ref["relative_path"])
     except OSError as error:
@@ -259,15 +237,7 @@ def _load(ref: dict[str, str], read_bytes: Callable[[str], bytes]) -> bytes:
 
 
 def over_capacity_reason(autopsia: dict[str, Any], max_images: int | None) -> str | None:
-    """The named capacity finding for this presentation, or ``None``.
-
-    Separated from the loader so a caller can reach the answer *before* it has
-    committed to a reading: consult §3.1 makes an over-capacity cluster a named
-    finding and a ``not-run`` Perlectio for that logical act, which a producer
-    can only publish if it can ask the question without the asking itself being
-    the refusal.  ``None`` is intentionally not treated as infinity: an
-    unmeasured serving recipe has no authority to receive a cluster.
-    """
+    """Return a finding before loading; an unsealed ceiling cannot authorize a call."""
     record = validate_autopsia(autopsia)
     needed = sum(
         len(view["region_refs"]) + len(view["page_render_refs"]) for view in record["views"]
@@ -290,14 +260,7 @@ def over_capacity_reason(autopsia: dict[str, Any], max_images: int | None) -> st
 def atomic_delivered_pixels(
     autopsia: dict[str, Any], *, read_bytes: Callable[[str], bytes], max_images: int | None
 ) -> dict[str, list[bytes]]:
-    """Materialize all view pixels for one reader request, or refuse before it.
-
-    The refusal is unconditional here even though ``over_capacity_reason`` lets
-    a producer route the same fact to a ``not-run`` Perlectio: a caller that
-    reached this function with a presentation that does not fit is asking for
-    pixels it cannot deliver in one request, and the only alternative to
-    refusing is chunking them.
-    """
+    """Refuse instead of chunking when all pixels cannot fit in one reader request."""
     record = validate_autopsia(autopsia)
     reason = over_capacity_reason(record, max_images)
     if reason is not None:
@@ -314,13 +277,7 @@ def assemble_reader_input(
     read_bytes: Callable[[str], bytes],
     max_images: int | None,
 ) -> tuple[dict[str, Any], dict[str, list[bytes]]]:
-    """Bind one logical dossier to its complete atomic pixel presentation.
-
-    This is deliberately the *only* cross-capture transport constructor.  It
-    validates and loads every view before returning anything a reader can be
-    called with.  Consequently a caller cannot receive one capture's pixels,
-    call a reader, and later ask for another capture as a fallback.
-    """
+    """Return nothing until every view has validated and loaded as one presentation."""
     record = validate_autopsia(autopsia)
     if not isinstance(dossier, dict):
         raise SchemaRefusal("cross-capture autopsia: reader dossier is not an object")
@@ -330,15 +287,11 @@ def assemble_reader_input(
     delivered = copy.deepcopy(dossier)
     delivered["logical_act_id"] = record["logical_act_id"]
     delivered["cross_capture_autopsia"] = record
-    # The transport is the last boundary before the reader. Production dossiers
-    # were swept when built, but a late field added by any caller must refuse
-    # here, before it can condition even a failed or unpublished invocation.
+    # Late fields must meet the preference guard before they can condition even
+    # a failed or unpublished invocation.
     _reject_preference(delivered)
-    # A real dossier arrives with a digest sealing its pre-transport fields.
-    # Adding the logical identity and presentation after that seal and then
-    # calling the reader would hand it an object whose own integrity claim is
-    # already false. Re-seal before the invocation; publication may verify the
-    # same digest again, but it must describe the bytes the reader received.
+    # The logical identity and presentation are added after dossier construction,
+    # so the pre-transport digest cannot describe the object the reader receives.
     if "dossier_digest" in delivered:
         body = {key: value for key, value in delivered.items() if key != "dossier_digest"}
         delivered["dossier_digest"] = digest_of(body)
@@ -354,12 +307,7 @@ def invoke_one_logical_read(
     max_images: int | None,
     pass_kind: str,
 ) -> tuple[dict[str, Any], dict[str, list[bytes]], Any]:
-    """Make exactly one reader call from an all-capture presentation.
-
-    The return keeps the delivered dossier and pixels beside the result so a
-    publisher can bind the invocation to the exact evidence.  There is no
-    per-view callback surface and no list of results to reconcile.
-    """
+    """Expose one result, dossier, and pixel set; no per-view result can be reconciled."""
     delivered, pixels = assemble_reader_input(
         autopsia=autopsia,
         dossier=dossier,
@@ -376,11 +324,7 @@ def dissent_shell(
     reader_invocation_ref: dict[str, str],
     response_observation_digest: str,
 ) -> dict[str, Any]:
-    """19B's post-reading dissent handoff, derived after the Perlectio.
-
-    The shell accepts only references to the already-published invocation and
-    its non-establishing observation section. It cannot be a reader input.
-    """
+    """Accept only post-reading references, so dissent cannot become reader input."""
     record = validate_autopsia(autopsia)
     shell: dict[str, Any] = {
         "schema": DISSENT_SCHEMA,

@@ -1,4 +1,4 @@
-"""Unit 19B's atomic all-capture Perlector boundary."""
+"""Atomic all-capture Perlector boundary."""
 
 import sys
 from pathlib import Path
@@ -31,10 +31,8 @@ from common.physical_act_partition import source_ledger_from_run  # noqa: E402
 
 A, B = "a" * 64, "b" * 64
 REF = {"relative_path": "blobs/x", "sha256": "c" * 64}
-# The stand-in transport below reads a path back as its own bytes, so a view
-# reference states the digest of exactly that: an image reference is a claim
-# about bytes, and `atomic_delivered_pixels` checks the claim before a reader
-# is handed anything (`test_a_view_image_that_no_longer_matches_its_digest_is_refused`).
+# The stand-in transport returns path bytes, making each fixture reference
+# independently digest-verifiable without filesystem state.
 READ_BYTES = str.encode
 
 
@@ -279,10 +277,7 @@ def test_cross_capture_audit_has_the_complete_page_set_and_no_representative_pag
 
 
 def test_a_view_image_that_no_longer_matches_its_digest_is_refused():
-    """The per-pass reader dossier this transport replaced verified every
-    delivered crop against its sealed digest (`dossier.py::_delivered_images`).
-    A transport that handed a reader whatever bytes now sit at the path would
-    have dropped that guard silently on the way through 19B."""
+    """A path is not evidence that its current bytes still match the sealed crop."""
     reader = RecordingReader()
     with pytest.raises(SchemaRefusal, match="no longer matches its sealed digest"):
         atomic_delivered_pixels(
@@ -309,11 +304,7 @@ def test_an_unreadable_view_image_is_a_named_refusal_not_a_bare_os_error():
 
 
 def test_the_unprimed_arms_carry_no_witness_derived_region_coverage():
-    """`build_dossier` omits `witness_covered` entirely when it is handed no
-    testimonia, so the old per-pass path's lectio-prior/nuda dossiers had no
-    such key. The combined path builds one dossier *with* witnesses and strips
-    it per arm, and a strip that stopped at `testimonia` would leave the
-    unprimed instrument holding a witness-derived fact about every region."""
+    """Removing testimony must also remove every fact derived from testimony."""
     reader = RecordingReader()
     output = run_logical_passes(
         reader,
@@ -336,25 +327,19 @@ def test_the_unprimed_arms_carry_no_witness_derived_region_coverage():
         assert seen["testimonia"] == []
         assert "act_attachment" not in seen
         assert all("witness_covered" not in region for region in seen["regions"]), arm
-    # The primed arms are witness-bearing by design and keep every fact.
     for arm in ("primed-without-prior", "perlectio"):
         assert all("witness_covered" in region for region in output[arm]["dossier"]["regions"]), arm
 
 
 def test_over_capacity_is_answerable_before_it_is_a_refusal():
-    """A producer routes the named finding to a not-run Perlectio for that act
-    (consult §3.1); it can only do so if asking is not itself the refusal."""
+    """Capacity must be measurable before a producer commits to a reader call."""
     assert over_capacity_reason(autopsia(), 4) is None
     assert OVER_CAPACITY in over_capacity_reason(autopsia(), 3)
     assert OVER_CAPACITY in over_capacity_reason(autopsia(), None)
 
 
 def test_the_final_published_dossier_is_swept_for_late_preference_fields():
-    """The combined transport adds fields after ``build_dossier``'s sweep.
-
-    The final reseal is therefore the production guard over what publication
-    actually retains, rather than only what the earlier constructor saw.
-    """
+    """The final sweep must cover fields added after dossier construction."""
     late_preference = {
         "logical_act_id": "pac_fixture",
         "cross_capture_autopsia": autopsia(),
@@ -476,9 +461,7 @@ def _singleton_group(act_id):
 
 
 def test_a_partition_with_any_finding_stops_before_the_first_perlectio(monkeypatch):
-    """The read loop publishes each act as it reads it, so by the time it
-    reaches an act the partition could not resolve, earlier acts already have
-    Perlectiones. Consult §2.1 stops the run *before* Perlector publication."""
+    """Partition findings must stop the run before earlier acts become immutable."""
     with pytest.raises(SchemaRefusal, match="not total"):
         _partition(
             monkeypatch,
@@ -488,11 +471,7 @@ def test_a_partition_with_any_finding_stops_before_the_first_perlectio(monkeypat
 
 
 def test_a_clustered_logical_act_is_refused_rather_than_read_once_per_member(monkeypatch):
-    """`run.py` walks local acts and presents one local act's own regions, so a
-    multi-member logical act would publish one capture-local Perlectio per
-    member (forbidden shapes §7.9, §7.15). Unreachable while every act is an
-    image-local singleton; refused rather than left silent for the first run
-    whose register actually clusters."""
+    """A local-act loop cannot publish one Perlectio per member of a logical act."""
     clustered = _singleton_group("pac_1")
     clustered["identity_scope"] = "physical-act"
     clustered["physical_act_id"] = "pac_1"

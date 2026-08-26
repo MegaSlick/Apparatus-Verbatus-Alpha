@@ -15,26 +15,10 @@ from common.cross_capture_autopsia import invoke_one_logical_read
 
 
 def _unprimed(dossier: dict[str, Any]) -> dict[str, Any]:
-    value = copy.deepcopy(dossier)
+    value = _without_prior(dossier)
     value["testimonia"] = []
-    value.pop("prior_draft", None)
-    value.pop("prior_draft_view", None)
-    # An unprimed instrument (lectio-nuda, lectio-prior) sees no witness-derived
-    # fact, not merely no witness list: `act_attachment` is exactly the
-    # witness-derived comparison/edge-delta evidence `validate_reading_payload`
-    # refuses on an unprimed record, so it leaves with the testimonia it was
-    # computed from.
+    # Unprimed arms may receive neither testimony nor facts derived from it.
     value.pop("act_attachment", None)
-    # `build_dossier` derives `witness_covered` from the testimonia it is handed
-    # and omits the key altogether when it is handed none, so the region rows of
-    # a dossier that was built once *with* witnesses still say which regions a
-    # witness saw. Clearing `testimonia` alone therefore leaves the unprimed
-    # instrument holding witness-derived metadata about the very evidence it is
-    # defined by not having seen -- the exact fact a pre-push review round
-    # already removed once (the `witness_covered` note in
-    # `pipeline/orchestrator/test_orchestrator_acceptance.py`'s pin comment).
-    # Dropping it here reproduces `build_dossier(..., testimonia=[])` byte for
-    # byte, which is what the old per-pass path actually called.
     for region in value.get("regions") or ():
         if isinstance(region, dict):
             region.pop("witness_covered", None)
@@ -60,20 +44,10 @@ def run_logical_passes(
     draft_fed: bool = True,
     publish_prior: Callable[[dict[str, Any], Any], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Run all requested Perlector arms for one logical act.
+    """Use one atomic presentation for every requested arm of one logical act.
 
-    Every arm is assembled from the same atomic presentation.  The only
-    difference is the protocol-authorized witness/prior view; image delivery
-    is never capture-local and the production ``perlectio`` is one invocation.
-
-    ``publish_prior``, if given, is called with the delivered lectio-prior
-    dossier and its reader result immediately after that pass completes, and
-    must return the closed ``prior_draft`` object (``{"reference", "text"}``)
-    the establishing pass embeds.  This is the seam a caller uses to publish
-    the immutable lectio-prior artifact and bind the establishing dossier to
-    its real reference, rather than to a bare draft string with nothing to
-    point at.  Without it the establishing pass carries only the text, which
-    is enough to prove the mechanism in a caller that never publishes.
+    ``publish_prior`` must return the closed prior reference and text before
+    the establishing call; without a publisher, only the text is retained.
     """
     max_images = protocol_config.get("max_images")
     if not isinstance(max_images, int) or isinstance(max_images, bool):
@@ -126,11 +100,8 @@ def run_logical_passes(
         pass_kind="perlectio",
     )
     if not draft_fed:
-        # The prior remains retained evidence for self-revision and prompt
-        # reproduction, but withheld means the reader cannot receive its text
-        # in a side channel beside the rendered prompt. Build a separate record
-        # copy after the synchronous call; never mutate the object the reader
-        # was handed (a capturing implementation may retain that reference).
+        # Retain the prior only on a separate post-call copy because a reader may
+        # keep the exact dossier object it was handed.
         retained_dossier = copy.deepcopy(final_dossier)
         retained_dossier["prior_draft"] = prior_draft
         if "dossier_digest" in retained_dossier:

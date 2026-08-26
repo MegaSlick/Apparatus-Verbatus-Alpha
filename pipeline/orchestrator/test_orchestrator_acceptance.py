@@ -3759,10 +3759,12 @@ def test_a_continuation_has_page_scoped_testimony_and_audit_on_its_far_page(happ
         for entry in tree.build_manifest(PERLECTOR)["artifacts"]
         if entry["kind"] == "audit-draft" and entry["subject_id"] == a2["act_id"]
     )
-    assert draft["payload"]["page_ids"] == [
-        page_identity(load_fixture(str(ROOT / "proof")), 1),
-        page_identity(load_fixture(str(ROOT / "proof")), 2),
-    ]
+    assert draft["payload"]["page_ids"] == sorted(
+        {
+            page_identity(load_fixture(str(ROOT / "proof")), 1),
+            page_identity(load_fixture(str(ROOT / "proof")), 2),
+        }
+    )
 
 
 def test_a_recrop_of_a_continuation_act_keeps_its_far_page_in_the_evidence(
@@ -3826,7 +3828,7 @@ def test_a_recrop_of_a_continuation_act_keeps_its_far_page_in_the_evidence(
         )
     }
     fixture = load_fixture(str(ROOT / "proof"))
-    both_pages = [page_identity(fixture, 1), page_identity(fixture, 2)]
+    both_pages = sorted({page_identity(fixture, 1), page_identity(fixture, 2)})
     assert drafts == {1: both_pages, 2: both_pages}
 
     attachment = tree.read_artifact(

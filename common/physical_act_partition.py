@@ -4,11 +4,9 @@ This is deliberately independent of a reader.  Discovery can prove geometry and
 append an immutable register declaration; production then consumes a fresh
 snapshot and produces the denominator that later stages must honour.
 
-Unit 19A deliberately has no run-tree producer for ``source_ledger``.  Unit 19B
-must derive that set from the sealed source manifest and prove each digest's
-Exemplar lineage before calling the partition builder.  Until that handoff
-lands, a missing active member is loud as ``cluster-member-absent`` and no
-production stage calls this module; absence is never interpreted as visibility.
+The source ledger comes from the sealed source manifest rather than local
+proposals, so an unproposed active member remains required. Production narrows
+that ledger only by independently verifying Exemplar page lineage.
 """
 
 from __future__ import annotations
@@ -37,14 +35,7 @@ _TEXTUAL_FIELDS: Final = frozenset(
 
 
 def source_ledger_from_run(run: dict[str, Any]) -> set[str]:
-    """Derive the capture ledger from the sealed RunTree source manifest.
-
-    This is deliberately not inferred from local proposals: a capture that the
-    Designator missed is still a required member of a registered physical page.
-    The run authority is the only complete production denominator available to
-    19B, and duplicate source rows (for split derivatives) collapse only after
-    their digest has been independently validated.
-    """
+    """Use the source manifest so a capture missed by proposals remains required."""
     rows = run.get("source_manifest") if isinstance(run, dict) else None
     if not isinstance(rows, list) or not rows:
         raise SchemaRefusal("physical-act partition: run has no sealed source manifest")
@@ -184,9 +175,8 @@ def build_physical_act_partition(
     """Build the total production denominator from a fresh register snapshot.
 
     Every local act aligned to a registered physical page either resolves through
-    its declared correspondence or emits a named finding.  It is never silently
-    downgraded to a singleton. ``source_ledger`` is the explicit Unit 19B handoff
-    described in the module docstring, not a set this slice infers from whichever
+    its declared correspondence or emits a named finding. It is never silently
+    downgraded to a singleton. ``source_ledger`` is independent of whichever
     local acts happened to be proposed.
     """
     _refuse_preference({"local_acts": local_acts, "capture_alignments": capture_alignments})

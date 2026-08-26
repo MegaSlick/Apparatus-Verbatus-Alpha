@@ -1,7 +1,7 @@
-"""The two-capture cluster path, from 19A correspondence through 19B dissent.
+"""The two-capture cluster path from correspondence through dissent.
 
 The canonical orchestrator fixtures intentionally remain image-local.  This
-module owns the separate fixture that proves a physical act represented by two
+This separate fixture proves a physical act represented by two
 captures reaches one atomic establishing call.  Its reader inspects the
 delivered crop bytes; green text therefore cannot be produced while silently
 dropping either active capture.
