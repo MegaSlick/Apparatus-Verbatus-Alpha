@@ -37,8 +37,10 @@ it needs.
 import errno
 import json
 import os
+import stat
 import sys
 import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, Final
 
@@ -90,6 +92,16 @@ _INGRESS_FIELD: Final = "ingress"
 # can say which setup fact is wrong instead of letting a bare OSError about `link`
 # escape as a traceback.
 _NO_HARD_LINKS: Final = frozenset({errno.EPERM, errno.EOPNOTSUPP, errno.ENOSYS})
+# A manifest walks files that may have been damaged or replaced outside the
+# store. Bound both axes before accepting them as an inventory: one malformed
+# artifact must not be able to allocate the process out of existence, and an
+# attacker-created directory forest must not grow the walk without limit.
+_MAX_MANIFEST_ARTIFACT_BYTES: Final = 64 * 1024 * 1024
+_MAX_MANIFEST_WALK_ENTRIES: Final = 100_000
+_DIRECTORY_OPEN_FLAGS: Final = (
+    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+)
+_FILE_OPEN_FLAGS: Final = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
 _RENDER_SETTINGS_FIELD: Final = "render_settings"
 # The digest of each configuration file this run sealed, under the name its point
 # of use asks for (`common/stage.py::require_sealed_config`). Recorded in the
@@ -158,6 +170,9 @@ class RunTree:
         # `relative_to` is exact rather than semantic: on macOS a caller passing
         # `/tmp` produces the real `/private/tmp` spelling consistently.
         self.root = resolved
+        self._root_identity: tuple[int, int] | None = None
+        if self.root.exists():
+            self._bind_root_identity()
         self._config_digest: str | None = None
 
     # --- Creation and the run authority ---------------------------------------
@@ -252,6 +267,7 @@ class RunTree:
 
         run_file = tree.root / RUN_FILE
         tree.root.mkdir(parents=True, exist_ok=True)
+        tree._bind_root_identity()
         try:
             _atomic_create(run_file, canonical_bytes(authority))
         except FileExistsError:
@@ -367,7 +383,18 @@ class RunTree:
         """
         if relative_path.startswith("/") or ".." in relative_path.split("/"):
             raise SchemaRefusal(f"{relative_path!r} escapes the run tree")
-        resolved = (self.root / relative_path).resolve()
+        try:
+            resolved = (self.root / relative_path).resolve()
+        except (OSError, RuntimeError, ValueError) as error:
+            # `Path.resolve` reports a filesystem-level symlink loop as a
+            # RuntimeError (and some platforms report an OSError), and rejects
+            # paths the OS cannot represent with ValueError, before the containment
+            # comparison below can run. Those are still paths the run tree cannot
+            # safely resolve, not interpreter failures a stage should surface as
+            # tracebacks.
+            raise SchemaRefusal(
+                f"{relative_path!r} could not be resolved inside the run tree: {error}"
+            ) from error
         # is_relative_to, not a string prefix: with a root of `.../r1`, a prefix
         # test would happily accept the sibling directory `.../r1-scratch`.
         if not resolved.is_relative_to(self.root):
@@ -733,14 +760,19 @@ class RunTree:
         # A manifest is a read route too. In particular, an empty directory must
         # not make a missing run authority look like an empty, trustworthy run.
         self._run_authority()
-        stage_root = self.resolve(writing_directory(stage))
         entries: list[dict[str, Any]] = []
-        artifacts_root = stage_root / ARTIFACTS_DIR
-        if artifacts_root.exists():
-            for path in sorted(artifacts_root.rglob("*.json")):
-                record = validate_envelope(_read_json(path))
+        artifacts_root = self._inventory_directory(stage, ARTIFACTS_DIR)
+        if artifacts_root is not None:
+            # Validate the whole walk before reading bytes so structural failures
+            # cannot be hidden by an earlier artifact-content failure.
+            members = list(self._walk_artifact_json(artifacts_root))
+            for relative_path in members:
+                # One filesystem read supplies both the record that is verified
+                # and its digest. Re-resolving here also closes the replacement
+                # window opened by collecting the complete walk first.
+                record, artifact_bytes = self._read_manifest_artifact(relative_path)
+                record = validate_envelope(record)
                 self._verify_artifact_run(record)
-                relative_path = str(path.relative_to(self.root))
                 self._verify_artifact_path(relative_path, record)
                 # Door and Exemplar deliberately share one physical directory:
                 # a Door admission is part of what Exemplar must account for.
@@ -756,11 +788,11 @@ class RunTree:
                         "subject_id": record["subject_id"],
                         "outcome": record["outcome"],
                         "relative_path": relative_path,
-                        "sha256": digest_bytes(path.read_bytes()),
+                        "sha256": digest_bytes(artifact_bytes),
                     }
                 )
-        blobs_root = stage_root / BLOBS_DIR
-        blobs = sorted(entry.name for entry in blobs_root.iterdir()) if blobs_root.exists() else []
+        blobs_root = self._inventory_directory(stage, BLOBS_DIR)
+        blobs = [] if blobs_root is None else list(self._walk_blobs(blobs_root))
         return {
             "schema": SCHEMA_LABEL,
             "run_id": self.run_id,
@@ -768,6 +800,432 @@ class RunTree:
             "artifacts": sorted(entries, key=lambda entry: entry["artifact_id"]),
             "blobs": blobs,
         }
+
+    def _inventory_directory(self, stage: str, subdirectory: str) -> Path | None:
+        """Return an unredirected inventory directory, or ``None`` if it is absent.
+
+        Every existing ancestor must be a plain directory; otherwise a broken
+        parent could make evidence below it look like an honestly empty inventory.
+        """
+        relative = f"{writing_directory(stage)}/{subdirectory}"
+        # Keep the spelling check for a useful out-of-tree diagnostic, but never
+        # rely on it for safety. The descriptor walk below opens every component
+        # relative to its already-open parent with O_NOFOLLOW and compares the
+        # opened object to the lstat result by device and inode.
+        resolved = self.resolve(relative)
+        descriptor = self._open_relative_fd(
+            relative,
+            directory=True,
+            missing_ok=True,
+            purpose=f"stage inventory {relative!r}",
+        )
+        if descriptor is None:
+            return None
+        os.close(descriptor)
+        return resolved
+
+    def _walk_artifact_json(self, directory: Path) -> Iterator[str]:
+        """Yield artifact paths while refusing every uninspectable tree entry.
+
+        The walk is iterative so filesystem depth cannot exhaust Python's call
+        stack. Its component-wise order matches ``sorted(rglob("*.json"))``;
+        ``endswith`` preserves that glob's match for a file named exactly ``.json``.
+        A ``.json`` directory is legal only at the kind level, where store-created
+        kinds may carry that suffix. Special files are rejected before opening
+        because reading a FIFO would block indefinitely.
+        """
+        relative_root = str(directory.relative_to(self.root))
+        start_fd = self._open_relative_fd(
+            relative_root,
+            directory=True,
+            purpose=f"artifact inventory {relative_root!r}",
+        )
+        assert start_fd is not None
+        start_identity = _inode_identity(os.fstat(start_fd))
+        walked: dict[tuple[int, int], str] = {start_identity: relative_root}
+        # fd, relative directory, ordered names, next index, ancestor identities.
+        stack: list[tuple[int, str, list[str], int, frozenset[tuple[int, int]]]] = []
+        examined = 0
+        try:
+            try:
+                start_names = self._listing_fd(start_fd, relative_root)
+            except BaseException:
+                os.close(start_fd)
+                raise
+            stack.append(
+                (
+                    start_fd,
+                    relative_root,
+                    start_names,
+                    0,
+                    frozenset({start_identity}),
+                )
+            )
+            while stack:
+                directory_fd, relative_directory, names, index, ancestors = stack[-1]
+                if index == len(names):
+                    self._require_directory_identity(relative_directory, directory_fd)
+                    os.close(directory_fd)
+                    stack.pop()
+                    continue
+                name = names[index]
+                stack[-1] = (directory_fd, relative_directory, names, index + 1, ancestors)
+                examined += 1
+                if examined > _MAX_MANIFEST_WALK_ENTRIES:
+                    raise SchemaRefusal(
+                        f"artifact inventory exceeds the {_MAX_MANIFEST_WALK_ENTRIES}-entry "
+                        "manifest walk limit"
+                    )
+                relative_path = f"{relative_directory}/{name}"
+                # Preserve explicit containment diagnostics. Security comes from
+                # the dir-fd operations below; this resolved spelling is not used.
+                self.resolve(relative_path)
+                before = self._entry_lstat(directory_fd, name, relative_path)
+                if stat.S_ISLNK(before.st_mode):
+                    self._raise_manifest_symlink(relative_path, ancestors)
+                if stat.S_ISDIR(before.st_mode):
+                    if relative_directory != relative_root and name.endswith(".json"):
+                        raise SchemaRefusal(
+                            f"{relative_path!r} is named as an artifact but is a directory, "
+                            "so it cannot be read as artifact bytes"
+                        )
+                    child_fd = self._open_child_fd(
+                        directory_fd, name, before, relative_path, directory=True
+                    )
+                    identity = _inode_identity(os.fstat(child_fd))
+                    if identity in ancestors:
+                        os.close(child_fd)
+                        raise SchemaRefusal(
+                            f"{relative_path!r} is a symlink cycle back to a directory "
+                            "already being walked"
+                        )
+                    if identity in walked:
+                        os.close(child_fd)
+                        raise SchemaRefusal(
+                            f"{relative_path!r} and {walked[identity]!r} are the same directory: "
+                            "a manifest may not describe one artifact at two paths"
+                        )
+                    walked[identity] = relative_path
+                    try:
+                        child_names = self._listing_fd(child_fd, relative_path)
+                    except BaseException:
+                        os.close(child_fd)
+                        raise
+                    stack.append(
+                        (
+                            child_fd,
+                            relative_path,
+                            child_names,
+                            0,
+                            ancestors | {identity},
+                        )
+                    )
+                elif relative_directory == relative_root:
+                    raise SchemaRefusal(
+                        f"{relative_path!r} is not a directory where an artifact kind "
+                        "directory must be, so it cannot disappear from the manifest walk"
+                    )
+                elif name.endswith(".json"):
+                    if not stat.S_ISREG(before.st_mode):
+                        raise SchemaRefusal(
+                            f"{relative_path!r} is neither a directory nor a regular file, "
+                            "so it cannot be read as an artifact"
+                        )
+                    yield relative_path
+        finally:
+            for directory_fd, *_ in stack:
+                try:
+                    os.close(directory_fd)
+                except OSError:
+                    pass
+
+    def _walk_blobs(self, directory: Path) -> Iterator[str]:
+        """Yield addressable regular blobs in name order.
+
+        Non-digest names include same-directory publication residue and are not
+        inventory members. Blob contents are verified when consumed rather than
+        during every manifest rebuild because they may be full page images.
+        """
+        relative_root = str(directory.relative_to(self.root))
+        directory_fd = self._open_relative_fd(
+            relative_root,
+            directory=True,
+            purpose=f"blob inventory {relative_root!r}",
+        )
+        assert directory_fd is not None
+        try:
+            names = self._listing_fd(directory_fd, relative_root)
+            for name in names:
+                relative_path = f"{relative_root}/{name}"
+                self.resolve(relative_path)
+                before = self._entry_lstat(directory_fd, name, relative_path)
+                if stat.S_ISLNK(before.st_mode):
+                    self._raise_manifest_symlink(relative_path, frozenset())
+                if not _is_sha256(name):
+                    continue
+                if not stat.S_ISREG(before.st_mode):
+                    raise SchemaRefusal(
+                        f"{relative_path!r} is named as a content-addressed blob but is not a "
+                        "regular file"
+                    )
+                blob_fd = self._open_child_fd(
+                    directory_fd, name, before, relative_path, directory=False
+                )
+                os.close(blob_fd)
+                yield name
+            self._require_directory_identity(relative_root, directory_fd)
+        finally:
+            os.close(directory_fd)
+
+    def _bind_root_identity(self) -> None:
+        """Bind this object to the run directory it opened, by device and inode."""
+        try:
+            descriptor = os.open(self.root, _DIRECTORY_OPEN_FLAGS)
+        except OSError as error:
+            raise SchemaRefusal(
+                f"run root {self.root} could not be opened without links: {error}"
+            ) from error
+        try:
+            identity = _inode_identity(os.fstat(descriptor))
+        finally:
+            os.close(descriptor)
+        if self._root_identity is not None and identity != self._root_identity:
+            raise SchemaRefusal(
+                f"run root {self.root} is no longer the directory this RunTree opened; "
+                "its device or inode changed"
+            )
+        self._root_identity = identity
+
+    def _open_root_fd(self) -> int:
+        """Open the bound run root without following a replacement link."""
+        try:
+            descriptor = os.open(self.root, _DIRECTORY_OPEN_FLAGS)
+        except OSError as error:
+            raise SchemaRefusal(
+                f"run root {self.root} could not be opened without links: {error}"
+            ) from error
+        try:
+            identity = _inode_identity(os.fstat(descriptor))
+        except OSError as error:
+            os.close(descriptor)
+            raise SchemaRefusal(
+                f"run root {self.root} could not be identified after it was opened: {error}"
+            ) from error
+        if self._root_identity is None:
+            self._root_identity = identity
+        elif identity != self._root_identity:
+            os.close(descriptor)
+            raise SchemaRefusal(
+                f"run root {self.root} is no longer the directory this RunTree opened; "
+                "its device or inode changed"
+            )
+        return descriptor
+
+    def _open_relative_fd(
+        self,
+        relative_path: str,
+        *,
+        directory: bool,
+        purpose: str,
+        missing_ok: bool = False,
+    ) -> int | None:
+        """Open one run-relative object through no-follow component descriptors."""
+        components = Path(relative_path).parts
+        parent_fd = self._open_root_fd()
+        try:
+            for index, component in enumerate(components):
+                current_relative = str(Path(*components[: index + 1]))
+                final = index == len(components) - 1
+                try:
+                    before = os.stat(component, dir_fd=parent_fd, follow_symlinks=False)
+                except FileNotFoundError:
+                    if missing_ok:
+                        os.close(parent_fd)
+                        return None
+                    raise SchemaRefusal(
+                        f"{current_relative!r} disappeared while opening {purpose}"
+                    ) from None
+                except OSError as error:
+                    raise SchemaRefusal(
+                        f"{current_relative!r} could not be inspected while opening "
+                        f"{purpose}: {error}"
+                    ) from error
+                if stat.S_ISLNK(before.st_mode):
+                    self._raise_manifest_symlink(current_relative, frozenset())
+                needs_directory = not final or directory
+                if needs_directory and not stat.S_ISDIR(before.st_mode):
+                    raise SchemaRefusal(
+                        f"{purpose} cannot be reached because {current_relative!r} "
+                        "is not a directory"
+                    )
+                if final and not directory and not stat.S_ISREG(before.st_mode):
+                    raise SchemaRefusal(
+                        f"{current_relative!r} is no longer a regular artifact file after "
+                        "the manifest walk, so it cannot be read as artifact bytes"
+                    )
+                opened = self._open_child_fd(
+                    parent_fd,
+                    component,
+                    before,
+                    current_relative,
+                    directory=needs_directory,
+                )
+                os.close(parent_fd)
+                parent_fd = opened
+            return parent_fd
+        except BaseException:
+            try:
+                os.close(parent_fd)
+            except OSError:
+                pass
+            raise
+
+    def _open_child_fd(
+        self,
+        parent_fd: int,
+        name: str,
+        before: os.stat_result,
+        relative_path: str,
+        *,
+        directory: bool,
+    ) -> int:
+        """Open one checked child and prove the name still denotes that inode."""
+        flags = _DIRECTORY_OPEN_FLAGS if directory else _FILE_OPEN_FLAGS
+        try:
+            descriptor = os.open(name, flags, dir_fd=parent_fd)
+        except OSError as error:
+            operation = "could not be listed or opened" if directory else "could not be opened"
+            raise SchemaRefusal(
+                f"{relative_path!r} changed or {operation} without following links: {error}"
+            ) from error
+        try:
+            after = os.fstat(descriptor)
+        except OSError as error:
+            os.close(descriptor)
+            raise SchemaRefusal(
+                f"{relative_path!r} could not be identified after it was opened: {error}"
+            ) from error
+        if _inode_identity(after) != _inode_identity(before) or stat.S_IFMT(
+            after.st_mode
+        ) != stat.S_IFMT(before.st_mode):
+            os.close(descriptor)
+            raise SchemaRefusal(
+                f"{relative_path!r} changed device, inode, or file type between inspection "
+                "and open; the manifest refuses the replacement"
+            )
+        return descriptor
+
+    def _entry_lstat(self, directory_fd: int, name: str, relative_path: str) -> os.stat_result:
+        try:
+            return os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        except OSError as error:
+            raise SchemaRefusal(
+                f"{relative_path!r} could not be inspected during the manifest walk: {error}"
+            ) from error
+
+    def _listing_fd(self, directory_fd: int, relative_directory: str) -> list[str]:
+        """List one opened directory and refuse names that default APFS conflates."""
+        try:
+            names = []
+            with os.scandir(directory_fd) as listing:
+                for entry in listing:
+                    names.append(entry.name)
+                    if len(names) > _MAX_MANIFEST_WALK_ENTRIES:
+                        raise SchemaRefusal(
+                            f"{relative_directory!r} exceeds the "
+                            f"{_MAX_MANIFEST_WALK_ENTRIES}-entry manifest walk limit"
+                        )
+        except OSError as error:
+            raise SchemaRefusal(
+                f"{relative_directory!r} could not be listed while this stage's manifest "
+                f"was being built: {error}"
+            ) from error
+        names.sort()
+        folded: dict[str, str] = {}
+        for name in names:
+            collision = folded.get(name.casefold())
+            if collision is not None and collision != name:
+                raise SchemaRefusal(
+                    f"{relative_directory!r} contains case-variant names {collision!r} and "
+                    f"{name!r}; default APFS stores them as one name, so this inventory "
+                    "cannot preserve both"
+                )
+            folded[name.casefold()] = name
+        return names
+
+    def _require_directory_identity(self, relative_path: str, descriptor: int) -> None:
+        """Refuse a directory renamed away or replaced while its entries were read."""
+        expected = _inode_identity(os.fstat(descriptor))
+        reopened = self._open_relative_fd(
+            relative_path,
+            directory=True,
+            purpose=f"manifest directory {relative_path!r}",
+        )
+        assert reopened is not None
+        try:
+            if _inode_identity(os.fstat(reopened)) != expected:
+                raise SchemaRefusal(
+                    f"{relative_path!r} changed device or inode while its manifest entries "
+                    "were being walked"
+                )
+        finally:
+            os.close(reopened)
+
+    def _raise_manifest_symlink(
+        self, relative_path: str, ancestors: frozenset[tuple[int, int]]
+    ) -> None:
+        """Refuse a link, retaining the most specific safe diagnostic available."""
+        try:
+            resolved = self.resolve(relative_path)
+        except SchemaRefusal:
+            raise
+        try:
+            target = resolved.stat()
+        except OSError:
+            target = None
+        if target is not None and _inode_identity(target) in ancestors:
+            raise SchemaRefusal(
+                f"{relative_path!r} is a symlink cycle back to a directory already being walked"
+            )
+        raise SchemaRefusal(
+            f"{relative_path!r} is a link to {str(resolved)!r}: a manifest reads only the "
+            "files and directories the store itself wrote, never an alias"
+        )
+
+    def _read_manifest_artifact(self, relative_path: str) -> tuple[Any, bytes]:
+        """Read one bounded regular artifact through a no-follow descriptor chain."""
+        resolved = self.resolve(relative_path)
+        lexical = self.root / relative_path
+        if resolved != lexical or lexical.is_symlink():
+            raise SchemaRefusal(
+                f"{relative_path!r} is a link to {str(resolved)!r}: a manifest reads the "
+                "artifact file the store itself wrote, never an alias"
+            )
+        descriptor = self._open_relative_fd(
+            relative_path,
+            directory=False,
+            purpose=f"manifest artifact {relative_path!r}",
+        )
+        assert descriptor is not None
+        try:
+            size = os.fstat(descriptor).st_size
+            if size > _MAX_MANIFEST_ARTIFACT_BYTES:
+                raise SchemaRefusal(
+                    f"{relative_path!r} is {size} bytes, above the "
+                    f"{_MAX_MANIFEST_ARTIFACT_BYTES}-byte manifest artifact limit"
+                )
+            with os.fdopen(descriptor, "rb", closefd=False) as handle:
+                data = handle.read(_MAX_MANIFEST_ARTIFACT_BYTES + 1)
+            if len(data) > _MAX_MANIFEST_ARTIFACT_BYTES:
+                raise SchemaRefusal(
+                    f"{relative_path!r} grew above the "
+                    f"{_MAX_MANIFEST_ARTIFACT_BYTES}-byte manifest artifact limit while read"
+                )
+        except OSError as error:
+            raise SchemaRefusal(f"{lexical} could not be read as an artifact: {error}") from error
+        finally:
+            os.close(descriptor)
+        return _decode_json_bytes(data, lexical), data
 
     def _verify_artifact_path(self, relative_path: str, record: dict[str, Any]) -> None:
         """Require a sealed artifact to live under the path its own fields derive.
@@ -1022,7 +1480,7 @@ def _write_temporary(target: Path, data: bytes) -> Path:
     return temporary
 
 
-def _read_json(path: Path) -> Any:
+def _read_json_with_bytes(path: Path) -> tuple[Any, bytes]:
     # `RecursionError` beside the two obvious ones because it is the same fact —
     # this file could not be read — arriving by a route the tuple did not name.
     # `json`'s scanner recurses per nesting level, so a deeply nested artifact
@@ -1039,9 +1497,21 @@ def _read_json(path: Path) -> Any:
     # already let a shallower-but-still-deep file through; that band is caught
     # where it happens, in `common/contracts/canonical.py`.
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        data = path.read_bytes()
+        return json.loads(data.decode("utf-8")), data
     except (OSError, ValueError, RecursionError) as error:
         raise SchemaRefusal(f"{path} could not be read as an artifact: {error}") from error
+
+
+def _decode_json_bytes(data: bytes, path: Path) -> Any:
+    try:
+        return json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError) as error:
+        raise SchemaRefusal(f"{path} could not be read as an artifact: {error}") from error
+
+
+def _read_json(path: Path) -> Any:
+    return _read_json_with_bytes(path)[0]
 
 
 def _is_sha256(value: Any) -> bool:
@@ -1050,6 +1520,11 @@ def _is_sha256(value: Any) -> bool:
         and len(value) == 64
         and all(character in "0123456789abcdef" for character in value)
     )
+
+
+def _inode_identity(value: os.stat_result) -> tuple[int, int]:
+    """The filesystem identity a spelling cannot forge by sharing a prefix."""
+    return value.st_dev, value.st_ino
 
 
 def _default_corpus_frame_membership(source_manifest: list[dict[str, Any]]) -> dict[str, str]:
