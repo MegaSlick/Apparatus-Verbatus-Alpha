@@ -46,15 +46,10 @@ CHALLENGE_BYTES = 8
 """Wide enough that a phrase cannot be guessed; short enough to retype from a screen."""
 
 PRICE_MOVE_MARKER = "the price may have changed between preview and confirmation"
-"""The one spelling of "this refusal is a price move", shared with its readers.
+"""Gate-owned discriminator for two refusal meanings sharing one launch state.
 
-A refused confirmation and a moved price are the same `LaunchState` but not the
-same thing to tell an operator: one says retype the phrase, the other says read
-a new price. `operations/operator/surface.py` tells them apart by looking for
-this text, and it used to look for a sentence fragment written out a second time
-there -- so rewording this refusal would have quietly reported every real price
-move as a mistyped phrase. The coupling is real either way; naming it makes the
-two move together.
+The operator surface must distinguish a price move from a mistyped phrase, so
+the producer and classifier share this spelling instead of duplicating it.
 """
 
 

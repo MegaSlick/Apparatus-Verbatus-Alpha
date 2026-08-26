@@ -114,8 +114,8 @@ cannot see:
   another one on top of it: tell Tyrel, and check the provider's own console.
 - **Two windows at once.** Only one window may be part-way through a paid launch. The
   second is told so straight away rather than left waiting, and it spent nothing: the
-  line you typed is still good once the first window has finished and its machine is
-  closed.
+  challenge remains unspent. After the first machine has a verified close, preview again
+  so the price and request are current.
 
 ## Shutting down, and what "closed" actually means
 

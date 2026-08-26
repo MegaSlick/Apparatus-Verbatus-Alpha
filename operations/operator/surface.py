@@ -37,6 +37,7 @@ from operations.pod.bootstrap import (
 from operations.pod.launch import (
     LaunchResult,
     LaunchState,
+    PaidActionPreview,
     PodRuntime,
     phraseless,
     price_move_note,
@@ -60,7 +61,11 @@ from operations.pod.preflight import (
     load_placement_table,
 )
 from operations.pod.shutdown import CloseReport, VerifiedShutdown
-from operations.pod.spend import PRICE_MOVE_MARKER, SpendPolicy, load_spend_policy
+from operations.pod.spend import (
+    PRICE_MOVE_MARKER,
+    SpendPolicy,
+    load_spend_policy,
+)
 from operations.pod.transfer import ChecksummedTransfer, TransferFailure, TransferTarget
 from operations.submit import submit as submission_door
 
@@ -433,26 +438,11 @@ class OperatorSurface:
         """Record the typed value, then let the spend gate validate it once."""
 
         with self._exclusive_paid_launch():
-            # Re-checked here, not only in prepare_launch(): two overlapping prepare
-            # calls (two double-clicks, two terminal windows) can each pass the earlier
-            # check before either confirms. Without this, the second confirmed launch
-            # would create a second real pod that status/close could never reach again.
-            # The claim above is what makes that true of two *concurrent* windows: the
-            # check and the receipt it depends on are one step, not two.
+            # This re-check must remain inside the cross-process claim: the active
+            # receipt does not exist until after the provider call returns.
             self._refuse_if_active_pod()
-            # `PodRuntime` owns the sole call to `spend.require_confirmation`, where
-            # it atomically checks and consumes the single-use challenge.  The UI
-            # records that it received a value and commits to its exact bytes; it
-            # does not check them itself, so there is no second gate here.
-            #
-            # A digest rather than the value: on the path that matters -- the one
-            # where the operator typed the phrase correctly -- the value *is* the
-            # phrase, and an unspent challenge is still spendable. `launch.phraseless`
-            # already keeps that phrase out of every refusal the runtime prints, and
-            # a durable receipt outlives the process the challenge lives in. What is
-            # given up is seeing a typo's exact characters; what is kept is that a
-            # confirmation was received before the paid call, pinned to its bytes,
-            # alongside the gate's own reason for refusing it in the launch receipt.
+            # Only PodRuntime may validate and consume a challenge. This durable
+            # receipt commits to the input bytes without retaining a spendable phrase.
             confirmation_receipt = self._write_action(
                 "launch-confirmation",
                 {
@@ -525,11 +515,7 @@ class OperatorSurface:
                         else "Existing fixture pod is adopted with both fixture safety timers recorded."
                     ),
                     "state": result.state.value,
-                    # The gate's own summary of what it proved, which the refusal
-                    # receipts have always carried and the green one did not. It is
-                    # where a price that moved after the confirmation was claimed says
-                    # so, and a fact that only exists on the unhappy path is a fact
-                    # this record loses exactly when it is surprising.
+                    # Gate detail is the only durable evidence of a post-claim price move.
                     "detail": result.detail,
                     "action": prepared.action,
                     "pod": _pod_record(result.record),
@@ -883,12 +869,8 @@ class OperatorSurface:
                 f"{expected_in_notice}.",
             )
             return RunOutcome(state, run_root, run_id, aggregate, export_payload)
-        # A list, or none at all. `aggregate` is read from an artifact on disk, so
-        # `reasons` is externally supplied: a string there would iterate character
-        # by character and present one "Hold reason:" line per letter, and a
-        # mapping would present its keys. Either turns a decision notification —
-        # the one that reaches his phone — into nonsense at exactly the moment a
-        # person is being asked to decide something. Found by CodeRabbit.
+        # `reasons` is external data: only a list may feed decision output, or a
+        # string would become one hold reason per character and a mapping its keys.
         reasons = aggregate.get("reasons")
         reasons = reasons if isinstance(reasons, list) else []
         self.present("Run is held. It was not called complete.")
@@ -1129,23 +1111,15 @@ class OperatorSurface:
     # -- status ---------------------------------------------------------------
 
     def status(self) -> list[str]:
-        """Read the explicit descriptor and immutable receipts only: no writes or provider calls."""
+        """Read descriptors, receipts, and leases without writes or provider calls."""
 
         try:
             descriptor = self.descriptor.load()
         except RecordError as error:
             raise OperatorError(ErrorCode.STATUS_UNREADABLE, detail=str(error)) from error
-        # Read before the emptiness test: `LAUNCH_UNRESOLVED` sends the operator
-        # here, and the thing it sends them to look at is a durable lease, which
-        # is not a receipt and was invisible to this verb. A state holding an
-        # armed lease has never been empty, whatever the descriptor says.
+        # A lease is operator evidence even when no receipt was written; unreadable
+        # lease evidence likewise prevents an honest claim that the state is empty.
         open_leases, lease_unreadable = self._open_leases()
-        # `lease_unreadable` counts as evidence too, and it is the half that
-        # matters most: an unreadable lease is where a pod is likeliest to be
-        # billing unwatched, so a state holding one is not empty either. Without
-        # it in this test, a descriptor with no actions and a corrupt lease
-        # reported "there are no saved operator records" and dropped the one
-        # record that said otherwise (GOVERNANCE 2).
         if (
             (descriptor is None or not descriptor["actions"])
             and not open_leases
@@ -1166,31 +1140,26 @@ class OperatorSurface:
             )
         for reason in lease_unreadable:
             lines.append(f"- safety lease: UNREADABLE; it was not treated as closed. {reason}")
-        if descriptor is None or not descriptor["actions"]:
-            for line in lines:
-                self.present(line)
-            if unreadable:
-                raise OperatorError(ErrorCode.STATUS_UNREADABLE, detail="; ".join(unreadable))
-            return lines
-        for action, path_texts in sorted(descriptor["history"].items()):
-            if action == "active-launch":
-                continue
-            for number, path_text in enumerate(path_texts, start=1):
-                try:
-                    record = self.receipts.read(Path(path_text))
-                    payload = record["payload"]
-                    summary = payload.get("summary")
-                    lines.append(
-                        f"- {action} record {number}: "
-                        + (summary if isinstance(summary, str) else "saved record")
-                    )
-                    lines.extend(_status_projection(action, payload))
-                    if action == "upload":
-                        lines.extend(_status_manifest_projection(payload))
-                except RecordError as error:
-                    label = f"{action} record {number}"
-                    unreadable.append(f"{label}: {error}")
-                    lines.append(f"- {label}: UNREADABLE; it was not treated as success.")
+        if descriptor is not None and descriptor["actions"]:
+            for action, path_texts in sorted(descriptor["history"].items()):
+                if action == "active-launch":
+                    continue
+                for number, path_text in enumerate(path_texts, start=1):
+                    try:
+                        record = self.receipts.read(Path(path_text))
+                        payload = record["payload"]
+                        summary = payload.get("summary")
+                        lines.append(
+                            f"- {action} record {number}: "
+                            + (summary if isinstance(summary, str) else "saved record")
+                        )
+                        lines.extend(_status_projection(action, payload))
+                        if action == "upload":
+                            lines.extend(_status_manifest_projection(payload))
+                    except RecordError as error:
+                        label = f"{action} record {number}"
+                        unreadable.append(f"{label}: {error}")
+                        lines.append(f"- {label}: UNREADABLE; it was not treated as success.")
         for line in lines:
             self.present(line)
         if unreadable:
@@ -1334,10 +1303,8 @@ class OperatorSurface:
     def _launch_error(self, result: LaunchResult, *, receipt: Path | None = None) -> OperatorError:
         detail = result.detail if receipt is None else f"{result.detail} Saved receipt: {receipt}"
         if result.state is LaunchState.REFUSED_CONFIRMATION:
-            # One launch state, two different things to tell a person: read a new
-            # price, or type the phrase again. `PRICE_MOVE_MARKER` is the spend
-            # gate's own text rather than a sentence copied out here, so rewording
-            # that refusal cannot silently turn every price move into "you mistyped".
+            # This shared state needs the gate-owned marker to distinguish a moved
+            # price from a mistyped confirmation without duplicating refusal text.
             if PRICE_MOVE_MARKER in result.detail:
                 return OperatorError(ErrorCode.PRICE_CHANGED, detail=detail)
             return OperatorError(ErrorCode.CONFIRMATION_REQUIRED, detail=detail)
@@ -1353,12 +1320,8 @@ class OperatorSurface:
             LaunchState.REFUSED_RUNTIME_CONTRACT,
             LaunchState.CREATE_UNLEASED,
             LaunchState.CONTROLLERS_UNARMED,
-            # The spend gate refused because a lease here has no verified close,
-            # or could not be proved to have one. That is the same evidence
-            # `_refuse_if_open_lease` reads, so it gets the same word for it:
-            # reaching the gate at all means this console's own read of that
-            # evidence was raced, and the operator is told to resolve the named
-            # close before another launch rather than to retry.
+            # A gate-level lease refusal means the console's earlier lease read raced;
+            # it must keep the same unresolved-close instruction.
             LaunchState.REFUSED_ACTIVE_LEASE,
         }:
             return OperatorError(ErrorCode.LAUNCH_UNRESOLVED, detail=detail)
@@ -1450,11 +1413,8 @@ class OperatorSurface:
     def _open_leases(self) -> tuple[list[tuple[Path, PodLease]], list[str]]:
         """Every durable lease in this state that has not reached a verified close.
 
-        The same evidence `PodRuntime._reserved_liability` totals for the balance
-        floor, read here for the operator instead of for the money ceiling. A
-        lease that cannot be read is returned as a reason rather than skipped:
-        an unreadable lease is the case where a pod is most likely to be billing
-        unwatched, and the two callers refuse on it in their own vocabulary.
+        Unreadable leases are returned as evidence rather than skipped because
+        neither caller may infer a verified close from an unreadable record.
         """
 
         root = self.state_root / "leases"
@@ -1476,23 +1436,11 @@ class OperatorSurface:
         return open_leases, unreadable
 
     def _refuse_if_open_lease(self) -> None:
-        """A lease outlives the process; the receipt that describes it may not.
+        """Refuse durable paid intent whose provider outcome may be unknown.
 
-        The active-launch receipt is written *after* the provider call returns.
-        A launch that armed its pending lease and then lost the provider's
-        response — the exact case `operations.pod.provider_runpod.create` is
-        built around, where "a POST whose response the client never saw may
-        still have created a billing pod" — writes no such receipt, so the
-        recorded check above reads "nothing is running" while a pod may be
-        billing and its armed lease sits on disk. `LAUNCH_UNRESOLVED` already
-        tells that operator not to launch again; nothing made it true, and
-        measurement showed the very next launch creating a second pod.
-
-        So the refusal reads the leases too. What it can prove is bounded and
-        worth saying: a lease still short of `closed-verified` means a paid
-        action was armed and its close is not evidenced here. Whether the
-        provider ever made the pod is exactly what the lease cannot say, which
-        is why this refuses rather than reporting either answer.
+        The receipt follows the provider response, but the lease precedes the
+        request. An unclosed lease therefore proves only that a paid action was
+        armed and lacks verified-close evidence, never whether the pod exists.
         """
 
         open_leases, unreadable = self._open_leases()
@@ -1519,24 +1467,11 @@ class OperatorSurface:
 
     @contextmanager
     def _exclusive_paid_launch(self) -> Iterator[None]:
-        """Hold this state's paid-launch claim across the check and the record.
+        """Hold the paid-launch claim across the active check and result record.
 
-        `_refuse_if_active_pod` is a read. Two console windows can both pass it
-        before either has written the receipt the other would have seen, and
-        then both confirm: measurement against the fake shows two pods created,
-        with the second launch receipt overwriting the descriptor pointer to the
-        first — which keeps billing where `close` can no longer find it. That is
-        the case the re-check in `launch` was written for, and a read cannot
-        close it.
-
-        Non-blocking on purpose. A console that waits silently while another
-        window talks to a provider is worse than one that says a launch is
-        already in flight, and the operator has lost nothing: the phrase was
-        never spent, so the preview they were shown is still theirs.
-
-        An OS lock, not a file left behind, so a window that dies mid-launch
-        releases its claim. What it must not release is the *evidence*, and that
-        is `_refuse_if_open_lease`'s job on the durable lease.
+        The claim is non-blocking so another window receives a refusal without
+        spending its challenge. Process death releases this claim; durable lease
+        evidence, not the lock file, carries any unresolved provider action.
         """
 
         self.state_root.mkdir(parents=True, exist_ok=True)
@@ -1560,15 +1495,8 @@ class OperatorSurface:
                     ),
                 ) from error
             except OSError as error:
-                # `LOCK_NB` reports a held claim as `BlockingIOError` and nothing
-                # else does. Every other errno -- a filesystem with no working
-                # `flock`, a lost descriptor -- means this window never took the
-                # claim at all, which is not the same fact as another window
-                # holding it and does not have the same remedy: the copy for
-                # `LAUNCH_ALREADY_IN_FLIGHT` tells the operator to wait for a
-                # window that may not exist, and would keep telling them so
-                # forever. `_unproven_lease_root` draws exactly this line on the
-                # durable lease; this is the same line on the claim (GOVERNANCE 10).
+                # Only BlockingIOError proves another holder; every other errno means
+                # this process failed to establish mutual exclusion at all.
                 raise OperatorError(
                     ErrorCode.SAFETY_CHECK_FAILED,
                     detail=(
@@ -1753,22 +1681,9 @@ class OperatorSurface:
         run_authority = source / "run.json"
         armarium = source / "7_armarium"
         selected = [run_authority, armarium]
-        # **A member of the wrong kind was written as complete, same as a missing one.**
-        # The loop below is `if is_file() ... elif is_dir()`, so an absent `run.json`
-        # matched neither arm, contributed nothing, and the receipt still recorded
-        # `"state": "complete"` -- a bundle short of the record saying which run
-        # produced it, describing itself as whole.
-        #
-        # Checking `exists()` alone closed only half of that, and CodeRabbit caught
-        # the other half on this very repair: a `7_armarium` that is a **regular
-        # file** exists, takes the `is_file()` arm, and is written as a single
-        # member -- so the bundle ships without any of the Armarium output and
-        # still says complete. That is the same defect through a different door,
-        # which is the shape this whole review keeps finding. So each member is
-        # required to be the *kind* it is expected to be, not merely present.
-        #
-        # GOVERNANCE 2: "a partial result is visibly partial; 'complete' is refused
-        # unless everything reconciles."
+        # Completeness requires the authority to be a regular file and Armarium
+        # to be a directory. Existence alone would allow wrong-kind members to
+        # omit required evidence while the bundle still claimed complete.
         wrong = []
         if run_authority.is_symlink():
             wrong.append("run.json is a symbolic link, not a regular file")
@@ -2062,21 +1977,12 @@ def _review_record(
     request: PodCreateRequest,
     action: str,
     adopted_pod_id: str | None,
-    preview: Any,
+    preview: PaidActionPreview,
 ) -> dict[str, object]:
-    """Make the one canonical UI record for a paid preview.
+    """Return the recomputable, phraseless preimage of the UI review digest.
 
-    ``PaidActionPreview.to_record`` is owned by the existing spend path; this
-    surface only places that record beside the reviewed request it was shown
-    with.  The resulting digest is an evidence pointer, not another authority
-    or a replacement confirmation phrase.
-
-    The preview is recorded phraseless, which `operations/pod/launch.py` already
-    requires of any refusal it prints: a challenge that has not been spent is
-    still spendable, and a durable receipt is the last place it belongs. It also
-    makes the digest mean something to the person reading the receipt -- a
-    digest whose preimage contains a value the receipt withholds cannot be
-    recomputed by anyone, which is not an evidence pointer at all.
+    A durable record must not retain a spendable challenge, and its digest must
+    cover only bytes a reader can recover from that record.
     """
 
     return {

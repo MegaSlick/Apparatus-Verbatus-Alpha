@@ -214,16 +214,9 @@ class PodCreateRequest:
     def reviewed_digest(self) -> str:
         """The digest of every field of this request, exactly as it was reviewed.
 
-        The typed confirmation phrase names only the action, the subject and the
-        two hourly rates, so on its own it authorizes any request that happens to
-        share those.  This digest is what the spend gate binds a preview's
-        challenge to, so the pod that bills is the pod that was reviewed.
-
-        Enumerated from ``dataclasses.fields`` rather than a written-out list:
-        a field this digest forgot would be a field the operator's authorization
-        silently does not cover, and a field added later would be forgotten by
-        default.  An unforeseen field type refuses loudly here rather than
-        reaching the digest as a repr nobody can reproduce.
+        The phrase does not name the complete request, so its challenge binds to
+        this digest as well. Reflection keeps future dataclass fields covered by
+        default; an unsupported value refuses instead of using an unstable repr.
         """
 
         return digest_bytes(
@@ -234,7 +227,7 @@ class PodCreateRequest:
 
 
 def _digestable(value: object) -> object:
-    """The canonical-serializable form of one request field."""
+    """Return a reproducible canonical value or refuse an unknown field type."""
 
     if value is None or isinstance(value, (bool, int, str)):
         return value

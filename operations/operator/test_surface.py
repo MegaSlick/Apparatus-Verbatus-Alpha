@@ -241,22 +241,11 @@ def test_launch_does_not_reach_paid_fake_without_a_saved_confirmation(tmp_path: 
 def test_no_saved_operator_record_carries_a_spendable_confirmation_phrase(
     tmp_path: Path,
 ) -> None:
-    """A receipt outlives the process the challenge lives in.
+    """Durable records may commit to confirmation bytes but never retain them.
 
-    `operations/pod/launch.phraseless` already keeps an unspent phrase out of
-    every refusal the runtime prints, on the stated ground that a challenge a
-    typo did not burn is still spendable. A durable receipt is the same argument
-    with a longer lifetime, so the surface writes the challenge nowhere: not in
-    the preview it kept, not in the review record the digest covers, and not as
-    the value the operator typed -- which, on the path that matters, *is* the
-    phrase. What the receipt keeps is a commitment to the exact bytes received.
-
-    Every file under the state root is searched for the phrase and for its
-    challenge on its own, because redacting the field a reader looks at first
-    while leaving the same secret in a neighbouring one would pass a narrower
-    check. The sha256 of the phrase is deliberately not among the things
-    withheld -- it is the commitment this receipt exists to make, and it is
-    asserted below rather than searched for.
+    Search every state file for both phrase and challenge so moving a spendable
+    value to another record cannot pass as redaction. The review digest remains
+    recomputable from its stored preimage.
     """
 
     surface = _surface(tmp_path)
@@ -284,19 +273,10 @@ def test_no_saved_operator_record_carries_a_spendable_confirmation_phrase(
 
 
 def test_only_the_offline_rehearsal_types_its_own_paid_confirmation() -> None:
-    """Deriving the phrase from the preview is not a person typing it.
+    """Only the fixture-locked rehearsal may derive its own typed confirmation.
 
-    `dry_run.py` produces the acceptance transcript with no human at the
-    keyboard, and it is safe because `OperatorSurface.__init__` refuses any
-    provider that is not the fixture fake. That is one `isinstance` holding up
-    GOVERNANCE 8, and Unit 21's own exit expects this path to meet a real
-    provider eventually. So the rehearsal is named here rather than left as the
-    only module that happens to do it: a second self-confirming caller is a paid
-    action nobody typed, and it should have to argue for itself in a diff.
-
-    Matched on the two real shapes -- the `confirmation=` keyword the runtime
-    takes and the positional argument `OperatorSurface.launch` takes -- so the
-    spend gate deriving its own `expected` phrase internally is not a hit.
+    Match both runtime keyword and surface positional call shapes so another
+    self-confirming production caller cannot bypass the human-input boundary.
     """
 
     callers: list[Path] = []
@@ -380,9 +360,8 @@ def test_adoption_rechecks_only_after_its_confirmation_record(tmp_path: Path) ->
     with pytest.raises(OperatorError):
         surface.launch(prepared, "no")
 
-    # An adoption preview inspects the existing fixture again after the input
-    # is recorded, because that is where the shared spend gate re-seals its
-    # current price.  It does not make the adoption green or write a lease.
+    # The shared spend gate must re-inspect adoption only after the input record,
+    # without making the adoption green or writing a lease.
     assert provider.saw_post_confirmation_adopt
     assert surface._descriptor_receipt("launch") is not None
     result = surface.launch(prepared, prepared.confirmation_phrase)
@@ -444,19 +423,11 @@ def test_two_overlapping_prepared_launches_cannot_both_be_confirmed_into_real_po
 
 
 def test_two_console_windows_cannot_both_confirm_a_paid_launch(tmp_path: Path) -> None:
-    """The sequential refusal above is a read; two windows do not take turns.
+    """The active check and result record must be exclusive across processes.
 
-    `_refuse_if_active_pod` decides from the active-launch receipt, and that
-    receipt is written after the provider call returns. Two windows over one
-    operator state can both pass the check inside the window where neither has
-    written it yet -- measured before this claim existed as two created pods,
-    with the second receipt overwriting the descriptor pointer to the first,
-    which then billed where `close` could no longer find it. That is the exact
-    failure the call site's own comment names, and a sequential test cannot
-    reach it.
-
-    The loser is refused rather than queued: its phrase was never spent, so the
-    preview it was shown is still confirmable once the winner's pod is closed.
+    The active receipt follows the provider call, so a sequential check cannot
+    prevent two windows from passing before either receipt exists. The loser is
+    refused without spending its challenge.
     """
 
     provider = OperatorFakeProvider(now=lambda: START)
@@ -491,7 +462,6 @@ def test_two_console_windows_cannot_both_confirm_a_paid_launch(tmp_path: Path) -
     assert sorted(str(outcome) for outcome in outcomes) == sorted(
         (str(LaunchState.CREATED_GUARDED), str(ErrorCode.LAUNCH_ALREADY_IN_FLIGHT))
     )
-    # The one pod that exists is the one the console can still find.
     recorded = first.receipts.read(first._active_launch_receipt())["payload"]
     assert recorded["pod"]["pod_id"] in provider.pods
     assert recorded["request"]["name"] == created[0]
@@ -500,16 +470,10 @@ def test_two_console_windows_cannot_both_confirm_a_paid_launch(tmp_path: Path) -
 def test_a_launch_that_lost_its_provider_response_refuses_the_next_one(
     tmp_path: Path,
 ) -> None:
-    """`LAUNCH_UNRESOLVED` says "do not launch again"; nothing used to make it true.
+    """A pending lease must enforce `LAUNCH_UNRESOLVED` across restarts.
 
-    `operations.pod.provider_runpod.create` is built around the case where a POST
-    whose response the client never saw may still have created a billing pod.
-    When that happens the runtime has already armed its durable lease, but the
-    surface writes no active-launch receipt -- so the check that reads only
-    receipts saw an empty state, and measurement showed the very next launch
-    creating a second pod on top of the first, which was still present.
-
-    The lease is the record that survives the process, so the refusal reads it.
+    The provider may create a pod without returning its response, leaving a
+    lease but no active receipt. A later process must refuse from that lease.
     """
 
     provider = OperatorFakeProvider(now=lambda: START)
@@ -521,11 +485,9 @@ def test_a_launch_that_lost_its_provider_response_refuses_the_next_one(
     with pytest.raises(OperatorError) as unresolved:
         surface.launch(first, first.confirmation_phrase)
     assert unresolved.value.code is ErrorCode.LAUNCH_UNRESOLVED
-    # The fake really did make the pod before losing the response.
     assert len(provider.pods) == 1
 
-    # A later process over the same operator state, which is how an operator
-    # meets this: the window died, they open a new one and try again.
+    # A new surface models the process boundary that discards in-memory state.
     restarted = _surface(tmp_path, provider=provider)
     with pytest.raises(OperatorError) as refused:
         second = restarted.prepare_launch(_request(name="second-attempt"), policy_path=spend)
@@ -540,13 +502,7 @@ def test_a_launch_that_lost_its_provider_response_refuses_the_next_one(
 def test_status_shows_the_open_lease_the_refusal_sends_the_operator_to_read(
     tmp_path: Path,
 ) -> None:
-    """`LAUNCH_UNRESOLVED` says to run `verbatus status`; status could not see it.
-
-    Status read receipts only, so the one durable record of a possibly-billing
-    pod -- the armed lease -- was invisible to the verb the recovery copy names.
-    A record that exists and cannot be read by the person it is for has been
-    lost (GOVERNANCE 2).
-    """
+    """Status must expose the lease named by `LAUNCH_UNRESOLVED` recovery copy."""
 
     provider = OperatorFakeProvider(now=lambda: START)
     spend = _spend_policy(tmp_path)
@@ -565,16 +521,7 @@ def test_status_shows_the_open_lease_the_refusal_sends_the_operator_to_read(
 
 
 def test_status_never_calls_a_state_holding_an_unreadable_lease_empty(tmp_path: Path) -> None:
-    """The lease that cannot be read is the one status must not swallow.
-
-    `status` counts open leases as records so an armed lease is never invisible,
-    but an unreadable lease is neither open nor closed -- it is the case where a
-    pod is likeliest to be billing unwatched, and `_open_leases` returns it as a
-    reason rather than as a lease. Left out of the emptiness test, a state whose
-    descriptor holds no actions reported "there are no saved operator records"
-    and dropped the corrupt file entirely, which is the record that exists and
-    cannot be read by the person it is for (GOVERNANCE 2).
-    """
+    """Unreadable lease evidence prevents both an empty and a closed claim."""
 
     surface = _surface(tmp_path)
     leases = surface.state_root / "leases"
@@ -591,21 +538,16 @@ def test_status_never_calls_a_state_holding_an_unreadable_lease_empty(tmp_path: 
 def test_a_paid_launch_claim_that_cannot_be_taken_is_not_called_another_window(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Say what was established: this window has no claim, not that someone else has one.
+    """Only `BlockingIOError` proves another window holds the launch claim.
 
-    `LOCK_NB` reports a claim another window holds as `BlockingIOError` and
-    nothing else does. A filesystem with no working `flock` raises a different
-    errno, and reading that as `LAUNCH_ALREADY_IN_FLIGHT` tells the operator to
-    wait for a window that does not exist -- advice that never comes true, and
-    the wrong half of the fact besides: what failed is this console's ability to
-    prove it is the only one launching. `_unproven_lease_root` draws the same
-    line on the durable lease (GOVERNANCE 10).
+    Other lock errors mean this process failed to establish exclusivity and must
+    not receive the wait-for-another-window remedy.
     """
 
     surface = _surface(tmp_path)
     prepared = surface.prepare_launch(_request(), policy_path=_spend_policy(tmp_path))
 
-    def no_locking(fileno: int, operation: int) -> None:
+    def no_locking(_fileno: int, _operation: int) -> None:
         raise OSError(errno.ENOLCK, "no locks available")
 
     monkeypatch.setattr(surface_module.fcntl, "flock", no_locking)
@@ -617,8 +559,7 @@ def test_a_paid_launch_claim_that_cannot_be_taken_is_not_called_another_window(
     assert "could not be taken" in (refusal.value.detail or "")
     assert "no locks available" in (refusal.value.detail or "")
     assert not any(verb == "create" for verb, _ in surface.provider.calls)
-    # A refusal here spends nothing, so the phrase the operator was shown still
-    # works once the claim can be taken again.
+    # Lock-acquisition failure occurs before runtime challenge consumption.
     monkeypatch.undo()
     assert surface.launch(prepared, prepared.confirmation_phrase).green
 
@@ -626,12 +567,7 @@ def test_a_paid_launch_claim_that_cannot_be_taken_is_not_called_another_window(
 def test_a_verified_close_releases_the_launch_the_open_lease_refused(
     tmp_path: Path,
 ) -> None:
-    """The refusal must be a hold, not a brick.
-
-    A guard that never lets go is indistinguishable from a broken console, so
-    the ordinary launch-then-close-then-launch-again sequence is asserted here
-    rather than assumed from the suites that happen to exercise it.
-    """
+    """Only a verified close may release the single-live-pod refusal."""
 
     provider = OperatorFakeProvider(now=lambda: START)
     spend = _spend_policy(tmp_path)
@@ -1313,13 +1249,7 @@ def test_timeout_word_cannot_make_an_unleased_launch_look_retryable(tmp_path: Pa
 def test_a_gate_refusal_for_an_open_lease_speaks_the_console_s_own_word_for_it(
     tmp_path: Path,
 ) -> None:
-    """The spend gate and this console read the same leases; they must agree.
-
-    `_refuse_if_open_lease` calls an unclosed lease `LAUNCH_UNRESOLVED`. The gate
-    refusing on the same evidence means this window's read of it was raced, and
-    the operator would be badly served by being told to retry rather than to
-    resolve the close that is missing.
-    """
+    """Both console and spend-gate lease reads require the unresolved-close remedy."""
 
     surface = _surface(tmp_path)
     result = LaunchResult(
@@ -2610,14 +2540,10 @@ def test_the_operator_writes_nothing_into_the_checkout(tmp_path: Path) -> None:
 def test_the_rehearsal_scratch_folder_is_never_created_inside_the_checkout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Pinned while the rehearsal runs, not merely after it.
+    """Rehearsal scratch must stay outside the checkout throughout its lifetime.
 
-    The scratch directory used to be created with `dir=ROOT`, and it is removed
-    on the way out — so comparing the checkout before and afterwards cannot see
-    it. What it left behind mid-run was a folder in `git status` and, on a
-    failed rehearsal, one that outlived the process. Recording the request is
-    the only way to assert about a directory that is meant to be gone by the
-    time anyone looks.
+    End-state inspection cannot locate a temporary directory removed on success,
+    so record its allocated path while it exists.
     """
 
     real = dry_run.tempfile.TemporaryDirectory
@@ -3078,15 +3004,7 @@ def test_an_evidence_bundle_short_of_run_json_refuses_rather_than_saying_complet
 
 
 def test_an_evidence_bundle_whose_armarium_is_a_file_refuses_too(tmp_path: Path) -> None:
-    """Present is not the same as the right kind, and `exists()` cannot tell them apart.
-
-    A `7_armarium` that is a regular file passes an existence check, takes the
-    `is_file()` arm of the writer's loop, and is archived as a single member — so
-    the bundle carries none of the Armarium output and still records itself
-    complete. That is the same defect as the missing `run.json` above, reached
-    through a different door, and the first version of this repair closed only the
-    door it came in by. Found by CodeRabbit reviewing that repair.
-    """
+    """Armarium must be a directory; existence cannot prove the required kind."""
 
     surface = _surface(tmp_path)
     run_root = tmp_path / "runs"
@@ -3290,14 +3208,10 @@ def test_the_combined_price_preview_line_is_rounded_to_cents(tmp_path: Path) -> 
 def test_a_price_that_moves_at_the_paid_call_reaches_the_operator_and_the_receipt(
     tmp_path: Path,
 ) -> None:
-    """A green launch is where a price nobody confirmed would go unnoticed.
+    """A post-claim price move must survive in both output and the green receipt.
 
-    A move before the challenge is claimed is refused and rendered as
-    PRICE_CHANGED. A move after it cannot be refused -- the pod exists -- and is
-    bounded only by the reviewed ceiling. The person who typed a phrase naming
-    $0.77/hr has to be told the pod bills at $0.90/hr, and the record has to keep
-    it: the green receipt carried no `detail` at all, so the one fact that only
-    appears on a surprising launch was the one it dropped.
+    The pod already exists when this move is observed, so the gate can only
+    enforce the configured ceiling and disclose the changed billing price.
     """
 
     class MovingPriceProvider(OperatorFakeProvider):
@@ -3335,9 +3249,8 @@ def test_a_price_that_moves_after_the_screen_is_named_a_price_change(tmp_path: P
 
     assert refusal.value.code is ErrorCode.PRICE_CHANGED
     assert "was not used to authorize a different price" in refusal.value.render()
-    # This classification is a text match against one launch state, so it is only
-    # as durable as the text: the marker the surface looks for has to be the spend
-    # gate's own, not a sentence rewritten here that the gate could drift away from.
+    # Classification must use the gate-owned marker because both meanings share
+    # REFUSED_CONFIRMATION.
     assert PRICE_MOVE_MARKER in (refusal.value.detail or "")
     # The confirmation the operator did give is recorded, and no pod was created.
     saved = surface.receipts.read(surface._descriptor_receipt("launch-confirmation"))["payload"]

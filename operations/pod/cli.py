@@ -122,19 +122,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _confirmable_only(result: LaunchResult) -> LaunchResult:
-    """Print a phrase only where typing it back could actually authorize this action.
-
-    `launch.phraseless` states the rule the runtime keeps on every refusal it
-    prints: a report the operator will not act on must not carry a phrase whose
-    challenge is still spendable, because a typo deliberately does not burn the
-    preview. A preview refused at a ceiling or at the balance floor is such a
-    report, and this printed its full phrase into the terminal and whatever log
-    scrapes it — the operator console already withholds it in the same case.
-
-    That it happened to be harmless here rests on this process exiting a few
-    lines later, which is a fact about the shape of a CLI and not a property
-    anything asserts. The rule is cheap to keep, so it is kept.
-    """
+    """Withhold a still-spendable challenge from every refused preview record."""
 
     preview = result.preview
     if preview is None or preview.assessment.allowed:

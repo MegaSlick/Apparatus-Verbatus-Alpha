@@ -503,15 +503,7 @@ def bare_runtime(
 def close_to_verified(
     provider: FakeProvider, clock: Clock, result: LaunchResult, *, reason: str = "fixture close"
 ) -> None:
-    """Take a green launch all the way to `closed-verified`, as `verbatus close` does.
-
-    One lease root holds at most one paid action that has not reached a verified
-    close (`PodRuntime._open_lease_refusal`), so a drill that needs a second paid
-    action after a first has to close the first the way an operator would:
-    terminate, prove absence, capture billing, and record that verified close
-    against the lease that armed it. Anything less leaves the invariant standing
-    and the second action refused before it reaches what the drill is about.
-    """
+    """Record every proof required to release the single-live-pod refusal."""
 
     assert result.record is not None
     assert result.lease_path is not None and result.owner_token is not None
@@ -567,9 +559,7 @@ def test_one_challenge_authorizes_exactly_one_paid_create(tmp_path: Path) -> Non
     first = pod_runtime.create(create_request, confirmation=CREATE_CONFIRMATION)
     assert first.state is LaunchState.CREATED_GUARDED
 
-    # Close it first, so the replay is refused by the gate this test is about and
-    # not by the single-live-pod invariant standing in front of it. The spent
-    # phrase must buy nothing even from a lease root with nothing open in it.
+    # Clear the lease so this replay reaches the challenge-consumption gate.
     close_to_verified(provider, clock, first)
     created = sum(1 for verb, _ in provider.calls if verb == "create")
     replay = pod_runtime.create(create_request, confirmation=CREATE_CONFIRMATION)
@@ -630,15 +620,10 @@ def test_a_challenge_does_not_authorize_a_longer_lifetime_than_was_previewed(
 def test_a_challenge_does_not_authorize_a_request_the_operator_never_reviewed(
     tmp_path: Path,
 ) -> None:
-    """The phrase names four public facts; the request is everything else.
+    """The challenge must bind request fields absent from the typed phrase.
 
-    Preview one pod, then create a different one at the same name, deadline and
-    rates: a different network volume and a different container image. The
-    printed phrase still matches, because none of what changed appears in it.
-    What changed is what the money and the evidence actually are -- another
-    volume is another corpus's disk (GOVERNANCE 4), and another image is code
-    nobody read running with the pod's credentials. The deadline check was the
-    same objection answered one field at a time; this binds the whole request.
+    Equal action, subject, deadline, and rates cannot authorize a substituted
+    image or volume; the refused attempt must leave the reviewed preview usable.
     """
 
     clock = Clock()
@@ -658,9 +643,7 @@ def test_a_challenge_does_not_authorize_a_request_the_operator_never_reviewed(
     assert "authorizes a different request" in result.detail
     assert not any(verb == "create" for verb, _ in provider.calls), "a pod was created anyway"
     assert list(tmp_path.glob("*.json")) == []
-    # The substitution is refused, not the mechanism: the preview the operator
-    # was actually shown is still theirs to confirm, and the challenge it issued
-    # was not burned by the attempt.
+    # Request-mismatch refusal must preserve the reviewed challenge.
     assert pod_runtime.create(reviewed, confirmation=CREATE_CONFIRMATION).state is (
         LaunchState.CREATED_GUARDED
     )
@@ -669,21 +652,10 @@ def test_a_challenge_does_not_authorize_a_request_the_operator_never_reviewed(
 def test_a_preview_replaced_mid_claim_keeps_its_challenge_and_names_the_replacement(
     tmp_path: Path,
 ) -> None:
-    """The claim must consume the preview its phrase was built from, not whichever is held.
+    """A stale phrase must neither spend nor destroy a replacement preview.
 
-    `_create_locked` reads the outstanding challenge, then does disk work --
-    `_open_lease_refusal` globs and reads every lease -- before `_claim_challenge`
-    runs. A second console window previewing in that gap replaces the entry, and
-    the claim used to delete whatever it found while checking the phrase against
-    the stale read. Two things went wrong at once: a superseded phrase still
-    bought a paid create, against `require_confirmation`'s own rule that a
-    confirmation is valid only for the preview that issued it; and the fresh
-    challenge was destroyed unused, so the window holding it was told "no preview
-    in this run issued a challenge for this create", which was false (rule 7).
-
-    The replacement is minted from inside the window, which is what a second
-    `preview_create` on another thread does, and nothing here needs a scheduler
-    to cooperate.
+    Mint the replacement during the lease scan between the caller's challenge
+    read and its atomic claim, avoiding scheduler-dependent timing.
     """
 
     clock = Clock()
@@ -709,8 +681,7 @@ def test_a_preview_replaced_mid_claim_keeps_its_challenge_and_names_the_replacem
     assert "no paid action occurred" in result.detail
     assert not any(verb == "create" for verb, _ in provider.calls), "a pod was created anyway"
     assert list(tmp_path.glob("*.json")) == []
-    # The refusal spends nothing, so the window that holds the newer preview can
-    # still confirm the price it was actually shown.
+    # Replacement refusal must preserve the newer challenge.
     newer = pod_runtime.create(
         create_request,
         confirmation=confirmation_phrase(
@@ -756,7 +727,7 @@ def test_an_adoption_challenge_does_not_authorize_another_expected_request(
     )
 
 
-def test_every_field_of_a_pod_request_is_inside_its_reviewed_digest(tmp_path: Path) -> None:
+def test_every_field_of_a_pod_request_is_inside_its_reviewed_digest() -> None:
     """A field outside the digest is a field the authorization silently misses.
 
     Enumerated from the dataclass rather than from a list written here: the
@@ -785,11 +756,8 @@ def test_every_field_of_a_pod_request_is_inside_its_reviewed_digest(tmp_path: Pa
         "a request field has no alternative here, so this check does not cover it"
     )
 
-    # Built field by field around the constructor: several of these alternatives
-    # are values `__post_init__` rightly refuses (an interruptible pod, a mount
-    # path the sealed report path would then sit outside of). What is under test
-    # is whether the digest reads the field at all, which a refusal at
-    # construction would hide rather than answer.
+    # Bypass validation because several alternatives are deliberately invalid;
+    # this test isolates whether the digest reads each field at all.
     baseline = reviewed.reviewed_digest()
     assert baseline == replace(reviewed).reviewed_digest(), "the digest is not stable"
     for name, value in alternatives.items():
@@ -826,16 +794,10 @@ def test_an_adoption_nobody_previewed_is_refused(tmp_path: Path) -> None:
 
 
 def test_one_challenge_authorizes_exactly_one_adoption(tmp_path: Path) -> None:
-    """One phrase, one adopted pod under lease -- and no second lease behind it.
+    """One adoption phrase may leave at most one open lease in its root.
 
-    A verified close is what would let this replay reach the confirmation gate, and
-    a closed pod cannot be adopted again: the fake provider stops answering for it,
-    exactly as RunPod would. So the replay is stopped one step earlier here, by the
-    single-live-pod invariant, and the adopt side's replay guard is proved on the
-    path where it is reachable --
-    `test_an_adoption_challenge_is_spent_when_it_is_claimed_not_when_it_succeeds`.
-    What this drill still owns is the outcome that costs money: one confirmation
-    never leaves two open leases in a root.
+    A closed pod cannot be adopted again, so this replay reaches the live-pod
+    refusal; the post-claim-failure test below covers challenge consumption.
     """
 
     clock = Clock()
@@ -860,7 +822,7 @@ def test_one_challenge_authorizes_exactly_one_adoption(tmp_path: Path) -> None:
 def test_an_adoption_challenge_is_spent_when_it_is_claimed_not_when_it_succeeds(
     tmp_path: Path,
 ) -> None:
-    """The replay guard on the adopt side, which `create`'s test cannot cover.
+    """A post-claim adoption failure must still consume its challenge.
 
     The claim consumes the challenge before anything durable is armed, so an
     adoption that fails afterwards leaves no lease behind -- and the phrase that
@@ -902,13 +864,8 @@ def test_an_adoption_challenge_is_spent_when_it_is_claimed_not_when_it_succeeds(
 def test_two_overlapping_creates_spend_one_challenge_exactly_once(tmp_path: Path) -> None:
     """One confirmation must buy one pod even when two callers race for it.
 
-    Validating the challenge and consuming it used to be separate steps, so both callers
-    could read the same outstanding challenge, both pass, and both reach the provider --
-    two billing pods from one authorization. A sequential test cannot see that, because
-    the second call only fails once the first has already finished consuming.
-
-    The barrier makes the overlap real rather than hoped for: neither thread proceeds
-    past the claim until both have arrived at it.
+    Validation and consumption must share a lock; a sequential test cannot prove
+    that boundary. The barrier forces both callers into the claim window.
     """
 
     clock = Clock()
@@ -917,16 +874,9 @@ def test_two_overlapping_creates_spend_one_challenge_exactly_once(tmp_path: Path
     create_request = request(clock)
     pod_runtime.preview_create(create_request)
 
-    # Hold the window open *inside* the claim, between reading the challenge and
-    # consuming it, which is where the old code was interruptible. A barrier on entry to
-    # `_claim_challenge` is not enough: one thread still finishes the whole read-and-
-    # delete before the other starts, so the broken version passes it.
-    #
-    # `require_confirmation` runs at exactly that point, so the first caller to reach it
-    # waits for a second to arrive. Without the lock both threads get there and both
-    # spend the same challenge. With it, the second is still blocked acquiring the lock,
-    # the wait expires, and the first proceeds alone — so the fixed code does not
-    # deadlock, it just pauses once.
+    # Rendezvous inside validation: an entry barrier would still allow one caller
+    # to finish read-and-delete before the other begins. With the lock, only the
+    # first reaches this point and its bounded wait expires without deadlock.
     monkeypatched = launch_module.require_confirmation
     gate = threading.Lock()
     first_here = threading.Event()
@@ -969,11 +919,8 @@ def test_two_overlapping_creates_spend_one_challenge_exactly_once(tmp_path: Path
 
     assert len(results) == 2
     granted = [outcome for outcome in results if outcome.state is LaunchState.CREATED_GUARDED]
-    # The loser is refused on the winner's armed lease now, one step before the
-    # challenge it would have found already spent: `_open_lease_refusal` runs inside
-    # the same lock and ahead of the claim. Either refusal is this drill's subject --
-    # one confirmation bought one pod -- and the spent-challenge refusal itself is
-    # pinned sequentially by `test_one_challenge_authorizes_exactly_one_paid_create`.
+    # Lock ordering permits either refusal: the winner may arm its lease before
+    # the loser observes the spent challenge. Both preserve the one-pod contract.
     refused = [
         outcome
         for outcome in results
@@ -991,8 +938,6 @@ def test_two_overlapping_creates_spend_one_challenge_exactly_once(tmp_path: Path
         f"the lock it claims to test (rendezvous returned {observed})"
     )
 
-
-# --- The single-live-pod invariant across processes ------------------------------
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -1075,8 +1020,7 @@ with lock_path.open("a+b") as handle:
     deadline = time.monotonic() + 30
     while not go.exists() and time.monotonic() < deadline:
         time.sleep(0.005)
-    # Published while the gate is still held: this is the write the other
-    # process's check has to be behind.
+    # The lease must become visible before releasing the gate another caller waits on.
     lease_destination.write_bytes(lease_source.read_bytes())
     fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 """
@@ -1107,19 +1051,10 @@ def _in_repo(argv: list[str]) -> subprocess.Popen[str]:
 
 
 def test_two_racing_processes_cannot_create_two_billing_pods(tmp_path: Path) -> None:
-    """The invariant that costs money if it is only true inside one process.
+    """The single-live-pod invariant must hold across independent processes.
 
-    Every other concurrency drill here shares one interpreter, so it shares the
-    in-memory challenge store and the runtime object -- and a laptop does not.
-    Two `verbatus launch` processes each hold their own preview and their own
-    challenge, and the only thing they share is this lease root. The old gate
-    read the leases outside the flock and wrote its own after the provider
-    answered, so both could pass the read, both could create, and the second
-    would leave the first billing behind a pointer that can only name one pod.
-
-    Both outcomes are asserted from the provider calls each process actually
-    made, not from what either says about itself: exactly one create leaves
-    these two processes, whichever of them wins the lock.
+    Each process owns its challenge store; only the lease root and flock are
+    shared. Provider-call counts, not result claims alone, prove one create.
     """
 
     root = tmp_path / "leases"
@@ -1162,14 +1097,10 @@ def test_two_racing_processes_cannot_create_two_billing_pods(tmp_path: Path) -> 
 def test_a_lease_written_under_the_gate_lock_is_seen_by_the_next_caller(
     tmp_path: Path,
 ) -> None:
-    """The check is behind the lock, so it cannot read a pre-write world.
+    """The lease scan must occur after acquiring the spend-gate lock.
 
-    The race above proves the outcome; this proves the mechanism, without asking
-    a scheduler to cooperate. Another process holds the spend-gate lock and arms
-    its lease while holding it. This one's create begins against a lease root
-    that is provably empty -- the assertion below is taken before the other
-    process is released -- and still refuses, naming the lease that appeared in
-    between. A check outside the lock would have passed on what it read first.
+    Publish another process's lease while this caller waits on the lock; a scan
+    performed before locking would miss it.
     """
 
     clock = Clock()
@@ -1205,7 +1136,7 @@ def test_a_lease_written_under_the_gate_lock_is_seen_by_the_next_caller(
         create_request = request(clock)
         pod_runtime.preview_create(create_request)
         creates = sum(1 for verb, _ in provider.calls if verb == "create")
-        # What the check would have seen if it ran before the lock.
+        # Establish the pre-lock world whose use would open the race.
         assert list(root.glob("*.json")) == []
         go.write_text("go", encoding="utf-8")
 
@@ -1218,19 +1149,15 @@ def test_a_lease_written_under_the_gate_lock_is_seen_by_the_next_caller(
     assert str(root / "other.json") in result.detail
     assert "no paid action occurred" in result.detail
     assert sum(1 for verb, _ in provider.calls if verb == "create") == creates
-    # The refusal is not a spent one: the phrase is still the operator's, and the
-    # report they are handed does not print it back at them.
+    # Lease refusal precedes challenge consumption and must render phraseless.
     assert result.preview is not None and result.preview.challenge is None
 
 
 def test_an_unreadable_lease_never_reads_as_an_empty_lease_root(tmp_path: Path) -> None:
-    """Fail closed, and say only what was established.
+    """Unreadable evidence must fail closed without claiming a pod was observed.
 
-    The balance floor reaches a corrupt lease first and refuses there, so this
-    scan is the redundant half -- called directly because that is the only place
-    it is reachable, and kept because a later reordering of these gates must not
-    be able to turn an unreadable file back into "nothing is running". What it
-    must not do is report a running pod: nobody observed one.
+    The balance assessment currently refuses corrupt leases first; direct
+    coverage keeps this later guard safe if gate ordering changes.
     """
 
     clock = Clock()
@@ -1275,7 +1202,7 @@ def test_a_price_that_moves_at_the_paid_call_is_named_on_the_green_launch(
     created = provider.create
 
     def moving_create(pod_request: PodCreateRequest) -> PodRecord:
-        # Still under the $1.00/hr combined ceiling, so nothing else refuses.
+        # Keep the moved rate under the ceiling to isolate post-claim disclosure.
         provider.price_sheet["fake-48gb"] = (Decimal("0.90"), VOLUME_HOURLY)
         return created(pod_request)
 
@@ -1290,7 +1217,7 @@ def test_a_price_that_moves_at_the_paid_call_is_named_on_the_green_launch(
     assert "bills at $0.90/hr" in result.detail
     assert "not the $0.77/hr" in result.detail
     assert "stayed inside the configured ceiling" in result.detail
-    # The durable record is the price that actually bills, not the one confirmed.
+    # Durable cost evidence must use the billing price observed after creation.
     lease = json.loads(next(iter(tmp_path.glob("*.json"))).read_text(encoding="utf-8"))
     assert lease["pod_hourly_usd"] == "0.90"
 
@@ -1383,8 +1310,8 @@ def test_cli_prints_preview_before_collecting_typed_confirmation(
         ),
         encoding="utf-8",
     )
-    monkeypatch.setattr(cli, "_provider", lambda reference: provider)
-    monkeypatch.setattr(cli, "_controller_armer", lambda reference: armer)
+    monkeypatch.setattr(cli, "_provider", lambda _reference: provider)
+    monkeypatch.setattr(cli, "_controller_armer", lambda _reference: armer)
     observed: dict[str, str] = {}
 
     def wrong_confirmation(prompt: str) -> str:
@@ -1451,18 +1378,10 @@ def test_a_create_refused_for_an_open_lease_exits_go_and_look() -> None:
 def test_a_preview_refused_at_the_floor_prints_no_phrase_that_still_authorizes_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """`launch.phraseless` states this rule; the CLI was the one printer breaking it.
+    """A refused preview must retain its reasons but not its unspent challenge.
 
-    A refused *preview* is a report the operator will not act on, and its
-    challenge is untouched -- the gate deliberately burns nothing before a
-    confirmation is claimed. The operator console already withholds the phrase
-    in exactly this case; `cli.py` printed the whole thing, price and challenge,
-    into the terminal and whatever log reads it.
-
-    That it was harmless rested on this process exiting a few lines later. That
-    is a fact about the shape of a CLI, not a property anything asserted, and
-    the refusal here is the balance floor -- a condition that clears on its own
-    when the account is topped up.
+    Balance-floor refusal can clear later, so process exit is not authority to
+    disclose a phrase that would remain valid in the runtime.
     """
 
     clock = Clock()
@@ -1508,10 +1427,10 @@ def test_a_preview_refused_at_the_floor_prints_no_phrase_that_still_authorizes_i
         ),
         encoding="utf-8",
     )
-    monkeypatch.setattr(cli, "_provider", lambda reference: provider)
-    monkeypatch.setattr(cli, "_controller_armer", lambda reference: armer)
+    monkeypatch.setattr(cli, "_provider", lambda _reference: provider)
+    monkeypatch.setattr(cli, "_controller_armer", lambda _reference: armer)
 
-    def never_asked(prompt: str) -> str:  # pragma: no cover - reaching it is the failure
+    def never_asked(_prompt: str) -> str:  # pragma: no cover - reaching it is the failure
         raise AssertionError("a refused preview must not collect a typed confirmation")
 
     monkeypatch.setattr("builtins.input", never_asked)
@@ -1545,7 +1464,7 @@ def test_a_preview_refused_at_the_floor_prints_no_phrase_that_still_authorizes_i
 
 
 def test_a_preview_that_may_be_confirmed_still_prints_its_phrase(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
 ) -> None:
     """The paired green path: withholding must be conditional, not a blanket redaction.
 
@@ -2723,12 +2642,10 @@ def test_confirmed_adoption_closes_if_its_lease_cannot_be_recorded(tmp_path: Pat
 
 
 def test_an_adoption_lease_that_cannot_be_read_back_closes_the_pod(tmp_path: Path) -> None:
-    """`store.load()` reads a file back off disk, so `None` is a real answer.
+    """A missing lease read-back must close an adopted pod under `python -O` too.
 
-    This was an `assert`, which `python -O` removes; a `None` lease then reached
-    controller arming and the durable-store fault surfaced as an arming one.
-    Found by CodeRabbit on this branch.  An adopted pod that cannot be guarded
-    does not keep billing, so this closes it exactly as failed arming does.
+    The safety check cannot rely on an optimizable assertion, and a pod without
+    durable lease evidence must follow failed-arming close behavior.
     """
 
     clock = Clock()
@@ -2775,8 +2692,8 @@ def test_a_request_that_cannot_be_sealed_is_named_a_request_refusal_not_a_lease_
 ) -> None:
     """Sealing is request preparation; it never touches the durable store.
 
-    Inside the lease block it reported as LEASE_FAILURE, which names the wrong
-    subsystem on a money path.  Found by CodeRabbit on this branch.
+    A sealing failure must remain REFUSED_REQUEST rather than naming the lease
+    subsystem on a money path.
     """
 
     clock = Clock()
@@ -3188,11 +3105,8 @@ def test_lease_cannot_construct_verified_phase_from_misbound_close_evidence(
 def test_a_verified_lease_phase_cannot_be_reached_without_naming_a_pod(tmp_path: Path) -> None:
     """`closed-verified` asserts absence about one exact pod.
 
-    A lease reaching that phase while naming no pod is evidence about nothing,
-    and the binding check skipped itself in exactly that case -- so a close
-    record with no `pod_id` and a lease that never bound one produced a green
-    terminal phase.  Found by CodeRabbit on this branch.  A lease read back off
-    disk runs this same validation, which is what makes it reachable.
+    A lease and close record without ``pod_id`` prove absence about nothing;
+    read-back validation must refuse that green terminal phase.
     """
 
     clock = Clock()
@@ -3740,8 +3654,7 @@ def test_two_launches_on_one_volume_get_distinct_report_paths(tmp_path: Path) ->
     first_command = provider.create_requests[-1].docker_start_cmd
     first_path = first_command[first_command.index("--report-path") + 1]
 
-    # The second launch is the one an operator actually makes: the first pod is
-    # closed and its lease verified before another may start on the same volume.
+    # A second launch may begin only after the first lease records verified close.
     close_to_verified(provider, clock, first)
     second = pod_runtime.create(request(clock), confirmation=CREATE_CONFIRMATION)
     assert second.state is LaunchState.CREATED_GUARDED
@@ -3819,10 +3732,11 @@ def test_pod_timer_report_write_failure_immediately_closes_and_never_returns_gre
 def test_a_pod_report_write_that_fails_twice_says_the_receipt_also_failed(
     tmp_path: Path,
 ) -> None:
-    """The fallback receipt is the pod's only durable evidence when the first
-    write fails.  Its own failure used to be swallowed, so an operator finding
-    nothing on the volume could not tell a write that failed twice from one that
-    never ran (GOVERNANCE 2).  Found by CodeRabbit on this branch."""
+    """A failed fallback write must remain visible when the primary write fails.
+
+    Otherwise an empty volume cannot distinguish two write failures from a timer
+    that never ran.
+    """
 
     clock = Clock()
     provider = fake(clock)
@@ -4497,8 +4411,8 @@ def test_a_hung_nvidia_smi_becomes_a_red_gpu_profile_rather_than_a_wedged_prefli
     """An unbounded `nvidia-smi` never reaches the red `GpuProfile` path below it.
 
     A wedged driver or a card mid-reset would block preflight forever on a pod
-    that is already billing.  `TimeoutExpired` is an `Exception`, so the same
-    handler records it in `discovery_detail`.  Found by CodeRabbit on this branch.
+    that is already billing. ``TimeoutExpired`` must become recorded discovery
+    detail rather than escape the red profile path.
     """
 
     class Disk:
@@ -5283,9 +5197,7 @@ def test_a_confirmation_spent_before_a_restart_authorizes_nothing_after_one(
     before.preview_create(create_request)
     spent = before.create(create_request, confirmation=CREATE_CONFIRMATION)
     assert spent.green
-    # Closed and verified before the restart, so the lease root the new process
-    # comes up on is clean: what refuses below is the money gate itself, not the
-    # single-live-pod invariant that would otherwise answer first.
+    # Clear the lease so restart behavior reaches the confirmation gate.
     close_to_verified(provider, clock, spent)
     creates = sum(1 for verb, _ in provider.calls if verb == "create")
 
