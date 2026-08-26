@@ -17,7 +17,12 @@ from common.stage import RUN_MODES
 from operations.pod.models import PodCreateRequest, require_utc
 
 from . import notify_bridge
-from .advance import boundary_summary, held_boundaries_for_mode, trigger_advance
+from .advance import (
+    UnsealedBoundaryRefusal,
+    boundary_summary,
+    held_boundaries_for_mode,
+    trigger_advance,
+)
 from .custody import python_module_command, run_confined
 from .errors import ErrorCode, OperatorError, strip_control_bytes
 from .ingest import ingest_in_custody
@@ -550,7 +555,7 @@ def _advance_with_confirmation(
         for candidate in STAGES:
             try:
                 candidate_summary = boundary_summary(tree, candidate)
-            except ApprovalRefusal:
+            except UnsealedBoundaryRefusal:
                 _print(f"- {candidate}: no stored completion seal")
             else:
                 _print(

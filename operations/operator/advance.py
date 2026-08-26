@@ -31,6 +31,10 @@ ADVANCE_ACTION = "advance"
 UTC = timezone.utc
 
 
+class UnsealedBoundaryRefusal(ApprovalRefusal):
+    """A known stage has no completion seal yet, rather than unreadable evidence."""
+
+
 def advance_subject(stage: str) -> str:
     """Return the closed subject name for one stage completion boundary."""
 
@@ -60,7 +64,7 @@ def sealed_boundary(tree: RunTree, stage: str) -> tuple[dict[str, Any], str]:
             f"advance could not read {stage}'s stored completion seal; no boundary was advanced"
         ) from error
     if not seals:
-        raise ApprovalRefusal(
+        raise UnsealedBoundaryRefusal(
             f"advance refuses {stage}: it has no stored stage-seal, so there is no witnessed boundary to pass"
         )
     seal = latest_attempt(seals, f"{stage} stage seal", operation="seal")

@@ -15,6 +15,7 @@ from common.contracts.errors import ApprovalRefusal
 from common.contracts.stages import STAGES
 from common.runtree.store import RunTree
 from common.stage import ALWAYS_HELD_BOUNDARIES, RUN_MODES, held_advance_boundaries
+from operations.operator.errors import ErrorCode, OperatorError
 
 from . import advance, cli
 
@@ -448,6 +449,39 @@ def test_an_unvalidated_mode_selection_states_no_boundary_before_it_refuses(
     assert "waits at" not in rendered
     assert "None" not in rendered
     assert "Current boundary state" in rendered  # the evidence is still shown
+
+
+def test_unreadable_boundary_evidence_is_refused_not_reported_as_unsealed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A damaged seal is evidence of damage, not evidence that no seal exists."""
+
+    run_root, run_id = _run(tmp_path)
+    tree = RunTree(run_root, run_id)
+    seal, _digest = advance.sealed_boundary(tree, "designator")
+    tree.resolve(tree.artifact_path("designator", "stage-seal", seal["artifact_id"])).write_text(
+        "not json", encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        cli,
+        "_typed_advance_confirmation",
+        lambda phrase: pytest.fail(f"damaged evidence reached confirmation: {phrase}"),
+    )
+
+    with pytest.raises(OperatorError) as refusal:
+        cli._advance_with_confirmation(
+            run_root,
+            run_id,
+            "armarium",
+            reason="operator must see the damaged earlier boundary",
+            workspace=ROOT,
+            mode="manual",
+        )
+
+    assert refusal.value.code == ErrorCode.ADVANCE_REFUSED
+    assert "could not read designator's stored completion seal" in (refusal.value.detail or "")
+    rendered = capsys.readouterr().out
+    assert "designator: no stored completion seal" not in rendered
 
 
 def test_the_advance_presentation_never_phrases_a_recommendation(
