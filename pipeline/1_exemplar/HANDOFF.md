@@ -166,11 +166,129 @@ filename/digest linkage and any `container_page_index` in `export.pages` and in
 every delivered crop's `source_regions`, so an individual output can be matched to
 all originals it used without guessing from an ordinal.
 
+## Split derivative pages (Unit 7)
+
+A submitted frame that Unit 5's decision manifest gives a split for fans out to one
+ordinal per declared part **before** `RunTree.create`, so `source_manifest` is the
+post-split page denominator and `require_corpus_frame_shard` counts post-split
+pages. `container_page_index` is the index of a page within whatever divided its
+source — a PDF or TIFF page index, or a split part index.
+
+The JPEG master is never re-encoded. Its untouched bytes are stored under their own
+digest as the admission's `parent_frame`, and the PNG page is a derivative that
+inputs both its own pixels and that master. When an exact no-op over an already
+deterministic PNG gives both roles the same content address, the admission carries
+that reference once rather than violating the artifact contract by double-counting
+it. `common/exemplar_boundary.py` re-derives the page from the master's bytes plus
+the recorded transform and compares byte for byte, so the pixels are provably the
+master's.
+
+**What the recorded render contract asserts, and what it does not.**
+
+- `source_mode` and `source_bands` are the master's own Pillow mode and bands, and
+  `output.color_mode` is read out of the encoded PNG's own header. The record
+  therefore states what the page's samples actually are, not what the image was on
+  the way into the encoder. The Exemplar boundary independently compares those
+  fields, the output codec/mode and dimensions, page index, mode-transform label,
+  and deterministic-encoder identity against its re-render; correct pixels under a
+  forged renderer record are refused too. The embedded row's closed shape, triage
+  mode, confidence, override, cluster identity, and resolved actor are independently
+  validated even when an attacker recomputes the row's self-digest.
+- `colour_mode: "keep"` is a declaration that no lossy colour or sample conversion
+  happens. The exact admitted set is the deterministic encoder's direct PNG modes
+  (`1`, `L`, `LA`, `RGB`, `RGBA`) plus palette `P`, whose expansion preserves every
+  displayed pixel. Every other decoded mode is refused under `keep`; in particular,
+  a 16-bit master would otherwise be crushed to 8 bits. An explicit declaration
+  (`grayscale`, `rgb`, `bitonal`) is admitted and its actual output mode is read from
+  the encoded PNG. Pillow modes such as LAB that do not implement direct conversion
+  to `L` take the recipe's explicit LAB-to-RGB-to-L path. Nothing here converts
+  evidence silently.
+- **Unit 6 consequence for real 16-bit TIFF masters:** it must emit a deliberate
+  per-part `grayscale`, `rgb`, or `bitonal` decision and record the actor that made
+  it. It must not default those masters to `keep`. If preserving the 16-bit samples
+  is required, Unit 6 must emit no split decision for that frame; the whole-page
+  route then seals lossless TIFF samples. This is a doctrine consequence, not a
+  guess based on the synthetic test material.
+- The row's declared `frame` is compared against the master's actual dimensions,
+  at the door and again at the Exemplar boundary. Unit 5 proves a row's parts
+  partition its *declared* frame exactly; only this comparison ties that
+  declaration to the photograph, and without it a row declaring a smaller frame
+  re-derives perfectly while the rest of the master reaches no page.
+- Frame dimensions and split coordinates are the decoded **stored raster**, before
+  any part-local deskew. Exact equality is accepted even when a 90-degree part
+  rotation swaps the derivative's output dimensions; every one-pixel width or
+  height mismatch is refused. EXIF orientation metadata is not an unrecorded
+  transform: a JPEG tagged for rotated display still has the stored raster's
+  dimensions and coordinate space here. Unit 6 must transcribe ScanTailor geometry
+  into that raw frame space rather than silently applying EXIF orientation.
+- **The apply recipe's library versions are a record, not an enforcement.** The
+  frozen `triage-raster-apply-v1` recipe is compared exactly; the Pillow, pillow-heif
+  and libheif versions beside it are provenance under GOVERNANCE 6 and are *not*
+  compared against the running host. Refusing on version drift would make every
+  archived run unverifiable on the next routine upgrade. The byte comparison is the
+  property; when it fails and the recorded versions differ from this host's, the
+  refusal names the drift, because a decoder upgrade is the ordinary cause and
+  "not reproducible" alone would send an operator looking for forgery.
+
+**What binds a triage decision to a run.** The byte digests of the decision
+manifest and of any cluster records are bound into `config_digest`. A triage pass
+re-run between two attempts at one run id can move a gutter without changing the
+part count, leaving `source_manifest` byte-identical; the digests are what make
+`RunTree.create` refuse that reuse by name rather than leaving it to be caught
+incidentally, one ordinal at a time, by write-once artifacts.
+
+**Re-shoot clusters.** A cluster reaches the run with every member accounted by its
+own admission outcome, no canonical designation and no winner field, and a private
+`re-shoot-cluster-report` makes the link visible without asking a later stage to
+reconstruct it. A submission holding only some of a cluster's members is refused:
+that is the door's own enforcement of "a seam is never placed inside a cluster",
+for the only seam a production run can currently place — the operator's folder cut.
+Every triage admission, successful or refused, carries a compact row/part link, and
+the cluster report includes every such outcome. A corrupt member therefore remains
+visibly in its cluster rather than disappearing from the cluster record while
+surviving only in the separate refusal report.
+
+**Not yet wired, and whose job it is.** `door.content_aware_shards` plans seams
+that fall at opening boundaries and never inside a split pair or a cluster, and
+refuses by name when the page cap leaves no legal seam. Nothing calls it: nothing
+in the tree partitions a corpus into shards at all. Unit 8 owns multi-shard
+submission and must call it before creating each `RunTree`, passing the sealed
+`max_pages_per_shard` from `config/corpus_frame.toml`. It imposes no shard-count
+ceiling of its own — the page cap is the sealed policy and the shard count is its
+consequence — so a caller with a real ceiling passes `max_shards` explicitly. A
+split pair cannot straddle a folder cut, because both halves come from one file.
+Pair identity is the submitted path plus digest, not digest alone: byte-identical
+copies remain distinct submitted frames, and a legal seam may fall between them.
+Nested or interleaved cluster spans are kept as one contiguous shard interval.
+
+**Hard-failure cap across shards — decided per shard/run.** The ruled unit in
+`config/hard_failure.toml` is "more than 2 failures within a 1000 page run". Unit 8
+creates one run per at-most-1,000-page shard, so it must keep the existing tally per
+shard and must not add a corpus-wide aggregate that would silently change the ruled
+unit. Two hard failures in each of several shards remain warnings in each run; the
+third within any one shard halts that run at its next checkpoint.
+
+**Recovery does not re-render a derivative page.** A recovery pass reads the same
+sealed Exemplar page, re-verifies its master/recipe lineage at the ordinary boundary,
+and cuts a new Designator region from those already sealed pixels. The deterministic
+crop and write-once publication paths accept a byte-identical replay. There is no
+recovery call site that invokes the Door renderer, so split fan-out neither expands
+the recovery budget nor collides with the derivative page artifact.
+
+**Early failures still keep the post-split denominator.** An unreadable, oversized,
+or undecodable frame receives one refused ordinal per part already declared by its
+validated triage row. The reasons may repeat because the source-level failure is
+the same, but the page count does not collapse: `require_corpus_frame_shard`, the
+Exemplar census, and the Armarium all reconcile against declared post-split pages,
+including pages whose pixels could not be produced.
+
 ## Data handling and scope
 
 Real input is fail-closed on living inside a storage root
-`config/data_handling_policy.json` names — the submitted folder, the run root, and
-the filename ledger all check against it before a byte is read. **Cut 2026-08-09,
+`config/data_handling_policy.json` names — the submitted folder, the run root,
+the filename ledger, and any triage decision manifest or cluster records all check
+against it before a byte is read, and none of the record files may live inside the
+submitted folder. **Cut 2026-08-09,
 per Tyrel's ruling that session:** real input no longer also needs a current
 data-gate approval-record artifact; none of this material ever reaches git
 regardless of any such sign-off. The local gate package is

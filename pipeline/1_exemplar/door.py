@@ -45,10 +45,12 @@ Invoked as a program:
 
 import hashlib
 import json
+import os
+import stat
 import sys
 from contextlib import ExitStack
 from pathlib import Path
-from typing import Any, BinaryIO, Callable, Final, NamedTuple
+from typing import Any, BinaryIO, Callable, Final, Mapping, NamedTuple
 
 ROOT = Path(__file__).resolve().parents[2]
 # The one folder in this repository whose contents are declared synthetic. A
@@ -57,8 +59,10 @@ DECLARED_SYNTHETIC_FIXTURE_ROOT: Final = ROOT / "proof"
 
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(ROOT / "pipeline" / "0_triage"))
 
 import admission  # noqa: E402
+import manifest as triage_manifest  # noqa: E402
 import pdf_render  # noqa: E402
 import render_config  # noqa: E402
 from admission import RefusalReason  # noqa: E402
@@ -68,6 +72,7 @@ from image_formats import (  # noqa: E402
     MAX_SOURCE_BYTES,
     FormatRefusal,
     count_raster_pages,
+    decode_raster,
     raster_renderer_recipe,
     render_raster_page,
     sniff,
@@ -114,7 +119,7 @@ from operations.submit import submit as submission_ledger  # noqa: E402
 
 
 class SourceEntry(NamedTuple):
-    """One standalone raster or one page fanned out from a source container."""
+    """One submitted frame may own several rows in the post-fan-out census."""
 
     ordinal: int
     declared_path: str
@@ -123,6 +128,9 @@ class SourceEntry(NamedTuple):
     declared_size: int | None = None
     ledger_sha256: str | None = None
     detected_format: str | None = None
+    triage_row: dict[str, Any] | None = None
+    triage_part_index: int | None = None
+    source_frame_index: int | None = None
 
 
 class _Decision(NamedTuple):
@@ -138,12 +146,20 @@ DOOR_REFUSAL_REPORT_SCHEMA: Final = "door-refusal-report.v0"
 DOOR_REFUSAL_REPORT_SUBJECT: Final = "refusal-report"
 DOOR_DUPLICATE_REPORT_SCHEMA: Final = "door-duplicate-report.v0"
 DOOR_DUPLICATE_REPORT_SUBJECT: Final = "duplicate-report"
+DOOR_CLUSTER_REPORT_SCHEMA: Final = "door-re-shoot-cluster-report.v1"
 _SOURCE_HASH_CHUNK: Final = 1024 * 1024
 _SNIFF_BYTES: Final = 4096
+# Triage JSON is untrusted ingress too. The real Door can create at most one
+# 1,000-page shard (the corpus-frame validator refuses any configured maximum
+# above 1,000), so a larger decision document or derivative census cannot shape
+# this run. Bound both before JSON-controlled lists reach Unit 5's pairwise
+# partition validation.
+MAX_TRIAGE_DOCUMENT_BYTES: Final = 64 * 1024 * 1024
+MAX_TRIAGE_DERIVATIVE_PAGES: Final = 1_000
 # The real Exemplar Door decodes/renders bytes; it is not the walking skeleton's
 # fake adapter. Bump this deliberately whenever source behavior changes so a real
 # run cannot resume under pixels made by a different Door implementation.
-REAL_DOOR_ADAPTER_REVISION: Final = "exemplar-door-v2"
+REAL_DOOR_ADAPTER_REVISION: Final = "exemplar-door-v5"
 
 
 def _source_digest_stream(handle: BinaryIO) -> tuple[str, int]:
@@ -224,6 +240,138 @@ def declared_digests(fixture: dict, scenario: str) -> dict[int, str]:
     return declared
 
 
+def load_triage_decisions(
+    manifest_path: str | Path, clusters_path: str | Path | None = None
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]], dict[str, str]]:
+    """Read the closed triage decision manifest without inventing another shape.
+
+    The third return value is the byte digest of each document read, for the same
+    reason `_real_bindings` digests every configuration it acts on: geometry that
+    shaped a run's pixels is bound into `config_digest`, so a re-entry under a
+    re-run triage pass is refused by name as a different run wearing an old
+    id — rather than left to be caught incidentally, one ordinal at a time, by the
+    run tree's write-once artifacts. Digested from the same bytes that were
+    parsed, because two reads can straddle a rewrite.
+    """
+    manifest_bytes, document = _read_triage_document(manifest_path, "triage decision manifest")
+    clusters_bytes, clusters_document = (
+        _read_triage_document(clusters_path, "triage re-shoot cluster records")
+        if clusters_path is not None
+        else (None, None)
+    )
+    digests = {"triage-decision-manifest": digest_bytes(manifest_bytes)}
+    if clusters_bytes is not None:
+        digests["triage-re-shoot-clusters"] = digest_bytes(clusters_bytes)
+    if clusters_document is not None:
+        if not isinstance(clusters_document, dict):
+            raise ContractError(
+                "the triage re-shoot cluster records are not an object keyed by cluster id; "
+                "no run was created because their memberships cannot be resolved; export the "
+                "records as one JSON object keyed by cluster id and retry"
+            )
+        clusters = clusters_document
+    else:
+        clusters = None
+    _refuse_triage_amplification(document, clusters)
+    try:
+        checked = triage_manifest.validate_manifest(document, clusters)
+    except ContractError as error:
+        raise ContractError(
+            f"the triage decision manifest is invalid ({error}); no run was created because "
+            "its page geometry cannot be trusted; correct the named manifest violation and retry"
+        ) from error
+    rows = {row["source_frame_sha256"]: row for row in checked["records"]}
+    return rows, dict(clusters or {}), digests
+
+
+def _read_triage_document(path: str | Path, label: str) -> tuple[bytes, Any]:
+    """Return the same bytes parsed, so digest and decisions cannot straddle a rewrite."""
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    if no_follow is None:
+        raise ContractError(
+            f"the {label} cannot be opened without following symlinks on this platform; no run "
+            "was created because its approved location cannot be held at the read boundary"
+        )
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(
+            Path(path),
+            os.O_RDONLY | no_follow | getattr(os, "O_CLOEXEC", 0),
+        )
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise ContractError(
+                f"the {label} is not a regular file; no run was created because a decision "
+                "document cannot be a device, pipe, socket, or directory"
+            )
+        with os.fdopen(descriptor, "rb") as handle:
+            descriptor = None
+            data = handle.read(MAX_TRIAGE_DOCUMENT_BYTES + 1)
+    except OSError as error:
+        refusal = ContractError(
+            f"the {label} could not be read; no run was created because its decisions are "
+            "unavailable; restore a readable file inside an approved storage root and retry"
+        )
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError as cleanup:
+                refusal.add_note(f"descriptor cleanup also failed: {cleanup}")
+        raise refusal from error
+    except BaseException as primary:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError as cleanup:
+                primary.add_note(f"descriptor cleanup also failed: {cleanup}")
+        raise
+    if len(data) > MAX_TRIAGE_DOCUMENT_BYTES:
+        raise ContractError(
+            f"the {label} exceeds the {MAX_TRIAGE_DOCUMENT_BYTES}-byte input bound; no run was "
+            "created because an untrusted decision document may not allocate without limit; "
+            "export only the records for this submitted shard and retry"
+        )
+    try:
+        return data, json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as error:
+        raise ContractError(
+            f"the {label} is not valid UTF-8 JSON; no run was created because its decisions "
+            "cannot be interpreted; export valid UTF-8 JSON and retry"
+        ) from error
+
+
+def _refuse_triage_amplification(document: Any, clusters: Any) -> None:
+    """Bound split and cluster fan-out before Unit 5 validates attacker-sized lists."""
+    if isinstance(document, dict) and isinstance(document.get("records"), list):
+        derivative_pages = 0
+        for row in document["records"]:
+            split = row.get("split") if isinstance(row, dict) else None
+            parts = split.get("parts") if isinstance(split, dict) else None
+            if not isinstance(parts, list):
+                continue
+            derivative_pages += len(parts)
+            if derivative_pages > MAX_TRIAGE_DERIVATIVE_PAGES:
+                raise ContractError(
+                    "the triage decision manifest declares more than "
+                    f"{MAX_TRIAGE_DERIVATIVE_PAGES} derivative pages; no run was created because "
+                    "attacker-controlled split counts must be bounded before pairwise geometry "
+                    "validation and source expansion; export one configured shard and retry"
+                )
+    if isinstance(clusters, dict):
+        member_references = 0
+        for record in clusters.values():
+            members = record.get("member_frame_sha256") if isinstance(record, dict) else None
+            if not isinstance(members, list):
+                continue
+            member_references += len(members)
+            if member_references > MAX_TRIAGE_DERIVATIVE_PAGES:
+                raise ContractError(
+                    "the triage re-shoot cluster records declare more than "
+                    f"{MAX_TRIAGE_DERIVATIVE_PAGES} member references; no run was created because "
+                    "attacker-controlled cluster counts must be bounded before set expansion; "
+                    "export only the clusters for one configured shard and retry"
+                )
+
+
 def decide(
     data: bytes | None,
     source: SourceEntry,
@@ -265,6 +413,88 @@ def decide(
             None,
             None,
         )
+    if source.triage_row is not None:
+        if data is None or source.triage_part_index is None:
+            raise ValueError("a triage-derived page needs bytes and an exact split-part index")
+        try:
+            triage_manifest.verify_submitted_frame(source.triage_row, data)
+            frame_index = source.source_frame_index or 0
+            decoded = decode_raster(data, page_index=frame_index)
+            frame = source.triage_row["frame"]
+            if (decoded.width, decoded.height) != (frame["width"], frame["height"]):
+                raise ContractError(
+                    "triage row frame dimensions do not match the decoded submitted frame; this "
+                    "page part was refused because applying those coordinates could omit or shift "
+                    "source pixels; regenerate the row against the stored raster dimensions and "
+                    "retry"
+                )
+            part = source.triage_row["split"]["parts"][source.triage_part_index]
+            page_bytes, _geometry, contract = render_raster_page(data, frame_index, part)
+        except triage_manifest.SchemaRefusal as error:
+            return _Decision(
+                "refused",
+                admission.reason(RefusalReason.DIGEST_MISMATCH, str(error)),
+                None,
+                None,
+                None,
+            )
+        except FormatRefusal as error:
+            return _Decision(
+                "refused",
+                admission.reason(admission._refusal_code(error), str(error)),
+                None,
+                None,
+                None,
+            )
+        except ContractError as error:
+            return _Decision(
+                "refused",
+                admission.reason(RefusalReason.CORRUPT, str(error)),
+                None,
+                None,
+                None,
+            )
+        backlink = triage_manifest.derivative_page_backlink(
+            source.triage_row, source.triage_part_index
+        )
+        rendered_from = {
+            "container_format": "triage-split-raster",
+            "container_sha256": whole_digest,
+            # This index selects a split part, not a page in the submitted raster.
+            "container_page_index": source.container_page_index,
+            "render_contract": {
+                **contract,
+                "derivative_page": {
+                    "kind": "sealed-derivative-page-v1",
+                    "parent_frame_sha256": whole_digest,
+                    "parent_frame_page_index": frame_index,
+                    "triage_manifest_row": source.triage_row,
+                    "triage_backlink": backlink,
+                    "operation_order": source.triage_row["split"]["operation_order"],
+                    "apply_recipe": {
+                        "schema": "triage-raster-apply-v1",
+                        "rotation_resample": "Pillow.Resampling.BICUBIC",
+                        "rotation_fill": "Pillow-default-zero",
+                        "rotation_expand": True,
+                        "colour_conversion": "Pillow.Image.convert-direct-or-via-RGB",
+                        "encoder": "common.imaging.encode_image_deterministic-v1",
+                    },
+                    "operations": [
+                        {"operation": "split", "region": part["region"]},
+                        {"operation": "crop", "bounds": part["crop_box"]},
+                        {"operation": "deskew", "rotation": part["rotation"]},
+                        {"operation": "convert", "colour_mode": part["colour_mode"]},
+                    ],
+                },
+            },
+        }
+        checked = admission.inspect_source(page_bytes, declared_sha256=None, policy=policy)
+        if checked.outcome != "admitted":
+            return _Decision("refused", checked.reason, None, None, None)
+        return _Decision(
+            "admitted", None, checked.digest, page_bytes, checked.geometry, rendered_from
+        )
+
     if source.container_page_index is None:
         if verdict == admission.RENDER_PAGES:
             return _Decision(
@@ -356,8 +586,10 @@ def expand_sources(
     policy: dict[str, str],
     *,
     open_source: Callable[[str], Any] | None = None,
+    triage_rows: Mapping[str, dict[str, Any]] | None = None,
+    triage_clusters: Mapping[str, dict[str, Any]] | None = None,
 ) -> list[SourceEntry]:
-    """Expand configured PDF/TIFF containers to stable page ordinals.
+    """Expand source containers and triage split decisions to stable ordinals.
 
     Counting inspects only enough to learn a page count; it does not produce page
     pixels.  Any source that cannot be read or counted still receives one ordinal,
@@ -371,12 +603,30 @@ def expand_sources(
     closed within its own row, so this pass holds one descriptor at a time rather
     than one per file in the folder.
     """
+    if triage_clusters is not None and triage_rows is None:
+        raise ContractError(
+            "triage cluster records were supplied without a decision manifest; no ordinals "
+            "were assigned because cluster evidence cannot be reconciled on its own; supply "
+            "the matching triage decision manifest and retry"
+        )
+    _require_case_unique_paths(files)
+    submitted_digests = {row["sha256"] for row in files}
     ordinal = 0
     sources: list[SourceEntry] = []
     for row in sorted(files, key=lambda item: item["relative_path"]):
         path, declared_sha256 = row["relative_path"], row["sha256"]
         declared_size = row.get("bytes")
         ledger_sha256 = row.get("ledger_sha256")
+        triage_row = None
+        if triage_rows is not None:
+            triage_row = triage_rows.get(declared_sha256)
+            if triage_row is None:
+                raise ContractError(
+                    "the triage decision manifest has no row for a submitted source frame; no "
+                    "source expansion was returned because that frame would disappear from the "
+                    "post-split census; regenerate the manifest with one row for every submitted "
+                    "frame digest and retry"
+                )
         if declared_size is not None and (
             not isinstance(declared_size, int)
             or isinstance(declared_size, bool)
@@ -398,13 +648,9 @@ def expand_sources(
             declared_sha256: str | None = declared_sha256,
             declared_size: int | None = declared_size,
             ledger_sha256: str | None = ledger_sha256,
+            bound_triage_row: dict[str, Any] | None = triage_row,
+            triage_part_index: int | None = None,
         ) -> None:
-            """One fanned-out or standalone row for this loop iteration's source.
-
-            The row-invariant fields are bound as default arguments, evaluated once
-            at definition time, rather than left as loop-variable closures a later
-            iteration's reassignment could change from under a still-live reference.
-            """
             nonlocal ordinal
             ordinal += 1
             sources.append(
@@ -416,8 +662,26 @@ def expand_sources(
                     declared_size,
                     ledger_sha256,
                     detected_format,
+                    bound_triage_row,
+                    triage_part_index,
+                    0 if bound_triage_row is not None else None,
                 )
             )
+
+        def append_refused_source(
+            detected_format: str | None,
+            bound_triage_row: dict[str, Any] | None = triage_row,
+        ) -> None:
+            """Keep the manifest's declared post-split denominator on early failure."""
+            if bound_triage_row is None:
+                append(None, detected_format)
+                return
+            for part_index in range(len(bound_triage_row["split"]["parts"])):
+                append(
+                    part_index,
+                    detected_format,
+                    triage_part_index=part_index,
+                )
 
         data: bytes | None = None
         try:
@@ -438,16 +702,48 @@ def expand_sources(
                 # intentionally unchanged; only a PDF container is handed to PDFium
                 # as an open stream instead of being read into one bytes object.
                 if declared_size is not None and declared_size > MAX_SOURCE_BYTES:
-                    append(None, detected)
+                    append_refused_source(detected)
                     continue
                 data = read_bytes(path)
                 detected = sniff(data)
         except (OSError, inventory.SubmissionInputError):
-            append(None, None)
+            append_refused_source(None)
             continue
         route = admission.classify_detected_format(detected, policy)
         if data is not None and len(data) > MAX_SOURCE_BYTES:
-            append(None, detected)
+            append_refused_source(detected)
+            continue
+        if triage_rows is not None:
+            assert triage_row is not None
+            if data is None or detected == "pdf":
+                raise ContractError(
+                    "a triage decision row names a source that is not one decodable raster frame; "
+                    "no source expansion was returned because its geometry cannot be applied to "
+                    "that source; remove the stale row or regenerate it against a single-frame "
+                    "raster and retry"
+                )
+            try:
+                frame_count = count_raster_pages(data)
+            except FormatRefusal:
+                # Geometry cannot be applied until the frame decodes, but the
+                # manifest already declares how many pages this frame contributes.
+                # Retain one refused ordinal per part so the immutable denominator
+                # and configured post-split cap do not undercount a broken frame.
+                append_refused_source(detected)
+                continue
+            if frame_count != 1:
+                raise ContractError(
+                    "a triage decision row names a multi-page raster container; no source "
+                    "expansion was returned because one frame-space recipe cannot describe every "
+                    "page; omit that container from the triage manifest and let the Door fan out "
+                    "its pages"
+                )
+            for part_index in range(len(triage_row["split"]["parts"])):
+                append(
+                    part_index,
+                    detected,
+                    triage_part_index=part_index,
+                )
             continue
         try:
             if detected == "pdf" and open_source is not None:
@@ -473,7 +769,149 @@ def expand_sources(
             continue
         for page_index in range(page_count):
             append(page_index, detected)
+    if triage_rows is not None and triage_clusters is not None:
+        named_clusters = {
+            row["re_shoot_cluster_id"]
+            for digest, row in triage_rows.items()
+            if digest in submitted_digests and row["re_shoot_cluster_id"] is not None
+        }
+        for cluster_id in named_clusters:
+            record = triage_clusters.get(cluster_id)
+            if not isinstance(record, dict) or "member_frame_sha256" not in record:
+                # Direct callers can bypass manifest validation; they still need a
+                # named contract refusal rather than a bare missing-key exception.
+                raise ContractError(
+                    "a submitted frame names a re-shoot cluster with no supplied cluster record; "
+                    "no source expansion was returned because the cluster cannot be reconciled; "
+                    "supply the matching corpus-scoped cluster record and retry"
+                )
+            members = set(record["member_frame_sha256"])
+            if not members <= submitted_digests:
+                raise ContractError(
+                    "a re-shoot cluster would cross this submitted shard; no source expansion was "
+                    "returned because every member must remain visible together and no canonical "
+                    "frame may be selected; submit every cluster member in the same shard and retry"
+                )
+    if triage_rows is not None:
+        unsubmitted_rows = set(triage_rows) - submitted_digests
+        if unsubmitted_rows:
+            raise ContractError(
+                "the triage decision manifest contains "
+                f"{len(unsubmitted_rows)} row(s) naming no submitted source frame; no source "
+                "expansion was returned because ignoring a decision would lose evidence; supply "
+                "a manifest whose rows exactly match the submitted shard and retry"
+            )
     return sources
+
+
+def _require_case_unique_paths(files: list[dict[str, Any]]) -> None:
+    """Refuse names that alias on default case-insensitive APFS.
+
+    A filename ledger is made on one host and may be admitted on another. Exact
+    string uniqueness is therefore insufficient: ``Page.PNG`` and ``page.png``
+    are two rows on a case-sensitive filesystem but one pathname on default APFS.
+    If the Door accepted both, which bytes an ordinal named would depend on the
+    host that happened to open it.
+    """
+    seen: set[str] = set()
+    for row in files:
+        path = row.get("relative_path") if isinstance(row, dict) else None
+        if not isinstance(path, str) or not path:
+            raise ContractError(
+                "a submitted source has no non-empty declared path; no source expansion was "
+                "returned because every ordinal must name one portable file"
+            )
+        portable = path.casefold()
+        if portable in seen:
+            raise ContractError(
+                "the submitted source manifest has case-variant path collisions; no source "
+                "expansion was returned because those rows alias on default APFS and cannot "
+                "name portable evidence uniquely"
+            )
+        seen.add(portable)
+
+
+def content_aware_shards(
+    sources: list[SourceEntry], *, max_pages_per_shard: int, max_shards: int | None = None
+) -> list[list[SourceEntry]]:
+    """Choose only seams that keep a split pair and re-shoot cluster whole.
+
+    This is intentionally a planning function: a caller selects the resulting
+    source-manifest shard *before* creating each RunTree.  Cutting after a run
+    exists would change its immutable denominator.
+
+    The page cap is sealed policy (`config/corpus_frame.toml`, checked at
+    `require_corpus_frame_shard`); shard count is a consequence, not an implicit
+    second ceiling. A caller with its own ceiling must pass ``max_shards``.
+    """
+    if (
+        not isinstance(max_pages_per_shard, int)
+        or isinstance(max_pages_per_shard, bool)
+        or max_pages_per_shard < 1
+        or (
+            max_shards is not None
+            and (not isinstance(max_shards, int) or isinstance(max_shards, bool) or max_shards < 1)
+        )
+    ):
+        raise ContractError(
+            "content-aware sharding received a non-positive or non-integer page or shard limit; "
+            "no shard plan was returned because slice boundaries must be exact page counts; "
+            "pass positive integer limits and retry"
+        )
+    ordered = sorted(sources, key=lambda source: source.ordinal)
+    if not ordered:
+        raise ContractError(
+            "content-aware sharding received no submitted pages; no shard plan was returned "
+            "because an empty plan would hide an empty submission; supply a non-empty post-split "
+            "page census and retry"
+        )
+    blocked: set[int] = set()
+    # A split fan-out is adjacent by construction; do not place a seam after
+    # its first (or any non-final) part.  A cluster may not be adjacent, so every
+    # boundary between its first and final member is blocked as well.
+    for left, right in zip(ordered, ordered[1:], strict=False):
+        if (
+            left.triage_row is not None
+            and right.triage_row is not None
+            and left.declared_path == right.declared_path
+            and left.declared_sha256 == right.declared_sha256
+            and left.triage_part_index is not None
+            and right.triage_part_index is not None
+        ):
+            blocked.add(left.ordinal)
+    clusters: dict[str, list[int]] = {}
+    for source in ordered:
+        if source.triage_row is None:
+            continue
+        cluster_id = source.triage_row["re_shoot_cluster_id"]
+        if cluster_id is not None:
+            clusters.setdefault(cluster_id, []).append(source.ordinal)
+    for ordinals in clusters.values():
+        blocked.update(range(min(ordinals), max(ordinals)))
+    shards: list[list[SourceEntry]] = []
+    start = 0
+    while start < len(ordered):
+        end = min(start + max_pages_per_shard, len(ordered))
+        if end < len(ordered):
+            while end > start and ordered[end - 1].ordinal in blocked:
+                end -= 1
+            if end == start:
+                raise ContractError(
+                    "content-aware shard refusal: every legal seam within the configured "
+                    "page cap would cut a split pair or re-shoot cluster; no shard plan was "
+                    "returned because those units must remain whole; place the whole unit in a "
+                    "shard within the sealed cap, or stop for Tyrel if the cap itself conflicts"
+                )
+        shards.append(ordered[start:end])
+        start = end
+    if max_shards is not None and len(shards) > max_shards:
+        raise ContractError(
+            "content-aware shard refusal: the configured shard count is exhausted without "
+            "cutting a split pair or re-shoot cluster; no shard plan was returned because the "
+            "caller ceiling cannot be met honestly; remove or increase that caller-supplied "
+            "ceiling and retry"
+        )
+    return shards
 
 
 def process_sources(
@@ -728,6 +1166,7 @@ def process_sources(
                 }
             seen_sources.setdefault(actual_digest, (source.declared_path, source.ordinal))
             _, published = tree.put_blob(DOOR, decision.store_bytes)
+            inputs = [context.input_ref(published.relative_path)]
             extra: dict[str, Any] = {
                 "sha256": decision.digest,
                 # The digest of the submitted source file, as this door computed it.
@@ -744,6 +1183,24 @@ def process_sources(
             }
             if decision.rendered_from is not None:
                 extra["rendered_from"] = decision.rendered_from
+            if source.triage_row is not None:
+                # The master must remain addressable independently so the sealed
+                # derivative can be re-applied from its exact source bytes.
+                assert data is not None
+                _, parent = tree.put_blob(DOOR, data)
+                extra["parent_frame"] = {
+                    "sha256": actual_digest,
+                    "stored_at": parent.relative_path,
+                    "source_frame_index": source.source_frame_index or 0,
+                }
+                # Content addressing can make the derivative and master the same
+                # blob: a full-frame, zero-rotation ``keep`` decision over a PNG
+                # already written by the deterministic encoder is a real example.
+                # One reference then proves both roles. Publishing it twice would
+                # violate the envelope's no-duplicate-input contract and turn an
+                # exact no-op into a fatal artifact error.
+                if parent.relative_path != published.relative_path:
+                    inputs.append(context.input_ref(parent.relative_path))
             if duplicate_of is not None:
                 extra["duplicate_of"] = duplicate_of
             _publish(
@@ -751,10 +1208,19 @@ def process_sources(
                 source,
                 outcome="admitted",
                 payload_extra=extra,
-                inputs=[context.input_ref(published.relative_path)],
+                inputs=inputs,
             )
             admitted += 1
-    finally:
+    except BaseException as primary:
+        # Cleanup must not replace a security refusal already in flight. A native
+        # close failure still remains visible on the primary exception, while the
+        # refusal that stopped admission keeps its type, message, and control flow.
+        try:
+            close_active_pdf()
+        except BaseException as cleanup:
+            primary.add_note(f"PDF cleanup also failed: {cleanup}")
+        raise
+    else:
         close_active_pdf()
 
     return admitted
@@ -778,6 +1244,26 @@ def _publish(
         payload["declared_bytes"] = source.declared_size
     if source.ledger_sha256 is not None:
         payload["ledger_sha256"] = source.ledger_sha256
+    if source.triage_row is not None:
+        row = source.triage_row
+        split = row.get("split")
+        parts = split.get("parts") if isinstance(split, dict) else None
+        if (
+            not isinstance(parts, list)
+            or not parts
+            or not isinstance(source.triage_part_index, int)
+            or isinstance(source.triage_part_index, bool)
+        ):
+            raise ContractError("a triage admission has no declared split-part identity")
+        backlink = triage_manifest.derivative_page_backlink(row, source.triage_part_index)
+        # A refused page has no derivative contract, so it needs this sibling link
+        # for its re-shoot membership to remain reportable.
+        payload["triage_link"] = {
+            "schema": "door-triage-admission-link.v0",
+            **backlink,
+            "declared_split_part_count": len(parts),
+            "re_shoot_cluster_id": row.get("re_shoot_cluster_id"),
+        }
     if outcome == "refused":
         payload["reason"] = reason
     else:
@@ -930,6 +1416,84 @@ def publish_duplicate_report(context: StageContext) -> str | None:
     return published.relative_path
 
 
+def publish_cluster_report(context: StageContext) -> str | None:
+    """Carry corpus-scoped re-shoot links into the sealed run.
+
+    Unlike a duplicate report, this never calls one member canonical: every
+    submitted member remains an admission and the record makes that fact visible
+    to an operator without asking a later stage to reconstruct it from geometry.
+    """
+    groups: dict[str, dict[str, Any]] = {}
+    inputs: list[dict[str, str]] = []
+    for outcome in ("admitted", "refused"):
+        for entry, payload in _iter_admissions(context, outcome):
+            link = payload.get("triage_link")
+            if not isinstance(link, dict) or link.get("re_shoot_cluster_id") is None:
+                continue
+            cluster_id = link["re_shoot_cluster_id"]
+            group = groups.setdefault(
+                cluster_id,
+                {"corpus_id": link["corpus_id"], "cluster_id": cluster_id, "members": {}},
+            )
+            if group["corpus_id"] != link["corpus_id"]:
+                raise ContractError("a re-shoot cluster id is reused across two corpora")
+            member = group["members"].setdefault(
+                link["source_frame_sha256"],
+                {
+                    "source_frame_sha256": link["source_frame_sha256"],
+                    "triage_manifest_row_sha256": link["triage_manifest_row_sha256"],
+                    "declared_split_part_count": link["declared_split_part_count"],
+                    "pages": [],
+                },
+            )
+            expected_member = {
+                "source_frame_sha256": link["source_frame_sha256"],
+                "triage_manifest_row_sha256": link["triage_manifest_row_sha256"],
+                "declared_split_part_count": link["declared_split_part_count"],
+            }
+            if any(member.get(field) != value for field, value in expected_member.items()):
+                raise ContractError("a re-shoot cluster member carries contradictory triage links")
+            member["pages"].append(
+                {
+                    "ordinal": payload["ordinal"],
+                    "triage_part_index": link["triage_part_index"],
+                    "outcome": outcome,
+                }
+            )
+            inputs.append({"relative_path": entry["relative_path"], "sha256": entry["sha256"]})
+    if not groups:
+        return None
+    payload = {
+        "schema": DOOR_CLUSTER_REPORT_SCHEMA,
+        "clusters": [
+            {
+                "corpus_id": group["corpus_id"],
+                "cluster_id": group["cluster_id"],
+                "members": sorted(
+                    (
+                        {
+                            **member,
+                            "pages": sorted(member["pages"], key=lambda page: page["ordinal"]),
+                        }
+                        for member in group["members"].values()
+                    ),
+                    key=lambda member: member["source_frame_sha256"],
+                ),
+            }
+            for _cluster_id, group in sorted(groups.items())
+        ],
+    }
+    payload["self_hash"] = self_hash(payload)
+    published = context.publish(
+        kind="re-shoot-cluster-report",
+        subject_id="re-shoot-cluster-report",
+        outcome="admitted",
+        inputs=inputs,
+        payload=payload,
+    )
+    return published.relative_path
+
+
 def require_some_admitted(admitted: int, tree: RunTree, refusal_report: str | None) -> None:
     """An empty or wholly refused input set is a loud failure (harvest #3).
 
@@ -1033,6 +1597,14 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         default=str(gate.DEFAULT_POLICY_PATH),
         help="the data-handling policy naming this run's approved storage locations",
     )
+    parser.add_argument(
+        "--triage-decision-manifest",
+        help="Unit 5 triage-decision-manifest-v1 controlling raster split/crop/rotation",
+    )
+    parser.add_argument(
+        "--triage-clusters",
+        help="corpus-scoped Unit 5 re-shoot cluster records keyed by cluster id",
+    )
     args = parser.parse_args()
     existing_tree = RunTree(Path(args.run_root), args.run_id)
     if existing_tree.resolve("run.json").exists():
@@ -1046,6 +1618,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             "a submission filename ledger is meaningful only with a real submission folder; "
             "the walking skeleton's declared synthetic pages are not gated input"
         )
+    if args.triage_decision_manifest is not None or args.triage_clusters is not None:
+        raise ContractError("triage geometry is meaningful only with a real submission folder")
     return fixture_submission(args, registry)
 
 
@@ -1072,6 +1646,7 @@ def _finish_door_run(context: StageContext, tree: RunTree, admitted: int) -> int
     """The one shared close for both entry points: reports, then the loud check."""
     refusal_report = publish_refusal_report(context)
     duplicate_report = publish_duplicate_report(context)
+    publish_cluster_report(context)
     _announce_refusal_report(tree, refusal_report)
     _announce_duplicate_report(tree, duplicate_report)
     require_some_admitted(admitted, tree, refusal_report)
@@ -1201,6 +1776,35 @@ def real_submission(args, registry) -> int:
                 "inventory includes pipeline-produced records as submitted sources"
             )
     ledger = submission_ledger.load_manifest(manifest_path)
+    if args.triage_clusters is not None and args.triage_decision_manifest is None:
+        raise ContractError("triage cluster records require a triage decision manifest")
+    # Gated exactly as the submission filename ledger above is, and for the same
+    # two reasons: a real-path input read from disk is inside the data-handling
+    # policy's approved roots or it was never read, and a decision record sitting
+    # inside the submitted folder would be inventoried as a submitted source.
+    triage_paths = [
+        (args.triage_decision_manifest, "triage decision manifest"),
+        (args.triage_clusters, "triage re-shoot cluster records"),
+    ]
+    gated_triage: dict[str, Path] = {}
+    for location, label in triage_paths:
+        if location is None:
+            continue
+        resolved = gate.require_approved_storage_location(Path(location), roots, label)
+        if resolved.is_relative_to(submission_folder):
+            raise ContractError(
+                f"the {label} cannot live inside the submitted folder; otherwise the next "
+                "inventory includes pipeline-produced records as submitted sources"
+            )
+        gated_triage[label] = resolved
+    triage_rows, triage_clusters, triage_digests = (
+        load_triage_decisions(
+            gated_triage["triage decision manifest"],
+            gated_triage.get("triage re-shoot cluster records"),
+        )
+        if args.triage_decision_manifest is not None
+        else (None, None, {})
+    )
 
     format_policy = admission.load_format_policy()
     pdf_render_binding = _load_pdf_render_binding(args)
@@ -1256,6 +1860,8 @@ def real_submission(args, registry) -> int:
         read_bytes,
         format_policy,
         open_source=open_source,
+        triage_rows=triage_rows,
+        triage_clusters=triage_clusters,
     )
     bindings = _real_bindings(
         registry.config,
@@ -1270,6 +1876,7 @@ def real_submission(args, registry) -> int:
         designator_padding_config_sha256=_padding_config_digest(args.designator_padding_config),
         designator_geometry_config_sha256=_geometry_config_digest(args.designator_geometry_config),
         alignment_config_path=args.alignment_config,
+        triage_document_digests=triage_digests,
         witness_context=args.witness_context,
         witness_context_config_path=args.witness_context_config,
         nuda_per_mille=args.nuda_per_mille,
@@ -1433,6 +2040,7 @@ def _real_bindings(
     designator_padding_config_sha256: str,
     designator_geometry_config_sha256: str,
     alignment_config_path=DEFAULT_ALIGNMENT_CONFIG_PATH,
+    triage_document_digests: dict[str, str] | None = None,
     witness_context: str = "named",
     witness_context_config_path: str | Path = DEFAULT_WITNESS_CONTEXT_CONFIG_PATH,
     nuda_per_mille: int = 0,
@@ -1528,6 +2136,9 @@ def _real_bindings(
                 "designator_padding_config_sha256": designator_padding_config_sha256,
                 "designator_geometry_config_sha256": designator_geometry_config_sha256,
                 "alignment_config_sha256": alignment_config_sha256,
+                # Triage documents shape sealed pixels and must therefore be
+                # run-bound; the empty mapping explicitly binds their absence.
+                "triage_document_digests": dict(sorted((triage_document_digests or {}).items())),
                 "corpus_frame_policy": corpus_frame_policy,
                 "corpus_frame_config_sha256": corpus_frame_config_sha256,
                 "models": models.to_record(),

@@ -667,6 +667,8 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # Re-pinned for `triage_modes.toml`, which is sealed into every run and so moves
 # both authorities without adding an artifact.
 #
+# Re-pinned for the Door's cluster report, a new artifact in every run.
+#
 # Re-pinned at each merge that brings two authority-moving branches together. The
 # pins below stand for the merged tree and nothing else: every contributing branch
 # moved them on its own, so no branch's own pin describes this tree and taking one
@@ -674,8 +676,8 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # through this module's own `orchestrate` and `semantic_snapshot_digest` helpers,
 # twice, at two independent run roots, and the file counts below were re-measured
 # the same way. The host re-measures at integration.
-HAPPY_RUN_TREE_DIGEST = "331c0ef7c013db235f9dd8aa3c9429382c2967205661ac6d401e94c8942ee477"
-REVIEW_RUN_TREE_DIGEST = "1161eb9b60d6277a74ca7108cb327821b3252d1da89db69cf69f0037e817f1e1"
+HAPPY_RUN_TREE_DIGEST = "6c54a76875530ca1edc0031141e35506c829193d5151781915f3f184ea3cc9c4"
+REVIEW_RUN_TREE_DIGEST = "853cfebbd99fff5f0b6b737d27f1d85c6286171fef99bdfa28d7c320c8525100"
 
 
 def orchestrate(

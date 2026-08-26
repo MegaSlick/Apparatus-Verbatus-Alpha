@@ -37,7 +37,11 @@ from PIL import Image
 
 from common.contracts.errors import ContractError
 from common.contracts.stages import DESIGNATOR, EXEMPLAR
-from common.exemplar_boundary import verify_exemplar_crop_lineage, verify_sealed_page_pixels
+from common.exemplar_boundary import (
+    _validate_exemplar_transform,
+    verify_exemplar_crop_lineage,
+    verify_sealed_page_pixels,
+)
 from common.imaging import decode_grayscale_png, encode_grayscale_png
 from common.runtree.store import RunTree
 
@@ -311,3 +315,323 @@ def test_a_crop_that_is_not_an_image_at_all_refuses_as_that(cropped):
 
     with pytest.raises(ContractError, match="not a decodable image"):
         verify_exemplar_crop_lineage(tree, run, restated(tree, region, b"not a png at all"))
+
+
+# --- Transform values are closed as well as their record shapes ----------------
+
+
+def _valid_split_transform():
+    return {"operation": "split", "region": {"space": "frame", "x": 0, "y": 0, "w": 5, "h": 4}}
+
+
+def _valid_part_local_crop_transform():
+    return {"operation": "crop", "bounds": {"space": "part", "x": 0, "y": 0, "w": 5, "h": 4}}
+
+
+def _valid_deskew_transform():
+    return {
+        "operation": "deskew",
+        "rotation": {
+            "rotation_millidegrees": 0,
+            "direction": "clockwise",
+            "origin": "crop-centre",
+            "canvas": "expand",
+        },
+    }
+
+
+def test_well_formed_split_part_local_crop_and_deskew_transforms_validate():
+    _validate_exemplar_transform(_valid_split_transform())
+    _validate_exemplar_transform(_valid_part_local_crop_transform())
+    _validate_exemplar_transform(_valid_deskew_transform())
+
+
+@pytest.mark.parametrize(
+    "field,value", [("w", 0), ("w", -1), ("h", 0), ("h", -1), ("x", -1), ("y", -1), ("w", 1.5)]
+)
+def test_a_split_region_with_a_non_positive_or_non_integer_bound_is_refused(field, value):
+    """The shape check alone would accept this; only a re-render would ever have
+    caught it downstream. Closed means the values are checked here too."""
+    transform = _valid_split_transform()
+    transform["region"][field] = value
+    with pytest.raises(ContractError, match="split transform"):
+        _validate_exemplar_transform(transform)
+
+
+@pytest.mark.parametrize(
+    "field,value", [("w", 0), ("w", -1), ("h", 0), ("h", -1), ("x", -1), ("y", -1), ("w", 1.5)]
+)
+def test_a_part_local_crop_with_a_non_positive_or_non_integer_bound_is_refused(field, value):
+    transform = _valid_part_local_crop_transform()
+    transform["bounds"][field] = value
+    with pytest.raises(ContractError, match="derivative crop transform"):
+        _validate_exemplar_transform(transform)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("rotation_millidegrees", 180_001),
+        ("rotation_millidegrees", -180_001),
+        ("rotation_millidegrees", 1.5),
+        ("direction", "counterclockwise"),
+        ("origin", "top-left"),
+        ("canvas", "crop"),
+    ],
+)
+def test_a_deskew_rotation_outside_its_closed_recipe_is_refused(field, value):
+    transform = _valid_deskew_transform()
+    transform["rotation"][field] = value
+    with pytest.raises(ContractError, match="deskew transform"):
+        _validate_exemplar_transform(transform)
+
+
+# --- The master a sealed derivative page claims to account for ----------------
+# A row can partition its declared frame while under-declaring the decoded master;
+# re-derivation alone proves the output pixels but cannot detect the omitted area.
+
+
+def _rows_digest(row):
+    from common.contracts.canonical import canonical_bytes, digest_bytes
+
+    return digest_bytes(
+        canonical_bytes({key: value for key, value in row.items() if key != "manifest_row_sha256"})
+    )
+
+
+def _sealed_derivative(master_size, declared_frame):
+    """A master, a row declaring `declared_frame`, and the page it re-derives to."""
+    from common.contracts.canonical import digest_bytes
+    from common.imaging import imaging_library_versions, render_triage_derivative
+
+    image = Image.new("RGB", master_size, (200, 30, 30))
+    output = BytesIO()
+    image.save(output, format="PNG")
+    master = output.getvalue()
+    part = {
+        "region": {
+            "space": "frame",
+            "x": 0,
+            "y": 0,
+            "w": declared_frame["width"],
+            "h": declared_frame["height"],
+        },
+        "crop_box": {
+            "space": "part",
+            "x": 0,
+            "y": 0,
+            "w": declared_frame["width"],
+            "h": declared_frame["height"],
+        },
+        "rotation": {
+            "rotation_millidegrees": 0,
+            "direction": "clockwise",
+            "origin": "crop-centre",
+            "canvas": "expand",
+        },
+        "colour_mode": "rgb",
+    }
+    row = {
+        "corpus_id": "parish-a",
+        "source_frame_sha256": digest_bytes(master),
+        "frame": declared_frame,
+        "split": {"operation_order": "region-crop-rotate", "parts": [part]},
+        "re_shoot_cluster_id": None,
+        "confidence": 4,
+        "mode": "auto",
+        "actor": {"kind": "model", "identity": "triage", "revision": "r1"},
+        "human_override": False,
+    }
+    row["manifest_row_sha256"] = _rows_digest(row)
+    sealed, geometry = render_triage_derivative(master, page_index=0, part=part)
+    mode_transform = (
+        "triage-region-crop-rotate-convert"
+        if geometry["source_mode"] == geometry["color_mode"]
+        else f"triage-region-crop-rotate-convert-to-{geometry['color_mode'].lower()}"
+    )
+    contract = {
+        **imaging_library_versions(),
+        "source_mode": geometry["source_mode"],
+        "source_bands": geometry["source_bands"],
+        "mode_transform": mode_transform,
+        "output": {"codec": "png", "color_mode": geometry["color_mode"]},
+        "container_page_index": 0,
+        "width": geometry["width"],
+        "height": geometry["height"],
+        "deterministic_encoder": "common.imaging.encode_image_deterministic-v1",
+        "derivative_page": {
+            "kind": "sealed-derivative-page-v1",
+            "parent_frame_sha256": row["source_frame_sha256"],
+            "parent_frame_page_index": 0,
+            "triage_manifest_row": row,
+            "triage_backlink": {
+                "corpus_id": "parish-a",
+                "source_frame_sha256": row["source_frame_sha256"],
+                "triage_manifest_row_sha256": row["manifest_row_sha256"],
+                "triage_part_index": 0,
+            },
+            "operation_order": "region-crop-rotate",
+            "apply_recipe": {
+                "schema": "triage-raster-apply-v1",
+                "rotation_resample": "Pillow.Resampling.BICUBIC",
+                "rotation_fill": "Pillow-default-zero",
+                "rotation_expand": True,
+                "colour_conversion": "Pillow.Image.convert-direct-or-via-RGB",
+                "encoder": "common.imaging.encode_image_deterministic-v1",
+            },
+            "operations": [
+                {"operation": "split", "region": part["region"]},
+                {"operation": "crop", "bounds": part["crop_box"]},
+                {"operation": "deskew", "rotation": part["rotation"]},
+                {"operation": "convert", "colour_mode": part["colour_mode"]},
+            ],
+        },
+    }
+    parent = {
+        "sha256": row["source_frame_sha256"],
+        "stored_at": "1-exemplar/blobs/x",
+        "source_frame_index": 0,
+    }
+    return contract, master, parent, sealed
+
+
+@pytest.mark.parametrize(
+    ("field", "forged"),
+    [("container_sha256", "f" * 64), ("container_page_index", 1)],
+)
+def test_a_derivative_container_origin_must_bind_its_submitted_source(field, forged):
+    """The nested master link cannot excuse a false outer container link."""
+    from common.contracts.canonical import digest_bytes
+    from common.exemplar_boundary import _verify_rendered_source_link
+
+    contract, master, _parent, _sealed = _sealed_derivative((4, 4), {"width": 4, "height": 4})
+    rendered = {
+        "container_format": "triage-split-raster",
+        "container_sha256": digest_bytes(master),
+        "container_page_index": 0,
+        "render_contract": contract,
+    }
+    source = {"sha256": digest_bytes(master), "container_page_index": 0}
+    forged_rendered = copy.deepcopy(rendered)
+    forged_rendered[field] = forged
+
+    with pytest.raises(ContractError, match="does not bind its submitted source"):
+        _verify_rendered_source_link(forged_rendered, forged_rendered, source)
+
+
+def test_a_page_cannot_change_the_render_origin_its_door_admission_sealed():
+    from common.contracts.canonical import digest_bytes
+    from common.exemplar_boundary import _verify_rendered_source_link
+
+    contract, master, _parent, _sealed = _sealed_derivative((4, 4), {"width": 4, "height": 4})
+    digest = digest_bytes(master)
+    admission_rendered = {
+        "container_format": "triage-split-raster",
+        "container_sha256": digest,
+        "container_page_index": 0,
+        "render_contract": contract,
+    }
+    page_rendered = copy.deepcopy(admission_rendered)
+    page_rendered["container_format"] = "some-other-origin"
+
+    with pytest.raises(ContractError, match="changed its Door admission's render origin"):
+        _verify_rendered_source_link(
+            page_rendered,
+            admission_rendered,
+            {"sha256": digest, "container_page_index": 0},
+        )
+
+
+def test_a_derivative_page_whose_row_under_declares_its_master_is_refused():
+    """The right half of this master reaches no page, and every other check passes.
+
+    One part, covering the declared 4x4 frame exactly, cut from an 8x4 master.
+    The row validates, the backlink names the master, and the recorded transform
+    re-derives the sealed bytes exactly. Only the frame comparison notices that
+    half the photograph was never accounted for.
+    """
+    from common.exemplar_boundary import _verify_triage_derivative
+
+    honest = _sealed_derivative((4, 4), {"width": 4, "height": 4})
+    _verify_triage_derivative(honest[0], honest[1], honest[2], honest[3])
+
+    contract, master, parent, sealed = _sealed_derivative((8, 4), {"width": 4, "height": 4})
+    with pytest.raises(ContractError, match="declares a frame that is not the size of the master"):
+        _verify_triage_derivative(contract, master, parent, sealed)
+
+
+def test_a_re_derivation_mismatch_names_a_decoder_upgrade_when_one_explains_it():
+    """The apply recipe's library versions are a record, not an enforcement.
+
+    Refusing on version drift would make every archived run unverifiable on the
+    next routine Pillow upgrade, so the byte comparison stays the property and
+    the versions stay provenance (GOVERNANCE 6). But an operator reading "not
+    reproducible" alone would go looking for forgery, and a decoder upgrade is
+    the ordinary cause — so when the recorded versions differ from this host's,
+    the refusal says which ones.
+    """
+    from common.exemplar_boundary import _verify_triage_derivative
+
+    contract, master, parent, sealed = _sealed_derivative((4, 4), {"width": 4, "height": 4})
+    contract["renderer_version"] = "0.0.0-not-this-host"
+
+    with pytest.raises(ContractError, match="not reproducible") as drifted:
+        _verify_triage_derivative(contract, master, parent, sealed + b"x")
+    assert "renderer_version '0.0.0-not-this-host'" in str(drifted.value)
+    assert "recorded, not enforced" in str(drifted.value)
+
+    contract, master, parent, sealed = _sealed_derivative((4, 4), {"width": 4, "height": 4})
+    with pytest.raises(ContractError, match="not reproducible") as undrifted:
+        _verify_triage_derivative(contract, master, parent, sealed + b"x")
+    assert "sealed under different imaging libraries" not in str(undrifted.value)
+
+
+@pytest.mark.parametrize(
+    ("field", "forged"),
+    [
+        ("source_mode", "L"),
+        ("source_bands", ["L"]),
+        ("mode_transform", "identity"),
+        ("output", {"codec": "png", "color_mode": "L"}),
+        ("container_page_index", 1),
+        ("width", 3),
+        ("height", 3),
+        ("deterministic_encoder", "some-other-encoder"),
+    ],
+)
+def test_a_derivative_renderer_record_cannot_lie_about_rederived_pixels(field, forged):
+    from common.exemplar_boundary import _verify_triage_derivative
+
+    contract, master, parent, sealed = _sealed_derivative((4, 4), {"width": 4, "height": 4})
+    contract[field] = forged
+
+    with pytest.raises(ContractError, match="renderer record does not describe"):
+        _verify_triage_derivative(contract, master, parent, sealed)
+
+
+@pytest.mark.parametrize(
+    "forge",
+    [
+        pytest.param(lambda row: row.pop("actor"), id="missing-actor"),
+        pytest.param(lambda row: row.__setitem__("mode", "undeclared"), id="unknown-mode"),
+        pytest.param(
+            lambda row: row.__setitem__(
+                "actor", {"kind": "model", "identity": "triage", "revision": ""}
+            ),
+            id="unresolved-actor",
+        ),
+    ],
+)
+def test_a_self_hashed_manifest_row_still_needs_complete_mode_and_actor_provenance(forge):
+    from common.exemplar_boundary import _verify_triage_derivative
+
+    contract, master, parent, sealed = _sealed_derivative((4, 4), {"width": 4, "height": 4})
+    row = contract["derivative_page"]["triage_manifest_row"]
+    forge(row)
+    row["manifest_row_sha256"] = _rows_digest(row)
+    contract["derivative_page"]["triage_backlink"]["triage_manifest_row_sha256"] = row[
+        "manifest_row_sha256"
+    ]
+
+    with pytest.raises(ContractError, match="triage row|triage manifest row"):
+        _verify_triage_derivative(contract, master, parent, sealed)

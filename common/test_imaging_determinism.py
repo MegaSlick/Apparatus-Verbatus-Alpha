@@ -30,6 +30,7 @@ from common.imaging import (
     encode_grayscale_png,
     encode_grayscale_png_deterministic,
     image_shown,
+    render_triage_derivative,
 )
 
 BOUNDS = {"x": 1, "y": 1, "w": 3, "h": 2}
@@ -422,3 +423,119 @@ def test_bytes_after_the_end_marker_are_not_an_image_only_png():
     assert not carries_only_image_chunks(crop + b"appended payload")
     assert not carries_only_image_chunks(crop[:-1])
     assert not carries_only_image_chunks(b"not a png at all")
+
+
+# --- Split derivatives report the samples they actually seal ------------------
+
+
+def _tiff_master(mode: str, size: tuple[int, int] = (6, 4)) -> bytes:
+    """A one-frame TIFF master in exactly the mode under test."""
+    image = Image.new(mode, size)
+    for x in range(size[0]):
+        for y in range(size[1]):
+            image.putpixel((x, y), (x * 9973 + y) % 65535 if mode == "I;16" else (x + y) % 255)
+    output = BytesIO()
+    image.save(output, format="TIFF", compression="raw")
+    return output.getvalue()
+
+
+def _part(width: int, height: int, colour_mode: str) -> dict:
+    return {
+        "region": {"space": "frame", "x": 0, "y": 0, "w": width, "h": height},
+        "crop_box": {"space": "part", "x": 0, "y": 0, "w": width, "h": height},
+        "rotation": {
+            "rotation_millidegrees": 0,
+            "direction": "clockwise",
+            "origin": "crop-centre",
+            "canvas": "expand",
+        },
+        "colour_mode": colour_mode,
+    }
+
+
+def test_keep_refuses_a_master_this_encoder_would_have_to_convert():
+    """`colour_mode: "keep"` declares that no conversion happens.
+
+    A 16-bit master cannot satisfy it through an 8-bit PNG conversion. The
+    whole-page path changes codec to retain those samples, while a triage part
+    must either declare its conversion or refuse it by name.
+    """
+    master = _tiff_master("I;16")
+    with pytest.raises(ValueError, match="cannot be sealed under colour_mode 'keep'"):
+        render_triage_derivative(master, page_index=0, part=_part(6, 4, "keep"))
+
+    # An explicit conversion makes the sample change part of the sealed decision.
+    _rendered, geometry = render_triage_derivative(
+        master, page_index=0, part=_part(6, 4, "grayscale")
+    )
+    assert geometry["source_mode"] == "I;16"
+    assert geometry["color_mode"] == "L"
+
+
+def test_the_render_record_names_the_mode_the_sealed_bytes_are_actually_in():
+    """Reported from the encoded PNG's own header, not from the pre-encode image.
+
+    A palette master is the case with no loss and a mode change anyway: the
+    encoder expands `P` to true colour pixel-for-pixel, so the record must name
+    the encoded `RGB` mode rather than the input `P` mode.
+    """
+    palette = Image.new("P", (6, 4))
+    palette.putpalette([(index * 3) % 256 for index in range(768)])
+    output = BytesIO()
+    palette.save(output, format="PNG")
+
+    rendered, geometry = render_triage_derivative(
+        output.getvalue(), page_index=0, part=_part(6, 4, "keep")
+    )
+    assert geometry["source_mode"] == "P"
+    assert geometry["color_mode"] == "RGB"
+    assert Image.open(BytesIO(rendered)).mode == "RGB"
+    assert (geometry["source_width"], geometry["source_height"]) == (6, 4)
+
+
+def _plain_tiff_master(mode: str) -> bytes:
+    image = Image.new(mode, (6, 4))
+    if mode == "P":
+        image.putpalette([(index * 5) % 256 for index in range(768)])
+    output = BytesIO()
+    image.save(output, format="TIFF", compression="raw")
+    return output.getvalue()
+
+
+@pytest.mark.parametrize("mode", ["1", "L", "LA", "RGB", "RGBA", "P"])
+def test_keep_admits_exactly_the_modes_the_encoder_carries_without_pixel_loss(mode):
+    rendered, geometry = render_triage_derivative(
+        _plain_tiff_master(mode), page_index=0, part=_part(6, 4, "keep")
+    )
+
+    expected = "RGB" if mode == "P" else mode
+    assert geometry["source_mode"] == mode
+    assert geometry["color_mode"] == expected
+    with Image.open(BytesIO(rendered)) as reread:
+        assert reread.mode == expected
+
+
+@pytest.mark.parametrize("mode", ["I;16", "I", "F", "CMYK", "LAB"])
+def test_keep_refuses_each_decodable_mode_that_requires_a_colour_or_sample_conversion(mode):
+    with pytest.raises(ValueError, match="cannot be sealed under colour_mode 'keep'"):
+        render_triage_derivative(_plain_tiff_master(mode), page_index=0, part=_part(6, 4, "keep"))
+
+
+@pytest.mark.parametrize("source_mode", ["I;16", "I", "F", "CMYK", "LAB"])
+@pytest.mark.parametrize(
+    ("declared_mode", "output_mode"),
+    [("grayscale", "L"), ("rgb", "RGB"), ("bitonal", "1")],
+)
+def test_every_declared_conversion_is_executable_and_records_the_bytes_actual_mode(
+    source_mode, declared_mode, output_mode
+):
+    rendered, geometry = render_triage_derivative(
+        _plain_tiff_master(source_mode),
+        page_index=0,
+        part=_part(6, 4, declared_mode),
+    )
+
+    assert geometry["source_mode"] == source_mode
+    assert geometry["color_mode"] == output_mode
+    with Image.open(BytesIO(rendered)) as reread:
+        assert reread.mode == output_mode

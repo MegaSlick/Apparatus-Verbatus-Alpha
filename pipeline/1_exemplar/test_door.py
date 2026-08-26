@@ -14,6 +14,7 @@ import struct
 import subprocess
 import sys
 import weakref
+import zlib
 from io import BytesIO
 from pathlib import Path
 from textwrap import dedent
@@ -35,7 +36,7 @@ from synthetic_sources import (
 
 from common.contracts.approval import synthetic_fixture_ingress_record
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash, verify_self_hash
-from common.contracts.errors import ContractError
+from common.contracts.errors import ContractError, IncompatibleReuse
 from common.contracts.stages import DESIGNATOR, DOOR, EXEMPLAR
 from common.runtree.store import RunTree
 from common.stage import (
@@ -473,6 +474,79 @@ def test_pdf_and_multipage_tiff_fan_out_and_seal_lossless_page_blobs(tmp_path):
         assert validate_png(tree.read_bytes(payload["stored_at"])).format == "png"
 
 
+def test_source_expansion_refuses_paths_that_alias_on_default_apfs():
+    """A cross-host ledger must not acquire different ordinal-to-file meaning.
+
+    Exact-string uniqueness permits both spellings on Linux, while default APFS
+    resolves each pair to one pathname. Refuse before calling the byte reader, so
+    the host filesystem never gets to choose which row's evidence was opened.
+    """
+    data = png(2, 2)
+    rows = [
+        {"relative_path": path, "sha256": digest_bytes(data), "bytes": len(data)}
+        for path in ("Page.PNG", "page.png")
+    ]
+
+    with pytest.raises(ContractError, match="alias on default APFS"):
+        expand_sources(
+            rows,
+            lambda _path: pytest.fail("colliding paths must refuse before a source is read"),
+            POLICY,
+        )
+
+
+def test_pdf_cleanup_failure_does_not_mask_a_security_refusal(monkeypatch):
+    """Cleanup evidence is retained without replacing the refusal in flight."""
+    data = single_gray_page_pdf()
+    digest = digest_bytes(data)
+    source = SourceEntry(
+        1,
+        "register.pdf",
+        digest,
+        container_page_index=0,
+        declared_size=len(data),
+        detected_format="pdf",
+    )
+
+    class Opened:
+        def __init__(self):
+            self.handle = BytesIO(data)
+
+        def assert_unchanged(self, *, expected_sha256):
+            assert expected_sha256 == digest
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    monkeypatch.setattr(door.pdf_render, "open_document", lambda _handle: object())
+    monkeypatch.setattr(
+        door,
+        "decide",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ContractError("security refusal")),
+    )
+
+    def fail_close(_document):
+        raise door.pdf_render.PdfRefusal(RefusalReason.CORRUPT, "native cleanup failed")
+
+    monkeypatch.setattr(door.pdf_render, "close_document", fail_close)
+
+    with pytest.raises(ContractError, match="security refusal") as refused:
+        process_sources(
+            object(),
+            object(),
+            [source],
+            lambda _path: pytest.fail("a streamed PDF must not use the raster reader"),
+            policy=POLICY,
+            pdf_settings=object(),
+            open_source=lambda _path: Opened(),
+        )
+
+    assert refused.value.__notes__ == ["PDF cleanup also failed: corrupt: native cleanup failed"]
+
+
 def test_a_directoryless_classic_tiff_keeps_its_ordinal_and_is_named_corrupt(tmp_path):
     """The offset-0 TIFF gap: a real file must never vanish from the census.
 
@@ -810,6 +884,271 @@ def test_expansion_ordinals_are_stable_by_filename_and_page_index():
         (4, "b.tif", 1),
         (5, "z.png", None),
     ]
+
+
+def test_triage_digest_mismatch_is_a_named_door_refusal(tmp_path):
+    """A manifest row is evidence about submitted master bytes, never a hint."""
+    data = png(4, 3)
+    actual = digest_bytes(data)
+    declared = "a" * 64
+    row = door.triage_manifest.make_row(
+        corpus_id="parish-a",
+        source_frame_sha256=declared,
+        frame={"width": 4, "height": 3},
+        split=door.triage_manifest.make_split(
+            [
+                door.triage_manifest.make_part(
+                    {"x": 0, "y": 0, "w": 4, "h": 3},
+                    {"x": 0, "y": 0, "w": 4, "h": 3},
+                    0,
+                    colour_mode="keep",
+                )
+            ]
+        ),
+        re_shoot_cluster_id=None,
+        confidence=4,
+        mode="auto",
+        actor={"kind": "model", "identity": "triage", "revision": "r1"},
+        human_override=False,
+    )
+    source = SourceEntry(
+        1,
+        "frame.png",
+        actual,
+        container_page_index=0,
+        triage_row=row,
+        triage_part_index=0,
+        source_frame_index=0,
+    )
+    tree, context = open_door(tmp_path, [source])
+    assert process_sources(context, tree, [source], reader({"frame.png": data}), policy=POLICY) == 0
+    record = admissions(tree)[1]
+    assert record["outcome"] == "refused"
+    assert reason_code(record["payload"]["reason"]) == RefusalReason.DIGEST_MISMATCH
+
+
+@pytest.mark.parametrize(
+    ("which", "expected"),
+    [
+        ("manifest", "triage decision manifest"),
+        ("clusters", "triage re-shoot cluster records"),
+    ],
+)
+def test_a_malformed_triage_document_names_its_role_effect_and_remedy(tmp_path, which, expected):
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema": door.triage_manifest.MANIFEST_SCHEMA,
+                "corpus_id": "parish-a",
+                "records": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    clusters_path = tmp_path / "clusters.json"
+    clusters_path.write_text("{}", encoding="utf-8")
+    (manifest_path if which == "manifest" else clusters_path).write_bytes(b"\xffnot-json")
+
+    with pytest.raises(ContractError, match=f"{expected} is not valid UTF-8 JSON") as refused:
+        door.load_triage_decisions(
+            manifest_path,
+            clusters_path if which == "clusters" else None,
+        )
+    assert "no run was created" in str(refused.value)
+    assert "export valid UTF-8 JSON and retry" in str(refused.value)
+
+
+def test_a_triage_document_is_bounded_before_json_decoding(tmp_path, monkeypatch):
+    decision_path = tmp_path / "manifest.json"
+    decision_path.write_bytes(b"123456789")
+    monkeypatch.setattr(door, "MAX_TRIAGE_DOCUMENT_BYTES", 8)
+
+    with pytest.raises(ContractError, match="8-byte input bound") as refused:
+        door.load_triage_decisions(decision_path)
+
+    assert "may not allocate without limit" in str(refused.value)
+    assert "records for this submitted shard" in str(refused.value)
+
+
+def test_a_triage_document_symlink_is_not_followed_at_the_read_boundary(tmp_path):
+    outside = tmp_path / "outside.json"
+    outside.write_text(
+        json.dumps(
+            {
+                "schema": door.triage_manifest.MANIFEST_SCHEMA,
+                "corpus_id": "parish-a",
+                "records": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    redirected = tmp_path / "manifest.json"
+    redirected.symlink_to(outside)
+
+    with pytest.raises(ContractError, match="could not be read") as refused:
+        door.load_triage_decisions(redirected)
+
+    assert "no run was created" in str(refused.value)
+
+
+def test_triage_split_count_refuses_before_quadratic_geometry_validation(tmp_path, monkeypatch):
+    decision_path = tmp_path / "manifest.json"
+    decision_path.write_text(
+        json.dumps(
+            {
+                "schema": door.triage_manifest.MANIFEST_SCHEMA,
+                "corpus_id": "parish-a",
+                "records": [{"split": {"parts": [{}, {}, {}]}}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(door, "MAX_TRIAGE_DERIVATIVE_PAGES", 2)
+
+    with pytest.raises(ContractError, match="more than 2 derivative pages") as refused:
+        door.load_triage_decisions(decision_path)
+
+    assert "before pairwise geometry validation" in str(refused.value)
+    assert "export one configured shard" in str(refused.value)
+
+
+def test_triage_cluster_members_are_bounded_before_set_expansion(tmp_path, monkeypatch):
+    decision_path = tmp_path / "manifest.json"
+    decision_path.write_text(
+        json.dumps(
+            {
+                "schema": door.triage_manifest.MANIFEST_SCHEMA,
+                "corpus_id": "parish-a",
+                "records": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    clusters_path = tmp_path / "clusters.json"
+    clusters_path.write_text(
+        json.dumps({"opening": {"member_frame_sha256": ["a", "b", "c"]}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(door, "MAX_TRIAGE_DERIVATIVE_PAGES", 2)
+
+    with pytest.raises(ContractError, match="more than 2 member references") as refused:
+        door.load_triage_decisions(decision_path, clusters_path)
+
+    assert "before set expansion" in str(refused.value)
+    assert "clusters for one configured shard" in str(refused.value)
+
+
+def test_split_render_uses_the_deterministic_common_encoder():
+    """Same-process repetition alone would pass even for a Pillow-chosen framing;
+    the claim under test is that a *different* PNG-writing zlib build still yields
+    identical bytes, which is what `common.imaging.encode_image_deterministic`
+    exists to guarantee (`common/test_imaging_determinism.py`'s own zlib-shim
+    pattern). Without varying the encoder, this test cannot tell the project-owned
+    encoder from Pillow's own writer choosing whatever its bundled zlib does."""
+    data = jpeg(6, 4)
+    part = door.triage_manifest.make_part(
+        {"x": 0, "y": 0, "w": 6, "h": 4},
+        {"x": 1, "y": 0, "w": 4, "h": 4},
+        0,
+        colour_mode="grayscale",
+    )
+    first, _, first_contract = door.render_raster_page(data, 0, part)
+    assert validate_png(first).width == 4
+    assert first_contract["deterministic_encoder"] == "common.imaging.encode_image_deterministic-v1"
+
+    genuine_compress = zlib.compress
+    try:
+        zlib.compress = lambda payload, level=-1, **kwargs: genuine_compress(payload, 6)
+        shimmed, _, shimmed_contract = door.render_raster_page(data, 0, part)
+    finally:
+        zlib.compress = genuine_compress
+
+    assert shimmed == first, "a different zlib compression level renamed the sealed derivative"
+    assert shimmed_contract == first_contract
+
+
+def test_content_aware_shards_do_not_cut_split_pairs_or_clusters():
+    split_row = {"re_shoot_cluster_id": None}
+    cluster_row = {"re_shoot_cluster_id": "opening-7"}
+    split = [
+        SourceEntry(1, "a.jpg", "a" * 64, 0, triage_row=split_row, triage_part_index=0),
+        SourceEntry(2, "a.jpg", "a" * 64, 1, triage_row=split_row, triage_part_index=1),
+        SourceEntry(3, "b.jpg", "b" * 64, 0, triage_row=cluster_row, triage_part_index=0),
+        SourceEntry(4, "c.jpg", "c" * 64, 0, triage_row=cluster_row, triage_part_index=0),
+    ]
+    shards = door.content_aware_shards(split, max_pages_per_shard=2)
+    assert [[source.ordinal for source in shard] for shard in shards] == [[1, 2], [3, 4]]
+    with pytest.raises(ContractError, match="content-aware shard refusal"):
+        door.content_aware_shards(split[:2], max_pages_per_shard=1)
+    with pytest.raises(ContractError, match="content-aware shard refusal"):
+        door.content_aware_shards(split[2:], max_pages_per_shard=1)
+
+
+def test_re_shoot_cluster_admits_every_member_and_records_no_canonical(tmp_path):
+    first, second = png(4, 3), png(4, 3, rows=(b"\x00" + b"\x63" * 4) * 3)
+    first_digest, second_digest = digest_bytes(first), digest_bytes(second)
+
+    def row(digest):
+        return door.triage_manifest.make_row(
+            corpus_id="parish-a",
+            source_frame_sha256=digest,
+            frame={"width": 4, "height": 3},
+            split=door.triage_manifest.make_split(
+                [
+                    door.triage_manifest.make_part(
+                        {"x": 0, "y": 0, "w": 4, "h": 3},
+                        {"x": 0, "y": 0, "w": 4, "h": 3},
+                        0,
+                        colour_mode="keep",
+                    )
+                ]
+            ),
+            re_shoot_cluster_id="opening-7",
+            confidence=3,
+            mode="semi",
+            actor={"kind": "model", "identity": "triage", "revision": "r1"},
+            human_override=False,
+        )
+
+    rows = {first_digest: row(first_digest), second_digest: row(second_digest)}
+    cluster = {
+        "schema": door.triage_manifest.CLUSTER_SCHEMA,
+        "corpus_id": "parish-a",
+        "cluster_id": "opening-7",
+        "member_frame_sha256": [first_digest, second_digest],
+        "split_count": 1,
+    }
+    sources = door.expand_sources(
+        [
+            {"relative_path": "a.png", "sha256": first_digest},
+            {"relative_path": "b.png", "sha256": second_digest},
+        ],
+        reader({"a.png": first, "b.png": second}),
+        POLICY,
+        triage_rows=rows,
+        triage_clusters={"opening-7": cluster},
+    )
+    tree, context = open_door(tmp_path, sources)
+    assert (
+        process_sources(
+            context,
+            tree,
+            sources,
+            reader({"a.png": first, "b.png": second}),
+            policy=POLICY,
+        )
+        == 2
+    )
+    report = door.publish_cluster_report(context)
+    assert report is not None
+    payload = json.loads(tree.read_bytes(report).decode("utf-8"))["payload"]
+    assert payload["clusters"][0]["cluster_id"] == "opening-7"
+    assert {member["source_frame_sha256"] for member in payload["clusters"][0]["members"]} == {
+        first_digest,
+        second_digest,
+    }
+    assert "canonical" not in json.dumps(payload)
 
 
 @pytest.mark.parametrize("bad_bytes", [True, False, -1, "5", 5.0])
@@ -2335,3 +2674,581 @@ def test_the_fixture_run_authority_records_every_digest_its_stages_will_ask_for(
     # data-handling entry here would name a check that never happened.
     assert "data-handling" not in run["sealed_config_digests"]
     assert {"pdf-render", "recovery"} <= set(run["sealed_config_digests"])
+
+
+# --- Split-page provenance and refusal contracts ------------------------------
+
+
+def test_a_master_this_encoder_would_convert_is_a_named_page_refusal(tmp_path):
+    """A 16-bit master under `keep` refuses as a page, not as a crash.
+
+    `common/test_imaging_determinism.py` proves the render refuses it; this
+    proves the door turns that into its ordinary named per-page alarm, so the
+    frame is visibly refused with a reason an operator can act on instead of
+    reaching the Exemplar as silently 8-bit pixels.
+    """
+    image = Image.new("I;16", (4, 2))
+    for x in range(4):
+        for y in range(2):
+            image.putpixel((x, y), (x * 9973 + y) % 65535)
+    output = BytesIO()
+    image.save(output, format="TIFF", compression="raw")
+    master = output.getvalue()
+    digest = digest_bytes(master)
+    row = door.triage_manifest.make_row(
+        corpus_id="parish-a",
+        source_frame_sha256=digest,
+        frame={"width": 4, "height": 2},
+        split=door.triage_manifest.make_split(
+            [
+                door.triage_manifest.make_part(
+                    {"x": 0, "y": 0, "w": 4, "h": 2},
+                    {"x": 0, "y": 0, "w": 4, "h": 2},
+                    0,
+                    colour_mode="keep",
+                )
+            ]
+        ),
+        re_shoot_cluster_id=None,
+        confidence=4,
+        mode="auto",
+        actor={"kind": "model", "identity": "triage", "revision": "r1"},
+        human_override=False,
+    )
+    sources = door.expand_sources(
+        [{"relative_path": "frame.tif", "sha256": digest}],
+        reader({"frame.tif": master}),
+        POLICY,
+        triage_rows={digest: row},
+    )
+    tree, context = open_door(tmp_path, sources)
+    assert (
+        process_sources(context, tree, sources, reader({"frame.tif": master}), policy=POLICY) == 0
+    )
+    record = admissions(tree)[1]
+    assert record["outcome"] == "refused"
+    assert reason_code(record["payload"]["reason"]) == RefusalReason.UNSUPPORTED_VARIANT
+    assert "colour_mode 'keep'" in record["payload"]["reason"]
+    assert "Declare the conversion this page needs" in record["payload"]["reason"]
+
+
+def test_a_split_derivative_records_its_master_mode_and_the_mode_it_was_sealed_in():
+    """The record must retain decoded master mode and bands, not placeholders.
+
+    The whole-page and split branches share this provenance constraint. A palette
+    master is the lossless case where the decoded mode differs from the PNG mode:
+    the deterministic encoder expands P to RGB pixel-for-pixel.
+    """
+    output = BytesIO()
+    Image.new("RGB", (6, 4), (10, 20, 30)).save(output, format="PNG")
+    part = door.triage_manifest.make_part(
+        {"x": 0, "y": 0, "w": 6, "h": 4},
+        {"x": 0, "y": 0, "w": 6, "h": 4},
+        0,
+        colour_mode="grayscale",
+    )
+    _bytes, _geometry, contract = door.render_raster_page(output.getvalue(), 0, part)
+    assert contract["source_mode"] == "RGB"
+    assert contract["source_bands"] == ["R", "G", "B"]
+    assert contract["output"] == {"codec": "png", "color_mode": "L"}
+    assert contract["mode_transform"] == "triage-region-crop-rotate-convert-to-l"
+
+
+def test_a_re_run_triage_manifest_is_a_different_run_wearing_an_old_id(tmp_path):
+    """The immutable denominator's *content*, not only its length.
+
+    A triage pass re-run between two attempts at one run id can move a gutter
+    without changing the part count, so `source_manifest` — paths, digests,
+    ordinals, part indices — is byte-identical and `RunTree.create` would accept
+    the reuse. The geometry that produced the pixels is therefore bound like
+    every other fact that shaped them, and the swap refuses at the run authority
+    rather than surviving until a changed row happens to reach an
+    already-published admission.
+    """
+
+    class Models:
+        witness_chairs = ("attestator_1", "attestator_2", "attestator_3")
+        adapter_recipes = {"door": "fake-door-v0"}
+
+        @staticmethod
+        def to_record():
+            return {"models": "synthetic"}
+
+    ledger = {
+        "files": [{"relative_path": "spread.jpg", "sha256": "a" * 64, "bytes": 12}],
+        "self_hash": "b" * 64,
+    }
+    settings = door.render_config.load_pdf_render_settings(
+        minimum_dpi=door.pdf_render.MIN_RENDER_DPI
+    )
+
+    def bindings(triage_digests):
+        return door._real_bindings(
+            Models(),
+            ledger,
+            POLICY,
+            settings,
+            door.load_recovery_policy(),
+            door.load_hard_failure_policy(),
+            triage_document_digests=triage_digests,
+            **_sealed_binding_digests(),
+        )
+
+    first = bindings({"triage-decision-manifest": "c" * 64})
+    again = bindings({"triage-decision-manifest": "c" * 64})
+    moved_gutter = bindings({"triage-decision-manifest": "d" * 64})
+    gained_clusters = bindings(
+        {"triage-decision-manifest": "c" * 64, "triage-re-shoot-clusters": "e" * 64}
+    )
+    none_at_all = bindings({})
+
+    assert first["config_digest"] == again["config_digest"]
+    assert (
+        len(
+            {
+                first["config_digest"],
+                moved_gutter["config_digest"],
+                gained_clusters["config_digest"],
+                none_at_all["config_digest"],
+            }
+        )
+        == 4
+    )
+
+    source_manifest = [
+        {
+            "relative_path": "spread.jpg",
+            "sha256": "a" * 64,
+            "bytes": 12,
+            "ordinal": 1,
+            "container_page_index": 0,
+        }
+    ]
+    created = RunTree.create(
+        tmp_path,
+        "triage-reuse",
+        source_manifest=source_manifest,
+        config_digest=first["config_digest"],
+        adapter_recipes=first["adapter_recipes"],
+        witness_chairs=first["witness_chairs"],
+        sealed_config_digests=first["sealed_config_digests"],
+    )
+    unchanged = RunTree.create(
+        tmp_path,
+        "triage-reuse",
+        source_manifest=source_manifest,
+        config_digest=again["config_digest"],
+        adapter_recipes=again["adapter_recipes"],
+        witness_chairs=again["witness_chairs"],
+        sealed_config_digests=again["sealed_config_digests"],
+    )
+    assert unchanged.read_run() == created.read_run()
+    with pytest.raises(IncompatibleReuse, match="different config_digest"):
+        RunTree.create(
+            tmp_path,
+            "triage-reuse",
+            source_manifest=source_manifest,
+            config_digest=moved_gutter["config_digest"],
+            adapter_recipes=moved_gutter["adapter_recipes"],
+            witness_chairs=moved_gutter["witness_chairs"],
+            sealed_config_digests=moved_gutter["sealed_config_digests"],
+        )
+
+
+def test_content_aware_shards_impose_no_shard_ceiling_of_their_own():
+    """The sealed page cap is the policy; the shard count is its consequence.
+
+    An implicit count ceiling would refuse a valid larger corpus independently of
+    the sealed page cap. A caller with an external ceiling must pass it explicitly.
+    """
+    sources = [
+        SourceEntry(index, f"{index:03d}.jpg", f"{index:03d}".zfill(64)) for index in range(1, 9)
+    ]
+
+    assert len(door.content_aware_shards(sources, max_pages_per_shard=2)) == 4
+    with pytest.raises(ContractError, match="shard count is exhausted"):
+        door.content_aware_shards(sources, max_pages_per_shard=2, max_shards=3)
+
+
+@pytest.mark.parametrize(
+    ("max_pages", "max_shards"),
+    [(True, None), (1.5, None), ("2", None), (2, True), (2, 1.5), (2, "3")],
+)
+def test_content_aware_shard_limits_are_positive_integer_counts(max_pages, max_shards):
+    sources = [SourceEntry(1, "one.jpg", "a" * 64)]
+
+    with pytest.raises(ContractError, match="non-positive or non-integer") as refused:
+        door.content_aware_shards(
+            sources,
+            max_pages_per_shard=max_pages,
+            max_shards=max_shards,
+        )
+    assert "no shard plan was returned" in str(refused.value)
+    assert "pass positive integer limits" in str(refused.value)
+
+
+def test_a_re_shoot_cluster_that_would_straddle_the_submitted_shard_is_refused(tmp_path):
+    """The seam a *production* run can actually place is the operator's folder cut.
+
+    Nothing in the tree partitions a corpus into shards; `content_aware_shards`
+    only plans seams for its caller, and a split pair cannot straddle a folder cut
+    because both halves come from one file. A cluster can, so source expansion must
+    refuse an incomplete cluster independently of whether the planner was used.
+    """
+    first, second = png(4, 3), png(4, 3, rows=(b"\x00" + b"\x63" * 4) * 3)
+    first_digest, second_digest = digest_bytes(first), digest_bytes(second)
+
+    def row(digest):
+        return door.triage_manifest.make_row(
+            corpus_id="parish-a",
+            source_frame_sha256=digest,
+            frame={"width": 4, "height": 3},
+            split=door.triage_manifest.make_split(
+                [
+                    door.triage_manifest.make_part(
+                        {"x": 0, "y": 0, "w": 4, "h": 3},
+                        {"x": 0, "y": 0, "w": 4, "h": 3},
+                        0,
+                        colour_mode="keep",
+                    )
+                ]
+            ),
+            re_shoot_cluster_id="opening-7",
+            confidence=3,
+            mode="semi",
+            actor={"kind": "model", "identity": "triage", "revision": "r1"},
+            human_override=False,
+        )
+
+    rows = {first_digest: row(first_digest), second_digest: row(second_digest)}
+    cluster = {
+        "schema": door.triage_manifest.CLUSTER_SCHEMA,
+        "corpus_id": "parish-a",
+        "cluster_id": "opening-7",
+        "member_frame_sha256": [first_digest, second_digest],
+        "split_count": 1,
+    }
+    with pytest.raises(ContractError, match="would cross this submitted shard") as crossing:
+        door.expand_sources(
+            [{"relative_path": "a.png", "sha256": first_digest}],
+            reader({"a.png": first}),
+            POLICY,
+            triage_rows=rows,
+            triage_clusters={"opening-7": cluster},
+        )
+    assert "no source expansion was returned" in str(crossing.value)
+    assert "submit every cluster member in the same shard" in str(crossing.value)
+
+    with pytest.raises(ContractError, match="no supplied cluster record") as unresolved:
+        door.expand_sources(
+            [
+                {"relative_path": "a.png", "sha256": first_digest},
+                {"relative_path": "b.png", "sha256": second_digest},
+            ],
+            reader({"a.png": first, "b.png": second}),
+            POLICY,
+            triage_rows=rows,
+            triage_clusters={},
+        )
+    assert "cluster cannot be reconciled" in str(unresolved.value)
+    assert "supply the matching corpus-scoped cluster record" in str(unresolved.value)
+
+
+def test_a_legal_seam_between_byte_identical_split_files_is_not_mistaken_for_a_pair():
+    """A pair is one declared path's parts, not every adjacent copy of its digest."""
+    row = {"re_shoot_cluster_id": None}
+    digest = "a" * 64
+    sources = [
+        SourceEntry(1, "copy-a.jpg", digest, 0, triage_row=row, triage_part_index=0),
+        SourceEntry(2, "copy-a.jpg", digest, 1, triage_row=row, triage_part_index=1),
+        SourceEntry(3, "copy-b.jpg", digest, 0, triage_row=row, triage_part_index=0),
+        SourceEntry(4, "copy-b.jpg", digest, 1, triage_row=row, triage_part_index=1),
+    ]
+
+    shards = door.content_aware_shards(sources, max_pages_per_shard=2)
+
+    assert [[source.ordinal for source in shard] for shard in shards] == [[1, 2], [3, 4]]
+
+
+def test_nested_cluster_spans_remain_whole_without_inventing_a_winner():
+    rows = {
+        "outer": {"re_shoot_cluster_id": "outer"},
+        "inner": {"re_shoot_cluster_id": "inner"},
+        "none": {"re_shoot_cluster_id": None},
+    }
+    cluster_by_ordinal = {
+        1: "none",
+        2: "outer",
+        3: "inner",
+        4: "none",
+        5: "none",
+        6: "inner",
+        7: "outer",
+        8: "none",
+    }
+    sources = [
+        SourceEntry(
+            ordinal,
+            f"{ordinal}.jpg",
+            f"{ordinal:064x}",
+            0,
+            triage_row=rows[cluster_by_ordinal[ordinal]],
+            triage_part_index=0,
+        )
+        for ordinal in range(1, 9)
+    ]
+
+    shards = door.content_aware_shards(sources, max_pages_per_shard=6)
+
+    assert [[source.ordinal for source in shard] for shard in shards] == [
+        [1],
+        [2, 3, 4, 5, 6, 7],
+        [8],
+    ]
+
+
+def test_unicode_and_separator_like_relative_paths_have_exact_stable_ordinals():
+    files = {
+        "é.png": png(4, 3),
+        "e\u0301.png": png(5, 3),
+        "a\\b.png": png(6, 3),
+        "a/b.png": png(7, 3),
+    }
+    rows = [
+        {"relative_path": path, "sha256": digest_bytes(data), "bytes": len(data)}
+        for path, data in reversed(list(files.items()))
+    ]
+
+    first = expand_sources(rows, reader(files), POLICY)
+    second = expand_sources(list(reversed(rows)), reader(files), POLICY)
+
+    assert first == second
+    assert [source.declared_path for source in first] == [
+        "a/b.png",
+        "a\\b.png",
+        "e\u0301.png",
+        "é.png",
+    ]
+
+
+def _single_part_triage_row(
+    master: bytes,
+    *,
+    frame: tuple[int, int],
+    rotation_millidegrees: int = 0,
+    colour_mode: str = "rgb",
+    cluster_id: str | None = None,
+):
+    width, height = frame
+    return door.triage_manifest.make_row(
+        corpus_id="parish-a",
+        source_frame_sha256=digest_bytes(master),
+        frame={"width": width, "height": height},
+        split=door.triage_manifest.make_split(
+            [
+                door.triage_manifest.make_part(
+                    {"x": 0, "y": 0, "w": width, "h": height},
+                    {"x": 0, "y": 0, "w": width, "h": height},
+                    rotation_millidegrees,
+                    colour_mode=colour_mode,
+                )
+            ]
+        ),
+        re_shoot_cluster_id=cluster_id,
+        confidence=4,
+        mode="auto",
+        actor={"kind": "model", "identity": "triage", "revision": "r1"},
+        human_override=False,
+    )
+
+
+def test_triage_rows_reconcile_exactly_with_the_submitted_shard():
+    submitted = png(4, 3)
+    absent = png(5, 3)
+    rows = {
+        digest_bytes(submitted): _single_part_triage_row(submitted, frame=(4, 3)),
+        digest_bytes(absent): _single_part_triage_row(absent, frame=(5, 3)),
+    }
+
+    with pytest.raises(ContractError, match="1 row.*no submitted source frame") as refused:
+        expand_sources(
+            [{"relative_path": "submitted.png", "sha256": digest_bytes(submitted)}],
+            reader({"submitted.png": submitted}),
+            POLICY,
+            triage_rows=rows,
+        )
+    assert "no source expansion was returned" in str(refused.value)
+    assert "exactly match the submitted shard" in str(refused.value)
+
+
+def test_a_missing_triage_row_names_the_loss_it_prevents_and_the_remedy():
+    submitted = png(4, 3)
+
+    with pytest.raises(ContractError, match="no row for a submitted source frame") as refused:
+        expand_sources(
+            [{"relative_path": "submitted.png", "sha256": digest_bytes(submitted)}],
+            reader({"submitted.png": submitted}),
+            POLICY,
+            triage_rows={},
+        )
+    assert "disappear from the post-split census" in str(refused.value)
+    assert "one row for every submitted frame digest" in str(refused.value)
+
+
+def test_cluster_records_without_a_decision_manifest_are_not_ignored():
+    submitted = png(4, 3)
+
+    with pytest.raises(ContractError, match="without a decision manifest") as refused:
+        expand_sources(
+            [{"relative_path": "submitted.png", "sha256": digest_bytes(submitted)}],
+            reader({"submitted.png": submitted}),
+            POLICY,
+            triage_clusters={},
+        )
+    assert "no ordinals were assigned" in str(refused.value)
+    assert "supply the matching triage decision manifest" in str(refused.value)
+
+
+def _triage_decision(master: bytes, row: dict):
+    source = SourceEntry(
+        1,
+        "frame.img",
+        digest_bytes(master),
+        0,
+        triage_row=row,
+        triage_part_index=0,
+        source_frame_index=0,
+    )
+    return door.decide(master, source, POLICY)
+
+
+@pytest.mark.parametrize("declared_frame", [(5, 4), (7, 4), (6, 3), (6, 5)])
+def test_the_frame_boundary_refuses_a_one_pixel_mismatch_on_every_edge(declared_frame):
+    master = jpeg(6, 4)
+    row = _single_part_triage_row(master, frame=declared_frame)
+
+    decision = _triage_decision(master, row)
+
+    assert decision.outcome == "refused"
+    assert "frame dimensions do not match" in decision.reason
+    assert "could omit or shift source pixels" in decision.reason
+    assert "regenerate the row against the stored raster dimensions" in decision.reason
+
+
+def test_exact_frame_equality_is_checked_before_a_part_rotation_changes_output_geometry():
+    master = jpeg(6, 4)
+    row = _single_part_triage_row(master, frame=(6, 4), rotation_millidegrees=90_000)
+
+    decision = _triage_decision(master, row)
+
+    assert decision.outcome == "admitted"
+    assert decision.geometry == (4, 6)
+
+
+def test_exif_orientation_is_metadata_not_an_unrecorded_frame_transform():
+    image = Image.new("RGB", (6, 4), (10, 20, 30))
+    exif = Image.Exif()
+    exif[274] = 6  # display rotated 90 degrees clockwise; stored raster remains 6x4
+    output = BytesIO()
+    image.save(output, format="JPEG", exif=exif)
+    master = output.getvalue()
+
+    raw_frame = _single_part_triage_row(master, frame=(6, 4))
+    display_frame = _single_part_triage_row(master, frame=(4, 6))
+
+    assert _triage_decision(master, raw_frame).outcome == "admitted"
+    refused = _triage_decision(master, display_frame)
+    assert refused.outcome == "refused"
+    assert "frame dimensions do not match" in refused.reason
+
+
+def test_cluster_report_keeps_refused_members_and_parts_visible(tmp_path):
+    admitted_master = png(4, 3)
+    high_precision = Image.new("I;16", (4, 3))
+    high_precision_output = BytesIO()
+    high_precision.save(high_precision_output, format="TIFF", compression="raw")
+    refused_master = high_precision_output.getvalue()
+    cluster_id = "opening-7"
+    rows = {
+        digest_bytes(admitted_master): _single_part_triage_row(
+            admitted_master, frame=(4, 3), colour_mode="keep", cluster_id=cluster_id
+        ),
+        digest_bytes(refused_master): _single_part_triage_row(
+            refused_master, frame=(4, 3), colour_mode="keep", cluster_id=cluster_id
+        ),
+    }
+    cluster = {
+        "schema": door.triage_manifest.CLUSTER_SCHEMA,
+        "corpus_id": "parish-a",
+        "cluster_id": cluster_id,
+        "member_frame_sha256": sorted(rows),
+        "split_count": 1,
+    }
+    files = {"a.png": admitted_master, "b.tif": refused_master}
+    sources = expand_sources(
+        [{"relative_path": path, "sha256": digest_bytes(data)} for path, data in files.items()],
+        reader(files),
+        POLICY,
+        triage_rows=rows,
+        triage_clusters={cluster_id: cluster},
+    )
+    tree, context = open_door(tmp_path, sources)
+    assert process_sources(context, tree, sources, reader(files), policy=POLICY) == 1
+
+    report_path = door.publish_cluster_report(context)
+    assert report_path is not None
+    payload = json.loads(tree.read_bytes(report_path))["payload"]
+    members = payload["clusters"][0]["members"]
+    assert len(members) == 2
+    assert {page["outcome"] for member in members for page in member["pages"]} == {
+        "admitted",
+        "refused",
+    }
+    assert "canonical" not in json.dumps(payload)
+    assert "winner" not in json.dumps(payload)
+
+
+def test_an_undecodable_split_frame_keeps_every_declared_page_ordinal(tmp_path):
+    master = b"not a decodable raster"
+    digest = digest_bytes(master)
+    row = door.triage_manifest.make_row(
+        corpus_id="parish-a",
+        source_frame_sha256=digest,
+        frame={"width": 6, "height": 4},
+        split=door.triage_manifest.make_split(
+            [
+                door.triage_manifest.make_part(
+                    {"x": 0, "y": 0, "w": 3, "h": 4},
+                    {"x": 0, "y": 0, "w": 3, "h": 4},
+                    0,
+                    colour_mode="keep",
+                ),
+                door.triage_manifest.make_part(
+                    {"x": 3, "y": 0, "w": 3, "h": 4},
+                    {"x": 0, "y": 0, "w": 3, "h": 4},
+                    0,
+                    colour_mode="keep",
+                ),
+            ]
+        ),
+        re_shoot_cluster_id=None,
+        confidence=1,
+        mode="auto",
+        actor={"kind": "model", "identity": "triage", "revision": "r1"},
+        human_override=False,
+    )
+    sources = expand_sources(
+        [{"relative_path": "broken.img", "sha256": digest, "bytes": len(master)}],
+        reader({"broken.img": master}),
+        POLICY,
+        triage_rows={digest: row},
+    )
+    assert [(source.ordinal, source.triage_part_index) for source in sources] == [(1, 0), (2, 1)]
+
+    tree, context = open_door(tmp_path, sources)
+    assert (
+        process_sources(context, tree, sources, reader({"broken.img": master}), policy=POLICY) == 0
+    )
+    records = admissions(tree)
+    assert set(records) == {1, 2}
+    assert all(record["outcome"] == "refused" for record in records.values())
