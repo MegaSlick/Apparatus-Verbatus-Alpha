@@ -3718,7 +3718,7 @@ def test_an_absent_witness_on_a_held_act_is_also_dead_not_not_run(
 
 
 def test_a_structured_testimonium_is_retained_and_carried_as_an_incomparable_witness(tmp_path):
-    """Unit 14A retirement: a structured witness ends the run honestly, never a crash.
+    """A structured witness ends the run honestly rather than crashing.
 
     Spec 07 requires `payload` to be the witness's native output, verbatim, never
     coerced into a shared body schema — so a witness whose real output is an object
@@ -3736,8 +3736,7 @@ def test_a_structured_testimonium_is_retained_and_carried_as_an_incomparable_wit
     a1's proposal, and the attachment is geometrically unattached. The
     `comparable` boolean is the SECOND, independent guard, for the case this
     fixture does not produce — a chair whose native geometry does overlap the
-    act while its retained testimony is structured (consult §3(b): after 10C,
-    attached and has-comparable-text came apart). That case is driven over real
+    act while its retained testimony is structured. That case is driven over real
     records in `pipeline/5_recensor/test_comparability_floor.py`, and the
     arithmetic in `common/contracts/test_contracts_algebra.py`; claiming this
     scenario exercises it would report an instrument that did not run
@@ -3780,8 +3779,6 @@ def test_a_structured_testimonium_is_retained_and_carried_as_an_incomparable_wit
         "reason": "no comparable text for this act: retained derived testimony is not text",
     }
 
-    # The mechanism, asserted rather than described, so the docstring above
-    # cannot drift into claiming a guard this run never reached.
     attachment = next(
         record
         for record in artifacts(tree, ATTESTATORES, "act-attachment")

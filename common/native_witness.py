@@ -187,8 +187,8 @@ def validate_presented(value: Any, *, page_size: tuple[int, int] | None = None) 
         # the digest re-derives, because re-derivation replays whatever target
         # the record asked for. What it would cost is the identification
         # `_dai_observe` makes when it reports the crop's own page bounds as the
-        # box for the whole shown image, and the view-to-page mapping Unit 14
-        # reads that box through -- both are only sound over a uniform scale.
+        # box for the whole shown image; downstream view-to-page mapping is only
+        # sound over a uniform scale.
         if resize["target_height_px"] != max(
             1, resize["source_height_px"] * resize["target_width_px"] // resize["source_width_px"]
         ):

@@ -870,17 +870,9 @@ def act_attachment_view(
                 # mapping would validate while leaving the operator no
                 # statement of why comparison failed.
                 raise SchemaRefusal("an unattached page witness has no explicit unaligned result")
-            # `comparable` is what the structured-witness retirement was paid
-            # for (consult 3): a chair reaches the witness floor only where
-            # retained text for THIS act exists to compare. `attached` is
-            # re-derived from the chair's own geometry a few lines above, and a
-            # safety net nobody recomputes is weaker than the thing it guards --
-            # a resealed attachment could buy the floor with one boolean while
-            # its dissent row still read `compared: "unknown"`. Derived here
-            # from the alignment this reader has already validated: an attached
-            # page witness whose alignment is `aligned` has retained page text
-            # (refused above if not) and therefore an act-anchored view; every
-            # other combination has none. Found in audit; comparability seam.
+            # Geometry alone cannot satisfy the witness floor: this act must also
+            # have an aligned slice of retained page text. Re-derive the boolean
+            # so a resealed attachment cannot claim comparability by assertion.
             if attachment["comparable"] != (
                 attachment["attached"]
                 and isinstance(alignment, dict)
@@ -908,11 +900,8 @@ def act_attachment_view(
                 raise SchemaRefusal(
                     f"act {act_id} attachment points to another chair's Testimonium"
                 )
-            # The act-scoped half of the same derivation. An act-scoped chair's
-            # comparable text is its own retained derived payload, and only a
-            # string is text: a structured native report is retained, visible,
-            # and uncountable. Asked of the Testimonium this attachment names,
-            # never believed from the attachment itself.
+            # Act-scoped comparability comes from the referenced Testimonium's
+            # own text; structured reports stay retained but uncountable.
             if attachment["comparable"] != (
                 attachment["attached"]
                 and isinstance(testimonium.get("payload", {}).get("payload"), str)
@@ -1714,14 +1703,8 @@ def _audit_semi_final(
         if not isinstance(record, dict):
             raise FatalAccounting(f"Perlectio for {act_id} carries a non-object audit testimonium")
         reported = record.get("reported")
-        # Absent is the honest shape for a chair that failed or never ran, or
-        # for a completed structured witness -- the dossier only ever carries
-        # `reported` as `str | None` (`dossier.py::_testimonium_entry`), and
-        # `dissent_against` records the same structured-witness fact as
-        # `compared: "unknown"` rather than dropping the chair from the flag
-        # denominator. The isinstance check below is the same closed shape
-        # enforced a second time, so a future dossier producer cannot reopen
-        # the gap unnoticed.
+        # `None` covers non-reading and structured reports; the latter remains
+        # present in dissent as incomparable rather than becoming invented text.
         if reported is None:
             continue
         if not isinstance(reported, str):

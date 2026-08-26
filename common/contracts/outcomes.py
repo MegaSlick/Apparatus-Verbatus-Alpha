@@ -410,10 +410,10 @@ def witness_coverage(
             )
         for chair, outcome in chair_outcomes.items():
             fact = attachments.get(chair)
-            if fact is True:
-                fact = {"attached": True, "comparable": True}
-            elif fact is False or fact is None:
-                fact = {"attached": False, "comparable": False}
+            if fact is None:
+                fact = False
+            if isinstance(fact, bool):
+                fact = {"attached": fact, "comparable": fact}
             if (
                 not isinstance(fact, Mapping)
                 or not isinstance(fact.get("attached"), bool)

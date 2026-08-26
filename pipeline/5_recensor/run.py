@@ -157,11 +157,8 @@ def chair_current_attempts(context, act_id: str) -> dict[str, dict]:
     records = artifacts_for(context, ATTESTATORES, "testimonium", act_id)
     return {
         record["payload"]["chair"]: {
-            # The exact current record identity travels with the projections.
-            # `act_attachment_facts` must prove that an act-scoped attachment
-            # references this record, rather than combine the current outcome
-            # with a stale Testimonium's payload and call the result a
-            # re-derivation.
+            # The identity is required to reject an attachment that combines a
+            # current outcome with a superseded Testimonium payload.
             "artifact_id": record["artifact_id"],
             "outcome": record["outcome"],
             "content_health": record["payload"].get("content_health"),
@@ -428,13 +425,8 @@ def act_attachment_facts(
                     f"act {act_id} page witness {chair!r} carries an unaligned record with "
                     "no usable reason; an unexplained failure is a silent loss"
                 )
-            # The floor seam's own derivation of the comparability safety net,
-            # independent of the Perlector's (which asks the same question of
-            # the same evidence at its read seam). `attached` is geometry and
-            # says nothing about text; a chair counts only where this page
-            # record retains text AND this act's alignment placed a span in it.
-            # Believing the sealed boolean would leave the retirement guarded by
-            # a field no reader recomputes.
+            # `attached` proves geometry, not text. The floor also requires an
+            # aligned slice from the referenced page record.
             if entry["comparable"] != (
                 entry["attached"]
                 and alignment["status"] == "aligned"
@@ -447,13 +439,9 @@ def act_attachment_facts(
                     "from the referenced page Testimonium and alignment."
                 )
         else:
-            # The act-scoped half. The floor may not be counted from a boolean
-            # this stage never checked against the Testimonium it names, so the
-            # exact current record is read and its outcome plus retained derived
-            # payload answer both predicates.  Reading `attached` back from this
-            # attachment row would make `comparable = attached and text` one
-            # assertion in two costumes: a producer could forge both booleans
-            # false and quietly remove a completed chair from the floor.
+            # Act-scoped floor facts come from the current referenced
+            # Testimonium; trusting both stored booleans would allow a producer
+            # to forge them false and silently remove a completed chair.
             reference = entry.get("testimonium_ref")
             if not isinstance(reference, dict):
                 raise FatalAccounting(
@@ -1642,13 +1630,8 @@ NO_PAGE_CONSERVATION = {
 NO_PAGE_CONTENT_COVERAGE = {
     "by_chair": None,
     "shortfall": None,
-    # "supplied comparable page text", not "reported text": since Unit 14A a
-    # page witness can report and be retained while its derived payload is
-    # structured, which is testimony this instrument cannot measure but is not
-    # an absence of testimony. Saying the chair reported nothing would put a
-    # false statement in the record of a page that was in fact witnessed
-    # (GOVERNANCE 2 and 10); the chair stays visible on its page Testimonium and
-    # incomparable in its act's own witness floor.
+    # A structured page report is retained testimony but supplies no comparable
+    # text; describing that as no report would make the measurement record false.
     "reason": (
         "no page witness supplied comparable page text for this page, so testimony content "
         "coverage was not measured; its acts are already held or floored by their own causes"
@@ -1709,9 +1692,8 @@ def review_route_from_findings(
     preempted cause with no independent field, so an act simultaneously
     under-witnessed and scenario-held recorded only the floor cause.
     """
-    # Review routing is the stage's closed decision payload.  Screen it before
-    # any reason is assembled so a future consensus/vote field cannot become a
-    # witness selector under review vocabulary.
+    # Screen before truthiness so a malformed nested value cannot introduce
+    # witness-selection vocabulary into the routing decision.
     refuse_preference(
         {
             "testimony_shortfall": testimony_shortfall,

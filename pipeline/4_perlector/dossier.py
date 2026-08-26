@@ -220,7 +220,8 @@ def _testimonium_entry(
         else None
     )
     reported_basis = "own-report" if reported is not None else "none"
-    provenance = record["payload"].get("provenance")
+    presented = payload.get("presented")
+    provenance = payload.get("provenance")
     if not isinstance(provenance, dict):
         raise SchemaRefusal(f"Testimonium from {chair!r} has no resolved provenance")
     identity = provenance.get("resolved_identity")
@@ -264,8 +265,8 @@ def _testimonium_entry(
         "outcome": record["outcome"],
         "reported": reported,
         "reported_basis": reported_basis,
-        "presented": payload.get("presented", {}).get("kind", "none")
-        if isinstance(payload.get("presented"), dict) and payload.get("presented")
+        "presented": presented.get("kind", "none")
+        if isinstance(presented, dict) and presented
         else "none",
         "observed": sorted(
             [

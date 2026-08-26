@@ -508,15 +508,11 @@ def test_an_unknown_quantization_rule_is_refused_by_name(tmp_path):
 
 
 def test_the_page_record_names_the_bytes_its_own_geometry_was_quantized_from(tmp_path):
-    """DoD bullet one, asked of the record that actually carries the geometry.
+    """The geometry record must name the retained response that produced it.
 
-    The act-scoped Testimonia are a compatibility bridge Unit 14 removes. The
-    durable output of a page-scoped occupant is the page Testimonium, and it is
-    the record whose `observed` boxes are integers this pipeline computed from
-    floats it did not keep. Without a reference to the retained response, that
-    record states a derived result with no route back to the evidence -- and the
-    route has to be in the record, not reconstructable by re-joining records that
-    are scheduled for deletion (GOALS 5).
+    The page Testimonium carries integer boxes derived from native floats. Its
+    response reference must travel in that same record rather than require a
+    later join through compatibility records (GOALS 5).
     """
     run_root = tmp_path / "runs"
     result = subprocess.run(

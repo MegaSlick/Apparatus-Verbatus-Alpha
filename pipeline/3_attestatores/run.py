@@ -285,20 +285,6 @@ def native_observed_for(
     ]
 
 
-def sealed_page_size_for_presentation(context, presented: dict[str, Any]) -> tuple[int, int]:
-    """Read the actual sealed-page dimensions behind one witness presentation.
-
-    A region presentation's bounds describe its crop, not the page ceiling a
-    native Chandra block is allowed to reach.  Keeping this lookup here makes
-    the page-edge check use the same Exemplar bytes the ordinary read-back wall
-    will later verify, and stops a block adjacent to a crop edge from being
-    mistaken for an overshoot of the page itself.
-    """
-    page_id = presented["source_page_id"]
-    page = context.tree.read_artifact(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", page_id))
-    return dimensions(context.tree.read_bytes(page["payload"]["image_path"]))
-
-
 def chandra_page_partition_entries(
     observed: list[dict[str, Any]],
     *,
@@ -306,6 +292,9 @@ def chandra_page_partition_entries(
     raw_response_ref: dict[str, str] | None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Return surviving Chandra boxes and response-linked page-edge findings.
+
+    `page_size` is the sealed source page, never a presentation crop: a block
+    may cross the crop edge while remaining valid page-space geometry.
 
     The page Testimonium, rather than the retired textual act bridge, owns the
     witness partition.  A finding without the raw response that supplied its
@@ -846,9 +835,7 @@ def provenance_for(context, resolved: ChairIdentity | AbsentChair, *, attempted:
     }
 
 
-# Every field a Testimonium payload must carry, whatever the outcome. `reason` is
-# conditional and deliberately outside it.  Consumers read the retained derived
-# `payload` layer directly; there is no textual compatibility projection.
+# `reason` is outcome-dependent; `payload` is the sole derived report layer.
 TESTIMONIUM_FIELDS = frozenset(
     {
         "chair",
@@ -2191,13 +2178,10 @@ def publish_attempt(
         and isinstance(resolved, ChairIdentity)
         and resolved.witness_adapter == "chandra.v1"
     ):
-        # The compatibility act view has no durable partition finding field:
-        # its raw response and the page Testimonium that records every rejected
-        # block are both retained below.  It must nevertheless exclude an
-        # out-of-page box here, or its own read-back wall would turn one bad
-        # block into a failure that prevents the page record from being sealed.
+        # The act view cannot retain partition findings, but it must exclude an
+        # overshoot so one bad block does not prevent the page record retaining it.
         observed, _ = split_page_edge_overshoots(
-            observed, page_size=sealed_page_size_for_presentation(context, presented)
+            observed, page_size=_sealed_source_page(context, presented)[1]
         )
     payload = testimonium_payload(
         chair=chair,
@@ -2569,15 +2553,8 @@ def publish_page_testimonia_and_attachments(
     page_records: dict[tuple[int, str], dict[str, str]] = {}
     page_observations: dict[tuple[int, str], list[dict[str, Any]]] = {}
     page_texts: dict[tuple[int, str], str] = {}
-    # What each page-scoped chair's own page attempt was, where a native capture
-    # made one. The legacy join derives its page outcome FROM the act attempts,
-    # so gating that path's act attachment on the act attempt stays coherent; a
-    # native capture is an independent full-page response, and reading the act
-    # attempt to decide what the PAGE record says is how the two come to
-    # disagree about the same chair on the same page.
-    # A page record owns its own derived payload and outcome.  Keep those facts
-    # directly rather than retaining an attempt-object bridge that a consumer
-    # could mistake for the page Testimonium's report.
+    # Native captures own their page outcome; legacy joins derive it from act
+    # attempts, so the two paths cannot share an attempt-object fallback.
     page_outcomes: dict[tuple[int, str], str] = {}
     # The anchor is a page fact, not a chair's report, and it is kept in its own
     # map for that reason: parked in `page_texts` under a reserved chair slot it
@@ -2721,14 +2698,13 @@ def publish_page_testimonia_and_attachments(
                     # quantized from, in the record that carries the geometry.
                     # Retained once per distinct blob and in the order the
                     # partition was built, so the record answers "derived from
-                    # what?" without a reader having to re-join the act-scoped
-                    # compatibility records Unit 14 deletes.
+                    # what?" without rejoining act-scoped compatibility records.
                     reference = source_attempt.raw_response_ref
                     if reference is not None and reference not in page_response_refs:
                         page_response_refs.append(reference)
                     source_observed, overshoots = chandra_page_partition_entries(
                         adapter.observe(presented, raw),
-                        page_size=sealed_page_size_for_presentation(context, presented),
+                        page_size=_sealed_source_page(context, presented)[1],
                         raw_response_ref=reference,
                     )
                     page_edge_overshoots.extend(overshoots)
@@ -2993,9 +2969,6 @@ def publish_page_testimonia_and_attachments(
                 # page laundered into `attached: true`. The legacy join keeps the
                 # act attempt because its page outcome is derived from exactly
                 # those attempts.
-                # Kept apart deliberately: which record supplied this outcome
-                # is part of the answer, and the fallback is not the page
-                # Testimonium's own outcome.
                 captured_outcome = page_outcomes.get((act["page_ordinal"], chair))
                 page_outcome = (
                     captured_outcome if captured_outcome is not None else act_attempt.outcome
@@ -3011,16 +2984,9 @@ def publish_page_testimonia_and_attachments(
                     # reason instead.
                     alignment = {
                         "status": "unaligned",
-                        # Name the record this outcome actually came from. Under
-                        # a native capture it is the page Testimonium's own
-                        # attempt. Under the legacy join the page record is
-                        # derived from EVERY act attempt on the page, so the fact
-                        # here is this act's own attempt -- and the page record
-                        # can honestly read `read` on the strength of another act
-                        # while this one failed. One name for both put a false
-                        # statement about a sealed record into the review tree:
-                        # `review`'s attestator_3 carries a failed a2 attempt
-                        # beside a page Testimonium that read a1 (GOVERNANCE 10).
+                        # Native captures name the page attempt; legacy joins name
+                        # this act's attempt because another act can make the joined
+                        # page record read successfully.
                         "reason": non_reading_alignment_reason(
                             page_outcome,
                             native_page_capture=captured_outcome is not None,

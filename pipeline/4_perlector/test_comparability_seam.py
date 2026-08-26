@@ -1,9 +1,8 @@
 """The Perlector's half of the comparability derivation, forged end to end.
 
-Unit 14A retired `dissent_against`'s crash on a completed Testimonium carrying
-no comparable text, and paid for the retirement with a `comparable` boolean on
-every act attachment: `witness_coverage` counts a chair toward the witness floor
-only where it is attached AND comparable (`/out/CONSULT_REPORT.md` 3).
+`dissent_against` retains a completed structured Testimonium as incomparable.
+The matching safety constraint is that `witness_coverage` counts a chair toward
+the witness floor only where its attachment is both attached and comparable.
 
 Everything else on that record is re-derived by both readers -- the geometric
 attachment, `page_role`, `content_health`, the page-witness scope, the current
@@ -11,8 +10,7 @@ attempt.  This module pins that `comparable` is too.  The attack it refuses is
 cheap and quiet: seal an attachment whose page alignment honestly failed, leave
 the boolean saying comparable, and the chair satisfies the floor while its own
 dissent row says `compared: "unknown"` -- a satisfied floor, empty reasons and
-an export that calls itself complete over testimony nothing compared.  That is
-the exact record the consult's strongest objection describes.
+an export that calls itself complete over testimony nothing compared.
 
 Forged directly onto a real run's Attestatores boundary, the way
 `pipeline/orchestrator/test_r0_contract_vertical_slice.py` forges its attachment

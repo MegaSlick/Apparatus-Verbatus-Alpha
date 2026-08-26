@@ -323,14 +323,7 @@ def _correspondence_identity(record: dict[str, Any]) -> str:
 
 
 def refuse_preference(value: Any, *, what: str) -> None:
-    """Refuse a record that names a preference, saying whose record it is.
-
-    Shared by every consumer of this vocabulary, and `what` is not decoration:
-    the same recursive check now screens Testimonia, Perlectiones, Recensor
-    reviews and audit drafts, and a refusal that names the corpus register for
-    a fault in a Perlectio sends whoever reads the exit to the wrong producer --
-    the fault F-O2 already ruled against for two faults sharing one string.
-    """
+    """Recursively refuse selection vocabulary and name the faulty record kind."""
     if isinstance(value, dict):
         forbidden = set(value) & _FORBIDDEN_PREFERENCE_FIELDS
         if forbidden:
@@ -347,7 +340,7 @@ def refuse_preference(value: Any, *, what: str) -> None:
 
 
 def _refuse_preference(value: Any) -> None:
-    """The corpus register's own subject, for its callers that have only one."""
+    """Apply the shared vocabulary with the corpus register's fixed subject."""
     refuse_preference(value, what="corpus register")
 
 

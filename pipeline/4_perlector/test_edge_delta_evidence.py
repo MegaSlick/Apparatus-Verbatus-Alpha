@@ -1,12 +1,9 @@
 """`edge_deltas` are correspondence evidence, and may never become a trigger.
 
-Unit 14A gave the dossier four signed offsets per observed box: how one chair's
-native or derived geometry sits against **the sealed proposal** for this act
-(`/out/CONSULT_REPORT.md` 4.1, "chair-vs-SEALED-PROPOSAL ... NEVER chair-vs-
-chair").  That is the first magnitude this pipeline has ever recorded about
-witness geometry, and the consult's recovery design names the ways it must not
-be used (4.5, FORBIDDEN TRIGGERS): "n-of-m agreement; IoU/similarity numbers;
-delta magnitude; per-chair weights; ANY two-chair disagreement".
+The dossier records four signed offsets per observed box: how one chair's native
+or derived geometry sits against this act's sealed proposal. The comparison is
+never chair against chair, and the magnitudes may not feed n-of-m agreement,
+IoU or similarity, thresholds, per-chair weights, or two-chair disagreement.
 
 The recovery gate itself is already fenced structurally by
 `pipeline/5_recensor/test_quality_firewall.py`, which pins the names the gate may

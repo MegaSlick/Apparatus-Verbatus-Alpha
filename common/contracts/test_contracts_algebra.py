@@ -659,7 +659,7 @@ def test_granularity_identity_is_executable_for_interim_and_native_bases():
 
 
 def test_an_attached_but_incomparable_witness_is_page_only_and_cannot_meet_the_floor():
-    """The structured-witness retirement is safe only with this identity.
+    """Attachment and comparability must remain independent floor predicates.
 
     Attachment records geometry; comparability records whether retained derived
     testimony supplies this act's text.  A native box can establish the first

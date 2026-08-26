@@ -246,19 +246,15 @@ def dissent_against(reading: str, testimonia: list[dict]) -> list[dict]:
         if record["outcome"] not in WITNESS_READING_OUTCOMES:
             rows.append({"chair": chair, "compared": False, "reason": record["outcome"]})
             continue
-        # `reported` is accepted only as a test-fixture compatibility input;
-        # producer schemas no longer admit it.  The real derived waist is
-        # `payload`, and page slices still take priority.
+        # Legacy fixture inputs may carry `reported`; production records use
+        # `payload`, while an act-aligned page slice still takes priority.
         reported = record["payload"].get(
             "comparison_reported",
             record["payload"].get("payload", record["payload"].get("reported")),
         )
         if not isinstance(reported, str):
-            # Native testimony is retained in its derived layer, not coerced into
-            # a string-shaped compatibility bridge.  A non-text report is
-            # therefore visible as incomparable.  The witness-floor seam counts
-            # attached AND comparable in the same change, so this cannot turn a
-            # complete run into an apparently witnessed one.
+            # A structured report remains visible as incomparable; coercing it
+            # would invent text, while the witness floor requires comparability.
             rows.append(
                 {
                     "chair": chair,

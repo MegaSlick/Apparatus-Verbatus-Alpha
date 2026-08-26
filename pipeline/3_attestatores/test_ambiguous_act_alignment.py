@@ -1,12 +1,10 @@
 """Two acts cannot both own one stretch of a page witness's reading.
 
-Unit 14A answered the consult's base question 3 (`/out/CONSULT_REPORT.md` 4.9):
-alignment is computed page-wide once per (page, chair) and each act clips its own
-hull out of it, so overlap between two acts' hulls is possible and "disjointness
-required, overlap -> BOTH unaligned with named ambiguity (never by size)".
+Alignment is computed page-wide once per (page, chair), and each act clips its
+own hull from that result. If two hulls overlap, both must become unaligned;
+choosing by size would turn correspondence into witness selection.
 
-The rule it built is `refuse_ambiguous_act_alignments`, and this module is the
-evidence for it.  It is exercised directly rather than through a run because the
+The rule is exercised directly rather than through a run because the
 combination needs one chair's page text to match a single act's anchor range in
 two separate places -- no scenario in `proof/skeleton_fixture.toml` does, and
 adding one to reach a rule that is already deterministic would move the pinned
@@ -39,7 +37,6 @@ stage = _load_stage()
 
 
 def _entry(chair="attestator_1", page_ordinal=1, span=None, page_witness=True, attached=True):
-    """One page-witness attachment row in the shape the pass builds."""
     if span is None:
         alignment = {"status": "unaligned", "reason": "no-overlap-with-act-anchor"}
         act_span = None

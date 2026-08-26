@@ -1,11 +1,9 @@
 """The comparability conjunct, driven over real records rather than a dict.
 
-Unit 14A retired `dissent_against`'s refusal of a completed Testimonium whose
-retained derived payload is not text.  The consult (`/out/CONSULT_REPORT.md` 3)
-made that retirement conditional on a safety net in the same commit: an act
-attachment gained a `comparable` boolean, and `witness_coverage` counts a chair
-toward the witness floor only where it is **attached AND comparable**.  Without
-that pair, after 10C made attachment purely geometric, a chair could be
+`dissent_against` retains a completed Testimonium whose derived payload is not
+text. The required safety constraint is that `witness_coverage` counts a chair
+toward the floor only where it is **attached AND comparable**. Without that
+pair, a chair could be
 geometrically attached, produce no comparable text at all, satisfy the floor,
 and land in a run that called itself complete while every dissent row for it
 read `compared: "unknown"` -- GOVERNANCE 2 and 10 in one record.
@@ -109,8 +107,8 @@ def context_and_act(tmp_path):
 def _structured_page_testimony(context, monkeypatch, chair=PAGE_CHAIR, page_ordinal=1):
     """Give one page witness the structured retained payload a native adapter
     can legitimately return, leaving its geometry -- and so its attachment --
-    untouched.  This is the consult's own worst case: the only native-geometry
-    chair is exactly the chair that can be geometrically attached."""
+    untouched. The only native-geometry chair must remain geometrically attached
+    so the test isolates comparability rather than attachment."""
     original = context.tree.read_artifact_reference
 
     def structured(reference, *, stage, kind, subject_id):

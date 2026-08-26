@@ -24,7 +24,7 @@ ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
 
 
 def test_witness_derived_location_classes_remain_the_one_open_class():
-    """Unit 14 records location basis without settling the reproof question.
+    """Location provenance does not make page-boundary evidence a text flag.
 
     Do not widen this set for boundary disagreement: that is Recensor page
     evidence, not a witness-derived text location.

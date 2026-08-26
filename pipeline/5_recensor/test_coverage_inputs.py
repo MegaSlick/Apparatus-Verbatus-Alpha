@@ -617,7 +617,7 @@ def test_each_act_gets_a_private_copy_of_its_pages_geometry_finding():
 
 
 def test_a_structured_native_page_payload_is_retained_without_text_coverage():
-    """F-O2: a declared non-comparable native payload is not forged into text."""
+    """A declared non-comparable native payload is not forged into text."""
     context = _context(_page_testimonium(outcome="read", reported={"lines": []}))
 
     assert RUN.testimony_content_findings(context) == {}
