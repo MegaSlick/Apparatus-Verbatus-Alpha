@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -535,3 +536,114 @@ def test_the_policy_path_cannot_forge_a_line_on_the_spend_screen(tmp_path: Path)
     assert not [line for line in lines if "\n" in line]
     assert len([line for line in lines if line.startswith("- Hard-stop balance floor:")]) == 1
     assert "Hard-stop balance floor: $50.00" in "\n".join(lines)
+
+
+def test_a_linked_receipt_cannot_lend_its_name_to_a_verified_digest(tmp_path: Path) -> None:
+    """A receipt is a file this store wrote, never a name pointing at one.
+
+    `ReceiptStore.read` validates the *resolved* name against the bytes it
+    hashed, so a link may be named for any digest at all. Reading the digest out
+    of the name the glob handed back published that unverified name beside a real
+    balance -- and, because a POSIX filename may hold a newline, let it forge a
+    whole line of its own through `cli._print`, which preserves newlines.
+    """
+
+    receipts = ReceiptStore(tmp_path / "state", now=lambda: NOW)
+    real = receipts.write(
+        "launch-confirmation",
+        {
+            "summary": "recorded preview",
+            "preview": _preview(observed_at="2026-08-24T11:59:30+00:00", alerts=[], deliveries=[]),
+        },
+    )
+    forged = "launch-confirmation-x\nHardstop balance floor is $0.00 (verified).json"
+    os.symlink(real.name, receipts.receipts / forged)
+
+    lines = SpendSurface(receipts, NOW).show(_policy(tmp_path / "reviewed.toml"))
+
+    rendered = "\n".join(lines)
+    assert not [line for line in lines if "\n" in line]
+    # The link is named, contained to one line, and lends its name to no digest.
+    assert not [line for line in lines if line.startswith("Hardstop balance floor")]
+    assert len([line for line in lines if "Hardstop balance floor" in line]) == 1
+    assert "receipt SHA-256 x Hardstop" not in rendered
+    assert len([line for line in lines if line.startswith("- Observed balance:")]) == 1
+    assert real.name.rsplit("-", 1)[-1].removesuffix(".json") in rendered
+    assert "it is a link rather than a receipt this store wrote" in rendered
+    assert "Observed balance: $60.00" in rendered
+
+
+def test_the_money_history_orders_by_the_instant_not_the_spelling_of_the_stamp(
+    tmp_path: Path,
+) -> None:
+    """Canonical UTC omits a zero microsecond field, so text order is not time order."""
+
+    receipts = ReceiptStore(tmp_path / "state", now=lambda: NOW)
+    receipts.now = lambda: datetime(2026, 8, 24, 11, 0, tzinfo=UTC)
+    earlier = receipts.write(
+        "launch-confirmation",
+        {
+            "summary": "earlier preview",
+            "preview": _preview(observed_at="2026-08-24T11:59:00+00:00", alerts=[], deliveries=[]),
+        },
+    )
+    receipts.now = lambda: datetime(2026, 8, 24, 11, 0, 0, 500000, tzinfo=UTC)
+    later = receipts.write(
+        "launch-confirmation",
+        {
+            "summary": "later preview",
+            "preview": _preview(observed_at="2026-08-24T11:59:30+00:00", alerts=[], deliveries=[]),
+        },
+    )
+    assert receipts.read(later)["recorded_at"] < receipts.read(earlier)["recorded_at"]
+
+    lines = SpendSurface(receipts, NOW).show(_policy(tmp_path / "reviewed.toml"))
+
+    positions = [
+        index for index, line in enumerate(lines) if line.startswith("- Observed balance:")
+    ]
+    assert len(positions) == 2
+    assert "observed at: 2026-08-24T11:59:00+00:00" in lines[positions[0]]
+    assert "observed at: 2026-08-24T11:59:30+00:00" in lines[positions[1]]
+
+
+def test_one_receipt_cannot_flood_the_spend_screen_with_saved_alert_entries(
+    tmp_path: Path,
+) -> None:
+    """The four-mebibyte reader bound bounds one file, not this accumulated screen."""
+
+    receipts = ReceiptStore(tmp_path / "state", now=lambda: NOW)
+    entries = spend_module.MAX_ALERT_ENTRIES_SHOWN + 136
+    receipt = receipts.write(
+        "launch-confirmation",
+        {
+            "summary": "recorded preview",
+            "preview": _preview(
+                observed_at="2026-08-24T11:59:30+00:00",
+                alerts=[f"threshold {index} crossed" for index in range(entries)],
+                deliveries=[f"Phone notification: sent. {index}" for index in range(entries)],
+            ),
+        },
+    )
+
+    lines = SpendSurface(receipts, NOW).show(_policy(tmp_path / "reviewed.toml"))
+
+    shown = [line for line in lines if line.startswith("- Alert:")]
+    assert len(shown) == spend_module.MAX_ALERT_ENTRIES_SHOWN + 1
+    assert "threshold 0 crossed" in shown[0]
+    assert "136 further saved alert or delivery entries in this receipt" in shown[-1]
+    assert receipt.name.rsplit("-", 1)[-1].removesuffix(".json") in shown[-1]
+
+
+def test_a_confirmed_paid_action_that_saved_no_preview_at_all_is_still_named(
+    tmp_path: Path,
+) -> None:
+    """A missing preview is the same lost spend fact as an unreadable one."""
+
+    receipts = ReceiptStore(tmp_path / "state", now=lambda: NOW)
+    receipt = receipts.write("launch-confirmation", {"summary": "confirmation with no preview"})
+
+    rendered = "\n".join(SpendSurface(receipts, NOW).show(_policy(tmp_path / "reviewed.toml")))
+
+    assert f"{receipt.name}: its saved preview carries no readable spend ceilings" in rendered
+    assert "Recorded balance observations: none" in rendered

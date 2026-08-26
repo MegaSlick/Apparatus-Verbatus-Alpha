@@ -102,9 +102,9 @@ class SpendSurface:
     ) -> tuple[list[dict[str, str]], list[dict[str, str]], list[str]]:
         """Project launch confirmations oldest first, naming unreadable receipts.
 
-        Content digests carry no chronology. `ReceiptStore.read` validates
-        canonical UTC, so `recorded_at` strings order by time. A partial money
-        history must retain a visible gap for every unreadable receipt.
+        Content digests carry no chronology, so the order comes from the
+        validated `recorded_at` instant. A partial money history must retain a
+        visible gap for every unreadable receipt.
         """
 
         observations: list[dict[str, str]] = []
@@ -114,19 +114,20 @@ class SpendSurface:
         except RecordError as error:
             raise OperatorError(ErrorCode.STATUS_UNREADABLE, detail=str(error)) from error
         for path, record in sorted(
-            records, key=lambda item: (item[1]["recorded_at"], item[0].name)
+            records, key=lambda item: (_recorded_instant(item[1]), item[0].name)
         ):
-            # ReceiptStore.read matched the filename's digest to the canonical bytes.
+            # `readable_records_of_kind` hands back only files it opened by the
+            # name it was given, and `ReceiptStore.read` matched that name's
+            # digest to the canonical bytes. A link would break both halves.
             digest = path.name.rsplit("-", 1)[-1].removesuffix(".json")
             preview = record["payload"].get("preview")
-            if preview is None:
-                # A confirmation without a preview contains no spend fact to account for.
-                continue
             spend = preview.get("spend") if isinstance(preview, dict) else None
             ceilings = spend.get("ceilings") if isinstance(spend, dict) else None
             if not isinstance(ceilings, dict):
-                # Every confirmation represents a paid action even when its
-                # saved ceilings are absent or malformed.
+                # Every confirmation represents a paid action even when its saved
+                # preview or ceilings are absent or malformed. A missing preview
+                # is the same lost spend fact as an unreadable one, because this
+                # tool writes a preview into every confirmation it records.
                 unreadable.append(
                     f"{path.name}: its saved preview carries no readable spend ceilings, "
                     "so no number from this confirmed paid action is shown below"
@@ -192,7 +193,7 @@ def _alert_rows(ceilings: dict[str, object], digest: str) -> tuple[list[dict[str
         f"and {len(deliveries)} delivery outcome(s), which position cannot pair"
     )
     rows: list[dict[str, str]] = []
-    for position, alert in enumerate(recorded):
+    for position, alert in enumerate(recorded[:MAX_ALERT_ENTRIES_SHOWN]):
         if not isinstance(alert, str):
             # Preserve position so the alert fact and its delivery outcome survive.
             alert = f"{NOT_RECORDED_AS_TEXT} (saved alert {position + 1})"
@@ -207,6 +208,7 @@ def _alert_rows(ceilings: dict[str, object], digest: str) -> tuple[list[dict[str
                 "digest": digest,
             }
         )
+    omitted = max(len(recorded) - MAX_ALERT_ENTRIES_SHOWN, 0)
     if not paired:
         rows.extend(
             {
@@ -214,13 +216,47 @@ def _alert_rows(ceilings: dict[str, object], digest: str) -> tuple[list[dict[str
                 "delivery": delivery if isinstance(delivery, str) else "invalid delivery outcome",
                 "digest": digest,
             }
-            for delivery in deliveries
+            for delivery in deliveries[:MAX_ALERT_ENTRIES_SHOWN]
+        )
+        omitted += max(len(deliveries) - MAX_ALERT_ENTRIES_SHOWN, 0)
+    if omitted:
+        rows.append(
+            {
+                "alert": f"{omitted} further saved alert or delivery entries in this receipt "
+                "are counted here rather than shown",
+                "delivery": "not shown: read the receipt named by the digest below for them",
+                "digest": digest,
+            }
         )
     return rows, []
 
 
 # Substitute one malformed field, never the record that contains it.
 NOT_RECORDED_AS_TEXT = "not readable: this value was not saved as text"
+
+MAX_ALERT_ENTRIES_SHOWN = 64
+"""How many saved alert or delivery entries one receipt may put on this screen.
+
+A launch confirmation records one episode per crossed warning threshold, so a
+genuine receipt holds one or two. `records.MAX_RECORD_BYTES` bounds one *file*,
+not this projection: measured here, one lawful four-mebibyte receipt holding a
+million one-character alerts rendered 1,000,009 lines at 504 MiB resident, and
+this screen accumulates every receipt in an append-only store — so a handful of
+them reaches exactly the kill that printed nothing at all, which is the failure
+that bound was chosen to prevent. The overflow is counted and shown against the
+receipt's own digest, so it is bounded on screen and not lost.
+"""
+
+
+def _recorded_instant(record: dict[str, object]) -> datetime:
+    """Order the money history by the instant, not by the spelling of the stamp.
+
+    `ReceiptStore.read` validates canonical UTC, but that spelling omits a zero
+    microsecond field, so `...:00.500000Z` sorts before `...:00Z` as text while
+    following it in time. The parse cannot fail; `read` already made it.
+    """
+
+    return datetime.fromisoformat(str(record["recorded_at"]).replace("Z", "+00:00"))
 
 
 def _recorded_field(value: object) -> str:

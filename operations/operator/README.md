@@ -112,7 +112,11 @@ threshold with the policy's SHA-256 digest. It also shows every recorded preview
 its source and present staleness, plus each saved notification delivery outcome with the
 immutable receipt digest that recorded it. Where a receipt saved a different number of
 alerts and delivery outcomes, the screen says the two cannot be paired and shows both
-sides unattributed rather than guessing which outcome belongs to which alert. It does not
+sides unattributed rather than guessing which outcome belongs to which alert. One receipt
+puts at most 64 saved alert or delivery entries on the screen; anything beyond that is
+counted on a final line against the same receipt digest rather than printed or dropped. A
+name in the receipt folder that is a link rather than a file this tool wrote is named as
+unreadable and lends its name to no digest. It does not
 fetch a fresh balance and it never changes `config/spend.toml`. The deliberately
 unconfigured checked-in policy refuses through the ordinary three-part console message
 rather than inventing values.

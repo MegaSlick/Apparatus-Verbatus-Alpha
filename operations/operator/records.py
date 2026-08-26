@@ -244,6 +244,18 @@ class ReceiptStore:
         loaded: list[tuple[Path, dict[str, Any]]] = []
         unreadable: list[str] = []
         for candidate in sorted(self.receipts.glob(f"{kind}-*.json")):
+            if candidate.is_symlink():
+                # `read` validates the *resolved* name against the bytes it
+                # hashed, so a link may carry any name at all: one named for a
+                # digest it does not hold passes, and a caller that reads the
+                # digest out of the name it was handed then publishes a digest
+                # nothing verified — beside a second, duplicate copy of the same
+                # record, since the link and its target are both globbed. A
+                # receipt is a file this store created, not a name pointing at one.
+                unreadable.append(
+                    f"{candidate.name}: it is a link rather than a receipt this store wrote"
+                )
+                continue
             try:
                 record = self.read(candidate)
             except RecordError as error:
