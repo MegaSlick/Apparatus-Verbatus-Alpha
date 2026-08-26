@@ -181,10 +181,17 @@ WITNESS_READING_OUTCOMES = _WITNESS_READING_OUTCOMES
 RUN_MODES: Final = TRIAGE_MODES
 
 # Attestatores can return EXIT_HELD before the driver consults `mode`, after it
-# has written its completion seal. Every mode can therefore stop at this sealed
-# boundary; `test_advance_modes.py` derives the set from the driver's syntax so
-# this cross-module claim cannot drift silently.
-ALWAYS_HELD_BOUNDARIES: Final = frozenset({ATTESTATORES})
+# has written its completion seal. Armarium's own terminal report can do the
+# same: `run_sequence`'s tail returns `EXIT_HELD` for any non-complete report
+# whenever the selection's last member is armarium, with no reference to
+# `mode` at all -- found in this unit's own security review, F-R21C1, because
+# the very AST scan this comment used to cite for "cannot drift silently" only
+# recognises an `if name == ...: return EXIT_HELD` branch and had no shape for
+# a bare tail ternary, so armarium had silently drifted out of this set.
+# `test_advance_modes.py` derives the branch-shaped half of this set from the
+# driver's own syntax and asserts the ternary shape by source literal for the
+# other half, so both halves of this cross-module claim stay checked.
+ALWAYS_HELD_BOUNDARIES: Final = frozenset({ATTESTATORES, ARMARIUM})
 
 
 def _named_boundary(name: str, role: str) -> str:

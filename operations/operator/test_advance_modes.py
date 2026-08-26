@@ -55,7 +55,9 @@ def _run(tmp_path: Path) -> tuple[Path, str]:
         # semi range holds there as well as at its declared endpoint.
         ("semi", "perlector", "designator", "perlector", {"attestatores", "perlector"}),
         ("semi", "designator", "door", "designator", {"designator"}),
-        ("auto", "armarium", None, None, {"attestatores"}),
+        # Armarium's own terminal report can hold before the driver consults
+        # mode too (F-R21C1), so auto can advance it just like Attestatores.
+        ("auto", "armarium", None, None, {"attestatores", "armarium"}),
     ),
 )
 def test_staged_mode_semantics_name_every_boundary_that_can_wait(
@@ -79,6 +81,19 @@ def _mode_independent_held_stages() -> frozenset[str]:
 
     Derive the set from `run_sequence` rather than restating the console's
     cross-module claim in a second hand-written list.
+
+    Two distinct shapes hold without consulting ``mode``, and this function must
+    catch both or the claim it derives is not the one the driver actually keeps.
+    The Attestatores' `if name == ATTESTATORES and result == EXIT_HELD: ...
+    return EXIT_HELD` is an ordinary branch the walk below finds. Armarium's own
+    terminal hold is not: `run_sequence` ends with a bare
+    `return EXIT_COMPLETE if status == "complete" else EXIT_HELD`, reached only
+    once the loop has run every member and the earlier guard has already refused
+    every selection whose last member is not armarium -- so it is unconditional
+    on `mode` without a single `if name == ...` branch for the walk to match.
+    Before this closed (F-R21C1), that gap meant `ALWAYS_HELD_BOUNDARIES` could
+    silently drop Armarium and this very test would still report green, because
+    both the production set and its derivation shared the identical blind spot.
     """
 
     module = ast.parse(ORCHESTRATOR.read_text(encoding="utf-8"))
@@ -115,6 +130,14 @@ def _mode_independent_held_stages() -> frozenset[str]:
                 held.add(operand.value)
             elif isinstance(operand, ast.Name):
                 held.add(getattr(stage_names, operand.id))
+    tail = function.body[-1]
+    if (
+        isinstance(tail, ast.Return)
+        and isinstance(tail.value, ast.IfExp)
+        and isinstance(tail.value.orelse, ast.Name)
+        and tail.value.orelse.id == "EXIT_HELD"
+    ):
+        held.add(stage_names.ARMARIUM)
     return frozenset(held)
 
 
@@ -159,13 +182,15 @@ def test_a_range_endpoint_with_no_boundary_names_the_boundaries_that_do() -> Non
 def test_auto_mode_shows_boundary_state_then_refuses_an_advance_record(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """Designator cannot hold in auto mode, unlike Attestatores and Armarium."""
+
     run_root, run_id = _run(tmp_path)
 
     with pytest.raises(OperatorError) as refusal:
         cli._advance_with_confirmation(
             run_root,
             run_id,
-            "armarium",
+            "designator",
             reason="operator reviewed the completed run",
             workspace=ROOT,
             mode="auto",
@@ -174,7 +199,7 @@ def test_auto_mode_shows_boundary_state_then_refuses_an_advance_record(
     assert "auto mode" in (refusal.value.detail or "").lower()
     rendered = capsys.readouterr().out
     assert "Current boundary state" in rendered
-    assert "armarium: seal" in rendered
+    assert "designator: seal" in rendered
 
 
 def test_semi_mode_confirmation_binds_the_displayed_last_boundary(
@@ -349,7 +374,7 @@ def test_auto_mode_never_solicits_a_typed_confirmation(
         cli._advance_with_confirmation(
             run_root,
             run_id,
-            "armarium",
+            "designator",
             reason="operator reviewed the completed run",
             workspace=ROOT,
             mode="auto",
@@ -377,8 +402,45 @@ def test_auto_mode_can_advance_the_boundary_that_may_hold_in_every_mode(
     )
 
     rendered = capsys.readouterr().out
-    assert "This declared selection can require a person-held advance at: attestatores." in rendered
+    assert (
+        "This declared selection can require a person-held advance at: armarium, attestatores."
+        in rendered
+    )
     assert "This invocation waits" not in rendered
+    assert "Advance record:" in rendered
+
+
+def test_auto_mode_can_advance_the_armarium_boundary_that_may_hold_in_every_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Auto may advance Armarium: its terminal report can hold without consulting mode.
+
+    Pins F-R21C1 closed: `ALWAYS_HELD_BOUNDARIES` used to name only Attestatores,
+    so `verbatus advance --mode auto --stage armarium` refused every request for
+    this boundary even when a real auto run stopped there, because
+    `run_sequence`'s tail returns `EXIT_HELD` for a non-complete terminal report
+    with no reference to `mode` at all -- the identical mode-independent shape
+    as the Attestatores' hold, just spelled as a bare ternary the branch-shaped
+    AST scan below could not see.
+    """
+
+    run_root, run_id = _run(tmp_path)
+    monkeypatch.setattr(cli, "_typed_advance_confirmation", lambda phrase: phrase)
+
+    cli._advance_with_confirmation(
+        run_root,
+        run_id,
+        "armarium",
+        reason="operator reviewed the terminal boundary",
+        workspace=ROOT,
+        mode="auto",
+    )
+
+    rendered = capsys.readouterr().out
+    assert (
+        "This declared selection can require a person-held advance at: armarium, attestatores."
+        in rendered
+    )
     assert "Advance record:" in rendered
 
 
