@@ -17,7 +17,7 @@ from common.runtree.store import RunTree
 from common.stage import ALWAYS_HELD_BOUNDARIES, RUN_MODES, held_advance_boundaries
 from operations.operator.errors import ErrorCode, OperatorError
 
-from . import advance, cli
+from . import advance, cli, review
 
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
@@ -359,6 +359,38 @@ def test_a_boundary_resealed_between_presentation_and_confirmation_is_refused(
     assert len(shown) == 1
     after = set(receipts.glob("*.json")) if receipts.exists() else set()
     assert after == before
+
+
+def test_typed_grant_binds_the_exact_reason_written_to_the_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The worker may not record decision text the operator never confirmed."""
+
+    run_root, run_id = _run(tmp_path)
+    reason = 'reviewed "census"\nwith the page image'
+    shown: list[str] = []
+
+    def capture_and_confirm(phrase: str) -> str:
+        shown.append(phrase)
+        return phrase
+
+    monkeypatch.setattr(cli, "_typed_advance_confirmation", capture_and_confirm)
+
+    cli._advance_with_confirmation(
+        run_root,
+        run_id,
+        "armarium",
+        reason=reason,
+        workspace=ROOT,
+        mode="manual",
+    )
+
+    assert len(shown) == 1
+    assert 'for reason "reviewed \\"census\\"\\nwith the page image"' in shown[0]
+    assert "\n" not in shown[0]
+    records = review.ReadOnlyRun(run_root, run_id).projection().advance_records
+    written = [record for record in records if record["reason"] == reason]
+    assert len(written) == 1
 
 
 def test_auto_mode_never_solicits_a_typed_confirmation(

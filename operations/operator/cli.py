@@ -616,13 +616,19 @@ def _advance_with_confirmation(
     _print(f"- artifact inventory digest: {summary['artifact_inventory']}")
     _print(f"- blob inventory digest: {summary['blob_inventory']}")
     _print(f"- outcome census: {json.dumps(summary['census'], sort_keys=True)}")
-    phrase = f"advance {run_id} past {stage} at {digest}"
+    phrase = (
+        f"advance {run_id} past {stage} at {digest} "
+        f"for reason {json.dumps(reason, ensure_ascii=True)}"
+    )
     _print(f"The current {stage} boundary has seal digest {digest}.")
     confirmation = _typed_advance_confirmation(phrase)
     if confirmation != phrase:
         raise OperatorError(
             ErrorCode.ADVANCE_REFUSED,
-            detail="the typed confirmation did not exactly name this run, stage, and seal digest",
+            detail=(
+                "the typed confirmation did not exactly name this run, stage, seal digest, "
+                "and recorded reason"
+            ),
         )
     reference = trigger_advance(
         run_root,
