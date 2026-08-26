@@ -68,6 +68,48 @@ def test_building_validates_on_the_way_out_too():
         )
 
 
+@pytest.mark.parametrize(
+    "stage,kind,outcome",
+    (
+        ("perlector", "perlectio", "sealed"),
+        ("attestatores", "testimonium", "recorded"),
+        ("perlector", "stage-seal", "read"),
+        ("door", "decode-environment", "admitted"),
+    ),
+)
+def test_boundary_outcomes_and_kinds_cannot_be_worn_by_ordinary_artifacts(stage, kind, outcome):
+    """Boundary bookkeeping must never classify as a successful stage result."""
+    with pytest.raises(SchemaRefusal, match="boundary"):
+        build_envelope(
+            run_id="boundary-kind-test",
+            artifact_id=artifact_id(stage, kind, "subject"),
+            subject_id="subject",
+            stage=stage,
+            kind=kind,
+            outcome=outcome,
+            config_digest="c" * 64,
+            adapter_revision="boundary-kind-test-v1",
+            inputs=[],
+            payload={},
+        )
+
+
+def test_exemplars_preexisting_sealed_outcome_remains_valid_for_page_evidence():
+    envelope = build_envelope(
+        run_id="boundary-kind-test",
+        artifact_id=artifact_id("exemplar", "page", "page-1"),
+        subject_id="page-1",
+        stage="exemplar",
+        kind="page",
+        outcome="sealed",
+        config_digest="c" * 64,
+        adapter_revision="boundary-kind-test-v1",
+        inputs=[],
+        payload={},
+    )
+    assert validate_envelope(envelope) == envelope
+
+
 # --- Corruption kind 1: the schema --------------------------------------------
 
 

@@ -1954,6 +1954,27 @@ def test_the_loud_failure_survives_a_census_it_cannot_read(tmp_path):
     assert "Traceback" not in message
 
 
+def test_a_wholly_refused_door_does_not_publish_a_completion_seal(tmp_path):
+    """Failure evidence remains, but a fatal close cannot wear the happy-path seal."""
+    broken = b"not an image at all"
+    source = SourceEntry(1, "one.png", digest_bytes(broken))
+    tree, context = open_door(tmp_path, [source])
+    admitted = process_sources(
+        context,
+        tree,
+        [source],
+        reader({"one.png": broken}),
+        policy=POLICY,
+    )
+
+    with pytest.raises(ContractError, match="the door admitted nothing"):
+        door._finish_door_run(context, tree, admitted)
+
+    kinds = [entry["kind"] for entry in tree.build_manifest(DOOR)["artifacts"]]
+    assert "refusal-report" in kinds
+    assert "stage-seal" not in kinds
+
+
 def test_the_loud_failure_survives_one_record_it_cannot_make_sense_of(tmp_path):
     """The inner half of the same fallback: the census is read, one row is not.
 

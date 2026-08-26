@@ -73,6 +73,7 @@ from common.stage import (  # noqa: E402
     require_sealed_config,
     run_sealed_config_digests,
     scenario_for,
+    verify_predecessor_seal,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -386,6 +387,9 @@ def main() -> int:
         report_halt(args, halted)
         return EXIT_RUN_HALTED
 
+    # Armarium has no stage successor, so the orchestrator consumes and proves
+    # its final boundary before it reads the export inside that boundary.
+    verify_predecessor_seal(tree, "orchestrator")
     export = tree.read_artifact(
         "armarium",
         "export",

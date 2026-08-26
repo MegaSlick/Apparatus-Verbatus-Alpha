@@ -1068,10 +1068,11 @@ def _finish_door_run(context: StageContext, tree: RunTree, admitted: int) -> int
     """The one shared close for both entry points: reports, then the loud check."""
     refusal_report = publish_refusal_report(context)
     duplicate_report = publish_duplicate_report(context)
-    context.finish(DOOR)
     _announce_refusal_report(tree, refusal_report)
     _announce_duplicate_report(tree, duplicate_report)
     require_some_admitted(admitted, tree, refusal_report)
+    context.seal_boundary()
+    context.finish(DOOR)
     return EXIT_COMPLETE
 
 

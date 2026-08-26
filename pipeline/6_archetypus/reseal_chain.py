@@ -14,7 +14,8 @@ directory import it by name (pytest puts the directory on `sys.path` for them).
 import json
 
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
-from common.contracts.stages import RECENSOR
+from common.contracts.stages import PERLECTOR, RECENSOR
+from conftest import rebind_stage_seal_artifact as _rebind_stage_seal
 
 
 def repoint_review(tree, review: dict, forged_ref: dict) -> None:
@@ -33,6 +34,12 @@ def repoint_review(tree, review: dict, forged_ref: dict) -> None:
     review["payload"]["perlectio_ref"] = forged_ref
     review["self_hash"] = self_hash(review)
     review_path.write_bytes(canonical_bytes(review))
+    # Callers often rewrote the referenced Perlectio immediately before
+    # repointing the review.  Rebinding an unchanged Perlector seal is a
+    # byte-identical no-op, so doing it here also keeps the simpler reference
+    # substitutions above deliberately coherent.
+    _rebind_stage_seal(tree, PERLECTOR)
+    _rebind_stage_seal(tree, RECENSOR)
 
 
 def reseal_reviewed_reading(tree, review: dict, mutate) -> str:

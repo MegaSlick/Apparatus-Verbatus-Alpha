@@ -2330,6 +2330,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     if read == 0 and acknowledged == 0:
         raise ContractError("the Perlector read no act and acknowledged no held act")
 
+    context.seal_boundary()
     context.finish()
     return EXIT_COMPLETE
 

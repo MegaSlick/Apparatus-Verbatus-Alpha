@@ -1,5 +1,23 @@
 # Recensor — handoff
 
+# Stage-completion seal
+
+Before this producer's final manifest it publishes one `decode-environment` and
+one `stage-seal`, or reuses both on a byte-identical retry. The seal witnesses
+this pass's disk inventory and blob contents, and binds the exact decode-environment
+bytes, run `config_digest` and `register_digest`, and `(kind, outcome)` census. An exit
+held after publishing stage evidence seals it (holds remain in its census); a
+pass held or refused before publishing stage evidence does not seal, so the
+successor correctly refuses the missing boundary. Every difference in decoders,
+platform, machine, `decode_paths_used`, and `produced_pixels` is reported by
+field or decoder name. A valid difference is report-only and never refuses;
+Unit 17 owns any fatal policy.
+
+Seals are compared as the SET the stored inventory names, on both sides of the
+boundary: the producer refuses to re-seal, and the successor refuses to read,
+when any named seal is no longer on disk. Ordinals are the contiguous run 1..N,
+so removing the latest leaves a prefix that still looks whole — and the earlier
+statement would then answer for a boundary it never witnessed.
 The Recensor establishes no text. It writes append-only review history under
 `5_recensor/artifacts/`, using `skeleton.v1` envelopes with a derived attempt
 identity, self-hash, and digest-checked parents. The stage first validates every

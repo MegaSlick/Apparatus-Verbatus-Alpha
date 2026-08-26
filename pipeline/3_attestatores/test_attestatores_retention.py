@@ -209,11 +209,11 @@ def test_a_whole_pass_resolves_designator_inputs_once_per_act_not_once_per_chair
         attempt_calls += 1
         return real_resolve_attempt(*args, **kwargs)
 
-    def counted_manifest(self, stage):
+    def counted_manifest(self, stage, **kwargs):
         nonlocal attestatores_manifest_calls
         if self.root == tree.root and stage == ATTESTATORES:
             attestatores_manifest_calls += 1
-        return real_build_manifest(self, stage)
+        return real_build_manifest(self, stage, **kwargs)
 
     monkeypatch.setattr(attestatores, "proposed_regions", counted_regions)
     monkeypatch.setattr(attestatores, "resolve_attempt", counted_attempt)
@@ -235,7 +235,11 @@ def test_a_whole_pass_resolves_designator_inputs_once_per_act_not_once_per_chair
     )
 
     assert attestatores.main() == 0
-    assert attestatores_manifest_calls == 3  # history index, manifest write, independent tally
+    # Exactly six scans are required: history index, prior-seal deletion check,
+    # the pre-close manifest the tally reconciles, the independent tally, the
+    # post-environment seal inventory, and the final manifest. The tally must run
+    # before the completion seal, while the seal must still bind environment bytes.
+    assert attestatores_manifest_calls == 6
     assert attempt_calls == 6  # one per act/chair, never re-resolved for publication
 
     act_ids = {record["subject_id"] for record in _testimonia(tree)}
@@ -1194,7 +1198,39 @@ def test_configured_never_attempted_seat_is_not_run_not_dead(tmp_path):
     assert record["payload"]["provenance"]["receipt_ref"] is None
 
 
-def test_one_refused_crop_records_its_chairs_and_leaves_the_other_act_intact(tmp_path):
+def test_a_crop_broken_after_the_designator_sealed_it_stops_at_that_boundary(tmp_path):
+    """Crop bytes that moved after the boundary are tree damage, not a bad crop.
+
+    The Designator's completion seal reads every blob's content back off disk,
+    so this is refused before the Attestatores reads an act. The retention
+    property the test below proves is a different claim about a different tree
+    state, and both are worth holding: this one says the pipeline notices, that
+    one says it degrades per act when the crop was bad all along.
+    """
+    run_root, tree = run_to_designator(tmp_path, "happy")
+    entry = next(
+        entry for entry in tree.build_manifest(DESIGNATOR)["artifacts"] if entry["kind"] == "region"
+    )
+    region = tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
+    tree.resolve(region["payload"]["image_path"]).write_bytes(b"broken crop bytes")
+
+    result = invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py")
+
+    assert result.returncode == 2, result.stderr
+    assert "designator stage-seal" in result.stderr
+    assert "named inventory no longer matches disk" in result.stderr
+    assert _testimonia(tree) == []
+
+
+def test_one_refused_crop_records_its_chairs_and_leaves_the_other_act_intact(
+    tmp_path, rebind_stage_seal
+):
+    """Spec 07's isolation rule: one unreadable crop never kills the folder.
+
+    The Designator seals the crop it actually wrote, so a crop a real detector
+    cut badly reaches the Attestatores *inside* a coherent boundary. The rebind
+    models that state; without it the test exercises the corruption refusal above.
+    """
     run_root, tree = run_to_designator(tmp_path, "happy")
     entry = next(
         entry for entry in tree.build_manifest(DESIGNATOR)["artifacts"] if entry["kind"] == "region"
@@ -1203,6 +1239,7 @@ def test_one_refused_crop_records_its_chairs_and_leaves_the_other_act_intact(tmp
     refused_key = region["payload"]["act_key"]
     intact_key = "a2" if refused_key == "a1" else "a1"
     tree.resolve(region["payload"]["image_path"]).write_bytes(b"broken crop bytes")
+    rebind_stage_seal(tree, DESIGNATOR)
 
     result = invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py")
 
@@ -1716,6 +1753,38 @@ def test_an_outer_manifest_accounting_imbalance_is_fatal_and_never_becomes_a_hol
 
     with pytest.raises(attestatores.FatalAccounting, match="outer manifest partition"):
         attestatores.attempt_tally(tree)
+
+
+def test_a_fatal_closing_tally_does_not_publish_a_completion_seal(tmp_path, monkeypatch):
+    """A fatal close cannot leave the checkpoint that only a closed pass earns."""
+    run_root, tree = run_to_designator(tmp_path, "happy")
+
+    def imbalanced(*_args, **_kwargs):
+        raise attestatores.FatalAccounting("the closing partition is broken")
+
+    monkeypatch.setattr(attestatores, "attempt_tally", imbalanced)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "pipeline/3_attestatores/run.py",
+            "--run-root",
+            str(run_root),
+            "--run-id",
+            "retention",
+            "--scenario",
+            "happy",
+            "--fixture-root",
+            str(ROOT / "proof"),
+        ],
+    )
+
+    with pytest.raises(attestatores.FatalAccounting, match="closing partition"):
+        attestatores.main()
+
+    assert not any(
+        entry["kind"] == "stage-seal" for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
+    )
 
 
 def test_main_does_not_turn_a_fatal_manifest_outcome_into_a_hold(tmp_path):

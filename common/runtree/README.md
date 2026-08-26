@@ -28,6 +28,11 @@ every time it is written. Delete it and it comes back identical. If it ever
 disagrees with the artifacts, the artifacts are right — which is why nothing may
 treat a manifest as the evidence that something happened.
 
+Door writes into Exemplar's evidence directory, but its producer inventory is
+`1_exemplar/manifest-door.json`; Exemplar retains `1_exemplar/manifest.json`.
+The files are separate because a later producer must not erase the stored set
+of completion seals the earlier producer's last inventory named.
+
 ## run.json
 
 The immutable authority for what this run *is*: its source pages, its configured

@@ -78,7 +78,7 @@ def invoke_designator(tmp_path, scenario: str = "happy") -> subprocess.Completed
     )
 
 
-def test_missing_exemplar_page_stops_at_the_first_downstream_boundary(tmp_path):
+def test_missing_exemplar_page_stops_at_the_first_downstream_boundary(tmp_path, rebind_stage_seal):
     tree = populated_run(tmp_path)
     entry = next(
         entry
@@ -87,6 +87,7 @@ def test_missing_exemplar_page_stops_at_the_first_downstream_boundary(tmp_path):
         and tree.read_artifact(EXEMPLAR, "page", entry["artifact_id"])["payload"]["ordinal"] == 2
     )
     tree.resolve(entry["relative_path"]).unlink()
+    rebind_stage_seal(tree, EXEMPLAR, rewrite_manifest=False)
     before = snapshot(tree.root)
 
     result = invoke_designator(tmp_path)
@@ -96,7 +97,9 @@ def test_missing_exemplar_page_stops_at_the_first_downstream_boundary(tmp_path):
     assert snapshot(tree.root) == before
 
 
-def test_a_tampered_corpus_seal_stops_before_the_designator_reads_any_page(tmp_path):
+def test_a_tampered_corpus_seal_stops_before_the_designator_reads_any_page(
+    tmp_path, rebind_stage_seal
+):
     tree = populated_run(tmp_path)
     identity = artifact_id(EXEMPLAR, "seal", "corpus-seal")
     path = tree.resolve(tree.artifact_path(EXEMPLAR, "seal", identity))
@@ -105,6 +108,7 @@ def test_a_tampered_corpus_seal_stops_before_the_designator_reads_any_page(tmp_p
     record["self_hash"] = self_hash(record)
     path.write_bytes(canonical_bytes(record))
     tree.write_manifest(EXEMPLAR)
+    rebind_stage_seal(tree, EXEMPLAR)
     # Captured after `write_manifest`, which mutates the tree itself. This is the
     # assertion that actually proves the module docstring's claim — that the
     # Designator stops *before publishing any new proposal* — and without it a
@@ -118,7 +122,9 @@ def test_a_tampered_corpus_seal_stops_before_the_designator_reads_any_page(tmp_p
     assert snapshot(tree.root) == before
 
 
-def test_a_changed_sealed_pixel_blob_stops_before_designator_crops_or_rehashes_it(tmp_path):
+def test_a_changed_sealed_pixel_blob_stops_before_designator_crops_or_rehashes_it(
+    tmp_path, rebind_stage_seal
+):
     """A later stage must not turn altered pixels into a fresh valid crop digest."""
     tree = populated_run(tmp_path)
     page_entry = next(
@@ -136,6 +142,7 @@ def test_a_changed_sealed_pixel_blob_stops_before_designator_crops_or_rehashes_i
         output = BytesIO()
         changed.save(output, format="PNG")
     blob_path.write_bytes(output.getvalue())
+    rebind_stage_seal(tree, EXEMPLAR, rewrite_manifest=False)
     before = snapshot(tree.root)
 
     result = invoke_designator(tmp_path)
@@ -146,7 +153,9 @@ def test_a_changed_sealed_pixel_blob_stops_before_designator_crops_or_rehashes_i
     assert snapshot(tree.root) == before
 
 
-def test_a_missing_sealed_pixel_blob_is_a_named_boundary_failure_not_a_traceback(tmp_path):
+def test_a_missing_sealed_pixel_blob_is_a_named_boundary_failure_not_a_traceback(
+    tmp_path, rebind_stage_seal
+):
     tree = populated_run(tmp_path)
     page_entry = next(
         entry
@@ -156,6 +165,7 @@ def test_a_missing_sealed_pixel_blob_is_a_named_boundary_failure_not_a_traceback
     )
     page = tree.read_artifact(EXEMPLAR, "page", page_entry["artifact_id"])
     tree.resolve(page["payload"]["image_path"]).unlink()
+    rebind_stage_seal(tree, EXEMPLAR, rewrite_manifest=False)
     before = snapshot(tree.root)
 
     result = invoke_designator(tmp_path)
@@ -188,7 +198,9 @@ def test_a_refused_page_keeps_its_door_alarm_evidence_at_the_downstream_boundary
     assert snapshot(tree.root) == before
 
 
-def test_a_page_outcome_missing_from_the_exemplar_stops_before_any_act_is_cut(tmp_path):
+def test_a_page_outcome_missing_from_the_exemplar_stops_before_any_act_is_cut(
+    tmp_path, rebind_stage_seal
+):
     """The reconciliation branch at `common/exemplar_boundary.py`, which had no test
     at all: replacing its condition with `if False` left the whole suite green.
 
@@ -223,6 +235,7 @@ def test_a_page_outcome_missing_from_the_exemplar_stops_before_any_act_is_cut(tm
     seal["self_hash"] = self_hash(seal)
     seal_path.write_bytes(canonical_bytes(seal))
     tree.resolve(page["relative_path"]).unlink()
+    rebind_stage_seal(tree, EXEMPLAR)
     before = snapshot(tree.root)
 
     result = invoke_designator(tmp_path)

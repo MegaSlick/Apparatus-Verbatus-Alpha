@@ -145,6 +145,19 @@ VOCABULARIES: Final[dict[str, dict[str, OutcomeClass]]] = {
     },
 }
 
+BOUNDARY_OUTCOMES: Final = {
+    "stage-seal": "sealed",
+    "decode-environment": "recorded",
+}
+
+# These two outcomes describe stage-boundary evidence, not an act's terminal
+# category. They use the ordinary envelope at every producer, including
+# Armarium; calling its boundary records ``delivered`` would falsely present
+# bookkeeping as exported text.
+for _stage in VOCABULARIES:
+    for _outcome in BOUNDARY_OUTCOMES.values():
+        VOCABULARIES[_stage][_outcome] = _C.COMPLETED
+
 # --- The transition table: (stage, outcome) -> terminal category, or None -------
 #
 # None means "this unit flows onward and some later stage decides its category".
@@ -186,6 +199,10 @@ TERMINAL_CATEGORY: Final[dict[tuple[str, str], ArmariumCategory | None]] = {
     (ARMARIUM, _A.CONFIRMED_BLANK.value): _A.CONFIRMED_BLANK,
     (ARMARIUM, _A.REFUSED_WITH_REASON.value): _A.REFUSED_WITH_REASON,
 }
+
+for _stage in VOCABULARIES:
+    for _outcome in BOUNDARY_OUTCOMES.values():
+        TERMINAL_CATEGORY[(_stage, _outcome)] = None
 
 # The Perlector's failures are transitive on purpose: a truncated or failed reading
 # is the Recensor's to act on — it may request bounded recovery — and only the

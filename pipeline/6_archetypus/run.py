@@ -56,7 +56,6 @@ from common.contracts.envelope import validate_input_refs  # noqa: E402
 from common.contracts.errors import FatalAccounting, SchemaRefusal  # noqa: E402
 from common.contracts.outcomes import (  # noqa: E402
     TEXT_STATUSES,
-    OutcomeClass,
     classify,
     derive_record_text_status,
     terminal_category,
@@ -495,7 +494,12 @@ def accepted_primed_perlectio(
     if reading.get("stage") != PERLECTOR or reading.get("kind") != "perlectio":
         raise SchemaRefusal("only a Perlectio may enter the Archetypus constructor")
     reading_class = classify(PERLECTOR, reading.get("outcome"))
-    if reading_class is not OutcomeClass.COMPLETED:
+    # Boundary records use the ordinary envelope vocabulary too.  Their
+    # ``recorded``/``sealed`` outcomes are completed *boundary evidence*, never
+    # a successful Perlectio: the constructor accepts the one reading outcome
+    # that can establish text, rather than treating every completed-class value
+    # for this producer as interchangeable.
+    if reading.get("outcome") != "read":
         raise FatalAccounting(
             f"act {act_id} would be established from a {reading['outcome']!r} "
             f"reading ({reading_class.value}); the established text may only come "
@@ -1178,6 +1182,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     index = validate_index(context, build_index(context), on_disk=on_disk, accepted=accepted)
     context.tree.write_index(ARCHETYPUS, index)
     validate_index(context, context.tree.read_index(ARCHETYPUS), on_disk=on_disk, accepted=accepted)
+    context.seal_boundary()
     context.finish()
     # Establishment for the accepted acts is real either way; the exit code
     # answers a different question — "is this stage's work finished?" — and an

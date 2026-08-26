@@ -26,6 +26,7 @@ from common.perlector_audit import (
 )
 from common.recovery import FALLBACK_RECROP
 from common.runtree.store import RunTree
+from conftest import rebind_stage_seal_artifact as rebind_stage_seal
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -84,7 +85,7 @@ def test_an_unrequested_second_perlectio_is_refused_before_recensor_publishes(tm
     path = tree.resolve(tree.artifact_path(PERLECTOR, "perlectio", forged["artifact_id"]))
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(canonical_bytes(forged))
-    tree.write_manifest(PERLECTOR)
+    rebind_stage_seal(tree, PERLECTOR)
 
     result = invoke(root, "unrequested", "happy", "pipeline/5_recensor/run.py")
     assert result.returncode == 2
@@ -293,7 +294,7 @@ def test_an_empty_completed_reading_is_held_not_accepted(tmp_path):
     changed["self_hash"] = self_hash(changed)
     validate_envelope(changed)
     path.write_bytes(canonical_bytes(changed))
-    tree.write_manifest(PERLECTOR)
+    rebind_stage_seal(tree, PERLECTOR)
     validate_chain(
         tree,
         tree.read_artifact(PERLECTOR, "perlectio", reading["artifact_id"]),
