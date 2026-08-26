@@ -62,7 +62,7 @@ def _armarium_digest(run_root: Path, run_id: str) -> str:
     return advance.sealed_boundary(RunTree(run_root, run_id), "armarium")[1]
 
 
-def test_read_surface_walks_stage_records_seals_census_pages_crops_and_review_rows(tmp_path: Path):
+def test_read_surface_walks_stage_records_seals_census_pages_and_crops(tmp_path: Path):
     run_root, run_id = _make_run(tmp_path)
 
     projected = review.ReadOnlyRun(run_root, run_id).projection()
@@ -1366,7 +1366,7 @@ def test_tampered_evidence_is_refused_naming_the_file_whose_bytes_moved(
     assert relative in raised.value.render(), "and it must survive the render a person reads"
 
 
-def test_opening_a_run_for_review_changes_no_byte_and_no_timestamp_in_the_tree(tmp_path: Path):
+def test_opening_a_run_for_review_changes_no_path_bytes_size_or_mtime(tmp_path: Path):
     """The parent side of the boundary is unconfined, so its no-write is a claim.
 
     `_review_in_custody` proves the *child* holds no write right, and the
@@ -1477,3 +1477,30 @@ def test_export_references_refuse_a_digest_that_disagrees_with_the_named_bytes(
     assert raised.value.code is ErrorCode.CONSOLE_TREE_UNREADABLE
     assert relative in raised.value.detail
     assert "digest" in raised.value.detail
+
+
+@pytest.mark.parametrize("missing", ["pages", "delivered", "non_delivered", "bundle-reference"])
+def test_review_refuses_a_missing_required_armarium_projection_field(tmp_path: Path, missing: str):
+    """Absent export evidence is not an empty successful review projection."""
+    run_root, run_id = _make_run(tmp_path)
+    tree = RunTree(run_root, run_id)
+    export_id = artifact_id(ARMARIUM, "export", "export", None)
+    record = tree.read_artifact(ARMARIUM, "export", export_id)
+    payload = dict(record["payload"])
+    if missing == "bundle-reference":
+        bundle = dict(payload["bundle"])
+        bundle.pop("reference")
+        payload["bundle"] = bundle
+    else:
+        payload.pop(missing)
+    record["payload"] = payload
+    record["self_hash"] = self_hash(record)
+    relative = tree.artifact_path(ARMARIUM, "export", export_id)
+    tree.resolve(relative).write_bytes(canonical_bytes(record))
+
+    with pytest.raises(OperatorError) as raised:
+        review.ReadOnlyRun(run_root, run_id).projection()
+
+    assert raised.value.code is ErrorCode.CONSOLE_TREE_UNREADABLE
+    assert relative in raised.value.detail
+    assert missing.split("-")[0] in raised.value.detail

@@ -172,10 +172,13 @@ def _armarium_payload(
             detail=f"the Armarium export record {expected_path} payload is not an object",
         )
     for name in ("pages", "delivered", "non_delivered"):
-        if not isinstance(payload.get(name, []), list):
+        if name not in payload or not isinstance(payload[name], list):
             raise OperatorError(
                 ErrorCode.CONSOLE_TREE_UNREADABLE,
-                detail=f"the Armarium export record {expected_path} {name} value is not a list",
+                detail=(
+                    f"the Armarium export record {expected_path} {name} value is missing or "
+                    "not a list"
+                ),
             )
     return payload, export_row["record_ref"]
 
@@ -410,13 +413,28 @@ def _review_items(
     tree: RunTree, payload: dict[str, Any], export_ref: dict[str, str]
 ) -> tuple[dict[str, Any], ...] | None:
     bundle = payload.get("bundle")
-    reference = bundle.get("reference") if isinstance(bundle, dict) else None
-    path = reference.get("relative_path") if isinstance(reference, dict) else None
-    if not isinstance(path, str):
-        return None
+    if not isinstance(bundle, dict):
+        raise OperatorError(
+            ErrorCode.CONSOLE_TREE_UNREADABLE,
+            detail=f"the Armarium export record {export_ref['relative_path']} has no bundle",
+        )
+    reference = bundle.get("reference")
+    if not isinstance(reference, dict):
+        raise OperatorError(
+            ErrorCode.CONSOLE_TREE_UNREADABLE,
+            detail=(
+                f"the Armarium export record {export_ref['relative_path']} bundle has no "
+                "immutable reference"
+            ),
+        )
+    path = reference.get("relative_path")
     expected_digest = reference.get("sha256")
     exported_digest = bundle.get("sha256")
-    if not isinstance(expected_digest, str) or exported_digest != expected_digest:
+    if (
+        not isinstance(path, str)
+        or not isinstance(expected_digest, str)
+        or exported_digest != expected_digest
+    ):
         raise OperatorError(
             ErrorCode.CONSOLE_TREE_UNREADABLE,
             detail=(
