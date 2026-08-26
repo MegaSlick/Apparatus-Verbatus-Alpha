@@ -18,18 +18,7 @@ CONTINUATION_HOLD: Final = "cross-shard-continuation-hold"
 SPLIT_RESHOOT_CLUSTER: Final = "split-re-shoot-cluster"
 
 
-def _digest(value: object, what: str) -> str:
-    if not (
-        isinstance(value, str)
-        and len(value) == 64
-        and all(character in "0123456789abcdef" for character in value)
-    ):
-        raise ContractError(f"{what} must be a lowercase sha256 digest")
-    return value
-
-
 def _partition(shards: Iterable[Mapping[str, Any]]) -> tuple[dict[int, str], dict[str, list[int]]]:
-    """Validate the one-owner page partition and return page/frame lookups."""
     owner: dict[int, str] = {}
     members: dict[str, list[int]] = {}
     for shard in shards:
@@ -40,7 +29,13 @@ def _partition(shards: Iterable[Mapping[str, Any]]) -> tuple[dict[int, str], dic
             raise ContractError(
                 "a shard boundary entry must contain membership_digest and page_ordinals"
             )
-        frame = _digest(shard["membership_digest"], "shard membership_digest")
+        frame = shard["membership_digest"]
+        if not (
+            isinstance(frame, str)
+            and len(frame) == 64
+            and all(character in "0123456789abcdef" for character in frame)
+        ):
+            raise ContractError("shard membership_digest must be a lowercase sha256 digest")
         pages = shard["page_ordinals"]
         if (
             not isinstance(pages, list)
@@ -176,9 +171,7 @@ def boundary_records(
                 {
                     "kind": SPLIT_RESHOOT_CLUSTER,
                     "cluster_id": cluster_id,
-                    # Each returned record is independently mutable until its caller
-                    # seals it. Sharing the caller's list here made an edit to one
-                    # shard's record silently rewrite its reciprocal records too.
+                    # Records remain independently mutable until their caller seals them.
                     "member_page_ordinals": list(pages),
                     "own_membership_digest": frame,
                     "other_membership_digests": [other for other in frames if other != frame],

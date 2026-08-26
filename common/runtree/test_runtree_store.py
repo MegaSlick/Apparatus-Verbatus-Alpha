@@ -327,14 +327,7 @@ def test_door_computed_page_digests_distinguish_shards_with_the_same_ordinals(tm
 
 
 def test_door_computed_page_digests_agree_for_the_same_bytes_at_the_same_ordinal(tmp_path):
-    """The other direction: honest agreement must still be reachable.
-
-    A membership digest that always differed across run trees -- salted by the run
-    id, the declared path, or anything else incidental -- would be exactly as
-    dishonest as one that never differed: two shards that really did inspect the
-    same page bytes at the same ordinal must read as the same membership, or the
-    digest is not describing content at all.
-    """
+    """Run identity and source path must not salt otherwise identical membership."""
     first = make_run(
         tmp_path / "first",
         run_id="shard-one",
@@ -388,15 +381,7 @@ def test_membership_uses_the_declaration_when_computed_digest_is_explicitly_abse
 
 
 def test_a_caller_cannot_name_a_frame_its_own_pages_do_not_derive(tmp_path):
-    """The frame is derived, never asserted. There is no parameter for asserting it.
-
-    `create` used to take a `corpus_frame_membership` that was only shape-checked,
-    so a caller could seal any well-formed triple over any pages -- two shards
-    holding different pages could name one membership through that parameter while
-    the derivation this unit exists to harden ran on neither. Nothing passed it,
-    so it is gone rather than guarded, and this pins the removal: the keyword is
-    refused, and what lands in `run.json` is what the pages produce.
-    """
+    """A caller-supplied membership would bypass derivation from the source pages."""
     with pytest.raises(TypeError):
         make_run(
             tmp_path / "asserted",

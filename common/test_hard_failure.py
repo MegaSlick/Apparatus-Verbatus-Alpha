@@ -639,17 +639,7 @@ def test_a_duplicate_reason_scoped_kind_is_refused(tmp_path):
 
 
 def test_a_crash_and_resume_does_not_spend_the_cap_twice_for_one_act(tmp_path):
-    """The wall a shard can die against: the tally must not double-count on resume.
-
-    A run that dies part-way through a shard is resumed by re-invoking the same
-    command, and a stage that had already published a failing outcome for an act
-    republishes it as a further attempt. Counted as raw artifacts, three shards
-    of a Montebello ingest would each drift toward Tyrel's cap by however many
-    times they were interrupted rather than by how many acts actually failed --
-    a halt nobody's evidence justifies, which is the same dishonesty as a missed
-    halt pointing the other way. Counted as `(stage, subject_id)` incidents, an
-    interruption costs nothing and the act still costs exactly one.
-    """
+    """Retries preserve evidence but must not turn one failed act into two incidents."""
     policy = load_hard_failure_policy(DEFAULT_HARD_FAILURE_CONFIG_PATH)
     tree = make_run(tmp_path)
     for act in ("act_0000000000000001", "act_0000000000000002"):
@@ -665,8 +655,6 @@ def test_a_crash_and_resume_does_not_spend_the_cap_twice_for_one_act(tmp_path):
     before = tally_hard_failures(tree, policy)
     assert before["count"] == 2 and before["breached"] is False
 
-    # The crash: nothing is removed (artifacts are append-only), and the resumed
-    # stage publishes a second attempt for one act it had already failed.
     publish(
         tree,
         stage=PERLECTOR,
@@ -682,7 +670,6 @@ def test_a_crash_and_resume_does_not_spend_the_cap_twice_for_one_act(tmp_path):
     assert after["subjects"] == before["subjects"]
     assert after["breached"] is False
 
-    # And a genuinely new act failing after the resume does still cost one.
     publish(
         tree,
         stage=PERLECTOR,

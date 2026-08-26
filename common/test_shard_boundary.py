@@ -1,5 +1,3 @@
-"""Three-shard proof for reciprocal boundary records."""
-
 from __future__ import annotations
 
 from itertools import permutations
@@ -42,8 +40,6 @@ def test_three_shards_emit_reciprocal_holds_and_a_distinct_split_cluster_finding
     assert first_hold["own_membership_digest"] == second_hold["other_membership_digest"] == ONE
     assert first_hold["other_membership_digest"] == second_hold["own_membership_digest"] == TWO
 
-    # The cluster finding is not an ordinary continuation hold, and each of the
-    # three affected shards names precisely the other membership digests.
     for own, others in ((ONE, [TWO, THREE]), (TWO, [ONE, THREE]), (THREE, [ONE, TWO])):
         finding = next(record for record in records[own] if record["kind"] == SPLIT_RESHOOT_CLUSTER)
         assert finding["cluster_id"] == "leaf-cluster"
@@ -133,17 +129,13 @@ def test_a_split_cluster_finding_fires_only_for_members_that_straddle_shards():
 
 
 def test_a_boundary_refuses_a_page_claimed_by_two_shards():
-    try:
+    with pytest.raises(ContractError, match="belongs to two shard memberships"):
         boundary_records(
             [
                 {"membership_digest": ONE, "page_ordinals": [1]},
                 {"membership_digest": TWO, "page_ordinals": [1]},
             ]
         )
-    except ContractError as error:
-        assert "belongs to two shard memberships" in str(error)
-    else:  # pragma: no cover - makes the intended refusal explicit
-        raise AssertionError("overlapping shards must not manufacture reciprocal records")
 
 
 def test_a_boundary_refuses_a_partition_that_silently_omits_a_page():

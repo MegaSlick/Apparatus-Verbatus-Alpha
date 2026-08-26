@@ -4849,21 +4849,7 @@ def test_an_interrupted_run_resumes_without_rewriting_what_survived(tmp_path):
 
 
 def test_a_run_interrupted_at_every_boundary_resumes_to_the_same_tree_and_tally(tmp_path):
-    """Charge the wall a shard dies against, at every place it can die.
-
-    `test_an_interrupted_run_resumes_without_rewriting_what_survived` interrupts
-    the happy path once, by deleting whole stage directories. This drives the
-    *review* scenario -- the one carrying held units and a bounded recovery loop --
-    and stops the run at every boundary in turn rather than one. This is a resume
-    and tally test for one run; it does not claim to exercise a corpus split or
-    reciprocal cross-shard records.
-
-    Two things must hold at each of them. The finished tree is byte-identical to
-    the uninterrupted one, so no hold is lost and no recovery round is spent
-    twice. And Tyrel's hard-failure tally is identical, because it is recomputed
-    from disk as `(stage, subject_id)` incidents: a shard interrupted five times
-    must not drift five failures closer to a halt nobody's evidence justifies.
-    """
+    """Resume must preserve held work, recovery rounds, and incident-based tallying."""
     policy = load_hard_failure_policy(ROOT / "config" / "hard_failure.toml")
 
     reference_root = tmp_path / "reference"

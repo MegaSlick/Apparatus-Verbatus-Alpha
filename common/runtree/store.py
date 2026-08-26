@@ -220,12 +220,8 @@ class RunTree:
                 "ordinal names one page, so a repeat leaves the run unable to say "
                 "how many pages it was given"
             )
-        # Derived here and nowhere else. `create` used to accept a caller-supplied
-        # `corpus_frame_membership` that was only shape-checked, so a caller could
-        # seal a frame its own pages do not produce -- two shards holding different
-        # pages could name one membership, which is precisely the collapse this
-        # binding exists to prevent, reached through the side door instead of the
-        # front one. Nothing passed it; the parameter is gone rather than guarded.
+        # Membership is derived from the manifest: accepting a caller-supplied
+        # value could let different page sets claim the same corpus frame.
         membership = _default_corpus_frame_membership(source_manifest)
         _validate_corpus_frame_membership(membership)
         authority = {
@@ -1332,29 +1328,12 @@ def _is_sha256(value: Any) -> bool:
 
 
 def _default_corpus_frame_membership(source_manifest: list[dict[str, Any]]) -> dict[str, str]:
-    """Bind even direct RunTree callers to the one frame they supplied.
+    """Derive the frame from inspected digests, falling back to declarations.
 
-    ``computed_sha256`` is the digest whoever opened the source took over the
-    bytes it read; ``sha256`` is what was *declared* about them.  Membership
-    binds the first where it exists, because a declaration is not evidence at
-    the moment a frame seals: the Door does not check a submitted filename
-    ledger against the bytes until ``process_sources``, which runs after this,
-    so a ledger declaring one digest for two genuinely different pages would
-    otherwise seal two shards into a single membership and the later refusal
-    would not unseal it.
-
-    The fallback to ``sha256`` is for the two honest cases that have no
-    computed digest: a direct RunTree caller constructing synthetic evidence,
-    which is responsible for the digest it supplies, and a source whose bytes
-    could not be read at all -- that page keeps its ordinal so the run's
-    denominator stays honest, and it is refused by name downstream before it
-    can become a reading.  A page with neither digest can make no membership
-    claim of any kind, so creation refuses before writing a run.
-
-    `gold/core._frame_from_run` re-derives this record from the same field with
-    the same fallback.  The two are one frame identity computed twice, and they
-    must not drift: deriving them from different fields both refuses honest
-    runs and lets a frame forged over the declarations pass the rederivation.
+    Unreadable sources retain their declared digest and ordinal so they remain
+    in the denominator; a page with neither digest cannot identify a frame.
+    Gold re-derives the frame with the same precedence, so the two boundaries
+    must continue to use the same source field.
     """
     pages = []
     for page in sorted(source_manifest, key=lambda page: page.get("ordinal", 0)):
