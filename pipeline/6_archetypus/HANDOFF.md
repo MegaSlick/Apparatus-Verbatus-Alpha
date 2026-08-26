@@ -41,25 +41,19 @@ select whatever Perlectio is now latest. The Perlectio must be a completed-class
 with valid serving provenance; a held Designator act may not be resurrected by an
 accepted later review.
 
-`accepted_primed_perlectio` closes the rest of spec 10's test 1 by name, so a producer
-that later starts labelling its readings cannot slip bad material through on a field this
-stage does not look at:
+`accepted_primed_perlectio` enforces spec 10's test 1:
 
 - an unprimed or differently primed reading is refused — `lectio_kind` must be exactly
   `primed-with-prior`, so Lectio nuda, `lectio-prior`, and `primed-without-prior` are all
-  refused, as is a contradictory explicit `primed: false`;
+  refused, as is a contradictory explicit `primed: false`
+  (`pipeline/6_archetypus/run.py:608-626`);
 - `tier`, `source_tier` or `reading_tier` of `salvage` is refused (invariant #31's
   boundary);
 - the reading must retain a non-empty Testimonium basis, and every entry's reference
   must be a direct sealed input of that reading and resolve as an
-  `(attestatores, testimonium)` artifact for this act.
-
-**Priming is explicit at this boundary.** The constructor accepts only
-`lectio_kind == "primed-with-prior"`; it refuses every other kind, including Lectio nuda,
-and refuses a contradictory explicit `primed: false`
-(`pipeline/6_archetypus/run.py:608-626`). The retained Testimonium basis remains a separate
-required custody check, not a substitute for the priming discriminator
-(`pipeline/6_archetypus/run.py:638-645`).
+  `(attestatores, testimonium)` artifact for this act
+  (`pipeline/6_archetypus/run.py:638-645`). This custody check does not substitute for the
+  priming discriminator.
 
 ## `kind="archetypus"`
 
@@ -255,19 +249,18 @@ direct-input chains, and exact equality of `text`, `regions`, `provenance`, `sta
 Exemplar filename ledger.
 
 **It also reads `text_status` and `annotations`, and does not take either on trust.**
-`verify_established_record` validates and NORMALIZES both annotation layers through
+`verify_established_record` validates and normalizes both annotation layers through
 the shared `validate_annotations` before comparing them — the sealed copy is
 normalized (an `illegible` note always carries `witness_evidence`, defaulted to
 `[]`) while the reading's raw copy may legally omit the field, so raw equality
 would refuse a correct record; the validated forms must be identical. It then
 *recomputes* `text_status` from that layer and the canonical `uncertainty`
 beside it, using the shared `derive_record_text_status`. A record claiming
-`established` over its own recorded gap is fatal at export. Both fields then travel
-into the manifest entry, the projection, and every selected literal format.
-`text_status` additionally enters the package's text-free source graph and the run
-aggregate, where a non-`established` status contributes its own named reason and the
-run reports `partial`. A run whose acts are
-all delivered but damaged therefore exits `EXIT_HELD` at the Armarium rather than 0 —
+`established` over its own recorded gap is fatal at export. Both fields travel into the
+manifest entry, projection, and every selected literal format. `text_status` also enters
+the package's text-free source graph and run aggregate, where a non-`established` status
+adds its named reason and makes the run `partial`. A run whose acts are all delivered but
+damaged therefore exits `EXIT_HELD` at the Armarium rather than 0 —
 the act is delivered, and the run did not read all of it.
 
 Consequences worth stating plainly:

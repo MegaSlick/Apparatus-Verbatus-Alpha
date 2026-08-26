@@ -1,6 +1,6 @@
 # operations
 
-This directory provides the offline operator rehearsal and its operational boundaries.
+This directory defines the offline operator rehearsal and its operational boundaries.
 No rehearsal verb starts, adopts, or bills a pod. `verbatus upload --network-volume` is
 an explicitly named transfer to a real RunPod volume, and `notify/notify.sh` can post a
 JSON notification to `https://ntfy.sh/` when invoked with its opt-in bearer topic
@@ -35,9 +35,9 @@ The words are:
 - `boot` — checks the saved fixture setup and ends with a plainly labelled green or red
   report.
 - `upload` — transfers only the files named by a sealed submission record to the fixture
-  volume. It does not
-  need a pod and uses zero GPU-hours. Naming `--network-volume DATACENTER:VOLUME_ID`
-  sends to a real RunPod network volume instead; see the caveat below.
+  volume. It needs no pod and uses zero GPU-hours. Naming
+  `--network-volume DATACENTER:VOLUME_ID` sends to a real RunPod network volume instead;
+  see the caveat below.
 - `run` — resumes the named fixture run and says which pages and acts it is working on.
 - `export` — makes a local evidence bundle and prints the Armarium reconciliation table.
 - `close` — asks for its own exact confirmation, then shows the captured cost through its
@@ -56,19 +56,18 @@ pod provider that is not the in-memory fake.
 
 **One exception, and it is off unless you name it.** `upload --network-volume` sends only
 the files named by the sealed submission record to a real RunPod network volume. Storage
-transfer needs no pod and starts no GPU meter — that is the point of running `upload`
-first — but it does leave this computer, which is why the operator has to name the volume
-and is told exactly what will be contacted before a byte moves. Its credentials are read
-from the environment only. **That adapter has never been run against a real endpoint**:
+transfer needs no pod and starts no GPU meter, but it does leave this computer. The
+operator must name the volume and is told exactly what will be contacted before a byte
+moves. Its credentials are read from the environment only. **That adapter has never been
+run against a real endpoint**:
 its logic is tested against an injected client and its network behaviour is untested.
 
 The Spec 11 **product bundle** is built in `pipeline/7_armarium`: `run.py` projects the
 manifest, acts, pages, and aggregate basis and seals the bundle into the run tree
 (`pipeline/7_armarium/run.py:1426-1452`), and `bundle.py` publishes that sealed blob to a
 chosen destination after re-verifying it from the outside (`pipeline/7_armarium/bundle.py:87-128`).
-Spec 11's remainder is not built — the semantic annotation layer occupies a contract no
-producer fills, and its refusal cannot yet be recorded — and
-`pipeline/7_armarium/HANDOFF.md:254-271` names those parts.
+The remaining Spec 11 semantic-annotation contract has no producer, so its refusal cannot
+yet be recorded (`pipeline/7_armarium/HANDOFF.md:254-271`).
 
 **The operator's `export` verb is not that bundle.** It copies `run.json` and the
 `7_armarium` directory out of the run tree as a base Armarium evidence bundle

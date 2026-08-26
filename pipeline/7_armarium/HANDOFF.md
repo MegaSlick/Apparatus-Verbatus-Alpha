@@ -204,30 +204,28 @@ every act on it was, and `held-for-review` otherwise — including when no act w
 marked out on it at all, because silence cannot tell a blank page from a detection
 failure and nothing here can prove one blank.
 
-**One of the five categories cannot be produced by a current run.**
-`excluded-with-approval` arises only from a
+**`excluded-with-approval` remains projection-only.** It arises only from a
 Designator `excluded` outcome, which no stage emits — the Recensor refuses an
 unhandled Designator terminal before the Armarium is ever reached, so `run.py`'s own
-`exclusion_approval_ref` guard, whose docstring says plainly "this refuses every
+`exclusion_approval_ref` guard, whose docstring states "this refuses every
 exclusion today, approved or not," is unreachable rather than merely strict.
-`confirmed-blank` is produced by Recensor, and among the gate's conditions are that the
-Perlector's own reading found `no-readable-text` and that each eligible witness
-independently corroborates that absence against the configured witness floor. The same
-gate also requires no continuation shortfall, no flagged pages, and no findings route
+Recensor produces `confirmed-blank` only when the Perlector found `no-readable-text` and
+each eligible witness independently corroborates that absence against the configured
+witness floor. The gate also requires no continuation shortfall, flagged pages, or
+findings route
 (`pipeline/5_recensor/run.py:2911-2938`, over `blank_corroboration` at `:843-962`) — a
-`confirmed-blank` is COMPLETED-class and terminal, so every hold cause the ordinary chain
-would apply is asked before it is sealed. Both categories are exercised correctly and
+`confirmed-blank` is COMPLETED-class and terminal, so its gate checks every ordinary hold
+cause before sealing. Both categories are exercised correctly and
 adversarially at this projection layer
 (`test_excluded_act_requires_and_carries_its_approval_reference`,
 `test_page_ledger_category_inherits_confirmed_blank_and_excluded_when_every_act_agrees`);
 the exclusion path remains projection-only, while confirmed blank is available end to
 end when its evidence conditions are met.
 
-**What the denominator does not cover, said rather than implied.** `run.json` binds one
-ordinal per submitted source *page or frame*, so a multi-page PDF or TIFF container is
-represented by one unit per page and not by one unit for the file. Every submitted file
-is therefore represented, but a reader counting files off this ledger would be counting
-pages. `claims.submission_inventory.limit` says exactly that.
+**The denominator counts pages or frames, not source containers.** `run.json` binds one
+ordinal per submitted source *page or frame*, so a multi-page PDF or TIFF has one unit per
+page rather than one for the file. Every submitted file is represented, but this ledger's
+units are pages. `claims.submission_inventory.limit` says exactly that.
 
 `claims.status` is the ledger's own measured status, not a constant: a run that loses
 nothing says `complete`, and every unresolved unit appears by name in

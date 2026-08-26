@@ -62,20 +62,15 @@ builds each stage's argv explicitly and forwards no selector. This is checked, n
 run three ways and compare every byte, so a mode that leaked into the tree would differ
 between the three and fail.
 
-**Join with the triage stage's modes.** Scan triage has three operating modes — manual,
-semi-automatic, fully automatic — chosen **per batch** and expressed as settings of a
-confidence threshold (`config/triage_modes.toml`). This table does not merely share three
-words with them: it is **one vocabulary, named once**. `common/contracts/stages.py:111-118`
-declares `TRIAGE_MODES = ("manual", "semi", "auto")` precisely so that three spellings of
-one triple cannot drift, and says Unit 1's driver joins that name rather than declaring a
-fourth; `common/stage.py:182` is `RUN_MODES: Final = TRIAGE_MODES`, the same tuple read
-under this table's name, and `pipeline/0_triage/HANDOFF.md:49-53` states the same join
-from the other end.
+**Scan triage and the driver share one mode vocabulary.** Triage chooses `manual`, `semi`,
+or `auto` per batch through confidence-threshold settings (`config/triage_modes.toml`).
+`common/contracts/stages.py:111-118` declares that triple once as `TRIAGE_MODES`, and
+`common/stage.py:182` aliases it as `RUN_MODES`; `pipeline/0_triage/HANDOFF.md:49-53`
+records the same join.
 
-What differs is not the words but what each end may do with a selection. Triage persists
-the selected member of this triple as a durable property of a batch. The driver infers a
-member for one invocation and never persists that selection; this file's byte-identity
-tests are the standing proof that it does not enter the run tree. Other contracts also
-use a field named `mode` for unrelated vocabularies, so the field name alone never means
-either selection (`common/contracts/approval.py:112-138`,
+The selections have different lifetimes. Triage persists its member as a batch property;
+the driver infers one for an invocation and never writes it to the run tree, as the
+byte-identity tests above require. Other contracts use a field named `mode` for unrelated
+vocabularies, so the field name alone identifies no selection
+(`common/contracts/approval.py:112-138`,
 `pipeline/2_designator/geometry_layer.py:570`).

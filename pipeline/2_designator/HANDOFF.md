@@ -244,10 +244,9 @@ structural grouping never proposed is visible rather than absent. If two compone
 share a bounding box and therefore cannot receive distinct act identities, the stage
 refuses before minting either instead of collapsing their evidence (`:1300-1311`).
 
-What this cannot prove is therefore narrower than "coverage of the cuts". Ink fainter
-than `background - SECONDARY_MARGIN`, or a mark with no contrast against its background
-at all, never entered the denominator, so the accounting cannot establish that such a
-mark was not missed. A page whose background cannot be inferred is recorded
+The accounting cannot detect ink fainter than `background - SECONDARY_MARGIN` or a mark
+with no contrast against its background; neither enters the denominator. A page whose
+background cannot be inferred is recorded
 `ink_measurable: false` with its reason rather than counted at a substituted divider.
 
 ```text
