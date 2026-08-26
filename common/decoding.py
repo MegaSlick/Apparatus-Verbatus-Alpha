@@ -19,37 +19,64 @@ def load_decoding_policy(
     """Read the closed policy and the digest of the exact bytes used."""
     try:
         raw = Path(path).read_bytes()
-        policy = tomllib.loads(raw.decode("utf-8"))
-    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
-        raise ContractError(f"decoding configuration at {path} could not be read") from error
+    except OSError as error:
+        raise ContractError(
+            f"decoding configuration at {path} could not be read: {error}"
+        ) from error
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ContractError(f"decoding configuration at {path} is not UTF-8: {error}") from error
+    try:
+        policy = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as error:
+        raise ContractError(
+            f"decoding configuration at {path} is not valid TOML: {error}"
+        ) from error
+    _validate_decoding_policy(policy)
+    return policy, digest_bytes(raw)
+
+
+def _validate_decoding_policy(policy: Any) -> None:
+    """Close both sections before their values can mint provenance identities."""
+    if not isinstance(policy, dict):
+        raise ContractError("decoding configuration is not a table")
     if set(policy) != {"schema", "reading_of_record", "variance_experiment"}:
         raise ContractError("decoding configuration has the wrong closed schema")
     if policy["schema"] != "decoding.v1":
         raise ContractError("decoding configuration has an unsupported schema")
     record = policy["reading_of_record"]
     variance = policy["variance_experiment"]
-    if not isinstance(record, dict) or set(record) != {"temperature"} or record["temperature"] != 0:
+    if (
+        not isinstance(record, dict)
+        or set(record) != {"temperature"}
+        or isinstance(record["temperature"], bool)
+        or not isinstance(record["temperature"], (int, float))
+        or record["temperature"] != 0
+    ):
         raise ContractError("decoding reading_of_record must declare temperature 0")
     if not isinstance(variance, dict) or set(variance) != {"label", "seed", "passes"}:
         raise ContractError("decoding variance_experiment has the wrong closed schema")
     if not isinstance(variance["label"], str) or not variance["label"].strip():
         raise ContractError("decoding variance_experiment label must be nonblank")
-    if not isinstance(variance["seed"], int) or isinstance(variance["seed"], bool):
-        raise ContractError("decoding variance_experiment seed must be an integer")
+    if (
+        not isinstance(variance["seed"], int)
+        or isinstance(variance["seed"], bool)
+        or variance["seed"] < 0
+    ):
+        raise ContractError("decoding variance_experiment seed must be a nonnegative integer")
     if (
         not isinstance(variance["passes"], int)
         or isinstance(variance["passes"], bool)
         or variance["passes"] < 2
     ):
         raise ContractError("decoding variance_experiment passes must be an integer of at least 2")
-    return policy, digest_bytes(raw)
 
 
 def variance_experiment_id(policy: dict[str, Any]) -> str:
     """Name the sealed variance plan, rather than an invocation that happens to run it."""
-    variance = policy.get("variance_experiment")
-    if not isinstance(variance, dict) or set(variance) != {"label", "seed", "passes"}:
-        raise ContractError("variance identities require the closed variance experiment policy")
+    _validate_decoding_policy(policy)
+    variance = policy["variance_experiment"]
     return derive("variance-experiment", variance)
 
 

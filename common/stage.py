@@ -1449,9 +1449,10 @@ def run_config_bindings(
     the adapter recipes, so two of the three come straight off it. The third,
     `config_digest`, is the digest of *everything* that shapes this run's
     behaviour — the model configuration, fixture, scenario, PDF-render settings,
-    Designator padding and geometry policy, Armarium projection configuration, recovery policy, the
-    run-level hard-failure policy, serving-recipe catalogue, and pod-placement
-    catalogue. The synthetic fixture declares byte-backed pages only, so
+    Designator padding and geometry policy, Armarium projection configuration,
+    recovery policy, decoding policy, the run-level hard-failure policy,
+    serving-recipe catalogue, and pod-placement catalogue. The synthetic fixture
+    declares byte-backed pages only, so
     it does not claim to bind the real Door's PDFium/Pillow/libheif execution
     recipe; ``door._real_bindings`` binds that recipe on actual ingress.
 
@@ -2572,8 +2573,8 @@ def open_context(
                 named += f" (sealed configuration {', '.join(moved)} moved)"
         raise IncompatibleReuse(
             f"run {args.run_id!r} is bound to different {named} than "
-            "the currently loaded models config and fixture scenario; direct stages "
-            "may not run against an unsealed configuration"
+            "the currently loaded run inputs. No stage work was written. Resume with "
+            "the original sealed inputs, or start a new run for the changed inputs"
         )
     verify_predecessor_seal(tree, stage)
     _refuse_halted_run(tree, stage, args.hard_failure_config)

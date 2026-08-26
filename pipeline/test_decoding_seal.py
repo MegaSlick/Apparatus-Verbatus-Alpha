@@ -68,8 +68,8 @@ def test_a_run_seals_the_exact_decoding_bytes_it_was_created_under(tmp_path):
     _policy, digest = load_decoding_policy()
     assert digest == digest_bytes(DEFAULT_DECODING_CONFIG_PATH.read_bytes())
     # Filed under the name its points of use ask for, and inside the digest of
-    # everything that shapes the run -- so the bytes are provable from the tree
-    # alone, without the file that produced them still being on disk.
+    # everything that shapes the run -- so a candidate policy file can be proved
+    # against the tree without trusting its filename or parsed values.
     assert run["sealed_config_digests"]["decoding"] == digest
     assert run["config_digest"] != digest
 
@@ -117,6 +117,8 @@ def test_a_stage_refuses_a_run_resumed_under_a_different_decoding_policy(
 
     assert refused.returncode != 0
     assert "sealed configuration decoding moved" in refused.stderr, refused.stderr
+    assert "No stage work was written" in refused.stderr, refused.stderr
+    assert "Resume with the original sealed inputs" in refused.stderr, refused.stderr
 
 
 @pytest.mark.parametrize("program", CONSUMING_STAGES)

@@ -1,4 +1,4 @@
-"""The seven derived identities, bound so a forged one is detectable.
+"""The eight derived identities, bound so a forged one is detectable.
 
 Every identity except `run_id` is a digest of exactly the facts it claims to bind,
 carried beside those facts in the artifact. That makes identity *verifiable*: a

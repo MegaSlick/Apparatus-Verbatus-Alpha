@@ -33,6 +33,11 @@ def test_shipped_decoding_policy_declares_a_zero_temperature_record_and_variance
             "temperature 0",
         ),
         (
+            'schema = "decoding.v1"\n[reading_of_record]\ntemperature = false\n'
+            '[variance_experiment]\nlabel = "v"\nseed = 1\npasses = 2\n',
+            "temperature 0",
+        ),
+        (
             'schema = "decoding.v1"\n[reading_of_record]\ntemperature = 0\n'
             '[variance_experiment]\nlabel = "v"\nseed = 1\npasses = 1\n',
             "at least 2",
@@ -71,6 +76,38 @@ def test_a_variance_pass_cannot_escape_the_sealed_pass_count(ordinal):
 
     with pytest.raises(ContractError, match="sealed range"):
         variance_pass_attempt_id(policy, ordinal)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"label": "", "seed": 20260820, "passes": 2},
+        {"label": "variance.v1", "seed": True, "passes": 2},
+        {"label": "variance.v1", "seed": -1, "passes": 2},
+        {"label": "variance.v1", "seed": 20260820, "passes": True},
+    ],
+)
+def test_variance_identity_refuses_a_policy_the_loader_would_refuse(change):
+    policy, _digest = load_decoding_policy()
+    policy["variance_experiment"] = change
+
+    with pytest.raises(ContractError, match="decoding variance_experiment"):
+        variance_experiment_id(policy)
+
+
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        (b"\xff", "not UTF-8"),
+        (b'schema = "decoding.v1"\n[', "not valid TOML"),
+    ],
+)
+def test_decoding_policy_parse_refusals_name_the_actual_cause(tmp_path, body, message):
+    path = tmp_path / "decoding.toml"
+    path.write_bytes(body)
+
+    with pytest.raises(ContractError, match=message):
+        load_decoding_policy(path)
 
 
 def test_a_variance_pass_can_never_become_an_act_s_reading_of_record():
