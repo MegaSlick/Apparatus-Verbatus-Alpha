@@ -106,6 +106,7 @@ def make_transcript(output: str | Path) -> Path:
                     'max_hourly_usd = "1.00"',
                     'max_estimated_metered_cost_usd = "2.00"',
                     'account_balance_floor_usd = "50.00"',
+                    'account_balance_alert_usd = "75.00"',
                     "hard_lifetime_seconds = 900",
                     "laptop_heartbeat_timeout_seconds = 60",
                     "shutdown_poll_interval_seconds = 1",

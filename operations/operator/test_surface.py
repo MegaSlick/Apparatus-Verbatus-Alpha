@@ -95,6 +95,7 @@ def _spend_policy(tmp_path: Path, *, hourly: str = "1.00", margin: int = 3600) -
                 f'max_hourly_usd = "{hourly}"',
                 'max_estimated_metered_cost_usd = "2.00"',
                 'account_balance_floor_usd = "50.00"',
+                'account_balance_alert_usd = "75.00"',
                 "hard_lifetime_seconds = 900",
                 "laptop_heartbeat_timeout_seconds = 60",
                 "shutdown_poll_interval_seconds = 1",
@@ -1019,6 +1020,96 @@ def test_configured_ceiling_refusal_does_not_claim_the_policy_is_missing(tmp_pat
 
     assert refusal.value.code is ErrorCode.PAID_ACTION_REFUSED
     assert "no reviewed spend limit" not in refusal.value.render().lower()
+
+
+def test_unobservable_balance_has_its_own_three_part_operator_refusal(tmp_path: Path) -> None:
+    surface = _surface(tmp_path)
+    surface.provider.inject_failure(
+        "observe_account_balance", ProviderFailure("balance source timed out")
+    )
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.prepare_launch(_request(), policy_path=_spend_policy(tmp_path))
+
+    assert refusal.value.code is ErrorCode.BALANCE_UNOBSERVABLE
+    rendered = refusal.value.render().lower()
+    assert "current account balance" in rendered
+    assert "no new paid provider action" in rendered
+    assert "repair the named balance source" in rendered
+    receipt = surface.receipts.read(surface._descriptor_receipt("launch"))["payload"]
+    assert receipt["state"] == LaunchState.REFUSED_BALANCE_UNOBSERVABLE.value
+
+
+def test_balance_floor_has_its_own_three_part_operator_refusal(tmp_path: Path) -> None:
+    surface = _surface(tmp_path)
+    surface.provider.set_account_balance("50.00")
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.prepare_launch(_request(), policy_path=_spend_policy(tmp_path))
+
+    assert refusal.value.code is ErrorCode.BALANCE_FLOOR_REACHED
+    rendered = refusal.value.render().lower()
+    assert "account-balance reserve" in rendered
+    assert "no new paid provider action" in rendered
+    assert "restore enough available balance" in rendered
+
+
+def test_operator_launch_delivers_and_displays_a_low_balance_warning(tmp_path: Path) -> None:
+    messages: list[str] = []
+    notifications: list[tuple[str, str]] = []
+    surface = _surface(tmp_path, output=messages)
+    surface.provider.set_account_balance("60.00")
+
+    def deliver(event: str, message: str) -> notify_bridge.NotifyOutcome:
+        notifications.append((event, message))
+        return notify_bridge.NotifyOutcome(True, True, "delivered")
+
+    surface.notifier = deliver
+    prepared = surface.prepare_launch(_request(), policy_path=_spend_policy(tmp_path))
+
+    assert prepared.result.preview is not None
+    assert notifications == [
+        (
+            "milestone",
+            "Spend warning: observed account balance is below the notification threshold; "
+            "create operator-test; observed available balance $60.00.",
+        )
+    ]
+    assert any("Warning: observed account balance" in line for line in messages)
+    assert "Phone notification: sent." in messages
+    assert any("Account-balance hard floor: $50.00" in line for line in messages)
+    receipt = surface.receipts.read(surface._descriptor_receipt("spend-alert"))["payload"]
+    assert receipt["action"] == "create"
+    assert receipt["subject"] == "operator-test"
+    assert receipt["spend"]["ceilings"]["alert_notifications"] == ["Phone notification: sent."]
+    assert "confirmation_phrase" not in receipt
+
+
+def test_post_create_balance_refusal_does_not_claim_no_paid_action_occurred(
+    tmp_path: Path,
+) -> None:
+    surface = _surface(tmp_path)
+    prepared = surface.prepare_launch(_request(), policy_path=_spend_policy(tmp_path))
+    observations = 1
+    original_observer = surface.provider.observe_account_balance
+
+    def observe():  # type: ignore[no-untyped-def]
+        nonlocal observations
+        observations += 1
+        if observations == 3:
+            raise ProviderFailure("balance endpoint failed after create")
+        return original_observer()
+
+    surface.provider.observe_account_balance = observe  # type: ignore[method-assign]
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.launch(prepared, prepared.confirmation_phrase)
+
+    assert refusal.value.code is ErrorCode.LAUNCH_UNRESOLVED
+    rendered = refusal.value.render().lower()
+    assert "provider request may already have occurred" in rendered
+    assert "do not launch again" in rendered
+    assert "balance endpoint failed after create" in rendered
 
 
 def test_partial_upload_is_recorded_and_retries_from_verified_work(tmp_path: Path) -> None:

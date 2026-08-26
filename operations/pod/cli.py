@@ -18,6 +18,7 @@ from typing import Sequence
 from .arming import ControllerArmer
 from .launch import LaunchResult, LaunchState, PodRuntime
 from .models import PodCreateRequest, require_utc
+from .notify_bridge import Notifier, shell_notifier, silent
 from .provider import PodProvider
 from .spend import load_spend_policy
 
@@ -35,6 +36,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--spend", type=Path, default=Path("config/spend.toml"))
     parser.add_argument("--leases", type=Path, required=True)
     parser.add_argument("--provider-name", required=True)
+    parser.add_argument(
+        "--notify",
+        action="store_true",
+        help=(
+            "send notification-only spend warnings through operations/notify/notify.sh; "
+            "off by default so nothing pages a phone unasked, and delivery never changes "
+            "a launch decision either way"
+        ),
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
     create = subparsers.add_parser("create", help="preview then optionally create a guarded pod")
     create.add_argument("--request", type=Path, required=True)
@@ -55,6 +65,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         spend_policy=load_spend_policy(args.spend),
         lease_root=args.leases,
         controller_armer=_controller_armer(args.controller_armer_factory),
+        notifier=_notifier(args.notify),
     )
     request = _request(args.request)
     if args.command == "create":
@@ -195,6 +206,17 @@ def _timestamp(value: object) -> datetime:
         return require_utc(parsed, "hard_deadline")
     except ValueError as error:
         raise ValueError("hard_deadline must be UTC") from error
+
+
+def _notifier(enabled: bool) -> Notifier:
+    """Off unless the operator asked for it on this invocation.
+
+    The spend floor is enforced by the runtime; a warning is notification-only,
+    and `operations/notify`'s topic is a bearer secret. Without ``--notify``, a
+    preview never reaches a phone.
+    """
+
+    return shell_notifier() if enabled else silent
 
 
 def _typed_confirmation(phrase: str) -> str | None:

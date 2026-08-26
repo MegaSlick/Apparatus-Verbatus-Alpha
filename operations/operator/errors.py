@@ -25,6 +25,8 @@ class ErrorCode(StrEnum):
     CONFIRMATION_RECORD_FAILED = "confirmation-record-failed"
     RECORD_WRITE_FAILED = "record-write-failed"
     PRICE_CHANGED = "price-changed"
+    BALANCE_FLOOR_REACHED = "balance-floor-reached"
+    BALANCE_UNOBSERVABLE = "balance-unobservable"
     SAFETY_CHECK_FAILED = "safety-check-failed"
     LAUNCH_UNRESOLVED = "launch-unresolved"
     ACTIVE_POD_REQUIRES_CLOSE = "active-pod-requires-close"
@@ -106,6 +108,16 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
         "The fixture price changed after the screen you confirmed.",
         "Your earlier confirmation was not used to authorize a different price.",
         "Read the new price and ceilings, then type a new confirmation only if they are acceptable; this is safe.",
+    ),
+    ErrorCode.BALANCE_FLOOR_REACHED: ErrorCopy(
+        "Launch could not preserve the reviewed account-balance reserve.",
+        "Verbatus sent no new paid provider action from this refusal path.",
+        "Read the observed balance and reserved liabilities, restore enough available balance, then preview launch again; this is safe.",
+    ),
+    ErrorCode.BALANCE_UNOBSERVABLE: ErrorCopy(
+        "Launch could not establish the current account balance or reserved liability.",
+        "Verbatus sent no new paid provider action because the reviewed reserve could not be proved.",
+        "Repair the named balance source or lease record, then preview launch again; this is safe.",
     ),
     ErrorCode.SAFETY_CHECK_FAILED: ErrorCopy(
         "Launch could not prove that its runtime safeguards were ready.",

@@ -154,10 +154,13 @@ must name `currency = "USD"`, `max_hourly_usd` and `max_estimated_metered_cost_u
 ceilings for the combined metered pod and attached-volume hourly price and cost through
 the hard lifetime, the `hard_lifetime_seconds` itself, plus a bounded
 `billing_cutoff_margin_seconds`, laptop heartbeat, and shutdown polling/deadline. It also
-names an `account_balance_floor_usd` manual reserve: the runtime does not observe account
-balance, and the documented `$50.00` default is unverified until checked against RunPod
-before a live run. The loader refuses any key it does not know and any policy missing one
-of these.
+names an observed `account_balance_floor_usd` hard reserve and a higher
+`account_balance_alert_usd` notification threshold. The runtime reads the available USD
+balance through the provider's explicitly configured source and refuses a paid action if
+that source is unavailable or the balance net of the action and other recorded liabilities
+would not preserve the reserve. The documented `$50.00` floor is an unverified policy
+value, not a balance observation, until checked against RunPod before a live run. The
+loader refuses any key it does not know and any policy missing one of these.
 It does not authorize retaining or deleting a volume after close: that is a separately
 named decision, and every close report states the volume's own ongoing price. The file
 itself carries the full key list as comments, so filling it in needs no code reading.
