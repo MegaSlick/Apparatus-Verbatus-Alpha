@@ -45,6 +45,7 @@ from .config import (
     ServingConfigInputs,
     ServingProfile,
     ServingRecipes,
+    UnsupportedProfile,
     chair_preflight_identity_digest,
     model_and_tokenizer_pins,
     seal_json_object,
@@ -1241,9 +1242,9 @@ class ServingManager:
 
 
 def _launchable(
-    profile: "ServingProfile | FixtureProfile", identity: ChairIdentity
+    profile: "ServingProfile | FixtureProfile | UnsupportedProfile", identity: ChairIdentity
 ) -> ServingProfile:
-    """Refuse a fixture profile by the reason it is a fixture, before anything else.
+    """Refuse a non-launchable profile by its real cause before anything else.
 
     The walking skeleton's chairs are answered by
     ``common.stage.fixture_serving_details`` — declared values that say
@@ -1261,6 +1262,13 @@ def _launchable(
             f"at tier {profile.tier!r} ({profile.description}); a fixture profile is never "
             "launched, and the offline walking skeleton answers it from declared serving "
             "details instead"
+        )
+    if isinstance(profile, UnsupportedProfile):
+        raise ServingConfigurationError(
+            f"chair {identity.role!r} resolves to unsupported serving profile "
+            f"{profile.recipe!r} at tier {profile.tier!r}: {profile.reason}; no serving "
+            "process was started; add and preflight a native serving implementation before "
+            "launching this chair"
         )
     if profile.preflight_state != "proven":
         raise ServingConfigurationError(

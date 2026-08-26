@@ -3,12 +3,14 @@
 #   --models-config config/models-real.toml
 #   --serving-recipes-config config/serving_recipes_real.toml
 #
-# It deliberately leaves the default fixture catalogue unchanged.  Every row is
-# a complete, locked launch shape but `preflight_state = "unproven"`: these are
-# planning inputs, not a claim that any listed model has started, fitted, or
-# answered on real silicon.  A serving manager refuses every such row before it
-# opens a process.  The exact profile and exact chair identity must be measured
-# and marked proven by a real pod preflight before that changes.
+# It deliberately leaves the default fixture catalogue unchanged.  Every vLLM
+# row is a complete, locked launch shape but `preflight_state = "unproven"`:
+# these are planning inputs, not a claim that any listed model has started,
+# fitted, or answered on real silicon.  The YOLO secondary proposer instead has
+# an explicit `unsupported` row at every tier: its upstream contract is native
+# Ultralytics object detection, not a vLLM completion endpoint, and no native
+# serving implementation exists here yet.  A serving manager refuses both
+# shapes before it opens a process.
 #
 # Rows cover every configured chair in models-real.toml at every tier in
 # pod_placement.toml.  The common stage parser seals the selected catalogue's
@@ -358,91 +360,30 @@ poll_interval_seconds = 2
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
 
 # The secondary proposer is a separately configured chair, even though its
-# model serves the Designator's proposal work.  It therefore receives its own
-# exact profile and cannot piggyback on the structure chair's row.
+# model serves the Designator's proposal work. Its pinned repository provides
+# an Ultralytics YOLO checkpoint, not a transformers generation model. Naming
+# the missing native serving path is honest coverage; a vLLM chat-completions
+# profile would be a launch recipe this model cannot satisfy.
 [[profiles]]
-kind = "vllm"
+kind = "unsupported"
 recipe = "unproven-real-secondary-proposer"
 chair = "secondary_proposer"
 tier = "generic-24gb"
-host = "127.0.0.1"
-port = 8105
-served_model_id = "secondary-proposer"
-dtype = "bfloat16"
-seed = 0
-required_packages = { vllm = "0.10.1", transformers = "4.57.1", ultralytics = "8.3.0" }
-max_model_len = 2048
-max_num_seqs = 1
-max_num_batched_tokens = 512
-gpu_memory_utilization = "0.58"
-min_pixels = 3136
-max_pixels = 1806336
-enable_prefix_caching = true
-enforce_eager = false
-trust_remote_code = true
-enable_tower_connector_lora = false
-max_lora_rank = 64
-generation_config = "vllm"
-preflight_state = "unproven"
-startup_timeout_seconds = 300
-poll_interval_seconds = 2
-readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
+reason = "the pinned model is an Ultralytics YOLO object detector, but this package implements only vLLM completion serving; no native Ultralytics service may be inferred"
 
 [[profiles]]
-kind = "vllm"
+kind = "unsupported"
 recipe = "unproven-real-secondary-proposer"
 chair = "secondary_proposer"
 tier = "generic-48gb"
-host = "127.0.0.1"
-port = 8105
-served_model_id = "secondary-proposer"
-dtype = "bfloat16"
-seed = 0
-required_packages = { vllm = "0.10.1", transformers = "4.57.1", ultralytics = "8.3.0" }
-max_model_len = 4096
-max_num_seqs = 2
-max_num_batched_tokens = 1024
-gpu_memory_utilization = "0.78"
-min_pixels = 3136
-max_pixels = 3211264
-enable_prefix_caching = true
-enforce_eager = false
-trust_remote_code = true
-enable_tower_connector_lora = false
-max_lora_rank = 64
-generation_config = "vllm"
-preflight_state = "unproven"
-startup_timeout_seconds = 300
-poll_interval_seconds = 2
-readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
+reason = "the pinned model is an Ultralytics YOLO object detector, but this package implements only vLLM completion serving; no native Ultralytics service may be inferred"
 
 [[profiles]]
-kind = "vllm"
+kind = "unsupported"
 recipe = "unproven-real-secondary-proposer"
 chair = "secondary_proposer"
 tier = "generic-80gb-plus"
-host = "127.0.0.1"
-port = 8105
-served_model_id = "secondary-proposer"
-dtype = "bfloat16"
-seed = 0
-required_packages = { vllm = "0.10.1", transformers = "4.57.1", ultralytics = "8.3.0" }
-max_model_len = 8192
-max_num_seqs = 4
-max_num_batched_tokens = 2048
-gpu_memory_utilization = "0.88"
-min_pixels = 3136
-max_pixels = 5299200
-enable_prefix_caching = true
-enforce_eager = false
-trust_remote_code = true
-enable_tower_connector_lora = false
-max_lora_rank = 64
-generation_config = "vllm"
-preflight_state = "unproven"
-startup_timeout_seconds = 300
-poll_interval_seconds = 2
-readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
+reason = "the pinned model is an Ultralytics YOLO object detector, but this package implements only vLLM completion serving; no native Ultralytics service may be inferred"
 
 [[profiles]]
 kind = "vllm"

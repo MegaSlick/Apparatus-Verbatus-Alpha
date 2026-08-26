@@ -48,9 +48,10 @@ from .errors import ServingConfigurationError
 
 SCHEMA = "serving-recipes.v1"
 _TOP_LEVEL = {"schema", "profiles"}
-_KINDS = {"vllm", "fixture"}
+_KINDS = {"vllm", "fixture", "unsupported"}
 _PROFILE_COMMON = {"kind", "recipe", "chair", "tier"}
 _FIXTURE_FIELDS = _PROFILE_COMMON | {"description"}
+_UNSUPPORTED_FIELDS = _PROFILE_COMMON | {"reason"}
 _PROFILE_FIELDS = {
     "kind",
     "recipe",
@@ -128,6 +129,26 @@ class FixtureProfile:
 
 
 @dataclass(frozen=True, slots=True)
+class UnsupportedProfile:
+    """A real configured chair with no honest serving implementation yet.
+
+    It remains in catalogue coverage so the gap cannot disappear, but carries
+    no launch flags: inventing a vLLM shape for a model served by another engine
+    would turn a named missing implementation into a misleading preflight.
+    """
+
+    recipe: str
+    chair: str
+    tier: str
+    reason: str
+    kind: str = "unsupported"
+
+    @property
+    def key(self) -> tuple[str, str, str]:
+        return (self.recipe, self.chair, self.tier)
+
+
+@dataclass(frozen=True, slots=True)
 class ServingProfile:
     """One complete vLLM flag profile for one chair at one GPU tier.
 
@@ -182,11 +203,13 @@ class ServingProfile:
 class ServingRecipes:
     """The complete closed serving-profile catalogue."""
 
-    profiles: tuple["ServingProfile | FixtureProfile", ...]
+    profiles: tuple["ServingProfile | FixtureProfile | UnsupportedProfile", ...]
     source_path: Path | None = None
     source_sha256: str | None = None
 
-    def for_identity(self, identity: ChairIdentity, tier: str) -> "ServingProfile | FixtureProfile":
+    def for_identity(
+        self, identity: ChairIdentity, tier: str
+    ) -> "ServingProfile | FixtureProfile | UnsupportedProfile":
         """Return the only profile configured for this identity and tier.
 
         This is lookup, not a ranking or fallback: zero or multiple matches are
@@ -390,7 +413,7 @@ def profile_preflight_digest(raw: Mapping[str, Any]) -> str:
         ) from error
 
 
-def _parse_profile(raw: Any) -> "ServingProfile | FixtureProfile":
+def _parse_profile(raw: Any) -> "ServingProfile | FixtureProfile | UnsupportedProfile":
     if not isinstance(raw, dict):
         raise ServingConfigurationError("each serving profile must be a table")
     kind = raw.get("kind")
@@ -400,6 +423,8 @@ def _parse_profile(raw: Any) -> "ServingProfile | FixtureProfile":
         )
     if kind == "fixture":
         return _parse_fixture_profile(raw)
+    if kind == "unsupported":
+        return _parse_unsupported_profile(raw)
     unknown = sorted(
         set(raw) - (_PROFILE_FIELDS | {_PREFLIGHT_DIGEST_FIELD, _PREFLIGHT_IDENTITY_FIELD})
     )
@@ -538,7 +563,27 @@ def _parse_fixture_profile(raw: Mapping[str, Any]) -> FixtureProfile:
     )
 
 
-def _validate_catalogue(profiles: tuple["ServingProfile | FixtureProfile", ...]) -> None:
+def _parse_unsupported_profile(raw: Mapping[str, Any]) -> UnsupportedProfile:
+    """Keep an unimplemented real serving path explicit and non-launchable."""
+
+    unknown = sorted(set(raw) - _UNSUPPORTED_FIELDS)
+    missing = sorted(_UNSUPPORTED_FIELDS - set(raw))
+    if unknown or missing:
+        raise ServingConfigurationError(
+            f"unsupported serving profile has unknown field(s) {unknown} or missing field(s) "
+            f"{missing}; an unsupported row carries identity and its refusal reason only"
+        )
+    return UnsupportedProfile(
+        recipe=_text(raw["recipe"], "recipe"),
+        chair=_text(raw["chair"], "chair"),
+        tier=_text(raw["tier"], "tier"),
+        reason=_text(raw["reason"], "reason"),
+    )
+
+
+def _validate_catalogue(
+    profiles: tuple["ServingProfile | FixtureProfile | UnsupportedProfile", ...],
+) -> None:
     keys = [profile.key for profile in profiles]
     if len(keys) != len(set(keys)):
         raise ServingConfigurationError("serving profiles duplicate a recipe/chair/tier key")

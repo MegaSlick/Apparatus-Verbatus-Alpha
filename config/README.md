@@ -13,7 +13,7 @@ The knobs. One question per planned file, each answerable without reading code.
 | `spend.toml` | deliberately unconfigured — Tyrel's pod-plus-attached-volume money caps; both paid paths refuse it until configured |
 | `pod_placement.toml` | planning-only single-resident GPU resource tiers, dtype capability floors, and the reviewed price sheet for the cards this project rents |
 | `serving_recipes.toml` | the fixture-only default serving catalogue; it stays untouched unless `--serving-recipes-config` selects another file |
-| `serving_recipes_real.toml` | unproven, locked real-chair vLLM profiles; selected only with `--models-config config/models-real.toml --serving-recipes-config config/serving_recipes_real.toml` |
+| `serving_recipes_real.toml` | unproven, locked real-chair vLLM profiles plus explicit non-launchable rows where no honest engine exists; selected only with `--models-config config/models-real.toml --serving-recipes-config config/serving_recipes_real.toml` |
 | `formats.toml` | which Armarium product projections are written and whether verified pixels are embedded |
 | `perlector_protocol.toml` | the sealed prior-draft protocol: Pass-B neutral fragment, page-shared-prefix policy, and control selection-rule name |
 | `alignment.toml` | sealed character, pair, and wall-clock ceilings for witness-to-Chandra alignment |
