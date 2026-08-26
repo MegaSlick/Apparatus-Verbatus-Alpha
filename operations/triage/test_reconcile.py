@@ -4,12 +4,18 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 from pathlib import Path
 
 import pytest
 
 from common.contracts.canonical import canonical_bytes
-from operations.triage.reconcile import ReconciliationRefusal, reconcile, reconcile_files
+from operations.triage.reconcile import (
+    ReconciliationRefusal,
+    reconcile,
+    reconcile_files,
+    validate_reconciliation_pair,
+)
 
 FIXTURES = Path(__file__).with_name("fixtures") / "reconciliation"
 
@@ -43,6 +49,31 @@ def test_reconciliation_outputs_cannot_overwrite_a_verdict_or_each_other(tmp_pat
     assert not shared.exists()
 
 
+def test_reconciliation_paths_refuse_case_collisions_and_source_symlinks(tmp_path: Path):
+    sources = []
+    for fixture in sorted(FIXTURES.glob("seat-*.json")):
+        local = tmp_path / fixture.name
+        local.write_bytes(fixture.read_bytes())
+        sources.append(local)
+    with pytest.raises(ReconciliationRefusal, match="case-insensitive filesystem"):
+        reconcile_files(sources, tmp_path / "Result.json", tmp_path / "result.json")
+    linked = tmp_path / "linked-seat.json"
+    linked.symlink_to(sources[0])
+    with pytest.raises(ReconciliationRefusal, match="symbolic link"):
+        reconcile_files(
+            [linked, sources[1]], tmp_path / "expected.json", tmp_path / "disagreements.json"
+        )
+    fifo = tmp_path / "verdict.fifo"
+    fifo.unlink(missing_ok=True)
+    os.mkfifo(fifo)
+    with pytest.raises(ReconciliationRefusal, match="not a regular file"):
+        reconcile_files(
+            [fifo, sources[1]], tmp_path / "expected.json", tmp_path / "disagreements.json"
+        )
+    assert not (tmp_path / "expected.json").exists()
+    assert not (tmp_path / "disagreements.json").exists()
+
+
 def test_unanimity_intervals_and_union_act_denominator_are_not_a_vote():
     verdicts = [
         json.loads(path.read_text(encoding="utf-8"))
@@ -70,6 +101,11 @@ def test_unanimity_intervals_and_union_act_denominator_are_not_a_vote():
             "value": ["act-001", "act-002", "act-003"],
         },
     ]
+    validate_reconciliation_pair(expected, disagreements)
+    tampered = copy.deepcopy(expected)
+    tampered["facts"]["frame-63"]["categorical"]["loose_document"] = "no"
+    with pytest.raises(ReconciliationRefusal, match="do not match their shared digest"):
+        validate_reconciliation_pair(tampered, disagreements)
 
 
 def test_a_fact_only_one_seat_reported_keeps_that_seat_s_act_enumeration():
@@ -156,6 +192,17 @@ def test_declared_tolerances_are_bounded_per_mille_integers(field: str):
     unbounded = copy.deepcopy(verdict)
     unbounded[field] = 1001
     with pytest.raises(ReconciliationRefusal, match="per-mille integer from 0 through 1000"):
+        reconcile([unbounded, other])
+
+
+def test_untrusted_verdict_counts_and_numeric_measurements_are_bounded_before_reconciliation():
+    verdict = json.loads((FIXTURES / "seat-a.json").read_text(encoding="utf-8"))
+    other = json.loads((FIXTURES / "seat-b.json").read_text(encoding="utf-8"))
+    with pytest.raises(ReconciliationRefusal, match="between 2 and 32"):
+        reconcile([verdict] * 33)
+    unbounded = copy.deepcopy(verdict)
+    unbounded["facts"]["frame-63"]["numeric"]["boundary_x_per_mille"] = 10**1000
+    with pytest.raises(ReconciliationRefusal, match="per-mille integers"):
         reconcile([unbounded, other])
 
 

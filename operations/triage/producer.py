@@ -9,12 +9,15 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import sys
 import tempfile
 import tomllib
+import unicodedata
+import warnings
 from dataclasses import dataclass
 from io import BytesIO
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Final, Mapping, Sequence
 
 from PIL import Image
@@ -28,6 +31,7 @@ from common.corpus_register import (
     append_records,
     empty_register,
     membership_heads,
+    read_register_path,
     register_digest,
     validate_register_bytes,
 )
@@ -69,6 +73,7 @@ _CANDIDATE_COST_FIELDS: Final = {
     "unique_candidate_pairs",
     "dimension_refused_pairs",
 }
+_MAX_CONFIRMATION_BYTES: Final = 16 * 1024 * 1024
 
 
 class ProducerRefusal(SchemaRefusal):
@@ -185,10 +190,17 @@ def _config_from_recipe(recipe: Mapping[str, Any]) -> InstrumentConfig:
 
 def _decode_dimensions_and_mode(data: bytes, path: str) -> tuple[int, int, str]:
     try:
-        with Image.open(BytesIO(data)) as image:
-            image.load()
-            return image.width, image.height, image.mode
-    except (OSError, ValueError) as error:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(BytesIO(data)) as image:
+                image.load()
+                return image.width, image.height, image.mode
+    except (
+        OSError,
+        ValueError,
+        Image.DecompressionBombError,
+        Image.DecompressionBombWarning,
+    ) as error:
         raise ProducerRefusal(f"producer frame {path!r} could not be decoded") from error
 
 
@@ -262,6 +274,7 @@ def _evidenced_pairs(
     instrument_recipe: Mapping[str, Any],
     evidence_manifest: Mapping[str, Any],
     evidence_records: Sequence[Mapping[str, Any]],
+    submitted: set[str],
 ) -> tuple[set[tuple[str, str]], set[str]]:
     """The pairs and frames the instrument actually evidenced for this confirmation.
 
@@ -310,6 +323,15 @@ def _evidenced_pairs(
             "emitted-pair accounting digest"
         )
     if (
+        not isinstance(evidence_records, Sequence)
+        or isinstance(evidence_records, (str, bytes))
+        or len(evidence_records) != emitted_record_count
+    ):
+        raise ProducerRefusal(
+            "manual refusal evidence-not-instrumented: the supplied candidate evidence "
+            "record count does not match the evidence manifest"
+        )
+    if (
         evidence_manifest.get("instrument_config_sha256")
         != confirmation["instrument_config_sha256"]
     ):
@@ -338,6 +360,11 @@ def _evidenced_pairs(
             "names no distinct set of instrumented frame digests"
         )
     frame_set = set(frame_digests)
+    if not frame_set <= submitted:
+        raise ProducerRefusal(
+            "manual refusal evidence-not-instrumented: the evidence manifest frame set reaches "
+            "outside this producer submission"
+        )
     candidate_cost = evidence_manifest.get("candidate_cost")
     if not isinstance(candidate_cost, Mapping) or set(candidate_cost) != _CANDIDATE_COST_FIELDS:
         raise ProducerRefusal(
@@ -350,6 +377,19 @@ def _evidenced_pairs(
     }
     frame_count = len(frame_digests)
     all_pair_count = frame_count * (frame_count - 1) // 2
+    if any(
+        costs[field] > all_pair_count
+        for field in (
+            "submission_window_pairs",
+            "global_prefilter_passes",
+            "unique_candidate_pairs",
+            "dimension_refused_pairs",
+        )
+    ):
+        raise ProducerRefusal(
+            "manual refusal evidence-not-instrumented: candidate accounting exceeds the "
+            "submitted frame set's possible pair count"
+        )
     selection_recipe = validated_recipe["candidate_selection_recipe"]
     submission_window = selection_recipe["submission_window"]
     expected_window_pairs = {
@@ -376,6 +416,11 @@ def _evidenced_pairs(
     if not isinstance(refused_values, list):
         raise ProducerRefusal(
             "manual refusal evidence-not-instrumented: unequal-dimension refusals are not a list"
+        )
+    if len(refused_values) != costs["dimension_refused_pairs"]:
+        raise ProducerRefusal(
+            "manual refusal evidence-not-instrumented: unequal-dimension refusal count does "
+            "not match the candidate accounting"
         )
     refused_pairs = {
         _manifest_pair(value, "an unequal-dimension refusal", frame_set) for value in refused_values
@@ -478,7 +523,7 @@ def _confirmation_cluster_ids(
     if not is_sha256(confirmation["evidence_manifest_sha256"]):
         raise ProducerRefusal("confirmation has no valid evidence manifest digest")
     evidenced, instrumented_frames = _evidenced_pairs(
-        confirmation, instrument_recipe, evidence_manifest, evidence_records
+        confirmation, instrument_recipe, evidence_manifest, evidence_records, submitted
     )
     authority = confirmation["authority"]
     if not isinstance(authority, dict) or set(authority) != {"kind", "identity", "revision"}:
@@ -633,6 +678,26 @@ def produce(
         raise ProducerRefusal(
             "manual refusal coverage: every submission must be a named frame with immutable bytes"
         )
+    path_keys: set[str] = set()
+    for frame in frames:
+        path = PurePosixPath(frame.path)
+        if (
+            path.is_absolute()
+            or frame.path == "."
+            or path.as_posix() != frame.path
+            or ".." in path.parts
+            or "\x00" in frame.path
+        ):
+            raise ProducerRefusal(
+                "manual refusal coverage: submitted source paths must be canonical relative paths"
+            )
+        key = unicodedata.normalize("NFC", frame.path).casefold()
+        if key in path_keys:
+            raise ProducerRefusal(
+                "manual refusal coverage: submitted source paths collide on a "
+                "case-insensitive filesystem"
+            )
+        path_keys.add(key)
     digests = [digest_bytes(frame.data) for frame in frames]
     if len(set(digests)) != len(digests):
         raise ProducerRefusal(
@@ -689,6 +754,8 @@ def produce(
         )
     clusters: dict[str, dict[str, Any]] = {}
     if confirmation is not None:
+        if not isinstance(confirmation, Mapping):
+            raise ProducerRefusal("confirmation file has the wrong closed schema")
         if confirmation.get("corpus_id") != corpus_id:
             raise ProducerRefusal(
                 "manual refusal wrong-corpus: confirmation corpus does not match producer pass"
@@ -766,7 +833,7 @@ def produce(
 def load_confirmation(path: str | Path) -> dict[str, Any]:
     """Read the pre-console confirmation file as canonical closed JSON."""
     try:
-        raw = Path(path).read_bytes()
+        raw = _read_direct_regular_bytes(Path(path), _MAX_CONFIRMATION_BYTES)
         value = json.loads(raw.decode("utf-8"))
     except (OSError, UnicodeDecodeError, ValueError) as error:
         raise ProducerRefusal("confirmation file could not be read") from error
@@ -822,7 +889,7 @@ def append_confirmation_to_register(
     if not confirmed:
         raise ProducerRefusal("confirmation has no designation; nothing was written")
     try:
-        current_bytes = Path(register_path).read_bytes()
+        current_bytes = read_register_path(register_path)
     except FileNotFoundError:
         current_bytes = empty_register()
     except OSError as error:
@@ -959,7 +1026,7 @@ def commit_confirmed_production(
             "confirmed triage destination is not a filesystem path; nothing was written. "
             "Supply one distinct path for each record role."
         ) from error
-    _refuse_aliased_destinations(**destinations)
+    destinations = _canonical_distinct_destinations(**destinations)
     _publish_immutable_canonical(destinations["authority"], confirmation)
     successor_digest = append_confirmation_to_register(
         confirmation,
@@ -980,6 +1047,8 @@ def _atomic_write_canonical(path: Path, value: Mapping[str, Any]) -> None:
     data = canonical_bytes(value)
     temporary: Path | None = None
     published = False
+    failure: ProducerRefusal | None = None
+    cause: OSError | None = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.tmp-", dir=path.parent)
@@ -997,45 +1066,78 @@ def _atomic_write_canonical(path: Path, value: Mapping[str, Any]) -> None:
             os.close(directory)
     except OSError as error:
         state = "was published but is not proven durable" if published else "was not published"
-        raise ProducerRefusal(f"confirmed triage document {path} {state}") from error
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
+        failure = ProducerRefusal(f"confirmed triage document {path} {state}")
+        cause = error
+    cleanup_error = _temporary_cleanup_error(temporary)
+    if failure is not None:
+        if cleanup_error is not None:
+            failure.add_note(
+                f"confirmed triage document temporary {temporary} also could not be removed: "
+                f"{cleanup_error}"
+            )
+        raise failure from cause
+    if cleanup_error is not None:
+        raise ProducerRefusal(
+            f"confirmed triage document temporary {temporary} could not be removed"
+        ) from cleanup_error
 
 
-def _refuse_aliased_destinations(**paths: Path) -> None:
-    """Refuse two commit roles resolving to one file before any role is written."""
-    resolved: dict[Path, str] = {}
+def _case_insensitive_path_key(path: Path) -> str:
+    return unicodedata.normalize("NFC", os.fspath(path)).casefold()
+
+
+def _canonical_distinct_destinations(**paths: Path) -> dict[str, Path]:
+    """Resolve parents once and refuse spelling or inode aliases before any write."""
+    canonical: dict[str, Path] = {}
+    spellings: dict[str, str] = {}
+    identities: dict[tuple[int, int], str] = {}
     for role, path in paths.items():
         try:
-            target = path.resolve(strict=False)
+            target = path.parent.resolve(strict=False) / path.name
         except (OSError, RuntimeError) as error:
             raise ProducerRefusal(
                 "confirmed triage destination could not be resolved; nothing was written. "
                 "Repair the named path and retry."
             ) from error
-        prior = resolved.get(target)
+        key = _case_insensitive_path_key(target)
+        prior = spellings.get(key)
         if prior is not None:
             raise ProducerRefusal(
-                f"confirmed triage destinations for {prior} and {role} resolve to {target}; "
+                f"confirmed triage destinations for {prior} and {role} collide on a "
+                "case-insensitive filesystem; "
                 "nothing was written. Give every record role its own path."
             )
-        resolved[target] = role
-    existing = [(role, path) for role, path in paths.items() if path.exists()]
-    for index, (role, path) in enumerate(existing):
-        for other_role, other_path in existing[index + 1 :]:
-            try:
-                same = os.path.samefile(path, other_path)
-            except OSError as error:
+        spellings[key] = role
+        try:
+            status = os.lstat(target)
+        except FileNotFoundError:
+            pass
+        except OSError as error:
+            raise ProducerRefusal(
+                "confirmed triage destination identity could not be verified; nothing was "
+                "written. Restore readable destination paths and retry."
+            ) from error
+        else:
+            if stat.S_ISLNK(status.st_mode):
                 raise ProducerRefusal(
-                    "confirmed triage destination identity could not be verified; nothing was "
-                    "written. Restore readable destination paths and retry."
-                ) from error
-            if same:
+                    f"confirmed triage destination for {role} is a symbolic link; nothing was "
+                    "written. Supply a direct path."
+                )
+            if not stat.S_ISREG(status.st_mode):
                 raise ProducerRefusal(
-                    f"confirmed triage destinations for {role} and {other_role} name one file; "
+                    f"confirmed triage destination for {role} is not a regular file; nothing "
+                    "was written. Supply a direct file path."
+                )
+            identity = (status.st_dev, status.st_ino)
+            prior = identities.get(identity)
+            if prior is not None:
+                raise ProducerRefusal(
+                    f"confirmed triage destinations for {prior} and {role} name one file; "
                     "nothing was written. Give every record role its own path."
                 )
+            identities[identity] = role
+        canonical[role] = target
+    return canonical
 
 
 def _publish_immutable_canonical(path: Path, value: Mapping[str, Any]) -> None:
@@ -1043,6 +1145,8 @@ def _publish_immutable_canonical(path: Path, value: Mapping[str, Any]) -> None:
     data = canonical_bytes(value)
     temporary: Path | None = None
     published = False
+    failure: ProducerRefusal | None = None
+    cause: OSError | None = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.tmp-", dir=path.parent)
@@ -1055,7 +1159,7 @@ def _publish_immutable_canonical(path: Path, value: Mapping[str, Any]) -> None:
             os.link(temporary, path)
         except FileExistsError:
             try:
-                existing = path.read_bytes()
+                existing = _read_existing_immutable(path, len(data))
             except OSError as error:
                 raise ProducerRefusal(
                     f"confirmation authority path {path} already exists but cannot be verified; "
@@ -1072,11 +1176,73 @@ def _publish_immutable_canonical(path: Path, value: Mapping[str, Any]) -> None:
             os.fsync(directory)
         finally:
             os.close(directory)
-    except ProducerRefusal:
-        raise
+    except ProducerRefusal as error:
+        failure = error
     except OSError as error:
         state = "was published but is not proven durable" if published else "was not published"
-        raise ProducerRefusal(f"confirmation authority record {path} {state}") from error
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
+        failure = ProducerRefusal(f"confirmation authority record {path} {state}")
+        cause = error
+    cleanup_error = _temporary_cleanup_error(temporary)
+    if failure is not None:
+        if cleanup_error is not None:
+            failure.add_note(
+                f"confirmation authority record temporary {temporary} also could not be "
+                f"removed: {cleanup_error}"
+            )
+        if cause is not None:
+            raise failure from cause
+        raise failure
+    if cleanup_error is not None:
+        raise ProducerRefusal(
+            f"confirmation authority record temporary {temporary} could not be removed"
+        ) from cleanup_error
+
+
+def _read_existing_immutable(path: Path, expected_size: int) -> bytes:
+    """Read a retry target by descriptor without following or accepting aliases."""
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    descriptor = os.open(path, flags)
+    with os.fdopen(descriptor, "rb") as handle:
+        status = os.fstat(handle.fileno())
+        if not stat.S_ISREG(status.st_mode) or status.st_nlink != 1:
+            raise OSError("immutable authority target is not one unaliased regular file")
+        existing = handle.read(expected_size + 1)
+        current = os.lstat(path)
+        if (current.st_dev, current.st_ino) != (status.st_dev, status.st_ino):
+            raise OSError("immutable authority target changed while it was verified")
+    return existing
+
+
+def _read_direct_regular_bytes(path: Path, maximum: int) -> bytes:
+    """Bound one untrusted file read and never follow or block on its final name."""
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    descriptor = os.open(path, flags)
+    with os.fdopen(descriptor, "rb") as handle:
+        status = os.fstat(handle.fileno())
+        if not stat.S_ISREG(status.st_mode):
+            raise OSError("input path is not a regular file")
+        data = handle.read(maximum + 1)
+    if len(data) > maximum:
+        raise OSError(f"input exceeds the {maximum}-byte limit")
+    return data
+
+
+def _temporary_cleanup_error(path: Path | None) -> OSError | None:
+    """Return cleanup failure so the named operation refusal remains primary."""
+    if path is None:
+        return None
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as error:
+        return error
+    return None

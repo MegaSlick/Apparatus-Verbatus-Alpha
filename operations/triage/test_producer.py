@@ -21,6 +21,7 @@ from operations.triage.producer import (
     SubmittedFrame,
     append_confirmation_to_register,
     commit_confirmed_production,
+    load_confirmation,
     produce,
     routes_to_review,
     triage_manifest,
@@ -84,6 +85,31 @@ def test_producer_has_exact_coverage_and_a_full_frame_fallback_for_every_submiss
     assert all(
         row["split"]["parts"][0]["colour_mode"] == "keep" for row in produced.manifest["records"]
     )
+
+
+def test_submitted_paths_refuse_traversal_and_case_variant_collisions():
+    with pytest.raises(ProducerRefusal, match="canonical relative paths"):
+        produce([frame("../page")], corpus_id="synthetic", mode="auto")
+    with pytest.raises(ProducerRefusal, match="case-insensitive filesystem"):
+        produce([frame("Page.png"), frame("page.png")], corpus_id="synthetic", mode="auto")
+
+
+def test_frame_decode_refuses_pillow_decompression_bombs(monkeypatch: pytest.MonkeyPatch):
+    specimen = frame("large-under-test")
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 1)
+    with pytest.raises(ProducerRefusal, match="could not be decoded"):
+        produce([specimen], corpus_id="synthetic", mode="auto")
+
+
+def test_confirmation_loader_does_not_follow_its_final_path(tmp_path: Path):
+    frames = [frame("63"), frame("64")]
+    confirmed, _recipe, _manifest, _evidence = confirmation(frames)
+    target = tmp_path / "target.json"
+    target.write_bytes(canonical_bytes(confirmed))
+    linked = tmp_path / "confirmation.json"
+    linked.symlink_to(target)
+    with pytest.raises(ProducerRefusal, match="could not be read"):
+        load_confirmation(linked)
 
 
 def test_modes_keep_rows_byte_identical_and_only_change_routing(tmp_path: Path):
@@ -297,6 +323,28 @@ def test_confirmation_accounting_refuses_boolean_record_count():
             instrument_recipe=recipe,
             evidence_manifest=malformed,
             evidence_records=evidence,
+        )
+
+
+def test_confirmation_record_count_is_refused_before_candidate_records_are_walked(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    frames = [frame("63"), frame("64")]
+    confirmed, recipe, manifest, evidence = confirmation(frames)
+
+    def must_not_validate(*_args, **_kwargs):
+        raise AssertionError("mismatched record count must refuse before record validation")
+
+    monkeypatch.setattr(producer_module, "validate_candidate_evidence", must_not_validate)
+    with pytest.raises(ProducerRefusal, match="record count does not match"):
+        produce(
+            frames,
+            corpus_id="synthetic",
+            mode="auto",
+            confirmation=confirmed,
+            instrument_recipe=recipe,
+            evidence_manifest=manifest,
+            evidence_records=[*evidence, *evidence],
         )
 
 
@@ -668,6 +716,59 @@ def test_confirmed_commit_refuses_aliased_destinations_before_any_write(tmp_path
             authority_path=shared,
         )
     assert sorted(tmp_path.iterdir()) == []
+
+
+def test_confirmed_commit_refuses_case_collisions_and_authority_symlinks(tmp_path: Path):
+    frames = [frame("63"), frame("64")]
+    confirmed, recipe, evidence_manifest, evidence = confirmation(frames)
+    common = {
+        "frames": frames,
+        "corpus_id": "synthetic",
+        "mode": "auto",
+        "confirmation": confirmed,
+        "instrument_recipe": recipe,
+        "evidence_manifest": evidence_manifest,
+        "evidence_records": evidence,
+        "register_path": tmp_path / "register.json",
+        "authority_path": tmp_path / "authority.json",
+    }
+    with pytest.raises(ProducerRefusal, match="case-insensitive filesystem"):
+        commit_confirmed_production(
+            **common,
+            manifest_path=tmp_path / "Door.json",
+            clusters_path=tmp_path / "door.json",
+        )
+    target = tmp_path / "outside-authority.json"
+    target.write_bytes(canonical_bytes(confirmed))
+    (tmp_path / "authority.json").symlink_to(target)
+    with pytest.raises(ProducerRefusal, match="symbolic link"):
+        commit_confirmed_production(
+            **common,
+            manifest_path=tmp_path / "manifest.json",
+            clusters_path=tmp_path / "clusters.json",
+        )
+    assert target.read_bytes() == canonical_bytes(confirmed)
+    assert not (tmp_path / "register.json").exists()
+
+
+def test_temporary_cleanup_failure_does_not_mask_a_producer_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    original_unlink = Path.unlink
+
+    def fail_replace(_source, _target):
+        raise OSError("simulated publish refusal")
+
+    def fail_temporary_unlink(path, *args, **kwargs):
+        if ".tmp-" in path.name:
+            raise OSError("simulated cleanup refusal")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(producer_module.os, "replace", fail_replace)
+    monkeypatch.setattr(Path, "unlink", fail_temporary_unlink)
+    with pytest.raises(ProducerRefusal, match="was not published") as refusal:
+        producer_module._atomic_write_canonical(tmp_path / "manifest.json", {"schema": "test"})
+    assert any("also could not be removed" in note for note in refusal.value.__notes__)
 
 
 def test_subset_confirmation_cannot_regress_a_grown_membership_or_door_cluster(tmp_path: Path):

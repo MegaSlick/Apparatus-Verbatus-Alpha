@@ -32,6 +32,7 @@ earlier run's is the cross-run check Unit 19 owns.
 
 import json
 import os
+import stat
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
@@ -78,7 +79,11 @@ def append_records(
     concurrent resolvers from both extending one predecessor and silently losing
     whichever append publishes first.
     """
-    path = Path(register_path)
+    try:
+        supplied_path = Path(register_path)
+        path = supplied_path.parent.resolve(strict=False) / supplied_path.name
+    except (OSError, RuntimeError, TypeError) as error:
+        raise SchemaRefusal("corpus-register path could not be resolved") from error
     if not _is_sha256(expected_digest):
         raise SchemaRefusal("expected corpus-register digest must be lowercase SHA-256")
     if (
@@ -90,9 +95,10 @@ def append_records(
     path.parent.mkdir(parents=True, exist_ok=True)
     with _register_lock(path):
         try:
-            current = path.read_bytes()
+            current, predecessor_identity = _read_register_path_with_identity(path)
         except FileNotFoundError:
             current = empty_register()
+            predecessor_identity = None
         observed = register_digest(current)
         if observed != expected_digest:
             raise IncompatibleReuse(
@@ -102,6 +108,7 @@ def append_records(
         value = validate_register_bytes(current)
         successor = canonical_bytes({"schema": SCHEMA, "records": [*value["records"], *records]})
         successor_digest = register_digest(successor)
+        _require_same_register_identity(path, predecessor_identity)
         _atomic_replace(path, successor)
         return successor_digest
 
@@ -110,7 +117,17 @@ def append_records(
 def _register_lock(path: Path) -> Iterator[None]:
     """Serialize pathname replacement across writers; a crash releases the lock."""
     lock_path = path.with_name(f".{path.name}.lock")
-    with lock_path.open("a+b") as handle:
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(lock_path, flags, 0o600)
+    except OSError as error:
+        raise SchemaRefusal(
+            "corpus-register lock path must be a direct, writable regular file"
+        ) from error
+    with os.fdopen(descriptor, "a+b") as handle:
+        status = os.fstat(handle.fileno())
+        if not stat.S_ISREG(status.st_mode) or status.st_nlink != 1:
+            raise SchemaRefusal("corpus-register lock path must be one unaliased regular file")
         try:
             import fcntl
         except ImportError:  # pragma: no cover - supported register stores are POSIX
@@ -123,11 +140,67 @@ def _register_lock(path: Path) -> Iterator[None]:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
+def read_register_path(register_path: str | Path) -> bytes:
+    """Read one direct, unaliased register file without following its final name."""
+    return _read_register_path_with_identity(Path(register_path))[0]
+
+
+def _read_register_path_with_identity(path: Path) -> tuple[bytes, tuple[int, int]]:
+    """Read stable bytes and retain the device/inode identity checked at publish."""
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    try:
+        descriptor = os.open(path, flags)
+    except FileNotFoundError:
+        raise
+    except OSError as error:
+        raise SchemaRefusal(
+            "corpus register path must be a direct, readable regular file"
+        ) from error
+    with os.fdopen(descriptor, "rb") as handle:
+        status = os.fstat(handle.fileno())
+        if not stat.S_ISREG(status.st_mode) or status.st_nlink != 1:
+            raise SchemaRefusal("corpus register path must be one unaliased regular file")
+        data = handle.read()
+        current = os.lstat(path)
+        if (current.st_dev, current.st_ino) != (status.st_dev, status.st_ino):
+            raise SchemaRefusal("corpus register path changed while its bytes were read")
+    return data, (status.st_dev, status.st_ino)
+
+
+def _require_same_register_identity(path: Path, expected: tuple[int, int] | None) -> None:
+    """Refuse a pathname swap between predecessor validation and replacement."""
+    try:
+        status = os.lstat(path)
+    except FileNotFoundError:
+        actual = None
+    except OSError as error:
+        raise IncompatibleReuse(
+            "the corpus register identity could not be rechecked before publication"
+        ) from error
+    else:
+        if stat.S_ISLNK(status.st_mode):
+            actual = None
+        else:
+            actual = (status.st_dev, status.st_ino)
+    if actual != expected:
+        raise IncompatibleReuse(
+            "the corpus register path changed after its predecessor was validated; the append "
+            "was not written and must be rebuilt against the current register file"
+        )
+
+
 def _atomic_replace(path: Path, data: bytes) -> None:
     """Publish complete register bytes atomically and make the name durable."""
     descriptor, raw_temporary = tempfile.mkstemp(prefix=f".{path.name}.tmp-", dir=path.parent)
     temporary = Path(raw_temporary)
     replaced = False
+    failure: ContractError | None = None
+    cause: OSError | None = None
     try:
         with os.fdopen(descriptor, "wb") as handle:
             handle.write(data)
@@ -135,7 +208,10 @@ def _atomic_replace(path: Path, data: bytes) -> None:
             os.fsync(handle.fileno())
         os.replace(temporary, path)
         replaced = True
-        directory = os.open(path.parent, os.O_RDONLY)
+        directory = os.open(
+            path.parent,
+            os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_DIRECTORY", 0),
+        )
         try:
             os.fsync(directory)
         finally:
@@ -146,9 +222,28 @@ def _atomic_replace(path: Path, data: bytes) -> None:
             if replaced
             else "was not replaced"
         )
-        raise ContractError(f"the corpus register {state}") from error
-    finally:
-        temporary.unlink(missing_ok=True)
+        failure = ContractError(f"the corpus register {state}")
+        cause = error
+    cleanup_error = _temporary_cleanup_error(temporary)
+    if failure is not None:
+        if cleanup_error is not None:
+            failure.add_note(
+                f"corpus-register temporary {temporary} also could not be removed: {cleanup_error}"
+            )
+        raise failure from cause
+    if cleanup_error is not None:
+        raise SchemaRefusal(
+            f"corpus-register temporary {temporary} could not be removed"
+        ) from cleanup_error
+
+
+def _temporary_cleanup_error(path: Path) -> OSError | None:
+    """Return cleanup failure so the corpus-register refusal remains primary."""
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as error:
+        return error
+    return None
 
 
 def read_snapshot(tree: Any, run: dict[str, Any]) -> bytes:
@@ -193,7 +288,7 @@ def verify_snapshot_is_current(run: dict[str, Any], register_path: str | None) -
             )
         return
     try:
-        live = register_digest(Path(register_path).read_bytes())
+        live = register_digest(read_register_path(register_path))
     except OSError as error:
         raise IncompatibleReuse("the corpus register could not be read") from error
     if live != sealed:

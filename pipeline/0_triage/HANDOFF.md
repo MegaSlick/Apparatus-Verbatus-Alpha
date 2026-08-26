@@ -173,6 +173,14 @@ is a whole-pass refusal. `_refuse_preference` remains mandatory on the recipe, e
 record, the evidence manifest, confirmations, decision-manifest rows, cluster records, and
 both corpus-register record types.
 
+Submitted frame names are canonical relative POSIX paths. Traversal, non-canonical spellings,
+and Unicode-normalized case variants are whole-pass refusals so the producer and the Door
+cannot sort or key one submission differently on default APFS. Candidate records and named
+dimension refusals are count-checked against the evidence manifest before either list is
+walked, and an evidence manifest may name only frames in the producer submission. Pillow's
+decompression-bomb warning and error are producer refusals, and the canonical confirmation
+loader reads at most 16 MiB from a direct regular file without following its final path.
+
 The two ScanTailor fixture seams must be replaced together when real transcription lands.
 A real project has no trustworthy `source_frame_sha256` attribute: Unit 6B computes a
 path-to-digest map from the submitted master bytes and binds each transcribed row through it.
@@ -257,7 +265,13 @@ interval. It writes the two canonical, replayable documents
 same `verdicts_sha256` over their ordered validated inputs and the same
 `reconciliation_sha256` over the complete derived pair before that shared field is inserted.
 A crash between the two separate pathname replacements therefore leaves a detectably mixed
-pair even when two reconciler revisions process the same inputs. A host runs the actual
+pair even when two reconciler revisions process the same inputs. Detection means calling
+`validate_reconciliation_pair`, which recomputes the complete-pair digest rather than merely
+comparing the two carried strings. Verdict paths are direct regular files, not symlinks;
+inputs are capped at 16 MiB each, 32 independent seats, 10,000 facts per seat, and 100,000
+observations per seat. Structural numeric observations are frame-relative per-mille integers
+from 0 through 1000. These deliberately generous ceilings bound an untrusted seat response
+without constraining the seven-frame measured protocol. A host runs the actual
 image-reading seats separately, never this producer.
 
 ### What a confirmation is authority for, and what binds it (Unit 6B audit)

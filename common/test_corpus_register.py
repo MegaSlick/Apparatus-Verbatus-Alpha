@@ -527,6 +527,29 @@ def test_a_stale_writer_cannot_overwrite_a_concurrent_append(tmp_path):
     assert register_digest(before) == current
 
 
+def test_a_path_swap_after_predecessor_read_is_refused_by_device_and_inode(tmp_path, monkeypatch):
+    path = tmp_path / "register.json"
+    path.write_bytes(empty_register())
+    replacement = tmp_path / "replacement.json"
+    foreign = canonical_bytes({"schema": SCHEMA, "records": [_declaration()]})
+    replacement.write_bytes(foreign)
+    real_digest = corpus_register.register_digest
+    calls = 0
+
+    def swap_after_observed(data):
+        nonlocal calls
+        calls += 1
+        digest = real_digest(data)
+        if calls == 1:
+            corpus_register.os.replace(replacement, path)
+        return digest
+
+    monkeypatch.setattr(corpus_register, "register_digest", swap_after_observed)
+    with pytest.raises(IncompatibleReuse, match="path changed after its predecessor"):
+        append_records(path, [_declaration()], expected_digest=EMPTY_REGISTER_DIGEST)
+    assert path.read_bytes() == foreign
+
+
 def test_a_failed_atomic_publish_leaves_the_complete_predecessor(tmp_path, monkeypatch):
     path = tmp_path / "register.json"
     path.write_bytes(empty_register())
@@ -540,6 +563,36 @@ def test_a_failed_atomic_publish_leaves_the_complete_predecessor(tmp_path, monke
 
     assert path.read_bytes() == empty_register()
     assert list(tmp_path.glob(".register.json.tmp-*")) == []
+
+
+def test_register_and_lock_paths_refuse_symlinks_without_touching_their_targets(tmp_path):
+    target = tmp_path / "outside.json"
+    target.write_bytes(empty_register())
+    register = tmp_path / "register.json"
+    register.symlink_to(target)
+    with pytest.raises(SchemaRefusal, match="corpus register path"):
+        append_records(register, [_declaration()], expected_digest=EMPTY_REGISTER_DIGEST)
+    assert target.read_bytes() == empty_register()
+
+    register.unlink()
+    (tmp_path / ".register.json.lock").unlink()
+    lock_target = tmp_path / "outside.lock"
+    lock_target.write_bytes(b"untouched")
+    (tmp_path / ".register.json.lock").symlink_to(lock_target)
+    with pytest.raises(SchemaRefusal, match="lock path"):
+        append_records(register, [_declaration()], expected_digest=EMPTY_REGISTER_DIGEST)
+    assert lock_target.read_bytes() == b"untouched"
+    assert not register.exists()
+
+
+def test_register_hardlink_is_refused_as_an_aliased_mutable_head(tmp_path):
+    target = tmp_path / "outside.json"
+    target.write_bytes(empty_register())
+    register = tmp_path / "register.json"
+    register.hardlink_to(target)
+    with pytest.raises(SchemaRefusal, match="unaliased regular file"):
+        append_records(register, [_declaration()], expected_digest=EMPTY_REGISTER_DIGEST)
+    assert target.read_bytes() == empty_register()
 
 
 # --- The sealed snapshot, and the check that cannot be skipped -------------------
