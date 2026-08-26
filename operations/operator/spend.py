@@ -77,7 +77,10 @@ class SpendSurface:
             )
             lines.extend(self._balance_line(item) for item in observations)
         else:
-            lines.append("Recorded balance observations: none in the saved launch-preview records.")
+            lines.append(
+                "Recorded balance observations: none. Only a confirmed launch saves one "
+                "in these records; a preview that was never confirmed saves nothing."
+            )
         if alerts:
             lines.append(
                 "Notification-only alert history (read-only; it did not block a paid action):"

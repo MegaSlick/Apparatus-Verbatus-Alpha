@@ -28,7 +28,8 @@ a real thing. The first real run is a separate, separately approved step.
 
 ## The ten words
 
-Ten things this tool can do, in the order a normal run uses them.
+Eight things this tool can do, in the order a normal run uses them, plus two you can
+run any time to check on things.
 
 | Word | What the real run does | Real-run cost |
 |---|---|---|
