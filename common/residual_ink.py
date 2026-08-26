@@ -18,8 +18,8 @@ honest run cannot hand this check an over-declared rectangle that masks real
 ink. A successful recovery crop that reaches the missed ink clears the finding
 on the very next Recensor pass, with no code here that requests one: there is
 no act to request a recrop for when the ink belongs to nobody's proposal at
-all, and this module never invents one (that would be exactly the "hold at the
-final boundary" GOVERNANCE 3 forbids in a stage that establishes no text).
+all, and this module never invents an act identity merely to attach recovery to
+it. The later explicit hold belongs to Unit 14.
 
 The measured justification (window pass, 2026-08-05): in the old pipeline, 218
 of 29,950 pages (0.73%) claimed success while producing nothing -- the silent
@@ -224,9 +224,14 @@ def page_edge_ink(image_bytes: bytes) -> dict[str, Any]:
     cross-page half act.
     """
     width, height, rows = grayscale_rows(image_bytes)
-    band = min(EDGE_BAND_PIXELS, width // 2, height // 2)
+    # A one-pixel-wide or one-pixel-high image has no centre, but it still has
+    # an edge. ``max(1, ...)`` keeps the recorded band honest for that smallest
+    # legal image; the explicit centre check prevents a negative rectangle.
+    band = min(EDGE_BAND_PIXELS, max(1, width // 2), max(1, height // 2))
     covered = (
-        [] if band == 0 else [{"x": band, "y": band, "w": width - 2 * band, "h": height - 2 * band}]
+        []
+        if 2 * band >= width or 2 * band >= height
+        else [{"x": band, "y": band, "w": width - 2 * band, "h": height - 2 * band}]
     )
     finding = residual_ink(width, height, rows, covered)
     return {**finding, "edge_band_pixels": band, "named_finding": "unclaimed-edge-ink"}

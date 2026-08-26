@@ -4,6 +4,7 @@ import importlib.util
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -153,15 +154,19 @@ def test_the_ink_map_refuses_a_page_the_submitted_manifest_does_not_name_once(mo
     page individually satisfies its own boundary.
     """
     unsubmitted = _StubContext(_StubTree([_sealed_page(7)]), {"source_manifest": [{"ordinal": 1}]})
-    with pytest.raises(FatalAccounting, match="exactly one sealed source"):
+    with pytest.raises(FatalAccounting, match="ordinal 7 matches 0 submitted source rows"):
         INK_MAP_RUN.sealed_pages(unsubmitted)
 
     monkeypatch.setattr(INK_MAP_RUN, "verify_sealed_page_pixels", lambda *args: None)
     duplicated = _StubContext(
         _StubTree([_sealed_page(1), _sealed_page(1)]), {"source_manifest": [{"ordinal": 1}]}
     )
-    with pytest.raises(FatalAccounting, match="exactly one sealed source"):
+    with pytest.raises(FatalAccounting, match="more than one sealed page names ordinal 1"):
         INK_MAP_RUN.sealed_pages(duplicated)
+
+    malformed = _StubContext(_StubTree([_sealed_page(True)]), {"source_manifest": [{"ordinal": 1}]})
+    with pytest.raises(FatalAccounting, match="sealed page has no integer ordinal"):
+        INK_MAP_RUN.sealed_pages(malformed)
 
 
 def test_the_ink_map_refuses_a_run_it_was_handed_no_sealed_page_of():
@@ -173,8 +178,70 @@ def test_the_ink_map_refuses_a_run_it_was_handed_no_sealed_page_of():
     """
     refused = {"subject_id": "page-1", "outcome": "refused", "payload": {"ordinal": 1}}
     context = _StubContext(_StubTree([refused]), {"source_manifest": [{"ordinal": 1}]})
-    with pytest.raises(FatalAccounting, match="no sealed Exemplar pages"):
+    with pytest.raises(FatalAccounting, match="contains no sealed pages"):
         INK_MAP_RUN.sealed_pages(context)
+
+
+def test_real_ingress_keeps_every_direct_stage_entry_guard(monkeypatch):
+    """The real shortcut may omit fixture loading, not run-integrity checks.
+
+    ``open_context`` applies all four checks on fixture ingress. Real ingress
+    needs a separate opener because it has no fixture, so this pins the guards
+    that shortcut must retain: live-register drift, the immutable snapshot, the
+    Exemplar seal, and the run-level hard-failure cap.
+    """
+    run = {
+        "ingress": {"mode": "real"},
+        "adapter_recipes": {INK_MAP: "deterministic-residual-ink-v1"},
+    }
+
+    class _RealTree:
+        def read_run(self):
+            return run
+
+    tree = _RealTree()
+    calls = []
+    monkeypatch.setattr(INK_MAP_RUN, "RunTree", lambda *_args: tree)
+    monkeypatch.setattr(
+        INK_MAP_RUN,
+        "verify_snapshot_is_current",
+        lambda observed, path: calls.append(("live-register", observed, path)),
+    )
+    monkeypatch.setattr(
+        INK_MAP_RUN,
+        "read_snapshot",
+        lambda observed_tree, observed_run: calls.append(
+            ("sealed-snapshot", observed_tree, observed_run)
+        ),
+    )
+    monkeypatch.setattr(
+        INK_MAP_RUN,
+        "verify_predecessor_seal",
+        lambda observed_tree, stage: calls.append(("predecessor", observed_tree, stage)),
+    )
+    monkeypatch.setattr(
+        INK_MAP_RUN,
+        "_refuse_halted_run",
+        lambda observed_tree, stage, path: calls.append(
+            ("hard-failure", observed_tree, stage, path)
+        ),
+    )
+    args = SimpleNamespace(
+        run_root="unused",
+        run_id="r",
+        corpus_register="register.json",
+        hard_failure_config="hard-failure.toml",
+    )
+
+    context = INK_MAP_RUN._open(args, registry_factory=None)
+
+    assert context.tree is tree
+    assert calls == [
+        ("live-register", run, "register.json"),
+        ("sealed-snapshot", tree, run),
+        ("predecessor", tree, INK_MAP),
+        ("hard-failure", tree, INK_MAP, "hard-failure.toml"),
+    ]
 
 
 def test_the_ink_map_measures_only_pixels_it_digested_itself():
@@ -226,7 +293,7 @@ def test_the_edge_band_is_a_bounded_instrument_and_says_it_is_not_calibrated():
 
     source = (ROOT / "common/residual_ink.py").read_text(encoding="utf-8")
     assert EDGE_BAND_PIXELS == 64
-    assert "64 pixels is a calibrated cross-page-act threshold" in source
+    assert "not a\n# claim that 64 pixels is a calibrated cross-page-act threshold" in source
 
 
 def test_a_page_with_no_ink_at_all_still_measures_clean_rather_than_flagging():
@@ -250,7 +317,65 @@ def test_a_page_with_no_ink_at_all_still_measures_clean_rather_than_flagging():
     assert classify(INK_MAP, "mapped") is OutcomeClass.COMPLETED
 
 
-def test_the_fixture_geometry_leaves_almost_no_quiet_perimeter():
+def test_a_page_with_no_ink_is_published_as_mapped(monkeypatch):
+    """Exercise the stage branch the inked fixture cannot reach."""
+    blank = encode_grayscale_png(200, 200, [bytearray([230] * 200) for _ in range(200)])
+    page = _sealed_page(1)
+
+    class _PublishingContext:
+        def __init__(self):
+            self.tree = object()
+            self.published = []
+            self.sealed = False
+            self.finished = False
+
+        def input_ref(self, path):
+            return {"relative_path": path, "sha256": "0" * 64}
+
+        def publish(self, **record):
+            self.published.append(record)
+
+        def seal_boundary(self):
+            self.sealed = True
+
+        def finish(self):
+            self.finished = True
+
+    context = _PublishingContext()
+
+    class _Parser:
+        @staticmethod
+        def parse_args():
+            return SimpleNamespace()
+
+    monkeypatch.setattr(INK_MAP_RUN, "stage_parser", lambda *_args: _Parser())
+    monkeypatch.setattr(INK_MAP_RUN, "_open", lambda *_args: context)
+    monkeypatch.setattr(
+        INK_MAP_RUN,
+        "sealed_pages",
+        lambda _context: [(1, page, "1_exemplar/artifacts/page/page.json")],
+    )
+    monkeypatch.setattr(INK_MAP_RUN, "measured_page_bytes", lambda *_args: blank)
+
+    assert INK_MAP_RUN.main(registry_factory=None) == 0
+    assert [record["outcome"] for record in context.published] == ["mapped"]
+    assert context.sealed is True
+    assert context.finished is True
+
+
+def test_a_one_pixel_wide_page_records_its_whole_width_as_edge():
+    """The smallest legal width has an edge even though ``width // 2`` is zero."""
+    rows = [bytearray([170 if y < 25 else 230]) for y in range(100)]
+
+    edge = INK_MAP_RUN.page_edge_ink(encode_grayscale_png(1, 100, rows))
+
+    assert edge["edge_band_pixels"] == 1
+    assert edge["total_ink_pixels"] == 25
+    assert edge["outside_ink_pixels"] == 25
+    assert edge["flagged"] is True
+
+
+def test_the_fixture_geometry_is_degenerate_and_every_fixture_page_flags():
     """Name the fixture's own degeneracy so a green run is not over-read.
 
     A 64-pixel band on a 200x260 page leaves a 72x132 centre, so every page of
@@ -261,7 +386,7 @@ def test_the_fixture_geometry_leaves_almost_no_quiet_perimeter():
     handoff paragraph it belongs to needs rewriting.
     """
     from common.imaging import dimensions
-    from common.residual_ink import EDGE_BAND_PIXELS
+    from common.residual_ink import EDGE_BAND_PIXELS, page_edge_ink
     from proof.synthetic_pages import page_bytes
 
     width, height = dimensions(page_bytes(1))
@@ -271,3 +396,5 @@ def test_the_fixture_geometry_leaves_almost_no_quiet_perimeter():
         "the fixture page now has a substantial quiet centre; the ink map handoff "
         "says it does not, and the edge findings on a fixture run mean something else"
     )
+    for ordinal in (1, 2):
+        assert page_edge_ink(page_bytes(ordinal))["flagged"] is True

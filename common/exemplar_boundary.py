@@ -7,9 +7,9 @@ a changed, missing, or substituted blob cannot be quietly re-hashed into new
 downstream evidence.
 
 This deliberately knows contracts and the run tree, but not a numbered pipeline
-module. Designator, Attestatores, Perlector, and Armarium use the same check: the
-first three prevent work over altered pixels; the latter prevents an export after
-pixels changed between stages.
+module. Ink Map, Designator, Attestatores, Perlector, and Armarium use the same
+check: the first four prevent work over altered pixels; the latter prevents an
+export after pixels changed between stages.
 """
 
 import json

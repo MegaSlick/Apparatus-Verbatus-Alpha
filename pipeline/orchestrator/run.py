@@ -10,8 +10,8 @@ never stand in for a pipeline that was never actually executed.
 It establishes nothing and reads nothing except the outcome bookkeeping it needs to
 sequence and to checkpoint. Its four jobs:
 
-  Sequence.   Door, Exemplar, Designator, Attestatores, Perlector, Recensor,
-              recovery, Archetypus, Armarium, in that order.
+  Sequence.   Door, Exemplar, Ink Map, Designator, Attestatores, Perlector,
+              Recensor, recovery, Archetypus, Armarium, in that order.
   Recover.    The Recensor appends a request; the orchestrator invokes the owning
               stage — the Designator — for a replacement region, then re-reads and
               re-reviews. The Recensor never cuts a crop, so recovery does not grow

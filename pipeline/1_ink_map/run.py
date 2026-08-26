@@ -1,9 +1,9 @@
 """Ink map: measure every sealed page before the Designator proposes acts.
 
 One ``ink-map`` record is written for every sealed Exemplar page, including a
-page with no ink and therefore no possible proposal.  The record is bounded
-evidence: ``unclaimed-edge-ink`` names an edge signal without holding anything;
-Unit 14 owns that explicit hold outcome.
+page on which this measure finds no ink; proposals do not exist yet. The record
+is bounded evidence: ``unclaimed-edge-ink`` names an edge signal without holding
+anything; Unit 14 owns that explicit hold outcome.
 """
 
 import sys
@@ -17,12 +17,14 @@ from common.contracts.approval import REAL_INGRESS, parse_ingress_record  # noqa
 from common.contracts.canonical import digest_bytes  # noqa: E402
 from common.contracts.errors import FatalAccounting  # noqa: E402
 from common.contracts.stages import EXEMPLAR, INK_MAP  # noqa: E402
+from common.corpus_register import read_snapshot, verify_snapshot_is_current  # noqa: E402
 from common.exemplar_boundary import verify_sealed_page_pixels  # noqa: E402
 from common.residual_ink import page_edge_ink, page_residual_ink  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
     StageContext,
+    _refuse_halted_run,
     adapter_recipe_for,
     open_context,
     run_stage,
@@ -48,18 +50,38 @@ def sealed_pages(context):
         if page["outcome"] != "sealed":
             continue
         ordinal = page.get("payload", {}).get("ordinal")
-        sources = [row for row in context.run["source_manifest"] if row.get("ordinal") == ordinal]
-        if not isinstance(ordinal, int) or len(sources) != 1 or ordinal in seen_ordinals:
+        if not isinstance(ordinal, int) or isinstance(ordinal, bool):
             raise FatalAccounting(
-                "the Exemplar does not name exactly one sealed source per ink map"
+                "the ink map refuses the Exemplar census: a sealed page has no integer "
+                "ordinal, so it cannot be matched to one submitted source; no ink-map "
+                "record was written"
+            )
+        sources = [row for row in context.run["source_manifest"] if row.get("ordinal") == ordinal]
+        if len(sources) != 1:
+            raise FatalAccounting(
+                f"the ink map refuses the Exemplar census: sealed page ordinal {ordinal} "
+                f"matches {len(sources)} submitted source rows, not exactly one; no "
+                "ink-map record was written"
+            )
+        if ordinal in seen_ordinals:
+            raise FatalAccounting(
+                f"the ink map refuses the Exemplar census: more than one sealed page names "
+                f"ordinal {ordinal}; one source cannot receive two ink-map records, and no "
+                "record was written"
             )
         seen_ordinals.add(ordinal)
         verify_sealed_page_pixels(context.tree, context.run, sources[0], page)
         if not isinstance(page["payload"].get("image_path"), str):
-            raise FatalAccounting(f"sealed page {ordinal} has no image bytes for the ink map")
+            raise FatalAccounting(
+                f"the ink map refuses sealed Exemplar page {ordinal}: it has no image path "
+                "to measure; no ink-map record was written"
+            )
         pages.append((ordinal, page, entry["relative_path"]))
     if not pages:
-        raise FatalAccounting("the ink map received no sealed Exemplar pages")
+        raise FatalAccounting(
+            "the ink map refuses the Exemplar census: it contains no sealed pages; "
+            "a completed map cannot be published over an empty measured denominator"
+        )
     return sorted(pages, key=lambda row: row[0])
 
 
@@ -107,7 +129,10 @@ def _open(args, registry_factory) -> StageContext:
     run = tree.read_run()
     if parse_ingress_record(run.get("ingress")) != REAL_INGRESS:
         return open_context(args, INK_MAP, registry_factory=registry_factory)
+    verify_snapshot_is_current(run, args.corpus_register)
+    read_snapshot(tree, run)
     verify_predecessor_seal(tree, INK_MAP)
+    _refuse_halted_run(tree, INK_MAP, args.hard_failure_config)
     return StageContext(
         tree=tree,
         run=run,

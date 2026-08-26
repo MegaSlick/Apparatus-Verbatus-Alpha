@@ -1,4 +1,4 @@
-"""The stage names, in flow order, and the seven handoffs between them.
+"""The stage names, in flow order, and the eight handoffs between them.
 
 Named once here so the run tree, the outcome algebra, and the boundary tests
 cannot drift apart on what a stage is called. The directory names match
@@ -8,7 +8,7 @@ like the diagram in ARCHITECTURE.md.
 The door is a producer but not a numbered stage: it is the submit surface that
 decides what may enter at all, and it writes its refusals where the Exemplar can
 account for them. Giving it a name here is what lets "door -> Exemplar" be one of
-the seven tested handoffs rather than an unexamined edge.
+the eight tested handoffs rather than an unexamined edge.
 """
 
 from typing import Final

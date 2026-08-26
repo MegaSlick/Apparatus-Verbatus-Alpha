@@ -977,6 +977,37 @@ def test_orchestrator_carries_a_real_submission_to_the_door_end_to_end(tmp_path)
     ), "the caller's policy must differ from the default, or the check above proves nothing"
 
 
+def test_real_designator_refuses_a_missing_ink_map_boundary(tmp_path):
+    """Real ingress must not bypass the producer inserted immediately before it."""
+    approved, source, manifest, policy = _real_submission(tmp_path)
+    root = approved / "runs"
+    first = orchestrate(
+        root,
+        "real-ink-map-boundary",
+        "happy",
+        submission_folder=source,
+        submission_manifest=manifest,
+        data_gate_policy=policy,
+    )
+    assert "real structural proposal/model work is outside System 03" in first.stderr
+
+    tree = RunTree(root, "real-ink-map-boundary")
+    _stage_seal_path(tree, INK_MAP).unlink()
+    before = snapshot(tree.root)
+
+    result = invoke_stage(
+        root,
+        "real-ink-map-boundary",
+        "happy",
+        "pipeline/2_designator/run.py",
+    )
+
+    assert result.returncode == EXIT_FATAL
+    assert "predecessor ink-map has no stage-seal" in result.stderr
+    assert "never re-derived" in result.stderr
+    assert snapshot(tree.root) == before
+
+
 def test_orchestrator_keeps_the_doors_manifest_without_folder_refusal(tmp_path):
     approved, _source, manifest, policy = _real_submission(tmp_path)
     result = orchestrate(

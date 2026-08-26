@@ -93,6 +93,7 @@ from common.stage import (  # noqa: E402
     run_stage,
     stage_parser,
     validate_serving_provenance,
+    verify_predecessor_seal,
 )
 
 # Fields a Designator artifact may never carry, at any depth of its payload.
@@ -2124,16 +2125,19 @@ def _regions_of(context, act_id: str) -> list[dict]:
 def _open(args, registry_factory) -> tuple[object, bool]:
     """Open either a fixture stage context or the honest real-input boundary.
 
-    System 03 owns the Exemplar-to-Designator reconciliation, but it does not own
-    a real structural-proposal model.  A real run therefore reaches that check and
-    then stops; it must not fabricate fixture acts, successful no-op work, or a
-    synthetic hold that could make an unproposed corpus look exported.
+    System 03 owns the Designator's independent Exemplar reconciliation behind
+    the Ink Map boundary, but it does not own a real structural-proposal model.
+    A real run therefore proves that immediate boundary, reaches the underlying
+    Exemplar check, and then stops; it must not fabricate fixture acts, successful
+    no-op work, or a synthetic hold that could make an unproposed corpus look
+    exported.
     """
     tree = RunTree(Path(args.run_root), args.run_id)
     run = tree.read_run()
     mode = parse_ingress_record(run.get("ingress"))
     if mode != REAL_INGRESS:
         return (open_context(args, DESIGNATOR, registry_factory=registry_factory), False)
+    verify_predecessor_seal(tree, DESIGNATOR)
     return (
         StageContext(
             tree=tree,
@@ -2157,9 +2161,9 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     if real_input:
         page_records(context)
         raise ContractError(
-            "the Exemplar-to-Designator filename-ledger boundary reconciled, but real "
-            "structural proposal/model work is outside System 03; no proposals or holds "
-            "were fabricated"
+            "the Designator proved its Ink Map boundary and reconciled the Exemplar "
+            "filename ledger, but real structural proposal/model work is outside System "
+            "03; no proposals or holds were fabricated"
         )
 
     if args.operation == "recover":
