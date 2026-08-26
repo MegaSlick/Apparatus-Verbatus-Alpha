@@ -542,6 +542,34 @@ def testimonia_of(context, act_id: str, proposal_regions: list[dict]) -> list[di
     return current
 
 
+def declared_page_witness_chairs(context) -> set[str]:
+    """Independently validate the producer's page-witness declaration.
+
+    A consumer may not inherit trust across a stage boundary. Uniqueness keeps
+    duplicates from disappearing in a set, and roster membership prevents a
+    declaration for nonexistent chairs from silently erasing page coverage.
+    """
+    declared = context.fixture.get("page_witness_chairs", [])
+    # Set construction and refusal formatting may invoke subclass-defined
+    # behavior, so both require exact built-in strings first.
+    if (
+        not isinstance(declared, list)
+        or any(type(item) is not str for item in declared)
+        or len(declared) != len(set(declared))
+    ):
+        raise SchemaRefusal(
+            "the fixture's page_witness_chairs declaration is not a unique list of chair names"
+        )
+    declared_chairs = set(declared)
+    unknown = declared_chairs - set(context.witness_chairs)
+    if unknown:
+        raise SchemaRefusal(
+            "the fixture's page_witness_chairs declaration names chair(s) outside this run's "
+            f"configured witness roster: {sorted(unknown)} not in {sorted(context.witness_chairs)}"
+        )
+    return declared_chairs
+
+
 def act_attachment_view(
     context, act: dict[str, Any], testimonia: list[dict], bases: list[dict]
 ) -> dict[str, Any]:
@@ -583,16 +611,11 @@ def act_attachment_view(
         raise SchemaRefusal("an act-attachment record has no attachment list")
     configured = set(context.witness_chairs)
     page_ids = {basis["source_page_ordinal"]: basis["source_page_id"] for basis in bases}
-    declared_chairs = context.fixture.get("page_witness_chairs", [])
-    # The producer enforces this exact shape; accepting a string here would turn
-    # membership into a per-character test at the consuming boundary.
-    if not isinstance(declared_chairs, list) or any(
-        not isinstance(item, str) for item in declared_chairs
-    ):
-        raise SchemaRefusal(
-            "the fixture's page_witness_chairs declaration is not a list of chair names"
-        )
-    page_chairs = set(declared_chairs)
+    # This run-global declaration is validated first, and by the stricter of the
+    # two readings that met here: exact strings, no duplicates hiding in a set,
+    # and no chair outside this run's configured roster. It must fail before any
+    # per-attachment diagnostic can misattribute its malformation to a chair record.
+    page_chairs = declared_page_witness_chairs(context)
     # Validate every value that becomes a set/dict key before pair accounting.
     # JSON booleans compare equal to integers in Python (`True == 1`), and an
     # unhashable JSON value would otherwise escape as a raw TypeError here. The
@@ -612,7 +635,7 @@ def act_attachment_view(
         if (
             not isinstance(attachment, dict)
             or set(attachment) != attachment_fields
-            or not isinstance(attachment.get("chair"), str)
+            or type(attachment.get("chair")) is not str
             or not isinstance(attachment.get("page_witness"), bool)
             or not isinstance(attachment.get("attached"), bool)
             or not isinstance(attachment.get("content_health"), dict)
@@ -1002,14 +1025,18 @@ def perlector_chair(context) -> ChairIdentity | AbsentChair:
 
 
 def preflight_testimonia_denominator(context, acts: list[dict]) -> None:
-    """Validate every requested act's witness denominator before any Perlectio writes.
+    """Validate the run declaration and every requested witness denominator before writes.
 
     A Perlectio is immutable, so one published over a short denominator cannot
     be corrected: restoring the missing witness changes the bytes under the same
     reading identity, and the run can no longer resume normally. Checking the
     whole requested set first is what stops a malformed act discovered late from
     leaving an unfixable reading behind it.
+
+    The run-global page-witness declaration is checked even when every act is
+    held, because those acts still publish immutable ``not-run`` Perlectiones.
     """
+    declared_page_witness_chairs(context)
     for act in acts:
         if act["outcome"] == "held":
             continue

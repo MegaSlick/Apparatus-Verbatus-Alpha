@@ -58,6 +58,7 @@ from common.contracts.canonical import (
     canonical_bytes,
     digest_bytes,
     self_hash,
+    self_hash_refusal,
     verify_self_hash,
 )
 from common.contracts.envelope import validate_envelope, validate_input_refs, verify_input_bytes
@@ -310,7 +311,7 @@ class RunTree:
         return tree
 
     def read_run(self) -> dict[str, Any]:
-        """The run authority, refused if it was edited after it was sealed."""
+        """The run authority, refused unless its self-hash verifies its current contents."""
         run_file = self.root / RUN_FILE
         if not run_file.exists():
             raise IncompatibleReuse(
@@ -319,6 +320,15 @@ class RunTree:
             )
         record = _read_json(run_file)
         if not verify_self_hash(record):
+            # Bare run authority has no envelope boundary to name an unhashable
+            # value; without a computed digest, this boundary cannot claim when
+            # the malformed content arose.
+            unhashable = self_hash_refusal(record)
+            if unhashable is not None:
+                raise IncompatibleReuse(
+                    f"{run_file} fails its own self-hash: {unhashable}. Nothing in this "
+                    "tree can be trusted against it"
+                )
             raise IncompatibleReuse(
                 f"{run_file} fails its own self-hash: the run authority was edited "
                 "after it was sealed, so nothing in this tree can be trusted against it"
@@ -1587,6 +1597,7 @@ def _read_json_with_bytes(path: Path) -> tuple[Any, bytes]:
 
 
 def _decode_json_bytes(data: bytes, path: Path) -> Any:
+    """Decode an already-read artifact snapshot under the store's named refusal."""
     try:
         return json.loads(data.decode("utf-8"))
     except (UnicodeDecodeError, ValueError, RecursionError) as error:

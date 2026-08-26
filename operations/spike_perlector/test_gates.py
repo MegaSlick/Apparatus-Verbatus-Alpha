@@ -661,8 +661,11 @@ def test_policy_content_that_cannot_be_canonicalized_refuses_rather_than_aliasin
         DataGateAuthority.scope_digest(
             policy_content={"policy_version": "test-v1", "retention_days": 1.5}
         )
+    # The gate must retain the canonical field path, not replace it with a codec
+    # diagnostic that omits which policy value failed.
     with pytest.raises(
-        DisclosureRefusal, match="cannot be canonically bound.*surrogates not allowed"
+        DisclosureRefusal,
+        match=r"cannot be canonically bound: unencodable character '\\ud800' at \$\.purpose",
     ):
         DataGateAuthority.scope_digest(
             policy_content={"policy_version": "test-v1", "purpose": chr(0xD800)}

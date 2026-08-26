@@ -28,7 +28,7 @@ exclusion, and that is governance, not something this cut touches.
 
 from typing import Any, Final
 
-from .canonical import self_hash, verify_self_hash
+from .canonical import self_hash, self_hash_refusal, verify_self_hash
 from .errors import ApprovalRefusal
 
 # The only human in these rules. Recorded as a value rather than assumed, so an
@@ -154,9 +154,13 @@ def build_approval_record(
     timestamp: str,
 ) -> dict[str, Any]:
     """Build a well-formed approval record, self-hash included."""
+    if type(action) is not str:
+        raise ApprovalRefusal(
+            "an approval action is not an exact string from the closed vocabulary"
+        )
     if action not in ACTIONS:
         raise ApprovalRefusal(f"action {action!r} is not one of {list(ACTIONS)}")
-    if not isinstance(subject_ids, list) or not subject_ids:
+    if type(subject_ids) is not list or not subject_ids:
         raise ApprovalRefusal("an approval that names no subject approves nothing")
     if len(subject_ids) > MAX_APPROVAL_SUBJECTS:
         raise ApprovalRefusal(
@@ -169,7 +173,7 @@ def build_approval_record(
             f"{MAX_APPROVAL_SUBJECT_BYTES} bytes"
         )
     if len(set(subject_ids)) != len(subject_ids):
-        raise ApprovalRefusal("an approval names the same subject more than once")
+        raise ApprovalRefusal("an approval may name each subject only once")
     if not _bounded_text(reason, MAX_APPROVAL_REASON_BYTES):
         raise ApprovalRefusal(
             "an approval with no reason is unreviewable later; the reason is the "
@@ -181,6 +185,9 @@ def build_approval_record(
             "an approval must name the lowercase sha256 of the exact policy or target version "
             "it approved, or it goes on approving something that changed underneath it"
         )
+    # The last asymmetry between this and the validator. The validator refuses a
+    # blank or non-string timestamp; this did not check it at all, so a caller
+    # could seal `timestamp="   "` here and no reader would ever accept it back.
     if not _bounded_text(timestamp, MAX_APPROVAL_TIMESTAMP_BYTES):
         raise ApprovalRefusal(
             "an approval with no timestamp cannot be reviewed later; when it was given "
@@ -221,17 +228,26 @@ def validate_approval_record(record: Any) -> dict[str, Any]:
     missing = [field for field in _REQUIRED if field not in record]
     if missing:
         raise ApprovalRefusal(f"approval record is missing {missing}")
-    if record.get("schema") != "approval-record.v0":
-        raise ApprovalRefusal(f"approval record has schema {record.get('schema')!r}")
-    if record["approver"] != APPROVER:
+    schema = record.get("schema")
+    if type(schema) is not str:
+        raise ApprovalRefusal("approval record schema is not an exact string")
+    if schema != "approval-record.v0":
+        raise ApprovalRefusal(f"approval record has schema {schema!r}")
+    approver = record["approver"]
+    if type(approver) is not str:
+        raise ApprovalRefusal("approval record approver is not an exact string")
+    if approver != APPROVER:
         raise ApprovalRefusal(
-            f"approval record names approver {record['approver']!r}; only "
+            f"approval record names approver {approver!r}; only "
             f"{APPROVER} approves, and no agent stands in for him"
         )
-    if record["action"] not in ACTIONS:
-        raise ApprovalRefusal(f"approval record has action {record['action']!r}")
+    action = record["action"]
+    if type(action) is not str:
+        raise ApprovalRefusal("approval record action is not an exact string")
+    if action not in ACTIONS:
+        raise ApprovalRefusal(f"approval record has action {action!r}")
     subjects = record["subject_ids"]
-    if not isinstance(subjects, list) or not subjects:
+    if type(subjects) is not list or not subjects:
         raise ApprovalRefusal("approval record names no subjects")
     if len(subjects) > MAX_APPROVAL_SUBJECTS:
         raise ApprovalRefusal(f"approval record names more than {MAX_APPROVAL_SUBJECTS} subjects")
@@ -258,13 +274,13 @@ def validate_approval_record(record: Any) -> dict[str, Any]:
         ("reason", MAX_APPROVAL_REASON_BYTES),
         ("timestamp", MAX_APPROVAL_TIMESTAMP_BYTES),
     ):
-        value = record[field]
-        if not _bounded_text(value, maximum):
+        problem = _text_field_refusal(record[field], maximum)
+        if problem is not None:
             raise ApprovalRefusal(
-                f"approval record field {field!r} is empty or not a string; an "
-                "approval that does not say what it approved, why, or when is "
-                "unreviewable later, which is the whole point of writing it down; "
-                f"the field is bounded to {maximum} UTF-8 bytes"
+                f"approval record field {field!r} {problem}; an approval that does not "
+                "say what it approved, why, or when is unreviewable later, which is the "
+                f"whole point of writing it down; the field is bounded to {maximum} "
+                "UTF-8 bytes"
             )
     if not _is_sha256(record["target_version_hash"]):
         raise ApprovalRefusal(
@@ -272,6 +288,11 @@ def validate_approval_record(record: Any) -> dict[str, Any]:
             "without a checkable target version cannot be current"
         )
     if not verify_self_hash(record):
+        # Unhashable current contents permit no digest comparison, so they must
+        # not be described as proof that an approval was edited after sealing.
+        unhashable = self_hash_refusal(record)
+        if unhashable is not None:
+            raise ApprovalRefusal(f"approval record fails its own self-hash: {unhashable}")
         raise ApprovalRefusal(
             "approval record fails its own self-hash: it was edited after it was "
             "sealed, and an edited approval is not an approval"
@@ -281,16 +302,38 @@ def validate_approval_record(record: Any) -> dict[str, Any]:
 
 def _is_sha256(value: Any) -> bool:
     return (
-        isinstance(value, str)
+        type(value) is str
         and len(value) == 64
         and all(character in "0123456789abcdef" for character in value)
     )
 
 
-def _bounded_text(value: Any, maximum_bytes: int) -> bool:
-    if not isinstance(value, str) or not value.strip():
-        return False
+def _text_field_refusal(value: Any, maximum_bytes: int) -> str | None:
+    """Why this is not sound approval text, named, or None if it is.
+
+    Named rather than boolean because the four ways a field fails are not one
+    fact. A surrogate in `reason` in particular must be reported as the
+    unencodable character it is: describing it as "empty or not a string" tells a
+    reader the wrong thing about a record that will never hash, and the seal's
+    own diagnostic (`self_hash_refusal`) is not reached once this check fires.
+
+    `type(value) is not str`, not `isinstance`: a str subclass can override
+    comparison, hashing or encoding, and an approval is a record whose exact
+    bytes are the evidence.
+    """
+    if type(value) is not str:
+        return "is not an exact string"
+    if not value.strip():
+        return "is empty"
     try:
-        return len(value.encode("utf-8")) <= maximum_bytes
-    except UnicodeEncodeError:
-        return False
+        encoded = value.encode("utf-8")
+    except UnicodeEncodeError as error:
+        offender = value[error.start : error.start + 1]
+        return f"contains an unencodable character {offender!a}"
+    if len(encoded) > maximum_bytes:
+        return f"exceeds {maximum_bytes} UTF-8 bytes"
+    return None
+
+
+def _bounded_text(value: Any, maximum_bytes: int) -> bool:
+    return _text_field_refusal(value, maximum_bytes) is None

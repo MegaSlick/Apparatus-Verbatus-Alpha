@@ -1468,23 +1468,30 @@ def resolve_attempt(
 
 
 def declared_page_witness_chairs(context) -> set[str]:
-    """The fixture's page-witness declaration, validated before any use.
+    """Validate page-witness scope before any Testimonium can be sealed.
 
-    One accessor for both write paths (the act-scoped compatibility flag in
-    `publish_attempt` and the page join in
-    `publish_page_testimonia_and_attachments`), so a malformed declaration is a
-    named refusal before the first attempt publishes rather than a TypeError
-    mid-pass after some artifacts already sealed (CodeRabbit chain-end review;
-    host disposition: fixed).
+    All write and reread paths use this accessor because a downstream page-join
+    check cannot repair an immutable act record carrying the wrong scope.
     """
     declared = context.fixture.get("page_witness_chairs", [])
+    # Set construction and refusal formatting may invoke subclass-defined
+    # behavior, so both require exact built-in strings first.
     if (
         not isinstance(declared, list)
+        or any(type(chair) is not str for chair in declared)
         or len(declared) != len(set(declared))
-        or any(not isinstance(chair, str) for chair in declared)
     ):
         raise SchemaRefusal("fixture page_witness_chairs is not a unique string list")
-    return set(declared)
+    declared_chairs = set(declared)
+    unknown_chairs = declared_chairs - set(context.witness_chairs)
+    if unknown_chairs:
+        # Both sets are required to correct the fixture without consulting
+        # external configuration for the roster sealed into this run.
+        raise SchemaRefusal(
+            "fixture page_witness_chairs names chair(s) outside the configured witness roster: "
+            f"{sorted(unknown_chairs)} not in {sorted(context.witness_chairs)}"
+        )
+    return declared_chairs
 
 
 def publish_attempt(
@@ -1512,7 +1519,8 @@ def publish_attempt(
         outcome=attempt.outcome,
         reason=attempt.reason,
     )
-    if chair in declared_page_witness_chairs(context):
+    page_witness_chairs = declared_page_witness_chairs(context)
+    if chair in page_witness_chairs:
         # This is the fixture's interim act view of an immutable page witness.
         # Its attachment points at the retained page Testimonium; R4 replaces
         # this declared view with alignment, not with another witness kind.
@@ -1776,7 +1784,7 @@ def publish_page_testimonia_and_attachments(
     compatibility view for the current Perlector; each is explicitly linked below
     to the immutable page Testimonium that supplied it.
     """
-    page_chairs = declared_page_witness_chairs(context) & set(context.witness_chairs)
+    page_chairs = declared_page_witness_chairs(context)
     limits, limits_digest = load_alignment_limits(context.args.alignment_config)
     context.require_sealed_config("alignment", limits_digest)
     page_records: dict[tuple[int, str], dict[str, str]] = {}

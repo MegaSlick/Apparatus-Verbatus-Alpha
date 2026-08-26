@@ -10,6 +10,16 @@ import pytest
 
 from common.contracts.errors import SchemaRefusal
 
+
+class _UnhashableString(str):
+    __hash__ = None
+
+
+class _HostileReprString(str):
+    def __repr__(self):
+        raise RuntimeError("the refusal rendered an untrusted string subclass")
+
+
 # --- Uncertain spans: read text, bounds-checked -------------------------------
 
 
@@ -32,12 +42,63 @@ def test_an_uncertain_span_with_start_after_end_refuses():
         )
 
 
-@pytest.mark.parametrize("confidence", ["certain", "maybe", "", None, 1])
+@pytest.mark.parametrize(
+    "confidence",
+    [
+        "certain",
+        "maybe",
+        "",
+        None,
+        1,
+        True,
+        False,
+        [],
+        {},
+        [[]],
+        {"nested": []},
+        {"nested": {"deep": [{}]}},
+    ],
+)
 def test_an_uncertain_span_with_an_undeclared_confidence_refuses(confidence):
     with pytest.raises(SchemaRefusal, match="confidence"):
         annotations.validate_uncertain_spans(
             [{"start": 0, "end": 1, "alternatives": [], "confidence": confidence}], "reading"
         )
+
+
+# An explicit id prevents pytest from recursively rendering this cycle during
+# collection, before the validator gets the value.
+_RECURSIVE_CONFIDENCE: list = []
+_RECURSIVE_CONFIDENCE.append(_RECURSIVE_CONFIDENCE)
+
+
+@pytest.mark.parametrize(
+    "confidence",
+    [
+        # Adapter output is not guaranteed to have passed through JSON, so type
+        # refusal must precede comparison, traversal, or rendering.
+        pytest.param(float("nan"), id="nan"),
+        pytest.param(float("inf"), id="inf"),
+        pytest.param(1.5, id="float"),
+        pytest.param(10**5000, id="huge-int"),
+        pytest.param(b"low", id="bytes"),
+        # These exact strings reach the value-bearing refusal message.
+        pytest.param("\ud800", id="lone-surrogate"),
+        pytest.param("NaN", id="nan-spelling"),
+        pytest.param("low\0", id="null-byte"),
+        pytest.param({"\ud800": "low"}, id="surrogate-key"),
+        pytest.param(_RECURSIVE_CONFIDENCE, id="recursive"),
+        pytest.param(_UnhashableString("low"), id="unhashable-string-subclass"),
+        pytest.param(_HostileReprString("maybe"), id="hostile-repr-string-subclass"),
+    ],
+)
+def test_a_noncanonical_or_undeclared_confidence_refuses_printably(confidence):
+    """Only exact strings may be rendered in the printable refusal message."""
+    with pytest.raises(SchemaRefusal, match="confidence") as caught:
+        annotations.validate_uncertain_spans(
+            [{"start": 0, "end": 1, "alternatives": [], "confidence": confidence}], "reading"
+        )
+    str(caught.value).encode("utf-8")
 
 
 def test_an_uncertain_span_with_a_non_string_alternative_refuses():
@@ -86,6 +147,24 @@ def test_a_well_formed_zero_width_gap_validates():
         }
     ]
     assert annotations.validate_gaps(gaps, "abcxyz") == gaps
+
+
+@pytest.mark.parametrize(
+    "position",
+    [
+        pytest.param(10**5000, id="huge-int"),
+        pytest.param([], id="unhashable-list"),
+        pytest.param(_UnhashableString("internal"), id="unhashable-string-subclass"),
+        pytest.param(_HostileReprString("sideways"), id="hostile-repr-string-subclass"),
+    ],
+)
+def test_a_noncanonical_gap_position_reaches_a_printable_refusal(position):
+    with pytest.raises(SchemaRefusal, match="position has type") as caught:
+        annotations.validate_gaps(
+            [{"position": position, "start": 1, "end": 1, "witness_evidence": []}],
+            "abc",
+        )
+    str(caught.value).encode("utf-8")
 
 
 def test_the_firewall_refuses_a_fake_seat_that_fills_a_gap_from_testimony():
