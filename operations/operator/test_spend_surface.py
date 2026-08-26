@@ -242,6 +242,18 @@ def test_the_spend_module_imports_no_route_to_a_paid_action_or_a_write() -> None
     A reader can confirm today that `show` reaches no provider and writes
     nothing. This fails the day an import or a call gives it one, which is the
     part a later reader would otherwise have to re-derive by hand.
+
+    Both spellings of an import, not only `from ... import ...`: a plain
+    `import operations.pod.launch` reaches every paid action in it and is not
+    an `ast.ImportFrom` node at all, so the check this test is named for used
+    to pass with the provider seam in the module. The same for a write: a
+    bare `open(path, "w")` is an `ast.Name` call, not an attribute call.
+
+    What it establishes and what it does not, because a boundary test that
+    reads as a proof is worse than none (GOVERNANCE 10): every route named
+    here is refused at import time. A route built at runtime -- a dynamic
+    import, an attribute reached through a variable -- is not visible to a
+    reader of this file and is not visible to this test either.
     """
 
     tree = ast.parse(Path(spend_module.__file__).read_text(encoding="utf-8"))
@@ -254,6 +266,37 @@ def test_the_spend_module_imports_no_route_to_a_paid_action_or_a_write() -> None
     assert project_imports == {
         ("operations.pod.spend", "MAX_BALANCE_OBSERVATION_AGE_SECONDS"),
         ("operations.pod.spend", "load_spend_policy"),
+    }
+    imported = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    } | {
+        node.module
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module is not None
+    }
+    assert not {name for name in imported if name.startswith("operations.pod.")} - {
+        "operations.pod.spend"
+    }
+    # A read-only projection needs no module here that can write a file, start
+    # a process, open a socket, or resolve an import by name at runtime.
+    assert not {name.split(".")[0] for name in imported} & {
+        "boto3",
+        "http",
+        "importlib",
+        "os",
+        "requests",
+        "shutil",
+        "socket",
+        "subprocess",
+        "urllib",
+    }
+    assert "open" not in {
+        node.func.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     }
     called = {
         node.func.attr
