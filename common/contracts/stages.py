@@ -102,3 +102,8 @@ def stage_directory(stage: str) -> str:
         raise KeyError(
             f"{stage!r} owns no run-tree directory; known stages: {sorted(STAGE_DIRECTORIES)}"
         ) from None
+
+
+# The config sections, manifest schema, and every future driver must import this
+# vocabulary rather than maintain independent spellings that can drift.
+TRIAGE_MODES: Final = ("manual", "semi", "auto")

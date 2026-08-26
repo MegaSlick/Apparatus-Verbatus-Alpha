@@ -63,6 +63,7 @@ from common.contracts.stages import (
     PERLECTOR,
     RECENSOR,
     SEAL_PREDECESSORS,
+    TRIAGE_MODES,
 )
 from common.corpus_register import read_snapshot, verify_snapshot_is_current
 from common.exemplar_boundary import verify_sealed_page_pixels
@@ -150,6 +151,27 @@ DEFAULT_SERVING_RECIPES_CONFIG_PATH = (
 DEFAULT_POD_PLACEMENT_CONFIG_PATH = (
     Path(__file__).resolve().parents[1] / "config" / "pod_placement.toml"
 )
+DEFAULT_TRIAGE_MODES_CONFIG_PATH = (
+    Path(__file__).resolve().parents[1] / "config" / "triage_modes.toml"
+)
+MAX_TRIAGE_MODES_CONFIG_BYTES: Final = 64 * 1024
+
+
+def _read_triage_modes_config(path: str | Path) -> bytes:
+    """Read one bounded config body through the descriptor that supplied it."""
+    try:
+        with Path(path).open("rb") as handle:
+            raw = handle.read(MAX_TRIAGE_MODES_CONFIG_BYTES + 1)
+    except OSError as error:
+        raise ContractError(f"triage modes configuration at {path} could not be read") from error
+    if len(raw) > MAX_TRIAGE_MODES_CONFIG_BYTES:
+        raise ContractError(
+            "triage modes configuration at "
+            f"{path} exceeds the {MAX_TRIAGE_MODES_CONFIG_BYTES}-byte limit"
+        )
+    return raw
+
+
 # The witness outcomes that mean a chair actually served, and therefore that a
 # serving receipt exists for the reading. Named once, here, because both halves
 # of the handoff need it and they must not drift: the Attestatores decides
@@ -1602,6 +1624,9 @@ def run_config_bindings(
     corpus_frame_policy, corpus_frame_config_digest = load_corpus_frame_policy(
         corpus_frame_config_path
     )
+    triage_modes_config_digest = digest_bytes(
+        _read_triage_modes_config(DEFAULT_TRIAGE_MODES_CONFIG_PATH)
+    )
     armarium_formats_digest, armarium_formats = bind_armarium_formats(armarium_formats_config_path)
     try:
         serving_recipes_config_digest = digest_bytes(Path(serving_recipes_config_path).read_bytes())
@@ -1646,6 +1671,7 @@ def run_config_bindings(
                 "alignment_config_sha256": alignment_config_digest,
                 "corpus_frame_policy": corpus_frame_policy,
                 "corpus_frame_config_sha256": corpus_frame_config_digest,
+                "triage_modes_config_sha256": triage_modes_config_digest,
                 "pdf_target_dpi_override": pdf_target_dpi,
                 "armarium_formats_config_sha256": armarium_formats_digest,
                 "armarium_formats": armarium_formats.to_record(),
@@ -1704,6 +1730,7 @@ def run_config_bindings(
             "pdf-render": pdf_render_config_digest,
             "recovery": recovery_policy["config_sha256"],
             "hard-failure": hard_failure_policy["config_sha256"],
+            "triage-modes": triage_modes_config_digest,
         },
         "armarium_formats": armarium_formats,
         # Parsed from the bytes `recovery_policy["config_sha256"]` names, and
@@ -1757,6 +1784,45 @@ def require_corpus_frame_shard(
             f"corpus frame has {page_count} pages, above its sealed shard limit "
             f"of {policy['max_pages_per_shard']}"
         )
+
+
+def require_triage_modes(
+    sealed_config_digests: Mapping[str, str],
+    path: str | Path | None = None,
+) -> None:
+    """Refuse mode schema or bytes that differ from the run's sealed vocabulary."""
+    if path is None:
+        path = DEFAULT_TRIAGE_MODES_CONFIG_PATH
+    raw = _read_triage_modes_config(path)
+    bound = sealed_config_digests.get("triage-modes")
+    if bound is None:
+        raise ContractError("this run sealed no digest for the triage modes configuration")
+    observed = digest_bytes(raw)
+    if bound != observed:
+        # Check the binding before parsing. A malformed replacement is still
+        # first and foremost bytes this run never sealed, and must not mask that
+        # security refusal behind a TOML diagnostic.
+        raise ContractError(
+            "the triage modes configuration changed between run binding and its "
+            f"point-of-use check: this run sealed {bound}, and {path} now hashes to {observed}"
+        )
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ContractError(f"triage modes configuration at {path} is not valid UTF-8") from error
+    try:
+        record = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as error:
+        raise ContractError(f"triage modes configuration at {path} is not valid TOML") from error
+    if set(record) != set(TRIAGE_MODES) or any(
+        not isinstance(policy, dict)
+        or set(policy) != {"review_at_or_below_confidence"}
+        or not isinstance(policy["review_at_or_below_confidence"], int)
+        or isinstance(policy["review_at_or_below_confidence"], bool)
+        or not 0 <= policy["review_at_or_below_confidence"] <= 4
+        for policy in record.values()
+    ):
+        raise ContractError("triage modes configuration has the wrong closed schema")
 
 
 # The roles the pipeline addresses by name, beside the Attestator witnesses.

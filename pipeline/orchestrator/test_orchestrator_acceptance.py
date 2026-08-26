@@ -664,6 +664,9 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # Re-pinned in the Phase-2 Sol correction: seals now bind their decode-environment
 # bytes and Armarium boundary records no longer claim delivery.
 #
+# Re-pinned for `triage_modes.toml`, which is sealed into every run and so moves
+# both authorities without adding an artifact.
+#
 # Re-pinned at each merge that brings two authority-moving branches together. The
 # pins below stand for the merged tree and nothing else: every contributing branch
 # moved them on its own, so no branch's own pin describes this tree and taking one
@@ -671,8 +674,8 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # through this module's own `orchestrate` and `semantic_snapshot_digest` helpers,
 # twice, at two independent run roots, and the file counts below were re-measured
 # the same way. The host re-measures at integration.
-HAPPY_RUN_TREE_DIGEST = "214058d9049fad37256a40594c5494e79747d05ec121f08352751b1e1212d7d0"
-REVIEW_RUN_TREE_DIGEST = "01a963397c21d4d4ad619b8d2875a55098373b69b2e6838922b22c83b2c97799"
+HAPPY_RUN_TREE_DIGEST = "331c0ef7c013db235f9dd8aa3c9429382c2967205661ac6d401e94c8942ee477"
+REVIEW_RUN_TREE_DIGEST = "1161eb9b60d6277a74ca7108cb327821b3252d1da89db69cf69f0037e817f1e1"
 
 
 def orchestrate(

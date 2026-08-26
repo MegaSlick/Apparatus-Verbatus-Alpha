@@ -1,0 +1,6 @@
+<scantailor-project shape="unverified-fixture-v0" version="unverified-scantailor-version">
+  <page source_frame_sha256="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" width="100" height="80" confidence="3" operation_order="region-crop-rotate">
+    <part region="0,0,50,80" region_space="frame" crop="1,2,45,70" crop_space="part" rotation_millidegrees="1250" rotation_direction="clockwise" rotation_origin="crop-centre" rotation_canvas="expand" colour_mode="rgb" />
+    <part region="50,0,50,80" region_space="frame" crop="4,2,45,70" crop_space="part" rotation_millidegrees="-300" rotation_direction="clockwise" rotation_origin="crop-centre" rotation_canvas="expand" colour_mode="bitonal" />
+  </page>
+</scantailor-project>
