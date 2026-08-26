@@ -6,9 +6,11 @@ import inspect
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import types
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -1117,6 +1119,33 @@ def test_a_symlink_inside_the_run_tree_pointing_outside_it_is_refused_not_follow
     assert excinfo.value.code == ErrorCode.CONSOLE_TREE_UNREADABLE
 
 
+def test_a_symlinked_receipts_directory_is_refused_not_walked(tmp_path: Path):
+    """The receipt walk is not a manifest walk, so it must assert its own containment.
+
+    `receipts/sha256` sits outside `_inventory_directory`'s protection (a receipt
+    is not a stage artifact), and every record found under it is still checked
+    for content-addressed self-consistency. That check alone does not stop a
+    redirected directory: an attacker who can only swap in a symlink, but who
+    also controls the decoy directory's contents, can name their own file
+    whatever its own hash is and satisfy that check trivially. A fabricated
+    "advance" record would then read as a real approval decision.
+    """
+    run_root, run_id = _make_run(tmp_path)
+    tree = RunTree(run_root, run_id)
+    decoy = tmp_path / "decoy-receipts"
+    decoy.mkdir()
+    (tree.root / "receipts").mkdir(exist_ok=True)
+    existing = tree.root / "receipts" / "sha256"
+    if existing.is_dir():
+        shutil.rmtree(existing)
+    existing.symlink_to(decoy)
+
+    with pytest.raises(OperatorError) as excinfo:
+        review.ReadOnlyRun(run_root, run_id).projection()
+    assert excinfo.value.code == ErrorCode.CONSOLE_TREE_UNREADABLE
+    assert "receipts/sha256" in excinfo.value.detail
+
+
 def test_a_relative_run_root_cannot_split_the_permitted_path_from_the_written_tree(
     tmp_path, monkeypatch
 ):
@@ -1435,6 +1464,44 @@ def test_export_references_refuse_a_digest_that_disagrees_with_the_named_bytes(
     assert raised.value.code is ErrorCode.CONSOLE_TREE_UNREADABLE
     assert relative in raised.value.detail
     assert "digest" in raised.value.detail
+
+
+def test_review_refuses_a_compressed_bundle_member_before_decompressing_it(tmp_path: Path):
+    """The review bundle is only ever written stored (`build_armarium_bundle`).
+
+    A compressed member could decompress far past its own physical bytes --
+    the same amplification `verify_export_bundle`'s ``ZIP_STORED`` check
+    already refuses for the sealed package (armarium_export.py). The review
+    surface opens the same bundle format and must refuse it the same way,
+    before `archive.read` decompresses anything.
+    """
+    run_root, run_id = _make_run(tmp_path, scenario="review")
+    tree = RunTree(run_root, run_id)
+    export_id = artifact_id(ARMARIUM, "export", "export", None)
+    record = tree.read_artifact(ARMARIUM, "export", export_id)
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("review-items.jsonl", b'{"act_id": "a1"}\n' * 4)
+    poisoned_digest, _ = tree.put_blob(ARMARIUM, buffer.getvalue())
+
+    bundle = dict(record["payload"]["bundle"])
+    bundle["sha256"] = poisoned_digest
+    bundle["reference"] = {
+        "relative_path": tree.blob_path(ARMARIUM, poisoned_digest),
+        "sha256": poisoned_digest,
+    }
+    record["payload"] = {**record["payload"], "bundle": bundle}
+    record["self_hash"] = self_hash(record)
+    tree.resolve(tree.artifact_path(ARMARIUM, "export", export_id)).write_bytes(
+        canonical_bytes(record)
+    )
+
+    with pytest.raises(OperatorError) as excinfo:
+        review.ReadOnlyRun(run_root, run_id).projection()
+
+    assert excinfo.value.code == ErrorCode.CONSOLE_TREE_UNREADABLE
+    assert "is compressed, not stored" in excinfo.value.detail
 
 
 @pytest.mark.parametrize("missing", ["pages", "delivered", "non_delivered", "bundle-reference"])

@@ -320,14 +320,42 @@ def _advance_records(tree: RunTree, sealed: dict[str, str]) -> tuple[dict[str, A
     record that declares it and then fails full validation is a governance
     fact — a tampered or hand-written approval — and is refused loudly rather
     than skipped, matching every other read this projection performs.
+
+    ``receipts/sha256`` itself is walked directly rather than through a
+    ``build_manifest``-style inventory, because a receipt is not a stage
+    artifact. That means it does not inherit the manifest walk's own refusal
+    of a symlinked producer directory (``RunTree._inventory_directory``), so
+    the same containment has to be asserted here: a symlink standing in for
+    this directory could point anywhere content-addressed self-consistency
+    can be satisfied by an attacker who names their own file, which a
+    directory *outside* `inventory_scope()` always can. Refused by identity,
+    not followed and trusted.
     """
 
-    receipts_dir = tree.resolve("receipts/sha256")
+    receipts_relative = "receipts/sha256"
+    if (tree.root / receipts_relative).is_symlink():
+        raise OperatorError(
+            ErrorCode.CONSOLE_TREE_UNREADABLE,
+            detail=(
+                f"{receipts_relative} is a link, not the directory this store wrote; an "
+                "advance record is read from the store's own receipts directory, never an "
+                "alias"
+            ),
+        )
+    receipts_dir = tree.resolve(receipts_relative)
     if not receipts_dir.is_dir():
         return ()
     records: list[dict[str, Any]] = []
     for path in sorted(receipts_dir.glob("*.json")):
         relative_path = path.relative_to(tree.root).as_posix()
+        if path.is_symlink():
+            raise OperatorError(
+                ErrorCode.CONSOLE_TREE_UNREADABLE,
+                detail=(
+                    f"{relative_path} is a link, not a receipt file this store wrote; an "
+                    "advance record is read from the file itself, never an alias"
+                ),
+            )
         data = tree.read_bytes(relative_path)
         try:
             decoded = json.loads(data.decode("utf-8"))
@@ -457,6 +485,23 @@ def _review_items(
         with zipfile.ZipFile(io.BytesIO(bundle_bytes)) as archive:
             if "review-items.jsonl" not in archive.namelist():
                 return None
+            member = archive.getinfo("review-items.jsonl")
+            if member.compress_type != zipfile.ZIP_STORED:
+                # `build_armarium_bundle` writes every member stored, never
+                # compressed (armarium_export.py), for exactly this reason: a
+                # stored member's extracted size is bounded by its own physical
+                # bytes, while a compressed one can decompress far past them.
+                # `verify_export_bundle` already refuses this for the sealed
+                # package; the review surface reads the same bundle format and
+                # must refuse it here too, before decompressing anything.
+                raise OperatorError(
+                    ErrorCode.CONSOLE_TREE_UNREADABLE,
+                    detail=(
+                        f"the Armarium export record {export_ref['relative_path']} bundle "
+                        f"{path} member review-items.jsonl is compressed, not stored; a "
+                        "review bundle is only ever written stored"
+                    ),
+                )
             return tuple(
                 {
                     "row": json.loads(line),
