@@ -8,7 +8,7 @@ from common import witness_adapters
 from common.chairs import load_models_toml
 from common.chairs.config import parse_models_config
 from common.chairs.errors import ConfigurationRefusal, ReceiptRefusal
-from common.chairs.models import ChairIdentity, ModelsConfig, ServingDetails
+from common.chairs.models import ModelsConfig, ServingDetails
 from common.chairs.receipts import build_receipt, receipt_record, validate_receipt
 from common.contracts.errors import ContractError, IncompatibleReuse
 from common.runtree.store import RunTree
