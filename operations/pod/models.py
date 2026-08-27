@@ -10,12 +10,14 @@ from __future__ import annotations
 import json
 import math
 import re
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, fields, replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from enum import StrEnum
 from pathlib import PurePosixPath
 from typing import Mapping
+
+from common.contracts.canonical import canonical_bytes, digest_bytes
 
 UTC = timezone.utc
 
@@ -208,6 +210,38 @@ class PodCreateRequest:
         """Return a non-creating exact-token lookup request for crash reconciliation."""
 
         return replace(self, recovery_only=True)
+
+    def reviewed_digest(self) -> str:
+        """The digest of every field of this request, exactly as it was reviewed.
+
+        The phrase does not name the complete request, so its challenge binds to
+        this digest as well. Reflection keeps future dataclass fields covered by
+        default; an unsupported value refuses instead of using an unstable repr.
+        """
+
+        return digest_bytes(
+            canonical_bytes(
+                {entry.name: _digestable(getattr(self, entry.name)) for entry in fields(self)}
+            )
+        )
+
+
+def _digestable(value: object) -> object:
+    """Return a reproducible canonical value or refuse an unknown field type."""
+
+    if value is None or isinstance(value, (bool, int, str)):
+        return value
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, Mapping):
+        return {str(key): _digestable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_digestable(item) for item in value]
+    raise ValueError(
+        f"pod request field of type {type(value).__name__} has no reviewed digest form"
+    )
 
 
 _SHELL_INTERPRETERS = frozenset({"sh", "bash", "zsh", "dash", "ksh"})

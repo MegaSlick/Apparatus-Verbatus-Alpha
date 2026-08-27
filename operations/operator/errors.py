@@ -31,6 +31,7 @@ class ErrorCode(StrEnum):
     BALANCE_UNOBSERVABLE = "balance-unobservable"
     SAFETY_CHECK_FAILED = "safety-check-failed"
     LAUNCH_UNRESOLVED = "launch-unresolved"
+    LAUNCH_ALREADY_IN_FLIGHT = "launch-already-in-flight"
     ACTIVE_POD_REQUIRES_CLOSE = "active-pod-requires-close"
     ADOPTION_REFUSED = "adoption-refused"
     PAID_ACTION_REFUSED = "paid-action-refused"
@@ -148,6 +149,11 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
         "Launch could not prove that its fixture pod is safely accounted for.",
         "It is not called ready, and a provider request may already have occurred.",
         "Do not launch again. Run `verbatus status`, preserve the saved receipt, and resolve the named close evidence before retrying.",
+    ),
+    ErrorCode.LAUNCH_ALREADY_IN_FLIGHT: ErrorCopy(
+        "Another Verbatus window is already part-way through a paid launch.",
+        "This window sent no paid provider action, because two of them cannot both be trusted to see the other's result.",
+        "Wait for the other window to finish and show its result, read `verbatus status`, then preview launch again; this is safe.",
     ),
     ErrorCode.ACTIVE_POD_REQUIRES_CLOSE: ErrorCopy(
         "A recorded fixture pod is still awaiting a verified close.",

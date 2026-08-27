@@ -45,6 +45,13 @@ permission in the session, with this gate refusing everything that never saw a p
 CHALLENGE_BYTES = 8
 """Wide enough that a phrase cannot be guessed; short enough to retype from a screen."""
 
+PRICE_MOVE_MARKER = "the price may have changed between preview and confirmation"
+"""Gate-owned discriminator for two refusal meanings sharing one launch state.
+
+The operator surface must distinguish a price move from a mistyped phrase, so
+the producer and classifier share this spelling instead of duplicating it.
+"""
+
 
 def mint_challenge() -> str:
     """A fresh, unpredictable challenge for exactly one preview."""
@@ -516,9 +523,8 @@ def require_confirmation(value: str | None, expected: str) -> None:
         and value[:price_start] == expected[:price_start]
     ):
         raise SpendRefusal(
-            "typed confirmation does not match this preview's phrase; the price may "
-            "have changed between preview and confirmation -- re-run the preview and "
-            "confirm the current price; no paid action occurred"
+            f"typed confirmation does not match this preview's phrase; {PRICE_MOVE_MARKER}"
+            " -- re-run the preview and confirm the current price; no paid action occurred"
         )
     # The expected phrase is deliberately not reproduced here: this refusal is
     # printed and logged, and the phrase it would quote is still spendable

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import ast
+import errno
 import hashlib
 import json
 import os
@@ -24,18 +26,19 @@ from operations.pod.lease import LeaseStore
 from operations.pod.models import (
     BILLING_CUTOFF_MARGIN_ENV,
     PodCreateRequest,
+    PodRecord,
     ProviderFailure,
     SpendRefusal,
     require_utc,
 )
 from operations.pod.shutdown import CloseReport, VerifiedShutdown
-from operations.pod.spend import load_spend_policy
+from operations.pod.spend import PRICE_MOVE_MARKER, load_spend_policy
 from operations.submit import gate
 from operations.submit import submit as submission_door
 from operations.submit.submit import build_manifest, walk_folder
 
 from . import cli, dry_run, entry, notify_bridge
-from . import surface as operator_surface
+from . import surface as surface_module
 from .dry_run import make_transcript
 from .errors import ErrorCode, OperatorError
 from .fakes import LocalFixtureObjectStore, OperatorFakeProvider
@@ -221,7 +224,11 @@ def test_launch_does_not_reach_paid_fake_without_a_saved_confirmation(tmp_path: 
     assert refusal.value.code is ErrorCode.CONFIRMATION_REQUIRED
     assert not provider.create_checked
     assert not any(verb == "create" for verb, _ in provider.calls)
-    assert surface._descriptor_receipt("launch-confirmation") is None
+    refused_receipt = surface.receipts.read(surface._descriptor_receipt("launch-confirmation"))
+    assert (
+        refused_receipt["payload"]["confirmation_sha256"]
+        == hashlib.sha256(b"not the required words").hexdigest()
+    )
 
     result = surface.launch(prepared, prepared.confirmation_phrase)
 
@@ -229,9 +236,100 @@ def test_launch_does_not_reach_paid_fake_without_a_saved_confirmation(tmp_path: 
     assert provider.create_checked
     receipt = surface.receipts.read(surface._descriptor_receipt("launch-confirmation"))
     assert receipt["payload"]["preview"]["spend"]["allowed"] is True
+    assert receipt["payload"]["review_sha256"] == prepared.review_digest
 
 
-def test_adoption_rechecks_only_after_its_confirmation_receipt(tmp_path: Path) -> None:
+def test_no_saved_operator_record_carries_a_spendable_confirmation_phrase(
+    tmp_path: Path,
+) -> None:
+    """Durable records may commit to confirmation bytes but never retain them.
+
+    Search every state file for both phrase and challenge so moving a spendable
+    value to another record cannot pass as redaction. The review digest remains
+    recomputable from its stored preimage.
+    """
+
+    surface = _surface(tmp_path)
+    prepared = surface.prepare_launch(_request(), policy_path=_spend_policy(tmp_path))
+    phrase = prepared.confirmation_phrase
+    challenge = phrase.rsplit(" CHALLENGE ", 1)[1]
+    assert len(challenge) == 16
+
+    with pytest.raises(OperatorError):
+        surface.launch(prepared, "not the required words")
+    assert surface.launch(prepared, phrase).green
+
+    written = sorted(path for path in surface.state_root.rglob("*") if path.is_file())
+    assert written, "the launch wrote no records at all"
+    for path in written:
+        text = path.read_text(encoding="utf-8")
+        assert phrase not in text, f"{path.name} carries the confirmation phrase"
+        assert challenge not in text, f"{path.name} carries the live preview challenge"
+
+    saved = surface.receipts.read(surface._descriptor_receipt("launch-confirmation"))["payload"]
+    assert saved["confirmation_sha256"] == hashlib.sha256(phrase.encode("utf-8")).hexdigest()
+    # The digest is an evidence pointer, so it has to be recomputable from what
+    # the receipt actually stores rather than from a preimage it withholds.
+    assert saved["review_sha256"] == hashlib.sha256(canonical_bytes(saved["review"])).hexdigest()
+
+
+def _tracked_production_sources() -> list[Path]:
+    """Tracked non-test sources only: a bare rglob also sweeps gitignored local
+    material (workbench chambers, stray checkouts, deliberately broken benchmark
+    fixtures), which are not production call sites and made these scans fail on
+    machines that have them."""
+    tracked = subprocess.run(
+        ["git", "ls-files", "*.py"], cwd=ROOT, capture_output=True, text=True, check=True
+    ).stdout.splitlines()
+    return sorted(ROOT / name for name in tracked if not Path(name).name.startswith("test_"))
+
+
+def test_only_the_offline_rehearsal_types_its_own_paid_confirmation() -> None:
+    """Only the fixture-locked rehearsal may derive its own typed confirmation.
+
+    Match both runtime keyword and surface positional call shapes so another
+    self-confirming production caller cannot bypass the human-input boundary.
+    """
+
+    callers: list[Path] = []
+    for source in _tracked_production_sources():
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            supplied = [keyword.value for keyword in node.keywords if keyword.arg == "confirmation"]
+            if isinstance(node.func, ast.Attribute) and node.func.attr == "launch":
+                supplied.extend(node.args)
+            for value in supplied:
+                if isinstance(value, ast.Attribute) and value.attr == "confirmation_phrase":
+                    callers.append(source.relative_to(ROOT))
+    assert sorted(set(callers)) == [Path("operations/operator/dry_run.py")]
+
+
+def test_paid_confirmation_has_one_production_spend_gate_call_site() -> None:
+    """The UI records an input; only the runtime consumes its spend challenge.
+
+    Scans the whole tree, not just ``operations/`` -- a second gate built
+    outside that package would be just as much a second path to a paid
+    action. Catches a qualified call (``spend.require_confirmation(...)``)
+    as well as a bare one: a second gate built either way is still a second
+    gate, and only matching ``ast.Name`` would miss the former.
+    """
+
+    calls: list[Path] = []
+    for source in _tracked_production_sources():
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", None)
+            if name == "require_confirmation":
+                calls.append(source.relative_to(ROOT))
+    assert calls == [Path("operations/pod/launch.py")]
+
+
+def test_adoption_rechecks_only_after_its_confirmation_record(tmp_path: Path) -> None:
     class AdoptionProvider(OperatorFakeProvider):
         def __init__(self) -> None:
             super().__init__(now=lambda: START)
@@ -264,7 +362,10 @@ def test_adoption_rechecks_only_after_its_confirmation_receipt(tmp_path: Path) -
     with pytest.raises(OperatorError):
         surface.launch(prepared, "no")
 
-    assert not provider.saw_post_confirmation_adopt
+    # The shared spend gate must re-inspect adoption only after the input record,
+    # without making the adoption green or writing a lease.
+    assert provider.saw_post_confirmation_adopt
+    assert surface._descriptor_receipt("launch") is not None
     result = surface.launch(prepared, prepared.confirmation_phrase)
 
     assert result.green
@@ -321,6 +422,267 @@ def test_two_overlapping_prepared_launches_cannot_both_be_confirmed_into_real_po
 
     assert refusal.value.code is ErrorCode.ACTIVE_POD_REQUIRES_CLOSE
     assert not any(verb == "create" and name == "window-b" for verb, name in surface.provider.calls)
+
+
+def test_two_console_windows_cannot_both_confirm_a_paid_launch(tmp_path: Path) -> None:
+    """The active check and result record must be exclusive across processes.
+
+    The active receipt follows the provider call, so a sequential check cannot
+    prevent two windows from passing before either receipt exists. The loser is
+    refused without spending its challenge.
+    """
+
+    provider = OperatorFakeProvider(now=lambda: START)
+    spend = _spend_policy(tmp_path)
+    first = _surface(tmp_path, provider=provider)
+    second = _surface(tmp_path, provider=provider)
+    assert first.state_root == second.state_root
+    first_prepared = first.prepare_launch(_request(name="window-a"), policy_path=spend)
+    second_prepared = second.prepare_launch(_request(name="window-b"), policy_path=spend)
+
+    outcomes: list[object] = []
+    ready = threading.Barrier(2)
+
+    def confirm(surface: OperatorSurface, prepared) -> None:  # type: ignore[no-untyped-def]
+        ready.wait()
+        try:
+            outcomes.append(surface.launch(prepared, prepared.confirmation_phrase).state)
+        except OperatorError as error:
+            outcomes.append(error.code)
+
+    threads = [
+        threading.Thread(target=confirm, args=(first, first_prepared)),
+        threading.Thread(target=confirm, args=(second, second_prepared)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    created = [name for verb, name in provider.calls if verb == "create"]
+    assert len(created) == 1, f"two windows both reached a paid create: {created}"
+    assert sorted(str(outcome) for outcome in outcomes) == sorted(
+        (str(LaunchState.CREATED_GUARDED), str(ErrorCode.LAUNCH_ALREADY_IN_FLIGHT))
+    )
+    recorded = first.receipts.read(first._active_launch_receipt())["payload"]
+    assert recorded["pod"]["pod_id"] in provider.pods
+    assert recorded["request"]["name"] == created[0]
+
+
+def test_a_launch_that_lost_its_provider_response_refuses_the_next_one(
+    tmp_path: Path,
+) -> None:
+    """A pending lease must enforce `LAUNCH_UNRESOLVED` across restarts.
+
+    The provider may create a pod without returning its response, leaving a
+    lease but no active receipt. A later process must refuse from that lease.
+    """
+
+    provider = OperatorFakeProvider(now=lambda: START)
+    spend = _spend_policy(tmp_path)
+    surface = _surface(tmp_path, provider=provider)
+    provider.inject_post_create_failure(ProviderFailure("connection reset after POST"))
+
+    first = surface.prepare_launch(_request(name="lost-response"), policy_path=spend)
+    with pytest.raises(OperatorError) as unresolved:
+        surface.launch(first, first.confirmation_phrase)
+    assert unresolved.value.code is ErrorCode.LAUNCH_UNRESOLVED
+    assert len(provider.pods) == 1
+
+    # A new surface models the process boundary that discards in-memory state.
+    restarted = _surface(tmp_path, provider=provider)
+    with pytest.raises(OperatorError) as refused:
+        second = restarted.prepare_launch(_request(name="second-attempt"), policy_path=spend)
+        restarted.launch(second, second.confirmation_phrase)
+
+    assert refused.value.code is ErrorCode.LAUNCH_UNRESOLVED
+    assert "no verified close is recorded" in (refused.value.detail or "")
+    assert len(provider.pods) == 1, "a second pod was created on top of an unresolved one"
+    assert not any(verb == "create" and name == "second-attempt" for verb, name in provider.calls)
+
+
+def test_status_shows_the_open_lease_the_refusal_sends_the_operator_to_read(
+    tmp_path: Path,
+) -> None:
+    """Status must expose the lease named by `LAUNCH_UNRESOLVED` recovery copy."""
+
+    provider = OperatorFakeProvider(now=lambda: START)
+    spend = _spend_policy(tmp_path)
+    surface = _surface(tmp_path, provider=provider)
+    provider.inject_post_create_failure(ProviderFailure("connection reset after POST"))
+    prepared = surface.prepare_launch(_request(name="lost-response"), policy_path=spend)
+    with pytest.raises(OperatorError):
+        surface.launch(prepared, prepared.confirmation_phrase)
+
+    lease = next(iter(sorted((surface.state_root / "leases").glob("*.json"))))
+    lines = _surface(tmp_path, provider=provider).status()
+
+    assert any(lease.name in line for line in lines), lines
+    assert any("pending-create" in line for line in lines)
+    assert any("may still be billing" in line for line in lines)
+
+
+def _open_lease_path(surface: OperatorSurface, provider: OperatorFakeProvider, spend: Path) -> Path:
+    """Leave exactly one open lease in `surface`'s state and return its path."""
+
+    provider.inject_post_create_failure(ProviderFailure("connection reset after POST"))
+    prepared = surface.prepare_launch(_request(name="lost-response"), policy_path=spend)
+    with pytest.raises(OperatorError):
+        surface.launch(prepared, prepared.confirmation_phrase)
+    return next(iter(sorted((surface.state_root / "leases").glob("*.json"))))
+
+
+def test_a_lease_that_is_a_symlink_is_never_read_as_evidence(tmp_path: Path) -> None:
+    """The console reader refuses a linked lease exactly as the paid gate does.
+
+    `operations/pod/launch.py` treats a symlinked lease as a root it cannot
+    prove clear. Following one here would let a record outside this operator's
+    state decide whether a pod may be billing -- and a link onto anything
+    already closed would report an open pod as absent, in the one verb an
+    operator runs to find a machine that is still costing money.
+    """
+
+    provider = OperatorFakeProvider(now=lambda: START)
+    spend = _spend_policy(tmp_path)
+    surface = _surface(tmp_path, provider=provider)
+    lease = _open_lease_path(surface, provider, spend)
+    stash = tmp_path / "outside-this-state"
+    stash.mkdir()
+    moved = stash / lease.name
+    lease.rename(moved)
+    lease.symlink_to(moved)
+
+    with pytest.raises(OperatorError) as unreadable:
+        _surface(tmp_path, provider=provider).status()
+    assert unreadable.value.code is ErrorCode.STATUS_UNREADABLE
+    assert "is a symlink" in (unreadable.value.detail or "")
+
+    with pytest.raises(OperatorError) as refused:
+        _surface(tmp_path, provider=provider).prepare_launch(
+            _request(name="second-attempt"), policy_path=spend
+        )
+    assert refused.value.code is ErrorCode.SAFETY_CHECK_FAILED
+    assert "is a symlink" in (refused.value.detail or "")
+    assert len(provider.pods) == 1, "a second pod was created past a linked lease"
+
+
+def test_status_reads_an_open_lease_without_writing_beside_it(tmp_path: Path) -> None:
+    """`status` is documented as making no record of its own, leases included.
+
+    Taking the lease writer's advisory lock creates `.<name>.lock` in the lease
+    directory, so a state directory this tool cannot write would turn every
+    lease into UNREADABLE -- hiding the pod that may still be billing behind
+    the very lock nothing here needs. The writer's own lock files are cleared
+    first: this is the state a restore, a sync, or a read-only medium presents,
+    carrying the lease records and nothing else.
+    """
+
+    provider = OperatorFakeProvider(now=lambda: START)
+    spend = _spend_policy(tmp_path)
+    surface = _surface(tmp_path, provider=provider)
+    lease = _open_lease_path(surface, provider, spend)
+    leases = lease.parent
+    for stale in leases.iterdir():
+        if stale.name.startswith("."):
+            stale.unlink()
+    before = {entry.name for entry in leases.iterdir()}
+
+    lines = _surface(tmp_path, provider=provider).status()
+
+    assert any(lease.name in line for line in lines), lines
+    assert {entry.name for entry in leases.iterdir()} == before
+
+
+def test_a_prepared_launch_without_a_preview_refuses_in_plain_language(tmp_path: Path) -> None:
+    """No money-path input reaches the operator as a raw attribute error.
+
+    `PreparedLaunch` guards both of its derived screens on a missing preview.
+    The confirmation receipt has to consult that guard before it reads the
+    preview, or the guard never runs.
+    """
+
+    surface = _surface(tmp_path)
+    policy = load_spend_policy(_spend_policy(tmp_path))
+    prepared = surface_module.PreparedLaunch(
+        _request(),
+        "create",
+        None,
+        LaunchResult(LaunchState.PREVIEW),
+        policy,
+        surface._runtime(policy),
+    )
+
+    with pytest.raises(OperatorError) as refused:
+        surface.launch(prepared, "anything at all")
+
+    assert refused.value.code is ErrorCode.CONFIRMATION_REQUIRED
+
+
+def test_status_never_calls_a_state_holding_an_unreadable_lease_empty(tmp_path: Path) -> None:
+    """Unreadable lease evidence prevents both an empty and a closed claim."""
+
+    surface = _surface(tmp_path)
+    leases = surface.state_root / "leases"
+    leases.mkdir(parents=True)
+    (leases / "corrupt.json").write_text("{not json", encoding="utf-8")
+
+    with pytest.raises(OperatorError) as unreadable:
+        surface.status()
+
+    assert unreadable.value.code is ErrorCode.STATUS_UNREADABLE
+    assert "corrupt.json" in (unreadable.value.detail or "")
+
+
+def test_a_paid_launch_claim_that_cannot_be_taken_is_not_called_another_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only `BlockingIOError` proves another window holds the launch claim.
+
+    Other lock errors mean this process failed to establish exclusivity and must
+    not receive the wait-for-another-window remedy.
+    """
+
+    surface = _surface(tmp_path)
+    prepared = surface.prepare_launch(_request(), policy_path=_spend_policy(tmp_path))
+
+    def no_locking(_fileno: int, _operation: int) -> None:
+        raise OSError(errno.ENOLCK, "no locks available")
+
+    monkeypatch.setattr(surface_module.fcntl, "flock", no_locking)
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.launch(prepared, prepared.confirmation_phrase)
+
+    assert refusal.value.code is ErrorCode.SAFETY_CHECK_FAILED
+    assert "could not be taken" in (refusal.value.detail or "")
+    assert "no locks available" in (refusal.value.detail or "")
+    assert not any(verb == "create" for verb, _ in surface.provider.calls)
+    # Lock-acquisition failure occurs before runtime challenge consumption.
+    monkeypatch.undo()
+    assert surface.launch(prepared, prepared.confirmation_phrase).green
+
+
+def test_a_verified_close_releases_the_launch_the_open_lease_refused(
+    tmp_path: Path,
+) -> None:
+    """Only a verified close may release the single-live-pod refusal."""
+
+    provider = OperatorFakeProvider(now=lambda: START)
+    spend = _spend_policy(tmp_path)
+    surface = _surface(tmp_path, provider=provider)
+    first = _launch(surface, spend, name="first-pod")
+    assert first.green
+
+    prepared_close = surface.prepare_close()
+    report = surface.close(prepared_close, prepared_close.phrase)
+    assert report.verified
+
+    second = _launch(surface, spend, name="second-pod")
+    assert second.green
+    assert [name for verb, name in provider.calls if verb == "create"] == [
+        "first-pod",
+        "second-pod",
+    ]
 
 
 def test_saved_request_and_pod_reconstruction_refuse_type_coercion(tmp_path: Path) -> None:
@@ -982,6 +1344,26 @@ def test_timeout_word_cannot_make_an_unleased_launch_look_retryable(tmp_path: Pa
     assert "do not launch again" in failure.render().lower()
 
 
+def test_a_gate_refusal_for_an_open_lease_speaks_the_console_s_own_word_for_it(
+    tmp_path: Path,
+) -> None:
+    """Both console and spend-gate lease reads require the unresolved-close remedy."""
+
+    surface = _surface(tmp_path)
+    result = LaunchResult(
+        LaunchState.REFUSED_ACTIVE_LEASE,
+        detail=(
+            "a paid action is already armed in this lease root and no verified close "
+            "is recorded for it: lease /state/leases/abc.json is active for pod pod-1"
+        ),
+    )
+
+    failure = surface._launch_error(result)
+
+    assert failure.code is ErrorCode.LAUNCH_UNRESOLVED
+    assert "do not launch again" in failure.render().lower()
+
+
 def test_a_post_confirmation_provider_failure_is_named_launch_unresolved_not_retryable(
     tmp_path: Path,
 ) -> None:
@@ -1147,7 +1529,7 @@ def test_upload_uses_one_sealed_manifest_snapshot_across_the_transfer(
     manifest.write_bytes(original)
     (source / "page-two.bin").write_bytes(b"second\n")
     replacement = canonical_bytes(build_manifest(walk_folder(source)))
-    real_resume = operator_surface.ChecksummedTransfer.resume
+    real_resume = surface_module.ChecksummedTransfer.resume
 
     def swap_restore(self):  # type: ignore[no-untyped-def]
         manifest.write_bytes(replacement)
@@ -1156,7 +1538,7 @@ def test_upload_uses_one_sealed_manifest_snapshot_across_the_transfer(
         finally:
             manifest.write_bytes(original)
 
-    monkeypatch.setattr(operator_surface.ChecksummedTransfer, "resume", swap_restore)
+    monkeypatch.setattr(surface_module.ChecksummedTransfer, "resume", swap_restore)
 
     surface.upload(source, sealed_manifest=manifest)
 
@@ -1172,12 +1554,12 @@ def test_upload_refuses_an_oversized_manifest_before_constructing_a_transfer(
     source = tmp_path / "submitted-pages"
     source.mkdir()
     manifest = tmp_path / "sealed-submission.json"
-    manifest.write_bytes(b" " * (operator_surface.MAX_SEALED_MANIFEST_BYTES + 1))
+    manifest.write_bytes(b" " * (surface_module.MAX_SEALED_MANIFEST_BYTES + 1))
 
     def should_not_construct(*_args, **_kwargs):  # type: ignore[no-untyped-def]
         raise AssertionError("the transfer was constructed for an oversized manifest")
 
-    monkeypatch.setattr(operator_surface, "ChecksummedTransfer", should_not_construct)
+    monkeypatch.setattr(surface_module, "ChecksummedTransfer", should_not_construct)
 
     with pytest.raises(OperatorError) as refusal:
         surface.upload(source, sealed_manifest=manifest)
@@ -2543,7 +2925,11 @@ def test_operator_state_and_rehearsal_scratch_stay_out_of_the_checkout_root(
 def test_the_rehearsal_scratch_folder_is_never_created_inside_the_checkout(
     tmp_path: Path, recorded_temporary_directories: list[Path]
 ) -> None:
-    """Observe the scratch path before automatic cleanup can hide its placement."""
+    """Rehearsal scratch must stay outside the checkout throughout its lifetime.
+
+    End-state inspection cannot locate a temporary directory removed on success,
+    so record its allocated path while it exists.
+    """
 
     dry_run.make_transcript(tmp_path / "rehearsal.txt")
 
@@ -3086,15 +3472,7 @@ def test_an_evidence_bundle_short_of_run_json_refuses_rather_than_saying_complet
 
 
 def test_an_evidence_bundle_whose_armarium_is_a_file_refuses_too(tmp_path: Path) -> None:
-    """Present is not the same as the right kind, and `exists()` cannot tell them apart.
-
-    A `7_armarium` that is a regular file passes an existence check, takes the
-    `is_file()` arm of the writer's loop, and is archived as a single member — so
-    the bundle carries none of the Armarium output and still records itself
-    complete. That is the same defect as the missing `run.json` above, reached
-    through a different door, and the first version of this repair closed only the
-    door it came in by. Found by CodeRabbit reviewing that repair.
-    """
+    """Armarium must be a directory; existence cannot prove the required kind."""
 
     surface = _surface(tmp_path)
     run_root = tmp_path / "runs"
@@ -3365,9 +3743,41 @@ def test_the_combined_price_preview_line_is_rounded_to_cents(tmp_path: Path) -> 
 
     combined_line = next(line for line in messages if line.startswith("- Combined estimated cost"))
     assert combined_line == "- Combined estimated cost through the hard lifetime: $0.21"
+    request_line = next(line for line in messages if line.startswith("- Reviewed request:"))
+    assert "operator-test" in request_line and "fake-48gb" in request_line
+    digest_line = next(line for line in messages if "ceilings digest" in line)
+    assert digest_line.endswith(prepared.review_digest)
 
     result = surface.launch(prepared, prepared.confirmation_phrase)
     assert result.green
+
+
+def test_a_price_that_moves_at_the_paid_call_reaches_the_operator_and_the_receipt(
+    tmp_path: Path,
+) -> None:
+    """A post-claim price move must survive in both output and the green receipt.
+
+    The pod already exists when this move is observed, so the gate can only
+    enforce the configured ceiling and disclose the changed billing price.
+    """
+
+    class MovingPriceProvider(OperatorFakeProvider):
+        def create(self, request: PodCreateRequest) -> PodRecord:
+            self.price_sheet["fake-48gb"] = (Decimal("0.90"), Decimal("0.05"))
+            return super().create(request)
+
+    messages: list[str] = []
+    surface = _surface(tmp_path, provider=MovingPriceProvider(now=lambda: START), output=messages)
+    prepared = surface.prepare_launch(_request(), policy_path=_spend_policy(tmp_path))
+
+    result = surface.launch(prepared, prepared.confirmation_phrase)
+
+    assert result.green
+    notice = next(line for line in messages if line.startswith("Price notice"))
+    assert "$0.90/hr" in notice and "$0.77/hr" in notice
+    saved = surface.receipts.read(surface._descriptor_receipt("active-launch"))["payload"]
+    assert "bills at $0.90/hr" in saved["detail"]
+    assert saved["pod"]["estimate"]["pod_hourly_usd"] == "0.90"
 
 
 def test_a_price_that_moves_after_the_screen_is_named_a_price_change(tmp_path: Path) -> None:
@@ -3386,7 +3796,14 @@ def test_a_price_that_moves_after_the_screen_is_named_a_price_change(tmp_path: P
 
     assert refusal.value.code is ErrorCode.PRICE_CHANGED
     assert "was not used to authorize a different price" in refusal.value.render()
+    # Classification must use the gate-owned marker because both meanings share
+    # REFUSED_CONFIRMATION.
+    assert PRICE_MOVE_MARKER in (refusal.value.detail or "")
     # The confirmation the operator did give is recorded, and no pod was created.
     saved = surface.receipts.read(surface._descriptor_receipt("launch-confirmation"))["payload"]
     assert saved["preview"]["spend"]["pod_hourly_usd"] == "0.77"
+    assert saved["review_sha256"] == prepared.review_digest
+    failed = surface.receipts.read(surface._descriptor_receipt("launch"))["payload"]
+    assert failed["presented_review_sha256"] == prepared.review_digest
+    assert failed["current_review_sha256"] != prepared.review_digest
     assert not any(verb == "create" for verb, _ in surface.provider.calls)

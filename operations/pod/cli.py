@@ -11,12 +11,13 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Sequence
 
 from .arming import ControllerArmer
-from .launch import LaunchResult, LaunchState, PodRuntime
+from .launch import LaunchResult, LaunchState, PodRuntime, phraseless
 from .models import PodCreateRequest, require_utc
 from .notify_bridge import Notifier, shell_notifier, silent
 from .provider import PodProvider
@@ -74,7 +75,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         preview = runtime.preview_adopt(args.pod_id, expected=request)
     # The order is the gate: nobody can type the phrase without having been
     # shown the price and ceilings it names.
-    print(json.dumps(_record(preview), sort_keys=True, indent=2), flush=True)
+    print(json.dumps(_record(_confirmable_only(preview)), sort_keys=True, indent=2), flush=True)
     if (
         preview.state is not LaunchState.PREVIEW
         or preview.preview is None
@@ -120,11 +121,28 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 3 if _observed_something(result) else 2
 
 
+def _confirmable_only(result: LaunchResult) -> LaunchResult:
+    """Withhold a still-spendable challenge from every refused preview record."""
+
+    preview = result.preview
+    if preview is None or preview.assessment.allowed:
+        return result
+    return replace(result, preview=phraseless(preview))
+
+
 def _observed_something(result: LaunchResult) -> bool:
-    """True when the result names a real pod, a durable lease, or a close."""
+    """True when the result names a real pod, a durable lease, or a close.
+
+    A create refused for an open lease names no lease of its own -- the lease it
+    found belongs to another action and saying otherwise would put a stranger's
+    path in this result. The state is the evidence: it is reached only where this
+    lease root holds an open paid action or could not be proved clear of one, so
+    it exits "go and look" rather than "nothing happened".
+    """
 
     return (
-        result.record is not None
+        result.state is LaunchState.REFUSED_ACTIVE_LEASE
+        or result.record is not None
         or result.lease_path is not None
         or result.close_report is not None
     )
