@@ -7,7 +7,6 @@ import fcntl
 import os
 import stat
 import sys
-import unicodedata
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +17,7 @@ from common.contracts.errors import ContractError, SchemaRefusal
 from .core import (
     DRAW_SCHEMA,
     SAMPLE_SCHEMA,
+    _portable_name,
     adjudicate,
     bind_instrument,
     build_sampling_draw,
@@ -66,10 +66,6 @@ def _open_corpus_directory(root: Path) -> int:
         os.close(descriptor)
         raise SchemaRefusal(f"{root} is not a directory of gold records")
     return descriptor
-
-
-def _portable_name(name: str) -> str:
-    return unicodedata.normalize("NFC", name).casefold()
 
 
 def _records_in(directory: str | Path | _CorpusDirectory) -> list[dict[str, object]]:
@@ -237,10 +233,14 @@ def main(argv: list[str] | None = None) -> int:
         with _locked_corpus(args.output_dir) as output:
             existing = _records_in(output)
             # Validate the state the whole command would create before publishing
-            # its first immutable byte. This also makes an interrupted identical
+            # its first immutable byte. Closure is waived here for the same
+            # reason as every other publication path: an act is legitimately
+            # open while two readings are being collected, and adding a sample
+            # neither closes nor threatens one. Closure is the collection
+            # gate's rule -- `validate-corpus` still enforces it. This also makes an interrupted identical
             # run resumable: repeated identical records are reuse, and the union
             # includes every member the retained draw says is still missing.
-            validate_corpus([*existing, draw, *selected], args.run)
+            validate_corpus([*existing, draw, *selected], args.run, require_closure=False)
             # The draw is the membership authority, so it is published FIRST: an
             # interrupted run then leaves a draw whose members are partly missing --
             # which verify-sampling refuses by name -- never orphan samples with no
@@ -267,7 +267,7 @@ def main(argv: list[str] | None = None) -> int:
             # second spelling, not only one that also restratifies the page, since
             # `sample_digest` binds `selection_basis` and a restated wording alone
             # mints a second individually valid sample of one hand-picked page.
-            validate_corpus([*existing, record], args.run)
+            validate_corpus([*existing, record], args.run, require_closure=False)
             write_append_only(output, record, directory_descriptor=corpus.descriptor)
     elif args.command == "bind-instrument":
         output = Path(args.output)

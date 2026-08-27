@@ -301,7 +301,11 @@ def _verify_act_attachment_view(
         testimony = context.tree.read_artifact_reference(
             testimony_ref, stage=ATTESTATORES, kind="page-testimonium", subject_id=page_id
         )
-        reported = testimony.get("payload", {}).get("reported")
+        # Guarded like `alignment` above: a payload that is present but not a
+        # mapping would otherwise reach `.get` and raise AttributeError, and a
+        # traceback is not a refusal -- this stage's contract is a named one.
+        payload = testimony.get("payload")
+        reported = payload.get("reported") if isinstance(payload, dict) else None
         if (
             not isinstance(reported, str)
             or not isinstance(span, dict)

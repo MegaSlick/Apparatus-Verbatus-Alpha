@@ -1322,6 +1322,125 @@ def test_cli_refuses_a_contradicting_record_before_it_becomes_immutable(tmp_path
     assert cli.main(["validate-corpus", str(records), "--run", str(path)]) == 0
 
 
+def test_cli_publishes_into_a_corpus_whose_custody_chain_is_still_open(tmp_path):
+    """A partial chain is legitimate while people work, so it blocks no publication.
+
+    `validate-corpus` names an act with a transcription and no adjudication --
+    that is the collection gate doing its job. Publication is a different
+    question: adding a sample, a manual pick, or the *second* of two readings
+    neither closes that act nor threatens it. If publication demanded a closed
+    corpus, the first transcription would wedge every later write in the
+    directory, including the second reading that is the only thing which can
+    close it."""
+    path, frame, pages = run_file(tmp_path)
+    rows = catalog(pages)
+    sample = sample_stratified(path, rows, plan_for(frame, rows))[0]
+    records = tmp_path / "records"
+    records.mkdir()
+    (records / "sample.json").write_text(json.dumps(sample), encoding="utf-8")
+
+    text_file = tmp_path / "hand-a.txt"
+    text_file.write_text("Marie Anne\n", encoding="utf-8")
+    assert (
+        cli.main(
+            [
+                "transcribe",
+                "--sample",
+                str(records / "sample.json"),
+                "--act-identity",
+                _act(),
+                "--transcriber",
+                "hand-a",
+                "--text-file",
+                str(text_file),
+                "--output",
+                str(records / "first.json"),
+                "--run",
+                str(path),
+            ]
+        )
+        == 0
+    )
+    # The corpus is now exactly what the collection gate refuses...
+    with pytest.raises(SchemaRefusal, match="custody chain is incomplete"):
+        cli.main(["validate-corpus", str(records), "--run", str(path)])
+
+    # ...and every publication path still writes into it.
+    page = rows[0]
+    pick = tmp_path / "pick.json"
+    pick.write_text(
+        json.dumps(
+            {
+                "schema": MANUAL_PICK_SCHEMA,
+                "selection_basis": "hand-picked beside an open chain",
+                "page": page,
+                "set": set_for_page(frame, page["sha256"]),
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert (
+        cli.main(
+            [
+                "ingest-manual",
+                "--run",
+                str(path),
+                "--pick",
+                str(pick),
+                "--output",
+                str(records / "manual.json"),
+            ]
+        )
+        == 0
+    )
+    assert (records / "manual.json").exists()
+
+    second_text = tmp_path / "hand-b.txt"
+    second_text.write_text("Marie Jeanne\n", encoding="utf-8")
+    assert (
+        cli.main(
+            [
+                "transcribe",
+                "--sample",
+                str(records / "sample.json"),
+                "--act-identity",
+                _act(),
+                "--transcriber",
+                "hand-b",
+                "--text-file",
+                str(second_text),
+                "--output",
+                str(records / "second.json"),
+                "--run",
+                str(path),
+            ]
+        )
+        == 0
+    )
+    established = tmp_path / "established.txt"
+    established.write_text("Marie Anne\n", encoding="utf-8")
+    assert (
+        cli.main(
+            [
+                "adjudicate",
+                "--first",
+                str(records / "first.json"),
+                "--second",
+                str(records / "second.json"),
+                "--adjudicator",
+                "hand-c",
+                "--text-file",
+                str(established),
+                "--output",
+                str(records / "adjudication.json"),
+            ]
+        )
+        == 0
+    )
+    # Closed again, and the gate agrees.
+    assert cli.main(["validate-corpus", str(records), "--run", str(path)]) == 0
+
+
 def test_cli_bind_instrument_refuses_a_membership_whose_sample_is_absent(tmp_path):
     """Instrument membership names a sample; publishing it beside no such sample
     records a measurement of something the corpus cannot show it measured."""

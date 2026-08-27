@@ -1165,7 +1165,12 @@ def test_the_artifact_walk_does_not_recurse_once_per_directory(tmp_path):
         deepest.mkdir()
 
     limit = sys.getrecursionlimit()
-    sys.setrecursionlimit(len(inspect.stack(0)) + 64)
+    # Headroom well under the 200 directories built above, so a walk that
+    # recursed once per directory still exhausts it and fails -- but far enough
+    # above the walk's own constant needs (JSON validation, `Path.resolve`)
+    # that incidental frames cannot raise `RecursionError` and be misread as
+    # the defect this hunts.
+    sys.setrecursionlimit(len(inspect.stack(0)) + 128)
     try:
         manifest = tree.build_manifest(DESIGNATOR)
     finally:
