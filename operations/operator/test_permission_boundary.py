@@ -6,6 +6,7 @@ import inspect
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import types
@@ -16,7 +17,7 @@ import pytest
 
 from common.contracts.approval import ApprovalRecordReference
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
-from common.contracts.errors import ApprovalRefusal
+from common.contracts.errors import ApprovalRefusal, SchemaRefusal
 from common.contracts.identities import artifact_id
 from common.contracts.stages import ARMARIUM
 from common.runtree.store import RunTree
@@ -25,10 +26,11 @@ from operations.operator.errors import ErrorCode, OperatorError
 from operations.operator.review import ReviewProjection
 
 ROOT = Path(__file__).resolve().parents[2]
+_EXPORT_REF = {"relative_path": "7_armarium/artifacts/export/art_test.json", "sha256": "e" * 64}
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
 
 
-def _make_run(tmp_path: Path) -> tuple[Path, str]:
+def _make_run(tmp_path: Path, *, scenario: str = "happy") -> tuple[Path, str]:
     run_root = tmp_path / "runs"
     completed = subprocess.run(
         [
@@ -37,7 +39,7 @@ def _make_run(tmp_path: Path) -> tuple[Path, str]:
             "--fixture",
             "synthetic-two-page-v0",
             "--scenario",
-            "happy",
+            scenario,
             "--run-id",
             "reviewed",
             "--run-root",
@@ -48,7 +50,7 @@ def _make_run(tmp_path: Path) -> tuple[Path, str]:
         text=True,
         check=False,
     )
-    assert completed.returncode == 0, completed.stderr
+    assert completed.returncode == (3 if scenario == "review" else 0), completed.stderr
     return run_root, "reviewed"
 
 
@@ -71,7 +73,7 @@ def _worker_identity_arguments(tree: RunTree) -> list[str]:
     ]
 
 
-def test_read_surface_projects_seals_census_pages_crops_and_optional_review_shape(tmp_path: Path):
+def test_read_surface_walks_stage_records_seals_census_pages_and_crops(tmp_path: Path):
     run_root, run_id = _make_run(tmp_path)
 
     projected = review.ReadOnlyRun(run_root, run_id).projection()
@@ -89,14 +91,78 @@ def test_read_surface_projects_seals_census_pages_crops_and_optional_review_shap
     }
     assert all(row["sealed"] and len(row["seal_digest"]) == 64 for row in projected.boundaries)
     assert all("census" in row for row in projected.boundaries)
+    assert len(projected.stage_records) > len(projected.boundaries)
+    tree = RunTree(run_root, run_id)
+    assert all(
+        row["stage"] == row["record"]["stage"]
+        and row["artifact_id"] == row["record"]["artifact_id"]
+        and row["kind"] == row["record"]["kind"]
+        and row["subject_id"] == row["record"]["subject_id"]
+        and row["outcome"] == row["record"]["outcome"]
+        and row["record_ref"]["sha256"]
+        == digest_bytes(tree.read_bytes(row["record_ref"]["relative_path"]))
+        for row in projected.stage_records
+    )
     assert len(projected.pages) == 2
     assert all(
-        row["image_data_url"].startswith("data:image/png;base64,") for row in projected.pages
+        row["image_path"].startswith("1_exemplar/blobs/sha256/")
+        and "image_data_url" not in row
+        and row["record_ref"]["relative_path"].startswith("7_armarium/artifacts/export/")
+        for row in projected.pages
     )
-    assert all(act["crops"] for act in projected.acts)
+    assert all(
+        act["crops"]
+        and all(
+            crop["image_path"].startswith("2_designator/blobs/sha256/") for crop in act["crops"]
+        )
+        and "image_data_url" not in act["crops"][0]
+        and act["record_ref"]["relative_path"].startswith("7_armarium/artifacts/export/")
+        for act in projected.acts
+    )
     # A complete fixture produces no review rows, but the shape remains visible
     # when Armarium includes it rather than being inferred from an empty outcome.
     assert projected.review_items in (None, ())
+
+
+def test_held_armarium_review_rows_keep_their_bundle_and_export_record_trace(tmp_path: Path):
+    run_root, run_id = _make_run(tmp_path, scenario="review")
+
+    projected = review.ReadOnlyRun(run_root, run_id).projection()
+
+    assert projected.review_items
+    for item in projected.review_items:
+        assert item["bundle_path"].startswith("7_armarium/blobs/sha256/")
+        assert item["member"] == "review-items.jsonl"
+        assert item["line"] > 0
+        assert item["record_ref"]["relative_path"].startswith("7_armarium/artifacts/export/")
+        assert isinstance(item["row"], dict)
+
+
+def test_review_child_receives_no_write_right_even_when_the_parent_reads_every_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review must never mint the write path that advance receives."""
+    run_root, run_id = _make_run(tmp_path)
+    seen: dict[str, object] = {}
+
+    class Backend:
+        def launcher_failure(self, completed):
+            return None
+
+    class Completed:
+        returncode = 0
+        stdout = "{}"
+        stderr = ""
+
+    def confined(command, *, writable, cwd, input_text):
+        seen.update(command=command, writable=writable, cwd=cwd, input_text=input_text)
+        return Backend(), Completed()
+
+    monkeypatch.setattr(cli, "run_confined", confined)
+    cli._review_in_custody(run_root, run_id, ROOT)
+
+    assert seen["writable"] is None
+    assert '"stage_records"' in str(seen["input_text"])
 
 
 def test_unsealed_boundary_is_refused_before_an_advance_record_is_written(tmp_path: Path):
@@ -1143,26 +1209,35 @@ def test_unreadable_tree_recovery_never_instructs_an_evidence_repair():
 
 
 def test_review_refuses_bundle_bytes_that_do_not_match_the_export_reference():
-    tree = types.SimpleNamespace(read_bytes=lambda _path: b"changed bundle")
+    tree = types.SimpleNamespace(
+        read_bytes=lambda _path: b"changed bundle",
+        blob_path=lambda stage, value: f"7_armarium/blobs/sha256/{value}",
+    )
     payload = {
         "bundle": {
-            "reference": {"relative_path": "7_armarium/blobs/sha256/example", "sha256": "0" * 64},
+            "reference": {
+                "relative_path": "7_armarium/blobs/sha256/" + "0" * 64,
+                "sha256": "0" * 64,
+            },
             "sha256": "0" * 64,
         }
     }
 
     with pytest.raises(OperatorError) as excinfo:
-        review._review_items(tree, payload)
-    assert "Armarium bundle" in (excinfo.value.detail or "")
+        review._review_items(tree, payload, _EXPORT_REF)
+    assert "but its bytes have digest" in (excinfo.value.detail or "")
 
 
 def _review_bundle_payload(data: bytes) -> tuple[types.SimpleNamespace, dict]:
     digest = digest_bytes(data)
-    tree = types.SimpleNamespace(read_bytes=lambda _path: data)
+    tree = types.SimpleNamespace(
+        read_bytes=lambda _path: data,
+        blob_path=lambda stage, value: f"7_armarium/blobs/sha256/{value}",
+    )
     payload = {
         "bundle": {
             "reference": {
-                "relative_path": "7_armarium/blobs/sha256/example",
+                "relative_path": f"7_armarium/blobs/sha256/{digest}",
                 "sha256": digest,
             },
             "sha256": digest,
@@ -1173,24 +1248,24 @@ def _review_bundle_payload(data: bytes) -> tuple[types.SimpleNamespace, dict]:
 
 def test_review_refuses_a_zip_member_that_would_expand_past_its_input_limit():
     bundle = io.BytesIO()
-    with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+    with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_STORED) as archive:
         archive.writestr("review-items.jsonl", b"x" * (review.MAX_REVIEW_ITEMS_BYTES + 1))
     tree, payload = _review_bundle_payload(bundle.getvalue())
 
     with pytest.raises(OperatorError) as excinfo:
-        review._review_items(tree, payload)
+        review._review_items(tree, payload, _EXPORT_REF)
 
     assert "review limit" in (excinfo.value.detail or "")
 
 
 def test_review_refuses_more_review_rows_than_the_console_can_safely_project():
     bundle = io.BytesIO()
-    with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+    with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_STORED) as archive:
         archive.writestr("review-items.jsonl", b"{}\n" * (review.MAX_REVIEW_ITEMS + 1))
     tree, payload = _review_bundle_payload(bundle.getvalue())
 
     with pytest.raises(OperatorError) as excinfo:
-        review._review_items(tree, payload)
+        review._review_items(tree, payload, _EXPORT_REF)
 
     assert "records" in (excinfo.value.detail or "")
 
@@ -1204,7 +1279,7 @@ def test_review_refuses_ambiguous_duplicate_review_members():
     tree, payload = _review_bundle_payload(bundle.getvalue())
 
     with pytest.raises(OperatorError) as excinfo:
-        review._review_items(tree, payload)
+        review._review_items(tree, payload, _EXPORT_REF)
 
     assert "more than one review-items.jsonl" in (excinfo.value.detail or "")
 
@@ -1588,6 +1663,7 @@ def test_hostile_projection_content_reaches_the_terminal_only_as_inert_escaped_t
     """
     hostile = ReviewProjection(
         run_id="hostile",
+        stage_records=(),
         boundaries=(),
         pages=(),
         acts=({"act_id": "a1", "act_key": "x\x1b[2Jwiped", "category": "baptism", "crops": []},),
@@ -1747,6 +1823,33 @@ def test_a_symlink_inside_the_run_tree_pointing_outside_it_is_refused_not_follow
     assert excinfo.value.code == ErrorCode.CONSOLE_TREE_UNREADABLE
 
 
+def test_a_symlinked_receipts_directory_is_refused_not_walked(tmp_path: Path):
+    """The receipt walk is not a manifest walk, so it must assert its own containment.
+
+    `receipts/sha256` sits outside `_inventory_directory`'s protection (a receipt
+    is not a stage artifact), and every record found under it is still checked
+    for content-addressed self-consistency. That check alone does not stop a
+    redirected directory: an attacker who can only swap in a symlink, but who
+    also controls the decoy directory's contents, can name their own file
+    whatever its own hash is and satisfy that check trivially. A fabricated
+    "advance" record would then read as a real approval decision.
+    """
+    run_root, run_id = _make_run(tmp_path)
+    tree = RunTree(run_root, run_id)
+    decoy = tmp_path / "decoy-receipts"
+    decoy.mkdir()
+    (tree.root / "receipts").mkdir(exist_ok=True)
+    existing = tree.root / "receipts" / "sha256"
+    if existing.is_dir():
+        shutil.rmtree(existing)
+    existing.symlink_to(decoy)
+
+    with pytest.raises(OperatorError) as excinfo:
+        review.ReadOnlyRun(run_root, run_id).projection()
+    assert excinfo.value.code == ErrorCode.CONSOLE_TREE_UNREADABLE
+    assert "receipts/sha256" in excinfo.value.detail
+
+
 def test_a_relative_run_root_cannot_split_the_permitted_path_from_the_written_tree(
     tmp_path, monkeypatch
 ):
@@ -1824,3 +1927,332 @@ def test_an_advance_whose_boundary_later_changed_is_named_stale_where_a_person_r
     assert len(stale) == 1  # still shown, never dropped
     assert stale[0]["boundary_current"] is False
     assert "changed after this advance was recorded" in stale[0]["boundary_note"]
+
+
+def _second_armarium_seal(tree: RunTree) -> str:
+    """The synthetic reseal must pass validation before display logic is exercised."""
+    from common.contracts.identities import attempt_id
+
+    rows = [
+        row
+        for row in tree.build_manifest(ARMARIUM, verify_inputs=False)["artifacts"]
+        if row["kind"] == "stage-seal"
+    ]
+    assert len(rows) == 1, "the fixture is expected to seal the Armarium exactly once"
+    first = tree.read_artifact(ARMARIUM, "stage-seal", rows[0]["artifact_id"])
+    attempt = attempt_id(first["subject_id"], "seal", 2)
+    # A seal binds the decode-environment record named by its own attempt, so a
+    # coherent reseal re-publishes that record under the new attempt too --
+    # otherwise the consumer's wrong-decode-environment-name refusal fires
+    # before the display logic this helper exists to exercise.
+    environment_id = first["payload"]["decode_environment_artifact_id"]
+    environment = tree.read_artifact(ARMARIUM, "decode-environment", environment_id)
+    second_environment = json.loads(json.dumps(environment))
+    second_environment["attempt_id"] = attempt
+    second_environment["artifact_id"] = artifact_id(
+        ARMARIUM, "decode-environment", environment["subject_id"], attempt
+    )
+    second_environment["self_hash"] = self_hash(second_environment)
+    environment_path = tree.resolve(
+        tree.artifact_path(ARMARIUM, "decode-environment", second_environment["artifact_id"])
+    )
+    environment_path.parent.mkdir(parents=True, exist_ok=True)
+    environment_path.write_bytes(canonical_bytes(second_environment))
+    second = json.loads(json.dumps(first))
+    second["attempt_id"] = attempt
+    second["artifact_id"] = artifact_id(ARMARIUM, "stage-seal", first["subject_id"], attempt)
+    second["payload"] = {
+        **second["payload"],
+        "attempt_id": attempt,
+        "attempt_ordinal": 2,
+        "decode_environment_artifact_id": second_environment["artifact_id"],
+        "decode_environment_sha256": digest_bytes(canonical_bytes(second_environment)),
+    }
+    second["self_hash"] = self_hash(second)
+    path = tree.resolve(tree.artifact_path(ARMARIUM, "stage-seal", second["artifact_id"]))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(canonical_bytes(second))
+    return second["artifact_id"]
+
+
+def test_a_resealed_boundary_shows_every_seal_and_names_exactly_one_as_current(tmp_path: Path):
+    """`current` is a label; superseded seals must remain visible evidence."""
+    run_root, run_id = _make_run(tmp_path)
+    tree = RunTree(run_root, run_id)
+    superseded = review.ReadOnlyRun(run_root, run_id).projection()
+    before = next(row for row in superseded.boundaries if row["stage"] == ARMARIUM)
+    assert [seal["artifact_id"] for seal in before["seals"]] == [before["seal_artifact_id"]]
+    assert before["seals"][0]["current"] is True
+    assert before["seal_record_ref"] == before["seals"][0]["record_ref"]
+
+    resealed = _second_armarium_seal(tree)
+
+    row = next(
+        candidate
+        for candidate in review.ReadOnlyRun(run_root, run_id).projection().boundaries
+        if candidate["stage"] == ARMARIUM
+    )
+    assert row["seal_artifact_id"] == resealed, "the later attempt is the one the boundary names"
+    assert {seal["artifact_id"] for seal in row["seals"]} == {
+        resealed,
+        before["seal_artifact_id"],
+    }, "the superseded seal is still on the surface a person reads"
+    assert [seal["current"] for seal in row["seals"]].count(True) == 1
+    assert next(seal for seal in row["seals"] if seal["current"])["artifact_id"] == resealed
+    assert all("census" in seal for seal in row["seals"])
+    # Each seal carries its own address, so the two are separable in the record
+    # rather than two rows sharing one trace back to the current one.
+    assert row["seal_record_ref"]["sha256"] != before["seal_record_ref"]["sha256"]
+    assert len({seal["record_ref"]["sha256"] for seal in row["seals"]}) == 2
+    for seal in row["seals"]:
+        assert seal["record_ref"]["sha256"] == digest_bytes(
+            tree.read_bytes(seal["record_ref"]["relative_path"])
+        )
+
+
+def test_a_boundary_that_moved_under_two_advances_names_each_one_separately(tmp_path: Path):
+    """Each advance keeps its own verdict; a stale one remains visible."""
+    run_root, run_id = _make_run(tmp_path)
+    tree = RunTree(run_root, run_id)
+    early = advance.trigger_advance(
+        run_root,
+        run_id,
+        ARMARIUM,
+        reason="advanced before the boundary was resealed",
+        workspace=ROOT,
+        expected_digest=_boundary_digest(run_root, run_id),
+    )
+    _second_armarium_seal(tree)
+    late = advance.trigger_advance(
+        run_root,
+        run_id,
+        ARMARIUM,
+        reason="advanced again against the reseal",
+        workspace=ROOT,
+        expected_digest=_boundary_digest(run_root, run_id),
+    )
+    assert early.relative_path != late.relative_path
+
+    records = review.ReadOnlyRun(run_root, run_id).projection().advance_records
+    verdicts = {record["relative_path"]: record for record in records}
+    assert set(verdicts) == {early.relative_path, late.relative_path}
+    assert verdicts[late.relative_path]["boundary_current"] is True
+    assert verdicts[late.relative_path]["boundary_note"] is None
+    assert verdicts[early.relative_path]["boundary_current"] is False
+    assert (
+        "changed after this advance was recorded" in verdicts[early.relative_path]["boundary_note"]
+    )
+    assert all(record["boundary_stage"] == ARMARIUM for record in records)
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    ["page", "crop", "bundle", "record"],
+    ids=["page-image", "act-crop", "review-bundle", "stage-record"],
+)
+def test_tampered_evidence_is_refused_naming_the_file_whose_bytes_moved(
+    tmp_path: Path, evidence: str
+):
+    """The rendered refusal must name the file; its `__cause__` is not shown."""
+    run_root, run_id = _make_run(tmp_path, scenario="review")
+    tree = RunTree(run_root, run_id)
+    projected = review.ReadOnlyRun(run_root, run_id).projection()
+    if evidence == "page":
+        relative = projected.pages[0]["image_path"]
+    elif evidence == "crop":
+        relative = next(act for act in projected.acts if act["crops"])["crops"][0]["image_path"]
+    elif evidence == "bundle":
+        assert projected.review_items
+        relative = projected.review_items[0]["bundle_path"]
+    else:
+        relative = next(
+            row["record_ref"]["relative_path"]
+            for row in projected.stage_records
+            if row["kind"] == "stage-seal"
+        )
+    target = tree.resolve(relative)
+    if evidence == "record":
+        # Canonical self-hashes ignore trailing whitespace, so change a field to
+        # create a semantic tamper rather than alternate JSON serialization.
+        record = json.loads(target.read_bytes().decode("utf-8"))
+        record["payload"] = {**record["payload"], "census": []}
+        target.write_bytes(canonical_bytes(record))
+    else:
+        target.write_bytes(target.read_bytes() + b"\n")
+
+    with pytest.raises(OperatorError) as raised:
+        review.ReadOnlyRun(run_root, run_id).projection()
+
+    assert raised.value.code is ErrorCode.CONSOLE_TREE_UNREADABLE
+    assert relative in raised.value.detail, "the refusal must name the file whose bytes moved"
+    assert relative in raised.value.render(), "and it must survive the render a person reads"
+
+
+def test_opening_a_run_for_review_changes_no_path_bytes_size_or_mtime(tmp_path: Path):
+    """The unconfined parent projection must preserve the entire run tree."""
+    run_root, run_id = _make_run(tmp_path, scenario="review")
+    root = run_root / run_id
+
+    def census() -> dict[str, object]:
+        seen: dict[str, object] = {}
+        for path in sorted(root.rglob("*")):
+            key = str(path.relative_to(root))
+            if path.is_dir():
+                seen[key + "/"] = "directory"
+            else:
+                status = path.stat()
+                seen[key] = (digest_bytes(path.read_bytes()), status.st_size, status.st_mtime_ns)
+        return seen
+
+    before = census()
+    assert before, "the fixture run must have written a tree to walk"
+
+    projected = review.ReadOnlyRun(run_root, run_id).projection()
+    assert projected.stage_records and projected.boundaries
+
+    after = census()
+    assert set(after) == set(before), "reviewing a run created or removed a path"
+    assert after == before, "reviewing a run rewrote evidence it was only meant to read"
+
+
+def test_a_stage_record_changed_after_inventory_is_not_paired_with_the_old_digest(tmp_path: Path):
+    """The displayed body and address must describe the same filesystem read."""
+    run_root, run_id = _make_run(tmp_path)
+    tree = RunTree(run_root, run_id)
+    manifest_row = next(
+        row
+        for row in tree.build_manifest(ARMARIUM, verify_inputs=False)["artifacts"]
+        if row["kind"] == "export"
+    )
+    target = tree.resolve(manifest_row["relative_path"])
+    changed = json.loads(target.read_bytes().decode("utf-8"))
+    changed["payload"] = {**changed["payload"], "scenario": "changed-during-review"}
+    changed["self_hash"] = self_hash(changed)
+    target.write_bytes(canonical_bytes(changed))
+
+    with pytest.raises(SchemaRefusal, match="changed while the review inventory was being read"):
+        review._record_row(tree, ARMARIUM, manifest_row)
+
+
+def test_export_rows_are_derived_from_the_stage_record_snapshot_not_a_later_reread(
+    tmp_path: Path,
+):
+    """One projection must not describe two versions of the Armarium export."""
+    run_root, run_id = _make_run(tmp_path)
+    tree = RunTree(run_root, run_id)
+    manifest_row = next(
+        row
+        for row in tree.build_manifest(ARMARIUM, verify_inputs=False)["artifacts"]
+        if row["kind"] == "export"
+    )
+    export_row = review._record_row(tree, ARMARIUM, manifest_row)
+    target = tree.resolve(manifest_row["relative_path"])
+    changed = json.loads(target.read_bytes().decode("utf-8"))
+    changed["payload"] = {**changed["payload"], "scenario": "changed-after-stage-walk"}
+    changed["self_hash"] = self_hash(changed)
+    target.write_bytes(canonical_bytes(changed))
+
+    payload, record_ref = review._armarium_payload(tree, [export_row])
+
+    assert payload["scenario"] != "changed-after-stage-walk"
+    assert payload is export_row["record"]["payload"]
+    assert record_ref == export_row["record_ref"]
+
+
+@pytest.mark.parametrize("evidence", ["page", "crop", "bundle"])
+def test_export_references_refuse_a_digest_that_disagrees_with_the_named_bytes(
+    tmp_path: Path, evidence: str
+):
+    """Review may not replace a contradictory recorded digest with a fresh one."""
+    run_root, run_id = _make_run(tmp_path, scenario="review")
+    tree = RunTree(run_root, run_id)
+    export_id = artifact_id(ARMARIUM, "export", "export", None)
+    record = tree.read_artifact(ARMARIUM, "export", export_id)
+    if evidence == "page":
+        pages = json.loads(json.dumps(record["payload"]["pages"]))
+        pages[0]["image_sha256"] = "0" * 64
+        record["payload"] = {**record["payload"], "pages": pages}
+    elif evidence == "crop":
+        delivered = json.loads(json.dumps(record["payload"]["delivered"]))
+        act = next(row for row in delivered if row["source_regions"])
+        act["source_regions"][0]["image_sha256"] = "0" * 64
+        record["payload"] = {**record["payload"], "delivered": delivered}
+    else:
+        bundle = json.loads(json.dumps(record["payload"]["bundle"]))
+        bundle["reference"]["sha256"] = "0" * 64
+        record["payload"] = {**record["payload"], "bundle": bundle}
+    record["self_hash"] = self_hash(record)
+    relative = tree.artifact_path(ARMARIUM, "export", export_id)
+    tree.resolve(relative).write_bytes(canonical_bytes(record))
+
+    with pytest.raises(OperatorError) as raised:
+        review.ReadOnlyRun(run_root, run_id).projection()
+
+    assert raised.value.code is ErrorCode.CONSOLE_TREE_UNREADABLE
+    assert relative in raised.value.detail
+    assert "digest" in raised.value.detail
+
+
+def test_review_refuses_a_compressed_bundle_member_before_decompressing_it(tmp_path: Path):
+    """The review bundle is only ever written stored (`build_armarium_bundle`).
+
+    A compressed member could decompress far past its own physical bytes --
+    the same amplification `verify_export_bundle`'s ``ZIP_STORED`` check
+    already refuses for the sealed package (armarium_export.py). The review
+    surface opens the same bundle format and must refuse it the same way,
+    before `archive.read` decompresses anything.
+    """
+    run_root, run_id = _make_run(tmp_path, scenario="review")
+    tree = RunTree(run_root, run_id)
+    export_id = artifact_id(ARMARIUM, "export", "export", None)
+    record = tree.read_artifact(ARMARIUM, "export", export_id)
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("review-items.jsonl", b'{"act_id": "a1"}\n' * 4)
+    poisoned_digest, _ = tree.put_blob(ARMARIUM, buffer.getvalue())
+
+    bundle = dict(record["payload"]["bundle"])
+    bundle["sha256"] = poisoned_digest
+    bundle["reference"] = {
+        "relative_path": tree.blob_path(ARMARIUM, poisoned_digest),
+        "sha256": poisoned_digest,
+    }
+    record["payload"] = {**record["payload"], "bundle": bundle}
+    record["self_hash"] = self_hash(record)
+    tree.resolve(tree.artifact_path(ARMARIUM, "export", export_id)).write_bytes(
+        canonical_bytes(record)
+    )
+
+    with pytest.raises(OperatorError) as excinfo:
+        review.ReadOnlyRun(run_root, run_id).projection()
+
+    assert excinfo.value.code == ErrorCode.CONSOLE_TREE_UNREADABLE
+    assert "is compressed, not stored" in excinfo.value.detail
+
+
+@pytest.mark.parametrize("missing", ["pages", "delivered", "non_delivered", "bundle-reference"])
+def test_review_refuses_a_missing_required_armarium_projection_field(tmp_path: Path, missing: str):
+    """Absent export evidence is not an empty successful review projection."""
+    run_root, run_id = _make_run(tmp_path)
+    tree = RunTree(run_root, run_id)
+    export_id = artifact_id(ARMARIUM, "export", "export", None)
+    record = tree.read_artifact(ARMARIUM, "export", export_id)
+    payload = dict(record["payload"])
+    if missing == "bundle-reference":
+        bundle = dict(payload["bundle"])
+        bundle.pop("reference")
+        payload["bundle"] = bundle
+    else:
+        payload.pop(missing)
+    record["payload"] = payload
+    record["self_hash"] = self_hash(record)
+    relative = tree.artifact_path(ARMARIUM, "export", export_id)
+    tree.resolve(relative).write_bytes(canonical_bytes(record))
+
+    with pytest.raises(OperatorError) as raised:
+        review.ReadOnlyRun(run_root, run_id).projection()
+
+    assert raised.value.code is ErrorCode.CONSOLE_TREE_UNREADABLE
+    assert relative in raised.value.detail
+    assert missing.split("-")[0] in raised.value.detail
