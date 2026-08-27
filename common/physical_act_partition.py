@@ -453,7 +453,17 @@ def build_physical_act_partition(
                     {"physical_page_id": key, "required_capture_sha256s": sorted(value)}
                     for key, value in sorted(components.items())
                 ],
-                "member_local_acts": members,
+                # Bindings (act_class/act_bounds) are intake facts for identity
+                # re-derivation and register appends; the sealed lineage row is
+                # the closed six-field shape every downstream consumer closes on.
+                "member_local_acts": [
+                    {
+                        key: value
+                        for key, value in member.items()
+                        if key not in ("act_class", "act_bounds")
+                    }
+                    for member in members
+                ],
                 "capture_presentations": [presentations[key] for key in sorted(presentations)],
             }
         )

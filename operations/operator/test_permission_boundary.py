@@ -1122,11 +1122,15 @@ def test_review_marks_invalid_and_advance_refuses_when_a_sealed_inventory_lost_e
     )
     tree.resolve(testimony["relative_path"]).unlink()
 
-    projected = review.ReadOnlyRun(run_root, run_id).projection()
-    boundary = next(row for row in projected.boundaries if row["stage"] == "attestatores")
-    assert boundary["seal_present"] is True
-    assert boundary["sealed"] is False
-    assert "inventory no longer matches disk" in boundary["seal_note"]
+    # 21F's provenance walk reads every stage record, so a deleted artifact
+    # fails the whole projection shut with the exact file named -- the same
+    # event the tree used to render as a marked-invalid boundary, read
+    # fail-shut instead of fail-visible. The refusal detail carries the path
+    # an operator needs, and the advance refusal below is unchanged.
+    with pytest.raises(OperatorError) as review_error:
+        review.ReadOnlyRun(run_root, run_id).projection()
+    assert review_error.value.code == ErrorCode.CONSOLE_TREE_UNREADABLE
+    assert testimony["relative_path"] in (review_error.value.detail or "")
 
     with pytest.raises(OperatorError) as advance_error:
         advance.trigger_advance(
@@ -1146,12 +1150,17 @@ def test_review_marks_invalid_and_advance_refuses_when_a_sealed_inventory_lost_e
 
 def test_review_image_rows_refuse_bytes_that_do_not_match_their_sealed_digest():
     stored = b"changed page bytes"
-    tree = types.SimpleNamespace(read_bytes=lambda _path: stored)
+    tree = types.SimpleNamespace(
+        read_bytes=lambda _path: stored,
+        blob_path=lambda stage, value: (
+            f"{'1_exemplar' if stage == 'exemplar' else '2_designator'}/blobs/sha256/{value}"
+        ),
+    )
     page = {
         "ordinal": 1,
         "page_id": "pg_example",
         "outcome": "sealed",
-        "image_path": "1_exemplar/blobs/sha256/example",
+        "image_path": "1_exemplar/blobs/sha256/" + "0" * 64,
         "image_sha256": "0" * 64,
     }
     act = {
@@ -1162,24 +1171,26 @@ def test_review_image_rows_refuse_bytes_that_do_not_match_their_sealed_digest():
             {
                 "source_page_ordinal": 1,
                 "region_id": "rgn_example",
-                "image_path": "2_designator/blobs/sha256/example",
+                "image_path": "2_designator/blobs/sha256/" + "0" * 64,
                 "image_sha256": "0" * 64,
             }
         ],
     }
 
     with pytest.raises(OperatorError) as page_error:
-        review._image_row(tree, page)
-    assert "sealed page" in (page_error.value.detail or "")
+        review._image_row(tree, page, _EXPORT_REF)
+    assert "bytes have digest" in (page_error.value.detail or "")
+    assert "page 1" in (page_error.value.detail or "")
     with pytest.raises(OperatorError) as crop_error:
-        review._act_row(tree, act)
-    assert "act crop" in (crop_error.value.detail or "")
+        review._act_row(tree, act, _EXPORT_REF)
+    assert "bytes have digest" in (crop_error.value.detail or "")
 
 
 def test_review_keeps_an_unsealed_page_visible_with_its_reason():
     row = review._image_row(
         types.SimpleNamespace(),
         {"ordinal": 2, "page_id": None, "outcome": "refused", "reason": "decoder refused"},
+        _EXPORT_REF,
     )
 
     assert row == {
@@ -1187,17 +1198,36 @@ def test_review_keeps_an_unsealed_page_visible_with_its_reason():
         "page_id": None,
         "outcome": "refused",
         "reason": "decoder refused",
+        "record_ref": _EXPORT_REF,
+        "image_path": None,
         "image_sha256": None,
-        "image_data_url": None,
     }
 
 
 def test_review_refuses_an_armarium_projection_that_omits_an_accounting_list():
-    tree = types.SimpleNamespace(read_artifact=lambda *_args: {"payload": {"pages": []}})
-
+    export_id = artifact_id(ARMARIUM, "export", "export", None)
+    record = {
+        "artifact_id": export_id,
+        "payload": {"pages": []},
+        "record_ref": _EXPORT_REF,
+    }
+    tree = types.SimpleNamespace(
+        artifact_path=lambda stage, kind, value: _EXPORT_REF["relative_path"],
+    )
+    stage_records = [
+        {
+            "stage": ARMARIUM,
+            "kind": "export",
+            "artifact_id": export_id,
+            "relative_path": _EXPORT_REF["relative_path"],
+            "record": record,
+            "record_ref": _EXPORT_REF,
+            "payload": record["payload"],
+        }
+    ]
     with pytest.raises(OperatorError) as excinfo:
-        review._armarium_payload(tree)
-    assert "no delivered list" in (excinfo.value.detail or "")
+        review._armarium_payload(tree, stage_records)
+    assert "delivered value is missing or" in (excinfo.value.detail or "")
 
 
 def test_unreadable_tree_recovery_never_instructs_an_evidence_repair():
