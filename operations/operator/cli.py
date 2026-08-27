@@ -267,6 +267,33 @@ def build_parser() -> PlainParser:
     backup.add_argument(
         "--mac-directory", type=Path, required=True, help="local synced backup directory"
     )
+    triage = verbs.add_parser(
+        "triage", help="declare a batch mode and walk its offline review queue"
+    )
+    triage.add_argument(
+        "--manifest", type=Path, required=True, help="producer decision manifest JSON"
+    )
+    triage.add_argument(
+        "--evidence", type=Path, required=True, help="candidate evidence JSON {records}"
+    )
+    triage.add_argument("--proxy-paths", type=Path, required=True, help="digest-to-proxy-path JSON")
+    triage.add_argument("--mode", required=True, choices=("manual", "semi", "auto"))
+    triage.add_argument("--batch-id", required=True)
+    triage.add_argument("--operator", required=True)
+    triage.add_argument("--mode-record", type=Path, required=True)
+    triage.add_argument("--queue-state", type=Path, help="append-only decision journal")
+    triage_decision = triage.add_mutually_exclusive_group()
+    triage_decision.add_argument(
+        "--decline", metavar="ITEM_SHA256", help="record a visible decline"
+    )
+    triage_decision.add_argument(
+        "--accept", metavar="ITEM_SHA256", help="accept this cluster candidate"
+    )
+    triage.add_argument(
+        "--draft", type=Path, help="canonical confirmation draft shown to the operator"
+    )
+    triage.add_argument("--confirmation-out", type=Path, help="producer confirmation-file target")
+    triage.add_argument("--preview-sha256", help="digest of the draft shown before writing")
     return parser
 
 
@@ -374,6 +401,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         elif args.verb == "backup":
             _backup_in_custody(args.run_root, args.run_id, args.mac_directory, workspace)
+        elif args.verb == "triage":
+            _triage_queue(args, workspace)
         # Parser choices must never become a silent no-op if dispatch drifts.
         else:
             raise OperatorError(
@@ -483,6 +512,55 @@ def _backup_in_custody(run_root: Path, run_id: str, mac_directory: Path, _worksp
         "Mac backup complete: "
         f"{report.copied} copied, {report.reused} reused; snapshot {report.snapshot_sha256}."
     )
+
+
+def _triage_queue(args: argparse.Namespace, workspace: Path) -> None:
+    """Render paths and evidence; the console never opens a master or chooses a link."""
+    from . import triage
+
+    try:
+        declaration = triage.declare_mode(args.mode, batch_id=args.batch_id, operator=args.operator)
+        triage.write_mode_declaration(args.mode_record, declaration)
+        queue = triage.load_queue(
+            args.manifest,
+            args.evidence,
+            args.proxy_paths,
+            mode=args.mode,
+            batch_id=args.batch_id,
+            operator=args.operator,
+            triage_modes_path=workspace / "config" / "triage_modes.toml",
+        )
+        if args.decline is not None:
+            if args.queue_state is None:
+                raise triage.TriageRefusal(
+                    "triage refusal queue-state-required: decline needs --queue-state"
+                )
+            triage.append_decision(
+                args.queue_state, queue, item_digest=args.decline, decision="decline"
+            )
+        if args.accept is not None:
+            if args.queue_state is None or args.draft is None or args.confirmation_out is None:
+                raise triage.TriageRefusal(
+                    "triage refusal acceptance-incomplete: accept needs --queue-state, --draft, and --confirmation-out"
+                )
+            if args.preview_sha256 is None:
+                raise triage.TriageRefusal(
+                    "triage refusal preview-confirmation-required: accept needs the shown preview digest"
+                )
+            draft = triage._read_canonical(args.draft, "confirmation-draft")
+            # Acceptance spans two durable files; this transaction API preserves
+            # journal-first ordering and resumes a missing confirmation on replay.
+            triage.accept_candidate(
+                args.queue_state,
+                queue,
+                item_digest=args.accept,
+                draft=draft,
+                confirmation_path=args.confirmation_out,
+                preview_sha256=args.preview_sha256,
+            )
+        _print(json.dumps(queue, sort_keys=True))
+    except triage.TriageRefusal as error:
+        raise OperatorError(ErrorCode.TRIAGE_REFUSED, detail=str(error)) from error
 
 
 def _advance_with_confirmation(
@@ -620,7 +698,7 @@ def _interactive_arguments() -> list[str]:
 
     _print("Verbatus")
     _print(
-        "Choose one word: ingest, launch, boot, upload, run, export, close, status, review, advance, or backup."
+        "Choose one word: ingest, triage, launch, boot, upload, run, export, close, status, review, advance, or backup."
     )
     try:
         verb = input("What would you like to do? ").strip().lower()
@@ -701,6 +779,39 @@ def _interactive_arguments() -> list[str]:
         if policy:
             arguments.extend(("--policy", policy))
         return arguments
+    if verb == "triage":
+        manifest = _ask("Producer decision manifest JSON")
+        evidence = _ask("Candidate evidence JSON")
+        proxy_paths = _ask("Digest-to-proxy-path JSON")
+        # The prompt names the three legal words for the same reason ingest's
+        # does: argparse `choices` answers a guess with "invalid choice".
+        mode = _ask("Triage mode — manual, semi, or auto", default="semi")
+        batch_id = _ask("Batch ID")
+        operator = _ask("Operator name for the mode record")
+        mode_record = _ask("Path where the mode declaration should be recorded")
+        if not all((manifest, evidence, proxy_paths, batch_id, operator, mode_record)):
+            _print(
+                "Triage needs the manifest, evidence, proxy paths, batch ID, operator, "
+                "and mode-record path. One was left blank, so nothing changed."
+            )
+            return []
+        return [
+            "triage",
+            "--manifest",
+            manifest,
+            "--evidence",
+            evidence,
+            "--proxy-paths",
+            proxy_paths,
+            "--mode",
+            mode,
+            "--batch-id",
+            batch_id,
+            "--operator",
+            operator,
+            "--mode-record",
+            mode_record,
+        ]
     if verb == "run":
         run_id = _ask("A short name for this run", default="dry-run")
         return ["run", "--run-id", run_id]

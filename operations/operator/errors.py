@@ -58,6 +58,7 @@ class ErrorCode(StrEnum):
     INGEST_REFUSED = "ingest-refused"
     INGEST_PREVIEW_UNRESOLVED = "ingest-preview-unresolved"
     INGEST_UNRESOLVED = "ingest-unresolved"
+    TRIAGE_REFUSED = "triage-refused"
     INTERRUPTED = "interrupted"
     UNEXPECTED = "unexpected"
 
@@ -283,20 +284,10 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
         "No pod was started or billed, but immutable ingest records may have been written before the interruption.",
         "Do not reuse or remove the output folder. Preserve it and the saved detail, inspect its records, then use a new empty approved folder when retrying.",
     ),
-    ErrorCode.INGEST_REFUSED: ErrorCopy(
-        "The submission could not be prepared for the Door.",
-        "No folder was called ready to submit, and no pod was started or billed.",
-        "Read the refusal reason below, correct the named source, output folder, policy, instrument setting, or confirmation, then run `verbatus ingest` again; this is safe.",
-    ),
-    ErrorCode.INGEST_PREVIEW_UNRESOLVED: ErrorCopy(
-        "Ingest could not show you the plan it was going to write.",
-        "Nothing was written: the preview runs with no write rights at all, so the output folder you chose is untouched.",
-        "Keep the saved detail and run `verbatus ingest` again with the same empty output folder; this is safe.",
-    ),
-    ErrorCode.INGEST_UNRESOLVED: ErrorCopy(
-        "Ingest did not return a checked ready-folder record.",
-        "No pod was started or billed, but immutable ingest records may have been written before the interruption.",
-        "Do not reuse or remove the output folder. Preserve it and the saved detail, inspect its records, then use a new empty approved folder when retrying.",
+    ErrorCode.TRIAGE_REFUSED: ErrorCopy(
+        "Triage could not safely record or show that review step.",
+        "Evidence was not changed. A mode declaration, queue decision, or confirmation may already have been written; this refusal did not silently roll recorded state back.",
+        "Read the saved detail and inspect the named mode, journal, and confirmation files; repair the named problem, then resume the same step when the detail permits it.",
     ),
     ErrorCode.INTERRUPTED: ErrorCopy(
         "The Verbatus command was interrupted before it reported an end state.",
