@@ -3808,6 +3808,10 @@ def test_vision_smoke_call_bounds_encoded_png_bytes_before_dispatch(
     fixture = tmp_path / "golden-page.png"
     fixture_bytes = write_golden_page(fixture)
     handle = manager.start(chair, TIER)
+    # The refusal below is driven by a lowered bound, so pin the real one too:
+    # the serving README states 64 MiB as a fact about this path, and without
+    # this the constant could move to any value with the suite still green.
+    assert smoke_module._MAXIMUM_PNG_BYTES == 64 * 1024 * 1024
     monkeypatch.setattr(smoke_module, "_MAXIMUM_PNG_BYTES", len(fixture_bytes) - 1)
 
     with pytest.raises(ServingConfigurationError, match="byte smoke request bound"):

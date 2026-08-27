@@ -2296,6 +2296,23 @@ def test_an_extraction_cleanup_failure_names_the_leftover_temporary_file(tmp_pat
     assert list(clean.rglob("*.extracting-*")), "the test must exercise a real leftover file"
 
 
+def test_a_member_path_deeper_than_the_bound_is_refused_by_name():
+    """A hostile archive gets a refusal, not a RecursionError.
+
+    Extraction builds parents in a loop, so the deep path lands; the inventory
+    that follows walks it with a recursive helper, and nothing converts
+    `RecursionError`. The bound is checked at validation, before any of it runs.
+    """
+    import armarium_export as export_module
+
+    legitimate = "media/pages/page-0001/crop-0001.png"
+    export_module._validate_member_name(legitimate)
+
+    too_deep = "/".join(f"d{index}" for index in range(64)) + "/acts.jsonl"
+    with pytest.raises(SchemaRefusal, match="package member bound"):
+        export_module._validate_member_name(too_deep)
+
+
 @pytest.mark.parametrize(
     ("name", "member"),
     # `PurePosixPath` splits on `/` alone, so neither of these is absolute and

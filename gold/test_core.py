@@ -1322,6 +1322,25 @@ def test_cli_refuses_a_contradicting_record_before_it_becomes_immutable(tmp_path
     assert cli.main(["validate-corpus", str(records), "--run", str(path)]) == 0
 
 
+@pytest.mark.parametrize("payload", ([1, 2, 3], "a string", None, 42))
+def test_a_gold_record_that_is_not_an_object_is_refused_by_name(tmp_path, payload):
+    """`read_json` returns any JSON value; every reader then reads `schema` off it.
+
+    A file holding a list, a string, a number or null reached `.get` and raised
+    AttributeError, which is a traceback where this CLI's contract is a named
+    refusal. The guard sits in `_records_in` because that is the one reader
+    every command goes through.
+    """
+    records = tmp_path / "records"
+    records.mkdir()
+    (records / "rogue.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(SchemaRefusal, match="is not a JSON object"):
+        cli.main(["verify-sampling", str(records), "--run", str(tmp_path / "absent")])
+    with pytest.raises(SchemaRefusal, match="is not a JSON object"):
+        cli.main(["validate-corpus", str(records)])
+
+
 def test_cli_publishes_into_a_corpus_whose_custody_chain_is_still_open(tmp_path):
     """A partial chain is legitimate while people work, so it blocks no publication.
 

@@ -98,14 +98,24 @@ def _records_in(directory: str | Path | _CorpusDirectory) -> list[dict[str, obje
                     f"the gold-record directory {corpus.path} contains names that collide "
                     "by case or Unicode normalization; it is not portable to default APFS"
                 )
-        records = [
-            read_json(
+        records = []
+        for name in sorted(names):
+            record = read_json(
                 name,
                 directory_descriptor=corpus.descriptor,
                 display_path=corpus.path / name,
             )
-            for name in sorted(names)
-        ]
+            # `read_json` returns any JSON value. Every caller then reads
+            # `schema` off these, so a file holding a list, a string or null
+            # reached `.get` and raised AttributeError -- a traceback where the
+            # contract is a named refusal. One guard here covers every reader.
+            if not isinstance(record, dict):
+                raise SchemaRefusal(
+                    f"the gold record {corpus.path / name} is not a JSON object, so it "
+                    "carries no schema and cannot be reconciled with the corpus around "
+                    "it. Correct or remove the file and retry"
+                )
+            records.append(record)
     except BaseException:
         if owns_descriptor:
             try:

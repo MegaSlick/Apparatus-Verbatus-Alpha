@@ -1332,6 +1332,21 @@ def test_a_manifest_hashes_the_same_artifact_read_it_verified(tmp_path, monkeypa
         return real_fdopen(descriptor, *args, **kwargs)
 
     monkeypatch.setattr(os, "fdopen", counted_fdopen)
+    # `os.fdopen` is not the only way to read the file. Counting that route
+    # alone, a change that hashed via `Path.read_bytes` would leave `reads` at
+    # 1 and the digest still correct -- the file does not change during the
+    # test -- so the manifest could hash bytes it never verified and this would
+    # still report success.
+    real_read_bytes = Path.read_bytes
+
+    def counted_read_bytes(path):
+        nonlocal reads
+        named = path.stat()
+        if (named.st_dev, named.st_ino) == artifact_identity:
+            reads += 1
+        return real_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", counted_read_bytes)
 
     entry = tree.build_manifest(DESIGNATOR)["artifacts"][0]
 

@@ -318,7 +318,10 @@ def test_a_dossier_under_an_unrecognized_witness_regime_cannot_establish(tmp_pat
     )
     assert result.returncode == 2, result.stderr
     assert "Traceback" not in result.stderr
-    assert "which is not one of" in result.stderr
+    # Pinned to the message this check owns: "which is not one of" is also
+    # produced by the provenance-regime and established-text-status refusals,
+    # so the bare fragment could be satisfied by a refusal about neither.
+    assert "embeds a dossier under witness regime" in result.stderr
 
 
 def test_a_blinded_comparison_view_may_not_wear_a_label_the_dossier_never_carried(tmp_path):
@@ -402,6 +405,12 @@ def test_blinded_comparison_views_cannot_exchange_valid_witness_labels(tmp_path)
         }
         labels = sorted(blinded_views)
         assert len(labels) >= 2, "the fixture must carry two attached page witnesses"
+        # If the two carried the same text the swap would be a no-op and the
+        # refusal below would have to come from somewhere else, leaving the
+        # attribution claim this test names unproven.
+        assert blinded_views[labels[0]] != blinded_views[labels[1]], (
+            "the swap must actually exchange two different readings"
+        )
         blinded_views[labels[0]], blinded_views[labels[1]] = (
             blinded_views[labels[1]],
             blinded_views[labels[0]],
