@@ -259,6 +259,7 @@ def test_models_config_owns_the_live_chairs_floor_and_recipes(skeleton, models_c
     assert set(models_config.adapter_recipes) == {
         "door",
         "exemplar",
+        "ink-map",
         "designator",
         "attestatores",
         "perlector",

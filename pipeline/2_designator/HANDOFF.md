@@ -666,14 +666,11 @@ worse than a poorly read act" exists to preserve, and the one failure mode
 `GOVERNANCE.md` 2 refuses by name. Nothing in this stage's output marks the page
 as suspect, so no recovery loop can be aimed at it either.
 
-**This stage did not create the defect and does not close it here.** It predates
-this contract and was previously hidden behind a claim that continuation
-ownership was unresolved; naming it is what makes it fixable. Closing it needs
-bounded cross-page detection and an explicit hold or review outcome for the
-half act — a change to what this stage *proposes*, with its own tests and its own
-review, not a wording change. It is the same family as the zero-proposal-page
-gap, is tracked as an open evidence defect rather than as a known limitation, and
-belongs to whichever work item settles that one.
+**This stage did not create the defect and does not close it here.** Unit 9's
+Ink Map now records bounded `unclaimed-edge-ink` evidence before proposals, but
+does not hold an act: **Unit 14 owns the explicit hold or review outcome** for
+the unproposed cross-page half act. The Designator must retain that evidence
+path rather than treating an absent proposal as a clean page.
 
 **Until it is closed, no run over real material may be described as having
 accounted for every act on a page.** The accounting is honest about what it

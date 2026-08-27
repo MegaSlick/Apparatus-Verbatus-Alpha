@@ -19,7 +19,7 @@ from PIL import Image
 from common.contracts.canonical import canonical_bytes, self_hash
 from common.contracts.errors import ContractError
 from common.contracts.identities import artifact_id
-from common.contracts.stages import EXEMPLAR
+from common.contracts.stages import EXEMPLAR, INK_MAP
 from common.runtree.store import RunTree
 from common.stage import EXIT_FATAL, EXIT_HELD, open_context, stage_parser
 
@@ -199,7 +199,7 @@ def test_a_refused_page_keeps_its_door_alarm_evidence_at_the_downstream_boundary
 
 
 def test_a_page_outcome_missing_from_the_exemplar_stops_before_any_act_is_cut(
-    tmp_path, rebind_stage_seal
+    tmp_path, rebind_stage_seal, rewitness_boundary
 ):
     """The reconciliation branch at `common/exemplar_boundary.py`, which had no test
     at all: replacing its condition with `if False` left the whole suite green.
@@ -236,6 +236,23 @@ def test_a_page_outcome_missing_from_the_exemplar_stops_before_any_act_is_cut(
     seal_path.write_bytes(canonical_bytes(seal))
     tree.resolve(page["relative_path"]).unlink()
     rebind_stage_seal(tree, EXEMPLAR)
+    # The Ink Map sits between Exemplar and Designator and accounted the same
+    # page; the producer bug this test models leaves NO stage accounting for
+    # it. Remove the ink-map artifacts that bound the lost page and re-witness
+    # that boundary, so the Designator reaches the census reconciliation this
+    # test exists for instead of an upstream dangling-input refusal.
+    import json as _json
+
+    for entry in list(tree.build_manifest(INK_MAP, verify_inputs=False)["artifacts"]):
+        artifact_file = tree.resolve(entry["relative_path"])
+        record = _json.loads(artifact_file.read_bytes())
+        if any(
+            reference["relative_path"] == page["relative_path"]
+            for reference in record.get("inputs", [])
+        ):
+            artifact_file.unlink()
+    tree.write_manifest(INK_MAP)
+    rewitness_boundary(tree, INK_MAP)
     before = snapshot(tree.root)
 
     result = invoke_designator(tmp_path)
@@ -259,7 +276,11 @@ def test_a_sealed_pixel_blob_tampered_after_the_upfront_check_is_still_caught(tm
     already happened.
     """
     root = tmp_path / "runs"
-    for program in ("pipeline/1_exemplar/door.py", "pipeline/1_exemplar/run.py"):
+    for program in (
+        "pipeline/1_exemplar/door.py",
+        "pipeline/1_exemplar/run.py",
+        "pipeline/1_ink_map/run.py",
+    ):
         result = subprocess.run(
             [
                 sys.executable,

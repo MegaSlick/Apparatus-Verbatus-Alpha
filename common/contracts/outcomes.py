@@ -41,6 +41,7 @@ from .stages import (
     DESIGNATOR,
     DOOR,
     EXEMPLAR,
+    INK_MAP,
     PERLECTOR,
     RECENSOR,
 )
@@ -87,6 +88,13 @@ VOCABULARIES: Final[dict[str, dict[str, OutcomeClass]]] = {
     EXEMPLAR: {
         "sealed": _C.COMPLETED,
         "refused": _C.FAILED,
+    },
+    # The map is page evidence, not an act decision.  In particular, an
+    # unclaimed edge signal is deliberately carried onward: Unit 14 owns the
+    # explicit hold that will make that evidence terminal.
+    INK_MAP: {
+        "mapped": _C.COMPLETED,
+        "unclaimed-edge-ink": _C.UNRESOLVED,
     },
     DESIGNATOR: {
         "proposed": _C.COMPLETED,
@@ -170,6 +178,8 @@ TERMINAL_CATEGORY: Final[dict[tuple[str, str], ArmariumCategory | None]] = {
     (DOOR, "refused"): _A.REFUSED_WITH_REASON,
     (EXEMPLAR, "sealed"): None,
     (EXEMPLAR, "refused"): _A.REFUSED_WITH_REASON,
+    (INK_MAP, "mapped"): None,
+    (INK_MAP, "unclaimed-edge-ink"): None,
     (DESIGNATOR, "proposed"): None,
     (DESIGNATOR, "excluded"): _A.EXCLUDED_WITH_APPROVAL,
     (DESIGNATOR, "held"): _A.HELD_FOR_REVIEW,

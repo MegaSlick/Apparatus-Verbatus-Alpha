@@ -46,6 +46,7 @@ def test_recovering_the_same_act_twice_refuses_rather_than_cutting_a_duplicate(t
     for program in (
         "pipeline/1_exemplar/door.py",
         "pipeline/1_exemplar/run.py",
+        "pipeline/1_ink_map/run.py",
         "pipeline/2_designator/run.py",
         "pipeline/3_attestatores/run.py",
         "pipeline/4_perlector/run.py",
@@ -117,7 +118,11 @@ def test_an_unrecognized_operation_refuses_rather_than_running_initial_pass(tmp_
     """A typo of "recover" must not silently fall through to a full initial
     pass -- it must be refused as the unrecognized operation it is."""
     root = tmp_path / "runs"
-    for program in ("pipeline/1_exemplar/door.py", "pipeline/1_exemplar/run.py"):
+    for program in (
+        "pipeline/1_exemplar/door.py",
+        "pipeline/1_exemplar/run.py",
+        "pipeline/1_ink_map/run.py",
+    ):
         result = _run(program, root)
         assert result.returncode == 0, f"{program}: {result.stderr}"
 
@@ -162,6 +167,7 @@ def test_a_recovery_at_existing_bounds_refuses_without_cutting_a_duplicate(tmp_p
     for program in (
         "pipeline/1_exemplar/door.py",
         "pipeline/1_exemplar/run.py",
+        "pipeline/1_ink_map/run.py",
         "pipeline/2_designator/run.py",
         "pipeline/3_attestatores/run.py",
         "pipeline/4_perlector/run.py",
@@ -234,6 +240,7 @@ def test_an_out_of_page_recovery_rectangle_refuses_with_a_contract_error(tmp_pat
     for program in (
         "pipeline/1_exemplar/door.py",
         "pipeline/1_exemplar/run.py",
+        "pipeline/1_ink_map/run.py",
         "pipeline/2_designator/run.py",
         "pipeline/3_attestatores/run.py",
         "pipeline/4_perlector/run.py",
@@ -287,6 +294,7 @@ def test_recovery_of_an_act_missing_from_the_fixture_is_a_named_refusal(tmp_path
     for program in (
         "pipeline/1_exemplar/door.py",
         "pipeline/1_exemplar/run.py",
+        "pipeline/1_ink_map/run.py",
         "pipeline/2_designator/run.py",
         "pipeline/3_attestatores/run.py",
         "pipeline/4_perlector/run.py",
@@ -324,6 +332,7 @@ def test_multiple_declared_recovery_bounds_refuse_instead_of_selecting_the_first
     for program in (
         "pipeline/1_exemplar/door.py",
         "pipeline/1_exemplar/run.py",
+        "pipeline/1_ink_map/run.py",
         "pipeline/2_designator/run.py",
         "pipeline/3_attestatores/run.py",
         "pipeline/4_perlector/run.py",
@@ -376,6 +385,7 @@ def test_a_recrop_strictly_inside_the_existing_crop_refuses_by_name(tmp_path):
     for program in (
         "pipeline/1_exemplar/door.py",
         "pipeline/1_exemplar/run.py",
+        "pipeline/1_ink_map/run.py",
         "pipeline/2_designator/run.py",
         "pipeline/3_attestatores/run.py",
         "pipeline/4_perlector/run.py",
@@ -555,6 +565,7 @@ def _review_run_to_recensor(root: Path) -> None:
     for program in (
         "pipeline/1_exemplar/door.py",
         "pipeline/1_exemplar/run.py",
+        "pipeline/1_ink_map/run.py",
         "pipeline/2_designator/run.py",
         "pipeline/3_attestatores/run.py",
         "pipeline/4_perlector/run.py",

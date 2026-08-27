@@ -696,7 +696,7 @@ _DECODE_PATHS: Final = frozenset({"project-png", "pillow", "pdfium", "none"})
 # Every stage that decodes or transforms image bytes in its own pass must seal
 # ``produced_pixels: true``; DAI makes Attestatores such a stage.
 _PIXEL_STAGES: Final = frozenset(
-    {"door", "exemplar", "designator", "attestatores", "perlector", "recensor"}
+    {"door", "exemplar", "ink-map", "designator", "attestatores", "perlector", "recensor"}
 )
 _DECODER_NAMES: Final = frozenset({"pillow", "jpeg-codec", "pillow-heif", "libheif", "pdfium"})
 _DECODE_ENVIRONMENT_FIELDS: Final = frozenset(
@@ -809,6 +809,10 @@ def _decode_environment(stage: str) -> dict[str, Any]:
     paths = {
         "door": {"pillow", "pdfium"},
         "exemplar": {"project-png"},
+        # `grayscale_rows` owns its Pillow fallback inside the project-PNG route.
+        # Naming that fallback as a second route would manufacture decoder drift
+        # at both boundaries around the Ink Map.
+        "ink-map": {"project-png"},
         "designator": {"project-png"},
         # Decode paths name the project-owned deterministic codec route; the
         # executable presentation transform separately names its resampler.

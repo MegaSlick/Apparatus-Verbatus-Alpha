@@ -76,6 +76,7 @@ def _built_through_designator(tmp_path, scenario="happy"):
     for program in (
         "pipeline/1_exemplar/door.py",
         "pipeline/1_exemplar/run.py",
+        "pipeline/1_ink_map/run.py",
         "pipeline/2_designator/run.py",
     ):
         _invoke(root, "r", scenario, program)
@@ -320,6 +321,7 @@ def test_a_flagged_page_holds_every_act_that_touches_it_through_main(tmp_path, m
     for program in (
         "pipeline/1_exemplar/door.py",
         "pipeline/1_exemplar/run.py",
+        "pipeline/1_ink_map/run.py",
         "pipeline/2_designator/run.py",
         "pipeline/3_attestatores/run.py",
         "pipeline/4_perlector/run.py",

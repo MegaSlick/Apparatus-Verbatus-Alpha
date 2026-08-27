@@ -12,7 +12,7 @@ in-memory and network-free. Every test below runs once per implementation, from
 one body, so a claim that holds for one and not the other cannot pass.
 
 The clause about the *stages* is discharged where the stages are:
-`pipeline/test_chair_parameterization.py` runs all eight stage programs over both
+`pipeline/test_chair_parameterization.py` runs all nine stage programs over both
 implementations. And the claim stays the size the spec sized it — exercising an
 interface against two implementations proves those two implement that interface,
 and nothing whatever about model churn.

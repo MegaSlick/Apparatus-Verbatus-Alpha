@@ -2,7 +2,7 @@
 parameterized over both".
 
 `common/chairs/test_chairs_contract_suite.py` runs the protocol itself against both
-implementations. This runs the *pipeline* against both: all eight stage programs,
+implementations. This runs the *pipeline* against both: all nine stage programs,
 over the real fixture, once through the production `ChairRegistry` and once
 through the `DeterministicChairRegistry` the chair tests already use. One fake, in
 one place, exercised from both ends — a second copy living here would drift from
@@ -43,6 +43,7 @@ FIXTURE_ROOT = ROOT / "proof"
 STAGE_PATHS = {
     "door": "pipeline/1_exemplar/door.py",
     "exemplar": "pipeline/1_exemplar/run.py",
+    "ink-map": "pipeline/1_ink_map/run.py",
     "designator": "pipeline/2_designator/run.py",
     "attestatores": "pipeline/3_attestatores/run.py",
     "perlector": "pipeline/4_perlector/run.py",

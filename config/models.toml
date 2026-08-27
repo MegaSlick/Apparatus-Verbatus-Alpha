@@ -48,6 +48,7 @@ witness_floor = 3
 [adapter_recipes]
 door = "fake-door-v1"
 exemplar = "fake-exemplar-v0"
+ink-map = "deterministic-residual-ink-v1"
 designator = "fake-designator-v0"
 attestatores = "fake-attestatores-v0"
 perlector = "fake-perlector-v0"

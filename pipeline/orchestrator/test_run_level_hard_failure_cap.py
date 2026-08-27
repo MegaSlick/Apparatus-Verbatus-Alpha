@@ -39,6 +39,7 @@ FIXTURE = "synthetic-two-page-v0"
 STAGES_THROUGH_PERLECTOR = (
     "pipeline/1_exemplar/door.py",
     "pipeline/1_exemplar/run.py",
+    "pipeline/1_ink_map/run.py",
     "pipeline/2_designator/run.py",
     "pipeline/3_attestatores/run.py",
     "pipeline/4_perlector/run.py",
@@ -358,6 +359,7 @@ def test_a_breach_first_seen_at_a_stage_boundary_stops_the_rest_of_the_sequence(
     assert invoked == [
         orchestrator.STAGE_PROGRAMS["door"],
         orchestrator.STAGE_PROGRAMS["exemplar"],
+        orchestrator.STAGE_PROGRAMS["ink-map"],
         orchestrator.STAGE_PROGRAMS["designator"],
     ]
     printed = capsys.readouterr().out

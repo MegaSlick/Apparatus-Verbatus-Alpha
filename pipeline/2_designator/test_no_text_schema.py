@@ -113,6 +113,7 @@ def test_a_real_act_group_artifact_carries_no_forbidden_field(tmp_path):
     for program in (
         "pipeline/1_exemplar/door.py",
         "pipeline/1_exemplar/run.py",
+        "pipeline/1_ink_map/run.py",
         "pipeline/2_designator/run.py",
     ):
         result = subprocess.run(
@@ -158,6 +159,7 @@ def test_deleting_the_check_lets_a_forged_text_field_publish_uninspected(tmp_pat
     for program in (
         "pipeline/1_exemplar/door.py",
         "pipeline/1_exemplar/run.py",
+        "pipeline/1_ink_map/run.py",
     ):
         result = subprocess.run(
             [

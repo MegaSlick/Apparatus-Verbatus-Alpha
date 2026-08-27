@@ -10,8 +10,8 @@ never stand in for a pipeline that was never actually executed.
 It establishes nothing and reads nothing except the outcome bookkeeping it needs to
 sequence and to checkpoint. Its four jobs:
 
-  Sequence.   Door, Exemplar, Designator, Attestatores, Perlector, Recensor,
-              recovery, Archetypus, Armarium, in that order.
+  Sequence.   Door, Exemplar, Ink Map, Designator, Attestatores, Perlector,
+              Recensor, recovery, Archetypus, Armarium, in that order.
   Recover.    The Recensor appends a request; the orchestrator invokes the owning
               stage — the Designator — for a replacement region, then re-reads and
               re-reviews. The Recensor never cuts a crop, so recovery does not grow
@@ -44,7 +44,7 @@ from common.alignment import DEFAULT_ALIGNMENT_CONFIG_PATH  # noqa: E402
 from common.armarium_formats import DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH  # noqa: E402
 from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.outcomes import ArmariumCategory, check_algebra_is_total  # noqa: E402
-from common.contracts.stages import ATTESTATORES, DESIGNATOR, RECENSOR  # noqa: E402
+from common.contracts.stages import ATTESTATORES, DESIGNATOR, INK_MAP, RECENSOR  # noqa: E402
 from common.hard_failure import (  # noqa: E402
     DEFAULT_HARD_FAILURE_CONFIG_PATH,
     load_hard_failure_policy,
@@ -84,6 +84,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SEQUENCE = (
     ("door", "pipeline/1_exemplar/door.py"),
     ("exemplar", "pipeline/1_exemplar/run.py"),
+    (INK_MAP, "pipeline/1_ink_map/run.py"),
     ("designator", "pipeline/2_designator/run.py"),
     (ATTESTATORES, "pipeline/3_attestatores/run.py"),
     ("perlector", "pipeline/4_perlector/run.py"),

@@ -41,6 +41,7 @@ from common.contracts.stages import (
     DESIGNATOR,
     DOOR,
     EXEMPLAR,
+    INK_MAP,
     PERLECTOR,
     RECENSOR,
     STAGE_DIRECTORIES,
@@ -866,9 +867,26 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # crop-resize recipe); happy gains attestator_2's two retained DAI act
 # responses (88 -> 90) and review likewise (111 -> 113). Measured twice at
 # two independent run roots through this module's own helpers.
-HAPPY_SNAPSHOT_FILES = 90
-HAPPY_RUN_TREE_DIGEST = "da199675689eae5707aa86c7300f05dba42bd26f8d51a28c4c6ad6d507b6f60e"
-REVIEW_RUN_TREE_DIGEST = "6b7ea777f27e9503052275c689fc0e9fe046b770af4169c54c22e9930c573a61"
+# Unit 13 final-seat ledger reason: identity-sized DAI views now seal the exact
+# `crop` operation that produced them, rather than a resize recipe naming
+# LANCZOS even though Pillow returns a copy before consulting the resampler.
+# Artifact counts and exits stay 86/0 and 111/3; only the Testimonium transform
+# records and their derived bindings move. Both digests below reproduced twice
+# in independent temporary roots at canonical run id "r".
+# The Ink Map adds five files to both canonical trees: two page records, its
+# stage seal, its decode-environment record, and its manifest. Happy therefore
+# has 97 files and review 118, with unchanged exits 0 and 3.
+# `_semantic_decode_environment` excludes route labels from the portable
+# snapshot, so the Ink Map's project-PNG declaration cannot move these pins.
+# Both digests reproduced twice in independent roots at canonical run id "r".
+# Re-pinned at this merge (9 onto the composed pr tree): the Ink Map stage
+# joins the walk between Exemplar and Designator, adding its artifacts to both
+# canonical trees (90 -> 95 happy, 113 -> 118 review). Measured twice at two
+# independent run roots through this module's own helpers.
+HAPPY_SNAPSHOT_FILES = 95
+REVIEW_SNAPSHOT_FILES = 118
+HAPPY_RUN_TREE_DIGEST = "8ca86041233e0eff41ab01513aa57cc361016fe001764aece6872dca0ef3b058"
+REVIEW_RUN_TREE_DIGEST = "e0d6e676b85975dee1eb4d3b7853eccb9d96050cc3105c1f17ee5f7aa52e8bb1"
 
 
 def orchestrate(
@@ -978,6 +996,37 @@ def test_orchestrator_carries_a_real_submission_to_the_door_end_to_end(tmp_path)
     assert digest_bytes(policy.read_bytes()) != digest_bytes(
         gate.DEFAULT_POLICY_PATH.read_bytes()
     ), "the caller's policy must differ from the default, or the check above proves nothing"
+
+
+def test_real_designator_refuses_a_missing_ink_map_boundary(tmp_path):
+    """Real ingress must not bypass the producer inserted immediately before it."""
+    approved, source, manifest, policy = _real_submission(tmp_path)
+    root = approved / "runs"
+    first = orchestrate(
+        root,
+        "real-ink-map-boundary",
+        "happy",
+        submission_folder=source,
+        submission_manifest=manifest,
+        data_gate_policy=policy,
+    )
+    assert "real structural proposal/model work is outside System 03" in first.stderr
+
+    tree = RunTree(root, "real-ink-map-boundary")
+    _stage_seal_path(tree, INK_MAP).unlink()
+    before = snapshot(tree.root)
+
+    result = invoke_stage(
+        root,
+        "real-ink-map-boundary",
+        "happy",
+        "pipeline/2_designator/run.py",
+    )
+
+    assert result.returncode == EXIT_FATAL
+    assert "predecessor ink-map has no stage-seal" in result.stderr
+    assert "never re-derived" in result.stderr
+    assert snapshot(tree.root) == before
 
 
 def test_orchestrator_preserves_the_manifest_without_folder_refusal(tmp_path):
@@ -1325,6 +1374,7 @@ def invoke_stage(
     (
         "pipeline/1_exemplar/door.py",
         "pipeline/1_exemplar/run.py",
+        "pipeline/1_ink_map/run.py",
         "pipeline/2_designator/run.py",
         "pipeline/4_perlector/run.py",
         "pipeline/5_recensor/run.py",
@@ -1349,6 +1399,7 @@ def _run_through_designator(root: Path, run_id: str = "r", scenario: str = "happ
     for program in (
         "pipeline/1_exemplar/door.py",
         "pipeline/1_exemplar/run.py",
+        "pipeline/1_ink_map/run.py",
         "pipeline/2_designator/run.py",
     ):
         result = invoke_stage(root, run_id, scenario, program)
@@ -1361,6 +1412,7 @@ def run_through_recensor(
     for program in (
         "pipeline/1_exemplar/door.py",
         "pipeline/1_exemplar/run.py",
+        "pipeline/1_ink_map/run.py",
         "pipeline/2_designator/run.py",
         "pipeline/3_attestatores/run.py",
         "pipeline/4_perlector/run.py",
@@ -2514,7 +2566,16 @@ def test_every_input_reference_in_the_run_resolves_and_matches_its_digest(happy_
     bytes it was derived from, and every one of those references is real."""
     _, tree = happy_run
     checked = 0
-    for stage in (DOOR, EXEMPLAR, DESIGNATOR, ATTESTATORES, PERLECTOR, RECENSOR, ARCHETYPUS):
+    for stage in (
+        DOOR,
+        EXEMPLAR,
+        INK_MAP,
+        DESIGNATOR,
+        ATTESTATORES,
+        PERLECTOR,
+        RECENSOR,
+        ARCHETYPUS,
+    ):
         for entry in tree.build_manifest(stage)["artifacts"]:
             record = tree.read_artifact(stage, entry["kind"], entry["artifact_id"])
             for reference in record["inputs"]:
@@ -2797,6 +2858,7 @@ def test_a_shortened_resealed_proposal_denominator_stops_the_first_consumer(tmp_
     for program in (
         "pipeline/1_exemplar/door.py",
         "pipeline/1_exemplar/run.py",
+        "pipeline/1_ink_map/run.py",
         "pipeline/2_designator/run.py",
     ):
         result = invoke_stage(root, "r", "happy", program)
@@ -3155,6 +3217,7 @@ def test_recensor_refuses_duplicate_witness_attempt_ordinals_instead_of_selectin
     for program in (
         "pipeline/1_exemplar/door.py",
         "pipeline/1_exemplar/run.py",
+        "pipeline/1_ink_map/run.py",
         "pipeline/2_designator/run.py",
         "pipeline/3_attestatores/run.py",
         "pipeline/4_perlector/run.py",
@@ -3640,8 +3703,11 @@ def test_the_run_used_no_network_and_no_model(happy_run):
     assert run["witness_chairs"] == list(config.witness_chairs)
     assert run["adapter_recipes"] == dict(config.adapter_recipes)
     recipes = run["adapter_recipes"]
-    assert len(recipes) == 8
-    assert all(revision.startswith("fake-") for revision in recipes.values())
+    assert len(recipes) == 9
+    assert recipes[INK_MAP] == "deterministic-residual-ink-v1"
+    assert all(
+        revision.startswith("fake-") for stage, revision in recipes.items() if stage != INK_MAP
+    )
     # Every configured chair is a local-repository fixture: nothing here can have
     # reached Hugging Face, because no live chair names a repo at all.
     assert {
@@ -3850,6 +3916,7 @@ def test_a_perlectio_retains_digest_checked_testimonia_it_used(tmp_path):
     for program in (
         "pipeline/1_exemplar/door.py",
         "pipeline/1_exemplar/run.py",
+        "pipeline/1_ink_map/run.py",
         "pipeline/2_designator/run.py",
         "pipeline/3_attestatores/run.py",
         "pipeline/4_perlector/run.py",
@@ -3882,6 +3949,7 @@ def test_recensor_refuses_a_completed_perlectio_without_an_object_region_basis(t
     for program in (
         "pipeline/1_exemplar/door.py",
         "pipeline/1_exemplar/run.py",
+        "pipeline/1_ink_map/run.py",
         "pipeline/2_designator/run.py",
         "pipeline/3_attestatores/run.py",
         "pipeline/4_perlector/run.py",
@@ -4502,8 +4570,8 @@ def test_repeating_the_identical_command_leaves_every_byte_unchanged(tmp_path):
     # R0 adds two retained page Testimonia and two derived act attachments to
     # the happy walking skeleton; repeatability still compares every byte.
     # The count includes two retained Chandra-response blobs, Unit 12's two
-    # content-addressed raw Churro responses, and Unit 13's retained DAI act
-    # responses.
+    # content-addressed raw Churro responses, Unit 13's retained DAI act
+    # responses, and Unit 9's ink-map artifacts.
     assert len(before) == HAPPY_SNAPSHOT_FILES
     assert semantic_snapshot_digest(root) == HAPPY_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "happy").returncode == 0
@@ -4546,7 +4614,7 @@ def test_repeating_the_review_scenario_also_changes_nothing(tmp_path):
 
     # The count includes the two retained Chandra blobs written before recovery;
     # rerunning the loop must not append another copy.
-    assert len(before) == 113
+    assert len(before) == REVIEW_SNAPSHOT_FILES
     assert semantic_snapshot_digest(root) == REVIEW_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "review").returncode == 3
     assert snapshot(root) == before
@@ -4975,12 +5043,13 @@ def test_a_delivered_act_still_links_back_to_the_exact_ink(review_run):
         assert region["declared_sha256"] == source["sha256"]
 
 
-# --- 7. Every one of the seven handoffs refuses corruption ---------------------
+# --- 7. Every contract handoff refuses corruption ------------------------------
 
 # (producer, consumer, the artifact kind that crosses this boundary)
 HANDOFF_ARTIFACTS = (
     (DOOR, EXEMPLAR, "admission"),
-    (EXEMPLAR, DESIGNATOR, "page"),
+    (EXEMPLAR, INK_MAP, "page"),
+    (INK_MAP, DESIGNATOR, "ink-map"),
     (DESIGNATOR, ATTESTATORES, "region"),
     (ATTESTATORES, PERLECTOR, "testimonium"),
     (PERLECTOR, RECENSOR, "perlectio"),
@@ -4992,7 +5061,8 @@ HANDOFF_ARTIFACTS = (
 # Armarium's final one, which the orchestrator itself consumes.
 SEAL_ARTIFACTS = (
     (DOOR, EXEMPLAR),
-    (EXEMPLAR, DESIGNATOR),
+    (EXEMPLAR, INK_MAP),
+    (INK_MAP, DESIGNATOR),
     (DESIGNATOR, ATTESTATORES),
     (ATTESTATORES, PERLECTOR),
     (PERLECTOR, RECENSOR),
@@ -5003,6 +5073,7 @@ SEAL_ARTIFACTS = (
 
 CONSUMER_PROGRAMS = {
     EXEMPLAR: "pipeline/1_exemplar/run.py",
+    INK_MAP: "pipeline/1_ink_map/run.py",
     DESIGNATOR: "pipeline/2_designator/run.py",
     ATTESTATORES: "pipeline/3_attestatores/run.py",
     PERLECTOR: "pipeline/4_perlector/run.py",
@@ -5154,7 +5225,7 @@ def test_next_stage_refuses_blob_content_changed_under_the_named_exemplar_seal(h
     )
     blob.write_bytes(b"tampered bytes under the same filename")
 
-    result = invoke_stage(root, "r", "happy", "pipeline/2_designator/run.py")
+    result = invoke_stage(root, "r", "happy", "pipeline/1_ink_map/run.py")
 
     assert result.returncode == EXIT_FATAL
     assert "exemplar stage-seal" in result.stderr
@@ -5163,6 +5234,7 @@ def test_next_stage_refuses_blob_content_changed_under_the_named_exemplar_seal(h
 
 @pytest.mark.full
 def test_next_stage_refuses_artifact_added_after_the_named_boundary(happy_run, tmp_path):
+    """The Exemplar-to-Ink-Map addition case. Its sibling below is one link later."""
     source_root, _ = happy_run
     root = tmp_path / "runs"
     shutil.copytree(source_root, root)
@@ -5189,7 +5261,74 @@ def test_next_stage_refuses_artifact_added_after_the_named_boundary(happy_run, t
     )
     tree.publish_artifact(forged)
 
+    result = invoke_stage(root, "r", "happy", "pipeline/1_ink_map/run.py")
+
+    assert result.returncode == EXIT_FATAL
+    assert "exemplar stage-seal" in result.stderr
+    assert "inventory no longer matches disk" in result.stderr
+
+
+@pytest.mark.full
+def test_next_stage_refuses_an_ink_map_artifact_added_after_the_named_boundary(happy_run, tmp_path):
+    """Each predecessor link needs its own added-artifact corruption proof."""
+    source_root, _ = happy_run
+    root = tmp_path / "runs"
+    shutil.copytree(source_root, root)
+    tree = RunTree(root, "r")
+    forged = build_envelope(
+        run_id="r",
+        artifact_id=artifact_id(INK_MAP, "added-after-seal", "added", None),
+        subject_id="added",
+        stage=INK_MAP,
+        kind="added-after-seal",
+        # An ordinary stage kind may not wear a boundary outcome; the forged
+        # addition uses the stage's own vocabulary and is still refused by the
+        # seal's inventory.
+        outcome="mapped",
+        config_digest=tree.read_run()["config_digest"],
+        adapter_revision=tree.read_artifact(
+            INK_MAP,
+            "ink-map",
+            next(
+                entry["artifact_id"]
+                for entry in tree.build_manifest(INK_MAP)["artifacts"]
+                if entry["kind"] == "ink-map"
+            ),
+        )["producer"]["adapter_revision"],
+        inputs=[],
+        payload={"deliberately": "unaccounted"},
+    )
+    tree.publish_artifact(forged)
+
     result = invoke_stage(root, "r", "happy", "pipeline/2_designator/run.py")
+
+    assert result.returncode == EXIT_FATAL
+    assert "ink-map stage-seal" in result.stderr
+    assert "inventory no longer matches disk" in result.stderr
+
+
+@pytest.mark.full
+def test_next_stage_refuses_an_exemplar_artifact_removed_after_the_boundary(happy_run, tmp_path):
+    """A later boundary can stay green while Exemplar removal checks regress."""
+    source_root, _ = happy_run
+    root = tmp_path / "runs"
+    shutil.copytree(source_root, root)
+    tree = RunTree(root, "r")
+    page = tree.resolve(
+        tree.artifact_path(
+            EXEMPLAR,
+            "page",
+            next(
+                entry["artifact_id"]
+                for entry in tree.build_manifest(EXEMPLAR)["artifacts"]
+                if entry["kind"] == "page"
+            ),
+        )
+    )
+    assert page.is_file()
+    page.unlink()
+
+    result = invoke_stage(root, "r", "happy", "pipeline/1_ink_map/run.py")
 
     assert result.returncode == EXIT_FATAL
     assert "exemplar stage-seal" in result.stderr
@@ -5198,33 +5337,43 @@ def test_next_stage_refuses_artifact_added_after_the_named_boundary(happy_run, t
 
 @pytest.mark.full
 def test_next_stage_refuses_an_artifact_removed_after_the_named_boundary(happy_run, tmp_path):
-    """The other half of the obligation the test above proves for an addition.
+    """The Ink-Map-to-Designator removal case, one stage later than the test above.
 
     "Added or removed after the boundary" is the one corruption class a
-    manifest-derived seal adds over the envelope self-hash, and only the
-    addition was named. The removal runs through the same recompute, which is
-    exactly why it is cheap to state and worth stating: a claim covered "by
-    construction" is a claim nothing would report if the construction changed.
+    manifest-derived seal adds over the envelope self-hash. The Exemplar link
+    is proved above; this proves the same recompute one stage later so that
+    link is not left covered only for addition, never for removal.
     """
     source_root, _ = happy_run
     root = tmp_path / "runs"
     shutil.copytree(source_root, root)
     tree = RunTree(root, "r")
-    corpus_seal = tree.resolve(
-        tree.artifact_path(EXEMPLAR, "seal", artifact_id(EXEMPLAR, "seal", "corpus-seal"))
+    ink_map = tree.resolve(
+        tree.artifact_path(
+            INK_MAP,
+            "ink-map",
+            next(
+                entry["artifact_id"]
+                for entry in tree.build_manifest(INK_MAP)["artifacts"]
+                if entry["kind"] == "ink-map"
+            ),
+        )
     )
-    assert corpus_seal.is_file()
-    corpus_seal.unlink()
+    assert ink_map.is_file()
+    ink_map.unlink()
 
     result = invoke_stage(root, "r", "happy", "pipeline/2_designator/run.py")
 
     assert result.returncode == EXIT_FATAL
-    assert "exemplar stage-seal" in result.stderr
+    assert "ink-map stage-seal" in result.stderr
     assert "inventory no longer matches disk" in result.stderr
 
 
 @pytest.mark.full
-def test_next_stage_refuses_forged_or_deleted_seal_without_rederiving(happy_run, tmp_path):
+def test_next_stage_refuses_an_exemplar_seal_forged_or_deleted_without_rederiving(
+    happy_run, tmp_path
+):
+    """Forged and missing seals must be proved independently at each link."""
     source_root, _ = happy_run
     forged_root = tmp_path / "forged"
     missing_root = tmp_path / "missing"
@@ -5237,15 +5386,42 @@ def test_next_stage_refuses_forged_or_deleted_seal_without_rederiving(happy_run,
     seal["payload"]["config_digest"] = "0" * 64
     seal["self_hash"] = self_hash(seal)
     seal_path.write_bytes(canonical_bytes(seal))
-    forged = invoke_stage(forged_root, "r", "happy", "pipeline/2_designator/run.py")
+    forged = invoke_stage(forged_root, "r", "happy", "pipeline/1_ink_map/run.py")
     assert forged.returncode == EXIT_FATAL
     assert "config_digest differs from run authority" in forged.stderr
 
     missing_tree = RunTree(missing_root, "r")
     _stage_seal_path(missing_tree, EXEMPLAR).unlink()
+    missing = invoke_stage(missing_root, "r", "happy", "pipeline/1_ink_map/run.py")
+    assert missing.returncode == EXIT_FATAL
+    assert "exemplar has no stage-seal" in missing.stderr
+    assert "never re-derived" in missing.stderr
+
+
+@pytest.mark.full
+def test_next_stage_refuses_forged_or_deleted_seal_without_rederiving(happy_run, tmp_path):
+    """The Ink-Map-to-Designator link, one stage later than the test above."""
+    source_root, _ = happy_run
+    forged_root = tmp_path / "forged"
+    missing_root = tmp_path / "missing"
+    shutil.copytree(source_root, forged_root)
+    shutil.copytree(source_root, missing_root)
+
+    forged_tree = RunTree(forged_root, "r")
+    seal_path = _stage_seal_path(forged_tree, INK_MAP)
+    seal = json.loads(seal_path.read_bytes())
+    seal["payload"]["config_digest"] = "0" * 64
+    seal["self_hash"] = self_hash(seal)
+    seal_path.write_bytes(canonical_bytes(seal))
+    forged = invoke_stage(forged_root, "r", "happy", "pipeline/2_designator/run.py")
+    assert forged.returncode == EXIT_FATAL
+    assert "config_digest differs from run authority" in forged.stderr
+
+    missing_tree = RunTree(missing_root, "r")
+    _stage_seal_path(missing_tree, INK_MAP).unlink()
     missing = invoke_stage(missing_root, "r", "happy", "pipeline/2_designator/run.py")
     assert missing.returncode == EXIT_FATAL
-    assert "has no stage-seal" in missing.stderr
+    assert "ink-map has no stage-seal" in missing.stderr
     assert "never re-derived" in missing.stderr
 
 
@@ -5311,14 +5487,14 @@ def test_every_handoff_in_the_contract_is_covered_by_this_table():
 
     assert {(producer, consumer) for producer, consumer, _ in HANDOFF_ARTIFACTS} == set(HANDOFFS)
     assert {consumer for _, consumer, _ in HANDOFF_ARTIFACTS} == set(CONSUMER_PROGRAMS)
-    assert len(HANDOFF_ARTIFACTS) == 7
+    assert len(HANDOFF_ARTIFACTS) == 8
 
 
 def test_every_stage_has_one_seal_battery_row():
     from common.contracts.stages import STAGES
 
     assert {producer for producer, _ in SEAL_ARTIFACTS} == set(STAGES)
-    assert len(SEAL_ARTIFACTS) == 8
+    assert len(SEAL_ARTIFACTS) == 9
 
 
 def test_the_run_authority_is_never_rewritten_by_any_stage(happy_run):
@@ -5539,6 +5715,7 @@ def test_the_recensor_refuses_a_continuation_claim_with_one_region(tmp_path):
     for name, program in (
         ("door", "pipeline/1_exemplar/door.py"),
         ("exemplar", "pipeline/1_exemplar/run.py"),
+        ("ink-map", "pipeline/1_ink_map/run.py"),
         ("designator", "pipeline/2_designator/run.py"),
     ):
         result = subprocess.run(
@@ -5733,6 +5910,7 @@ def test_the_recensor_refuses_a_testimonium_from_a_chair_the_run_never_sealed(tm
     for program in (
         "pipeline/1_exemplar/door.py",
         "pipeline/1_exemplar/run.py",
+        "pipeline/1_ink_map/run.py",
         "pipeline/2_designator/run.py",
         "pipeline/3_attestatores/run.py",
         "pipeline/4_perlector/run.py",
