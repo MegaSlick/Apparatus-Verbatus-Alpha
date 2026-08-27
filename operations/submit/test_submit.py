@@ -432,6 +432,21 @@ def test_resubmitting_identical_content_to_one_path_is_still_a_true_no_op(submis
     assert submission["manifest_out"].exists()
 
 
+def test_an_identical_referent_behind_a_planted_symlink_is_not_reused(tmp_path):
+    """An EEXIST comparison must identify the directory entry without following it."""
+    target = tmp_path / "sealed.json"
+    referent = tmp_path / "elsewhere.json"
+    data = b"identical sealed bytes"
+    referent.write_bytes(data)
+    target.symlink_to(referent)
+
+    with pytest.raises(submit.ExistingRecordRefusal, match="Evidence is never overwritten"):
+        submit._atomic_create(target, data)
+
+    assert target.is_symlink()
+    assert referent.read_bytes() == data
+
+
 # --- The walk is bounded in every direction an attacker shapes -------------------
 
 

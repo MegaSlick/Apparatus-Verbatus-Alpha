@@ -31,6 +31,7 @@ here keeps the dependency between the two trees pointing one way:
 """
 
 import json
+import os
 from pathlib import Path
 from typing import Any, Final, NamedTuple
 
@@ -203,21 +204,70 @@ def require_approved_storage_location(
     location: Path, approved_roots: tuple[Path, ...], label: str
 ) -> Path:
     """Refuse a real input or output location outside the approved storage roots."""
-    location = Path(location)
-    if location.is_symlink():
-        raise GateRefusal(
-            f"the {label} is a symlink; an approved storage root cannot be entered by redirect"
-        )
+    location = Path(os.path.abspath(location))
+    _refuse_redirect_below_root(location, approved_roots, label)
     try:
         resolved = location.resolve(strict=False)
     except OSError as error:
         raise GateRefusal(
             f"the {label} could not be resolved against the approved storage roots"
         ) from error
-    if not any(resolved.is_relative_to(root) for root in approved_roots):
+    if not any(same_or_inside(root, resolved) for root in approved_roots):
         raise GateRefusal(
             f"the {label} is outside every approved storage root "
             f"{[str(root) for root in approved_roots]}; the policy decides where real "
             "material may live, and an unlisted location is refused rather than allowed"
         )
     return resolved
+
+
+def _refuse_redirect_below_root(
+    location: Path, approved_roots: tuple[Path, ...], label: str
+) -> None:
+    """Reject every symlink below the trusted root, not only the final name.
+
+    The approved root itself has already been resolved from the reviewed policy,
+    so a platform alias above it is not an operator-controlled redirect.  Every
+    component beneath that inode is.  Walking the unresolved spelling is
+    essential: walking ``resolve()``'s result would erase the link being checked.
+    """
+
+    root_identities = {_identity(root) for root in approved_roots}
+    if None in root_identities:
+        raise GateRefusal("an approved storage root could not be identified")
+    for position, candidate in enumerate((location, *location.parents)):
+        if position > 0 and _identity(candidate) in root_identities:
+            return
+        if candidate.is_symlink():
+            relation = "is a symlink" if position == 0 else "crosses a symlink"
+            raise GateRefusal(
+                f"the {label} {relation}; an approved storage root cannot be entered by redirect"
+            )
+        if position == 0 and _identity(candidate) in root_identities:
+            return
+
+
+def _identity(path: Path) -> tuple[int, int] | None:
+    try:
+        status = path.stat()
+    except OSError:
+        return None
+    return (status.st_dev, status.st_ino)
+
+
+def same_or_inside(ancestor: Path, descendant: Path) -> bool:
+    """Whether one path is the other, or holds it, by filesystem identity.
+
+    Not `is_relative_to`, which compares spellings.  APFS is case-insensitive by
+    default, so `/approved/masters` and `/approved/Masters` are one directory
+    that compares unequal as text, and `Path.resolve` does not correct case on
+    macOS: a case-variant spelling walks straight through a textual containment
+    check and lands produced records inside the submitted folder.  Device and
+    inode decide whether two names are the same directory, and they settle a
+    bind mount with the same reading.  A descendant that does not exist yet is
+    judged by its parents, so a not-yet-written output file still answers.
+    """
+    target = _identity(ancestor)
+    if target is None:
+        return False
+    return any(_identity(candidate) == target for candidate in (descendant, *descendant.parents))

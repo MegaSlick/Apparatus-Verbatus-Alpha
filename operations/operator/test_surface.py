@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
@@ -1421,6 +1422,43 @@ def test_console_parser_never_prints_a_raw_traceback(capsys: pytest.CaptureFixtu
     assert "What it means:" in captured
     assert "Next step:" in captured
     assert "Traceback" not in captured
+
+
+def test_every_declared_verb_with_a_required_flag_has_an_interactive_surface(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reflect over the parser's own verbs rather than hand-listing one at a time.
+
+    A hand-picked check of, say, only `ingest` would still pass the day a new verb
+    is added to `build_parser()` with a required flag and no matching branch in
+    `_interactive_arguments`: the trailing fallthrough there returns the bare verb
+    name, and argparse then refuses for "missing required argument" — a person at
+    the double-click window gets no prompt for the fact it needed, only a cryptic
+    parse failure. Walking the parser's declared subcommands and their `required`
+    flags means a future verb is covered automatically, not by remembering to add
+    another hand-written case here.
+    """
+    parser = cli.build_parser()
+    subparsers_action = next(
+        action for action in parser._actions if isinstance(action, argparse._SubParsersAction)
+    )
+    assert subparsers_action.choices, "the parser declared no verbs to enumerate"
+
+    for verb, subparser in subparsers_action.choices.items():
+        required_flags = sorted(
+            option
+            for action in subparser._actions
+            for option in action.option_strings
+            if action.required
+        )
+        answers = iter([verb, *(f"placeholder-{index}" for index in range(20))])
+        monkeypatch.setattr("builtins.input", lambda _prompt, answers=answers: next(answers))
+        arguments = cli._interactive_arguments()
+        missing = [flag for flag in required_flags if flag not in arguments]
+        assert not missing, (
+            f"verb {verb!r} declares required flag(s) {missing} that the double-click "
+            "interactive route never asks for or supplies"
+        )
 
 
 def test_sealed_manifest_upload_refuses_a_new_policy_instead_of_ignoring_it(

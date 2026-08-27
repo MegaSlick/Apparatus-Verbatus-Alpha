@@ -26,13 +26,14 @@ only that): see the status line above and the upload section below.
 That is deliberate, and it is why every screen says "fixture" where a real run would say
 a real thing. The first real run is a separate, separately approved step.
 
-## The eight words
+## The nine words
 
-Seven things this tool can do, in the order a normal run uses them, plus one you can run
+Eight things this tool can do, in the order a normal run uses them, plus one you can run
 any time to check on things.
 
 | Word | What the real run does | Real-run cost |
 |---|---|---|
+| `ingest` | Seals and checks a submitted folder, produces triage evidence, and accepts a cluster confirmation file. | No — it is podless and offline. |
 | `launch` | Rents a machine with a GPU to run the pipeline on. This build rehearses that gate with a fixture. | **Yes in a real run; no in this rehearsal.** It shows the price per hour and every limit, and makes you type a confirmation back first. |
 | `boot` | Gets the rented machine ready and checks it over. This build checks fixture wiring only. | No new cost beyond a machine already running. |
 | `upload` | Sends your images to storage. | No — and it needs no rented machine at all. Do it first if you like. |
@@ -41,6 +42,45 @@ any time to check on things.
 | `backup` | Copies one completed or partial volume-hosted run tree to a local synced Mac directory. | No. It uses no provider credential, stores every published run-tree file by SHA-256, verifies every reused or copied byte, and records any excluded RunTree publication temporaries in the snapshot. |
 | `close` | Shuts the rented machine down. This build closes its fixture pod only. | A real close is what **stops** the pod cost. Always safe to run. |
 | `status` | Shows what is currently going on. | No — it only reads. It never starts, changes or spends anything. |
+
+## `ingest`: prepare a folder before the Door
+
+Choose **ingest** in the double-click window to prepare source masters before any pod
+exists. It asks for the submitted folder, an **existing empty approved output folder**,
+the corpus ID, triage mode, and (only when you have made one) the canonical Unit 6B
+cluster-confirmation file. First it shows the sealed submission ledger, data-gate result,
+instrument candidates, and every file it will write. Only then does it write the ready
+folder: the ledger, producer recipe, proxies, candidate evidence, triage documents, and a
+final `ingest-ready.json` handoff record.
+
+The confirmation file is the operator act. Verbatus never makes one and never promotes an
+instrument verdict on its own. It repeats a Unit 6B refusal exactly, including evidence or
+membership failures. Leaving the confirmation path blank is valid: no cluster is written
+and every cluster field stays null. This is podless; no provider credential enters either
+confined child and no pod is started, confirmed, or billed.
+
+The preview and the write are two separate confined launches, so each reads the submitted
+folder, the confirmation file, the triage instrument settings, and the caller-selected
+data-handling policy fresh. The write is pinned
+to the exact digests and output-folder identity the preview just showed: if any of them
+changes underneath it — a source file rewritten, a confirmation swapped for a different
+one, the instrument settings edited, the policy replaced, or the selected empty folder
+exchanged for another directory at the same path — the write refuses rather than commit
+something other than what was shown and approved on screen.
+
+The output folder must be **beside** the submitted folder, never inside it. Records written
+inside a submitted folder would be counted as submitted files by the next thing that reads
+it, and the Door refuses a submission on exactly those grounds; ingest refuses first, before
+writing anything.
+
+Every submitted file must be an image the triage instrument can decode. A stray `.DS_Store`,
+a text file, or a PDF makes ingest refuse the whole folder — and say how many files could not
+be decoded and where they sit in the ledger's path order, so you can find and move them. A
+PDF or other container reaches the Door through `upload`, which needs no triage pass.
+One ingest accepts at most 1,500 masters and 20,000 reached candidate pairs. Those ceilings
+sit above the instrument suite's 1,200-frame corpus-order case and turn a larger or unusually
+dense pass into a named refusal before proxy retention or full comparisons can grow without
+a bound; prepare that material as smaller submitted folders.
 
 **`upload` needs no rented machine**, so a normal order is: `upload` your images first
 (zero machine cost while you do), then `launch` when you are ready to actually process

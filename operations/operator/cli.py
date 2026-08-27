@@ -19,6 +19,7 @@ from . import notify_bridge
 from .advance import sealed_boundary, trigger_advance
 from .custody import python_module_command, run_confined
 from .errors import ErrorCode, OperatorError, strip_control_bytes
+from .ingest import ingest_in_custody
 from .review import ReadOnlyRun
 from .surface import DEFAULT_FIXTURE, OperatorSurface
 from .volume_s3 import VolumeSpec, VolumeTransferRefusal
@@ -158,6 +159,37 @@ def build_parser() -> PlainParser:
     )
     upload.add_argument(
         "--source", type=Path, required=True, help="folder containing the submitted files"
+    )
+
+    ingest = verbs.add_parser(
+        "ingest",
+        help="prepare one folder for the Door: ledger, data gate, triage evidence, and confirmation",
+    )
+    ingest.add_argument(
+        "--source", type=Path, required=True, help="folder containing submitted masters"
+    )
+    ingest.add_argument(
+        "--output-dir",
+        type=Path,
+        required=True,
+        help="existing empty approved folder for the ready-to-submit records",
+    )
+    ingest.add_argument(
+        "--policy",
+        type=Path,
+        help="reviewed data-handling policy (defaults to config/data_handling_policy.json)",
+    )
+    ingest.add_argument("--corpus-id", required=True, help="non-empty corpus identity for triage")
+    ingest.add_argument(
+        "--mode",
+        choices=("manual", "semi", "auto"),
+        default="auto",
+        help="declared triage mode; all current modes remain routed to review",
+    )
+    ingest.add_argument(
+        "--confirmation-file",
+        type=Path,
+        help="canonical Unit 6B cluster-confirmation file; omit when confirming no cluster",
     )
     reuse = upload.add_mutually_exclusive_group(required=True)
     reuse.add_argument(
@@ -302,6 +334,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                     policy_path=args.policy,
                     volume=volume,
                 )
+        elif args.verb == "ingest":
+            ingest_in_custody(
+                source=args.source,
+                output_dir=args.output_dir,
+                policy_path=args.policy,
+                corpus_id=args.corpus_id,
+                mode=args.mode,
+                confirmation_file=args.confirmation_file,
+                workspace=workspace,
+                printer=_print,
+            )
         elif args.verb == "run":
             surface.run(
                 run_id=args.run_id,
@@ -577,7 +620,7 @@ def _interactive_arguments() -> list[str]:
 
     _print("Verbatus")
     _print(
-        "Choose one word: launch, boot, upload, run, export, close, status, review, advance, or backup."
+        "Choose one word: ingest, launch, boot, upload, run, export, close, status, review, advance, or backup."
     )
     try:
         verb = input("What would you like to do? ").strip().lower()
@@ -624,6 +667,40 @@ def _interactive_arguments() -> list[str]:
             )
             return []
         return ["upload", "--source", source, "--manifest-out", manifest_out]
+    if verb == "ingest":
+        source = _ask("Folder containing the submitted master files")
+        output_dir = _ask("Existing empty approved folder for the ready-to-submit records")
+        policy = _ask("Reviewed data-handling policy (leave blank for the project default)")
+        corpus_id = _ask("Corpus ID")
+        # The prompt names the three legal words. Without them a typo reaches
+        # argparse's `choices`, and the double-click window answers a person's
+        # reasonable guess with "invalid choice" instead of the list they needed.
+        mode = _ask("Triage mode — manual, semi, or auto", default="auto")
+        confirmation = _ask(
+            "Canonical cluster confirmation file (leave blank when confirming no cluster)"
+        )
+        if not source or not output_dir or not corpus_id:
+            _print(
+                "Ingest needs a submitted folder, an empty approved output folder, and a corpus ID. "
+                "One was left blank, so nothing changed."
+            )
+            return []
+        arguments = [
+            "ingest",
+            "--source",
+            source,
+            "--output-dir",
+            output_dir,
+            "--corpus-id",
+            corpus_id,
+            "--mode",
+            mode,
+        ]
+        if confirmation:
+            arguments.extend(("--confirmation-file", confirmation))
+        if policy:
+            arguments.extend(("--policy", policy))
+        return arguments
     if verb == "run":
         run_id = _ask("A short name for this run", default="dry-run")
         return ["run", "--run-id", run_id]
