@@ -58,11 +58,13 @@ from common.contracts.outcomes import (
 from common.contracts.serving import SERVING_CONFIG_INPUTS_FIELDS, SERVING_CONFIG_INPUTS_SCHEMA
 from common.contracts.stages import (
     ARMARIUM,
+    ATTESTATORES,
     DESIGNATOR,
     EXEMPLAR,
     PERLECTOR,
     RECENSOR,
     SEAL_PREDECESSORS,
+    STAGES,
     TRIAGE_MODES,
 )
 from common.corpus_register import read_snapshot, verify_snapshot_is_current
@@ -193,6 +195,75 @@ ATTEMPTED_WITNESS_OUTCOMES = frozenset({"read", "genuinely-empty", "failed"})
 # attached without being read; two identical literals in two files agreed only by
 # coincidence.  Found in audit; F-O3.
 WITNESS_READING_OUTCOMES = _WITNESS_READING_OUTCOMES
+
+# One closed vocabulary for staged driver selections and the console that
+# presents them.  Selection remains an invocation choice, never run-tree bytes.
+RUN_MODES: Final = TRIAGE_MODES
+
+# Attestatores can return EXIT_HELD before the driver consults `mode`, after it
+# has written its completion seal. Armarium's own terminal report can do the
+# same: `run_sequence`'s tail returns `EXIT_HELD` for any non-complete report
+# whenever the selection's last member is armarium, with no reference to
+# `mode` at all -- found in this unit's own security review, F-R21C1, because
+# the very AST scan this comment used to cite for "cannot drift silently" only
+# recognises an `if name == ...: return EXIT_HELD` branch and had no shape for
+# a bare tail ternary, so armarium had silently drifted out of this set.
+# `test_advance_modes.py` derives the branch-shaped half of this set from the
+# driver's own syntax and asserts the ternary shape by source literal for the
+# other half, so both halves of this cross-module claim stay checked.
+ALWAYS_HELD_BOUNDARIES: Final = frozenset({ATTESTATORES, ARMARIUM})
+
+
+def _named_boundary(name: str, role: str) -> str:
+    """Refuse a selection endpoint that owns no stage completion boundary.
+
+    `recovery` is a legal driver member (`--from designator --to recovery`
+    parses) and owns no stage program and no seal, so it is refused here by the
+    same sentence a typo is: what matters to a person at the console is which
+    names *do* carry a boundary, not which list the name failed to be in.
+    """
+
+    if name not in STAGES:
+        raise ContractError(
+            f"{role} names {name!r}, which owns no stage completion boundary; "
+            f"the boundaries are {', '.join(STAGES)}"
+        )
+    return name
+
+
+def held_advance_boundaries(
+    mode: str,
+    *,
+    stage: str,
+    from_stage: str | None = None,
+    to_stage: str | None = None,
+) -> frozenset[str]:
+    """Return every boundary a selected invocation can stop at, judging no evidence.
+
+    This is a claim about the *driver*, not about the run tree: it says where a
+    person can be waiting, never whether one is or whether they should advance.
+    """
+
+    if mode not in RUN_MODES:
+        raise ContractError(f"unknown staged run mode {mode!r}")
+    _named_boundary(stage, "the advanced boundary")
+    if mode == "auto":
+        if from_stage is not None or to_stage is not None:
+            raise ContractError("auto mode names no held range")
+        return ALWAYS_HELD_BOUNDARIES
+    if mode == "manual":
+        if from_stage is not None or to_stage is not None:
+            raise ContractError("manual mode names one stage, not a range")
+        return frozenset({stage})
+    if from_stage is None or to_stage is None:
+        raise ContractError("semi mode needs both the first and last stage of its range")
+    first = STAGES.index(_named_boundary(from_stage, "the semi-mode range start"))
+    last = STAGES.index(_named_boundary(to_stage, "the semi-mode range end"))
+    if first > last:
+        raise ContractError("semi mode cannot run a boundary backwards")
+    span = frozenset(STAGES[first : last + 1])
+    return frozenset({to_stage}) | (ALWAYS_HELD_BOUNDARIES & span)
+
 
 # Every top-level field a reading's model provenance may carry. A closed set,
 # because invariant #42 refuses *wrong-schema* provenance rather than a list of

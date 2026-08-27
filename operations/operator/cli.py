@@ -13,10 +13,17 @@ from datetime import datetime
 from pathlib import Path
 from typing import Sequence
 
+from common.contracts.stages import STAGES
+from common.stage import RUN_MODES
 from operations.pod.models import PodCreateRequest, require_utc
 
 from . import notify_bridge
-from .advance import sealed_boundary, trigger_advance
+from .advance import (
+    UnsealedBoundaryRefusal,
+    boundary_summary,
+    held_boundaries_for_mode,
+    trigger_advance,
+)
 from .custody import python_module_command, run_confined
 from .errors import ErrorCode, OperatorError, strip_control_bytes
 from .ingest import ingest_in_custody
@@ -256,6 +263,9 @@ def build_parser() -> PlainParser:
     advance.add_argument("--run-id", required=True, help="the sealed run to advance")
     advance.add_argument("--stage", required=True, help="the sealed stage boundary to pass")
     advance.add_argument("--reason", required=True, help="why Tyrel chose to advance this boundary")
+    advance.add_argument("--mode", choices=RUN_MODES, default="manual")
+    advance.add_argument("--from-stage", help="first stage of the inclusive semi-mode range")
+    advance.add_argument("--to-stage", help="last stage of the inclusive semi-mode range")
     backup = verbs.add_parser(
         "backup",
         help="copy one run tree to a local Mac directory by digest, without a provider credential",
@@ -398,6 +408,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.stage,
                 reason=args.reason,
                 workspace=workspace,
+                mode=args.mode,
+                from_stage=args.from_stage,
+                to_stage=args.to_stage,
             )
         elif args.verb == "backup":
             _backup_in_custody(args.run_root, args.run_id, args.mac_directory, workspace)
@@ -570,6 +583,9 @@ def _advance_with_confirmation(
     *,
     reason: str,
     workspace: Path,
+    mode: str = "manual",
+    from_stage: str | None = None,
+    to_stage: str | None = None,
 ) -> None:
     """Bind a human confirmation to one observed digest, then launch the worker."""
 
@@ -578,16 +594,80 @@ def _advance_with_confirmation(
 
     tree = RunTree(run_root.resolve(), run_id)
     try:
-        _seal, digest = sealed_boundary(tree, stage)
+        # Stored boundary facts do not depend on the declared selection. Mode
+        # claims must wait until the selection is validated, or an invalid
+        # range could be presented as evidence before it is refused.
+        boundary_states: list[dict[str, object] | None] = []
+        for candidate in STAGES:
+            try:
+                candidate_summary = boundary_summary(tree, candidate)
+            except UnsealedBoundaryRefusal:
+                boundary_states.append(None)
+            else:
+                boundary_states.append(candidate_summary)
+        first_gap: str | None = None
+        for candidate, state in zip(STAGES, boundary_states, strict=True):
+            if state is None and first_gap is None:
+                first_gap = candidate
+            elif state is not None and first_gap is not None:
+                raise ApprovalRefusal(
+                    f"advance refuses the stored boundary chain: {first_gap} has no "
+                    f"completion seal although later stage {candidate} is sealed; earlier evidence "
+                    "is missing, not merely unfinished"
+                )
+        _print("Current boundary state (pipeline order; not a recommendation):")
+        for candidate, candidate_summary in zip(STAGES, boundary_states, strict=True):
+            if candidate_summary is None:
+                _print(f"- {candidate}: no stored completion seal")
+            else:
+                _print(
+                    f"- {candidate}: seal {candidate_summary['seal_digest']}; "
+                    f"attempt {candidate_summary['attempt_ordinal']}; "
+                    f"census {json.dumps(candidate_summary['census'], sort_keys=True)}"
+                )
+        held = held_boundaries_for_mode(mode, stage=stage, from_stage=from_stage, to_stage=to_stage)
+        # Named as the operator's own declaration, because that is all it can
+        # be: nothing in the run tree records how the pipeline was invoked, so
+        # the console cannot check this against evidence and must not present
+        # it as though it had.
+        _print(f"Staged invocation mode, as you declared it: {mode}.")
+        _print("The run tree records no invocation mode, so nothing here checks that claim.")
+        if mode == "auto":
+            _print("Auto mode runs every stage and passes every boundary it does not hold.")
+        elif mode == "semi":
+            _print(
+                f"Semi mode runs the inclusive range {from_stage} through {to_stage} "
+                "and passes every boundary in it that it does not hold."
+            )
+        else:
+            _print(f"Manual mode runs {stage} alone and passes nothing.")
+        _print(
+            "This declared selection can require a person-held advance at: "
+            f"{', '.join(sorted(held))}."
+        )
+        summary = boundary_summary(tree, stage)
+        digest = summary["seal_digest"]
     except ApprovalRefusal as error:
         raise OperatorError(ErrorCode.ADVANCE_REFUSED, detail=str(error)) from error
-    phrase = f"advance {run_id} past {stage} at {digest}"
+    _print("Sealed evidence summary:")
+    _print(f"- seal digest: {summary['seal_digest']}")
+    _print(f"- configuration digest: {summary['config_digest']}")
+    _print(f"- artifact inventory digest: {summary['artifact_inventory']}")
+    _print(f"- blob inventory digest: {summary['blob_inventory']}")
+    _print(f"- outcome census: {json.dumps(summary['census'], sort_keys=True)}")
+    phrase = (
+        f"advance {run_id} past {stage} at {digest} "
+        f"for reason {json.dumps(reason, ensure_ascii=True)}"
+    )
     _print(f"The current {stage} boundary has seal digest {digest}.")
     confirmation = _typed_advance_confirmation(phrase)
     if confirmation != phrase:
         raise OperatorError(
             ErrorCode.ADVANCE_REFUSED,
-            detail="the typed confirmation did not exactly name this run, stage, and seal digest",
+            detail=(
+                "the typed confirmation did not exactly name this run, stage, seal digest, "
+                "and recorded reason"
+            ),
         )
     reference = trigger_advance(
         run_root,
@@ -827,12 +907,29 @@ def _interactive_arguments() -> list[str]:
             return []
         arguments = [verb, "--run-root", run_root, "--run-id", run_id]
         if verb == "advance":
-            stage = _ask("The sealed stage boundary to pass")
+            # The double-click route has no `--help`, so every closed-value
+            # prompt must state the spellings its parser accepts.
+            boundaries = ", ".join(STAGES)
+            stage = _ask(f"The sealed stage boundary to pass — one of: {boundaries}")
             reason = _ask("Why this boundary should be advanced")
-            if not stage or not reason:
-                _print("Advance needs both a stage and a reason. Nothing changed.")
+            mode = _ask(
+                f"Staged invocation mode — one of: {', '.join(RUN_MODES)}", default="manual"
+            )
+            if not stage or not reason or not mode:
+                _print("Advance needs a stage, reason, and staged mode. Nothing changed.")
                 return []
-            arguments.extend(("--stage", stage, "--reason", reason))
+            arguments.extend(("--stage", stage, "--reason", reason, "--mode", mode))
+            if mode == "semi":
+                from_stage = _ask(
+                    f"First stage in the inclusive semi-mode range — one of: {boundaries}"
+                )
+                to_stage = _ask(
+                    f"Last stage in the inclusive semi-mode range — one of: {boundaries}"
+                )
+                if not from_stage or not to_stage:
+                    _print("Semi advance needs both range endpoints. Nothing changed.")
+                    return []
+                arguments.extend(("--from-stage", from_stage, "--to-stage", to_stage))
         if verb == "backup":
             mac_directory = _ask("Local synced Mac backup directory")
             if not mac_directory:

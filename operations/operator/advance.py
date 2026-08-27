@@ -21,7 +21,12 @@ from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ApprovalRefusal, ContractError
 from common.contracts.stages import ARMARIUM, SEAL_PREDECESSORS, STAGES
 from common.runtree.store import RunTree
-from common.stage import latest_attempt, verify_final_seal, verify_predecessor_seal
+from common.stage import (
+    held_advance_boundaries,
+    latest_attempt,
+    verify_final_seal,
+    verify_predecessor_seal,
+)
 
 from .custody import (
     python_module_command,
@@ -36,6 +41,10 @@ MAX_ADVANCE_REQUEST_CHARACTERS = 65_536
 UTC = timezone.utc
 
 _DIRECTORY_OPEN_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+
+
+class UnsealedBoundaryRefusal(ApprovalRefusal):
+    """A known stage has no completion seal yet, rather than unreadable evidence."""
 
 
 def advance_subject(stage: str) -> str:
@@ -182,24 +191,79 @@ def stored_boundary(tree: RunTree, stage: str) -> tuple[dict[str, Any], str]:
             for entry in manifest["artifacts"]
             if entry["kind"] == "stage-seal"
         ]
-    except (ContractError, KeyError, TypeError) as error:
+        if not seals:
+            raise UnsealedBoundaryRefusal(
+                f"advance refuses {stage}: it has no stored stage-seal, so there is no "
+                "witnessed boundary to pass"
+            )
+        seal = latest_attempt(seals, f"{stage} stage seal", operation="seal")
+        data = tree.read_bytes(tree.artifact_path(stage, "stage-seal", seal["artifact_id"]))
+    except UnsealedBoundaryRefusal:
+        raise
+    except (ContractError, KeyError, OSError, TypeError) as error:
         raise ApprovalRefusal(
             f"advance could not read {stage}'s stored completion seal ({error}); "
             "no boundary was advanced"
         ) from error
-    if not seals:
-        raise ApprovalRefusal(
-            f"advance refuses {stage}: it has no stored stage-seal, so there is no witnessed boundary to pass"
-        )
-    seal = latest_attempt(seals, f"{stage} stage seal", operation="seal")
-    try:
-        data = tree.read_bytes(tree.artifact_path(stage, "stage-seal", seal["artifact_id"]))
-    except (KeyError, OSError, TypeError) as error:
-        raise ApprovalRefusal(
-            f"advance could not read {stage}'s stored completion seal bytes ({error}); "
-            "no boundary was advanced"
-        ) from error
     return seal, digest_bytes(data)
+
+
+def boundary_summary(tree: RunTree, stage: str) -> dict[str, Any]:
+    """Project stored boundary facts for display, never a recommendation.
+
+    Reads via `stored_boundary`, not the verifying `sealed_boundary`: a chain
+    display row states what is on disk, and verifying every stage to draw a
+    table would make display cost scale with the whole run. The one digest an
+    operator confirms an advance against is sourced from the verifying path
+    at the advance itself (`trigger_advance` via `sealed_boundary`).
+    """
+
+    seal, digest = stored_boundary(tree, stage)
+    payload = seal["payload"]
+    return {
+        "stage": stage,
+        "seal_digest": digest,
+        "attempt_ordinal": payload["attempt_ordinal"],
+        "config_digest": payload["config_digest"],
+        "artifact_inventory": payload["artifact_inventory"],
+        "blob_inventory": payload["blob_inventory"],
+        "census": payload["census"],
+    }
+
+
+def held_boundaries_for_mode(
+    mode: str,
+    *,
+    stage: str,
+    from_stage: str | None = None,
+    to_stage: str | None = None,
+) -> frozenset[str]:
+    """Refuse unless this declared selection can require an advance at ``stage``.
+
+    The held set is the driver's, not this module's opinion of it: an auto run
+    can still stop at the Attestatores' witnessed boundary, and so can a semi
+    range that spans it (`common.stage.ALWAYS_HELD_BOUNDARIES`). This function
+    validates invocation shape; the run tree carries no invocation mode or
+    exit-status evidence from which it could claim that one particular run did
+    stop there.
+    """
+
+    try:
+        held = held_advance_boundaries(mode, stage=stage, from_stage=from_stage, to_stage=to_stage)
+    except ContractError as error:
+        raise ApprovalRefusal(f"advance refuses this mode selection: {error}") from error
+    if stage not in held:
+        waits = ", ".join(sorted(held))
+        if mode == "auto":
+            raise ApprovalRefusal(
+                f"advance refuses {stage} in auto mode: auto passes every selected boundary "
+                f"without a person-held record except {waits}, where a run can stop in every mode"
+            )
+        raise ApprovalRefusal(
+            f"advance refuses {stage} in {mode} mode: that declared selection can require "
+            f"a person-held advance at {waits}, not {stage}"
+        )
+    return held
 
 
 def sealed_boundary(tree: RunTree, stage: str) -> tuple[dict[str, Any], str]:
@@ -289,7 +353,7 @@ def record_advance(
         if timestamp is not None
         else datetime.now(UTC).isoformat().replace("+00:00", "Z"),
     )
-    reference, _result = tree.write_approval_record(record)
+    reference, _ = tree.write_approval_record(record)
     return reference
 
 
@@ -465,6 +529,17 @@ def trigger_advance(
             or record["reason"] != reason
         ):
             raise ApprovalRefusal("the advance worker returned a different decision record")
+        try:
+            verify_advance(tree, stage, reference)
+        except ApprovalRefusal as error:
+            raise OperatorError(
+                ErrorCode.ADVANCE_REFUSED,
+                detail=(
+                    f"the advance worker wrote checked decision record {reference.relative_path}, "
+                    "but the stage seal changed before the result was verified; the immutable "
+                    "record remains visible as stale, so inspect advance_records before retrying"
+                ),
+            ) from error
         return reference
     except (ApprovalRefusal, ContractError, KeyError, OSError, TypeError, ValueError) as error:
         raise OperatorError(
