@@ -236,13 +236,19 @@ no attempt binding. The independent coverage proof: every ink pixel at the
 stage's most sensitive declared threshold, `structure.SECONDARY_MARGIN`, reconciled
 against the *final* (padded)
 proposal crops actually cut on it — never against what grouping *claims* to have
-found, which is the gap an independent second read of the old pipeline's own
-conservation logic named precisely (`/stage/70_gpt_review/ASSESSMENT.md:172-173`
-in the window: it "proves coverage of units already emitted by a structural
-model. It cannot prove that the model did not miss ink entirely." An earlier
-draft of this sentence cited `MISSING.md`, which carries the same idea in
-different words at line 319 but is not where this exact sentence lives;
-corrected here after a second window read).
+found. The cut rectangles are what is passed as `claimed_bounds`
+(`pipeline/2_designator/run.py:1534`), and the counts and residual components are
+published from that scan (`:1544-1570`). Ink that no crop covers is not merely counted:
+on a successful pass every residual component becomes its own held act
+(`_publish_residual_holds`, `pipeline/2_designator/run.py:1277-1330`), so a mark
+structural grouping never proposed is visible rather than absent. If two components
+share a bounding box and therefore cannot receive distinct act identities, the stage
+refuses before minting either instead of collapsing their evidence (`:1300-1311`).
+
+The accounting cannot detect ink fainter than `background - SECONDARY_MARGIN` or a mark
+with no contrast against its background; neither enters the denominator. A page whose
+background cannot be inferred is recorded
+`ink_measurable: false` with its reason rather than counted at a substituted divider.
 
 ```text
 page_ordinal, background_source, background_value | null
@@ -282,9 +288,9 @@ first and never decides whether one is recorded at all — deleting the priority
 threshold would only reorder the list, never shorten it.
 
 **Every residual is also now minted as its own held act**
-(`_publish_residual_holds`, `common/stage.py::residual_act_ordinal` and
-`_verify_residual_act_rows`), closing the gap this section used to name as
-unimplemented. `expected_acts` no longer requires the seal's denominator to
+(`pipeline/2_designator/run.py::hold_residual_act` via `_publish_residual_holds`,
+verified by `common/stage.py::_verify_every_conservation_residual_is_accounted`),
+closing the gap this section used to name as unimplemented. `expected_acts` no longer requires the seal's denominator to
 equal the fixture's declared acts exactly — every fixture act is still a floor
 that must appear, but the seal may also carry additional rows a residual
 minted, each `held` from the moment it exists (never `proposed`: nothing
@@ -309,9 +315,10 @@ restructure needed no changes at all: a held act's outcome, whichever stage
 minted it, already flows through them generically.
 
 The identity a residual receives is disjoint from every real proposal's by
-construction: `residual_act_ordinal(index) = -(index + 1)`, and a structure
-pass's own proposal ordinal is always non-negative, so the two act-identity
-spaces can never collide, present fixture or real one.
+construction: it derives from `act_id(page_id, "residual", bounds)` -- the
+`"residual"` act class is its own namespace in the identity ladder -- so a
+structure pass's `"proposal"`-class identities can never collide with it,
+present fixture or real one.
 
 ## `kind="secondary-provenance"`, `kind="secondary-proposal"`, and `kind="rescue-crop"`
 
@@ -624,12 +631,11 @@ limit rather than a bug to close by dropping regions: whatever bounds it must
 bound the *page* (refuse a page this speckled, visibly and as a hold) rather
 than the accounting over one. Named here rather than discovered at scale.
 
-There is now one bound on it, and it is not that one: `residual_act_ordinal`
-refuses an index past `RESIDUAL_ACT_ORDINAL_FLOOR` (-2^31), which exists so the
-page-fallback act's reserved ordinal sits below the residual space and the two
-are disjoint by construction. It is nine orders of magnitude past the ~60,000
-above, so it bounds nothing anyone will reach; it is a proof of disjointness,
-not an operating limit, and the paragraph above is still the real one.
+There is no ordinal arithmetic left to bound: residual identities are
+class-namespaced (`act_id(page_id, "residual", bounds)`), so disjointness from
+proposals and the page-fallback act is by construction rather than by a
+reserved ordinal floor, and the paragraph above is still the real operating
+limit.
 
 ## Continuation ownership
 

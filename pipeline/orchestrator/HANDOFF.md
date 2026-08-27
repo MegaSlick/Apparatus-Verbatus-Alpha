@@ -62,12 +62,15 @@ builds each stage's argv explicitly and forwards no selector. This is checked, n
 run three ways and compare every byte, so a mode that leaked into the tree would differ
 between the three and fail.
 
-**Join with the triage stage's modes.** Tyrel's direction for scan triage
-(`STAGED_PIPELINE_2026-08-20.md`) gives that stage three operating modes — manual,
-semi-automatic, fully automatic — chosen **per batch** and expressed as settings of a
-confidence threshold. They share three words with this table and are not the same
-vocabulary: triage's mode is a durable property of a batch that its records must carry,
-and this driver's is a property of one invocation that the pipeline is forbidden to
-record. The names collide; the concepts do not meet. Anything that reads a stored `mode`
-field is reading triage's, and this file's byte-identity tests are the standing proof
-that it can never be this one.
+**Scan triage and the driver share one mode vocabulary.** Triage chooses `manual`, `semi`,
+or `auto` per batch through confidence-threshold settings (`config/triage_modes.toml`).
+`common/contracts/stages.py:111-113` declares that triple once as `TRIAGE_MODES`, and
+`common/stage.py:200-202` aliases it as `RUN_MODES`; `pipeline/0_triage/HANDOFF.md:49-53`
+records the same join.
+
+The selections have different lifetimes. Triage persists its member as a batch property;
+the driver infers one for an invocation and never writes it to the run tree, as the
+byte-identity tests above require. Other contracts use a field named `mode` for unrelated
+vocabularies, so the field name alone identifies no selection
+(`common/contracts/approval.py:112-138`,
+`pipeline/2_designator/geometry_layer.py:570`).
