@@ -57,7 +57,7 @@ class VisionSmokeCall:
             or len(self.page_witness) > _MAXIMUM_WITNESS_LENGTH
             or not self.page_witness.strip()
         ):
-            raise ValueError(
+            raise ServingConfigurationError(
                 "golden-page witness must be a non-blank string between "
                 f"{_MINIMUM_WITNESS_LENGTH} and {_MAXIMUM_WITNESS_LENGTH} characters"
             )
@@ -65,26 +65,26 @@ class VisionSmokeCall:
         # the one-line output contract; reject it before chair inference so a
         # fixture defect cannot be reported as `smoke-output-invalid`.
         if any(character.isspace() for character in self.page_witness):
-            raise ValueError(
+            raise ServingConfigurationError(
                 "golden-page witness must contain no whitespace: it is a visible token "
                 "returned on one exact output line"
             )
         if not self.page_witness.isascii() or not all(
             character.isalnum() or character in "-_" for character in self.page_witness
         ):
-            raise ValueError(
+            raise ServingConfigurationError(
                 "golden-page witness must use only visible URL-safe ASCII letters, digits, "
                 "hyphen, or underscore"
             )
         # A subclass can override `prompt`; keep the page-only claim enforced at
         # construction even though the base prompt is constant.
         if self.page_witness in self.prompt:
-            raise ValueError(
+            raise ServingConfigurationError(
                 "golden-page witness occurs in the smoke prompt, so a text-only answer "
                 "copied from the prompt would satisfy the page-read check"
             )
         if not callable(self.utilization):
-            raise ValueError("golden-page utilization sampler must be callable")
+            raise ServingConfigurationError("golden-page utilization sampler must be callable")
 
     @property
     def prompt(self) -> str:

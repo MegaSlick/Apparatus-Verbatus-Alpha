@@ -958,6 +958,12 @@ def test_append_only_writer_refuses_symlink_and_portable_name_collisions(tmp_pat
     assert outside.read_bytes() == canonical_bytes({"example": "evidence"}) + b"\n"
 
     write_append_only(records / "Evidence.json", {"example": "first"})
+    if (records / "evidence.json").exists():
+        # Default APFS already keeps one publication slot for both spellings, so
+        # the collision this refuses cannot be constructed here: the sibling
+        # spelling *is* the file just written. Skip rather than fail, so a macOS
+        # run reports "not measurable here" instead of a defect that is not one.
+        pytest.skip("the filesystem itself conflates case variants")
     with pytest.raises(SchemaRefusal, match="collides by case or Unicode normalization"):
         write_append_only(records / "evidence.json", {"example": "second"})
     assert not (records / "evidence.json").exists()
@@ -973,9 +979,15 @@ def test_corpus_directory_refuses_links_case_collisions_and_inode_replacement(tm
             raise AssertionError("a symlinked corpus directory must never be locked")
 
     (real / "One.json").write_text("{}", encoding="utf-8")
-    (real / "one.json").write_text("{}", encoding="utf-8")
-    with pytest.raises(SchemaRefusal, match="not portable to default APFS"):
-        cli._records_in(real)
+    if (real / "one.json").exists():
+        # As above: the two spellings are one file here, so there is no
+        # collision to refuse. Only this half is filesystem-dependent -- the
+        # inode-replacement half below still runs everywhere.
+        (real / "One.json").unlink()
+    else:
+        (real / "one.json").write_text("{}", encoding="utf-8")
+        with pytest.raises(SchemaRefusal, match="not portable to default APFS"):
+            cli._records_in(real)
 
     corpus_path = tmp_path / "corpus"
     corpus_path.mkdir()
@@ -1233,6 +1245,109 @@ def test_cli_walks_one_act_from_two_transcriptions_to_an_adjudication(tmp_path):
     ]
     assert cli.main(["validate", str(adjudication)]) == 0
     assert cli.main(["validate-corpus", str(records), "--run", str(path)]) == 0
+
+
+def test_cli_refuses_a_contradicting_record_before_it_becomes_immutable(tmp_path):
+    """Publication reconciles against the corpus the record joins.
+
+    `write_append_only` is exactly that: once the byte lands it cannot be
+    withdrawn. A second reading from one transcriber, or a second adjudication
+    of one act, is a contradiction `validate-corpus` would name afterwards --
+    and afterwards is too late, because the refusal would then describe a file
+    nobody may delete. The lock these commands already take exists so the
+    check and the write are one step; before this, they took it and checked
+    nothing."""
+    path, frame, pages = run_file(tmp_path)
+    sample = sample_stratified(path, catalog(pages), plan_for(frame, catalog(pages)))[0]
+    records = tmp_path / "records"
+    records.mkdir()
+    (records / "sample.json").write_text(json.dumps(sample), encoding="utf-8")
+
+    def transcription(hand, reading, name):
+        text_file = tmp_path / f"{name}.txt"
+        text_file.write_text(reading + "\n", encoding="utf-8")
+        return [
+            "transcribe",
+            "--sample",
+            str(records / "sample.json"),
+            "--act-identity",
+            _act(),
+            "--transcriber",
+            hand,
+            "--text-file",
+            str(text_file),
+            "--output",
+            str(records / f"{name}.json"),
+            "--run",
+            str(path),
+        ]
+
+    assert cli.main(transcription("hand-a", "Marie Anne", "first")) == 0
+    # The same hand reading the same act twice: the act no longer has one
+    # independent reading from that person, and the corpus cannot say which.
+    with pytest.raises(SchemaRefusal, match="two transcription records"):
+        cli.main(transcription("hand-a", "Marie Jeanne", "restated"))
+    assert not (records / "restated.json").exists()
+
+    # An open custody chain is still publishable -- that is the whole reason
+    # closure is waived here rather than the reconciliation being skipped.
+    assert cli.main(transcription("hand-b", "Marie Jeanne", "second")) == 0
+
+    def adjudication(name, reading):
+        established = tmp_path / f"{name}.txt"
+        established.write_text(reading + "\n", encoding="utf-8")
+        return [
+            "adjudicate",
+            "--first",
+            str(records / "first.json"),
+            "--second",
+            str(records / "second.json"),
+            "--adjudicator",
+            "hand-c",
+            "--text-file",
+            str(established),
+            "--output",
+            str(records / f"{name}.json"),
+        ]
+
+    assert cli.main(adjudication("adjudication", "Marie Anne")) == 0
+    # Gold has one established reading per act. A second adjudication that
+    # establishes a *different* reading is the contradiction: it is refused at
+    # the door rather than published and named by a later validate-corpus.
+    # (An identical one would carry the same self-hash and be reuse, not
+    # conflict, exactly as a repeated sample record is.)
+    with pytest.raises(SchemaRefusal, match="two conflicting adjudications"):
+        cli.main(adjudication("second-adjudication", "Marie Jeanne"))
+    assert not (records / "second-adjudication.json").exists()
+    assert cli.main(["validate-corpus", str(records), "--run", str(path)]) == 0
+
+
+def test_cli_bind_instrument_refuses_a_membership_whose_sample_is_absent(tmp_path):
+    """Instrument membership names a sample; publishing it beside no such sample
+    records a measurement of something the corpus cannot show it measured."""
+    path, frame, pages = run_file(tmp_path)
+    sample = sample_stratified(path, catalog(pages), plan_for(frame, catalog(pages)))[0]
+    records = tmp_path / "records"
+    records.mkdir()
+    sample_file = tmp_path / "sample-outside-the-corpus.json"
+    sample_file.write_text(json.dumps(sample), encoding="utf-8")
+    with pytest.raises(SchemaRefusal, match="absent from the gold corpus"):
+        cli.main(
+            [
+                "bind-instrument",
+                "--sample",
+                str(sample_file),
+                "--act-identity",
+                _act(),
+                "--protocol-digest",
+                _sha("e"),
+                "--output",
+                str(records / "membership.json"),
+                "--run",
+                str(path),
+            ]
+        )
+    assert not (records / "membership.json").exists()
 
 
 def test_corpus_refuses_orphaned_or_conflicting_adjudication_custody(tmp_path):

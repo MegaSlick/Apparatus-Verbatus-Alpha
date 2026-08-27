@@ -1430,7 +1430,35 @@ def test_a_manifest_refuses_an_unbounded_number_of_walk_entries(tmp_path, monkey
         (artifacts_root / name).write_bytes(b"publication residue")
     monkeypatch.setattr(runtree_store, "_MAX_MANIFEST_WALK_ENTRIES", 2)
 
-    with pytest.raises(SchemaRefusal, match="entry manifest walk limit"):
+    with pytest.raises(SchemaRefusal, match="entry manifest walk limit") as refusal:
+        tree.build_manifest(DESIGNATOR)
+    # One listing carries every entry, so this is the per-directory guard in
+    # `_listing_fd`. Named here so the cumulative case below cannot be mistaken
+    # for a duplicate of it.
+    assert not str(refusal.value).startswith("artifact inventory")
+
+
+def test_a_manifest_bounds_the_whole_walk_not_only_each_directory(tmp_path, monkeypatch):
+    """The cumulative walk bound is a guard in its own right.
+
+    Every directory here lists under the limit, so the per-directory refusal
+    never fires and only the running `examined` count in `_walk_artifact_json`
+    can stop the walk. Both bounds read `_MAX_MANIFEST_WALK_ENTRIES`, so without
+    a case that separates them an implementation that counted per directory and
+    reset between them would satisfy the suite while an artifact tree of
+    unbounded *total* size walked to the end.
+    """
+    tree = make_run(tmp_path)
+    artifacts_root = tree.resolve(f"{writing_directory(DESIGNATOR)}/{ARTIFACTS_DIR}")
+    for directory in ("first", "second"):
+        nested = artifacts_root / directory
+        nested.mkdir(parents=True)
+        for name in ("one", "two"):
+            (nested / name).write_bytes(b"publication residue")
+    # Six entries in all; no single directory lists more than two.
+    monkeypatch.setattr(runtree_store, "_MAX_MANIFEST_WALK_ENTRIES", 3)
+
+    with pytest.raises(SchemaRefusal, match="artifact inventory exceeds"):
         tree.build_manifest(DESIGNATOR)
 
 

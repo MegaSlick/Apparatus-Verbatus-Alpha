@@ -275,6 +275,11 @@ def main(argv: list[str] | None = None) -> int:
             read_json(args.sample), args.act_identity, args.protocol_digest, args.run
         )
         with _locked_corpus(output.parent) as corpus:
+            # Reconcile against the corpus this record joins before publishing an
+            # immutable byte. Closure is waived because an open custody chain is
+            # the normal state here; every other collection rule still refuses.
+            existing = _records_in(corpus)
+            validate_corpus([*existing, record], args.run, require_closure=False)
             write_append_only(output, record, directory_descriptor=corpus.descriptor)
     elif args.command == "transcribe":
         output = Path(args.output)
@@ -286,6 +291,11 @@ def main(argv: list[str] | None = None) -> int:
             args.run,
         )
         with _locked_corpus(output.parent) as corpus:
+            # Reconcile against the corpus this record joins before publishing an
+            # immutable byte. Closure is waived because an open custody chain is
+            # the normal state here; every other collection rule still refuses.
+            existing = _records_in(corpus)
+            validate_corpus([*existing, record], args.run, require_closure=False)
             write_append_only(output, record, directory_descriptor=corpus.descriptor)
     elif args.command == "adjudicate":
         output = Path(args.output)
@@ -296,6 +306,11 @@ def main(argv: list[str] | None = None) -> int:
             text=(read_transcription_text(args.text_file) if args.text_file is not None else None),
         )
         with _locked_corpus(output.parent) as corpus:
+            # Reconcile against the corpus this record joins before publishing an
+            # immutable byte. Closure is waived because an open custody chain is
+            # the normal state here; every other collection rule still refuses.
+            existing = _records_in(corpus)
+            validate_corpus([*existing, record], None, require_closure=False)
             write_append_only(output, record, directory_descriptor=corpus.descriptor)
     elif args.command == "verify-sampling":
         if (args.catalog is None) != (args.plan is None):
