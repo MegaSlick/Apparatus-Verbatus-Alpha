@@ -22,6 +22,17 @@ successor asserting the captures it withdrew. This is the answer to a human
 confirming two frames as one physical page and being wrong, which no
 deterministic instrument can catch — two blank forms agree everywhere.
 
+A correspondence is corrected the same way and reasserted the same way. Its
+retraction names the link itself rather than a chain head, because a
+correspondence has no chain; and a later run may declare that same link again,
+which is a new operator act with its own appending run and not the resurrection
+of the withdrawn record. Without that, a retraction made in error would be a
+corpus-lifetime fact: the act could never rejoin the physical act it belongs to,
+and the only way round would be minting a second physical act for it — the exact
+duplication the correspondence step exists to prevent. What may not reassert one
+is the geometry-only resolver, which holds any component with a retracted member
+rather than proposing it again; undoing a person's correction is a person's act.
+
 The chain is verified on read, not merely written: a reader replays it, so a
 membership record removed or reordered from the middle of the register breaks
 every successor's predecessor digest. What replay cannot see is truncation of
@@ -58,8 +69,15 @@ _FORBIDDEN_PREFERENCE_FIELDS: Final = frozenset(
         "primary",
         "canonical",
         "best",
+        "better",
         "preferred",
         "superseded_by",
+        # The rest of the consult's §7 shape 1 vocabulary. These are binding
+        # review words, so the screen spells all of them rather than the subset
+        # that happened to appear first.
+        "winner",
+        "selected",
+        "chosen",
         # These are witness-selection mechanisms under a different spelling.
         # `agree` is deliberately absent: page partition evidence legitimately
         # records `partition_disagreement`.
@@ -155,7 +173,16 @@ def append_records(
 
 @contextmanager
 def _register_lock(path: Path) -> Iterator[None]:
-    """Serialize pathname replacement across writers; a crash releases the lock."""
+    """Serialize pathname replacement across writers; a crash releases the lock.
+
+    The lock name is predictable -- ``.<register name>.lock`` beside the register
+    it guards -- so it is opened with ``O_NOFOLLOW``. Without that, anything able
+    to place a symlink at that name before the first writer arrives would redirect
+    every future writer's exclusion lock onto a file of its choosing: two corpora
+    serialized against each other instead of themselves, or a file created at a
+    path this process never named. A predictable name is safe only if the open
+    refuses to follow it.
+    """
     lock_path = path.with_name(f".{path.name}.lock")
     no_follow = getattr(os, "O_NOFOLLOW", None)
     if no_follow is None:  # pragma: no cover - supported register stores are POSIX
@@ -384,7 +411,13 @@ class _Reading:
         self.physical_pages: set[str] = set()
         self.physical_acts: set[str] = set()
         self.physical_act_pages: dict[str, str] = {}
-        self.correspondences: set[str] = set()
+        # Retracted links must leave this lookup so the same link can later be
+        # reasserted as a new operator act.
+        self.correspondence_records: dict[str, dict[str, Any]] = {}
+        # Every act any correspondence ever named, so a proposal whose links were
+        # all withdrawn reads differently from one that never had any.
+        self.correspondence_declared: set[str] = set()
+        self.correspondence_active: dict[str, set[str]] = {}
         self.membership_head: dict[str, tuple[str, frozenset[str]]] = {}
         # Every link of every page's chain, oldest first, so a retraction of the
         # head can restore the predecessor it grew from without the register
@@ -460,6 +493,17 @@ def membership_heads(data: bytes) -> dict[str, tuple[str, frozenset[str]]]:
     return dict(_read(data)[1].membership_head)
 
 
+def physical_act_page(data: bytes, physical_act: str) -> str | None:
+    """The physical page one physical act was minted on, or None if undeclared.
+
+    A physical act belongs to exactly one physical page and validation enforces
+    it, so this is a lookup with one answer. It exists so a writer naming an
+    existing physical act proves it against the register rather than against the
+    page it happens to be proposing.
+    """
+    return _read(data)[1].physical_act_pages.get(physical_act)
+
+
 def resolve_proposal(data: bytes, act_id: str) -> dict[str, str]:
     """Resolve an image-local proposal through declared correspondence.
 
@@ -473,26 +517,37 @@ def resolve_proposal(data: bytes, act_id: str) -> dict[str, str]:
     4) and stops resolving anything (GOVERNANCE 2). A proposal whose every
     correspondence has been retracted is a named finding, distinct from one that
     never had a correspondence at all, because the two ask a caller for
-    different things.
+    different things. A resolved row retains both the rendered page declared by
+    the correspondence and the physical page declared by its physical act, so a
+    consumer can prove both sides of the local act's lineage instead of dropping
+    the former during lookup.
     """
-    register = validate_register_bytes(data)
     _identity(act_id, "act", "proposal resolution act_id")
-    retracted = {
-        record["retracts"] for record in register["records"] if record["kind"] == "retraction"
-    }
-    declared = [
-        record
-        for record in register["records"]
-        if record["kind"] == "correspondence" and record["act_id"] == act_id
-    ]
-    matches = [record for record in declared if _correspondence_identity(record) not in retracted]
-    if not matches:
-        code = "retracted-physical-act" if declared else "unresolved-physical-act"
+    reading = _read(data)[1]
+    active = reading.correspondence_active.get(act_id, set())
+    if not active:
+        code = (
+            "retracted-physical-act"
+            if act_id in reading.correspondence_declared
+            else "unresolved-physical-act"
+        )
         return {"outcome": "finding", "code": code, "act_id": act_id}
-    physical_acts = {record["physical_act_id"] for record in matches}
-    if len(physical_acts) != 1:
+    if len(active) != 1:
         return {"outcome": "finding", "code": "ambiguous-physical-act", "act_id": act_id}
-    return {"outcome": "resolved", "act_id": act_id, "physical_act_id": physical_acts.pop()}
+    # Exactly one, proven above rather than chosen.
+    (physical_act,) = active
+    correspondence = reading.correspondence_records[f"{act_id}->{physical_act}"]
+    # The physical page comes from the register's own declaration, never from a
+    # caller's alignment table: a physical act is minted on exactly one physical
+    # page (validation enforces it), so every match agrees and reading it here is
+    # a lookup rather than a choice between rows.
+    return {
+        "outcome": "resolved",
+        "act_id": act_id,
+        "page_id": correspondence["page_id"],
+        "physical_act_id": physical_act,
+        "physical_page_id": reading.physical_act_pages[physical_act],
+    }
 
 
 def _correspondence_identity(record: dict[str, Any]) -> str:
@@ -655,7 +710,20 @@ def _validate_record(record: Any, reading: _Reading) -> None:
                 "correspondence physical_act_id was minted for a different physical page"
             )
         identity = _correspondence_identity(row)
-        reading.correspondences.add(identity)
+        if identity in reading.correspondence_records:
+            raise SchemaRefusal(
+                f"corpus register already declares correspondence {identity!r} and no "
+                "retraction has withdrawn it; declaring it twice records nothing new"
+            )
+        reading.correspondence_records[identity] = row
+        reading.correspondence_declared.add(row["act_id"])
+        reading.correspondence_active.setdefault(row["act_id"], set()).add(row["physical_act_id"])
+        # Like a membership link, the record's identity carries the run that
+        # appended it: reasserting a withdrawn correspondence is a new act by a
+        # new run, not the resurrection of the immutable record that was
+        # withdrawn. Without the run, a corrected link could never be re-declared
+        # at all, and a mistaken retraction would be a corpus-lifetime fact.
+        identity = f"{identity}@{row['appending_run']}"
     elif kind == "retraction":
         row = _closed(record, {"kind", "retracts", "reason", "appending_run"}, kind)
         if not all(
@@ -667,13 +735,18 @@ def _validate_record(record: Any, reading: _Reading) -> None:
         # correction that happened. It is refused rather than filed.
         if row["retracts"].startswith("membership:"):
             _retract_membership(row, reading)
-        elif row["retracts"] not in reading.correspondences:
+        elif row["retracts"] not in reading.correspondence_records:
+            # Either nothing ever declared it, or an earlier retraction already
+            # withdrew it. Both are a retraction that corrects nothing.
             raise SchemaRefusal(
                 f"retraction names {row['retracts']!r}, which no earlier correspondence or "
                 "membership link in this register declares; a retraction that corrects "
                 "nothing is not a correction"
             )
-        identity = f"retract:{row['retracts']}"
+        else:
+            withdrawn = reading.correspondence_records.pop(row["retracts"])
+            reading.correspondence_active[withdrawn["act_id"]].discard(withdrawn["physical_act_id"])
+        identity = f"retract:{row['retracts']}@{row['appending_run']}"
     else:
         raise SchemaRefusal(f"unknown corpus register record kind {kind!r}")
     if identity in reading.seen:
