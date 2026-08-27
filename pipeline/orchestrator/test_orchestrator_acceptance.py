@@ -911,16 +911,52 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # although they add no artifact: on the composed tree happy remains 95/0 and
 # review remains 118/3. Both digests and counts were re-measured twice in
 # independent roots through this module's own helpers at canonical run id "r".
+# Union re-pin (host, seam of Unit 9 x Unit 14A): each side above measured its
+# own tree — Unit 9's carried the ink-map stage without the native-testimony
+# seam, Unit 14A's the seam without the stage. The combined tree holds both, so
+# neither side's digest can stand; the values below are measured on THIS tree,
+# twice each in independent temporary roots at canonical run id "r", through
+# this module's own orchestrate and semantic_snapshot_digest helpers. Counts are
+# re-measured on the composed tree at unchanged exits.
+# Edge findings release only when the retained ink runs are covered by verified
+# crops. The v3 export carries one source row per sealed page so clean-machine
+# verification derives the same held set, and testimony-diff bases use only
+# chairs whose retained text differs. This pin was measured twice in independent
+# roots at canonical run id "r".
 # Review only, once more in the same seat: a page witness invoked on every act
 # and unusable on all of them now records the serving moment that produced it
 # (`provenance_for(..., attempted=attempted_page)`), where the `reading` gate
 # left `receipt_ref: None` beside a `presented` block claiming pixels were shown.
 # One `receipt_ref` field on attestator_3's page-2 record; no new file, no count
-# or exit change, and happy is untouched.
+# or exit change (97/3), and happy is untouched at the digest above.
+# Unit 14A audit: that renamed reason said something false. Under the legacy
+# page join the outcome carried into an unaligned attachment is THIS ACT'S
+# attempt, not the page Testimonium's -- `review`'s attestator_3 has a failed a2
+# attempt beside a page-1 Testimonium that read a1 and records `read` -- so the
+# record named a non-reading page Testimonium that had in fact read
+# (GOVERNANCE 10). The reason now names the attempt in that case
+# (`non-reading-act-attempt-<outcome>`) and keeps
+# `non-reading-page-testimonium-<outcome>` for a native page capture, which is
+# the only path where the page record's own attempt supplies it. One string on
+# one attestator_3 attachment row; the review tree is otherwise unchanged at 113
+# files and exit 3, and happy never carried that reason so its digest above is
+# untouched. Measured twice in independent temporary roots at canonical run id
+# "r" by this module's `orchestrate` and `semantic_snapshot_digest` helpers.
+# Union re-pin: see the seam entry above the happy digest — measured on the
+# combined Unit 9 x Unit 14A tree.
+# The review fixture's marginal witness box contains no independently measured
+# ink, so it cannot fund a second recovery. Its sole request records a causal
+# origin for the page-wide grant, reducing the review tree's file count at exit 3. This pin was
+# measured twice in independent roots at canonical run id "r".
+# Re-pinned at this merge (14B onto the composed pr tree): edge findings ride
+# every ink-map record, the recovery request carries origin as data, and the
+# unconfirmed witness pointer no longer spends review's second recovery round
+# (118 -> 106); happy holds 95 files. Measured twice at two independent run
+# roots through this module's own helpers at canonical run id "r".
 HAPPY_SNAPSHOT_FILES = 95
-REVIEW_SNAPSHOT_FILES = 118
-HAPPY_RUN_TREE_DIGEST = "2597b8e269bcaf06a5fe6399f16a7fac81c96b2ce1867360cdb15cce055c5b52"
-REVIEW_RUN_TREE_DIGEST = "3cad9e17520140802c8afcf4eeb3a08db9f4b4c5463bc34df16ff0fa3cef9feb"
+REVIEW_SNAPSHOT_FILES = 106
+HAPPY_RUN_TREE_DIGEST = "a0a591175415dc06da8fb7c22ea29fbd6d297b41e328f641312001a812cf8691"
+REVIEW_RUN_TREE_DIGEST = "d660d8835857765830069b3f458c2c7e4989cc483748348cd2102e191cb7de83"
 
 
 def orchestrate(
@@ -1647,7 +1683,7 @@ def _armarium_bundle_semantics(data: bytes) -> tuple[str, dict[str, str]] | None
             manifest = json.loads(manifest_data)
             if (
                 not isinstance(manifest, dict)
-                or manifest.get("schema") != "armarium-export-manifest.v2"
+                or manifest.get("schema") != "armarium-export-manifest.v3"
                 or canonical_bytes(manifest) != manifest_data
                 or manifest.get("self_hash") != self_hash(manifest)
             ):
@@ -2501,7 +2537,7 @@ def _write_acceptance_bundle_tree(root: Path, database_data: bytes, damage=None)
     """
     members = {"acts.sqlite": database_data, "acts.jsonl": b'{"act_id":"a1"}\n'}
     package_manifest = {
-        "schema": "armarium-export-manifest.v2",
+        "schema": "armarium-export-manifest.v3",
         "members": [
             {"path": name, "sha256": digest_bytes(content), "bytes": len(content)}
             for name, content in sorted(members.items())
@@ -4760,8 +4796,11 @@ def test_repeating_the_review_scenario_also_changes_nothing(tmp_path):
     assert orchestrate(root, "r", "review").returncode == 3
     before = snapshot(root)
 
-    # The count includes the two retained Chandra blobs written before recovery;
-    # rerunning the loop must not append another copy.
+    # Unit 11 adds the same two retained Chandra-response blobs before review's
+    # recovery loop; its append-only invariant is unchanged. Unit 14B Sonnet
+    # audit: fewer than 118 -- the ink-confirmation gate (consult §4.5) removes
+    # the second recovery round a2's unconfirmed witness box used to spend
+    # (see the REVIEW_RUN_TREE_DIGEST comment above).
     assert len(before) == REVIEW_SNAPSHOT_FILES
     assert semantic_snapshot_digest(root) == REVIEW_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "review").returncode == 3
@@ -4957,12 +4996,18 @@ def test_the_witness_uncovered_caveat_names_the_region_carrying_the_new_pixels(r
 
 
 def test_the_recovery_request_and_both_reading_attempts_survive(review_run):
+    """Unit 14B Sonnet audit: a2 no longer requests a spurious second recovery.
+
+    Before the correction, a2 (which `hold_acts` declares should go straight
+    to a hold) independently satisfied `wants_recovery` from the same page's
+    marginal witness box -- a report with zero ink behind it (consult §4.5;
+    see the `REVIEW_RUN_TREE_DIGEST` comment above). Only a1's scenario-
+    declared request is a real, retained coverage decision here.
+    """
     _, tree = review_run
     requests = artifacts(tree, RECENSOR, "recovery-request")
-    # Unclaimed geometry is a distinct coverage decision, never a retry for
-    # disagreeing text.
-    assert len(requests) == 2
-    assert {request["payload"]["act_key"] for request in requests} == {"a1", "a2"}
+    assert len(requests) == 1
+    assert {request["payload"]["act_key"] for request in requests} == {"a1"}
 
     readings = [
         record
@@ -5022,8 +5067,15 @@ def test_the_cross_page_act_is_witnessed_on_both_sides_of_the_break(review_run):
 
     The geometric coverage bit says whether a witness observation contains a
     particular region; it is not permission to omit a continuation region from
-    the Perlector's image basis.  Both sides must remain there even when an
-    observation did not cover one of them.
+    the Perlector's image basis.  Both sides must remain there even where a2 is
+    never recovered at all -- exactly the case `review` now exercises (Unit
+    14B Sonnet audit: a2's own second reading here used to come from the same
+    unconfirmed marginal witness box `REVIEW_RUN_TREE_DIGEST` above documents;
+    it is refused there for the same lack of ink evidence). The stronger claim
+    -- that a genuine recovery recrop keeps the far side of a real continuation
+    in the evidence -- is proven end to end by
+    `test_a_recrop_of_a_continuation_act_keeps_its_far_page_in_the_evidence`
+    against `continuation_recovery_run`, which declares a2 for recovery.
     """
     _, tree = review_run
     readings = [
@@ -5031,11 +5083,9 @@ def test_the_cross_page_act_is_witnessed_on_both_sides_of_the_break(review_run):
         for record in artifacts(tree, PERLECTOR, "perlectio")
         if record["payload"]["act_key"] == "a2"
     ]
-    # Only unclaimed geometry, never text disagreement, authorizes this second attempt.
-    assert sorted(record["payload"]["attempt_ordinal"] for record in readings) == [1, 2]
-    reading = max(readings, key=lambda record: record["payload"]["attempt_ordinal"])
+    assert sorted(record["payload"]["attempt_ordinal"] for record in readings) == [1]
+    reading = readings[0]
     regions = reading["payload"]["basis"]["regions"]
-    assert len(regions) == 3
     proposal_regions = {
         record["payload"]["region_id"]
         for record in artifacts(tree, DESIGNATOR, "region")
@@ -5051,10 +5101,11 @@ def test_the_cross_page_act_is_witnessed_on_both_sides_of_the_break(review_run):
 
 
 def test_recovery_stayed_inside_its_budget(review_run):
+    """Unit 14B Sonnet audit: one request, not two -- see the comment on
+    `test_the_recovery_request_and_both_reading_attempts_survive`."""
     _, tree = review_run
     requests = artifacts(tree, RECENSOR, "recovery-request")
-    # Each geometry-triggered request retains the same absolute policy cap.
-    assert len(requests) == 2
+    assert len(requests) == 1
     assert all(request["payload"]["budget_allowed"] <= 3 for request in requests), (
         "the absolute cap is a ruling"
     )
@@ -5736,6 +5787,35 @@ def test_the_page_loss_is_named_and_the_run_is_partial(refused_page_run):
         reason.startswith("page 2 was refused:") for reason in export["aggregate"]["reasons"]
     )
     assert export["aggregate"]["by_page_outcome"] == {"sealed": 1, "refused": 1}
+
+
+def test_unclaimed_edge_ink_remains_held_when_designator_cut_no_page_region(tmp_path):
+    """The positive edge case: an initial finding releases only after real coverage.
+
+    `structure-failure` leaves the fixture's actual edge ink without any
+    Designator crop.  It therefore proves the complementary case to happy: the
+    hold reaches the terminal ledger and makes the export visibly partial.
+    """
+    root = tmp_path / "runs"
+    result = orchestrate(root, "r", "structure-failure")
+    assert result.returncode == EXIT_HELD
+
+    tree = RunTree(root, "r")
+    export = export_of(tree)
+    bundle = tree.read_bytes(export["bundle"]["reference"]["relative_path"])
+    with ZipFile(BytesIO(bundle)) as archive:
+        manifest = json.loads(archive.read("EXPORT_MANIFEST.json"))
+
+    assert manifest["claims"]["status"] == "partial"
+    assert manifest["claims"]["ink_map"]["held_pages"] == [1, 2]
+    assert any("unclaimed-edge-ink" in reason for reason in manifest["claims"]["partial_reasons"])
+    page_reasons = {
+        row["unit_id"]: row["reason"]
+        for row in manifest["claims"]["terminal_ledger"]["units"]
+        if row["unit_type"] == "page"
+    }
+    assert set(page_reasons) == {"page:1", "page:2"}
+    assert all("unclaimed-edge-ink" in reason for reason in page_reasons.values())
 
 
 def test_the_act_with_the_lost_continuation_is_held_not_delivered(refused_page_run):

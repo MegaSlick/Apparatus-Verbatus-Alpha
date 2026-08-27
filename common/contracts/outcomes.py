@@ -599,6 +599,7 @@ def run_aggregate(
     unaddressed_chairs: Sequence[str] | None = None,
     act_pages: Mapping[str, Sequence[int]] | None = None,
     act_text_status: Mapping[str, str] | None = None,
+    edge_hold_pages: Sequence[int] | None = None,
 ) -> dict[str, Any]:
     """The run's own terminal state, and every reason it is not `complete`.
 
@@ -639,6 +640,11 @@ def run_aggregate(
     to be ordinary rather than exceptional. A non-`established` status therefore
     contributes its own named reason, exactly as an under-witnessed act or a refused
     page does.
+
+    `edge_hold_pages` is page-scoped because no act can yet own the unclaimed
+    ink. A held page therefore keeps the aggregate partial even when every act
+    cut from that page was delivered; otherwise the aggregate and terminal
+    ledger would report different statuses for one export.
 
     A delivered act with no status supplied is named too, rather than assumed whole:
     that is the same "this run does not know" `NO_ATTRIBUTION_REASON` refuses to
@@ -688,6 +694,12 @@ def run_aggregate(
     # whose role no stage addresses — a misspelt witness, most plainly — was
     # resolved by nothing and named in no artifact, and the run still reported
     # `complete`. It is named here instead, every time.
+    for ordinal in sorted(edge_hold_pages or ()):
+        reasons.append(
+            f"page {ordinal} carries unreleased unclaimed-edge-ink: ink at its edge that no "
+            "Designator crop on the page claims, so its coverage is not reconciled"
+        )
+
     for chair in sorted(unaddressed_chairs or ()):
         reasons.append(
             f"chair {chair} is configured and no stage addresses that role, so nothing "

@@ -54,3 +54,24 @@ the fixture geometry does not leave a quiet perimeter for it to be quiet about.
 better would be tuning the instrument to the specimen, which is what
 GOVERNANCE 10's second paragraph forbids. Selectivity is measured on real
 material or not claimed.
+
+## Unit 14B reconciliation ledger — release is by the same ink, not by exemption
+
+The fixture's apparent degeneracy was measured against the actual declared
+crop rectangles before changing it. On page 1 (200x260), the 64-pixel initial
+edge band contains 8,328 of 11,520 ink pixels (72.2917%); the two declared act
+crops leave 0 outside pixels. On page 2, it contains 3,384 of 3,840 pixels
+(88.125%); its declared continuation crop likewise leaves 0. Thus the ink is
+genuinely *claimed*; the semantic defect was treating a pre-proposal finding
+as unreleased after the Designator had supplied coverage, not a specimen with
+unclaimed edge ink.
+
+Unit 14B therefore retains the fixture and leaves `EDGE_BAND_PIXELS` and
+`MINIMUM_INK_PIXELS` unchanged. Armarium re-measures the Ink Map's retained,
+lossless page-space runs against verified final Designator crop bounds. A clear
+re-measure releases the page; a flagged re-measure holds it. The
+`structure-failure` scenario is the positive: it cuts no page regions, so its
+real fixture ink remains unclaimed, is held for review, appears in
+`partial_reasons`, and refuses a complete export. This distinguishes a
+pre-proposal signal from a genuine unresolved coverage finding without
+weakening either.

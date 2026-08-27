@@ -102,9 +102,19 @@ def test_recovery_is_a_manual_sequence_member_with_its_own_contiguous_seal_attem
         for entry in tree.build_manifest("designator")["artifacts"]
         if entry["kind"] == "stage-seal"
     ]
-    # Even unassigned page geometry must produce an explicitly sequenced,
-    # sealed recovery round.
-    assert sorted(seal["payload"]["attempt_ordinal"] for seal in seals) == [1, 2, 3]
+    # `review` spends only its declared a1 recovery. The scenario's marginal
+    # page-1 witness box (x 0..10 / y 200..240) sits over zero ink -- measured
+    # directly against `proof.synthetic_pages.page_bytes(1)` via
+    # `common.residual_ink.ink_runs`, the same control
+    # `test_coverage_recovery_origin.py` proves at the unit level -- so consult
+    # §4.5's ink-confirmation conjunct (`unclaimed_ink_observations`, read
+    # through `outside_ink_requests`) correctly refuses it a second recovery
+    # round; a2 goes straight to held-for-review instead
+    # (`pipeline/orchestrator/test_orchestrator_acceptance.py`'s "Unit 14B
+    # Sonnet audit" REVIEW_RUN_TREE_DIGEST re-pin measures the same tree).
+    # Spending an unconfirmed witness pointer here would be exactly the
+    # picker GOVERNANCE 3 forbids.
+    assert sorted(seal["payload"]["attempt_ordinal"] for seal in seals) == [1, 2]
 
 
 def test_from_refuses_an_unsealed_predecessor_by_name(tmp_path):

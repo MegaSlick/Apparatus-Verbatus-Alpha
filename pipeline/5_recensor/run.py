@@ -38,6 +38,7 @@ from common.contracts.stages import (  # noqa: E402
     ATTESTATORES,
     DESIGNATOR,
     EXEMPLAR,
+    INK_MAP,
     PERLECTOR,
     RECENSOR,
 )
@@ -58,7 +59,7 @@ from common.recovery import (  # noqa: E402
     reconcile_recovery_requests,
     recovery_kind_budget,
 )
-from common.residual_ink import page_residual_ink  # noqa: E402
+from common.residual_ink import MINIMUM_INK_PIXELS, page_residual_ink  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
     EXIT_HELD,
@@ -1244,6 +1245,285 @@ def page_coverage_for(act_regions: list[dict], findings: dict[int, dict]) -> dic
     }
 
 
+def ink_map_by_page(context) -> dict[int, dict]:
+    """Read the sealed page-space evidence without re-decoding page pixels."""
+    maps: dict[int, dict] = {}
+    for entry in context.tree.build_manifest(INK_MAP)["artifacts"]:
+        if entry["kind"] != "ink-map":
+            continue
+        record = context.tree.read_artifact(INK_MAP, "ink-map", entry["artifact_id"])
+        payload = _payload(record, "ink-map")
+        ordinal = payload.get("page_ordinal")
+        evidence = payload.get("edge_findings")
+        if not isinstance(ordinal, int) or isinstance(ordinal, bool):
+            raise FatalAccounting(
+                "ink-map has a record without an integer page ordinal. The Recensor cannot bind "
+                "its ink evidence to a sealed page. Restore the sealed Ink Map inventory or "
+                "restart the run before rerunning the Recensor."
+            )
+        if not isinstance(evidence, dict) or evidence.get("schema") != "ink-runs.v1":
+            raise FatalAccounting(
+                f"ink-map page {ordinal} has no readable ink-runs.v1 page-space evidence. The "
+                "Recensor cannot confirm witness pointers from a bare page outcome. Restore the "
+                "sealed Ink Map artifact or restart the run before rerunning the Recensor."
+            )
+        if ordinal in maps:
+            raise FatalAccounting(
+                f"ink-map repeats page ordinal {ordinal}. The Recensor has no rule for choosing "
+                "which retained page-space evidence confirms witness pointers. Restore the sealed "
+                "Ink Map inventory or restart the run before rerunning the Recensor."
+            )
+        maps[ordinal] = evidence
+    return maps
+
+
+def _ink_outside_cuts_in_box(evidence: dict, box: dict, covered: list[dict]) -> int:
+    """Ink of Unit 9's retained runs inside ``box`` and outside every cut region.
+
+    Witness observations remain classified against the proposal set that
+    existed when they were recorded, so an observation may overlap a recovery
+    crop cut later. Subtracting every current proposal and recovery crop keeps
+    already-covered ink from funding another bounded recovery.
+    """
+    width, height, rows = evidence.get("width"), evidence.get("height"), evidence.get("rows")
+    if (
+        not isinstance(width, int)
+        or isinstance(width, bool)
+        or width <= 0
+        or not isinstance(height, int)
+        or isinstance(height, bool)
+        or height <= 0
+        or not isinstance(rows, list)
+        or len(rows) != height
+    ):
+        raise FatalAccounting(
+            "ink-map edge findings have invalid dimensions. Their retained runs cannot be "
+            "measured against a witness pointer, so reading them as empty would suppress a "
+            "possible coverage finding. Restore the sealed Ink Map artifact or restart the "
+            "run before rerunning the Recensor."
+        )
+    x0 = max(0, box["x"])
+    y0 = max(0, box["y"])
+    # Clamp the far edge back to the near edge as well as to the page. A box
+    # wholly above the page otherwise produces (for example) ``rows[0:-2]``;
+    # Python interprets that as almost the whole page, manufacturing ink inside
+    # geometry that intersects no page pixel at all.
+    x1 = max(x0, min(width, box["x"] + box["w"]))
+    y1 = max(y0, min(height, box["y"] + box["h"]))
+    total = 0
+    for offset, row in enumerate(rows[y0:y1]):
+        if not isinstance(row, list):
+            raise FatalAccounting(
+                "ink-map edge findings contain a malformed row. Its ink count cannot be "
+                "measured reliably, so it cannot authorize recovery. Restore the sealed Ink "
+                "Map artifact or restart the run before rerunning the Recensor."
+            )
+        previous_end = 0
+        ink_spans: list[tuple[int, int]] = []
+        for run in row:
+            if (
+                not isinstance(run, list)
+                or len(run) != 2
+                or not all(isinstance(v, int) and not isinstance(v, bool) for v in run)
+            ):
+                raise FatalAccounting(
+                    "ink-map edge findings contain a malformed run. Its ink count cannot be "
+                    "measured reliably, so it cannot authorize recovery. Restore the sealed "
+                    "Ink Map artifact or restart the run before rerunning the Recensor."
+                )
+            start, length = run
+            # Ordered and disjoint, as `ink_runs` writes them and as
+            # `edge_ink_from_runs` already requires of the same evidence. Two
+            # runs that overlap would be counted twice here and could confirm
+            # a pointer over ink that is not there.
+            if start < previous_end or length <= 0 or start + length > width:
+                raise FatalAccounting(
+                    "ink-map edge findings have unordered or out-of-bounds runs. Counting them "
+                    "could invent ink and authorize unsupported recovery. Restore the sealed "
+                    "Ink Map artifact or restart the run before rerunning the Recensor."
+                )
+            previous_end = start + length
+            ink_spans.append((max(x0, start), min(x1, start + length)))
+        cut_spans = sorted(
+            (max(x0, bounds["x"]), min(x1, bounds["x"] + bounds["w"]))
+            for bounds in covered
+            if bounds["y"] <= y0 + offset < bounds["y"] + bounds["h"]
+        )
+        cuts: list[tuple[int, int]] = []
+        for cut_start, cut_end in cut_spans:
+            if cut_start >= cut_end:
+                continue
+            # Coverage is a union: overlapping act crops must not subtract
+            # their shared pixels twice and understate the unclaimed ink.
+            if cuts and cut_start <= cuts[-1][1]:
+                cuts[-1] = (cuts[-1][0], max(cut_end, cuts[-1][1]))
+            else:
+                cuts.append((cut_start, cut_end))
+        for start, end in ink_spans:
+            cursor = start
+            for cut_start, cut_end in cuts:
+                if cut_end <= cursor:
+                    continue
+                if cut_start >= end:
+                    break
+                total += max(0, min(cut_start, end) - cursor)
+                cursor = max(cursor, cut_end)
+                if cursor >= end:
+                    break
+            total += max(0, end - cursor)
+    return total
+
+
+def unclaimed_ink_observations(
+    maps: dict[int, dict],
+    unclaimed_observations: list,
+    page_ordinal: int,
+    cut_regions: dict[int, list[dict]],
+) -> list[dict]:
+    """Which of this page's retained unclaimed observations point at real ink.
+
+    A witness box is only a pointer. Recovery requires independently measured
+    ink outside every current cut; agreement, overlap scores, chair identity,
+    and other witness-derived quantities cannot authorize it. ``cut_regions``
+    is required because an omitted mask would count already-covered ink as a
+    reason to cut it again.
+
+    A retained observation with no map row is a fatal accounting gap, not an
+    empty result: absence of the independent evidence cannot honestly be read
+    as a measurement of zero ink. With no observations there is no pointer to
+    confirm, so an absent row remains inert here; the Armarium later reconciles
+    the complete page denominator independently.
+
+    A retained observation whose own ``bounds`` is missing or not the closed
+    ``{x, y, w, h}`` shape is the same kind of gap, not a pointer that happens
+    to point at nothing: silently skipping it would let a malformed witness
+    record disappear behind an empty result instead of the fatal refusal every
+    other malformed-evidence path in this module raises.
+    """
+    evidence = maps.get(page_ordinal)
+    if evidence is None:
+        if unclaimed_observations:
+            raise FatalAccounting(
+                f"page {page_ordinal} has retained unclaimed witness observations but no "
+                "ink-map page-space evidence. The Recensor cannot determine whether those "
+                "pointers cover real ink, so treating the missing map as zero ink would lose "
+                "a coverage finding silently. Restore the page's sealed Ink Map artifact or "
+                "restart the run before rerunning the Recensor."
+            )
+        return []
+    covered = cut_regions.get(page_ordinal, [])
+    requests = []
+    for observation in unclaimed_observations:
+        bounds = observation.get("bounds") if isinstance(observation, dict) else None
+        if not isinstance(bounds, dict):
+            raise FatalAccounting(
+                f"page {page_ordinal} has a retained unclaimed witness observation with no "
+                "{x, y, w, h} bounds. Skipping it would read a malformed pointer as one that "
+                "never pointed at ink, the same silent loss this gate exists to refuse. Restore "
+                "the page's sealed Testimonium evidence or restart the run before rerunning the "
+                "Recensor."
+            )
+        ink_pixels = _ink_outside_cuts_in_box(evidence, bounds, covered)
+        if ink_pixels >= MINIMUM_INK_PIXELS:
+            requests.append({"page_ordinal": page_ordinal, "outside_ink_pixels": ink_pixels})
+    return requests
+
+
+# Request origin is recorded data because the page-wide bound must not depend
+# on parsing mutable human-readable reason text.
+COVERAGE_OBSERVATION_ORIGIN = "coverage-observation"
+DECLARED_CROP_ORIGIN = "declared-incomplete-crop"
+RECOVERY_ORIGINS = (COVERAGE_OBSERVATION_ORIGIN, DECLARED_CROP_ORIGIN)
+
+
+def observation_funded_pages(context, acts: list[dict]) -> set[int]:
+    """Pages whose one observation-funded recovery has already been spent.
+
+    An unclaimed observation is page-scoped, while the recovery request it can
+    fund is act-scoped. Counting from the retained tree prevents each act on a
+    page, or each later Recensor pass, from spending a separate grant for the
+    same page evidence. The first eligible act follows the sealed proposal
+    order and budget state; no witness-derived ranking enters that choice.
+
+    Spending the grant does not claim the ink is covered. The observation stays
+    retained, and the Designator expands the act's declared rectangle rather
+    than treating the witness box as authoritative geometry.
+    """
+    page_of = {act["act_id"]: act["page_ordinal"] for act in acts}
+    funded: dict[int, str] = {}
+    for entry in context.tree.build_manifest(RECENSOR)["artifacts"]:
+        if entry["kind"] != "recovery-request":
+            continue
+        request = context.tree.read_artifact(RECENSOR, "recovery-request", entry["artifact_id"])
+        payload = _payload(request, f"recovery request {entry['artifact_id']}")
+        origin = payload.get("origin")
+        if origin not in RECOVERY_ORIGINS:
+            raise FatalAccounting(
+                f"recovery request {entry['artifact_id']} names no recorded origin. The "
+                "one-observation-one-request bound cannot be counted from the tree, so another "
+                "request could be granted silently. Restore a valid request artifact or restart "
+                "the run before rerunning the Recensor."
+            )
+        ordinal = page_of.get(request.get("subject_id"))
+        if ordinal is None:
+            raise FatalAccounting(
+                f"recovery request {entry['artifact_id']} names an act outside the "
+                "proposal seal's expected set. Its page-scoped recovery grant cannot be "
+                "accounted to this run. Remove no evidence; inspect the inconsistent run tree "
+                "and restart the run from its sealed inputs."
+            )
+        if origin == COVERAGE_OBSERVATION_ORIGIN:
+            previous = funded.get(ordinal)
+            if previous is not None:
+                raise FatalAccounting(
+                    f"page {ordinal} carries more than one observation-funded recovery "
+                    f"request ({previous!r}, {entry['artifact_id']!r}). The page-wide one-grant "
+                    "bound is already broken, and collapsing both would hide the extra spend. "
+                    "Inspect both retained requests and restart the run before recovery continues."
+                )
+            funded[ordinal] = entry["artifact_id"]
+    return set(funded)
+
+
+def recovery_request_origin(*, declared: bool, outside_ink_requests: list) -> str:
+    """Name the route that actually caused one fallback-recrop request.
+
+    A scenario declaration and an ink-confirmed observation can coincide.  The
+    declaration is the independent structural route and takes precedence: the
+    page's one observation-funded grant must not be consumed merely because
+    witness geometry happened to be present beside a request the declaration
+    already caused.  With neither cause, publication is an accounting defect.
+    """
+    if declared:
+        return DECLARED_CROP_ORIGIN
+    if outside_ink_requests:
+        return COVERAGE_OBSERVATION_ORIGIN
+    raise FatalAccounting(
+        "a recovery request has neither a declared nor an ink-confirmed origin. Publishing it "
+        "would spend bounded recovery without coverage evidence. Fix the request caller before "
+        "rerunning the Recensor."
+    )
+
+
+def unresolved_observation_hold(
+    outside_ink_requests: list, page_ordinal: int, funded_pages: set[int]
+) -> tuple[str, str] | None:
+    """Keep a still-confirmed pointer visible when no request can be published."""
+    if not outside_ink_requests:
+        return None
+    grant_state = (
+        "the page's one observation-funded recovery request is already recorded"
+        if page_ordinal in funded_pages
+        else "the bounded recovery policy cannot admit another request"
+    )
+    return (
+        "held-for-review",
+        "Unit 9 still confirms ink in a witness-reported pointer outside every "
+        f"current cut, but {grant_state}; the unresolved coverage evidence is "
+        "held visibly rather than dropped behind an accepted review",
+    )
+
+
 def geometry_coverage_inputs(context) -> dict[int, dict]:
     """Consume, and independently reconcile, R2's conservation denominator.
 
@@ -2060,6 +2340,13 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     page_findings = page_coverage_findings(context)
     geometry_inputs = geometry_coverage_inputs(context)
     content_findings = testimony_content_findings(context)
+    ink_maps = ink_map_by_page(context)
+    # Both residual measurement and the witness-pointer gate use the union of
+    # every proposal and recovery crop currently cut on the page.
+    cut_regions = regions_by_source_page(context)
+    # Tree-backed accounting keeps the page-wide grant spent across Recensor
+    # passes; an in-memory counter would reset after the requested recrop.
+    funded_pages = observation_funded_pages(context, expected_acts(context))
 
     held = 0
     for act in expected_acts(context):
@@ -2170,10 +2457,23 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         used_total = len(state["requests"])
         used_fallback = len(state["requests_by_kind"][FALLBACK_RECROP])
         allowed_fallback = recovery_kind_budget(budget, FALLBACK_RECROP)
+        # A witness's geometry is only a pointer; independently measured ink
+        # outside the live crop union is required to authorize recovery.
+        # Without this check, an Attestator's mis-reported box alone could
+        # spend a real recovery budget or hold an act on zero actual ink.
+        outside_ink_requests = unclaimed_ink_observations(
+            ink_maps,
+            content_coverage.get("unclaimed_observations", []),
+            act["page_ordinal"],
+            cut_regions,
+        )
         wants_recovery = (
             act_key in scenario["recover_acts"]
-            or bool(content_coverage.get("unclaimed_observations"))
+            or (bool(outside_ink_requests) and act["page_ordinal"] not in funded_pages)
         ) and used_total == 0
+        observation_hold = unresolved_observation_hold(
+            outside_ink_requests, act["page_ordinal"], funded_pages
+        )
         ordinal = used_total + 1
 
         # The cap is enforced at the request boundary rather than by convention
@@ -2198,6 +2498,10 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             # stage does not request an operation nothing downstream can honor,
             # because a request the orchestrator can only refuse turns a graceful
             # hold into a hard failure for no gain.
+            request_origin = recovery_request_origin(
+                declared=act_key in scenario["recover_acts"],
+                outside_ink_requests=outside_ink_requests,
+            )
             request = context.publish(
                 kind="recovery-request",
                 subject_id=act_id,
@@ -2208,9 +2512,16 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     "act_key": act_key,
                     "attempt_ordinal": ordinal,
                     "recovery_kind": FALLBACK_RECROP,
+                    # The origin as data beside the sentence that states it, so
+                    # the page-wide bound counts a recorded fact rather than
+                    # re-reading prose (`observation_funded_pages`). The origin
+                    # is single -- declaration takes precedence for funding --
+                    # while the reason keeps every triggered cause visible when
+                    # the two coincide.
+                    "origin": request_origin,
                     "reason": recovery_request_reason(
                         declared_crop=act_key in scenario["recover_acts"],
-                        unclaimed_observation=bool(content_coverage.get("unclaimed_observations")),
+                        unclaimed_observation=len(outside_ink_requests) > 0,
                     ),
                     "budget_allowed": budget["allowed"],
                     "budget_used": used_total,
@@ -2223,6 +2534,14 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                     "recovery_policy": budget,
                 },
             )
+            # Spent where the request is actually published, not where
+            # `wants_recovery` was computed: an act that wanted recovery and was
+            # refused it by budget or continuation must not consume the page's
+            # one grant on the way past. The condition is the same one that
+            # recorded the origin above, so the page marked funded is exactly
+            # the page whose request says it was.
+            if request_origin == COVERAGE_OBSERVATION_ORIGIN:
+                funded_pages.add(act["page_ordinal"])
             request_ref = context.input_ref(request.relative_path)
             publish_review(
                 context,
@@ -2363,6 +2682,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             )
         elif findings_route is not None:
             outcome, reason = findings_route
+        elif observation_hold is not None:
+            outcome, reason = observation_hold
         elif wants_recovery:
             outcome, reason = (
                 "held-for-review",

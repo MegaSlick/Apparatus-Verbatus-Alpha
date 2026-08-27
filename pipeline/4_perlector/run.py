@@ -2245,25 +2245,21 @@ def _sealed_sibling_semi_finals(
 
 
 def flag_location_basis(
-    dossier: dict[str, Any], flags: list[dict[str, Any]], *, semi_final_text: str
+    dossier: dict[str, Any], flags: list[dict[str, Any]], text: str
 ) -> list[dict[str, str]]:
     """Name the chair and retained-text derivation behind testimony-diff flags.
 
-    Only a report whose exact comparison with the semi-final produced one of
-    the frozen testimony-diff locations is named.  An agreeing witness is
-    evidence in the dossier, but it did not locate that flag and must not be
-    attributed as though it did.  This records a location basis only; it does
-    not promote testimony into a reading or make boundary geometry a text flag.
+    This records a location basis only; it does not promote testimony into a
+    reading or make boundary geometry a text flag.
+
+    ``audit_semi_finals`` raises one flag per retained text that differs from
+    the reading but receives only bare strings, so it cannot name the chairs.
+    The basis must use that same denominator: including a chair whose text
+    agrees would attribute a flag to evidence that did not raise one, and the
+    denominator identity below is executable rather than assumed.
     """
-    testimony_diff_locations = {
-        (flag["location"]["start"], flag["location"]["end"])
-        for flag in flags
-        if flag.get("class") == "testimony-diff"
-    }
-    if not testimony_diff_locations:
-        return []
     rows = dossier.get("testimonia", [])
-    return sorted(
+    basis = sorted(
         [
             {
                 "class": "testimony-diff",
@@ -2273,12 +2269,21 @@ def flag_location_basis(
             for row in rows
             if isinstance(row, dict)
             and isinstance(row.get("reported"), str)
+            and row["reported"] != text
             and row.get("reported_basis") in {"own-report", "page-slice"}
-            and row["reported"] != semi_final_text
-            and audit.text_change_span(semi_final_text, row["reported"]) in testimony_diff_locations
         ],
         key=lambda row: (row["chair"], row["derivation"]),
     )
+    raised = sum(1 for flag in flags if flag.get("class") == "testimony-diff")
+    if raised != len(basis):
+        raise FatalAccounting(
+            f"the audit raised {raised} testimony-diff flag(s) over this act's retained "
+            f"testimony but {len(basis)} chair(s) of it depart from the reading. The "
+            "flag-location basis is counted on a different denominator than the flags it "
+            "explains, so the audit draft cannot be trusted. Rebuild the draft from the "
+            "unchanged dossier before continuing the Perlector."
+        )
+    return basis
 
 
 def _page_flags(
@@ -2954,9 +2959,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             "round_cap": audit_policy["round_cap"],
             "policy": policy_record,
             "flags": flags,
-            "flag_location_basis": flag_location_basis(
-                payload["dossier"], flags, semi_final_text=payload["text"]
-            ),
+            "flag_location_basis": flag_location_basis(payload["dossier"], flags, payload["text"]),
         }
         audit.validate_draft(draft_payload)
         draft = context.publish(

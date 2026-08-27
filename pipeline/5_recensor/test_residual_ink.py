@@ -28,6 +28,8 @@ from residual_ink import (  # noqa: E402
 )
 
 from common.imaging import encode_grayscale_png  # noqa: E402
+from common.residual_ink import edge_ink_from_runs, ink_runs, page_edge_ink  # noqa: E402
+from proof.synthetic_pages import PAGES, page_bytes  # noqa: E402
 
 BACKGROUND = 230
 INK = BACKGROUND - MINIMUM_CONTRAST_BELOW_BACKGROUND - 10  # comfortably past the contrast floor
@@ -309,6 +311,24 @@ def test_page_residual_ink_decodes_before_measuring():
 def test_page_residual_ink_refuses_undecodable_bytes():
     with pytest.raises(ValueError):
         page_residual_ink(b"not a page", covered=[])
+
+
+def test_a_preproposal_edge_finding_releases_when_designator_crops_claim_its_ink():
+    """The map's early edge observation is not a hold after the crop re-measure.
+
+    The fixture is intentionally small enough that its 64-pixel edge band sees
+    its acts.  The relevant truth is not that early observation, but whether
+    every observed edge pixel lies in the later, recorded Designator crops.
+    """
+    for page in PAGES:
+        image = page_bytes(page["ordinal"])
+        initial = page_edge_ink(image)
+        released = edge_ink_from_runs(ink_runs(image), [act["bounds"] for act in page["acts"]])
+
+        assert initial["flagged"] is True
+        assert released["total_ink_pixels"] == initial["total_ink_pixels"]
+        assert released["outside_ink_pixels"] == 0
+        assert released["flagged"] is False
 
 
 if __name__ == "__main__":

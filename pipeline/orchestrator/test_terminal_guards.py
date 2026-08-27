@@ -20,7 +20,7 @@ from common.contracts.approval import synthetic_fixture_ingress_record
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ApprovalRefusal, FatalAccounting
 from common.contracts.outcomes import ArmariumCategory
-from common.contracts.stages import DOOR, EXEMPLAR
+from common.contracts.stages import DOOR, EXEMPLAR, INK_MAP
 from common.runtree.store import RunTree
 from common.stage import (
     EXIT_COMPLETE,
@@ -79,9 +79,50 @@ class _RecordingContext:
             self.blobs[relative_path] = data
             return digest_bytes(data), SimpleNamespace(relative_path=relative_path)
 
+        # Unit 14B: the export's page-level hold is derived from one Ink Map
+        # row per sealed page, and the stage reads them with no capability
+        # sniff -- a guard that silently yielded "no holds" beside a hold gate
+        # is exactly the shape that becomes reachable later without anyone
+        # noticing (GOVERNANCE 2). This double therefore answers the manifest
+        # walk the real tree answers: one `mapped` page 1 finding, carrying
+        # real `ink-runs.v1`-shaped evidence rather than a placeholder, and no
+        # Designator regions to release anything with.
+        self.ink_map_records = {
+            "page-1": {
+                "artifact_id": "page-1",
+                "outcome": "mapped",
+                "payload": {
+                    "page_ordinal": 1,
+                    "edge_findings": {
+                        "schema": "ink-runs.v1",
+                        "width": 8,
+                        "height": 2,
+                        "rows": [[], []],
+                    },
+                },
+            }
+        }
+
+        def build_manifest(stage: str) -> dict:
+            if stage != INK_MAP:
+                return {"artifacts": []}
+            return {
+                "artifacts": [
+                    {"kind": "ink-map", "artifact_id": artifact_id}
+                    for artifact_id in self.ink_map_records
+                ]
+            }
+
+        def read_artifact(stage: str, kind: str, artifact_id: str) -> dict:
+            if stage != INK_MAP or kind != "ink-map":
+                raise AssertionError(f"the stage read an unstored artifact: {stage}/{kind}")
+            return self.ink_map_records[artifact_id]
+
         self.tree = SimpleNamespace(
             read_bytes=read_bytes,
             put_blob=put_blob,
+            build_manifest=build_manifest,
+            read_artifact=read_artifact,
         )
 
     def publish(self, **record) -> None:

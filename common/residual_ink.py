@@ -60,10 +60,48 @@ MINIMUM_FRACTION_OUTSIDE_COVERAGE = 0.02
 SUBSTANTIAL_INK_PIXELS = 2_000
 
 # A bounded strip on every page edge.  This is an instrument boundary, not a
-# claim that 64 pixels is a calibrated cross-page-act threshold: the existing
-# ink thresholds above remain PROPOSED, NOT YET MEASURED.  It keeps the signal
-# local to the page break while Unit 14 decides the explicit hold outcome.
+# claim that 64 pixels is a calibrated cross-page-act threshold: it only
+# localizes the signal, and the ink thresholds above remain PROPOSED, NOT YET
+# MEASURED until they are read against a real corpus.
 EDGE_BAND_PIXELS = 64
+
+
+def coverage_flag(total_ink_pixels: int, outside_ink_pixels: int) -> tuple[float, bool]:
+    """The one outside-coverage gate, and the ratio it is read against.
+
+    Either gate flags on its own. The fraction gate catches a miss that is
+    large *relative to* what the page carries; the absolute gate catches one
+    that is large *full stop*, which on a dense page the fraction gate alone
+    would let through (see `SUBSTANTIAL_INK_PIXELS`). This can only ever add
+    a flag, never remove one — every page flagged before this second gate
+    existed is still flagged by the first.
+
+    One function rather than a copy per measure, because the Armarium's export
+    verifier recomputes this predicate over recorded counts on a clean machine
+    (`pipeline/7_armarium/armarium_export.py`). A verifier applying its own
+    fourth copy of the arithmetic would be checking a different instrument
+    than the one that measured, which is not a check.
+    """
+    fraction_outside = (outside_ink_pixels / total_ink_pixels) if total_ink_pixels else 0.0
+    flagged = outside_ink_pixels >= SUBSTANTIAL_INK_PIXELS or (
+        outside_ink_pixels >= MINIMUM_INK_PIXELS
+        and fraction_outside >= MINIMUM_FRACTION_OUTSIDE_COVERAGE
+    )
+    return fraction_outside, flagged
+
+
+def _ink_table(background: int) -> bytes:
+    """A 256-entry translation table mapping every pixel value to 1 (ink) or 0.
+
+    Precomputed once per page so the per-pixel ink test becomes a single
+    C-level `bytes.translate` over each row rather than an interpreted
+    comparison per pixel. The predicate is exactly the one the old loop
+    applied: ink is a value at least `MINIMUM_CONTRAST_BELOW_BACKGROUND`
+    levels below this page's own inferred background.
+    """
+    return bytes(
+        1 if background - value >= MINIMUM_CONTRAST_BELOW_BACKGROUND else 0 for value in range(256)
+    )
 
 
 def _background_level(rows: list[bytearray]) -> int:
@@ -115,9 +153,9 @@ def residual_ink(
     # Values in both translated rows and mask rows are restricted to 0 or 1, so
     # integer `ink & ~covered` preserves the per-pixel predicate. Equivalence is pinned by
     # `test_the_fast_counts_agree_with_a_straightforward_implementation`.
-    ink_table = bytes(
-        1 if background - value >= MINIMUM_CONTRAST_BELOW_BACKGROUND else 0 for value in range(256)
-    )
+    # One spelling of the ink predicate, shared with `ink_runs`: a second copy
+    # would let the retained runs and this count drift apart silently.
+    ink_table = _ink_table(background)
     total_ink = 0
     outside_ink = 0
     for y, row in enumerate(rows):
@@ -129,12 +167,7 @@ def residual_ink(
             int.from_bytes(ink_row, "big") & ~int.from_bytes(covered_row, "big")
         ).bit_count()
 
-    fraction_outside = (outside_ink / total_ink) if total_ink else 0.0
-    # The relative gate catches sparse pages; the absolute gate prevents dense
-    # pages from hiding substantial ink below the fraction threshold.
-    flagged = outside_ink >= SUBSTANTIAL_INK_PIXELS or (
-        outside_ink >= MINIMUM_INK_PIXELS and fraction_outside >= MINIMUM_FRACTION_OUTSIDE_COVERAGE
-    )
+    fraction_outside, flagged = coverage_flag(total_ink, outside_ink)
     return {
         "background_level": background,
         "total_ink_pixels": total_ink,
@@ -149,8 +182,134 @@ def page_residual_ink(image_bytes: bytes, covered: list[Bounds]) -> dict[str, An
     return residual_ink(width, height, rows, covered)
 
 
+def ink_runs(image_bytes: bytes) -> dict[str, Any]:
+    """The ink map's reusable, lossless page-space evidence.
+
+    Later consumers must count these retained runs rather than decode the page
+    again under a potentially different pixel measurement.
+    """
+    width, height, rows = grayscale_rows(image_bytes)
+    table = _ink_table(_background_level(rows))
+    encoded: list[list[list[int]]] = []
+    for row in rows:
+        bits = row.translate(table)
+        runs: list[list[int]] = []
+        start = 0
+        while start < width:
+            start = bits.find(1, start)
+            if start < 0:
+                break
+            end = bits.find(0, start)
+            if end < 0:
+                end = width
+            runs.append([start, end - start])
+            start = end
+        encoded.append(runs)
+    return {"schema": "ink-runs.v1", "width": width, "height": height, "rows": encoded}
+
+
+def edge_ink_from_runs(evidence: dict[str, Any], covered: list[Bounds]) -> dict[str, Any]:
+    """Re-measure the edge finding against later Designator cuts.
+
+    The initial measure precedes all proposals, so it is a candidate finding.
+    A later crop may release it only by applying the same edge band and flag
+    gates to these retained runs; only the coverage mask may change.
+    """
+    if not isinstance(evidence, dict) or evidence.get("schema") != "ink-runs.v1":
+        raise ValueError("ink-run evidence has the wrong schema")
+    width, height, rows = evidence.get("width"), evidence.get("height"), evidence.get("rows")
+    if (
+        not isinstance(width, int)
+        or isinstance(width, bool)
+        or width <= 0
+        or not isinstance(height, int)
+        or isinstance(height, bool)
+        or height <= 0
+        or not isinstance(rows, list)
+        or len(rows) != height
+    ):
+        raise ValueError("ink-run evidence has invalid dimensions")
+
+    band = min(EDGE_BAND_PIXELS, width // 2, height // 2)
+    total_ink = 0
+    outside_ink = 0
+    for y, row in enumerate(rows):
+        if not isinstance(row, list):
+            raise ValueError("ink-run evidence has a malformed row")
+        runs: list[tuple[int, int]] = []
+        previous_end = 0
+        for run in row:
+            if (
+                not isinstance(run, list)
+                or len(run) != 2
+                or not all(isinstance(value, int) and not isinstance(value, bool) for value in run)
+            ):
+                raise ValueError("ink-run evidence has a malformed run")
+            start, length = run
+            end = start + length
+            if start < previous_end or length <= 0 or end > width:
+                raise ValueError("ink-run evidence has unordered or out-of-bounds runs")
+            runs.append((start, end))
+            previous_end = end
+
+        total_ink += sum(end - start for start, end in runs)
+        if band == 0:
+            continue
+        edge_intervals = (
+            [(0, width)] if y < band or y >= height - band else [(0, band), (width - band, width)]
+        )
+        covered_intervals = sorted(
+            (
+                max(0, min(bounds["x"], width)),
+                max(0, min(bounds["x"] + bounds["w"], width)),
+            )
+            for bounds in covered
+            if bounds["y"] <= y < bounds["y"] + bounds["h"]
+        )
+        merged_coverage: list[tuple[int, int]] = []
+        for start, end in covered_intervals:
+            if start >= end:
+                continue
+            if merged_coverage and start <= merged_coverage[-1][1]:
+                merged_coverage[-1] = (merged_coverage[-1][0], max(end, merged_coverage[-1][1]))
+            else:
+                merged_coverage.append((start, end))
+        for run_start, run_end in runs:
+            for edge_start, edge_end in edge_intervals:
+                start, end = max(run_start, edge_start), min(run_end, edge_end)
+                if start >= end:
+                    continue
+                cursor = start
+                for covered_start, covered_end in merged_coverage:
+                    if covered_end <= cursor:
+                        continue
+                    if covered_start >= end:
+                        break
+                    outside_ink += max(0, min(covered_start, end) - cursor)
+                    cursor = max(cursor, covered_end)
+                    if cursor >= end:
+                        break
+                outside_ink += max(0, end - cursor)
+
+    fraction_outside, flagged = coverage_flag(total_ink, outside_ink)
+    return {
+        "total_ink_pixels": total_ink,
+        "outside_ink_pixels": outside_ink,
+        "fraction_outside": fraction_outside,
+        "flagged": flagged,
+        "edge_band_pixels": band,
+        "named_finding": "unclaimed-edge-ink",
+    }
+
+
 def page_edge_ink(image_bytes: bytes) -> dict[str, Any]:
-    """Measure the bounded perimeter as evidence; Unit 14 owns any resulting hold."""
+    """Measure unclaimed ink in the bounded perimeter of one sealed page.
+
+    The central rectangle is the only covered area, so this delegates the ink
+    predicate and both existing flag gates to ``residual_ink`` rather than
+    creating a second detector with slightly different arithmetic. Its finding
+    is evidence only; this measurement does not assign the ink to an act.
+    """
     width, height, rows = grayscale_rows(image_bytes)
     # A one-pixel-wide or one-pixel-high image has no centre, but it still has
     # an edge. ``max(1, ...)`` keeps the recorded band honest for that smallest
