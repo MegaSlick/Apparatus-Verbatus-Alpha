@@ -30,7 +30,7 @@ from common.stage import (  # noqa: E402
     stage_parser,
     verify_predecessor_seal,
 )
-from common.stage import (
+from common.stage import (  # noqa: E402
     refuse_halted_run as _refuse_halted_run,
 )
 
