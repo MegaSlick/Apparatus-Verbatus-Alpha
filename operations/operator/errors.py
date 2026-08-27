@@ -62,6 +62,8 @@ class ErrorCode(StrEnum):
     INGEST_PREVIEW_UNRESOLVED = "ingest-preview-unresolved"
     INGEST_UNRESOLVED = "ingest-unresolved"
     TRIAGE_REFUSED = "triage-refused"
+    SCANTAILOR_REFUSED = "scantailor-refused"
+    SCANTAILOR_UNRESOLVED = "scantailor-unresolved"
     INTERRUPTED = "interrupted"
     UNEXPECTED = "unexpected"
 
@@ -276,6 +278,16 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
         "The operator console could not read the selected run tree safely.",
         "It did not guess at missing evidence or change the run tree.",
         "Preserve the run tree unchanged and investigate the named evidence problem. Resume only from retained valid evidence, or create a new run; never edit the damaged evidence in place.",
+    ),
+    ErrorCode.SCANTAILOR_REFUSED: ErrorCopy(
+        "ScanTailor geometry could not be imported.",
+        "No geometry document was written or applied, and no source image was changed.",
+        "Keep the project file. The saved detail names what was refused: fix it in ScanTailor if it is a project detail, or name an existing folder if it is the geometry folder, then import again; this is safe.",
+    ),
+    ErrorCode.SCANTAILOR_UNRESOLVED: ErrorCopy(
+        "ScanTailor geometry import did not return a checked committed result.",
+        "An immutable geometry document may have been written even though the import was not reported as complete. No geometry was applied and no source image was changed.",
+        "Keep the project and geometry folder. Inspect any content-addressed scantailor-geometry document and the saved detail before retrying; an unchanged retry safely accepts identical bytes.",
     ),
     ErrorCode.ADVANCE_REFUSED: ErrorCopy(
         "The requested stage boundary could not be advanced.",

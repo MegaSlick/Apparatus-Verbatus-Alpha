@@ -26,14 +26,15 @@ only that): see the status line above and the upload section below.
 That is deliberate, and it is why every screen says "fixture" where a real run would say
 a real thing. The first real run is a separate, separately approved step.
 
-## The ten words
+## The eleven words
 
-Eight things this tool can do, in the order a normal run uses them, plus two you can
-run any time to check on things.
+Nine things this tool can do, in the order a normal run uses them, plus two you can run
+any time to check on things.
 
 | Word | What the real run does | Real-run cost |
 |---|---|---|
 | `ingest` | Seals and checks a submitted folder, produces triage evidence, and accepts a cluster confirmation file. | No — it is podless and offline. |
+| `scantailor` | Names the separate desktop handoff and records a saved ScanTailor project's geometry by digest. | No. It does not launch ScanTailor or use its output images. |
 | `launch` | Rents a machine with a GPU to run the pipeline on. This build rehearses that gate with a fixture. | **Yes in a real run; no in this rehearsal.** It shows the price per hour and every limit, and makes you type a confirmation back first. |
 | `boot` | Gets the rented machine ready and checks it over. This build checks fixture wiring only. | No new cost beyond a machine already running. |
 | `upload` | Sends your images to storage. | No — and it needs no rented machine at all. Do it first if you like. |
@@ -88,6 +89,17 @@ a bound; prepare that material as smaller submitted folders.
 them, `boot`, `run`, `export`, `backup` your run tree to keep a local copy, and `close`
 the moment you are done. Run `status` any time you are unsure what is happening or
 costing money.
+
+## The ScanTailor seam
+
+**ScanTailor Advanced is a separate desktop program; Verbatus does not pretend it is built in.**
+Choose `scantailor`, give the saved project XML, and Verbatus tells you exactly which
+project to open and what to do there. After you save it, give a geometry folder that
+already exists to the same screen to import its split geometry — the console writes into a
+folder, it never makes one, and it says so rather than failing at the boundary. The imported
+document is immutable and bound to the exact project-file digest shown before the write. It records geometry only: it does
+not choose a preferred page, apply a crop, or submit ScanTailor's output images. The original
+submitted masters remain the Exemplar.
 
 ## Before anything bills, it asks
 
