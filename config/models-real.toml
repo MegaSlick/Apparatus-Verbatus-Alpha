@@ -48,6 +48,8 @@ digest_manifest = "0000000000000000000000000000000000000000000000000000000000000
 manifest = "manifests/dai-recordgold-atr.json"
 serving_recipe = "unproven-real-attestatores"
 license_note = "No licence declared at all; accepted under the research track (Tyrel, 2026-08-20) — weights are pulled from the repository at the pinned revision, never vendored, and a downstream operator fetches them and accepts whatever terms apply at the source"
+witness_adapter = "dai.v1"
+witness_scope = "act"
 
 [chairs.attestator_3]
 state = "configured"

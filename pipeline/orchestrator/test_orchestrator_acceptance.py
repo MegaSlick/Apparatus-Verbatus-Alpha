@@ -853,45 +853,22 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # their retained blob digests, and the config digest bound into every artifact;
 # counts and exits remain 86/0 and 111/3.  Both digests below reproduced twice
 # from independent canonical-id `r` runs after the correction.
-HAPPY_RUN_TREE_DIGEST = "2bdd0ef9f5d7ea63feaf2855793c0d9d2961700c125b3cb4efb108d4c8bc5de5"
-HAPPY_RUN_TREE_DIGEST = "553000b2fc5fb62dbbc11729d8d50654de121710c98be2c5c19294fec0c2f141"
-# Review only, once more in the same seat: a page witness invoked on every act
-# and unusable on all of them now records the serving moment that produced it
-# (`provenance_for(..., attempted=attempted_page)`), where the `reading` gate
-# left `receipt_ref: None` beside a `presented` block claiming pixels were shown.
-# One `receipt_ref` field on attestator_3's page-2 record; no new file, no count
-# or exit change (97/3), and happy is untouched at the digest above.
-# Phase-2 review correction: a1's single request now names both coverage causes
-# that actually triggered it (the declared incomplete crop and the unclaimed
-# witness observation), instead of silently reporting only the latter.
-# Re-pinned at this merge (10C onto the composed pr tree): every contributing
-# branch moved these pins on its own, so no branch's own pin describes this
-# tree. One semantic contradiction was composed rather than sided with: 10B's
-# formal review added "observed boxes lie inside the exact presentation", and
-# 10C's coverage design records a page witness's page-space geometry on its
-# act view, where boxes legitimately exceed the one-crop presentation. The
-# containment refusal now keys on whether the presentation IS the witness's
-# complete view: page-scoped records and act-scoped chairs keep the review
-# pass's refusal verbatim; only a page witness's act view (`page_witness:
-# True`, reconciled downstream against the sealed declaration) is exempt, and
-# its boxes stay bounded by the sealed page. Counts move to 84/0 and 109/3 as
-# 10C's own narrative records. Both values measured through this module's own
-# `orchestrate` and `semantic_snapshot_digest` helpers, twice, at two
-# independent run roots.
-# Re-pinned at this merge (11 onto the composed pr tree): the pins bind the
-# merged tree alone; measured twice at two independent run roots through this
-# module's own helpers.
-# Re-pinned at this merge (12 onto the composed pr tree): the Churro fixture
-# seam now belongs only to the churro-adapter chair (attestator_3) - a
-# whole-page churro response attributed to the Chandra chair would be fixture
-# bytes wearing another model boundary's name, which 12's own review passes
-# refuse. The four capture-coverage cases survive across churro-native and the
-# new churro-truncation scenario. Happy gains attestator_3's two retained raw
-# responses (86 -> 88); a page record with a native capture binds exactly its
-# presented image AND its retained raw response as inputs. Measured twice at
+# run's digest. That candidate changed no stage behavior, artifact kind, count,
+# or exit code; its canonical measurements were 84/0 and 109/3.
+# DAI adds a content-addressed adapter crop, making canonical happy/review
+# counts 86/0 and 111/3. Identity-sized views seal ``crop`` because Pillow never
+# consults LANCZOS there. Both digests were reproduced twice in independent
+# temporary roots at canonical run id "r" after those bindings were final.
+# Re-pinned at this merge (13 onto the composed pr tree): the DAI adapter
+# joins the composed roster (attestator_2, act scope) with its relabel-proof
+# retain wrapper; presentation validation knows all three adapters (Chandra
+# and Churro present the exact image they were given, DAI re-derives its
+# crop-resize recipe); happy gains attestator_2's two retained DAI act
+# responses (88 -> 90) and review likewise (111 -> 113). Measured twice at
 # two independent run roots through this module's own helpers.
-HAPPY_RUN_TREE_DIGEST = "29a47dd025ef6d988db80c25e1b10a6ce22feaee6d29c4be36ca3c90f85b22d1"
-REVIEW_RUN_TREE_DIGEST = "2969110fedaad3cbfa2e0a6fe99cc7dc4c113ce95ee6f63500aaf794fac6f469"
+HAPPY_SNAPSHOT_FILES = 90
+HAPPY_RUN_TREE_DIGEST = "da199675689eae5707aa86c7300f05dba42bd26f8d51a28c4c6ad6d507b6f60e"
+REVIEW_RUN_TREE_DIGEST = "6b7ea777f27e9503052275c689fc0e9fe046b770af4169c54c22e9930c573a61"
 
 
 def orchestrate(
@@ -4524,10 +4501,10 @@ def test_repeating_the_identical_command_leaves_every_byte_unchanged(tmp_path):
 
     # R0 adds two retained page Testimonia and two derived act attachments to
     # the happy walking skeleton; repeatability still compares every byte.
-    # The count includes two retained Chandra-response blobs, and Unit 12 adds
-    # four more files: one content-addressed raw Churro response per
-    # (page, chair), retained before the XML is parsed at all.
-    assert len(before) == 88
+    # The count includes two retained Chandra-response blobs, Unit 12's two
+    # content-addressed raw Churro responses, and Unit 13's retained DAI act
+    # responses.
+    assert len(before) == HAPPY_SNAPSHOT_FILES
     assert semantic_snapshot_digest(root) == HAPPY_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "happy").returncode == 0
     after = snapshot(root)
@@ -4569,7 +4546,7 @@ def test_repeating_the_review_scenario_also_changes_nothing(tmp_path):
 
     # The count includes the two retained Chandra blobs written before recovery;
     # rerunning the loop must not append another copy.
-    assert len(before) == 111
+    assert len(before) == 113
     assert semantic_snapshot_digest(root) == REVIEW_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "review").returncode == 3
     assert snapshot(root) == before

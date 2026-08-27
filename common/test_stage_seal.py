@@ -29,6 +29,7 @@ from common.contracts.stages import (
     DOOR,
     EXEMPLAR,
     PERLECTOR,
+    RECENSOR,
 )
 from common.runtree.store import RunTree
 from common.stage import (
@@ -557,17 +558,30 @@ def test_door_deletion_trigger_survives_the_exemplar_manifest_write(tmp_path):
         verify_predecessor_seal(tree, EXEMPLAR)
 
 
+def test_the_attestatores_records_the_pixels_its_own_pass_computes():
+    """A stage that cuts/resamples pixels must say so in its sealed environment."""
+    environment = _decode_environment(ATTESTATORES)
+    assert environment["produced_pixels"] is True
+    assert environment["decode_paths_used"] == ["project-png"]
+
+
 def test_a_clean_consumer_reconstructs_the_producers_environment(tmp_path, capsys):
-    """Different stage roles must not manufacture a predecessor mismatch."""
+    """Different stage roles must not manufacture a predecessor mismatch.
+
+    Unit 13 first pinned these role differences as reported-by-name; Unit 12's
+    later correction reconstructs the PRODUCER's environment on the consumer's
+    machine, so a role-only difference cannot exist to report and a clean
+    consumer sees a clean predecessor.
+    """
     tree, run, registry, bindings = _tree(tmp_path)
-    context = _context(tree, run, registry, bindings)
+    context = _context(tree, run, registry, bindings, stage=RECENSOR)
     context.seal_boundary()
     context.finish()
-    assert _decode_environment(ATTESTATORES)["produced_pixels"] is False
-    assert _decode_environment(PERLECTOR)["produced_pixels"] is True
+    assert _decode_environment(RECENSOR)["produced_pixels"] is True
+    assert _decode_environment(ARCHETYPUS)["produced_pixels"] is False
     capsys.readouterr()
 
-    verify_predecessor_seal(tree, PERLECTOR)
+    verify_predecessor_seal(tree, ARCHETYPUS)
 
     reported = capsys.readouterr().err
     assert "decode environment differs" not in reported
@@ -587,8 +601,11 @@ def test_a_producer_environment_change_is_reported_field_by_field(tmp_path, caps
         dict(row, version="0.0.0-moved") if row["name"] == "pillow" else row
         for row in moved["decoders"]
     ]
-    moved["decode_paths_used"] = ["project-png"]
-    moved["produced_pixels"] = True
+    # Attestatores now seals decode_paths_used=["project-png"] and
+    # produced_pixels=True itself (DAI makes it a pixel stage), so the moved
+    # values must differ from that baseline to be reportable at all.
+    moved["decode_paths_used"] = []
+    moved["produced_pixels"] = False
     monkeypatch.setattr(stage_module, "_decode_environment", lambda _: moved)
     capsys.readouterr()
 

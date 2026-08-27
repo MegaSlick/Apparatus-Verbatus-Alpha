@@ -15,6 +15,7 @@ from common.native_witness import (
     validate_native_witness_geometry,
     validate_page_testimonium_payload,
     validate_partition_disagreement,
+    validate_presented,
     validate_presented_page_binding,
     validate_retained_response_refs,
     verify_native_capture_bytes,
@@ -739,3 +740,81 @@ def test_partition_disagreement_is_rederived_before_its_findings_can_trigger_rec
             testimonium_id="page-testimony",
             proposal_boxes=[{"x": 20, "y": 20, "w": 5, "h": 5}],
         )
+
+
+def _resized_presentation():
+    value = payload()
+    value["presented"].update({"kind": "adapter-crop", "image_sha256": "b" * 64})
+    value["presented"]["image_path"] = "3_attestatores/blobs/sha256/" + "b" * 64
+    value["presented"]["transform"].update(
+        {
+            "operation": "crop-resize-preserve-aspect",
+            "bounds": {"x": 0, "y": 0, "w": 40, "h": 20},
+            "resize": {
+                "resampler": "pillow-lanczos",
+                "dimension_rounding": "floor",
+                "source_width_px": 40,
+                "source_height_px": 20,
+                "target_width_px": 20,
+                "target_height_px": 10,
+            },
+        }
+    )
+    return value["presented"]
+
+
+def test_a_resize_recipe_must_preserve_the_aspect_its_own_operation_names():
+    """Digest replay accepts stretched targets, but page mapping requires one scale."""
+    presented = _resized_presentation()
+    validate_presented(presented)
+
+    presented["transform"]["resize"]["target_height_px"] = 18
+    with pytest.raises(SchemaRefusal, match="does not preserve the aspect"):
+        validate_presented(presented)
+
+
+def test_a_resize_recipe_rounds_down_and_never_up():
+    """The sealed ``floor`` rule makes 40x21 at width 20 exactly 10 pixels high."""
+    presented = _resized_presentation()
+    presented["transform"]["bounds"]["h"] = 21
+    presented["transform"]["resize"]["source_height_px"] = 21
+    validate_presented(presented)
+
+    presented["transform"]["resize"]["target_height_px"] = 11
+    with pytest.raises(SchemaRefusal, match="does not preserve the aspect"):
+        validate_presented(presented)
+
+
+def test_a_resize_recipe_never_scales_a_dimension_away_entirely():
+    """Flooring may not erase a dimension; executable resize targets start at 1px."""
+    presented = _resized_presentation()
+    presented["transform"]["bounds"].update({"w": 4000, "h": 3})
+    presented["transform"]["resize"].update(
+        {"source_width_px": 4000, "source_height_px": 3, "target_width_px": 1000}
+    )
+    presented["transform"]["resize"]["target_height_px"] = 1
+    validate_presented(presented)
+
+    presented["transform"]["resize"]["target_height_px"] = 0
+    with pytest.raises(SchemaRefusal, match="resize dimensions are invalid"):
+        validate_presented(presented)
+
+
+def test_a_resize_dimension_is_typed_before_the_aspect_identity_reads_it():
+    """Malformed dimensions must reach a named refusal before aspect arithmetic."""
+    presented = _resized_presentation()
+    presented["transform"]["resize"]["target_width_px"] = "20"
+    with pytest.raises(SchemaRefusal, match="resize dimensions are invalid"):
+        validate_presented(presented)
+
+
+def test_a_resize_recipe_refuses_an_over_bound_target_as_its_own_schema_error():
+    """A resealed target is untrusted input. It must be refused before Pillow
+    allocates it, and as a SchemaRefusal the tally knows how to hold."""
+    presented = _resized_presentation()
+    presented["transform"]["resize"].update(
+        {"target_width_px": 200_000_002, "target_height_px": 100_000_001}
+    )
+
+    with pytest.raises(SchemaRefusal, match="target exceeds.*pixel bound"):
+        validate_presented(presented)

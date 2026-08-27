@@ -778,7 +778,9 @@ def test_page_testimonium_consumer_closes_payload_and_provenance(
 
     def forged_reference(reference, *, stage, kind, subject_id):
         record = original(reference, stage=stage, kind=kind, subject_id=subject_id)
-        if kind == "page-testimonium":
+        # Only the churro chair's page records carry a native capture in the
+        # composed roster; the forgery targets exactly those.
+        if kind == "page-testimonium" and "native_capture" in record["payload"]:
             record = copy.deepcopy(record)
             mutate(record["payload"])
         return record
@@ -824,7 +826,7 @@ def test_page_attachment_uses_the_page_attempt_outcome_not_the_compatibility_act
             entry = next(
                 item
                 for item in record["payload"]["attachments"]
-                if item["chair"] == "attestator_1" and item["page_ordinal"] == 1
+                if item["chair"] == "attestator_3" and item["page_ordinal"] == 1
             )
             assert entry["attached"] is True
             entry.update(attached=False, attachment_basis="unattached", span=None)
@@ -832,7 +834,7 @@ def test_page_attachment_uses_the_page_attempt_outcome_not_the_compatibility_act
 
     def failed_page(reference, *, stage, kind, subject_id):
         record = original_reference(reference, stage=stage, kind=kind, subject_id=subject_id)
-        if kind == "page-testimonium" and record["payload"]["chair"] == "attestator_1":
+        if kind == "page-testimonium" and record["payload"]["chair"] == "attestator_3":
             record = copy.deepcopy(record)
             record["outcome"] = "failed"
         return record
@@ -841,8 +843,8 @@ def test_page_attachment_uses_the_page_attempt_outcome_not_the_compatibility_act
     monkeypatch.setattr(context.tree, "read_artifact_reference", failed_page)
 
     view = perlector.act_attachment_view(context, act, testimonia, bases, proposal_ids)
-    assert "attestator_1" in original_view["comparison_views"]
-    assert "attestator_1" not in view["comparison_views"]
+    assert "attestator_3" in original_view["comparison_views"]
+    assert "attestator_3" not in view["comparison_views"]
 
 
 def test_a_recovery_crop_cannot_retroactively_attach_a_page_witness(real_region, monkeypatch):

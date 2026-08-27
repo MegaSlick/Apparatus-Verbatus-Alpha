@@ -21,12 +21,16 @@ from feeding import (
     chandra_capture_intake,
     churro_generation,
     churro_prompt,
+    dai_generation,
     dai_model_view,
+    dai_prompt,
     detect_repetition,
     execute_stage_major_schedule,
     retain_model_view,
     stage_major_schedule,
     validate_churro_xml,
+    validate_dai_model_view,
+    validate_dai_text,
 )
 
 from common.chairs.models import AbsentChair, ChairIdentity
@@ -775,6 +779,43 @@ def test_dai_retains_resize_and_manifest_references_not_carried_prompt_bytes():
     assert set(view["prompts"]["system"]) == {"relative_path", "sha256"}
 
 
+def test_dai_carried_request_bytes_and_uncertainty_tokens_are_not_normalized():
+    prompt = dai_prompt()
+    assert prompt == {
+        "system": (
+            "Tu es un assistant archiviste. Tu dois lire des actes issus de registres "
+            "paroissiaux français, du 16è au 18è siècle. Extrais le texte de la marge, du "
+            "corps de l'acte, et éventuellement les signatures.\n"
+        ),
+        "user": "Extrais le texte de ce document.\n",
+    }
+    # Vendor prompt bytes are pinned including trailing newlines because any
+    # character change alters the trained request framing.
+    assert len(prompt["system"].encode("utf-8")) == 206
+    assert len(prompt["user"].encode("utf-8")) == 33
+    assert digest_bytes(prompt["system"].encode("utf-8")) == (
+        "b4e7d61d4f27f0aa46ba597ebfac3925b3ed87e72583def4bce2bd4f0393c333"
+    )
+    assert digest_bytes(prompt["user"].encode("utf-8")) == (
+        "3a5cd8eb3263f2511d207f49f9933b1cf184e95fd7a9534871207d8d8b6a3489"
+    )
+    # Every vendor value is pinned; changing any one creates a local decoding
+    # policy instead of reproducing the shipped configuration.
+    assert dai_generation() == {
+        "bos_token_id": 151_643,
+        "do_sample": True,
+        "eos_token_id": [151_645, 151_643],
+        "pad_token_id": 151_643,
+        "repetition_penalty": 1.05,
+        "temperature": 0.1,
+        "top_k": 1,
+        "top_p": 0.001,
+        "transformers_version": "5.2.0",
+    }
+    response = "[UNCERTAIN]  ſ [CROSSED_OUT]"
+    assert validate_dai_text(response.encode("utf-8")) == response
+
+
 def test_every_dai_ceiling_seals_where_it_came_from():
     """A sealed ceiling states its source, and a chosen one says it was chosen."""
     view = dai_model_view(
@@ -802,7 +843,13 @@ def test_every_dai_ceiling_seals_where_it_came_from():
 
 @pytest.mark.parametrize(
     ("width_px", "height_px", "expected"),
-    [(500, 10_000, (204, 4_080)), (1_500, 3_000, (1_086, 2_172))],
+    [
+        (500, 10_000, (204, 4_080)),
+        (1_500, 3_000, (1_086, 2_172)),
+        # This crossover distinguishes predicate search from a pre-floored
+        # height bound: 565x4096 fits, while nested flooring chooses only 564.
+        (581, 4_212, (565, 4_096)),
+    ],
 )
 def test_dai_resize_applies_height_and_total_pixel_ceilings(width_px, height_px, expected):
     view = dai_model_view(
@@ -844,6 +891,77 @@ def test_dai_identity_view_requires_the_exact_source_image_reference():
             query_prompt_ref=_ref("models/dai/query.txt"),
             generation_config_ref=_ref("models/dai/generation_config.json"),
         )
+
+
+@pytest.mark.parametrize(
+    "unsafe_path",
+    ["/etc/passwd", "../outside", "prompts/../../outside"],
+)
+def test_dai_model_view_refuses_reference_paths_that_escape_the_run_tree(unsafe_path):
+    with pytest.raises(SchemaRefusal, match="reference path escapes the run tree"):
+        dai_model_view(
+            source_image_ref=_ref(unsafe_path),
+            model_image_ref=_ref(unsafe_path),
+            width_px=1_000,
+            height_px=1_000,
+            system_prompt_ref=_ref("models/dai/system.txt"),
+            query_prompt_ref=_ref("models/dai/query.txt"),
+            generation_config_ref=_ref("models/dai/generation_config.json"),
+        )
+
+
+def test_dai_retention_refuses_an_image_limits_digest_that_was_not_compared():
+    source = _ref("designator/crops/small.png")
+    view = dai_model_view(
+        source_image_ref=source,
+        model_image_ref=source,
+        width_px=1_000,
+        height_px=1_000,
+        system_prompt_ref=_ref("models/dai/system.txt"),
+        query_prompt_ref=_ref("models/dai/query.txt"),
+        generation_config_ref=_ref("models/dai/generation_config.json"),
+    )
+    valid = retain_model_view(
+        _Tree(),
+        adapter="dai.v1",
+        view=view,
+        raw_response=b"native DAI text",
+        transport_stop_reason="eos",
+        parser="text",
+    )
+    assert valid["parse"] == {"state": "parsed", "parser": "text", "text": "native DAI text"}
+
+    view["image_limits_sha256"] = "b" * 64
+    tree = _Tree()
+
+    with pytest.raises(SchemaRefusal, match="image-limits digest does not match"):
+        retain_model_view(
+            tree,
+            adapter="dai.v1",
+            view=view,
+            raw_response=b"native DAI text",
+            transport_stop_reason="eos",
+            parser="text",
+        )
+    assert tree.blobs == {}
+
+
+def test_dai_model_view_refuses_rehashed_limits_that_change_the_sealed_ceiling():
+    source = _ref("designator/crops/small.png")
+    view = dai_model_view(
+        source_image_ref=source,
+        model_image_ref=source,
+        width_px=1_000,
+        height_px=1_000,
+        system_prompt_ref=_ref("models/dai/system.txt"),
+        query_prompt_ref=_ref("models/dai/query.txt"),
+        generation_config_ref=_ref("models/dai/generation_config.json"),
+    )
+    view["image_limits"]["max_width_px"] += 1
+    view["image_limits_sha256"] = digest_of(view["image_limits"])
+
+    with pytest.raises(SchemaRefusal, match="differ from the sealed executable limits"):
+        validate_dai_model_view(view)
 
 
 def test_chandra_intake_consumes_the_r2_blob_under_its_original_receipt():
@@ -1154,6 +1272,21 @@ def test_stage_major_execution_refuses_reentry_and_fails_closed_on_unload_failur
             residency=residency,
             serve=lambda *_: None,
         )
+
+
+def test_unload_failure_cannot_mask_a_security_refusal_from_the_resident_body():
+    def unload_fails(*_args):
+        raise RuntimeError("unload not verified")
+
+    residency = SingleChairResidency(lambda chair: chair, unload_fails)
+
+    with pytest.raises(SchemaRefusal, match="security refusal survives cleanup") as caught:
+        with residency.occupy("attestator_1"):
+            raise SchemaRefusal("security refusal survives cleanup")
+
+    assert isinstance(caught.value.__cause__, RuntimeError)
+    assert str(caught.value.__cause__) == "unload not verified"
+    assert residency.resident == "attestator_1"
 
 
 def test_stage_major_execution_fails_closed_when_the_load_itself_fails():

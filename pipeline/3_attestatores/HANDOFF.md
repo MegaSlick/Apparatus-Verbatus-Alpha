@@ -88,11 +88,15 @@ requirement, not a claim that the float was retained verbatim.
 description of exactly one `page`, `region`, or `adapter-crop` image: sealed page
 identity and ordinal, blob path/digest, and an executable sealed-page transform.
 A region presentation is re-derived from its unique Designator proposal. A page
-presentation must name the whole sealed page and `operation="whole"`. The current
-adapter-crop recipe is exactly `operation="crop"`; both read seams regenerate its
-PNG bytes from the sealed page and refuse a digest that differs. A resize or any
-other adapter-owned recipe must extend this closed transform rather than ride as
-an opaque operation string.
+presentation must name the whole sealed page and `operation="whole"`. An
+adapter-crop is either an exact `operation="crop"`, or the closed
+`operation="crop-resize-preserve-aspect"` recipe with Pillow LANCZOS, floor
+rounding, and source/target dimensions. Both read seams regenerate its PNG bytes
+from the sealed page and refuse a digest that differs. A resize or any other
+adapter-owned recipe must extend this closed transform rather than ride as an
+opaque operation string. DAI records the exact crop recipe when its proposal is
+already inside every ceiling; it does not claim a resampler ran on Pillow's
+identity-copy path.
 
 `observed` is the witness-order list of integer sealed-page boxes, each with a
 dense zero-based ordinal, `bounds_source` in `native | derived | presented`, and
@@ -149,9 +153,11 @@ contract:
   (the only space anything downstream can verify: `verify_exemplar_crop_lineage`
   re-derives there and the Recensor reconciles there). `kind="region"` may name a
   Designator region whose `origin` is `proposal` and nothing else — a recovery
-  crop may never be presented as a witness basis. An `adapter-crop` is a
-  page-scoped occupant's own subdivision, not a third scope, and both read seams
-  regenerate its bytes from the sealed page and refuse a differing digest.
+  crop may never be presented as a witness basis. An `adapter-crop` is an
+  adapter-owned derivative, not a third scope: the current DAI occupant is
+  act-scoped and publishes one from the proposal it was assigned. Both read
+  seams regenerate its bytes from the sealed page and refuse a differing
+  digest.
 * `observe(presentation, native_payload)` returns the closed `observed` list from
   that exact image and response together — dense, unique, zero-based ordinal;
   integer `x/y/w/h` in the pixel space of `presented.source_page_id`;
@@ -191,9 +197,12 @@ named non-fatal `unrouted-observation` finding, retained in
 bounded fallback-recrop on it, against one absolute cap of three shared with
 every other recovery origin.
 
-**Evidence.** Each adapter lands with one recorded specimen response read from
-the vendor's published source, with that source and its licence recorded, exactly
-as `feeding.churro_prompt` cites stanford-oval/churro.
+**Evidence.** Published vendor specimens enter with their source and licence
+recorded, exactly as `feeding.churro_prompt` cites stanford-oval/churro. A vendor
+that publishes no response specimen is not represented by a synthetic fixture
+wearing that status: the current DAI adapter records its published request
+framing and generation values as named carries, while its fixture response
+remains explicitly synthetic.
 
 **Named obligations after Unit 10.** These are adapter/integration work, not
 unfinished choices in this contract:
@@ -209,11 +218,17 @@ unfinished choices in this contract:
   post-capture repetition visible. It declares whether it has any native
   quantization to apply (rather than inheriting another adapter's rule) and
   carries its own published specimen evidence.
-* **Unit 13 (DAI)** adds DAI's exact registry rows, records its detector's
-  float quantization beside the raw digest, and extends the closed transform for
-  its adapter-owned resize/crop so the shown pixels remain reproducible. Its
-  carried prompts, generation configuration, specimen, source and licence are
-  named; uncertainty tokens are retained unchanged.
+* **Unit 13 (DAI)** adds DAI's exact registry rows and extends the closed
+  transform for its adapter-owned crop/resize so the shown pixels remain
+  reproducible. The landed adapter begins from its assigned Designator proposal;
+  it does not execute DAI's own detector, so it does not satisfy the staged
+  pipeline's separate native-detector requirement. DAI publishes no native
+  layout channel here: its honest
+  `bounds_source="presented"` fallback is excluded from routing and coverage,
+  while the separate secondary proposer remains Unit 9's chair and is not this
+  adapter's native channel. Its carried prompts and nine generation values are
+  named with source, digests, and the settled licence position; uncertainty
+  tokens are retained unchanged.
 * **Unit 14 (native-testimony integration)** removes the temporary
   `payload.reported` bridge below and teaches the Perlector/Recensor consumers to
   use each adapter's native retained text and partition facts without choosing a

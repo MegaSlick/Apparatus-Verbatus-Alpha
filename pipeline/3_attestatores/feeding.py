@@ -57,7 +57,7 @@ SCHEDULING_POLICY = "chair-outer-act-inner.stage-major-parish.v1"
 # rather than spelled -1 at the two places that have to agree on it.
 _UNPLACED_ORDINAL = -1
 # The (adapter, parser) pairs `retain_model_view` can actually carry to a state.
-_RUNNABLE_PARSERS = frozenset({("chandra.v1", "json"), ("churro.v1", "xml")})
+_RUNNABLE_PARSERS = frozenset({("chandra.v1", "json"), ("churro.v1", "xml"), ("dai.v1", "text")})
 _UNCERTAINTY_TOKENS = ("[UNCERTAIN]", "[CROSSED_OUT]")
 
 
@@ -109,6 +109,73 @@ def churro_generation() -> dict[str, int]:
     return {"max_new_tokens": CHURRO_OUTPUT_TOKENS}
 
 
+def dai_prompt() -> dict[str, str]:
+    """Return DAI's two carried prompt files byte-for-byte as UTF-8 text.
+
+    Carried third-party content: ``system.txt`` (206 bytes, SHA-256
+    ``b4e7d61d4f27f0aa46ba597ebfac3925b3ed87e72583def4bce2bd4f0393c333``)
+    and ``query.txt`` (33 bytes, SHA-256
+    ``3a5cd8eb3263f2511d207f49f9933b1cf184e95fd7a9534871207d8d8b6a3489``)
+    from Teklia's pinned
+    ``Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR`` repository at
+    ``e371095d4ffe585f31f4974462931ddbac61ff64``:
+    https://huggingface.co/Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR/tree/e371095d4ffe585f31f4974462931ddbac61ff64.
+    The source declares no licence; its research-track use is Tyrel's settled
+    2026-08-20 ruling. These are named carries, not reconstructed instructions:
+    changing any character changes the trained request framing.
+    """
+    return {
+        "system": (
+            "Tu es un assistant archiviste. Tu dois lire des actes issus de registres "
+            "paroissiaux français, du 16è au 18è siècle. Extrais le texte de la marge, du "
+            "corps de l'acte, et éventuellement les signatures.\n"
+        ),
+        "user": "Extrais le texte de ce document.\n",
+    }
+
+
+def dai_generation() -> dict[str, Any]:
+    """Return DAI's carried ``generation_config.json`` without changing its values.
+
+    Carried third-party content: every value in ``generation_config.json`` (243
+    source bytes, SHA-256
+    ``f4cd2d54597a1a3cb38ac78d5cb275d06f6fd660fef52ee444a58d81297ff027``),
+    from the same pinned Teklia source and under the same no-licence/ruling
+    citation as :func:`dai_prompt`. What crosses is the nine values, re-typed as
+    a Python mapping; the source file's bytes are its JSON framing, which this
+    function does not return, so this is a source-file digest rather than a
+    byte-count claim about the mapping. This is the shipped generation
+    configuration, not a locally chosen decoding policy; in particular,
+    ``do_sample`` remains true.
+    """
+    return {
+        "bos_token_id": 151643,
+        "do_sample": True,
+        "eos_token_id": [151645, 151643],
+        "pad_token_id": 151643,
+        "repetition_penalty": 1.05,
+        "temperature": 0.1,
+        "top_k": 1,
+        "top_p": 0.001,
+        "transformers_version": "5.2.0",
+    }
+
+
+def validate_dai_text(raw: bytes) -> str:
+    """Decode DAI's text response exactly; uncertainty markers are not normalized.
+
+    ``[UNCERTAIN]`` and ``[CROSSED_OUT]`` are ordinary retained response text.
+    This parser does no whitespace, Unicode, or token rewriting, so both the
+    native payload and the DAI model view preserve them unaltered.
+    """
+    if not isinstance(raw, (bytes, bytearray)):
+        raise SchemaRefusal("DAI response is not raw bytes")
+    try:
+        return bytes(raw).decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise SchemaRefusal(f"DAI response is not UTF-8 text: {error}") from error
+
+
 def dai_model_view(
     *,
     source_image_ref: dict[str, str],
@@ -139,14 +206,8 @@ def dai_model_view(
         raise SchemaRefusal("DAI resized model image is not distinct from its source bytes")
     if not resized and source_image_ref != model_image_ref:
         raise SchemaRefusal("DAI identity transform does not retain the source image bytes exactly")
-    limits = {
-        "schema": "dai-image-limits.v2",
-        "max_width_px": DAI_MAX_WIDTH_PX,
-        "max_height_px": DAI_MAX_HEIGHT_PX,
-        "max_total_pixels": DAI_MAX_TOTAL_PIXELS,
-        "sources": dict(DAI_LIMIT_SOURCES),
-    }
-    return {
+    limits = _dai_image_limits()
+    view = {
         "adapter": "dai-atr.v1",
         "source_image_ref": source_image_ref,
         "model_image_ref": model_image_ref,
@@ -165,22 +226,127 @@ def dai_model_view(
         "generation_config_ref": generation_config_ref,
         "uncertainty_tokens_preserved": list(_UNCERTAINTY_TOKENS),
     }
+    return validate_dai_model_view(view)
+
+
+def _dai_image_limits() -> dict[str, Any]:
+    """The one sealed statement of DAI's executable image ceilings."""
+    return {
+        "schema": "dai-image-limits.v2",
+        "max_width_px": DAI_MAX_WIDTH_PX,
+        "max_height_px": DAI_MAX_HEIGHT_PX,
+        "max_total_pixels": DAI_MAX_TOTAL_PIXELS,
+        "sources": dict(DAI_LIMIT_SOURCES),
+    }
+
+
+def validate_dai_model_view(value: Any) -> dict[str, Any]:
+    """Close a DAI view before request retention trusts its references or digest."""
+    fields = {
+        "adapter",
+        "source_image_ref",
+        "model_image_ref",
+        "transform",
+        "image_limits",
+        "image_limits_sha256",
+        "prompts",
+        "generation_config_ref",
+        "uncertainty_tokens_preserved",
+    }
+    if not isinstance(value, dict) or set(value) != fields or value["adapter"] != "dai-atr.v1":
+        raise SchemaRefusal("DAI model view is not its closed adapter schema")
+
+    for name, reference in (
+        ("source image", value["source_image_ref"]),
+        ("model image", value["model_image_ref"]),
+        ("generation config", value["generation_config_ref"]),
+    ):
+        _reference(reference, name)
+    prompts = value["prompts"]
+    if not isinstance(prompts, dict) or set(prompts) != {"system", "query"}:
+        raise SchemaRefusal("DAI model view does not bind its two prompt references")
+    _reference(prompts["system"], "system prompt")
+    _reference(prompts["query"], "query prompt")
+
+    transform = value["transform"]
+    transform_fields = {
+        "kind",
+        "resampler",
+        "dimension_rounding",
+        "source_width_px",
+        "source_height_px",
+        "target_width_px",
+        "target_height_px",
+    }
+    if not isinstance(transform, dict) or set(transform) != transform_fields:
+        raise SchemaRefusal("DAI model view has no closed executable transform")
+    dimensions_px = tuple(
+        transform[field]
+        for field in (
+            "source_width_px",
+            "source_height_px",
+            "target_width_px",
+            "target_height_px",
+        )
+    )
+    if not all(
+        isinstance(dimension, int) and not isinstance(dimension, bool) and dimension > 0
+        for dimension in dimensions_px
+    ):
+        raise SchemaRefusal("DAI model view transform dimensions must be positive integers")
+    source_width, source_height, target_width, target_height = dimensions_px
+    expected_target = _dai_dimensions(source_width, source_height)
+    resized = expected_target != (source_width, source_height)
+    expected_transform_facts = (
+        ("resize-preserve-aspect", "pillow-lanczos", "floor")
+        if resized
+        else ("identity", None, None)
+    )
+    if (target_width, target_height) != expected_target or (
+        transform["kind"],
+        transform["resampler"],
+        transform["dimension_rounding"],
+    ) != expected_transform_facts:
+        raise SchemaRefusal("DAI model view transform differs from its sealed image ceilings")
+    source_ref = value["source_image_ref"]
+    model_ref = value["model_image_ref"]
+    if resized and source_ref["sha256"] == model_ref["sha256"]:
+        raise SchemaRefusal("DAI resized model image is not distinct from its source bytes")
+    if not resized and source_ref != model_ref:
+        raise SchemaRefusal("DAI identity transform does not retain the source image bytes exactly")
+
+    limits = value["image_limits"]
+    expected_limits = _dai_image_limits()
+    if limits != expected_limits:
+        raise SchemaRefusal("DAI model view image limits differ from the sealed executable limits")
+    limits_digest = value["image_limits_sha256"]
+    if (
+        not isinstance(limits_digest, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", limits_digest)
+        or limits_digest != digest_of(limits)
+    ):
+        raise SchemaRefusal("DAI model view image-limits digest does not match its limits")
+    if value["uncertainty_tokens_preserved"] != list(_UNCERTAINTY_TOKENS):
+        raise SchemaRefusal("DAI model view does not preserve the declared uncertainty tokens")
+    return value
 
 
 def _dai_dimensions(width_px: int, height_px: int) -> tuple[int, int]:
-    """Largest integer aspect-preserving view within every DAI ceiling."""
-    upper_width = min(
-        width_px,
-        DAI_MAX_WIDTH_PX,
-        width_px * DAI_MAX_HEIGHT_PX // height_px,
-    )
+    """Largest integer aspect-preserving view within every DAI ceiling.
+
+    Height and area must remain search predicates: pre-flooring a height-derived
+    width can undercut the largest feasible view by one pixel.
+    """
+    upper_width = min(width_px, DAI_MAX_WIDTH_PX)
     if upper_width < 1:
         raise SchemaRefusal("DAI image aspect cannot fit the sealed height ceiling")
     low, high = 1, upper_width
     while low < high:
         candidate = (low + high + 1) // 2
         candidate_height = max(1, height_px * candidate // width_px)
-        if candidate * candidate_height <= DAI_MAX_TOTAL_PIXELS:
+        if candidate * candidate_height <= DAI_MAX_TOTAL_PIXELS and (
+            candidate_height <= DAI_MAX_HEIGHT_PX
+        ):
             low = candidate
         else:
             high = candidate - 1
@@ -250,6 +416,8 @@ def retain_model_view(
     # is the shape GOVERNANCE 2 refuses. Ask for a parse that runs, or ask for none.
     if parser is not None and (adapter, parser) not in _RUNNABLE_PARSERS:
         raise SchemaRefusal(f"model-view parser {parser!r} does not run for adapter {adapter!r}")
+    if adapter == "dai.v1":
+        validate_dai_model_view(view)
     raw_digest, published = tree.put_blob(ATTESTATORES, raw_response)
     record: dict[str, Any] = {
         "schema": "attestatores-model-view.v1",
@@ -291,6 +459,16 @@ def retain_model_view(
             record["stop_reason"] = "partial-parse-unrecognized-shape"
         else:
             record["parse"] = {"state": "parsed", "parser": "json", "text": parsed}
+    elif adapter == "dai.v1" and parser == "text":
+        try:
+            record["parse"] = {
+                "state": "parsed",
+                "parser": "text",
+                "text": validate_dai_text(raw_response),
+            }
+        except SchemaRefusal as error:
+            record["parse"] = {"state": "failed", "parser": "text", "reason": str(error)}
+            record["stop_reason"] = "partial-parse-failed"
     return record
 
 
@@ -385,12 +563,25 @@ class SingleChairResidency:
         resource = self._load(chair)
         try:
             yield resource
-        finally:
-            self._unload(chair, resource)
-            with self._lock:
-                if self._resident != chair:
-                    raise SchemaRefusal("single-chair residency state diverged during unload")
-                self._resident = None
+        except BaseException as refusal:
+            try:
+                self._release(chair, resource)
+            except BaseException as cleanup_error:
+                # The refusal is the security decision the caller must see. Keep a
+                # failed cleanup as its cause, and keep the chair resident, rather
+                # than replacing the refusal with a generic unload exception.
+                raise refusal from cleanup_error
+            raise
+        else:
+            self._release(chair, resource)
+
+    def _release(self, chair: str, resource: Any) -> None:
+        """Clear residency only after the resource and guard both verify release."""
+        self._unload(chair, resource)
+        with self._lock:
+            if self._resident != chair:
+                raise SchemaRefusal("single-chair residency state diverged during unload")
+            self._resident = None
 
 
 def execute_stage_major_schedule(
@@ -436,5 +627,8 @@ def _reference(value: object, name: str) -> None:
         raise SchemaRefusal(f"DAI {name} reference has no closed digest shape")
     if not isinstance(value["relative_path"], str) or not value["relative_path"]:
         raise SchemaRefusal(f"DAI {name} reference path is blank")
+    path = value["relative_path"]
+    if path.startswith("/") or ".." in path.split("/"):
+        raise SchemaRefusal(f"DAI {name} reference path escapes the run tree")
     if not isinstance(value["sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", value["sha256"]):
         raise SchemaRefusal(f"DAI {name} reference digest is invalid")

@@ -199,6 +199,20 @@ def region_inputs(context, regions: list[dict], presented: dict[str, Any]) -> li
     return sorted(inputs.values(), key=lambda item: (item["relative_path"], item["sha256"]))
 
 
+def testimonium_inputs(
+    context, regions: list[dict], presented: dict[str, Any]
+) -> list[dict[str, str]]:
+    """Bind proposal crops and the exact adapter-owned image a witness saw."""
+    inputs = {
+        (reference["relative_path"], reference["sha256"]): reference
+        for reference in region_inputs(context, regions, {})
+    }
+    if presented:
+        reference = context.input_ref(presented["image_path"])
+        inputs[(reference["relative_path"], reference["sha256"])] = reference
+    return sorted(inputs.values(), key=lambda item: (item["relative_path"], item["sha256"]))
+
+
 def presentation_for_region(region: dict[str, Any]) -> dict[str, Any]:
     """Derive one region presentation from a verified proposal record."""
     payload = region["payload"]
@@ -239,7 +253,8 @@ def presentation_for_page(context, page_ordinal: int) -> dict[str, Any]:
     page_id = page_identity(context.fixture, page_ordinal)
     page = context.tree.read_artifact(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", page_id))
     image_path = page["payload"]["image_path"]
-    width, height = dimensions(context.tree.read_bytes(image_path))
+    page_bytes = _verified_page_bytes(context, page)
+    width, height = dimensions(page_bytes)
     return {
         "kind": "page",
         "source_page_id": page_id,
@@ -291,6 +306,43 @@ def _fixture_native_observations(
     ]
 
 
+def _sealed_source_page(
+    context, presented: dict[str, Any]
+) -> tuple[dict[str, Any], bytes, tuple[int, int]]:
+    """The sealed Exemplar page, exact verified bytes used, and decoded size."""
+    page_id = presented["source_page_id"]
+    page = context.tree.read_artifact(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", page_id))
+    page_bytes = _verified_page_bytes(context, page)
+    return page, page_bytes, dimensions(page_bytes)
+
+
+def _verified_page_bytes(context, page: dict[str, Any]) -> bytes:
+    """Read once and bind the exact page bytes that image operations will use.
+
+    ``read_artifact`` verifies the page's inputs, but reopening its blob afterward
+    creates a check/use interval. Compare the one immutable byte object handed to
+    Pillow/cropping with the page digest so a filesystem swap cannot cross it.
+    """
+    payload = page.get("payload")
+    if not isinstance(payload, dict):
+        raise SchemaRefusal("a sealed Exemplar page has no object payload")
+    image_path = payload.get("image_path")
+    expected_digest = payload.get("source_sha256")
+    if not isinstance(image_path, str) or not image_path:
+        raise SchemaRefusal("a sealed Exemplar page has no image path")
+    try:
+        page_bytes = context.tree.read_bytes(image_path)
+    except OSError as error:
+        raise SchemaRefusal(f"sealed Exemplar page bytes could not be read: {error}") from error
+    actual_digest = digest_bytes(page_bytes)
+    if actual_digest != expected_digest:
+        raise SchemaRefusal(
+            "sealed Exemplar page bytes changed between artifact verification and image use: "
+            f"digest {actual_digest}, not {expected_digest}"
+        )
+    return page_bytes
+
+
 def validate_testimonium_presentation(context, record: dict[str, Any]) -> None:
     """Re-derive the presentation's sealed page, blob binding, and region wall."""
     payload = record["payload"]
@@ -300,13 +352,7 @@ def validate_testimonium_presentation(context, record: dict[str, Any]) -> None:
         if record.get("inputs") != []:
             raise SchemaRefusal("an unpresented Testimonium carries image inputs")
         return
-    page = context.tree.read_artifact(
-        EXEMPLAR,
-        "page",
-        artifact_id(EXEMPLAR, "page", presented["source_page_id"]),
-    )
-    page_bytes = context.tree.read_bytes(page["payload"]["image_path"])
-    page_size = dimensions(page_bytes)
+    page, page_bytes, page_size = _sealed_source_page(context, presented)
     validate_native_witness_geometry(payload, page_size=page_size)
     validate_presented_page_binding(
         presented,
@@ -1444,9 +1490,16 @@ def validate_tallied_testimonium(
         if regions is None:
             regions = proposed_regions(context, act["act_id"])
             regions_by_act[act["act_id"]] = regions
-        if payload["regions"] != region_references(regions) or record["inputs"] != region_inputs(
-            context, regions, payload["presented"]
-        ):
+        identity = context.registry.config.chairs[chair]
+        if isinstance(identity, ChairIdentity):
+            witness_adapters.validate_adapter_presentation(
+                identity.witness_adapter,
+                presentation_for_region(regions[0]),
+                payload["presented"],
+            )
+        if payload["regions"] != region_references(regions) or record[
+            "inputs"
+        ] != testimonium_inputs(context, regions, payload["presented"]):
             raise SchemaRefusal(
                 "a Testimonium tally record does not bind exactly the proposal regions and inputs"
             )
@@ -2158,7 +2211,11 @@ def publish_attempt(
         else None
     )
     if adapter is not None:
-        presented = adapter.present(context, presented)
+        source_presentation = presented
+        presented = adapter.present(context, source_presentation)
+        witness_adapters.validate_adapter_presentation(
+            resolved.witness_adapter, source_presentation, presented
+        )
     unpresented_regions = unpresented_region_ids(presented, regions)
     if not presented:
         observed: list[dict[str, Any]] = []
@@ -2202,7 +2259,7 @@ def publish_attempt(
             resolved, has_raw_response=attempt.raw_response_ref is not None
         ),
     )
-    inputs = region_inputs(context, regions, presented) if attempted else []
+    inputs = testimonium_inputs(context, regions, presented) if attempted else []
     # Adapter output is untrusted. Reconcile it while refusal can still leave
     # the immutable Testimonium identity unwritten; tally/consumer validation
     # repeats this check but cannot undo an invalid publication.
@@ -2576,7 +2633,11 @@ def publish_page_testimonia_and_attachments(
                 else None
             )
             if adapter is not None:
-                presented = adapter.present(context, presented)
+                source_presentation = presented
+                presented = adapter.present(context, source_presentation)
+                witness_adapters.validate_adapter_presentation(
+                    resolved.witness_adapter, source_presentation, presented
+                )
             unpresented_regions = unpresented_region_ids(presented, page_proposal_regions)
             page_attempt = attempt_id(page_subject, f"read:{chair}", ordinal)
             roles = {

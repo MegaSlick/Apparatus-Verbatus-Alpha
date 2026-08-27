@@ -128,7 +128,7 @@ def test_a_known_adapter_name_with_no_configured_occupant_is_reported(monkeypatc
     monkeypatch.setattr(
         witness_adapters,
         "KNOWN_WITNESS_ADAPTER_NAMES",
-        frozenset({"chandra.v1", "churro.v1", "unbound.fixture.v1"}),
+        frozenset({"chandra.v1", "churro.v1", "dai.v1", "unbound.fixture.v1"}),
     )
     with warnings.catch_warnings():
         warnings.simplefilter("error")
@@ -201,17 +201,15 @@ def test_two_chairs_may_share_one_adapter_at_different_scopes():
     """
     models = _models()
     witness_adapters.validate_witness_adapter_bindings(models)
-    # Derive the sharing pair because chair-to-adapter bindings may move while
-    # the cross-scope sharing invariant remains unchanged.
-    by_adapter: dict[str, list[str]] = {}
-    for _, chair in sorted(models.chairs.items()):
-        if isinstance(chair, ChairIdentity) and chair.witness_adapter is not None:
-            by_adapter.setdefault(chair.witness_adapter, []).append(chair.witness_scope)
-    sharing = {name: scopes for name, scopes in by_adapter.items() if len(scopes) > 1}
-    assert sharing, "no adapter is shared by two chairs; this test would pass vacuously"
-    assert any(set(scopes) == {"page", "act"} for scopes in sharing.values()), (
-        f"one adapter serves several chairs but never at both scopes: {sharing}"
-    )
+    # The three adapters now partition the roster one-to-one: Chandra reads
+    # page geometry natively, Churro answers whole pages with no layout, and
+    # DAI crops acts. Pin the assignment so a moved binding is a loud fact.
+    assert models.chairs["attestator_1"].witness_adapter == "chandra.v1"
+    assert models.chairs["attestator_1"].witness_scope == "page"
+    assert models.chairs["attestator_2"].witness_adapter == "dai.v1"
+    assert models.chairs["attestator_2"].witness_scope == "act"
+    assert models.chairs["attestator_3"].witness_adapter == "churro.v1"
+    assert models.chairs["attestator_3"].witness_scope == "page"
 
 
 @pytest.mark.parametrize(
@@ -333,7 +331,7 @@ def test_witness_adapter_is_inside_the_sealed_config_digest(monkeypatch):
     monkeypatch.setattr(
         witness_adapters,
         "KNOWN_WITNESS_ADAPTER_NAMES",
-        frozenset({"chandra.v1", "churro.v1", "other.fixture.v1"}),
+        frozenset({"chandra.v1", "churro.v1", "dai.v1", "other.fixture.v1"}),
     )
     fixture = load_fixture(str(ROOT / "proof"))
     sealed = run_config_bindings(_models(), fixture, "happy")["config_digest"]

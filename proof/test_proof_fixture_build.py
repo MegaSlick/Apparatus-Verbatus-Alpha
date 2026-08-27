@@ -353,9 +353,7 @@ def test_the_pinned_reference_run_exercises_the_churro_capture_path(skeleton):
     """The pinned run exercises capture without moving its reading text."""
     happy = [row for row in skeleton["churro_page_response"] if row["scenario"] == "happy"]
     assert {(row["page_ordinal"], row["chair"]) for row in happy} == {
-        (1, "attestator_1"),
         (1, "attestator_3"),
-        (2, "attestator_1"),
         (2, "attestator_3"),
     }
     page_acts = {1: ("a1", "a2"), 2: ("a2",)}
@@ -374,24 +372,27 @@ def test_the_churro_native_scenario_reaches_all_three_parse_states(skeleton):
         for row in skeleton["churro_page_response"]
         if row["scenario"] == "churro-native"
     }
-    assert set(rows) == {
-        (1, "attestator_1"),
-        (1, "attestator_3"),
-        (2, "attestator_1"),
-        (2, "attestator_3"),
-    }
+    # The Churro fixture seam belongs to the churro-adapter chair alone; the
+    # visibly cut, still-parseable case lives in churro-truncation.
+    assert set(rows) == {(1, "attestator_3"), (2, "attestator_3")}
     header = "[FOLIO RUBRIC 7 -- page furniture, belongs to no entry]"
-    complete = rows[(1, "attestator_1")]
+    complete = rows[(1, "attestator_3")]
     assert complete["raw_xml"].startswith(f"<output>{header}")
     assert complete["raw_xml"].endswith("</output>")
     assert complete["transport_stop_reason"] == "eos"
     assert header not in "".join(act["text"] for act in ACTS)
-    truncated = rows[(2, "attestator_1")]
-    assert truncated["raw_xml"].endswith("</output>")
-    assert truncated["transport_stop_reason"] == "length"
     malformed = rows[(2, "attestator_3")]
     assert not malformed["raw_xml"].endswith("</output>")
     assert malformed["transport_stop_reason"] == "length"
+    truncation_rows = {
+        (row["page_ordinal"], row["chair"]): row
+        for row in skeleton["churro_page_response"]
+        if row["scenario"] == "churro-truncation"
+    }
+    assert set(truncation_rows) == {(1, "attestator_3"), (2, "attestator_3")}
+    truncated = truncation_rows[(2, "attestator_3")]
+    assert truncated["raw_xml"].endswith("</output>")
+    assert truncated["transport_stop_reason"] == "length"
 
 
 def test_fixture_declares_the_explicit_non_reading_and_malformed_attempts(skeleton):
@@ -408,6 +409,7 @@ def test_the_scenarios_are_exactly_the_declared_ones(skeleton):
         "continuation-recovery",
         "coverage-recovery",
         "churro-native",
+        "churro-truncation",
         "audit-change",
         "refused-page",
         "refused-first-page",

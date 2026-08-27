@@ -147,6 +147,54 @@ def test_each_testimonium_writer_reconciles_adapter_evidence_before_publication(
         assert source.index("validate_testimonium_presentation(") < source.index("context.publish(")
 
 
+def test_dai_uncertainty_tokens_reach_a_closed_testimonium_verbatim():
+    """Uncertainty markers must survive every boundary, not only UTF-8 parsing."""
+    adapter = attestatores.witness_adapters.resolve_runnable_adapter("dai.v1")
+    raw = "[UNCERTAIN]  ſ [CROSSED_OUT]".encode("utf-8")
+    parsed = adapter.parse(raw)
+    presented = _base()["presented"]
+    observed = adapter.observe(presented, parsed)
+
+    record = attestatores.testimonium_payload(
+        chair="attestator_2",
+        act_key="a1",
+        ordinal=1,
+        regions=[],
+        provenance={},
+        format_capabilities=attestatores.DEFAULT_FORMAT_CAPABILITIES,
+        native_payload=parsed,
+        witness_reported=None,
+        health=attestatores.content_health(parsed, completed=True),
+        presented=presented,
+        observed=observed,
+        outcome="read",
+    )
+
+    assert record["payload"] == raw.decode("utf-8")
+    assert record["reported"] == record["payload"]
+    assert record["observed"][0]["span"] == {"start": 0, "end": len(record["payload"])}
+
+
+def test_page_image_use_refuses_bytes_swapped_after_artifact_verification():
+    original = b"sealed page bytes"
+    swapped = b"different page bytes"
+
+    class _SwappedTree:
+        def read_bytes(self, _relative_path):
+            return swapped
+
+    context = type("Context", (), {"tree": _SwappedTree()})()
+    page = {
+        "payload": {
+            "image_path": "1_exemplar/blobs/sha256/" + digest_bytes(original),
+            "source_sha256": digest_bytes(original),
+        }
+    }
+
+    with pytest.raises(SchemaRefusal, match="changed between artifact verification and image use"):
+        attestatores._verified_page_bytes(context, page)
+
+
 class _Context:
     def __init__(self, tree):
         self.tree = tree
@@ -262,6 +310,17 @@ def _happy_run(tmp_path, run_id):
     return RunTree(tmp_path / "runs", run_id)
 
 
+def _region_testimonium(tree):
+    """Region-ref tests cannot use DAI's distinct ``adapter-crop`` shape."""
+    for entry in tree.build_manifest(ATTESTATORES)["artifacts"]:
+        if entry["kind"] != "testimonium":
+            continue
+        record = tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
+        if record["payload"]["presented"]["kind"] == "region":
+            return record
+    raise AssertionError("the fixture has no region-kind Testimonium")
+
+
 def test_a_continuation_act_states_which_of_its_crops_the_derived_layer_omits(tmp_path):
     """One page-space presentation must name a continuation crop it cannot describe."""
     tree = _happy_run(tmp_path, "continuation-scope")
@@ -285,7 +344,12 @@ def test_a_continuation_act_states_which_of_its_crops_the_derived_layer_omits(tm
         record = tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
         expected = [second_crop] if entry["subject_id"] == continuation else []
         assert record["payload"]["unpresented_regions"] == expected, entry["artifact_id"]
-        assert record["payload"]["presented"]["region_ref"]["region_id"] != second_crop
+        presented = record["payload"]["presented"]
+        if presented["kind"] == "region":
+            assert presented["region_ref"]["region_id"] != second_crop
+        else:
+            assert presented["kind"] == "adapter-crop"
+            assert "region_ref" not in presented
     assert single != continuation
 
 
@@ -439,11 +503,7 @@ def test_a_region_ref_naming_no_sealed_designator_region_is_refused(tmp_path):
     """Digest-bound pixels cannot supply a forged region identity."""
     tree = _happy_run(tmp_path, "unknown-region-ref")
     context = _Context(tree)
-    testimony = next(
-        tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
-        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
-        if entry["kind"] == "testimonium"
-    )
+    testimony = _region_testimonium(tree)
     forged = copy.deepcopy(testimony)
     forged["payload"]["presented"]["region_ref"] = {"region_id": "rgn_" + "0" * 16}
     forged["self_hash"] = self_hash(forged)
@@ -455,11 +515,7 @@ def test_a_region_ref_matching_two_manifest_rows_is_not_treated_as_unique(tmp_pa
     """A region identity must resolve to exactly one sealed manifest row."""
     tree = _happy_run(tmp_path, "duplicate-region-ref")
     context = _Context(tree)
-    testimony = next(
-        tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
-        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
-        if entry["kind"] == "testimonium"
-    )
+    testimony = _region_testimonium(tree)
     original = tree.build_manifest
     designator_manifest = original(DESIGNATOR)
     matching = next(
