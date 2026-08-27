@@ -277,6 +277,26 @@ def test_a_record_only_tally_leaves_stale_lineage_to_its_consumer_boundary(tmp_p
     assert tally["subjects"] == ["perlector:act_0000000000000001"]
 
 
+def test_the_ruled_cap_is_tallied_per_shard_run_not_across_run_trees(tmp_path):
+    """The ruling says "within a 1000 page run"; a shard is that run."""
+    policy = load_hard_failure_policy(DEFAULT_HARD_FAILURE_CONFIG_PATH)
+    tallies = []
+    for run_id in ("shard-one", "shard-two", "shard-three"):
+        tree = make_run(tmp_path / run_id, run_id=run_id)
+        for ordinal in (1, 2):
+            publish(
+                tree,
+                stage=PERLECTOR,
+                kind="perlectio",
+                subject=f"act_{ordinal:016d}",
+                outcome="failed",
+                adapter_revision="fake-perlector-v0",
+            )
+        tallies.append(tally_hard_failures(tree, policy))
+    assert [tally["count"] for tally in tallies] == [2, 2, 2]
+    assert all(tally["breached"] is False for tally in tallies)
+
+
 def test_instrument_arm_failures_are_visible_but_do_not_spend_the_ruled_cap(tmp_path):
     tree = make_run(tmp_path)
     for kind in ("lectio-nuda", "lectio-prior", "primed-without-prior"):
@@ -680,6 +700,51 @@ def test_a_duplicate_reason_scoped_kind_is_refused(tmp_path):
     )
     with pytest.raises(ContractError, match="more than once"):
         load_hard_failure_policy(path)
+
+
+def test_a_crash_and_resume_does_not_spend_the_cap_twice_for_one_act(tmp_path):
+    """Retries preserve evidence but must not turn one failed act into two incidents."""
+    policy = load_hard_failure_policy(DEFAULT_HARD_FAILURE_CONFIG_PATH)
+    tree = make_run(tmp_path)
+    for act in ("act_0000000000000001", "act_0000000000000002"):
+        publish(
+            tree,
+            stage=PERLECTOR,
+            kind="perlectio",
+            subject=act,
+            outcome="failed",
+            adapter_revision="fake-perlector-v0",
+            attempt="att_0000000000000001",
+        )
+    before = tally_hard_failures(tree, policy)
+    assert before["count"] == 2 and before["breached"] is False
+
+    publish(
+        tree,
+        stage=PERLECTOR,
+        kind="perlectio",
+        subject="act_0000000000000001",
+        outcome="failed",
+        adapter_revision="fake-perlector-v0",
+        attempt="att_0000000000000002",
+    )
+    after = tally_hard_failures(tree, policy)
+
+    assert after["count"] == 2, "a resumed attempt is the same incident, not a second one"
+    assert after["subjects"] == before["subjects"]
+    assert after["breached"] is False
+
+    publish(
+        tree,
+        stage=PERLECTOR,
+        kind="perlectio",
+        subject="act_0000000000000003",
+        outcome="failed",
+        adapter_revision="fake-perlector-v0",
+        attempt="att_0000000000000001",
+    )
+    breached = tally_hard_failures(tree, policy)
+    assert breached["count"] == 3 and breached["breached"] is True
 
 
 if __name__ == "__main__":

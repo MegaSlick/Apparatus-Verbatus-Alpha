@@ -193,7 +193,6 @@ class RunTree:
         config_digest: str,
         adapter_recipes: dict[str, str],
         witness_chairs: list[str],
-        corpus_frame_membership: dict[str, str] | None = None,
         register_bytes: bytes | None = None,
         ingress: dict[str, Any] | None = None,
         render_settings: dict[str, Any] | None = None,
@@ -238,14 +237,9 @@ class RunTree:
                 "ordinal names one page, so a repeat leaves the run unable to say "
                 "how many pages it was given"
             )
-        # `is None`, not falsy: an explicitly supplied empty mapping is a claim
-        # about the frame and must reach the validator to be refused, never be
-        # silently replaced by the derived default.
-        membership = (
-            _default_corpus_frame_membership(source_manifest)
-            if corpus_frame_membership is None
-            else corpus_frame_membership
-        )
+        # Membership is derived from the manifest: accepting a caller-supplied
+        # value could let different page sets claim the same corpus frame.
+        membership = _default_corpus_frame_membership(source_manifest)
         _validate_corpus_frame_membership(membership)
         authority = {
             "schema": SCHEMA_LABEL,
@@ -1622,22 +1616,24 @@ def _inode_identity(value: os.stat_result) -> tuple[int, int]:
 
 
 def _default_corpus_frame_membership(source_manifest: list[dict[str, Any]]) -> dict[str, str]:
-    """Bind even direct RunTree callers to the one frame they supplied.
+    """Derive the frame from inspected digests, falling back to declarations.
 
-    A row's declared sha256 is optional here BY the Door's own contract:
-    `SourceEntry.declared_sha256` defaults to None, admission is legal without
-    it, and the door computes digests itself (duplicate accounting groups on
-    the computed digest for exactly that reason). Refusing None here was tried
-    and broke that contract in CI. The residual weakness is real and recorded:
-    two undigested page sets with the same ordinals produce identical
-    membership digests, so the honest close is binding the door's COMPUTED
-    digests into membership -- a recorded-bytes change, parked as a follow-up,
-    not a silent refusal that contradicts the admission contract.
+    Unreadable sources retain their declared digest and ordinal so they remain
+    in the denominator; a page with neither digest cannot identify a frame.
+    Gold re-derives the frame with the same precedence, so the two boundaries
+    must continue to use the same source field.
     """
-    pages = [
-        {"ordinal": page.get("ordinal"), "sha256": page.get("sha256")}
-        for page in sorted(source_manifest, key=lambda page: page.get("ordinal", 0))
-    ]
+    pages = []
+    for page in sorted(source_manifest, key=lambda page: page.get("ordinal", 0)):
+        computed = page.get("computed_sha256")
+        if computed is None:
+            computed = page.get("sha256")
+        if not _is_sha256(computed):
+            raise SchemaRefusal(
+                "corpus frame membership needs an inspected or declared sha256 for "
+                "every source page"
+            )
+        pages.append({"ordinal": page.get("ordinal"), "sha256": computed})
     page_digest = digest_bytes(canonical_bytes(pages))
     return {
         "frame_digest": digest_bytes(canonical_bytes({"pages": pages})),

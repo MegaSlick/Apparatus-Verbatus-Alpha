@@ -13,7 +13,9 @@ anything asks it a second time, which is precisely backwards for a mechanism
 whose entire job is noticing that something died. Every stage's outcome
 artifacts are already the sealed, self-hashed, append-only evidence this
 pipeline keeps for every other accounting purpose; this reuses that evidence
-rather than inventing a parallel ledger for it.
+rather than inventing a parallel ledger for it. A shard is one capped 1,000-page
+run, so the tally is deliberately per shard; a cross-shard condition is held for
+Recensor review, never smuggled into another run tree's tally.
 """
 
 import tomllib

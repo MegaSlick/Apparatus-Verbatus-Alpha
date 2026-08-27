@@ -237,7 +237,12 @@ def load_run_frame(path: str | Path) -> tuple[dict[str, str], list[dict[str, Any
     source = []
     for page in pages:
         _refuse(not isinstance(page, dict), "a source page is not an object")
-        ordinal, page_sha = page.get("ordinal"), page.get("sha256")
+        # This must match RunTree's precedence: container pages share a declared
+        # file digest but carry distinct computed membership digests.
+        ordinal = page.get("ordinal")
+        page_sha = page.get("computed_sha256")
+        if page_sha is None:
+            page_sha = page.get("sha256")
         _refuse(
             not isinstance(ordinal, int) or isinstance(ordinal, bool),
             "source page ordinal is not an integer",

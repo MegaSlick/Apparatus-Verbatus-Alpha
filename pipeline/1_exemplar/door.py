@@ -134,6 +134,29 @@ class SourceEntry(NamedTuple):
     triage_row: dict[str, Any] | None = None
     triage_part_index: int | None = None
     source_frame_index: int | None = None
+    # Computed during expansion so membership binds inspected bytes before the
+    # run seals. Unreadable and oversized sources retain None and their ordinal.
+    computed_sha256: str | None = None
+
+
+def _membership_sha256(source: SourceEntry) -> str | None:
+    """The digest one page binds into shard membership.
+
+    Membership prefers inspected bytes because ledger declarations remain
+    untrusted until admission, after the run authority seals. Container pages
+    additionally bind their index because they share one whole-file digest and
+    their decoded page digests do not exist yet. Unreadable and oversized
+    sources fall back to their declaration so their ordinals remain visible.
+    """
+    inspected = source.computed_sha256 or source.declared_sha256
+    if inspected is None or source.container_page_index is None:
+        return inspected
+    return digest_of(
+        {
+            "container_sha256": inspected,
+            "container_page_index": source.container_page_index,
+        }
+    )
 
 
 class _Decision(NamedTuple):
@@ -725,7 +748,10 @@ def expand_sources(
             ledger_sha256: str | None = ledger_sha256,
             bound_triage_row: dict[str, Any] | None = triage_row,
             triage_part_index: int | None = None,
+            source_frame_index: int | None = None,
+            computed_sha256: str | None = None,
         ) -> None:
+            """Bind row fields before the next loop iteration can reassign them."""
             nonlocal ordinal
             ordinal += 1
             sources.append(
@@ -739,26 +765,34 @@ def expand_sources(
                     detected_format,
                     bound_triage_row,
                     triage_part_index,
-                    0 if bound_triage_row is not None else None,
+                    source_frame_index
+                    if source_frame_index is not None
+                    else (0 if bound_triage_row is not None else None),
+                    computed_sha256,
                 )
             )
 
         def append_refused_source(
             detected_format: str | None,
             bound_triage_row: dict[str, Any] | None = triage_row,
+            computed_sha256: str | None = None,
         ) -> None:
             """Keep the manifest's declared post-split denominator on early failure."""
             if bound_triage_row is None:
-                append(None, detected_format)
+                append(None, detected_format, computed_sha256=computed_sha256)
                 return
             for part_index in range(len(bound_triage_row["split"]["parts"])):
                 append(
                     part_index,
                     detected_format,
                     triage_part_index=part_index,
+                    source_frame_index=0,
+                    computed_sha256=computed_sha256,
                 )
 
         data: bytes | None = None
+        # None means this pass read no complete source and must not claim it did.
+        computed: str | None = None
         try:
             if open_source is not None:
                 # A real source is classified from the same descriptor-relative
@@ -766,6 +800,10 @@ def expand_sources(
                 # reconstructed from the ledger would have a replacement window.
                 with open_source(path) as opened_source:
                     detected = _sniff_source_stream(opened_source.handle)
+                    if detected == "pdf":
+                        # Streamed PDFs are not loaded into `data`, but their
+                        # inspected identity must exist before membership seals.
+                        computed, _ = _source_digest_stream(opened_source.handle)
                     opened_source.assert_unchanged(expected_sha256=declared_sha256)
             else:
                 # A caller with no anchored opener supplies bytes directly; there is
@@ -788,6 +826,10 @@ def expand_sources(
         if data is not None and len(data) > MAX_SOURCE_BYTES:
             append_refused_source(detected)
             continue
+        if data is not None:
+            # `read_bytes` returns only a prefix above the ceiling; never bind it
+            # as though it identified the complete source.
+            computed = digest_bytes(data)
         if triage_rows is not None:
             assert triage_row is not None
             if data is None or detected == "pdf":
@@ -804,7 +846,7 @@ def expand_sources(
                 # manifest already declares how many pages this frame contributes.
                 # Retain one refused ordinal per part so the immutable denominator
                 # and configured post-split cap do not undercount a broken frame.
-                append_refused_source(detected)
+                append_refused_source(detected, computed_sha256=computed)
                 continue
             if frame_count != 1:
                 raise ContractError(
@@ -818,6 +860,8 @@ def expand_sources(
                     part_index,
                     detected,
                     triage_part_index=part_index,
+                    source_frame_index=0,
+                    computed_sha256=computed,
                 )
             continue
         try:
@@ -831,19 +875,19 @@ def expand_sources(
                 )
         except (pdf_render.PdfRefusal, FormatRefusal, inventory.SubmissionInputError, OSError):
             if route != admission.RENDER_PAGES:
-                append(None, detected)
+                append(None, detected, computed_sha256=computed)
                 continue
-            append(0, detected)
+            append(0, detected, computed_sha256=computed)
             continue
         # PDF/TIFF are declared page containers even when there is one page. For
         # every other decoder-backed image, a reported multi-frame source is also
         # fanned out. Retaining an animation as one raster would silently drop all
         # but frame zero downstream; one-frame rasters retain their original bytes.
         if route != admission.RENDER_PAGES and page_count == 1:
-            append(None, detected)
+            append(None, detected, computed_sha256=computed)
             continue
         for page_index in range(page_count):
-            append(page_index, detected)
+            append(page_index, detected, computed_sha256=computed)
     if triage_rows is not None and triage_clusters is not None:
         named_clusters = {
             row["re_shoot_cluster_id"]
@@ -1152,6 +1196,19 @@ def process_sources(
                         RefusalReason.DIGEST_MISMATCH,
                         f"the source now has {actual_size} bytes, but {source.declared_size} bytes "
                         "were recorded in its filename ledger",
+                    ),
+                )
+                continue
+
+            if source.computed_sha256 is not None and actual_digest != source.computed_sha256:
+                _publish(
+                    context,
+                    source,
+                    outcome="refused",
+                    reason=admission.reason(
+                        RefusalReason.DIGEST_MISMATCH,
+                        f"computed {actual_digest} at admission, but shard membership was "
+                        f"sealed from {source.computed_sha256} during source expansion",
                     ),
                 )
                 continue
@@ -1782,6 +1839,10 @@ def fixture_submission(args, registry) -> int:
             {
                 "relative_path": page["path"],
                 "sha256": declared[page["ordinal"]],
+                # The fixture declaration's digest is checked against these
+                # bytes by the Door.  Bind that computed page-set identity
+                # separately so shard membership never collapses to ordinals.
+                "computed_sha256": page["sha256"],
                 "ordinal": page["ordinal"],
             }
             for page in pages
@@ -1986,6 +2047,8 @@ def real_submission(args, registry) -> int:
             {
                 "relative_path": source.declared_path,
                 "sha256": source.declared_sha256,
+                # Membership seals before the ledger declaration is checked.
+                "computed_sha256": _membership_sha256(source),
                 "ordinal": source.ordinal,
                 "bytes": source.declared_size,
                 "ledger_sha256": source.ledger_sha256,
