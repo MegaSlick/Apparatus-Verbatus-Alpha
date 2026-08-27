@@ -346,7 +346,7 @@ def test_the_final_published_dossier_is_swept_for_late_preference_fields():
         "winner_capture": A,
         "dossier_digest": "0" * 64,
     }
-    with pytest.raises(ContractError, match="order-bearing or trust-bearing field"):
+    with pytest.raises(ContractError, match="order-bearing or trust-bearing dossier field"):
         perlector_run._reseal_dossier(late_preference)
 
 

@@ -175,6 +175,12 @@ _CONTAINER_GRANULARITY_LIMIT: Final = (
     "represented and cannot be counted off this ledger"
 )
 _ACT_PARTITION_DENOMINATOR: Final = "proposal-seal expected acts"
+# The clustered spelling of the same claim. A logical act over two captures is
+# two proposal-seal rows and one terminal category, so a bundle that counted it
+# under the name above would be reporting a number nobody measured. Named as its
+# own denominator, with the seal's own row count carried beside it, exactly as
+# `_SALVAGE_CLAIM_FIELDS` keeps its two shapes apart rather than unioning them.
+_LOGICAL_ACT_PARTITION_DENOMINATOR: Final = "physical-act-partition logical acts"
 _PAGE_CENSUS_DENOMINATOR: Final = "run.json source-page/frame rows"
 _SALVAGE_PROMOTION_CLAIM: Final = (
     "recorded approval then pipeline re-entry; never export-time act promotion"
@@ -246,6 +252,23 @@ class ArmariumProjection:
     # One row per sealed page retains the initial map outcome and any later
     # re-measurement. The held set is derived, never stored beside this evidence.
     ink_map_pages: tuple[dict[str, Any], ...] = ()
+    # How many rows the Designator's proposal seal actually held, when this run's
+    # acts are logical acts over a `physical-act-partition.v1` rather than the
+    # image-local acts the seal names one-for-one.
+    #
+    # `expected_acts` is the act *terminal* denominator, and consult §5.2 makes
+    # it `logical_expected_count` for a clustered run -- one terminal category
+    # per logical act. But the manifest's fixed claim calls that denominator
+    # "proposal-seal expected acts", and for a cluster the two numbers differ:
+    # a two-capture physical act is two seal rows and one logical act. Exporting
+    # the logical count under the local count's name is a claim about something
+    # that was not measured (GOVERNANCE 10), and dropping the local count
+    # entirely loses the evidence a reader needs to reconcile the bundle against
+    # the seal (GOVERNANCE 2). So a clustered run carries both, and the ledger
+    # says which is which -- consult §5.2's "the terminal ledger reports both
+    # counts explicitly". `None` is the ordinary image-local run, where the two
+    # numbers are the same number and the claim already says so.
+    local_proposal_rows: int | None = None
 
 
 @dataclass(frozen=True)
@@ -700,10 +723,24 @@ _MANIFEST_CLAIM_FIELDS: Final = frozenset(
         "ink_map",
     }
 )
-_CLAIM_SUBFIELDS: Final = {
-    "act_partition": frozenset(
+_ACT_PARTITION_CLAIM_FIELDS: Final = {
+    _ACT_PARTITION_DENOMINATOR: frozenset(
         {"denominator", "expected_count", "counted", "reconciles", "categories", "act_keys"}
     ),
+    _LOGICAL_ACT_PARTITION_DENOMINATOR: frozenset(
+        {
+            "denominator",
+            "expected_count",
+            "counted",
+            "reconciles",
+            "categories",
+            "act_keys",
+            "local_proposal_rows",
+            "logical_membership",
+        }
+    ),
+}
+_CLAIM_SUBFIELDS: Final = {
     "submission_inventory": frozenset(
         {
             "status",
@@ -773,6 +810,15 @@ def _verify_manifest_field_closure(manifest: dict[str, Any]) -> None:
     )
     for name, fields in _CLAIM_SUBFIELDS.items():
         _require_exact_fields(claims[name], fields, subject=f"the manifest {name} claim")
+    act_partition = claims["act_partition"]
+    if not isinstance(act_partition, dict):
+        raise SchemaRefusal("the manifest act_partition claim is not an object")
+    act_partition_fields = _ACT_PARTITION_CLAIM_FIELDS.get(act_partition.get("denominator"))
+    if act_partition_fields is None:
+        raise SchemaRefusal("the manifest act denominator is not this build's fixed claim")
+    _require_exact_fields(
+        act_partition, act_partition_fields, subject="the manifest act_partition claim"
+    )
     salvage = claims["salvage"]
     if not isinstance(salvage, dict):
         raise SchemaRefusal("the manifest salvage claim is not an object")
@@ -790,8 +836,6 @@ def _verify_manifest_field_closure(manifest: dict[str, Any]) -> None:
             frozenset({"category", "count", "act_ids"}),
             subject="an act partition category row",
         )
-    if claims["act_partition"]["denominator"] != _ACT_PARTITION_DENOMINATOR:
-        raise SchemaRefusal("the manifest act denominator is not this build's fixed claim")
     if claims["page_census"]["denominator"] != _PAGE_CENSUS_DENOMINATOR:
         raise SchemaRefusal("the manifest page denominator is not this build's fixed claim")
 
@@ -989,6 +1033,174 @@ def edge_hold_pages_from_rows(rows: list[dict[str, Any]]) -> tuple[int, ...]:
     )
 
 
+def _act_partition_claim(
+    projection: ArmariumProjection, categories: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """The act denominator, under the name of the thing that was actually counted.
+
+    An image-local run counts proposal-seal rows and says so. A clustered run
+    counts logical acts, which is a different denominator with a different
+    number, and the seal's own row count travels beside it with the membership
+    that reconciles the two -- so a reader holding the bundle and the Designator
+    seal can see why 2 became 1, instead of finding a bundle that claims to have
+    counted seal rows and reports the wrong total for them (GOVERNANCE 10).
+    """
+    claim = {
+        "denominator": _ACT_PARTITION_DENOMINATOR,
+        "expected_count": projection.expected_acts,
+        "counted": len(projection.acts),
+        "reconciles": len(projection.acts) == projection.expected_acts,
+        "categories": categories,
+        "act_keys": {
+            act["act_id"]: act["act_key"]
+            for act in sorted(projection.acts, key=lambda item: item["act_id"])
+        },
+    }
+    logical_rows = [act for act in projection.acts if "logical_membership" in act]
+    if not logical_rows:
+        return claim
+    claim["denominator"] = _LOGICAL_ACT_PARTITION_DENOMINATOR
+    claim["local_proposal_rows"] = projection.local_proposal_rows
+    claim["logical_membership"] = {
+        act["act_id"]: {
+            "member_local_act_ids": list(act["logical_membership"]["member_local_act_ids"]),
+            "member_act_keys": list(act["logical_membership"]["member_act_keys"]),
+            "member_source_page_ordinals": list(
+                act["logical_membership"]["member_source_page_ordinals"]
+            ),
+        }
+        for act in sorted(logical_rows, key=lambda item: item["act_id"])
+    }
+    return claim
+
+
+_LOGICAL_MEMBERSHIP_FIELDS: Final = frozenset(
+    {
+        "member_local_act_ids",
+        "member_act_keys",
+        "member_source_page_ordinals",
+        "physical_page_components",
+    }
+)
+
+
+def _validate_logical_act_conservation(
+    projection: ArmariumProjection, act_ids: set[str], act_keys: set[str]
+) -> None:
+    """Every local proposal row is counted once: under a logical act, or alone.
+
+    Two things a clustered export could otherwise do silently.
+
+    **Double-count (consult §7.15).** A projection carrying a logical act *and*
+    its own member local acts as separate rows passes every other check in this
+    file -- distinct ids, distinct keys, one terminal category each -- and the
+    same ink leaves the pipeline as three delivered acts. The check is
+    exact-identity, not heuristic: a member act_id or act_key that also names a
+    row of this projection is the duplicate.
+
+    **Vanish (GOVERNANCE 2, invariant 8).** A clustered run's act denominator
+    is `logical_expected_count`, which is smaller than the proposal seal's row
+    count by construction. Without `local_proposal_rows` beside it, a member act
+    that never reached any logical act is invisible -- the arithmetic still
+    closes, because the number it closes against already shrank. So a clustered
+    projection must declare how many seal rows it is accounting for, and the
+    members it retains plus the acts it carries alone must be exactly that many.
+
+    Neither check reads a member as text or identity; the logical row's own
+    `act_id`/`act_key` stay derived from `logical_act_id` alone.
+    """
+    logical_rows = [act for act in projection.acts if "logical_membership" in act]
+    if not logical_rows:
+        if projection.local_proposal_rows is not None:
+            raise SchemaRefusal(
+                "an Armarium projection declares a proposal-seal row count but carries no "
+                "logical act; the two denominators are one number in an image-local run"
+            )
+        return
+    member_ids_seen: set[str] = set()
+    member_keys_seen: set[str] = set()
+    for act in logical_rows:
+        membership = act["logical_membership"]
+        if not isinstance(membership, dict) or set(membership) != _LOGICAL_MEMBERSHIP_FIELDS:
+            raise SchemaRefusal("an Armarium projection logical act has no closed membership")
+        ids = membership["member_local_act_ids"]
+        keys = membership["member_act_keys"]
+        ordinals = membership["member_source_page_ordinals"]
+        components = membership["physical_page_components"]
+        if (
+            not isinstance(ids, list)
+            or not ids
+            or any(not _is_line_safe_identity(member_id) for member_id in ids)
+            or ids != sorted(set(ids))
+            or not isinstance(keys, list)
+            or len(keys) != len(ids)
+            or any(not _is_line_safe_identity(member_key) for member_key in keys)
+            or keys != sorted(set(keys))
+            or not isinstance(ordinals, list)
+            or not ordinals
+            or any(
+                not isinstance(ordinal, int) or isinstance(ordinal, bool) or ordinal < 0
+                for ordinal in ordinals
+            )
+            or ordinals != sorted(set(ordinals))
+            or not isinstance(components, list)
+            or not components
+        ):
+            raise SchemaRefusal(
+                "an Armarium projection logical act has malformed member ids, keys, source "
+                "page ordinals, or physical-page components; the projection is refused "
+                "because its local proposal accounting cannot be reconstructed"
+            )
+        colliding = sorted((set(ids) & act_ids) | (set(keys) & act_keys))
+        if colliding:
+            raise SchemaRefusal(
+                f"an Armarium projection exports member local act(s) {colliding} beside the "
+                "logical act they belong to; one logical act leaves as one act row, never "
+                "again as its own members"
+            )
+        repeated_members = sorted((set(ids) & member_ids_seen) | (set(keys) & member_keys_seen))
+        if repeated_members:
+            raise SchemaRefusal(
+                f"an Armarium projection repeats local member id/key(s) {repeated_members} "
+                "across logical acts; the projection is refused because a proposal row "
+                "belongs to exactly one logical act"
+            )
+        member_ids_seen.update(ids)
+        member_keys_seen.update(keys)
+        # Consult §5.2: attribution becomes `logical_act_id -> all source page
+        # ordinals`, and it is what keeps "a silent page cannot hide beside a
+        # busy page" true once several captures answer for one act. The basis
+        # supplies that attribution as a caller's assertion; the member rows are
+        # where the pages were actually marked out. A logical act attributed to
+        # fewer pages than its own members were cut on would leave the missing
+        # page looking silent -- or, worse, looking accounted for by a busy
+        # sibling. Superset, not equality: a continuation legitimately reaches a
+        # page no member proposal was cut on.
+        attributed = (projection.aggregate_basis.get("act_pages") or {}).get(act["act_key"])
+        if attributed is None:
+            continue
+        uncovered = sorted(set(ordinals) - set(attributed))
+        if uncovered:
+            raise SchemaRefusal(
+                f"logical act {act['act_id']} has member acts marked out on page(s) {uncovered} "
+                "that its own page attribution does not name; a member capture's page may not "
+                "drop out of the run's page coverage check"
+            )
+    declared = projection.local_proposal_rows
+    if not isinstance(declared, int) or isinstance(declared, bool):
+        raise SchemaRefusal(
+            "an Armarium projection carries a logical act but does not say how many "
+            "proposal-seal rows its act denominator stands for"
+        )
+    accounted = len(member_ids_seen) + (len(projection.acts) - len(logical_rows))
+    if accounted != declared:
+        raise SchemaRefusal(
+            f"an Armarium projection accounts for {accounted} local proposal row(s) against a "
+            f"declared {declared}; every seal row is carried under exactly one logical act or "
+            "as an act of its own"
+        )
+
+
 def _validate_projection(projection: ArmariumProjection) -> None:
     if not isinstance(projection.fixture_id, str) or not projection.fixture_id:
         raise SchemaRefusal("an Armarium projection has no fixture identifier")
@@ -1089,6 +1301,7 @@ def _validate_projection(projection: ArmariumProjection) -> None:
         if category == ArmariumCategory.EXCLUDED_WITH_APPROVAL.value:
             require_approval(ARMARIUM, category, act.get("approval_ref"))
         _reject_act_salvage_namespace(act)
+    _validate_logical_act_conservation(projection, act_ids, act_keys)
     # The basis is the copy the run's verdict is computed from, and it was the
     # one copy of the damage record nothing compared to the acts it describes —
     # the repaired defect's own shape, one level up. Delivered acts and the
@@ -1322,6 +1535,22 @@ def _reject_act_salvage_namespace(act: dict[str, Any]) -> None:
 
 def _reject_salvage_act_namespace(value: Any, *, subject: str) -> None:
     """The salvage firewall applies to nested provenance as well as record headers."""
+    try:
+        _reject_salvage_act_namespace_walk(value, subject=subject)
+    except RecursionError as error:
+        # Both call sites (`_validate_salvage_items`, `_validate_salvage_region`)
+        # run this screen on harvested, caller-supplied content before any of
+        # its own shape checks, so an unvalidated salvage item can nest past
+        # Python's recursion limit. A record this machine cannot walk is
+        # refused, never crashed on -- the same boundary `self_hash` already
+        # holds for the digests this package seals.
+        raise SchemaRefusal(
+            f"a salvage-tier {subject} nests too deeply for this machine to walk, so its "
+            "acts-namespace screen was never computable"
+        ) from error
+
+
+def _reject_salvage_act_namespace_walk(value: Any, *, subject: str) -> None:
     if isinstance(value, dict):
         forbidden = sorted(set(value) & _SALVAGE_RESERVED_FIELDS)
         if forbidden:
@@ -1330,10 +1559,10 @@ def _reject_salvage_act_namespace(value: Any, *, subject: str) -> None:
                 f"reserved field(s) {forbidden}"
             )
         for item in value.values():
-            _reject_salvage_act_namespace(item, subject=subject)
+            _reject_salvage_act_namespace_walk(item, subject=subject)
     elif isinstance(value, (list, tuple)):
         for item in value:
-            _reject_salvage_act_namespace(item, subject=subject)
+            _reject_salvage_act_namespace_walk(item, subject=subject)
 
 
 def _validate_cited_region(region: object, *, subject: str) -> None:
@@ -1491,10 +1720,18 @@ def _text_bundle_members(
         if act["category"] != ArmariumCategory.DELIVERED.value:
             continue
         # A delivered act reached here with at least one region, each already carrying a
-        # validated `declared_path`, so the folder is read rather than re-proved.
-        folder = _source_folder_for_declared_path(act["source_regions"][0]["declared_path"])
-        folders.add(folder)
-        grouped[folder].append(act)
+        # validated `declared_path`. A logical act may cite captures in several source
+        # folders; copy its one unchanged text into every cited folder rather than allowing
+        # region order to choose one capture's folder as its representative.
+        source_folders = sorted(
+            {
+                _source_folder_for_declared_path(region["declared_path"])
+                for region in act["source_regions"]
+            }
+        )
+        for folder in source_folders:
+            folders.add(folder)
+            grouped[folder].append(act)
     members: dict[str, bytes] = {}
     for folder in sorted(folders):
         records = grouped[folder]
@@ -2042,6 +2279,7 @@ def _text_bundle_records(
         str,
         tuple[str, str, tuple[tuple[str, str], ...], dict[str, Any], str, list, str],
     ] = {}
+    record_locations: set[tuple[str, str]] = set()
     # The source graph authenticates the complete folder census, and the exact-member
     # check has already proved these are the package's only text files. Enumerating
     # those derived names is both directions of the promise; an `rglob` walk could
@@ -2118,11 +2356,7 @@ def _text_bundle_records(
                 if not digest_line.startswith("canonical_text_sha256: "):
                     raise SchemaRefusal("a text-bundle literal has no declared hash")
                 digest = digest_line.removeprefix("canonical_text_sha256: ")
-                if (
-                    not citations
-                    or digest != canonical_text_sha256(literal)
-                    or current_id in records
-                ):
+                if not citations or digest != canonical_text_sha256(literal):
                     raise SchemaRefusal("a text-bundle literal identity or hash is invalid")
                 pending = (literal, digest, tuple(citations))
             elif line == "uncertainty:":
@@ -2235,15 +2469,33 @@ def _text_bundle_records(
                     raise SchemaRefusal(
                         "a text-bundle display does not strip back to its canonical clean text"
                     )
-                if _source_folder_for_declared_path(citations[0][0]) != folder:
+                citation_folders = sorted(
+                    {_source_folder_for_declared_path(path) for path, _digest in citations}
+                )
+                if folder not in citation_folders:
                     raise SchemaRefusal("a text-bundle act is enclosed by the wrong source folder")
-                records[current_id] = (
+                candidate = (
                     *pending,
                     pending_uncertainty,
                     pending_text_status,
                     pending_annotations,
                     heading_key,
                 )
+                location = (current_id, folder)
+                if location in record_locations:
+                    raise SchemaRefusal(
+                        "a text-bundle repeats one act inside the same source folder; the "
+                        "bundle is refused because duplicated sections cannot be collapsed "
+                        "silently while cross-folder citations are reconciled"
+                    )
+                existing = records.get(current_id)
+                if existing is not None and existing != candidate:
+                    raise SchemaRefusal(
+                        "a text-bundle repeats one act with different text, provenance, or "
+                        "damage layers across source folders"
+                    )
+                record_locations.add(location)
+                records[current_id] = candidate
                 current_id, heading_key, pending, pending_uncertainty = None, None, None, None
                 pending_text_status, pending_annotations = None, None
         if current_id is not None:
@@ -2765,17 +3017,7 @@ def _export_manifest(
                 "denominator": INK_MAP_DENOMINATOR,
                 "held_pages": list(edge_hold_pages),
             },
-            "act_partition": {
-                "denominator": _ACT_PARTITION_DENOMINATOR,
-                "expected_count": projection.expected_acts,
-                "counted": len(projection.acts),
-                "reconciles": len(projection.acts) == projection.expected_acts,
-                "categories": categories,
-                "act_keys": {
-                    act["act_id"]: act["act_key"]
-                    for act in sorted(projection.acts, key=lambda item: item["act_id"])
-                },
-            },
+            "act_partition": _act_partition_claim(projection, categories),
             "submission_inventory": {
                 "status": "reconciled-at-source-page-ordinal-granularity",
                 "granularity": _SOURCE_GRANULARITY,

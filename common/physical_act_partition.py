@@ -11,6 +11,7 @@ that ledger only by independently verifying Exemplar page lineage.
 
 from __future__ import annotations
 
+import unicodedata
 from collections import defaultdict
 from typing import Any, Final
 
@@ -55,20 +56,43 @@ def source_ledger_from_run(run: dict[str, Any]) -> set[str]:
 
 
 def _refuse_preference(value: Any) -> None:
-    refuse_preference(value, what="physical-act partition")
+    try:
+        refuse_preference(value, what="physical-act partition")
+    except RecursionError as error:
+        # Every call site below runs this screen on a caller-supplied structure
+        # before its own shape checks, so an unvalidated proposal or partition
+        # can nest past Python's recursion limit. A record this machine cannot
+        # walk is refused, never crashed on -- the same boundary `self_hash`
+        # already holds for the digest this module seals.
+        raise SchemaRefusal(
+            "physical-act partition: the record nests too deeply for this machine to walk, "
+            "so its preference screen was never computable"
+        ) from error
 
 
 def _refuse_textual(value: Any) -> None:
+    try:
+        _refuse_textual_walk(value)
+    except RecursionError as error:
+        # The same boundary as `_refuse_preference`: a structure this machine
+        # cannot walk is refused by name, never crashed on.
+        raise SchemaRefusal(
+            "physical-act partition: the record nests too deeply for this machine to walk, "
+            "so its textual-evidence screen was never computable"
+        ) from error
+
+
+def _refuse_textual_walk(value: Any) -> None:
     if isinstance(value, dict):
         if set(value) & _TEXTUAL_FIELDS:
             raise SchemaRefusal(
                 "correspondence proposal: textual evidence cannot match physical acts"
             )
         for child in value.values():
-            _refuse_textual(child)
+            _refuse_textual_walk(child)
     elif isinstance(value, list):
         for child in value:
-            _refuse_textual(child)
+            _refuse_textual_walk(child)
 
 
 def _dedupe_findings(findings: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -93,8 +117,14 @@ def _sha(value: Any, what: str) -> str:
     return value
 
 
-def _identity(value: Any, prefix: str) -> bool:
-    return is_well_formed(value) and value.startswith(f"{prefix}_")
+def _is_derived_id(value: Any, prefix: str) -> bool:
+    """A derived identity of one kind: the right shape *and* the right prefix.
+
+    `is_well_formed` accepts every derived-identity prefix, so the prefix test
+    is what pins which kind of thing a field names. Shape alone would let a page
+    id stand where an act id belongs.
+    """
+    return is_well_formed(value) and value.startswith(prefix)
 
 
 def _path(value: Any, what: str) -> str:
@@ -125,8 +155,16 @@ def _act(row: Any, *, require_bindings: bool = False) -> dict[str, Any]:
         isinstance(row[name], str) and row[name] for name in ("act_id", "act_key", "page_id")
     ):
         raise SchemaRefusal("physical-act partition: local act lacks immutable identity lineage")
-    if not _identity(row["act_id"], "act") or not _identity(row["page_id"], "pg"):
+    if not _is_derived_id(row["act_id"], "act_") or not _is_derived_id(row["page_id"], "pg_"):
         raise SchemaRefusal("physical-act partition: local act identities are malformed")
+    if (
+        not row["act_key"].isprintable()
+        or unicodedata.normalize("NFC", row["act_key"]) != row["act_key"]
+    ):
+        raise SchemaRefusal(
+            "physical-act partition: local act key is not printable NFC; the partition is "
+            "refused because normalization variants cannot be separate denominator keys"
+        )
     if bindings <= set(row):
         # Proving the identity here keeps a mismatched class or bounds a
         # partition intake refusal rather than a later append refusal.
@@ -141,8 +179,16 @@ def _act(row: Any, *, require_bindings: bool = False) -> dict[str, Any]:
                 "physical-act partition: local act_id does not derive from its own "
                 "page, class, and minted bounds"
             )
-    if not isinstance(row["page_ordinal"], int) or isinstance(row["page_ordinal"], bool):
-        raise SchemaRefusal("physical-act partition: local act page ordinal is invalid")
+    if (
+        not isinstance(row["page_ordinal"], int)
+        or isinstance(row["page_ordinal"], bool)
+        or row["page_ordinal"] < 0
+    ):
+        raise SchemaRefusal(
+            "physical-act partition: local act page ordinal is negative, boolean, or not an "
+            "integer; the partition is refused because source-page attribution must be a "
+            "non-negative manifest index"
+        )
     _sha(row["source_sha256"], "local act source_sha256")
     if (
         not isinstance(row["proposal_refs"], list)
@@ -162,7 +208,9 @@ def _alignment(row: Any) -> dict[str, Any]:
         raise SchemaRefusal("physical-act partition: capture alignment must use its closed shape")
     if not all(isinstance(row[name], str) and row[name] for name in required):
         raise SchemaRefusal("physical-act partition: capture alignment is incomplete")
-    if not _identity(row["page_id"], "pg") or not _identity(row["physical_page_id"], "ppg"):
+    if not _is_derived_id(row["page_id"], "pg_") or not _is_derived_id(
+        row["physical_page_id"], "ppg_"
+    ):
         raise SchemaRefusal("physical-act partition: capture alignment names malformed identities")
     _sha(row["source_sha256"], "capture alignment source_sha256")
     return row
@@ -286,6 +334,11 @@ def build_physical_act_partition(
     acts = [_act(dict(row)) for row in local_acts]
     if len({row["act_id"] for row in acts}) != len(acts):
         raise SchemaRefusal("physical-act partition: a local act occurs more than once")
+    if len({row["act_key"] for row in acts}) != len(acts):
+        raise SchemaRefusal(
+            "physical-act partition: a local act key occurs more than once; the partition is "
+            "refused because two proposal rows cannot share one export key"
+        )
     alignments = [_alignment(dict(row)) for row in capture_alignments]
     by_page = {row["page_id"]: row for row in alignments}
     if len(by_page) != len(alignments):
@@ -501,6 +554,7 @@ def validate_physical_act_partition(payload: dict[str, Any]) -> dict[str, Any]:
     }
     reconstructed: list[dict[str, str]] = []
     published: set[str] = set()
+    published_member_keys: set[str] = set()
     for group in groups:
         if not isinstance(group, dict) or set(group) != group_fields:
             raise SchemaRefusal("physical-act partition: logical act row is not closed")
@@ -533,6 +587,13 @@ def validate_physical_act_partition(payload: dict[str, Any]) -> dict[str, Any]:
             raise SchemaRefusal(
                 "physical-act partition: one logical act has two local acts from one capture"
             )
+        member_keys = {member["act_key"] for member in parsed_members}
+        if len(member_keys) != len(parsed_members) or member_keys & published_member_keys:
+            raise SchemaRefusal(
+                "physical-act partition: a local act key occurs in more than one proposal "
+                "row; the partition is refused because member accounting must be one-to-one"
+            )
+        published_member_keys.update(member_keys)
 
         components = group["physical_page_components"]
         if not isinstance(components, list):
@@ -548,12 +609,16 @@ def validate_physical_act_partition(payload: dict[str, Any]) -> dict[str, Any]:
             page = component["physical_page_id"]
             required_captures = component["required_capture_sha256s"]
             if (
-                not _identity(page, "ppg")
+                not _is_derived_id(page, "ppg_")
                 or not isinstance(required_captures, list)
                 or not required_captures
                 or required_captures != sorted(set(required_captures))
             ):
-                raise SchemaRefusal("physical-act partition: physical page component is malformed")
+                raise SchemaRefusal(
+                    "physical-act partition: physical-page component has a malformed identity "
+                    "or required-capture set; the partition is refused because its capture "
+                    "denominator must be a non-empty canonical set"
+                )
             for source in required_captures:
                 _sha(source, "required capture source_sha256")
                 component_pairs.add((page, source))
@@ -584,19 +649,21 @@ def validate_physical_act_partition(payload: dict[str, Any]) -> dict[str, Any]:
             page_ids = presentation["page_ids"]
             local_ids = presentation["local_act_ids"]
             projected = presentation["projected_view_refs"]
-            if not _identity(page, "ppg"):
+            if not _is_derived_id(page, "ppg_"):
                 raise SchemaRefusal(
-                    "physical-act partition: capture presentation physical page is malformed"
+                    "physical-act partition: capture presentation physical_page_id is not a "
+                    "recognized derived identity; the partition is refused because capture "
+                    "evidence cannot attach to a free-form page key"
                 )
             _sha(source, "capture presentation source_sha256")
             if (
                 not isinstance(page_ids, list)
                 or not page_ids
                 or page_ids != sorted(set(page_ids))
-                or not all(_identity(item, "pg") for item in page_ids)
+                or not all(_is_derived_id(item, "pg_") for item in page_ids)
                 or not isinstance(local_ids, list)
                 or local_ids != sorted(set(local_ids))
-                or not all(_identity(item, "act") for item in local_ids)
+                or not all(_is_derived_id(item, "act_") for item in local_ids)
                 or not isinstance(presentation["alignment_ref"], str)
                 or not presentation["alignment_ref"]
                 or not isinstance(projected, list)
@@ -633,7 +700,7 @@ def validate_physical_act_partition(payload: dict[str, Any]) -> dict[str, Any]:
         elif scope == "physical-act":
             if (
                 physical != logical
-                or not _identity(logical, "pac")
+                or not _is_derived_id(logical, "pac_")
                 or not components
                 or presentation_pairs != component_pairs
             ):
@@ -686,7 +753,7 @@ def validate_physical_act_partition(payload: dict[str, Any]) -> dict[str, Any]:
             or set(row) != {"code", "act_id"}
             or not isinstance(row["code"], str)
             or not row["code"]
-            or not _identity(row["act_id"], "act")
+            or not _is_derived_id(row["act_id"], "act_")
         ):
             raise SchemaRefusal("physical-act partition: finding is not closed")
         finding_pairs.append((row["act_id"], row["code"]))
@@ -761,9 +828,9 @@ def build_correspondence_proposal(
         local = component["local_acts"]
         evidence = component["evidence"]
         finding = component["finding"]
-        if not _identity(page, "ppg") or not isinstance(local, list) or not local:
+        if not _is_derived_id(page, "ppg_") or not isinstance(local, list) or not local:
             raise SchemaRefusal("correspondence proposal: component lacks page or local acts")
-        if existing is not None and (not _identity(existing, "pac")):
+        if existing is not None and (not _is_derived_id(existing, "pac_")):
             raise SchemaRefusal(
                 "correspondence proposal: existing physical act identity is malformed"
             )
@@ -1050,9 +1117,9 @@ def validate_correspondence_proposal(payload: dict[str, Any]) -> dict[str, Any]:
             )
         page = record["physical_page_id"]
         physical = record["physical_act_id"]
-        if not _identity(page, "ppg"):
+        if not _is_derived_id(page, "ppg_"):
             raise SchemaRefusal("correspondence proposal: physical page identity is malformed")
-        if not _identity(physical, "pac"):
+        if not _is_derived_id(physical, "pac_"):
             raise SchemaRefusal("correspondence proposal: physical act identity is malformed")
         if record["kind"] == "physical-act":
             designation = record["mint_designation"]
@@ -1066,8 +1133,8 @@ def validate_correspondence_proposal(payload: dict[str, Any]) -> dict[str, Any]:
             minted.add(physical)
         else:
             if (
-                not _identity(record["page_id"], "pg")
-                or not _identity(record["act_id"], "act")
+                not _is_derived_id(record["page_id"], "pg_")
+                or not _is_derived_id(record["act_id"], "act_")
                 or record["act_id"] in correspondence_acts
             ):
                 raise SchemaRefusal(
@@ -1091,7 +1158,7 @@ def validate_correspondence_proposal(payload: dict[str, Any]) -> dict[str, Any]:
             or set(finding) != {"code", "act_id"}
             or not isinstance(finding["code"], str)
             or not finding["code"]
-            or not _identity(finding["act_id"], "act")
+            or not _is_derived_id(finding["act_id"], "act_")
         ):
             raise SchemaRefusal("correspondence proposal: finding is not closed")
         finding_pairs.append((finding["act_id"], finding["code"]))

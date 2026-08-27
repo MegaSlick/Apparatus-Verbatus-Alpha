@@ -195,6 +195,65 @@ def build_cross_capture_coverage(
     }
 
 
+def validate_cross_capture_coverage(record: object) -> dict[str, Any]:
+    """Recompute every derived visibility fact from a sealed coverage record."""
+    if not isinstance(record, dict) or set(record) != {
+        "basis",
+        "logical_act_id",
+        "components",
+        "act_state",
+        "findings",
+    }:
+        raise SchemaRefusal(
+            "cross-capture coverage record is not closed; the record is refused because its "
+            "visibility denominator and derived findings cannot be reconstructed"
+        )
+    component_fields = {
+        "physical_page_id",
+        "expected_cells",
+        "required_capture_sha256s",
+        "captures",
+        "union_visible_cells",
+        "uncovered_cells",
+        "union_state",
+        "findings",
+    }
+    components = record["components"]
+    if not isinstance(components, list) or any(
+        not isinstance(component, dict) or set(component) != component_fields
+        for component in components
+    ):
+        raise SchemaRefusal(
+            "cross-capture coverage components are not closed; the record is refused because "
+            "its capture surveys cannot be separated from their derived union facts"
+        )
+    raw_components = [
+        {
+            "physical_page_id": component["physical_page_id"],
+            "expected_cells": component["expected_cells"],
+            "required_capture_sha256s": component["required_capture_sha256s"],
+            "captures": component["captures"],
+        }
+        for component in components
+    ]
+    try:
+        rebuilt = build_cross_capture_coverage(
+            logical_act_id=record["logical_act_id"], components=raw_components
+        )
+    except (SchemaRefusal, TypeError) as error:
+        raise SchemaRefusal(
+            "cross-capture coverage contains a malformed component survey; the record is "
+            "refused because visibility findings must derive from a valid complete capture "
+            "denominator"
+        ) from error
+    if rebuilt != record:
+        raise SchemaRefusal(
+            "cross-capture coverage carries altered union state or finding facts; the record "
+            "is refused because all derived visibility claims must recompute from its surveys"
+        )
+    return record
+
+
 def same_chair_witness_floor(
     rows: list[dict[str, Any]], *, components: set[str], floor: int
 ) -> dict[str, Any]:
