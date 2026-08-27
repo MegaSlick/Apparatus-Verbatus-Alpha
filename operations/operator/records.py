@@ -228,6 +228,43 @@ class ReceiptStore:
     def records_of_kind(self, kind: str) -> list[tuple[Path, dict[str, Any]]]:
         return [(path, record) for path, record in self.list() if record["kind"] == kind]
 
+    def readable_records_of_kind(
+        self, kind: str
+    ) -> tuple[list[tuple[Path, dict[str, Any]]], list[str]]:
+        """Read one kind while naming its failures beside the records that survive.
+
+        The filename prefix avoids unrelated failures, but hyphenated kinds can
+        make the glob overmatch; only the validated record's exact kind decides.
+        """
+
+        if not self.receipts.exists():
+            return [], []
+        if not self.receipts.is_dir() or self.receipts.is_symlink():
+            raise RecordError("operator receipt directory is not a safe directory")
+        loaded: list[tuple[Path, dict[str, Any]]] = []
+        unreadable: list[str] = []
+        for candidate in sorted(self.receipts.glob(f"{kind}-*.json")):
+            if candidate.is_symlink():
+                # `read` validates the *resolved* name against the bytes it
+                # hashed, so a link may carry any name at all: one named for a
+                # digest it does not hold passes, and a caller that reads the
+                # digest out of the name it was handed then publishes a digest
+                # nothing verified — beside a second, duplicate copy of the same
+                # record, since the link and its target are both globbed. A
+                # receipt is a file this store created, not a name pointing at one.
+                unreadable.append(
+                    f"{candidate.name}: it is a link rather than a receipt this store wrote"
+                )
+                continue
+            try:
+                record = self.read(candidate)
+            except RecordError as error:
+                unreadable.append(f"{candidate.name}: {error}")
+                continue
+            if record["kind"] == kind:
+                loaded.append((candidate, record))
+        return loaded, unreadable
+
 
 class DescriptorStore:
     """A small, self-hashed index of explicitly chosen receipt paths.
