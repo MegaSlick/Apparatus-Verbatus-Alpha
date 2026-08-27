@@ -1,5 +1,9 @@
 # Planning estimates only.  This file selects no GPU class and does not authorize
 # a pod.  Its fractions and caps must be benchmarked on the card actually rented.
+# Unit 17 binds these tier bytes into each run alongside the separately selected
+# serving-recipes catalogue: one authorized boot consumes one stage's selected
+# tier, then closes by default.  It is never authority to carry a pod into the
+# next stage or to create another one.
 #
 # Serving is SEQUENTIAL — one model at a time, as much of the card as stays
 # stable, next model after (Tyrel's ruling, 2026-08-05).  Every tier below is

@@ -55,6 +55,7 @@ from .config import (
     ServingConfigInputs,
     ServingProfile,
     ServingRecipes,
+    UnsupportedProfile,
     chair_preflight_identity_digest,
     load_serving_recipes,
     model_and_tokenizer_pins,
@@ -2406,6 +2407,85 @@ def test_config_catalogue_is_complete_for_the_fixture_roster_and_closed() -> Non
     assert model_and_tokenizer_pins(identity("reader", "reader-v1")) == (REVISION, REVISION)
     with pytest.raises(ServingConfigurationError, match="without a commit pin"):
         model_and_tokenizer_pins(identity("reader", "reader-v1", revision="not-a-commit"))
+
+
+def test_real_catalogue_resolves_every_real_chair_without_inventing_a_yolo_vllm_service():
+    """The real roster is opt-in; every row is launch-red for its actual cause."""
+
+    root = Path(__file__).resolve().parents[2]
+    placement = load_placement_table(root / "config/pod_placement.toml")
+    tiers = tuple(tier.identifier for tier in placement.tiers)
+    fixture_models = load_models_toml(root / "config/models.toml")
+    fixture_catalogue = load_serving_recipes(root / "config/serving_recipes.toml")
+    real_models = load_models_toml(root / "config/models-real.toml")
+    real_catalogue = load_serving_recipes(root / "config/serving_recipes_real.toml")
+
+    # Each opt-in catalogue must reconcile only with its paired roster; real
+    # coverage cannot weaken or silently replace the fixture default.
+    verify_recipes_cover_chairs(fixture_models, fixture_catalogue, tiers)
+    verify_recipes_cover_chairs(real_models, real_catalogue, tiers)
+    configured = [
+        value for value in real_models.chairs.values() if isinstance(value, ChairIdentity)
+    ]
+    assert len(real_catalogue.profiles) == len(configured) * len(tiers)
+    for identity in configured:
+        for tier in tiers:
+            profile = real_catalogue.for_identity(identity, tier)
+            if identity.role == "secondary_proposer":
+                assert isinstance(profile, UnsupportedProfile)
+                assert "Ultralytics YOLO object detector" in profile.reason
+                assert "vLLM completion serving" in profile.reason
+            else:
+                assert isinstance(profile, ServingProfile)
+                assert profile.preflight_state == "unproven"
+                assert profile.required_packages["vllm"] == "0.10.1"
+
+
+def test_unsupported_real_profile_refuses_by_cause_before_a_process_starts(
+    tmp_path: Path,
+) -> None:
+    chair = identity("secondary_proposer", "unproven-real-secondary-proposer")
+    row = {
+        "kind": "unsupported",
+        "recipe": chair.serving_recipe,
+        "chair": chair.role,
+        "tier": TIER,
+        "reason": "native Ultralytics object detection serving is not implemented",
+    }
+    manager, _, _, launcher, registry, publisher = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(row,),
+        model_ids=(),
+    )
+
+    with pytest.raises(ServingRecipeRefusal, match="native Ultralytics object detection"):
+        manager.start(chair, TIER)
+
+    assert launcher.processes == []
+    assert publisher.calls == []
+    assert "no serving process was started" in registry.refusals[0][1]
+
+
+def test_real_catalogue_missing_row_refusal_names_the_exact_chair_and_tier() -> None:
+    """The opt-in catalogue fails closed with an operator-actionable row name."""
+
+    root = Path(__file__).resolve().parents[2]
+    placement = load_placement_table(root / "config/pod_placement.toml")
+    tiers = tuple(tier.identifier for tier in placement.tiers)
+    models = load_models_toml(root / "config/models-real.toml")
+    complete = load_serving_recipes(root / "config/serving_recipes_real.toml")
+    removed = complete.profiles[0]
+    incomplete = ServingRecipes(profiles=complete.profiles[1:])
+
+    with pytest.raises(ServingConfigurationError) as refusal:
+        verify_recipes_cover_chairs(models, incomplete, tiers)
+
+    detail = str(refusal.value)
+    assert "missing=" in detail
+    assert removed.recipe in detail
+    assert removed.chair in detail
+    assert removed.tier in detail
 
 
 def test_for_identity_refuses_both_zero_and_multiple_matches() -> None:

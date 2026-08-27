@@ -45,6 +45,7 @@ from .config import (
     ServingConfigInputs,
     ServingProfile,
     ServingRecipes,
+    UnsupportedProfile,
     chair_preflight_identity_digest,
     model_and_tokenizer_pins,
     seal_json_object,
@@ -1241,18 +1242,14 @@ class ServingManager:
 
 
 def _launchable(
-    profile: "ServingProfile | FixtureProfile", identity: ChairIdentity
+    profile: "ServingProfile | FixtureProfile | UnsupportedProfile", identity: ChairIdentity
 ) -> ServingProfile:
-    """Refuse a fixture profile by the reason it is a fixture, before anything else.
+    """Refuse non-launchable rows before snapshot and runtime checks.
 
-    The walking skeleton's chairs are answered by
-    ``common.stage.fixture_serving_details`` — declared values that say
-    ``fixture://`` out loud — and nothing in this package substitutes for that.
-    Refusing here rather than letting an unsatisfiable package pin do it keeps
-    the operator from chasing a runtime-version complaint that is true about the
-    wrong thing, and keeps the refusal from being an accident of one field's
-    value: edit that pin to match and the manager would try to serve a directory
-    of fixture bytes to a real engine.
+    Fixture chairs are answered from declared ``fixture://`` details, while an
+    unsupported row names a missing native engine. Deferring either refusal
+    would replace its configuration cause with a misleading pin or engine
+    failure.
     """
 
     if isinstance(profile, FixtureProfile):
@@ -1261,6 +1258,13 @@ def _launchable(
             f"at tier {profile.tier!r} ({profile.description}); a fixture profile is never "
             "launched, and the offline walking skeleton answers it from declared serving "
             "details instead"
+        )
+    if isinstance(profile, UnsupportedProfile):
+        raise ServingConfigurationError(
+            f"chair {identity.role!r} resolves to unsupported serving profile "
+            f"{profile.recipe!r} at tier {profile.tier!r}: {profile.reason}; no serving "
+            "process was started; add and preflight a native serving implementation before "
+            "launching this chair"
         )
     if profile.preflight_state != "proven":
         raise ServingConfigurationError(

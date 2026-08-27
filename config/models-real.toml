@@ -39,6 +39,8 @@ digest_manifest = "0000000000000000000000000000000000000000000000000000000000000
 manifest = "manifests/chandra-ocr-2.json"
 serving_recipe = "unproven-real-attestatores"
 license_note = "Revenue-capped (>$2M revenue/funding barred; competitive use barred). Accepted under the research track (Tyrel, 2026-08-20)"
+witness_adapter = "chandra.v1"
+witness_scope = "page"
 
 [chairs.attestator_2]
 state = "configured"
@@ -61,6 +63,8 @@ digest_manifest = "0000000000000000000000000000000000000000000000000000000000000
 manifest = "manifests/churro-3B.json"
 serving_recipe = "unproven-real-attestatores"
 license_note = "Weights: Qwen research licence (research only); code incl. prompts: Apache-2.0. Accepted under the research track (Tyrel, 2026-08-20)"
+witness_adapter = "churro.v1"
+witness_scope = "page"
 
 [chairs.secondary_proposer]
 state = "configured"

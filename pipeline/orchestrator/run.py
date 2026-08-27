@@ -62,6 +62,7 @@ from common.stage import (  # noqa: E402
     DEFAULT_PDF_RENDER_CONFIG_PATH,
     DEFAULT_PERLECTOR_AUDIT_CONFIG_PATH,
     DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH,
+    DEFAULT_SERVING_RECIPES_CONFIG_PATH,
     DEFAULT_WITNESS_CONTEXT_CONFIG_PATH,
     EXIT_COMPLETE,
     EXIT_HELD,
@@ -180,6 +181,8 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
         str(args.fixture_root),
         "--models-config",
         str(args.models_config),
+        "--serving-recipes-config",
+        str(args.serving_recipes_config),
         "--pdf-render-config",
         str(args.pdf_render_config),
         "--designator-padding-config",
@@ -299,6 +302,18 @@ def main() -> int:
         "--models-config",
         default="config/models.toml",
         help="the sealed model-chair roster and recipes for this run",
+    )
+    # The roster's other half. `--models-config` selects which chairs exist and
+    # this selects the vLLM profile each one is served under; both are sealed
+    # into `config_digest`, so a run that forwarded one and not the other would
+    # let the real roster resolve against the fixture-only catalogue. Unit 17
+    # added the flag to `stage_parser` alone, which made the real catalogue
+    # unreachable through the only program that invokes the stages.
+    parser.add_argument(
+        "--serving-recipes-config",
+        default=str(DEFAULT_SERVING_RECIPES_CONFIG_PATH),
+        help="the sealed serving-profile catalogue for this run; the default is the "
+        "fixture-only catalogue",
     )
     parser.add_argument(
         "--perlector-instrument-per-mille",

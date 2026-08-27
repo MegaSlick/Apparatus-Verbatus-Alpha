@@ -906,10 +906,21 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # native-payload coverage, and page-edge overshoots ride the partition keyed
 # to their retained responses. File counts hold at 95/118. Measured twice at
 # two independent run roots through this module's own helpers.
+# Unit 17 ledger reason: `config/pod_placement.toml` is now sealed into every
+# run's `config_digest`. Its final bytes therefore change both scenario trees,
+# although they add no artifact: on the composed tree happy remains 95/0 and
+# review remains 118/3. Both digests and counts were re-measured twice in
+# independent roots through this module's own helpers at canonical run id "r".
+# Review only, once more in the same seat: a page witness invoked on every act
+# and unusable on all of them now records the serving moment that produced it
+# (`provenance_for(..., attempted=attempted_page)`), where the `reading` gate
+# left `receipt_ref: None` beside a `presented` block claiming pixels were shown.
+# One `receipt_ref` field on attestator_3's page-2 record; no new file, no count
+# or exit change, and happy is untouched.
 HAPPY_SNAPSHOT_FILES = 95
 REVIEW_SNAPSHOT_FILES = 118
-HAPPY_RUN_TREE_DIGEST = "dde76107943a4a626ff6ea28ab0359f1fb90ec57dc5ccb6a2cb20f8e783956ee"
-REVIEW_RUN_TREE_DIGEST = "568acc38e3e52d41e65317d10eb541b77139e034e87f3af6e4a3b98d04db438b"
+HAPPY_RUN_TREE_DIGEST = "2597b8e269bcaf06a5fe6399f16a7fac81c96b2ce1867360cdb15cce055c5b52"
+REVIEW_RUN_TREE_DIGEST = "3cad9e17520140802c8afcf4eeb3a08db9f4b4c5463bc34df16ff0fa3cef9feb"
 
 
 def orchestrate(
@@ -918,6 +929,7 @@ def orchestrate(
     scenario: str,
     *,
     models_config: Path | None = None,
+    serving_recipes_config: Path | None = None,
     recovery_config: Path | None = None,
     hard_failure_config: Path | None = None,
     nuda_per_mille: int | None = None,
@@ -958,6 +970,8 @@ def orchestrate(
     ]
     if models_config is not None:
         command.extend(("--models-config", str(models_config)))
+    if serving_recipes_config is not None:
+        command.extend(("--serving-recipes-config", str(serving_recipes_config)))
     if recovery_config is not None:
         command.extend(("--recovery-config", str(recovery_config)))
     if hard_failure_config is not None:
@@ -1103,6 +1117,7 @@ def _orchestrator_namespace_fields(tmp_path: Path) -> dict:
         scenario="happy",
         fixture_root=ROOT / "proof",
         models_config=ROOT / "config" / "models.toml",
+        serving_recipes_config=ROOT / "config" / "serving_recipes.toml",
         pdf_render_config=ROOT / "config" / "pdf_render.toml",
         designator_padding_config=ROOT / "config" / "designator_padding.toml",
         designator_geometry_config=ROOT / "config" / "designator_geometry.toml",
@@ -1126,6 +1141,84 @@ def _orchestrator_namespace_fields(tmp_path: Path) -> dict:
         submission_folder=None,
         submission_manifest=None,
         data_gate_policy=None,
+    )
+
+
+def test_every_stage_receives_the_runs_selected_serving_recipes_catalogue(monkeypatch, tmp_path):
+    """The roster's other half has to travel with it, to every child.
+
+    `--models-config` selects which chairs exist; `--serving-recipes-config`
+    selects the vLLM profile each one is served under. Both are sealed into
+    `config_digest` (`common/stage.py::run_config_bindings`), so a stage left on
+    the fixture-only default while its siblings were handed the real catalogue
+    refuses the whole run for a reason that has nothing to do with the corpus.
+    Unit 17 added the flag to `stage_parser` alone, which made the real
+    catalogue unreachable through the only program that invokes the stages.
+    """
+
+    orchestrator = _orchestrator_module("orchestrator_serving_recipes_argv")
+    observed: list[list[str]] = []
+    monkeypatch.setattr(
+        orchestrator.subprocess,
+        "run",
+        lambda command, **_kwargs: (
+            observed.append(command) or subprocess.CompletedProcess(command, 0, "", "")
+        ),
+    )
+    selected = ROOT / "config" / "serving_recipes_real.toml"
+    args = Namespace(
+        **{**_orchestrator_namespace_fields(tmp_path), "serving_recipes_config": selected}
+    )
+
+    programs = [program for _name, program in orchestrator.SEQUENCE if program is not None]
+    for program in programs:
+        orchestrator.invoke(program, args)
+
+    assert len(observed) == len(programs) and programs, "no stage was invoked"
+    for command in observed:
+        assert "--serving-recipes-config" in command, (
+            f"{Path(command[1]).name} was invoked without the run's serving catalogue and "
+            "would seal the fixture-only default instead"
+        )
+        assert command[command.index("--serving-recipes-config") + 1] == str(selected)
+
+
+def test_real_roster_and_catalogue_reach_the_real_orchestrator_route(tmp_path):
+    """The actual subprocess route seals the selected real pair, not the defaults.
+
+    Model materialization is deliberately still red: all-zero manifest digests
+    are pre-materialization sentinels. Reaching that named refusal proves the
+    real roster passed its native-adapter boundary and that the Door sealed the
+    caller-selected catalogue before the Designator tried to resolve a model.
+    Catalogue row completeness and unproven state are checked against these same
+    literal files in ``operations/serving/test_manager.py``.
+    """
+
+    models = ROOT / "config" / "models-real.toml"
+    recipes = ROOT / "config" / "serving_recipes_real.toml"
+    run_root = tmp_path / "runs"
+
+    result = orchestrate(
+        run_root,
+        "r",
+        "happy",
+        models_config=models,
+        serving_recipes_config=recipes,
+    )
+
+    assert result.returncode == 2
+    assert "all-zero pre-materialization sentinel" in result.stderr
+    assert "has no witness_adapter" not in result.stderr
+    run_record = json.loads((run_root / "r" / "run.json").read_text(encoding="utf-8"))
+    expected = run_config_bindings(
+        load_models_toml(models),
+        load_fixture(ROOT / "proof"),
+        "happy",
+        serving_recipes_config_path=recipes,
+    )
+    assert run_record["config_digest"] == expected["config_digest"]
+    assert expected["serving_config_inputs"]["serving_recipes_sha256"] == digest_bytes(
+        recipes.read_bytes()
     )
 
 
