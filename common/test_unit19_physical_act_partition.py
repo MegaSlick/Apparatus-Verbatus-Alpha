@@ -99,7 +99,9 @@ def test_discovery_append_uses_sealed_predecessor_then_the_old_run_is_stale(tmp_
     with pytest.raises(IncompatibleReuse, match="changed after this run"):
         from common.corpus_register import verify_snapshot_is_current
 
-        verify_snapshot_is_current({"register_digest": predecessor}, str(path))
+        verify_snapshot_is_current(
+            {"register_digest": predecessor, "register_required": True}, str(path)
+        )
 
 
 def test_every_local_expected_act_occurs_in_exactly_one_physical_act_partition_row(tmp_path):
@@ -293,7 +295,7 @@ def test_partition_input_collections_refuse_their_own_malformed_shape():
             capture_alignments=[],
             source_ledger=[SOURCE_A],
         )
-    with pytest.raises(SchemaRefusal, match="run-relative"):
+    with pytest.raises(SchemaRefusal, match="escapes the run tree"):
         build_physical_act_partition(
             register=empty_register(),
             register_digest=register_digest(empty_register()),
@@ -612,6 +614,8 @@ def test_ambiguous_correspondence_reaches_the_partition_as_a_named_finding(tmp_p
                 "kind": "correspondence",
                 "page_id": PG1,
                 "act_id": ACT_A,
+                "act_class": "proposal",
+                "act_bounds": {"x": 0, "y": 0, "w": 10, "h": 10},
                 "physical_page_id": PAGE,
                 "physical_act_id": physical_p,
                 "evidence": ["fixture"],
@@ -621,6 +625,8 @@ def test_ambiguous_correspondence_reaches_the_partition_as_a_named_finding(tmp_p
                 "kind": "correspondence",
                 "page_id": PG1,
                 "act_id": ACT_A,
+                "act_class": "proposal",
+                "act_bounds": {"x": 0, "y": 0, "w": 10, "h": 10},
                 "physical_page_id": other_page,
                 "physical_act_id": physical_q,
                 "evidence": ["fixture"],
@@ -1462,61 +1468,46 @@ def test_a_local_act_corresponding_to_a_physical_act_minted_elsewhere_is_held(tm
     assert proposal["findings"] == [{"code": "ambiguous-physical-act", "act_id": ACT_A}]
 
 
-def test_correspondence_page_lineage_mismatch_is_held_by_both_consumers(tmp_path):
-    """An act-to-physical-act link cannot discard the page it was declared from."""
+def test_correspondence_page_lineage_mismatch_is_refused_at_the_register(tmp_path):
+    """An act-to-physical-act link cannot discard the page it was declared from.
+
+    Disposition recorded at composition: the register now re-derives every
+    correspondence's act_id from the page, class, and bounds beside it, so a
+    declaration that moves an act onto another page is refused at the append --
+    before either downstream consumer could be asked to hold it. The
+    `correspondence-page-mismatch` findings in the proposal builder and the
+    partition remain as defense in depth behind this refusal.
+    """
     path = _register(tmp_path)
     physical = physical_act_id(PAGE, "entry-a")
-    append_records(
-        path,
-        [
-            {
-                "kind": "physical-act",
-                "physical_page_id": PAGE,
-                "mint_designation": "entry-a",
-                "physical_act_id": physical,
-                "evidence": ["fixture"],
-                "appending_run": "run-1",
-            },
-            {
-                "kind": "correspondence",
-                "page_id": PG2,
-                "act_id": ACT_A,
-                "physical_page_id": PAGE,
-                "physical_act_id": physical,
-                "evidence": ["fixture"],
-                "appending_run": "run-1",
-            },
-        ],
-        expected_digest=register_digest(path.read_bytes()),
-    )
-    register_bytes = path.read_bytes()
-    assert resolve_proposal(register_bytes, ACT_A)["page_id"] == PG2
-
-    proposal = build_correspondence_proposal(
-        register=register_bytes,
-        register_digest=register_digest(register_bytes),
-        discovery_run_id="run-2",
-        components=[
-            {
-                "physical_page_id": PAGE,
-                "physical_act_id": None,
-                "local_acts": [_local(ACT_A, PG1, SOURCE_A, "a")],
-                "evidence": ["geometry:again"],
-                "finding": None,
-            }
-        ],
-    )
-    assert proposal["accepted_records"] == []
-    assert proposal["findings"] == [{"code": "correspondence-page-mismatch", "act_id": ACT_A}]
-
-    partition = _partition(
-        register_bytes,
-        [_local(ACT_A, PG1, SOURCE_A, "a")],
-        [_align(PG1, SOURCE_A, PAGE, "align:a")],
-        {SOURCE_A, SOURCE_B},
-    )
-    assert partition["logical_acts"] == []
-    assert partition["findings"] == [{"code": "correspondence-page-mismatch", "act_id": ACT_A}]
+    before = path.read_bytes()
+    with pytest.raises(SchemaRefusal, match="does not bind the page, class, and bounds"):
+        append_records(
+            path,
+            [
+                {
+                    "kind": "physical-act",
+                    "physical_page_id": PAGE,
+                    "mint_designation": "entry-a",
+                    "physical_act_id": physical,
+                    "evidence": ["fixture"],
+                    "appending_run": "run-1",
+                },
+                {
+                    "kind": "correspondence",
+                    "page_id": PG2,
+                    "act_id": ACT_A,
+                    "act_class": "proposal",
+                    "act_bounds": {"x": 0, "y": 0, "w": 10, "h": 10},
+                    "physical_page_id": PAGE,
+                    "physical_act_id": physical,
+                    "evidence": ["fixture"],
+                    "appending_run": "run-1",
+                },
+            ],
+            expected_digest=register_digest(path.read_bytes()),
+        )
+    assert path.read_bytes() == before
 
 
 def test_a_component_cannot_claim_an_unreached_existing_act_on_the_same_page(tmp_path):
@@ -1847,6 +1838,8 @@ def test_the_register_lifecycle_closes_proposal_append_retraction_reproposal(tmp
                 "kind": "correspondence",
                 "page_id": PG2,
                 "act_id": ACT_B,
+                "act_class": "proposal",
+                "act_bounds": {"x": 0, "y": 0, "w": 10, "h": 10},
                 "physical_page_id": PAGE,
                 "physical_act_id": minted,
                 "evidence": ["operator:reviewed-the-frames"],
@@ -1989,3 +1982,35 @@ def test_one_source_split_into_two_pages_resolves_each_page_to_its_own_physical_
     )
     assert pages == sorted([PAGE, PAGE_13R])
     assert all(len(group["physical_page_components"]) == 1 for group in partition["logical_acts"])
+
+
+# --- Sonnet security seat: path-handling on the digest-bound seal reference -----
+
+
+@pytest.mark.parametrize("escaping_path", ["../outside", "a/../../outside", "/etc/passwd"])
+def test_a_traversal_proposal_seal_ref_is_refused_at_the_builder(escaping_path):
+    with pytest.raises(SchemaRefusal, match="escapes the run tree"):
+        build_physical_act_partition(
+            register=empty_register(),
+            register_digest=register_digest(empty_register()),
+            proposal_seal_ref={"relative_path": escaping_path, "sha256": "0" * 64},
+            local_acts=[_local(ACT_A, "pg_" + "1" * 16, SOURCE_A, "a")],
+            capture_alignments=[],
+            source_ledger=set(),
+        )
+
+
+def test_a_traversal_proposal_seal_ref_is_refused_at_the_validator():
+    payload = {
+        "schema": PARTITION_SCHEMA,
+        "register_digest": register_digest(empty_register()),
+        "proposal_seal_ref": {"relative_path": "../outside", "sha256": "0" * 64},
+        "local_expected_count": 0,
+        "logical_expected_count": 0,
+        "logical_acts": [],
+        "local_to_logical": [],
+        "findings": [],
+    }
+    payload["self_hash"] = self_hash(payload)
+    with pytest.raises(SchemaRefusal, match="escapes the run tree"):
+        validate_physical_act_partition(payload)

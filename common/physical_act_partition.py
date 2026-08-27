@@ -4,11 +4,9 @@ This is deliberately independent of a reader.  Discovery can prove geometry and
 append an immutable register declaration; production then consumes a fresh
 snapshot and produces the denominator that later stages must honour.
 
-Unit 19A deliberately has no run-tree producer for ``source_ledger``.  Unit 19B
-must derive that set from the sealed source manifest and prove each digest's
-Exemplar lineage before calling the partition builder.  Until that handoff
-lands, a missing active member is loud as ``cluster-member-absent`` and no
-production stage calls this module; absence is never interpreted as visibility.
+The source ledger comes from the sealed source manifest rather than local
+proposals, so an unproposed active member remains required. Production narrows
+that ledger only by independently verifying Exemplar page lineage.
 """
 
 from __future__ import annotations
@@ -41,6 +39,19 @@ PROPOSAL_SCHEMA: Final = "correspondence-proposal.v1"
 _TEXTUAL_FIELDS: Final = frozenset(
     {"text", "ocr", "testimonium", "lectio", "perlectio", "edit_distance"}
 )
+
+
+def source_ledger_from_run(run: dict[str, Any]) -> set[str]:
+    """Use the source manifest so a capture missed by proposals remains required."""
+    rows = run.get("source_manifest") if isinstance(run, dict) else None
+    if not isinstance(rows, list) or not rows:
+        raise SchemaRefusal("physical-act partition: run has no sealed source manifest")
+    ledger: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            raise SchemaRefusal("physical-act partition: source manifest row is not an object")
+        ledger.add(_sha(row.get("sha256"), "source manifest sha256"))
+    return ledger
 
 
 def _refuse_preference(value: Any) -> None:
@@ -86,39 +97,50 @@ def _identity(value: Any, prefix: str) -> bool:
     return is_well_formed(value) and value.startswith(f"{prefix}_")
 
 
-def _act(row: Any) -> dict[str, Any]:
-    required = {
-        "act_id",
-        "act_key",
-        "act_class",
-        "act_bounds",
-        "page_id",
-        "page_ordinal",
-        "source_sha256",
-        "proposal_refs",
-    }
-    if not isinstance(row, dict) or set(row) != required:
+def _path(value: Any, what: str) -> str:
+    # Same containment idiom as `common/contracts/envelope.py::validate_input_refs`
+    # and `common/runtree/store.py::RunTree.resolve`: a reference is relative to
+    # the run root, and a digest-bound reference this schema seals must be
+    # refused here rather than trusted through to whichever reader dereferences it.
+    if value.startswith("/") or ".." in value.split("/"):
+        raise SchemaRefusal(f"physical-act partition: {what} path {value!r} escapes the run tree")
+    return value
+
+
+def _act(row: Any, *, require_bindings: bool = False) -> dict[str, Any]:
+    base = {"act_id", "act_key", "page_id", "page_ordinal", "source_sha256", "proposal_refs"}
+    bindings = {"act_class", "act_bounds"}
+    if not isinstance(row, dict) or not (base <= set(row) <= base | bindings):
         raise SchemaRefusal("physical-act partition: local act must use its closed lineage shape")
+    if require_bindings and not bindings <= set(row):
+        # The register re-derives every correspondence's act_id from its class
+        # and minted bounds, so a discovery row that will be appended must
+        # carry both; a run-partition row read from the Designator seal, whose
+        # closed contract has no bindings, legitimately omits them.
+        raise SchemaRefusal(
+            "physical-act partition: a correspondence-bound local act must carry "
+            "its act_class and minted act_bounds"
+        )
     if not all(
         isinstance(row[name], str) and row[name] for name in ("act_id", "act_key", "page_id")
     ):
         raise SchemaRefusal("physical-act partition: local act lacks immutable identity lineage")
     if not _identity(row["act_id"], "act") or not _identity(row["page_id"], "pg"):
         raise SchemaRefusal("physical-act partition: local act identities are malformed")
-    # The register re-derives every correspondence's act_id from these two
-    # bindings; proving the same identity here keeps a mismatched class or
-    # bounds a partition intake refusal rather than a later append refusal.
-    try:
-        expected_act = local_act_id(row["page_id"], row["act_class"], row["act_bounds"])
-    except ContractError as error:
-        raise SchemaRefusal(
-            f"physical-act partition: local act bindings are malformed: {error}"
-        ) from error
-    if row["act_id"] != expected_act:
-        raise SchemaRefusal(
-            "physical-act partition: local act_id does not derive from its own "
-            "page, class, and minted bounds"
-        )
+    if bindings <= set(row):
+        # Proving the identity here keeps a mismatched class or bounds a
+        # partition intake refusal rather than a later append refusal.
+        try:
+            expected_act = local_act_id(row["page_id"], row["act_class"], row["act_bounds"])
+        except ContractError as error:
+            raise SchemaRefusal(
+                f"physical-act partition: local act bindings are malformed: {error}"
+            ) from error
+        if row["act_id"] != expected_act:
+            raise SchemaRefusal(
+                "physical-act partition: local act_id does not derive from its own "
+                "page, class, and minted bounds"
+            )
     if not isinstance(row["page_ordinal"], int) or isinstance(row["page_ordinal"], bool):
         raise SchemaRefusal("physical-act partition: local act page ordinal is invalid")
     _sha(row["source_sha256"], "local act source_sha256")
@@ -224,11 +246,9 @@ def build_physical_act_partition(
     """Build the total production denominator from a fresh register snapshot.
 
     Every local act aligned to a registered physical page either resolves through
-    its declared correspondence or emits a named finding.  It is never silently
-    downgraded to a singleton. Every local act's own source must occur in
-    ``source_ledger`` before either path is allowed. The ledger is the explicit
-    Unit 19B handoff described in the module docstring, not a set this slice
-    infers from whichever local acts happened to be proposed.
+    its declared correspondence or emits a named finding. It is never silently
+    downgraded to a singleton. ``source_ledger`` is independent of whichever
+    local acts happened to be proposed.
     """
     _refuse_preference({"local_acts": local_acts, "capture_alignments": capture_alignments})
     _sha(register_digest, "register_digest")
@@ -248,6 +268,7 @@ def build_physical_act_partition(
         "sha256",
     }:
         raise SchemaRefusal("physical-act partition: proposal seal reference is not digest-bound")
+    _path(proposal_seal_ref["relative_path"], "proposal seal")
     _sha(proposal_seal_ref["sha256"], "proposal seal sha256")
     if not isinstance(local_acts, list) or not local_acts:
         raise SchemaRefusal("physical-act partition: no local expected acts are not a denominator")
@@ -440,12 +461,10 @@ def validate_physical_act_partition(payload: dict[str, Any]) -> dict[str, Any]:
         or set(seal) != {"relative_path", "sha256"}
         or not isinstance(seal["relative_path"], str)
         or not seal["relative_path"]
-        or seal["relative_path"].startswith("/")
-        or ".." in seal["relative_path"].split("/")
     ):
-        raise SchemaRefusal(
-            "physical-act partition: proposal seal reference is not closed and run-relative"
-        )
+        raise SchemaRefusal("physical-act partition: proposal seal reference is not closed")
+    _path(seal["relative_path"], "proposal seal")
+    _path(seal["relative_path"], "proposal seal")
     _sha(seal["sha256"], "proposal seal sha256")
     if any(
         not isinstance(payload[name], int) or isinstance(payload[name], bool) or payload[name] < 0
@@ -748,7 +767,7 @@ def build_correspondence_proposal(
             raise SchemaRefusal(
                 "correspondence proposal: existing physical act identity is malformed"
             )
-        acts = [_act(dict(row)) for row in local]
+        acts = [_act(dict(row), require_bindings=True) for row in local]
         if (
             not isinstance(evidence, list)
             or not evidence

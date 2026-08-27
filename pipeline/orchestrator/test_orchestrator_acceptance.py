@@ -923,6 +923,102 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # verification derives the same held set, and testimony-diff bases use only
 # chairs whose retained text differs. This pin was measured twice in independent
 # roots at canonical run id "r".
+# this module's own orchestrate and semantic_snapshot_digest helpers. Counts
+# stay Unit 9's 97/118 (the seam moves bytes, not files) at unchanged exits.
+# Unit 17 ledger reason: `config/pod_placement.toml` is now sealed into every
+# run's `config_digest`. Its final bytes therefore change both scenario trees,
+# although they add no artifact — on Unit 17's own tree that meant unchanged
+# counts 92/113 at new digests.
+#
+# Union re-pin (host, Unit 17 joins the composed tree): the placement seal
+# moves both digests again over the 97/118 trees the union already measured.
+# The values below are measured on THIS tree, twice each in independent
+# temporary roots at canonical run id "r", through this module's own helpers.
+# Unit 14B reconciliation: the initial Ink Map finding is pre-proposal evidence.
+# Armarium re-measures its retained runs against verified Designator crops, so
+# the fully claimed synthetic ink releases rather than turning happy into a
+# false hold. The positive remains real: a page with no such crop stays held.
+# Both pins were measured twice in independent roots with this module's
+# `orchestrate` and `semantic_snapshot_digest` helpers at run id `r`: happy is
+# 97/0 and review is 106/3.
+# Unit 14B fix pass 2: that release accidentally made Unit 10C's existing
+# witness-observation recovery conditional on the new edge-ink trigger. The
+# older path keeps its own origin and fallback-recrop budget; it is not an
+# edge-ink request. Restoring it re-adds the second review recovery round, so
+# review returns to 118/3 while happy remains 97/0. Both pins were measured at
+# canonical run id `r` in two independent roots through the same helpers after
+# this final semantic byte: happy reproduced its existing digest and review
+# reproduced the replacement below.
+# Unit 14B Opus audit: the Armarium's edge hold is now derived, on both sides,
+# from one recorded ink-map row per sealed page carried in `sources.json`
+# (`armarium-sources.v3`), so the clean-machine verifier recomputes the held set
+# from the package's own source graph instead of reading it back out of the
+# claim it produced. Every package member except EXPORT_MANIFEST.json used to be
+# byte-identical whether or not a page was held, so a manifest built with the
+# hold simply dropped verified clean against the very run that had it. Both
+# trees gain the evidence, so both digests move; counts and exits are unchanged
+# (happy 97/0, review 106/3). Measured twice in independent temporary roots at
+# canonical run id "r" through this module's own `orchestrate` and
+# `semantic_snapshot_digest` helpers.
+# Unit 14B Opus audit, again in both trees: an audit draft's
+# `flag_location_basis` named every chair that reported, not the chairs whose
+# retained text departs from the reading. On this very fixture both acts raise
+# two `testimony-diff` flags and the basis named three chairs -- attestator_1
+# agreed with the reading exactly and was recorded as the basis of a flag it
+# did not raise (GOVERNANCE 10, consult §4.7: a fact re-derived over a wider
+# denominator than its writer counted on). The two producers are now held to
+# the same count. Counts and exits unchanged (happy 97/0, review 106/3); both
+# re-measured twice in independent roots at run id "r".
+# Union re-pin (host, Unit 14B joins the composed tree with Unit 17's
+# placement seal): both sides above measured trees missing the other's
+# change; the value below is measured on THIS tree, twice, independent
+# roots, rid "r", via this module's own helpers.
+# Unit 19B Sonnet audit round 2: consult §3.2 step 7 and §7 forbidden shape 19
+# named `page_id = page_ids[0]` a representative-singular picker shape and
+# required its removal from the audit draft/finding payload; it is now gone
+# from `common/perlector_audit.py`'s closed field sets, so the byte this
+# digest covers shrinks by that one key on every act's audit chain. No file
+# count or exit changes (happy 97/0, review 106/3). Measured twice in
+# independent temporary roots at canonical run id "r" through this module's
+# own `orchestrate` and `semantic_snapshot_digest` helpers.
+# Unit 19B build round 3: `run.py`'s main loop now reads every logical act
+# through `combined.run_logical_passes`, fed by `logical_reading.py`'s own
+# physical-act partition (`build_run_partition`, `common/physical_act_partition.py`)
+# and cross-capture autopsia (`act_autopsia`, `common/cross_capture_autopsia.py`)
+# rather than one `build_reader_dossier` call per pass. The partition is one
+# run-level artifact, sealed once and published as its own content-addressed
+# blob under the Perlector's own stage (consult §9.1's Designator ownership is
+# a recorded deviation, not a silent relocation -- see `logical_reading.py`'s
+# module docstring) -- one new file per run, not per act. Every act's
+# published dossier also carries the new `logical_act_id` and
+# `cross_capture_autopsia` fields, and every stored payload carries the new
+# `autopsia` field, moving the digest again on every existing file. No test
+# scenario in this fixture registers a physical page, so every act still
+# resolves as `image-local-singleton` and no reading, flag, or recovery
+# decision changes: exits stay 0 (happy) and 3 (review); file counts move by
+# exactly the one new partition blob, 97 -> 98 (happy) and 106 -> 107
+# (review). Measured twice in independent temporary roots at canonical run id
+# "r" through this module's own `orchestrate` and `semantic_snapshot_digest`
+# helpers.
+# Unit 19B Opus audit: the lectio-prior and lectio-nuda dossiers no longer
+# carry `witness_covered` on their region rows. `build_dossier` omits that key
+# entirely when it is handed no testimonia, and the pre-19B path built each
+# unprimed pass with `testimonia=[]`; the combined path builds one dossier with
+# witnesses and strips it per arm, and the strip stopped at `testimonia` --
+# leaving the unprimed instrument holding a witness-derived fact about every
+# region, which is the same defect an earlier pre-push review round already
+# removed once (see the `witness_covered` note further up this comment block).
+# Only the lectio-prior/nuda payloads move; file counts and exits are
+# unchanged (happy 98/0, review 107/3). Measured twice in independent
+# temporary roots at canonical run id "r" through this module's own
+# `orchestrate` and `semantic_snapshot_digest` helpers.
+# Unit 19B Sol formal review: every cross-capture dossier now binds the physical-
+# act partition it cites as a direct envelope input, and multi-page audit
+# denominators are canonical page-ID sets rather than ordinal traversal lists.
+# The first change moves every reading and its downstream chain; the second
+# moves the continuation act's audit chain. No reading, decision, exit, or file
+# count changes (happy 98/0). Measured twice in independent temporary roots at
+# canonical run id "r" through this module's own helpers.
 # Review only, once more in the same seat: a page witness invoked on every act
 # and unusable on all of them now records the serving moment that produced it
 # (`provenance_for(..., attempted=attempted_page)`), where the `reading` gate
@@ -953,6 +1049,70 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # unconfirmed witness pointer no longer spends review's second recovery round
 # (118 -> 106); happy holds 95 files. Measured twice at two independent run
 # roots through this module's own helpers at canonical run id "r".
+# Union re-pin: see the Unit 17 seam entry above the happy digest.
+# Unit 14B Sonnet audit: fix pass 2's "restoration" above was the regression,
+# not the fix. Unit 10C's own `unclaimed_observations` is a witness's report --
+# a native/derived box the Attestatores reported, with no ink evidence behind
+# it -- and consult §4.5 (`/out/CONSULT_REPORT.md`, BINDING) requires Unit 9's
+# ink map to independently confirm real ink under that box before it may spend
+# a bounded recovery or hold an act; "the box is a pointer; the ink is the
+# evidence... this is what makes it not a picker." Measured directly against
+# the checked-in fixture (`common.residual_ink.ink_runs` over
+# `proof.synthetic_pages.page_bytes(1)`): the `review` scenario's marginal
+# witness box at page 1, x 0..10 / y 200..240, sits over zero ink. The second
+# review recovery round fix pass 2 restored was therefore spent on a2 (which
+# `hold_acts` declares should go straight to a hold) for no evidence at all --
+# a witness's own unconfirmed report picking a pipeline action for itself,
+# exactly what GOVERNANCE 3 forbids. Restoring the ink gate removes that
+# wasted round: a1's recovery request now names its true origin ("the crop may
+# be incomplete", not the coverage-origin phrase, since its own box is equally
+# unconfirmed by ink), and a2 goes directly to held-for-review, without an
+# intervening recovery-request/region/reading round. Review returns to 106
+# files at unchanged exit 3; happy is untouched (it carries no witness box at
+# all) at the digest above. Both pins were measured twice in independent
+# temporary roots at canonical run id "r" through this module's own
+# `orchestrate` and `semantic_snapshot_digest` helpers: happy reproduced its
+# existing digest and review reproduced the value below.
+# Unit 14B Opus audit: Sonnet's ink gate above is confirmed and unchanged -- the
+# marginal box still sits over measured-zero ink, so review keeps 106 files at
+# exit 3 and no recovery round returns. This digest moved once for the Armarium
+# source-graph byte named above the happy digest, and once more here: review's
+# one recovery request now records its `origin` as data beside the sentence that
+# states it, so the one-observation-one-request bound (consult base question 11)
+# counts a recorded fact rather than re-reading prose. Happy has no recovery
+# request, so its digest above is untouched by that second byte. The bound
+# itself changes no fixture behaviour -- no shipped scenario has ink under a
+# witness pointer at all -- and review stays at 106 files, exit 3. Measured
+# twice in independent temporary roots at canonical run id "r" through this
+# module's own `orchestrate` and `semantic_snapshot_digest` helpers.
+# Union re-pin (host, Unit 14B joins the composed tree with Unit 17's
+# placement seal): both sides above measured trees missing the other's
+# change; the value below is measured on THIS tree, twice, independent
+# roots, rid "r", via this module's own helpers.
+# Unit 19B Sonnet audit round 2: same `page_id` removal as the happy digest
+# above. Review's own recovery/audit chains lose the same one key per act;
+# no file count or exit change (106 files, exit 3). Measured twice in
+# independent temporary roots at canonical run id "r" through this module's
+# own `orchestrate` and `semantic_snapshot_digest` helpers.
+# Unit 19B build round 3: same combined cross-capture wiring as the happy
+# digest above (see that comment for the mechanism). Review's own recovery
+# and audit chains gain the same `logical_act_id`/`cross_capture_autopsia`/
+# `autopsia` fields, and the run gains the same one new partition blob; exit
+# stays 3 and file count moves 106 -> 107. Measured twice in independent
+# temporary roots at canonical run id "r" through this module's own
+# `orchestrate` and `semantic_snapshot_digest` helpers.
+# Unit 19B Opus audit: same `witness_covered` removal from the unprimed
+# dossiers as the happy digest above. Review publishes a lectio-prior for
+# every act it reads, including the recovered ones, so the same one key leaves
+# each of them; file count stays 107 and the exit stays 3. Measured twice in
+# independent temporary roots at canonical run id "r" through this module's
+# own `orchestrate` and `semantic_snapshot_digest` helpers.
+# Unit 19B Sol formal review: same partition-input and canonical page-set
+# corrections as happy above. Review's recovery attempts acquire the same
+# immutable partition input and its continuation audit uses the same canonical
+# denominator. File count remains 107 and exit remains 3. Measured twice in
+# independent temporary roots at canonical run id "r" through this module's
+# own helpers.
 HAPPY_SNAPSHOT_FILES = 95
 REVIEW_SNAPSHOT_FILES = 106
 HAPPY_RUN_TREE_DIGEST = "a0a591175415dc06da8fb7c22ea29fbd6d297b41e328f641312001a812cf8691"
@@ -3740,10 +3900,12 @@ def test_a_continuation_has_page_scoped_testimony_and_audit_on_its_far_page(happ
         for record in artifacts(tree, PERLECTOR, "audit-draft")
         if record["subject_id"] == a2["act_id"]
     )
-    assert draft["payload"]["page_ids"] == [
-        page_identity(load_fixture(str(ROOT / "proof")), 1),
-        page_identity(load_fixture(str(ROOT / "proof")), 2),
-    ]
+    assert draft["payload"]["page_ids"] == sorted(
+        {
+            page_identity(load_fixture(str(ROOT / "proof")), 1),
+            page_identity(load_fixture(str(ROOT / "proof")), 2),
+        }
+    )
 
 
 def test_a_continuation_counts_page_witness_chairs_not_page_pairs(happy_run):
@@ -3802,7 +3964,7 @@ def test_a_recrop_of_a_continuation_act_keeps_its_far_page_in_the_evidence(
         if record["subject_id"] == a2["act_id"]
     }
     fixture = load_fixture(str(ROOT / "proof"))
-    both_pages = [page_identity(fixture, 1), page_identity(fixture, 2)]
+    both_pages = sorted({page_identity(fixture, 1), page_identity(fixture, 2)})
     assert drafts == {1: both_pages, 2: both_pages}
 
     attachment = next(

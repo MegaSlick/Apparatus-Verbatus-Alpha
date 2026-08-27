@@ -58,7 +58,6 @@ _DRAFT_FIELDS: Final = frozenset(
         "act_key",
         "attempt_ordinal",
         "semi_final_text",
-        "page_id",
         "page_ids",
         "round_cap",
         "policy",
@@ -70,7 +69,6 @@ _FINDING_FIELDS: Final = frozenset(
     {
         "act_key",
         "attempt_ordinal",
-        "page_id",
         "page_ids",
         "round_cap",
         "policy",
@@ -299,37 +297,16 @@ def validate_audit_request(payload: Any) -> dict[str, Any]:
 
 
 def _validate_common(value: dict[str, Any], *, text_length: int) -> None:
-    if not isinstance(value["act_key"], str) or not value["act_key"]:
-        raise SchemaRefusal(
-            "an audit record has no non-empty act identity; the finding cannot be bound "
-            "to an act; restore the act_key before publishing it"
-        )
-    if not isinstance(value["page_id"], str) or not value["page_id"]:
-        raise SchemaRefusal(
-            "an audit record has no non-empty primary page identity; its page evidence "
-            "cannot be reconciled; restore page_id before publishing it"
-        )
-    page_ids = value["page_ids"]
-    if not isinstance(page_ids, list) or not page_ids:
-        raise SchemaRefusal(
-            "an audit record has no non-empty contributing-page list; page evidence would "
-            "disappear from the audit; restore page_ids before publishing it"
-        )
-    if any(not isinstance(page_id, str) or not page_id for page_id in page_ids):
-        raise SchemaRefusal(
-            "an audit record carries an unusable contributing-page identity; its page "
-            "denominator cannot be addressed; replace it with non-empty page ids"
-        )
-    if len(page_ids) != len(set(page_ids)):
-        raise SchemaRefusal(
-            "an audit record repeats a contributing page identity; duplicate evidence would "
-            "distort the denominator; retain each page exactly once"
-        )
-    if value["page_id"] != page_ids[0]:
-        raise SchemaRefusal(
-            "an audit record's primary page is not first in its contributing-page list; the "
-            "scalar and page set disagree; restore the primary-first page order"
-        )
+    if (
+        not isinstance(value["act_key"], str)
+        or not value["act_key"]
+        or not isinstance(value["page_ids"], list)
+        or not value["page_ids"]
+        or any(not isinstance(page_id, str) or not page_id for page_id in value["page_ids"])
+        or len(value["page_ids"]) != len(set(value["page_ids"]))
+        or value["page_ids"] != sorted(value["page_ids"])
+    ):
+        raise SchemaRefusal("an audit record has no act identity or canonical page set")
     if (
         not isinstance(value["attempt_ordinal"], int)
         or isinstance(value["attempt_ordinal"], bool)
@@ -552,7 +529,6 @@ def validate_chain(tree, reading: dict[str, Any], act_id: str) -> dict[str, Any]
     shared_fields = (
         "act_key",
         "attempt_ordinal",
-        "page_id",
         "page_ids",
         "round_cap",
         "policy",
@@ -589,10 +565,7 @@ def validate_chain(tree, reading: dict[str, Any], act_id: str) -> dict[str, Any]
                 "audit page set cannot be derived; restore one page id per integer ordinal"
             )
         pages_by_ordinal[ordinal] = page_id
-        # Region order is sealed act order; source-page ordinal is identity and
-        # may place a continuation before the primary page numerically.
-        if page_id not in basis_page_ids:
-            basis_page_ids.append(page_id)
+    basis_page_ids = sorted(set(pages_by_ordinal.values()))
     if draft_payload["page_ids"] != basis_page_ids:
         raise SchemaRefusal(
             f"audit page set for {act_id} disagrees with the reading's sealed region basis; "

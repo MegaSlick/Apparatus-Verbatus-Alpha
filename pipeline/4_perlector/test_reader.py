@@ -139,11 +139,12 @@ def test_an_unnamed_pass_kind_is_refused_rather_than_served_as_the_establishing_
 
 
 def test_every_pass_kind_the_producer_uses_is_in_the_closed_vocabulary():
-    """`run.py` passes these four literals; the set is not a wider net than the
-    producer needs, and no producer call site sits outside it."""
-    producer_calls = set(
-        re.findall(r"pass_kind=\"([^\"]+)\"", (Path(__file__).parent / "run.py").read_text())
-    )
+    """The vocabulary equals literals in both producers, including audit re-proof."""
+    producer_calls = set()
+    for name in ("run.py", "combined.py"):
+        producer_calls |= set(
+            re.findall(r"pass_kind=\"([^\"]+)\"", (Path(__file__).parent / name).read_text())
+        )
     assert producer_calls == set(reader_module.PASS_KINDS)
 
 
