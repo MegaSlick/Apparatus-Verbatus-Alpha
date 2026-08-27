@@ -93,6 +93,7 @@ from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.identities import artifact_id  # noqa: E402
 from common.contracts.stages import DOOR  # noqa: E402
 from common.corpus_register import read_register_file  # noqa: E402
+from common.decoding import DEFAULT_DECODING_CONFIG_PATH, load_decoding_policy  # noqa: E402
 from common.hard_failure import load_hard_failure_policy  # noqa: E402
 from common.recovery import load_recovery_policy  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
@@ -1766,6 +1767,7 @@ def fixture_submission(args, registry) -> int:
         perlector_audit_config_path=args.perlector_audit_config,
         draft_fed=args.draft_fed,
         serving_recipes_config_path=args.serving_recipes_config,
+        decoding_config_path=args.decoding_config,
     )
     require_corpus_frame_shard(len(pages), bindings["sealed_config_digests"])
 
@@ -1953,6 +1955,7 @@ def real_submission(args, registry) -> int:
         perlector_instrument_approval_ref=args.perlector_instrument_approval_ref,
         perlector_protocol_config_path=args.perlector_protocol_config,
         perlector_audit_config_path=args.perlector_audit_config,
+        decoding_config_path=args.decoding_config,
         draft_fed=args.draft_fed,
     )
     # The modes seal must be proved before triage rows can shape master-frame geometry.
@@ -2136,6 +2139,7 @@ def _real_bindings(
     perlector_instrument_approval_ref: str = "",
     perlector_protocol_config_path=DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH,
     perlector_audit_config_path=DEFAULT_PERLECTOR_AUDIT_CONFIG_PATH,
+    decoding_config_path=DEFAULT_DECODING_CONFIG_PATH,
     draft_fed: bool = True,
 ) -> dict[str, Any]:
     """The sealed configuration facts for a real submission.
@@ -2164,6 +2168,7 @@ def _real_bindings(
         perlector_instrument_approval_ref=perlector_instrument_approval_ref,
     )
     _, alignment_config_sha256 = load_alignment_limits(alignment_config_path)
+    _decoding_policy, decoding_config_sha256 = load_decoding_policy(decoding_config_path)
     adapter_recipes = dict(sorted(models.adapter_recipes.items()))
     adapter_recipes[DOOR] = REAL_DOOR_ADAPTER_REVISION
     armarium_formats_digest, armarium_formats = bind_armarium_formats(armarium_formats_config_path)
@@ -2242,6 +2247,7 @@ def _real_bindings(
                 "triage_document_digests": dict(sorted((triage_document_digests or {}).items())),
                 "corpus_frame_policy": corpus_frame_policy,
                 "corpus_frame_config_sha256": corpus_frame_config_sha256,
+                "decoding_config_sha256": decoding_config_sha256,
                 "models": models.to_record(),
                 # Spec 08's run-level settings, bound on the real path exactly as
                 # `run_config_bindings` binds them on the fixture path: a resumed
@@ -2279,6 +2285,7 @@ def _real_bindings(
             "designator-geometry": designator_geometry_config_sha256,
             "alignment": alignment_config_sha256,
             "corpus-frame-shard": corpus_frame_config_sha256,
+            "decoding": decoding_config_sha256,
             "perlector-protocol": perlector_protocol_config_sha256,
             "perlector-audit": perlector_audit_config_sha256,
             "pdf-render": pdf_render_config_sha256,

@@ -68,6 +68,7 @@ from common.contracts.stages import (
     TRIAGE_MODES,
 )
 from common.corpus_register import read_snapshot, verify_snapshot_is_current
+from common.decoding import DEFAULT_DECODING_CONFIG_PATH, load_decoding_policy
 from common.exemplar_boundary import verify_sealed_page_pixels
 from common.hard_failure import (
     DEFAULT_HARD_FAILURE_CONFIG_PATH,
@@ -1390,6 +1391,11 @@ def stage_parser(description: str, *, accepts_chair: bool = False) -> argparse.A
     )
     parser.add_argument("--models-config", default="config/models.toml")
     parser.add_argument(
+        "--decoding-config",
+        default=str(DEFAULT_DECODING_CONFIG_PATH),
+        help="the sealed decoding posture for record readings and variance experiments",
+    )
+    parser.add_argument(
         "--serving-recipes-config",
         default=str(DEFAULT_SERVING_RECIPES_CONFIG_PATH),
         help=(
@@ -1648,6 +1654,7 @@ def run_config_bindings(
     serving_recipes_config_path: str | Path = DEFAULT_SERVING_RECIPES_CONFIG_PATH,
     pod_placement_config_path: str | Path = DEFAULT_POD_PLACEMENT_CONFIG_PATH,
     corpus_frame_config_path: str | Path = DEFAULT_CORPUS_FRAME_CONFIG_PATH,
+    decoding_config_path: str | Path = DEFAULT_DECODING_CONFIG_PATH,
 ) -> dict[str, Any]:
     """The three `run.json` bindings, and everything that shapes them.
 
@@ -1655,9 +1662,10 @@ def run_config_bindings(
     the adapter recipes, so two of the three come straight off it. The third,
     `config_digest`, is the digest of *everything* that shapes this run's
     behaviour — the model configuration, fixture, scenario, PDF-render settings,
-    Designator padding and geometry policy, Armarium projection configuration, recovery policy, the
-    run-level hard-failure policy, serving-recipe catalogue, and pod-placement
-    catalogue. The synthetic fixture declares byte-backed pages only, so
+    Designator padding and geometry policy, Armarium projection configuration,
+    recovery policy, decoding policy, the run-level hard-failure policy,
+    serving-recipe catalogue, and pod-placement catalogue. The synthetic fixture
+    declares byte-backed pages only, so
     it does not claim to bind the real Door's PDFium/Pillow/libheif execution
     recipe; ``door._real_bindings`` binds that recipe on actual ingress.
 
@@ -1727,6 +1735,7 @@ def run_config_bindings(
     corpus_frame_policy, corpus_frame_config_digest = load_corpus_frame_policy(
         corpus_frame_config_path
     )
+    _decoding_policy, decoding_config_digest = load_decoding_policy(decoding_config_path)
     triage_modes_config_digest = digest_bytes(
         _read_triage_modes_config(DEFAULT_TRIAGE_MODES_CONFIG_PATH)
     )
@@ -1775,6 +1784,7 @@ def run_config_bindings(
                 "alignment_config_sha256": alignment_config_digest,
                 "corpus_frame_policy": corpus_frame_policy,
                 "corpus_frame_config_sha256": corpus_frame_config_digest,
+                "decoding_config_sha256": decoding_config_digest,
                 "triage_modes_config_sha256": triage_modes_config_digest,
                 "pdf_target_dpi_override": pdf_target_dpi,
                 "armarium_formats_config_sha256": armarium_formats_digest,
@@ -1829,6 +1839,7 @@ def run_config_bindings(
             "designator-geometry": geometry_config_digest,
             "alignment": alignment_config_digest,
             "corpus-frame-shard": corpus_frame_config_digest,
+            "decoding": decoding_config_digest,
             "perlector-protocol": perlector_protocol_config_digest,
             "perlector-audit": perlector_audit_config_digest,
             "pdf-render": pdf_render_config_digest,
@@ -2718,6 +2729,7 @@ def open_context(
         perlector_audit_config_path=args.perlector_audit_config,
         draft_fed=args.draft_fed,
         serving_recipes_config_path=args.serving_recipes_config,
+        decoding_config_path=args.decoding_config,
     )
     tree = RunTree(Path(args.run_root), args.run_id)
     run = tree.read_run()
@@ -2745,10 +2757,30 @@ def open_context(
         and run.get(field) != bindings[field]
     ]
     if differing:
+        # Name the sealed policies that actually moved, not only the field that
+        # holds them. "different config_digest, sealed_config_digests" is true of
+        # every one of the family's members and sends an operator to read ten
+        # files to find the one that changed; a resume refused because
+        # `config/decoding.toml` was edited should say `decoding`. Unit 2's
+        # definition of done asks for exactly this by name, and the sentence it
+        # asks for is the same sentence every other sealed policy needs.
+        named = ", ".join(differing)
+        if SEALED_CONFIG_DIGESTS_FIELD in differing and isinstance(
+            run.get(SEALED_CONFIG_DIGESTS_FIELD), Mapping
+        ):
+            sealed_before = run[SEALED_CONFIG_DIGESTS_FIELD]
+            sealed_now = bindings[SEALED_CONFIG_DIGESTS_FIELD]
+            moved = sorted(
+                name
+                for name in set(sealed_before) | set(sealed_now)
+                if sealed_before.get(name) != sealed_now.get(name)
+            )
+            if moved:
+                named += f" (sealed configuration {', '.join(moved)} moved)"
         raise IncompatibleReuse(
-            f"run {args.run_id!r} is bound to different {', '.join(differing)} than "
-            "the currently loaded models config and fixture scenario; direct stages "
-            "may not run against an unsealed configuration"
+            f"run {args.run_id!r} is bound to different {named} than "
+            "the currently loaded run inputs. No stage work was written. Resume with "
+            "the original sealed inputs, or start a new run for the changed inputs"
         )
     verify_predecessor_seal(tree, stage)
     refuse_halted_run(tree, stage, args.hard_failure_config)

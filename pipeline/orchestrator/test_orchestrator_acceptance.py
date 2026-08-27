@@ -1024,6 +1024,17 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # absence as `unresolved`; a Designator hold records `None`. The happy tree
 # remains 98 files at exit 0. This digest was reproduced twice from independent
 # canonical run-id `r` trees through `semantic_snapshot_digest`.
+# Unit 2 re-pin: `config/decoding.toml` is sealed into every run's
+# `config_digest`, so both scenario trees legally move without gaining an
+# artifact. Happy remains 97 files and exit 0. The value below was measured
+# twice in independent roots, rid "r", via this module's `orchestrate` and
+# `semantic_snapshot_digest` helpers.
+# Re-measured unchanged at Unit 2's audit seat, after the whole-pass resume
+# reverted to one shared ordinal and the Perlector's reading ordinal went back
+# to its crop-history derivation. Neither revert touches an orchestrated tree:
+# on a clean run there is no prior attempt for either derivation to diverge
+# over, which is a measurement here and not an inference -- twice more, in two
+# further independent roots at rid "r", through the same two helpers.
 # Review only, once more in the same seat: a page witness invoked on every act
 # and unusable on all of them now records the serving moment that produced it
 # (`provenance_for(..., attempted=attempted_page)`), where the `reading` gate
@@ -1127,10 +1138,18 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # cross_capture_coverage field, and audit chains use the canonical page set.
 # Measured twice at two independent run roots through this module's own
 # helpers at canonical run id "r".
+# Unit 2 re-pin: see the happy entry above. `decoding.toml` changes this
+# run's sealed `config_digest`, not its artifact count or exit: review remains
+# 106 files / exit 3. Measured twice in independent roots, rid "r", through
+# this module's own helpers.
 HAPPY_SNAPSHOT_FILES = 96
 REVIEW_SNAPSHOT_FILES = 107
-HAPPY_RUN_TREE_DIGEST = "87d61e641f555565e801e8aae95449dd8f2680cce6595934bbd10a5e099caef7"
-REVIEW_RUN_TREE_DIGEST = "46bf9ba1e83349900d1ab9e5fbc62a0d8a602b023e8ca2d28988af6f2b71dff8"
+# Re-pinned at this merge (2 onto the composed pr tree): `config/decoding.toml`
+# joins every run's sealed config_digest, moving both digests while adding no
+# artifact -- counts hold at 96/0 and 107/3. Measured twice at two independent
+# run roots through this module's own helpers at canonical run id "r".
+HAPPY_RUN_TREE_DIGEST = "c754eadc7622c590b0f8d49597f1922bffae03cd9cb1070b7b8da99d91ec8d7d"
+REVIEW_RUN_TREE_DIGEST = "0326988b952b71386d20152a87141e2b13665702e2acf0b0b6c027e64950e21f"
 
 
 def orchestrate(

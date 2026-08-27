@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 # Every listed value is sealed by digest; exceptions are classified below.
 SEALED_CONFIG_FLAGS = (
+    "--decoding-config",
     "--pdf-render-config",
     "--designator-padding-config",
     "--designator-geometry-config",
