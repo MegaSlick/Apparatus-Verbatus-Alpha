@@ -1,0 +1,182 @@
+"""Classify page-pixel occlusions on a capture-local act-surface grid.
+
+The grid is normalized to each capture's own bounds because no sealed
+cross-capture registration exists. Its cells are therefore sound within one
+capture but may not be unioned between captures; the Recensor leaves such a
+component unresolved until a registration maps every mask into one frame.
+"""
+
+from __future__ import annotations
+
+from math import isclose
+
+GRID: int = 4
+
+# A page-pixel occlusion outline has no legitimate reason to carry more points
+# than this: real occluder boundaries (torn edges, fingers, folds) are simple
+# shapes with at most a few hundred vertices. Without a ceiling here, one
+# malformed occlusion record can force `_polygon_intersects_cell` to run its
+# edge-intersection test over an unbounded vertex count for every grid cell of
+# every capture that names it -- amplification the caller cannot see coming
+# from the record's own declared shape (a "polygon"), only from its size.
+MAX_POLYGON_POINTS: int = 1024
+
+
+def _validated_grid(grid: object) -> int:
+    if not isinstance(grid, int) or isinstance(grid, bool) or grid <= 0:
+        raise ValueError("act-visibility grid must be a positive integer")
+    return grid
+
+
+def _validated_polygons(value: object) -> list[list[dict[str, int]]]:
+    if not isinstance(value, list):
+        raise ValueError("act-visibility occlusions must be a polygon list")
+    for polygon in value:
+        if not isinstance(polygon, list) or len(polygon) < 3:
+            raise ValueError("act-visibility occlusion is not a polygon")
+        if len(polygon) > MAX_POLYGON_POINTS:
+            raise ValueError(f"act-visibility occlusion has more than {MAX_POLYGON_POINTS} points")
+        points: list[tuple[int, int]] = []
+        for point in polygon:
+            if (
+                not isinstance(point, dict)
+                or set(point) != {"x", "y"}
+                or not isinstance(point["x"], int)
+                or isinstance(point["x"], bool)
+                or not isinstance(point["y"], int)
+                or isinstance(point["y"], bool)
+            ):
+                raise ValueError("act-visibility occlusion has a malformed point")
+            points.append((point["x"], point["y"]))
+        if len(set(points)) < 3:
+            raise ValueError("act-visibility occlusion has fewer than three distinct points")
+    return value
+
+
+def _point_in_polygon(x: float, y: float, polygon: list[dict[str, int]]) -> bool:
+    """Even-odd ray-casting membership test over a closed polygon ring."""
+    inside = False
+    count = len(polygon)
+    for index in range(count):
+        x1, y1 = polygon[index]["x"], polygon[index]["y"]
+        x2, y2 = polygon[(index + 1) % count]["x"], polygon[(index + 1) % count]["y"]
+        if (y1 > y) != (y2 > y):
+            x_at_y = x1 + (y - y1) * (x2 - x1) / (y2 - y1)
+            if x < x_at_y:
+                inside = not inside
+    return inside
+
+
+def _orientation(a: tuple[float, float], b: tuple[float, float], c: tuple[float, float]) -> float:
+    return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+
+
+def _segments_intersect(
+    a: tuple[float, float],
+    b: tuple[float, float],
+    c: tuple[float, float],
+    d: tuple[float, float],
+) -> bool:
+    orientations = (
+        _orientation(a, b, c),
+        _orientation(a, b, d),
+        _orientation(c, d, a),
+        _orientation(c, d, b),
+    )
+    if orientations[0] * orientations[1] < 0 and orientations[2] * orientations[3] < 0:
+        return True
+    return any(
+        isclose(orientation, 0.0, abs_tol=1e-9)
+        and min(start[0], end[0]) <= point[0] <= max(start[0], end[0])
+        and min(start[1], end[1]) <= point[1] <= max(start[1], end[1])
+        for orientation, start, end, point in (
+            (orientations[0], a, b, c),
+            (orientations[1], a, b, d),
+            (orientations[2], c, d, a),
+            (orientations[3], c, d, b),
+        )
+    )
+
+
+def _polygon_intersects_cell(
+    polygon: list[dict[str, int]], *, x0: float, y0: float, x1: float, y1: float
+) -> bool:
+    """Whether any part of an occlusion touches one grid cell.
+
+    A centre-point sample can miss a narrow occluder wholly contained inside
+    the cell and then publish that cell as visible.  The coverage record needs
+    the conservative implication in the other direction: a cell is visible
+    only when the complete polygon geometry is disjoint from it.
+    """
+    rectangle = ((x0, y0), (x1, y0), (x1, y1), (x0, y1))
+    vertices = tuple((point["x"], point["y"]) for point in polygon)
+    if any(x0 <= x <= x1 and y0 <= y <= y1 for x, y in vertices):
+        return True
+    if any(_point_in_polygon(x, y, polygon) for x, y in rectangle):
+        return True
+    polygon_edges = tuple(zip(vertices, vertices[1:] + vertices[:1], strict=True))
+    rectangle_edges = tuple(zip(rectangle, rectangle[1:] + rectangle[:1], strict=True))
+    return any(
+        _segments_intersect(poly_start, poly_end, cell_start, cell_end)
+        for poly_start, poly_end in polygon_edges
+        for cell_start, cell_end in rectangle_edges
+    )
+
+
+def expected_surface_cells(grid: int = GRID) -> list[list[int]]:
+    """The complete cell surface one capture's act footprint is classified over.
+
+    Named separately from ``classify_capture_visibility`` because a caller that
+    cannot measure a capture at all still owes its component an expected
+    surface: an unresolved survey classifies no cell, and a component whose
+    expected surface came from whichever capture happened to be measured first
+    would be a silent collapse (consult §7.14).
+    """
+    checked_grid = _validated_grid(grid)
+    return [[col, row] for row in range(checked_grid) for col in range(checked_grid)]
+
+
+def classify_capture_visibility(
+    *, bounds: dict[str, int], occlusion_polygons: list[list[dict[str, int]]], grid: int = GRID
+) -> dict[str, object]:
+    """One capture's exact visible/occluded classification over its own AABB.
+
+    ``occlusion_polygons`` are real page-pixel polygons; the caller has
+    already excluded any whose ``z_relationship`` positively proves they do
+    not occlude the ink (``below-ink``). Every other relationship
+    (``above-ink``, ``unknown``) is treated as occluding here, exactly as
+    conservatively as the existing page-wide rule treats any occlusion at all.
+    """
+    checked_grid = _validated_grid(grid)
+    polygons = _validated_polygons(occlusion_polygons)
+    if not isinstance(bounds, dict) or set(bounds) != {"x", "y", "w", "h"}:
+        raise ValueError("act-visibility bounds must be a closed x/y/w/h rectangle")
+    if any(
+        not isinstance(bounds[axis], int) or isinstance(bounds[axis], bool)
+        for axis in ("x", "y", "w", "h")
+    ):
+        raise ValueError("act-visibility bounds must use integer page coordinates")
+    if bounds["x"] < 0 or bounds["y"] < 0:
+        raise ValueError("act-visibility bounds must have a non-negative page origin")
+    if bounds["w"] <= 0 or bounds["h"] <= 0:
+        raise ValueError("act-visibility bounds must have positive extent")
+    expected = expected_surface_cells(checked_grid)
+    visible: list[list[int]] = []
+    occluded: list[list[int]] = []
+    for row in range(checked_grid):
+        for col in range(checked_grid):
+            x0 = bounds["x"] + col * bounds["w"] / checked_grid
+            y0 = bounds["y"] + row * bounds["h"] / checked_grid
+            x1 = bounds["x"] + (col + 1) * bounds["w"] / checked_grid
+            y1 = bounds["y"] + (row + 1) * bounds["h"] / checked_grid
+            hit = any(
+                _polygon_intersects_cell(polygon, x0=x0, y0=y0, x1=x1, y1=y1)
+                for polygon in polygons
+            )
+            (occluded if hit else visible).append([col, row])
+    return {
+        "expected_cells": expected,
+        "visible_cells": visible,
+        "occluded_cells": occluded,
+        "visibility_state": "occluded" if occluded else "visible",
+    }

@@ -37,6 +37,11 @@ def _verified_source_ledger(context) -> set[str]:
         if entry["kind"] != "page":
             continue
         page = context.tree.read_artifact(EXEMPLAR, "page", entry["artifact_id"])
+        if page.get("outcome") == "refused":
+            # A Door-refused capture never entered the run; its page record is
+            # the refusal evidence and legitimately carries no source. The act
+            # whose continuation it held is excluded upstream as a held act.
+            continue
         digest = page.get("payload", {}).get("source_sha256")
         if not isinstance(digest, str) or not digest:
             raise SchemaRefusal(f"Exemplar page {entry['artifact_id']!r} carries no source_sha256")

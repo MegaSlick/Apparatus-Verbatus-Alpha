@@ -1019,6 +1019,11 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # moves the continuation act's audit chain. No reading, decision, exit, or file
 # count changes (happy 98/0). Measured twice in independent temporary roots at
 # canonical run id "r" through this module's own helpers.
+# Unit 19C adds `cross_capture_coverage` to every Recensor review. With no
+# sealed Designator survey, each measured act records the named instrument
+# absence as `unresolved`; a Designator hold records `None`. The happy tree
+# remains 98 files at exit 0. This digest was reproduced twice from independent
+# canonical run-id `r` trees through `semantic_snapshot_digest`.
 # Review only, once more in the same seat: a page witness invoked on every act
 # and unusable on all of them now records the serving moment that produced it
 # (`provenance_for(..., attempted=attempted_page)`), where the `reading` gate
@@ -1113,10 +1118,19 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # denominator. File count remains 107 and exit remains 3. Measured twice in
 # independent temporary roots at canonical run id "r" through this module's
 # own helpers.
-HAPPY_SNAPSHOT_FILES = 95
-REVIEW_SNAPSHOT_FILES = 106
-HAPPY_RUN_TREE_DIGEST = "a0a591175415dc06da8fb7c22ea29fbd6d297b41e328f641312001a812cf8691"
-REVIEW_RUN_TREE_DIGEST = "d660d8835857765830069b3f458c2c7e4989cc483748348cd2102e191cb7de83"
+# The review tree records the same field and instrument-absence state without
+# changing its one ink-confirmed recrop: 107 files, exit 3. This digest was
+# reproduced twice under the same canonical measurement as the happy pin.
+# Re-pinned at this merge (19A+19B+19C onto the composed pr tree): each
+# scenario gains exactly the one sealed run-partition blob 19B declared
+# (95 -> 96 happy, 106 -> 107 review), every review carries 19C's
+# cross_capture_coverage field, and audit chains use the canonical page set.
+# Measured twice at two independent run roots through this module's own
+# helpers at canonical run id "r".
+HAPPY_SNAPSHOT_FILES = 96
+REVIEW_SNAPSHOT_FILES = 107
+HAPPY_RUN_TREE_DIGEST = "87d61e641f555565e801e8aae95449dd8f2680cce6595934bbd10a5e099caef7"
+REVIEW_RUN_TREE_DIGEST = "46bf9ba1e83349900d1ab9e5fbc62a0d8a602b023e8ca2d28988af6f2b71dff8"
 
 
 def orchestrate(
