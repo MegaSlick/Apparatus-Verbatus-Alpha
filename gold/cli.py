@@ -214,6 +214,7 @@ def main(argv: list[str] | None = None) -> int:
     adjudication.add_argument("--output", required=True)
     adjudication.add_argument("--adjudicator")
     adjudication.add_argument("--text-file")
+    adjudication.add_argument("--run")
     verify = commands.add_parser("verify-sampling")
     verify.add_argument("directory")
     verify.add_argument("--run", required=True)
@@ -310,7 +311,7 @@ def main(argv: list[str] | None = None) -> int:
             # immutable byte. Closure is waived because an open custody chain is
             # the normal state here; every other collection rule still refuses.
             existing = _records_in(corpus)
-            validate_corpus([*existing, record], None, require_closure=False)
+            validate_corpus([*existing, record], args.run, require_closure=False)
             write_append_only(output, record, directory_descriptor=corpus.descriptor)
     elif args.command == "verify-sampling":
         if (args.catalog is None) != (args.plan is None):

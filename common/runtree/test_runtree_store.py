@@ -1009,7 +1009,15 @@ def test_a_manifest_refuses_a_unique_directory_link_inside_the_run_tree(tmp_path
 
 @pytest.mark.parametrize("alias_name", ("also-proposal", "z-proposal-alias"))
 def test_a_manifest_refuses_one_artifact_directory_reachable_at_two_paths(tmp_path, alias_name):
-    """Alias refusal must not depend on which directory name sorts first."""
+    """Alias refusal must not depend on which directory name sorts first.
+
+    This covers the *symlink* alias and says so. The walk's other alias guard --
+    two names resolving to one inode, `identity in walked` -- cannot be reached
+    from here, because a symlink trips the link refusal first and a second
+    non-symlink name for one directory needs a directory hard link or a bind
+    mount, neither of which a portable test can make. Asserting the two messages
+    as an alternation let this read as coverage of both; it never was.
+    """
     tree = make_run(tmp_path)
     envelope = make_envelope()
     tree.publish_artifact(envelope)
@@ -1018,7 +1026,7 @@ def test_a_manifest_refuses_one_artifact_directory_reachable_at_two_paths(tmp_pa
     ).parent
     (kind_directory.parent / alias_name).symlink_to(kind_directory)
 
-    with pytest.raises(SchemaRefusal, match="is a link|are the same directory"):
+    with pytest.raises(SchemaRefusal, match="is a link"):
         tree.build_manifest(DESIGNATOR)
 
 
