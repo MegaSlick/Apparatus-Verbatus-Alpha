@@ -883,10 +883,33 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # joins the walk between Exemplar and Designator, adding its artifacts to both
 # canonical trees (90 -> 95 happy, 113 -> 118 review). Measured twice at two
 # independent run roots through this module's own helpers.
+# Unit 14A re-pin: the happy tree now carries the retained-native testimony
+# seam -- its act attachments explicitly say whether they are comparable, and
+# the Perlector dossier records `reported_basis` plus sealed-proposal
+# `edge_deltas` rather than a retired `payload.reported` bridge. The Door's own
+# decode-environment record is unchanged (it still names both library routes it
+# can take, `common/stage.py::_decode_environment`); the semantic reducer
+# already makes every stage's decode-environment payload host-observation-only
+# in this pin, so it was never part of what moved. Happy remains 92 files and
+# exits 0. Both values were measured twice in independent roots by this
+# module's `orchestrate` and `semantic_snapshot_digest` helpers at canonical
+# run id "r".
+# Sol review re-pin: audit location provenance now names only reports whose
+# exact comparison produced a frozen testimony-diff location; agreeing
+# witnesses are no longer falsely attributed as sources. Multi-page edge-delta
+# rows are also normalized to their declared `(ordinal, region_id)` order after
+# all page contributions are combined. Counts and exits remain unchanged. The
+# two repeatability tests below each measure the candidate before and after an
+# identical rerun at canonical run id "r".
+# Re-pinned at this merge (14A onto the composed pr tree): attachments say
+# whether they are comparable, the reported projection is retired for direct
+# native-payload coverage, and page-edge overshoots ride the partition keyed
+# to their retained responses. File counts hold at 95/118. Measured twice at
+# two independent run roots through this module's own helpers.
 HAPPY_SNAPSHOT_FILES = 95
 REVIEW_SNAPSHOT_FILES = 118
-HAPPY_RUN_TREE_DIGEST = "8ca86041233e0eff41ab01513aa57cc361016fe001764aece6872dca0ef3b058"
-REVIEW_RUN_TREE_DIGEST = "e0d6e676b85975dee1eb4d3b7853eccb9d96050cc3105c1f17ee5f7aa52e8bb1"
+HAPPY_RUN_TREE_DIGEST = "dde76107943a4a626ff6ea28ab0359f1fb90ec57dc5ccb6a2cb20f8e783956ee"
+REVIEW_RUN_TREE_DIGEST = "568acc38e3e52d41e65317d10eb541b77139e034e87f3af6e4a3b98d04db438b"
 
 
 def orchestrate(
@@ -3812,29 +3835,37 @@ def test_an_absent_witness_on_a_held_act_is_also_dead_not_not_run(
     assert by_chair["attestator_2"]["outcome"] == "not-run"
 
 
-def test_a_structured_testimonium_is_retained_here_and_refused_by_name_downstream(tmp_path):
-    """The known edge of the Testimonium split, pinned rather than left to be found.
+def test_a_structured_testimonium_is_retained_and_carried_as_an_incomparable_witness(tmp_path):
+    """A structured witness ends the run honestly rather than crashing.
 
     Spec 07 requires `payload` to be the witness's native output, verbatim, never
     coerced into a shared body schema — so a witness whose real output is an object
-    lands here as an object. The Perlector's current dissent comparison still reads
-    a textual `reported` field, and this stage deliberately projects that only for a
-    *textual* native payload: picking a field out of a structured one to stand in
-    for the whole would be the coercion the spec refuses, one step further on.
+    lands here as an object. The Perlector's dossier now reads that retained
+    `payload` layer natively (`reported_basis` names the derivation), and
+    `dissent_against` records the chair as `compared: "unknown"` with the fact
+    named rather than raising: a structured report is visible, not silently
+    dropped and not a crash. The act still lands under-witnessed and the run
+    still ends `partial` rather than a falsely `complete` export.
 
-    So the pipeline cannot yet carry a structured witness end to end, and this test
-    exists to say exactly how it fails: a named `SchemaRefusal` at the Perlector
-    boundary naming the chair, with the Testimonium retained intact behind it —
-    never a reading assembled from part of a payload, and never a silent skip.
-    Removing this test is the Perlector owner's to do, once its reader consumes
-    `payload` natively; until then it is the honest record of a gap.
+    **Said exactly, because the mechanism matters more than the exit code.**
+    What holds the floor down *in this scenario* is `attached: False`: the page
+    join legitimately omits a structured act (its `unjoined_act_attempts` row
+    says so by name), the chair's page capture therefore observes no box over
+    a1's proposal, and the attachment is geometrically unattached. The
+    `comparable` boolean is the SECOND, independent guard, for the case this
+    fixture does not produce — a chair whose native geometry does overlap the
+    act while its retained testimony is structured. That case is driven over real
+    records in `pipeline/5_recensor/test_comparability_floor.py`, and the
+    arithmetic in `common/contracts/test_contracts_algebra.py`; claiming this
+    scenario exercises it would report an instrument that did not run
+    (GOVERNANCE 10).
     """
     root = tmp_path / "runs"
     result = orchestrate(root, "r", "structured-witness")
 
-    assert result.returncode == 2, result.stderr
-    assert "carries no text to compare" in result.stderr
-    assert "attestator_1" in result.stderr
+    assert result.returncode == 3, result.stderr
+    assert "act a1 is held-for-review" in result.stdout
+    assert "act a1 is under-witnessed (2 of a floor of 3)" in result.stdout
 
     tree = RunTree(root, "r")
     structured = next(
@@ -3850,6 +3881,30 @@ def test_a_structured_testimonium_is_retained_here_and_refused_by_name_downstrea
     }
     assert "reported" not in structured["payload"], (
         "no field of a structured payload may be promoted to stand in for the whole"
+    )
+
+    perlectio = next(
+        record
+        for record in artifacts(tree, PERLECTOR, "perlectio")
+        if record["subject_id"] == structured["subject_id"]
+    )
+    unknown_row = next(
+        row for row in perlectio["payload"]["dissent"] if row["chair"] == "attestator_1"
+    )
+    assert unknown_row == {
+        "chair": "attestator_1",
+        "compared": "unknown",
+        "reason": "no comparable text for this act: retained derived testimony is not text",
+    }
+
+    attachment = next(
+        record
+        for record in artifacts(tree, ATTESTATORES, "act-attachment")
+        if record["subject_id"] == structured["subject_id"]
+    )
+    rows = [row for row in attachment["payload"]["attachments"] if row["chair"] == "attestator_1"]
+    assert rows and all(row["attached"] is False and row["comparable"] is False for row in rows), (
+        rows
     )
 
 

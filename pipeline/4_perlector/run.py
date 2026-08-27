@@ -66,6 +66,7 @@ from common.contracts.errors import (  # noqa: E402
 )
 from common.contracts.identities import artifact_id, perlector_attempt_id  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR, PERLECTOR  # noqa: E402
+from common.corpus_register import refuse_preference  # noqa: E402
 from common.exemplar_boundary import verify_exemplar_crop_lineage  # noqa: E402
 from common.imaging import dimensions  # noqa: E402
 from common.native_witness import (  # noqa: E402
@@ -843,6 +844,7 @@ def act_attachment_view(
         "page_ordinal",
         "testimonium_ref",
         "attached",
+        "comparable",
         "attachment_basis",
         "content_health",
         "alignment",
@@ -855,6 +857,7 @@ def act_attachment_view(
             or type(attachment.get("chair")) is not str
             or not isinstance(attachment.get("page_witness"), bool)
             or not isinstance(attachment.get("attached"), bool)
+            or not isinstance(attachment.get("comparable"), bool)
             or attachment.get("attachment_basis")
             not in {"presented-region", "anchor-line", "geometric-overlap", "unattached"}
             or not isinstance(attachment.get("content_health"), dict)
@@ -896,6 +899,7 @@ def act_attachment_view(
     # otherwise the reader is told a two-chair roster contains four witnesses.
     page_witness_chairs: set[str] = set()
     comparison_views: dict[str, str] = {}
+    edge_deltas: dict[str, list[dict[str, Any]]] = {}
     for attachment in attachments:
         if (
             not isinstance(attachment, dict)
@@ -906,6 +910,7 @@ def act_attachment_view(
                 "page_ordinal",
                 "testimonium_ref",
                 "attached",
+                "comparable",
                 "attachment_basis",
                 "content_health",
                 "alignment",
@@ -914,6 +919,7 @@ def act_attachment_view(
             or not isinstance(attachment.get("chair"), str)
             or not isinstance(attachment.get("page_witness"), bool)
             or not isinstance(attachment.get("attached"), bool)
+            or not isinstance(attachment.get("comparable"), bool)
             or attachment.get("attachment_basis")
             not in {"presented-region", "anchor-line", "geometric-overlap", "unattached"}
             or not isinstance(attachment.get("content_health"), dict)
@@ -933,6 +939,12 @@ def act_attachment_view(
                 raise SchemaRefusal(
                     "an attached act view does not span its complete delivered reading"
                 )
+        if attachment["comparable"] and not attachment["attached"]:
+            raise SchemaRefusal(
+                "an unattached act view cannot claim comparable text. "
+                "Text cannot count for an act when witness geometry did not attach to it. "
+                "Rebuild both facts from the retained Testimonium."
+            )
         elif not attachment["attached"] and (
             attachment["attachment_basis"] != "unattached" or span is not None
         ):
@@ -1080,6 +1092,9 @@ def act_attachment_view(
                     f"act {act_id} page attachment for chair {chair!r} does not derive from "
                     "that witness's reported geometry against the sealed proposal"
                 )
+            edge_deltas.setdefault(chair, []).extend(
+                sealed_proposal_edge_deltas(page_payload, page_bases)
+            )
             unjoined = (
                 page_payload.get("unjoined_act_attempts")
                 if isinstance(page_payload, dict)
@@ -1168,17 +1183,32 @@ def act_attachment_view(
                 and isinstance(alignment, dict)
                 and alignment.get("status") == "aligned"
             ):
-                if set(alignment) != {
-                    "status",
-                    "anchor_basis",
-                    "anchor_span",
-                    "witness_span",
-                    "line_geometry",
-                    "loss",
-                    "offset_maps",
-                } or span != alignment.get("witness_span"):
+                if (
+                    not isinstance(alignment, dict)
+                    or set(alignment)
+                    != {
+                        "status",
+                        "anchor_basis",
+                        "anchor_chair",
+                        "anchor_span",
+                        "witness_span",
+                        "line_geometry",
+                        "loss",
+                        "offset_maps",
+                    }
+                    or alignment.get("status") != "aligned"
+                    or (
+                        alignment.get("anchor_basis") == "act-anchor"
+                        and not isinstance(alignment.get("anchor_chair"), str)
+                    )
+                    or (
+                        alignment.get("anchor_basis") != "act-anchor"
+                        and alignment.get("anchor_chair") is not None
+                    )
+                    or span != alignment.get("witness_span")
+                ):
                     raise SchemaRefusal("an attached page witness has no computed alignment")
-                page_text = page_payload.get("reported")
+                page_text = page_payload.get("payload")
                 witness_span = alignment["witness_span"]
                 if not isinstance(page_text, str):
                     raise SchemaRefusal("an attached page witness has no textual comparison view")
@@ -1225,6 +1255,20 @@ def act_attachment_view(
                 # statement of why comparison failed.
                 raise SchemaRefusal("an unattached page witness has no explicit unaligned result")
             page_witness_chairs.add(chair)
+            # Geometry alone cannot satisfy the witness floor: this act must also
+            # have an aligned slice of retained page text. Re-derive the boolean
+            # so a resealed attachment cannot claim comparability by assertion.
+            if attachment["comparable"] != (
+                attachment["attached"]
+                and isinstance(alignment, dict)
+                and alignment.get("status") == "aligned"
+            ):
+                raise SchemaRefusal(
+                    f"act {act_id} page attachment for chair {chair!r} claims a comparability "
+                    "its own recorded alignment does not support. The witness floor could count "
+                    "text that was never placed in this act. Rebuild comparability from the "
+                    "referenced page Testimonium and alignment."
+                )
         else:
             if attachment_page is not None:
                 raise SchemaRefusal("an act-scoped witness carries a page ordinal")
@@ -1240,6 +1284,24 @@ def act_attachment_view(
                 raise SchemaRefusal(
                     f"act {act_id} attachment points to another chair's Testimonium"
                 )
+            # Act-scoped comparability comes from the referenced Testimonium's
+            # own text; structured reports stay retained but uncountable.
+            if attachment["comparable"] != (
+                attachment["attached"]
+                and isinstance(testimonium.get("payload", {}).get("payload"), str)
+            ):
+                raise SchemaRefusal(
+                    f"act {act_id} attachment for chair {chair!r} claims a comparability its "
+                    "own retained derived testimony does not support. The witness floor could "
+                    "count a structured or absent report as act text. Rebuild comparability "
+                    "from the current referenced Testimonium."
+                )
+            edge_deltas.setdefault(chair, []).extend(
+                sealed_proposal_edge_deltas(
+                    testimonium["payload"],
+                    [basis for basis in bases if basis["region_id"] in proposal_region_ids],
+                )
+            )
     return {
         "reference": context.artifact_ref(ATTESTATORES, "act-attachment", record["artifact_id"]),
         # A blinded dossier may show that page evidence exists, but not the
@@ -1258,7 +1320,51 @@ def act_attachment_view(
         # so R5a/R5b, which own the dossier's reference-based act views, can
         # weigh it deliberately. R4 audit, F-X5.
         "comparison_views": comparison_views,
+        "edge_deltas": ordered_edge_deltas(edge_deltas),
     }
+
+
+def ordered_edge_deltas(
+    rows_by_chair: dict[str, list[dict[str, Any]]],
+) -> dict[str, list[dict[str, Any]]]:
+    """Keep each chair's multi-page delta evidence in its declared stable order."""
+    return {
+        chair: sorted(rows, key=lambda row: (row["ordinal"], row["region_id"]))
+        for chair, rows in rows_by_chair.items()
+    }
+
+
+def sealed_proposal_edge_deltas(
+    payload: dict[str, Any], bases: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Per-chair offsets from observed ink to this act's sealed proposals.
+
+    This is correspondence evidence, not a vote: each native/derived observation
+    can retain every positive-area overlap.  No chair is compared with another
+    chair and no magnitude is interpreted here.
+    """
+    rows: list[dict[str, Any]] = []
+    for observation in payload.get("observed", []):
+        if observation.get("bounds_source") not in {"native", "derived"}:
+            continue
+        observed = observation["bounds"]
+        for basis in bases:
+            bounds = basis["transform"]["bounds"]
+            if not reported_geometry_overlaps([observation], bounds):
+                continue
+            rows.append(
+                {
+                    "ordinal": observation["ordinal"],
+                    "region_id": basis["region_id"],
+                    "offsets": {
+                        "left": observed["x"] - bounds["x"],
+                        "top": observed["y"] - bounds["y"],
+                        "right": observed["x"] + observed["w"] - bounds["x"] - bounds["w"],
+                        "bottom": observed["y"] + observed["h"] - bounds["y"] - bounds["h"],
+                    },
+                }
+            )
+    return sorted(rows, key=lambda row: (row["ordinal"], row["region_id"]))
 
 
 def act_comparison_view(page_text: str, witness_span: dict[str, int]) -> str:
@@ -1454,14 +1560,14 @@ def _whole_act_gap(testimonia: list[dict], references: dict[str, dict]) -> list[
             "chair": record["payload"]["chair"],
             "testimonium_id": record["artifact_id"],
             "reference": references[record["artifact_id"]],
-            "variant": record["payload"]["reported"],
+            "variant": record["payload"]["payload"],
         }
         for record in testimonia
         # Presence and type, never truthiness: a genuinely-empty witness
         # reported "" and that report is the strongest corroboration a
         # whole-act gap can carry.
         if record["outcome"] in WITNESS_READING_OUTCOMES
-        and isinstance(record["payload"].get("reported"), str)
+        and isinstance(record["payload"].get("payload"), str)
     ]
     return [{"position": "whole-act", "start": 0, "end": 0, "witness_evidence": evidence}]
 
@@ -1623,6 +1729,7 @@ def validate_reading_payload(
     this is the matching check at the moment one is written, so a defect
     surfaces where it was introduced rather than one stage later.
     """
+    refuse_preference(payload, what="a Perlector reading")
     missing = sorted(fields - set(payload))
     unexpected = sorted(set(payload) - fields)
     if missing or unexpected:
@@ -1728,12 +1835,14 @@ def validate_reading_payload(
         attachment = reading_dossier["act_attachment"]
         if (
             not isinstance(attachment, dict)
-            or set(attachment) != {"reference", "page_witness_count", "comparison_views"}
+            or set(attachment)
+            != {"reference", "page_witness_count", "comparison_views", "edge_deltas"}
             or not isinstance(attachment["reference"], dict)
             or not isinstance(attachment["page_witness_count"], int)
             or isinstance(attachment["page_witness_count"], bool)
             or attachment["page_witness_count"] < 0
             or not isinstance(attachment["comparison_views"], dict)
+            or not isinstance(attachment["edge_deltas"], dict)
         ):
             raise SchemaRefusal("a Perlector dossier has malformed act-attachment evidence")
         if is_unprimed:
@@ -1982,19 +2091,15 @@ def _audit_semi_final(
         if not isinstance(record, dict):
             raise FatalAccounting(f"Perlectio for {act_id} carries a non-object audit testimonium")
         reported = record.get("reported")
-        # Absent is the honest shape for a chair that failed or never ran; a
-        # present-but-untextual report is a witness this pass cannot compare
-        # and may not quietly omit from the flag denominator -- the audit
-        # draft would state a flag set computed from fewer witnesses than the
-        # act has, with nothing saying which was left out. `dissent_against`
-        # already refuses the same shape; this keeps the two rules aligned so
-        # a reordering cannot open the gap.
+        # `None` covers non-reading and structured reports; the latter remains
+        # present in dissent as incomparable rather than becoming invented text.
         if reported is None:
             continue
         if not isinstance(reported, str):
             raise FatalAccounting(
-                f"Perlectio for {act_id} carries a witness report that is not text; a witness "
-                "this pass cannot compare may not be dropped from its flags"
+                "a dossier reported value is neither text nor null. "
+                "The audit cannot compare it without coercing witness evidence. "
+                "Rebuild the dossier from retained derived testimony before running the audit."
             )
         reports.append(reported)
     return {
@@ -2137,6 +2242,43 @@ def _sealed_sibling_semi_finals(
             )
         )
     return siblings
+
+
+def flag_location_basis(
+    dossier: dict[str, Any], flags: list[dict[str, Any]], *, semi_final_text: str
+) -> list[dict[str, str]]:
+    """Name the chair and retained-text derivation behind testimony-diff flags.
+
+    Only a report whose exact comparison with the semi-final produced one of
+    the frozen testimony-diff locations is named.  An agreeing witness is
+    evidence in the dossier, but it did not locate that flag and must not be
+    attributed as though it did.  This records a location basis only; it does
+    not promote testimony into a reading or make boundary geometry a text flag.
+    """
+    testimony_diff_locations = {
+        (flag["location"]["start"], flag["location"]["end"])
+        for flag in flags
+        if flag.get("class") == "testimony-diff"
+    }
+    if not testimony_diff_locations:
+        return []
+    rows = dossier.get("testimonia", [])
+    return sorted(
+        [
+            {
+                "class": "testimony-diff",
+                "chair": row["witness_label"],
+                "derivation": row["reported_basis"],
+            }
+            for row in rows
+            if isinstance(row, dict)
+            and isinstance(row.get("reported"), str)
+            and row.get("reported_basis") in {"own-report", "page-slice"}
+            and row["reported"] != semi_final_text
+            and audit.text_change_span(semi_final_text, row["reported"]) in testimony_diff_locations
+        ],
+        key=lambda row: (row["chair"], row["derivation"]),
+    )
 
 
 def _page_flags(
@@ -2812,6 +2954,9 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             "round_cap": audit_policy["round_cap"],
             "policy": policy_record,
             "flags": flags,
+            "flag_location_basis": flag_location_basis(
+                payload["dossier"], flags, semi_final_text=payload["text"]
+            ),
         }
         audit.validate_draft(draft_payload)
         draft = context.publish(

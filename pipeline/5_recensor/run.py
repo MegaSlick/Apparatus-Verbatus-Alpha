@@ -41,6 +41,7 @@ from common.contracts.stages import (  # noqa: E402
     PERLECTOR,
     RECENSOR,
 )
+from common.corpus_register import refuse_preference  # noqa: E402
 from common.exemplar_boundary import verify_sealed_page_pixels  # noqa: E402
 from common.native_witness import (  # noqa: E402
     reported_geometry_overlaps,
@@ -156,6 +157,9 @@ def chair_current_attempts(context, act_id: str) -> dict[str, dict]:
     records = artifacts_for(context, ATTESTATORES, "testimonium", act_id)
     return {
         record["payload"]["chair"]: {
+            # The identity is required to reject an attachment that combines a
+            # current outcome with a superseded Testimonium payload.
+            "artifact_id": record["artifact_id"],
             "outcome": record["outcome"],
             "content_health": record["payload"].get("content_health"),
             "read_evidence": _read_evidence(record["payload"]),
@@ -252,7 +256,9 @@ def _merge_page_attachment_fact(previous: dict, current: dict) -> dict:
     return previous
 
 
-def act_attachment_facts(context, act_id: str, outcomes: dict[str, str]) -> dict[str, dict]:
+def act_attachment_facts(
+    context, act_id: str, current_attempts: dict[str, dict]
+) -> dict[str, dict]:
     """Re-derive R0's attachment record before counting the witness floor.
 
     The Perlector checks the same writer fact at its read seam.  The Recensor is
@@ -261,6 +267,7 @@ def act_attachment_facts(context, act_id: str, outcomes: dict[str, str]) -> dict
     testimony must still overlap this act's original proposal geometry, in
     either direction of claimed/derived drift.
     """
+    outcomes = chair_outcomes(current_attempts)
     records = artifacts_for(context, ATTESTATORES, "act-attachment", act_id)
     if not records:
         raise FatalAccounting(f"act {act_id} has no derived act-attachment record")
@@ -277,12 +284,14 @@ def act_attachment_facts(context, act_id: str, outcomes: dict[str, str]) -> dict
         raise FatalAccounting(f"act {act_id} has malformed derived act-attachment payload")
     proposal_pages = _proposal_geometry_by_page(context, act_id)
     facts: dict[str, dict] = {}
-    seen_pairs: set[tuple[str, int | None]] = set()
+    seen_pairs: set[tuple[str, object]] = set()
     for entry in entries:
         if not isinstance(entry, dict) or not isinstance(entry.get("chair"), str):
             raise FatalAccounting(f"act {act_id} has malformed derived act-attachment entry")
         chair = entry["chair"]
-        if not isinstance(entry.get("attached"), bool):
+        if not isinstance(entry.get("attached"), bool) or not isinstance(
+            entry.get("comparable"), bool
+        ):
             raise FatalAccounting(f"act {act_id} has ambiguous derived act-attachment facts")
         attachment_basis = entry.get("attachment_basis")
         if attachment_basis not in {
@@ -311,19 +320,7 @@ def act_attachment_facts(context, act_id: str, outcomes: dict[str, str]) -> dict
                 f"act {act_id} attachment entry for chair {chair!r} carries no boolean "
                 "page_witness flag; its scope decides which consistency check applies"
             )
-        page_ordinal = entry.get("page_ordinal")
-        if page_witness:
-            if not isinstance(page_ordinal, int) or isinstance(page_ordinal, bool):
-                raise FatalAccounting(
-                    f"act {act_id} page witness {chair!r} has no integer page ordinal; its "
-                    "attachment cannot be placed; restore the contributing page identity"
-                )
-        elif page_ordinal is not None:
-            raise FatalAccounting(
-                f"act {act_id} act-scoped witness {chair!r} carries page ordinal "
-                f"{page_ordinal!r}; its scope is contradictory; restore null page_ordinal"
-            )
-        pair = (chair, page_ordinal)
+        pair = (chair, entry.get("page_ordinal") if page_witness else None)
         if pair in seen_pairs:
             raise FatalAccounting(
                 f"act {act_id} repeats attachment pair {pair!r}; its page evidence is "
@@ -403,8 +400,16 @@ def act_attachment_facts(context, act_id: str, outcomes: dict[str, str]) -> dict
                     f"act {act_id} page attachment for chair {chair!r} does not derive from "
                     "that witness's reported geometry against the sealed proposal"
                 )
+            if entry["comparable"] and not entry["attached"]:
+                raise FatalAccounting(
+                    f"act {act_id} has comparable text without an attached witness. "
+                    "The witness floor could count text that geometry did not place in the act. "
+                    "Rebuild the attachment facts from the retained witness geometry."
+                )
             alignment = entry.get("alignment")
             alignment_status = alignment.get("status") if isinstance(alignment, dict) else None
+            # An unhashable JSON value at an enum field is a named refusal,
+            # never a set-membership TypeError.
             if not isinstance(alignment_status, str) or alignment_status not in {
                 "aligned",
                 "unaligned",
@@ -432,6 +437,7 @@ def act_attachment_facts(context, act_id: str, outcomes: dict[str, str]) -> dict
                     != {
                         "status",
                         "anchor_basis",
+                        "anchor_chair",
                         "anchor_span",
                         "witness_span",
                         "line_geometry",
@@ -440,7 +446,19 @@ def act_attachment_facts(context, act_id: str, outcomes: dict[str, str]) -> dict
                     }
                     or not isinstance(alignment["anchor_basis"], str)
                     or alignment["anchor_basis"]
-                    not in {"act-anchor", "no-page-anchor", "act-line-not-located"}
+                    not in {
+                        "act-anchor",
+                        "no-page-anchor",
+                        "act-line-not-located",
+                    }
+                    or (
+                        alignment["anchor_basis"] == "act-anchor"
+                        and not isinstance(alignment.get("anchor_chair"), str)
+                    )
+                    or (
+                        alignment["anchor_basis"] != "act-anchor"
+                        and alignment.get("anchor_chair") is not None
+                    )
                 ):
                     raise FatalAccounting(
                         f"act {act_id} page witness {chair!r} carries a malformed aligned "
@@ -454,30 +472,94 @@ def act_attachment_facts(context, act_id: str, outcomes: dict[str, str]) -> dict
                     f"act {act_id} page witness {chair!r} carries an unaligned record with "
                     "no usable reason; an unexplained failure is a silent loss"
                 )
+            # `attached` proves geometry, not text. The floor also requires an
+            # aligned slice from the referenced page record.
+            if entry["comparable"] != (
+                entry["attached"]
+                and alignment["status"] == "aligned"
+                and isinstance(page_payload.get("payload"), str)
+            ):
+                raise FatalAccounting(
+                    f"act {act_id} page attachment for chair {chair!r} claims a comparability "
+                    "its own retained page testimony does not support. The witness floor could "
+                    "count text the page record cannot supply for this act. Rebuild the attachment "
+                    "from the referenced page Testimonium and alignment."
+                )
         else:
-            if entry.get("page_ordinal") is not None:
+            # Act-scoped floor facts come from the current referenced
+            # Testimonium; trusting both stored booleans would allow a producer
+            # to forge them false and silently remove a completed chair.
+            reference = entry.get("testimonium_ref")
+            if not isinstance(reference, dict):
                 raise FatalAccounting(
-                    f"act {act_id} act-scoped witness {chair!r} claims a page ordinal"
+                    f"act {act_id} act-scoped witness {chair!r} has no Testimonium reference. "
+                    "Its attachment and comparability cannot be checked against immutable evidence. "
+                    "Rebuild the attachment with a reference to the current Testimonium."
                 )
-            if entry.get("alignment") is not None:
+            try:
+                testimonium = context.tree.read_artifact_reference(
+                    reference,
+                    stage=ATTESTATORES,
+                    kind="testimonium",
+                    subject_id=act_id,
+                )
+            except ContractError as error:
                 raise FatalAccounting(
-                    f"act {act_id} act-scoped witness {chair!r} claims page alignment evidence"
-                )
-            expected_attached = outcomes.get(chair) in WITNESS_READING_OUTCOMES
-            if entry["attached"] != expected_attached:
+                    f"act {act_id} act-scoped witness {chair!r} names no readable "
+                    f"Testimonium: {error}. Its witness-floor contribution is unverifiable. "
+                    "Restore the referenced artifact and retry the Recensor."
+                ) from error
+            act_payload = testimonium.get("payload")
+            if not isinstance(act_payload, dict) or act_payload.get("chair") != chair:
                 raise FatalAccounting(
-                    f"act {act_id} act-scoped attachment for chair {chair!r} disagrees with "
-                    "the current Testimonium outcome for that chair"
+                    f"act {act_id} act-scoped attachment for chair {chair!r} points to "
+                    "another chair's Testimonium. One witness's evidence would be attributed "
+                    "to another chair. Rebuild the attachment from the named chair's own record."
                 )
-            expected_basis = "presented-region" if expected_attached else "unattached"
+            current = current_attempts.get(chair)
+            if not isinstance(current, dict) or testimonium.get("artifact_id") != current.get(
+                "artifact_id"
+            ):
+                raise FatalAccounting(
+                    f"act {act_id} act-scoped attachment for chair {chair!r} does not point "
+                    "to that chair's current Testimonium; its referenced witness basis has "
+                    "since superseded. The witness floor would be computed from stale evidence. "
+                    "Rebuild the attachment against the current immutable attempt."
+                )
+            derived_attached = testimonium.get("outcome") in WITNESS_READING_OUTCOMES
+            if entry["attached"] != derived_attached:
+                raise FatalAccounting(
+                    f"act {act_id}'s derived act-attachment disagrees with the current "
+                    f"Testimonium outcome for chair {chair!r}; the witness floor may not be "
+                    "counted from a superseded attempt. The attachment is stale or malformed. "
+                    "Rebuild it from the current Testimonium before retrying."
+                )
+            if entry.get("page_ordinal") is not None or entry.get("alignment") is not None:
+                raise FatalAccounting(
+                    f"act {act_id} act-scoped attachment for chair {chair!r} carries page "
+                    "alignment evidence. The record mixes witness scopes with different "
+                    "derivations. Rebuild it without page alignment fields."
+                )
+            expected_basis = "presented-region" if derived_attached else "unattached"
             if attachment_basis != expected_basis:
                 raise FatalAccounting(
                     f"act {act_id} act-scoped attachment for chair {chair!r} names "
-                    f"{attachment_basis!r}; its {entry['attached']!r} attached fact requires "
-                    f"{expected_basis!r}"
+                    f"{attachment_basis!r} instead of its derived {expected_basis!r} basis. "
+                    "The stated cause contradicts the current Testimonium outcome. "
+                    "Rebuild the basis from that current outcome."
+                )
+            if entry["comparable"] != (
+                derived_attached and isinstance(act_payload.get("payload"), str)
+            ):
+                raise FatalAccounting(
+                    f"act {act_id} attachment for chair {chair!r} claims a comparability its "
+                    "own retained derived testimony does not support. The witness floor could "
+                    "count a structured or absent report as act text. Rebuild comparability "
+                    "from the current referenced Testimonium."
                 )
         fact = {
             "attached": entry["attached"],
+            "comparable": entry["comparable"],
             "attachment_basis": attachment_basis,
             "truncated": truncated,
             "health_unrecorded": truncated is None,
@@ -507,7 +589,10 @@ def act_attachment_facts(context, act_id: str, outcomes: dict[str, str]) -> dict
             # Its act-level floor remains the one act attempt, so a continuation
             # whose page has no anchor cannot erase the primary page's valid
             # attachment; all page references remain separately checked by the
-            # content denominator below.
+            # content denominator below. Merging whole rows keeps one page's
+            # contribution carrying both predicates — `comparable` is derived
+            # from the shared act payload, so OR-ing booleans across pages
+            # could only manufacture a basis no single page supplied.
             previous = facts[chair]
             merged = dict(_merge_page_attachment_fact(previous, fact))
             # `act-line-not-located` is sticky across aligned page rows: a
@@ -672,7 +757,7 @@ def validate_chair_coverage(context, act_id: str, floor: int) -> dict[str, objec
             f"which this run was not sealed with. `run.json` names its witness "
             "chairs and nothing may add one after the seal"
         )
-    attachments = act_attachment_facts(context, act_id, outcomes)
+    attachments = act_attachment_facts(context, act_id, current_attempts)
     # R4's attachment is an independent computed fact for a PAGE witness.  It
     # must not be forced back into the act attempt outcome there: a page
     # witness can have read its page while the bounded text-to-anchor
@@ -1565,12 +1650,18 @@ def testimony_content_findings(context) -> dict[int, dict]:
                 {"by_chair": {}, "shortfall": False},
             )
             finding.setdefault("unclaimed_observations", []).extend(copy.deepcopy(unclaimed))
-            # Unclaimed geometry requests bounded recovery without becoming an
-            # act-level text shortfall; it assigns the observation to no act.
-        if "reported" not in payload:
+            # An observation outside every proposal is a retained coverage
+            # finding, not evidence that the page's *reported text* fell
+            # outside an attached span.  It independently asks the Recensor
+            # for bounded recovery below; turning it into this text shortfall
+            # would keep every act on the page held after that route has run,
+            # even though the finding never assigned the observation to one of
+            # them.  That would turn unknown ownership into a silent negative
+            # verdict about otherwise reconciled acts.
+        if "payload" not in payload:
             if record.get("outcome") in WITNESS_READING_OUTCOMES:
                 raise FatalAccounting(
-                    "reading page Testimonium has no reported text for content coverage"
+                    "reading page Testimonium has no retained derived payload for content coverage"
                 )
             # A page witness that read nothing across every act on this page --
             # every configured act was `dead`, `not-run`, or otherwise non-reading
@@ -1582,13 +1673,14 @@ def testimony_content_findings(context) -> dict[int, dict]:
             # attachments in the former case; the chair's absence stays visible
             # through its act-scoped Testimonia and the act's witness-coverage floor.
             continue
-        text = payload.get("reported")
+        text = payload.get("payload")
         if not isinstance(text, str):
-            # Deliberately not the identity refusal above. A record that names its
-            # page and chair but carries a non-textual `reported` is a different
-            # fault from one that names neither, and one string for two faults
-            # sends whoever reads the exit to the wrong producer.
-            raise FatalAccounting("page Testimonium's reported page text is not text")
+            # Structured derived testimony is retained but has no comparable
+            # page text.  Its act attachment is explicitly `comparable: false`,
+            # so it cannot satisfy the witness floor; treating that declared
+            # limit as a malformed page would erase the very evidence the
+            # retirement is meant to preserve.
+            continue
         spans = []
         for act_id, row in rows_by_page_chair.get((ordinal, chair), []):
             alignment = row.get("alignment")
@@ -1644,9 +1736,11 @@ NO_PAGE_CONSERVATION = {
 NO_PAGE_CONTENT_COVERAGE = {
     "by_chair": None,
     "shortfall": None,
+    # A structured page report is retained testimony but supplies no comparable
+    # text; describing that as no report would make the measurement record false.
     "reason": (
-        "no page witness reported text for this page, so testimony content coverage "
-        "was not measured; its acts are already held or floored by their own causes"
+        "no page witness supplied comparable page text for this page, so testimony content "
+        "coverage was not measured; its acts are already held or floored by their own causes"
     ),
 }
 
@@ -1694,9 +1788,9 @@ def review_route_from_findings(
     Coverage comes first under GOALS 1, followed by R5b's reading-audit finding,
     then the witness floor. Every active reason is retained in that stable order;
     they all map to the same `held-for-review` outcome. `None` testimony coverage
-    means no page witness reported text and routes like `False`: the act's own
-    held or witness-floor cause already routes it, while an absent measurement
-    is not itself a measured shortfall. `audit_unresolved` is
+    means no page witness supplied comparable page text and routes like `False`:
+    the act's own held or witness-floor cause already routes it, while an absent
+    measurement is not itself a measured shortfall. `audit_unresolved` is
     wired to the Recensor's verified `audit_state` since the wave restacked R5b
     below this branch; `None` means no audit exists and routes like `False` by
     design, because absence of an audit is not an unresolved audit. `unreconciled`
@@ -1704,6 +1798,17 @@ def review_route_from_findings(
     preempted cause with no independent field, so an act simultaneously
     under-witnessed and scenario-held recorded only the floor cause.
     """
+    # Screen before truthiness so a malformed nested value cannot introduce
+    # witness-selection vocabulary into the routing decision.
+    refuse_preference(
+        {
+            "testimony_shortfall": testimony_shortfall,
+            "audit_unresolved": audit_unresolved,
+            "under_witnessed": under_witnessed,
+            "unreconciled": unreconciled,
+        },
+        what="a Recensor review route",
+    )
     reasons = []
     if testimony_shortfall:
         reasons.append(
@@ -1726,6 +1831,31 @@ def review_route_from_findings(
     if not reasons:
         return None
     return "held-for-review", "; ".join(reasons)
+
+
+def publish_review(
+    context,
+    *,
+    subject_id: str,
+    outcome: str,
+    attempt: str,
+    inputs: list[dict],
+    payload: dict,
+) -> dict:
+    """Write a review only after rejecting witness-selection vocabulary.
+
+    Review records are a second durable consumer beside Perlectio: screening
+    only the route inputs would leave a future direct payload field unchecked.
+    """
+    refuse_preference(payload, what="a Recensor review")
+    return context.publish(
+        kind="review",
+        subject_id=subject_id,
+        outcome=outcome,
+        attempt=attempt,
+        inputs=inputs,
+        payload=payload,
+    )
 
 
 def _reconcile_reading_regions(reading: dict, regions: list[dict], act_id: str) -> list[dict]:
@@ -1956,8 +2086,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             # hardcoding them empty would silently drop a flagged page's
             # evidence for the one act that touches it.
             hold_regions = artifacts_for(context, DESIGNATOR, "region", act_id)
-            context.publish(
-                kind="review",
+            publish_review(
+                context,
                 subject_id=act_id,
                 outcome="held-for-review",
                 attempt=attempt_id(act_id, "recense", 1),
@@ -2094,8 +2224,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 },
             )
             request_ref = context.input_ref(request.relative_path)
-            context.publish(
-                kind="review",
+            publish_review(
+                context,
                 subject_id=act_id,
                 outcome="recovery-requested",
                 attempt=attempt_id(act_id, "recense", ordinal),
@@ -2152,7 +2282,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 blank_corroboration(
                     coverage,
                     current_outcomes,
-                    act_attachment_facts(context, act_id, current_outcomes),
+                    act_attachment_facts(context, act_id, current_attempts),
                     chair_read_evidence(current_attempts),
                     witness_uncovered=bool(state["recovery_regions"]),
                 )
@@ -2250,8 +2380,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         if classify(RECENSOR, outcome) is not OutcomeClass.COMPLETED:
             held += 1
 
-        context.publish(
-            kind="review",
+        publish_review(
+            context,
             subject_id=act_id,
             outcome=outcome,
             attempt=attempt_id(act_id, "recense", ordinal),

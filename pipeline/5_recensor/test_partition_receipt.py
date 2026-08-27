@@ -201,7 +201,15 @@ def test_recensor_rederives_act_scoped_attachment_instead_of_trusting_its_label(
         return record
 
     monkeypatch.setattr(context.tree, "read_artifact", forged_attachment)
-    with pytest.raises(FatalAccounting, match="act-scoped attachment"):
+    # Two independent protections can name this forgery: the re-derivation of
+    # the act-scoped attachment, and the outcome-consistency check that refuses
+    # an attachment disagreeing with the current Testimonium. Which one fires
+    # first depends on the drift; either named refusal proves the label was
+    # not trusted.
+    with pytest.raises(
+        FatalAccounting,
+        match="act-scoped attachment|disagrees with the current Testimonium outcome",
+    ):
         recensor.validate_chair_coverage(context, act["act_id"], context.witness_floor)
 
 
@@ -245,7 +253,10 @@ def test_recensor_uses_the_page_attempt_outcome_for_page_geometry(tmp_path, monk
                 if item["chair"] == "attestator_3" and item["page_ordinal"] == 1
             )
             assert entry["attached"] is True
-            entry.update(attached=False, attachment_basis="unattached", span=None)
+            # A coherent forgery: comparability implies attachment, so the
+            # forged row must drop both or the comparable seam names it first
+            # instead of the page-outcome check this test is aimed at.
+            entry.update(attached=False, attachment_basis="unattached", span=None, comparable=False)
         return record
 
     def failed_page(reference, *, stage, kind, subject_id):
@@ -302,8 +313,8 @@ def test_recensor_rederives_a_native_projection_from_the_retained_raw_response(
             text = payload["payload"]
             forged = ("X" if text[0] != "X" else "Y") + text[1:]
             payload["payload"] = forged
-            payload["reported"] = forged
             payload["native_capture"]["parse"]["text"] = forged
+            payload["content_health"]["characters"] = len(forged)
         return record
 
     monkeypatch.setattr(context.tree, "read_artifact_reference", forged_projection)
@@ -920,9 +931,24 @@ def _coverage_with_an_excluded_chair() -> dict:
 
     outcomes = {"attestator_1": "read", "attestator_2": "read", "attestator_3": "excluded"}
     attachments = {
-        "attestator_1": {"attached": True, "truncated": False, "health_unrecorded": False},
-        "attestator_2": {"attached": True, "truncated": False, "health_unrecorded": False},
-        "attestator_3": {"attached": False, "truncated": None, "health_unrecorded": True},
+        "attestator_1": {
+            "attached": True,
+            "comparable": True,
+            "truncated": False,
+            "health_unrecorded": False,
+        },
+        "attestator_2": {
+            "attached": True,
+            "comparable": True,
+            "truncated": False,
+            "health_unrecorded": False,
+        },
+        "attestator_3": {
+            "attached": False,
+            "comparable": False,
+            "truncated": None,
+            "health_unrecorded": True,
+        },
     }
     return witness_coverage(outcomes, 3, attachments=attachments)
 

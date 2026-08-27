@@ -54,7 +54,20 @@ MAX_REGISTER_BYTES: Final = 64 * 1024 * 1024
 MAX_REGISTER_RECORDS: Final = 100_000
 MAX_RECORD_LIST_ITEMS: Final = 100_000
 _FORBIDDEN_PREFERENCE_FIELDS: Final = frozenset(
-    {"primary", "canonical", "best", "preferred", "superseded_by"}
+    {
+        "primary",
+        "canonical",
+        "best",
+        "preferred",
+        "superseded_by",
+        # These are witness-selection mechanisms under a different spelling.
+        # `agree` is deliberately absent: page partition evidence legitimately
+        # records `partition_disagreement`.
+        "consensus",
+        "majority",
+        "vote",
+        "quorum",
+    }
 )
 
 
@@ -486,7 +499,12 @@ def _correspondence_identity(record: dict[str, Any]) -> str:
     return f"{record['act_id']}->{record['physical_act_id']}"
 
 
-def _refuse_preference(value: Any) -> None:
+def refuse_preference(value: Any, *, what: str = "corpus register") -> None:
+    """Recursively refuse selection vocabulary and name the faulty record kind.
+
+    Iterative on purpose: the value is untrusted input, and a deeply nested
+    payload must exhaust the walk's own list, never the interpreter stack.
+    """
     pending = [value]
     while pending:
         current = pending.pop()
@@ -494,11 +512,15 @@ def _refuse_preference(value: Any) -> None:
             forbidden = set(current) & _FORBIDDEN_PREFERENCE_FIELDS
             if forbidden:
                 raise SchemaRefusal(
-                    f"corpus register may not express capture preference: {sorted(forbidden)}"
+                    f"{what} may not express capture preference: {sorted(forbidden)}"
                 )
             pending.extend(current.values())
         elif isinstance(current, list):
             pending.extend(current)
+
+
+# The pre-14A private spelling, kept so older callers keep their exact seam.
+_refuse_preference = refuse_preference
 
 
 def _closed(record: Any, fields: set[str], what: str) -> dict[str, Any]:

@@ -223,6 +223,49 @@ def test_the_no_order_bearing_sweep_is_not_vacuous(evidence):
         dossier.assert_no_order_bearing_field(tampered)
 
 
+@pytest.mark.parametrize("field", ["consensus", "majority", "vote", "quorum"])
+def test_voting_synonyms_are_refused_at_the_dossier_boundary_before_reading(evidence, field):
+    """Every durable voting synonym is also blocked before a reader sees it."""
+    context, act_id, act_key, regions, testimonia = evidence
+    built = _build(context, act_id, act_key, regions, testimonia)
+    tampered = copy.deepcopy(built)
+    tampered["testimonia"][0][field] = True
+
+    with pytest.raises(ContractError, match="names a preference"):
+        dossier.assert_no_order_bearing_field(tampered)
+
+
+def test_edge_deltas_refuse_a_colliding_witness_label(evidence, monkeypatch):
+    """The new per-label geometry map may not overwrite one chair with another.
+
+    Comparison views already refuse the same collision. Drive this with no
+    comparison views so the edge-delta map has to defend its own evidence.
+    """
+    context, act_id, act_key, regions, testimonia = evidence
+    monkeypatch.setattr(dossier, "witness_label", lambda *args, **kwargs: "witness-collision")
+
+    with pytest.raises(SchemaRefusal, match="edge-deltas.*same witness label"):
+        dossier.build_dossier(
+            context,
+            act_id=act_id,
+            act_key=act_key,
+            regions=regions,
+            testimonia=testimonia,
+            regime="blinded",
+            page_renders=[],
+            witness_context=dossier.load_witness_context(DECLARATION),
+            act_attachment={
+                "reference": {"relative_path": "unused", "sha256": "0" * 64},
+                "page_witness_count": 0,
+                "comparison_views": {},
+                "edge_deltas": {
+                    "attestator_1": [],
+                    "attestator_2": [],
+                },
+            },
+        )
+
+
 def test_blinded_regime_carries_no_chair_name_or_training_domain(evidence):
     context, act_id, act_key, regions, testimonia = evidence
     named = _build(context, act_id, act_key, regions, testimonia, regime="named")

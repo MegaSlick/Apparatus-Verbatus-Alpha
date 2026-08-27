@@ -12,6 +12,7 @@ from common.imaging import crop_png
 from common.native_witness import (
     partition_disagreement,
     unpresented_region_ids,
+    validate_native_capture,
     validate_native_witness_geometry,
     validate_page_testimonium_payload,
     validate_partition_disagreement,
@@ -20,6 +21,25 @@ from common.native_witness import (
     validate_retained_response_refs,
     verify_native_capture_bytes,
 )
+
+
+def _native_capture() -> dict:
+    return {
+        "schema": "attestatores-model-view.v1",
+        "adapter": "churro.v1",
+        "view": {
+            "prompt": {"system": "system prompt", "user": "user prompt"},
+            "generation": {"max_new_tokens": 24_000},
+        },
+        "raw_response_ref": {
+            "relative_path": "3_attestatores/blobs/sha256/" + "a" * 64,
+            "sha256": "a" * 64,
+        },
+        "transport_stop_reason": "stop",
+        "stop_reason": "stop",
+        "findings": [],
+        "parse": {"state": "parsed", "parser": "xml", "text": "read"},
+    }
 
 
 def payload():
@@ -448,7 +468,6 @@ def _page_with_churro_capture() -> dict:
             "provenance": {},
             "format_capabilities": {},
             "witness_reported": None,
-            "reported": text,
             "content_health": {
                 "native_type": "string",
                 "encoding": "utf-8-json-native",
@@ -555,7 +574,6 @@ def test_churro_native_capture_closes_its_evidence_reference_and_derived_facts(c
 def test_a_cut_off_empty_churro_capture_is_recordable_but_not_a_reported_absence():
     value = _page_with_churro_capture()
     value["payload"] = ""
-    value.pop("reported")
     value["content_health"].update(
         empty=True,
         blank=True,
@@ -570,8 +588,10 @@ def test_a_cut_off_empty_churro_capture_is_recordable_but_not_a_reported_absence
 
     assert validate_page_testimonium_payload(value) is value
 
+    # The `reported` projection is retired; the closed schema refuses the key
+    # itself, so a claimed absence has no field left to ride in on.
     value["reported"] = ""
-    with pytest.raises(SchemaRefusal, match="claims a reported absence"):
+    with pytest.raises(SchemaRefusal, match="not its closed schema"):
         validate_page_testimonium_payload(value)
 
 
@@ -818,3 +838,36 @@ def test_a_resize_recipe_refuses_an_over_bound_target_as_its_own_schema_error():
 
     with pytest.raises(SchemaRefusal, match="target exceeds.*pixel bound"):
         validate_presented(presented)
+
+
+def test_native_capture_accepts_a_genuine_blob_reference():
+    validate_native_capture(_native_capture())
+
+
+@pytest.mark.parametrize(
+    "sha256",
+    [
+        "b" * 63,  # too short
+        "b" * 65,  # too long
+        "g" * 64,  # non-hex character
+        ("B" * 64),  # uppercase is not this pipeline's lowercase-hex shape
+        "not-a-digest-but-still-non-empty-and-sixty-four-characters-long",
+    ],
+)
+def test_native_capture_refuses_a_raw_response_reference_that_is_not_a_real_sha256(sha256):
+    """A shape check alone (any two non-empty strings) let a malformed or
+    forged digest stand as this record's claim to trace back to retained
+    bytes (ARCHITECTURE invariant 2, GOALS 5) -- the same gap `is_sha256`
+    closes everywhere else this pipeline validates a blob reference.
+    """
+    value = _native_capture()
+    value["raw_response_ref"]["sha256"] = sha256
+    with pytest.raises(SchemaRefusal, match="invalid raw-response reference"):
+        validate_native_capture(value)
+
+
+def test_native_capture_refuses_a_blank_relative_path():
+    value = _native_capture()
+    value["raw_response_ref"]["relative_path"] = ""
+    with pytest.raises(SchemaRefusal, match="invalid raw-response reference"):
+        validate_native_capture(value)

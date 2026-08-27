@@ -246,16 +246,25 @@ def dissent_against(reading: str, testimonia: list[dict]) -> list[dict]:
         if record["outcome"] not in WITNESS_READING_OUTCOMES:
             rows.append({"chair": chair, "compared": False, "reason": record["outcome"]})
             continue
-        reported = record["payload"].get("comparison_reported", record["payload"].get("reported"))
+        # Legacy fixture inputs may carry `reported`; production records use
+        # `payload`, while an act-aligned page slice still takes priority.
+        reported = record["payload"].get(
+            "comparison_reported",
+            record["payload"].get("payload", record["payload"].get("reported")),
+        )
         if not isinstance(reported, str):
-            # Deliberately BEFORE the page-witness branch (F-P2, pinned by the
-            # acceptance suite's structured-witness scenario): a structured
-            # native payload must refuse here by name -- the honest record of
-            # the structured-witness gap -- and never slide under the
-            # page-witness "unknown" row into a run that calls itself complete.
-            raise SchemaRefusal(
-                f"completed Testimonium from chair {chair!r} carries no text to compare"
+            # A structured report remains visible as incomparable; coercing it
+            # would invent text, while the witness floor requires comparability.
+            rows.append(
+                {
+                    "chair": chair,
+                    "compared": "unknown",
+                    "reason": (
+                        "no comparable text for this act: retained derived testimony is not text"
+                    ),
+                }
             )
+            continue
         if not is_comparable(record):
             rows.append(
                 {

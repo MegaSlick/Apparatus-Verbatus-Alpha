@@ -37,6 +37,27 @@ def _load_attestatores():
 attestatores = _load_attestatores()
 
 
+@pytest.mark.parametrize(
+    ("native_page_capture", "expected"),
+    [
+        (False, "non-reading-act-attempt-failed"),
+        (True, "non-reading-page-testimonium-failed"),
+    ],
+)
+def test_a_non_reading_alignment_reason_names_the_record_that_supplied_its_outcome(
+    native_page_capture, expected
+):
+    assert (
+        attestatores.non_reading_alignment_reason("failed", native_page_capture=native_page_capture)
+        == expected
+    )
+
+
+def test_a_reading_outcome_cannot_be_misnamed_as_a_non_reading_alignment_reason():
+    with pytest.raises(attestatores.FatalAccounting, match="reading outcome.*cannot explain"):
+        attestatores.non_reading_alignment_reason("read", native_page_capture=True)
+
+
 def invoke_stage(
     run_root: Path,
     run_id: str,
@@ -444,7 +465,7 @@ def test_a_successful_reread_retains_new_testimony_and_keeps_attempt_one(tmp_pat
     second = _testimonium_for(tree, act_key="a2", chair="attestator_2", ordinal=2)
     assert second["outcome"] == "read"
     assert second["payload"]["payload"].endswith(", reread")
-    assert second["payload"]["reported"] == second["payload"]["payload"]
+    assert "reported" not in second["payload"]
     assert second["payload"]["payload"] != first["payload"]["payload"]
     assert first_path.read_bytes() == first_bytes
 
@@ -1415,7 +1436,6 @@ def test_a_reading_that_claims_its_own_channel_was_unrecordable_is_unknown(tmp_p
     assert record["outcome"] == "read"
     changed = copy.deepcopy(record)
     changed["payload"]["payload"] = None
-    changed["payload"].pop("reported")
     changed["payload"]["content_health"] = {
         "native_type": "unrecordable",
         "encoding": "invalid-or-unrecordable",
@@ -1457,7 +1477,6 @@ def test_an_unrecordable_channel_may_not_assert_facts_nothing_measured(tmp_path)
     fabricated = copy.deepcopy(record)
     fabricated["outcome"] = "failed"
     fabricated["payload"]["reason"] = "the provider response was refused without repair"
-    fabricated["payload"].pop("reported")
     fabricated["payload"]["content_health"] = {
         "native_type": "string",
         "encoding": "utf-8-json-native",
@@ -1539,19 +1558,25 @@ def test_a_failed_attempt_with_recordable_native_evidence_still_requires_a_reaso
 @pytest.mark.parametrize(
     ("scenario", "replacement", "message"),
     (
-        ("happy", "different text", "differs from its verbatim native payload"),
-        ("structured-witness", "coerced text", "carries a compatibility projection"),
+        ("happy", "different text", "inconsistent content_health.characters"),
+        ("structured-witness", "coerced text", "inconsistent content_health.native_type"),
     ),
 )
-def test_a_resealed_compatibility_projection_cannot_change_native_testimony(
+def test_a_resealed_native_payload_cannot_change_without_remeasuring_its_health(
     tmp_path, scenario, replacement, message
 ):
+    """The retired textual bridge is not a second payload to tamper with.
+
+    A Testimonium now retains one native-derived payload.  Changing it while
+    retaining the producer's computed health must still make the tally UNKNOWN;
+    the exact health field names which native fact no longer reconciles.
+    """
     run_root, tree = run_to_designator(tmp_path, scenario)
     initial = invoke_stage(run_root, "retention", scenario, "pipeline/3_attestatores/run.py")
     assert initial.returncode == 0, initial.stderr
     record = _testimonium_for(tree, act_key="a1", chair="attestator_1", ordinal=1)
     changed = copy.deepcopy(record)
-    changed["payload"]["reported"] = replacement
+    changed["payload"]["payload"] = replacement
     changed["self_hash"] = self_hash(changed)
     path = tree.resolve(tree.artifact_path(ATTESTATORES, "testimonium", record["artifact_id"]))
     path.write_bytes(canonical_bytes(changed))

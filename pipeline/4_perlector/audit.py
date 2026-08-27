@@ -48,6 +48,12 @@ _CONFIG_FIELDS: Final = frozenset(
     {"schema", "default_round_cap", "absolute_round_cap", "round_cap", "approval_ref"}
 )
 
+# Kept exact, rather than widened from the current flag vocabulary: only a
+# text departure from retained testimony derives a witness location. Boundary
+# disagreement remains page evidence for the Recensor, and this declaration
+# deliberately settles neither the larger reproof question nor a new class.
+WITNESS_DERIVED_LOCATION_CLASSES: Final = frozenset({"testimony-diff"})
+
 
 def load(path: str | Path) -> tuple[dict[str, Any], str]:
     try:

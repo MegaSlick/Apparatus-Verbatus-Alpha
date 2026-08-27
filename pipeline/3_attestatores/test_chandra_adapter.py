@@ -16,7 +16,10 @@ from common.chairs import load_models_toml
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import SchemaRefusal
 from common.contracts.stages import ATTESTATORES
-from common.native_witness import validate_observed
+from common.native_witness import (
+    partition_disagreement,
+    validate_observed,
+)
 from common.runtree.store import RunTree
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -530,30 +533,235 @@ def test_reading_order_is_the_response_order_and_no_other_key_reorders_it():
     assert [block["reading_index"] for block in json.loads(raw)["blocks"]] == [7, 0]
 
 
-def test_a_block_past_the_page_edge_is_refused_rather_than_clamped_into_the_page():
-    """The declared rule rounds outward, and outward past the page is a refusal.
+def test_a_page_edge_overshoot_is_named_per_block_without_clamping_or_losing_neighbours():
+    """One bad page-edge box is retained as a finding, never an in-page box.
 
     `ceil` on a max edge means any block whose float edge sits fractionally past
-    the sealed page derives a box the shared wall refuses, which takes the whole
-    Attestatores pass to `UNKNOWN`. Clamping it to the page instead would be the
-    cheaper failure and is the wrong one: on a Designator fallback crop -- whose
-    region *is* the whole page -- a clamped box lands exactly on the recovery
-    region and hands it the retrospective witness coverage a recovery crop may
-    never acquire. So the conversion never invents an in-page box from an
-    out-of-page report; it reports what it derived and lets the wall speak.
-
-    Both the outward rounding and downstream refusal are pinned so clamping
-    cannot silently convert out-of-page testimony into in-page coverage.
+    the sealed page derives a box the shared wall refuses.  That fact belongs to
+    this block, not to a valid neighbouring block from the same retained response.
+    The durable page partition therefore carries the exact, out-of-page box as a
+    response-linked finding and retains the valid block in its ordinary observed
+    list.  Clamping would instead hand a fallback crop retrospective witness
+    coverage it never received.
     """
     chandra = _load_stage_module("chandra")
-    raw = (
-        b'{"schema":"fixture-chandra-response.v1","markdown":"one",'
-        b'"blocks":[{"bbox":[0,0,200.2,260.0]}]}'
+    attestatores = _load_stage_module("run")
+    raw = b'{"schema":"fixture-chandra-response.v1","markdown":"two","blocks":[{"bbox":[10,10,100,100]},{"bbox":[0,0,200.2,260.0]}]}'
+    raw_ref = {
+        "relative_path": "3_attestatores/blobs/sha256/" + digest_bytes(raw),
+        "sha256": digest_bytes(raw),
+    }
+    surviving, overshoots = attestatores.chandra_page_partition_entries(
+        chandra.observe(_presented(), raw), page_size=(200, 260), raw_response_ref=raw_ref
     )
-    observed = chandra.observe(_presented(), raw)
-    assert observed[0]["bounds"] == {"x": 0, "y": 0, "w": 201, "h": 260}
+    assert surviving == [
+        {
+            "ordinal": 0,
+            "bounds": {"x": 10, "y": 10, "w": 90, "h": 90},
+            "bounds_source": "native",
+            "span": None,
+        }
+    ]
+    assert overshoots == [
+        {
+            "kind": "page-edge-overshoot",
+            "response_sha256": raw_ref["sha256"],
+            "ordinal": 1,
+            "bounds": {"x": 0, "y": 0, "w": 201, "h": 260},
+            "sealed_page_bounds": {"x": 0, "y": 0, "w": 200, "h": 260},
+        }
+    ]
+
+    disagreement = partition_disagreement(
+        {
+            "artifact_id": "page-testimonium",
+            "payload": {"presented": _presented(), "observed": surviving},
+        },
+        [],
+        page_edge_overshoots=overshoots,
+    )
+    durable = attestatores.page_testimonium_payload(
+        page_ordinal=1,
+        page_role="primary",
+        unjoined_act_attempts=[],
+        partition_disagreement=disagreement,
+        testimonium_id="page-testimonium",
+        raw_response_refs=[raw_ref],
+        adapter_metadata={"geometry_quantization": chandra.QUANTIZATION_RULE},
+        chair="attestator_1",
+        act_key="page-1",
+        ordinal=1,
+        regions=[],
+        provenance={"chair": "attestator_1"},
+        format_capabilities=attestatores.DEFAULT_FORMAT_CAPABILITIES,
+        native_payload="two",
+        witness_reported=None,
+        health=attestatores.content_health("two", completed=True),
+        presented=_presented(),
+        observed=surviving,
+        unpresented_regions=[],
+        outcome="read",
+    )
+    assert durable["partition_disagreement"]["observed_boxes"] == [
+        {"ordinal": 0, "bounds": {"x": 10, "y": 10, "w": 90, "h": 90}, "bounds_source": "native"}
+    ]
+    assert durable["partition_disagreement"]["page_edge_overshoots"] == [overshoots[0]]
+
+    # The shared wall remains the refusal: the finding preserves these exact
+    # derived bounds, and they still cannot masquerade as an observation.
     with pytest.raises(SchemaRefusal, match="outside the sealed source page"):
-        validate_observed(observed, presented=_presented(), page_size=(200, 260))
+        validate_observed(
+            [
+                {
+                    "ordinal": 0,
+                    "bounds": overshoots[0]["bounds"],
+                    "bounds_source": "native",
+                    "span": None,
+                }
+            ],
+            presented=_presented(),
+            page_size=(200, 260),
+        )
+
+
+def test_two_acts_sharing_one_chandra_response_do_not_double_count_its_overshoot():
+    """Two acts on one page legitimately re-derive the same chair's response.
+
+    `publish_page_testimonia_and_attachments` calls `chandra_page_partition_entries`
+    once per act on a page for a page-scoped Chandra chair, and two acts commonly
+    share one raw response (the page record already dedupes `raw_response_refs` for
+    exactly this reason). Re-deriving an out-of-page block from that same response
+    twice must not double-count it: `validate_partition_disagreement` refuses one
+    page-edge finding named twice, so an unrefined concatenation would abort the
+    whole page's publish over ordinary shared testimony rather than a malformed
+    record. The page writer must dedupe by the finding's own identity --
+    `(response_sha256, ordinal)` -- exactly as it already dedupes response refs.
+    """
+    chandra = _load_stage_module("chandra")
+    attestatores = _load_stage_module("run")
+    raw = b'{"schema":"fixture-chandra-response.v1","markdown":"two","blocks":[{"bbox":[10,10,100,100]},{"bbox":[0,0,200.2,260.0]}]}'
+    raw_ref = {
+        "relative_path": "3_attestatores/blobs/sha256/" + digest_bytes(raw),
+        "sha256": digest_bytes(raw),
+    }
+
+    # Two acts on the page independently re-derive the identical response.
+    first_survivors, first_overshoots = attestatores.chandra_page_partition_entries(
+        chandra.observe(_presented(), raw), page_size=(200, 260), raw_response_ref=raw_ref
+    )
+    second_survivors, second_overshoots = attestatores.chandra_page_partition_entries(
+        chandra.observe(_presented(), raw), page_size=(200, 260), raw_response_ref=raw_ref
+    )
+    assert first_overshoots == second_overshoots
+
+    # Mirrors the page writer's own renumbering of the aggregate `observed`
+    # list across every act contributing to this page/chair
+    # (`observed.append({**item, "ordinal": len(observed)})`), so this test
+    # isolates the overshoot-identity question from ordinary survivor
+    # renumbering, which the writer already gets right.
+    merged_observed = []
+    for item in [*first_survivors, *second_survivors]:
+        merged_observed.append({**item, "ordinal": len(merged_observed)})
+
+    def _build(overshoots):
+        disagreement = partition_disagreement(
+            {
+                "artifact_id": "page-testimonium",
+                "payload": {"presented": _presented(), "observed": merged_observed},
+            },
+            [],
+            page_edge_overshoots=overshoots,
+        )
+        return attestatores.page_testimonium_payload(
+            page_ordinal=1,
+            page_role="primary",
+            unjoined_act_attempts=[],
+            partition_disagreement=disagreement,
+            testimonium_id="page-testimonium",
+            raw_response_refs=[raw_ref],
+            adapter_metadata={"geometry_quantization": chandra.QUANTIZATION_RULE},
+            chair="attestator_1",
+            act_key="page-1",
+            ordinal=1,
+            regions=[],
+            provenance={"chair": "attestator_1"},
+            format_capabilities=attestatores.DEFAULT_FORMAT_CAPABILITIES,
+            native_payload="two",
+            witness_reported=None,
+            health=attestatores.content_health("two", completed=True),
+            presented=_presented(),
+            observed=merged_observed,
+            unpresented_regions=[],
+            outcome="read",
+        )
+
+    # Naively concatenating both acts' re-derivations names one page-edge
+    # finding twice -- the exact crash this defect let a normal, shared page
+    # response trigger mid-publish.
+    with pytest.raises(SchemaRefusal, match="names one page-edge finding twice"):
+        _build([*first_overshoots, *second_overshoots])
+
+    # Deduplicated by the finding's own identity -- exactly what the page
+    # writer now does before it extends `page_edge_overshoots` -- the shared
+    # response's overshoot is retained exactly once.
+    seen: set[tuple[str, int]] = set()
+    deduped = []
+    for overshoot in [*first_overshoots, *second_overshoots]:
+        key = (overshoot["response_sha256"], overshoot["ordinal"])
+        if key not in seen:
+            seen.add(key)
+            deduped.append(overshoot)
+    durable = _build(deduped)
+    assert durable["partition_disagreement"]["page_edge_overshoots"] == first_overshoots
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("ordinal", 7, "ordinals that are not dense"),
+        ("bounds_source", "presented", "not reported witness geometry"),
+        ("bounds_source", [], "not reported witness geometry"),
+        ("span", {"start": 0, "end": 1}, "would lose evidence"),
+    ],
+)
+def test_an_overshoot_cannot_hide_malformed_observation_facts(field, value, message):
+    """Removing a bad box must not sanitize fields the finding does not retain."""
+    chandra = _load_stage_module("chandra")
+    attestatores = _load_stage_module("run")
+    observed = chandra.observe(
+        _presented(),
+        b'{"schema":"fixture-chandra-response.v1","markdown":"one","blocks":[{"bbox":[0,0,200.2,260.0]}]}',
+    )
+    observed[0][field] = value
+
+    with pytest.raises(SchemaRefusal, match=message):
+        attestatores.chandra_page_partition_entries(
+            observed,
+            page_size=(200, 260),
+            raw_response_ref={"relative_path": "retained", "sha256": "a" * 64},
+        )
+
+
+def test_an_in_page_observation_keeps_its_supported_text_span():
+    """Only converting an overshoot loses the span; an in-page box survives intact."""
+    attestatores = _load_stage_module("run")
+    observed = [
+        {
+            "ordinal": 0,
+            "bounds": {"x": 10, "y": 10, "w": 20, "h": 20},
+            "bounds_source": "native",
+            "span": {"start": 0, "end": 4},
+        }
+    ]
+
+    survivors, findings = attestatores.chandra_page_partition_entries(
+        observed,
+        page_size=(200, 260),
+        raw_response_ref={"relative_path": "retained", "sha256": "a" * 64},
+    )
+
+    assert survivors == observed
+    assert findings == []
 
 
 def test_a_parse_failure_keeps_its_bytes_and_its_name_through_the_written_record(tmp_path):
@@ -727,7 +935,12 @@ def test_resume_collision_compares_native_response_digest_not_only_parsed_text()
 
 
 def test_the_page_record_names_the_bytes_its_own_geometry_was_quantized_from(tmp_path):
-    """The page record must directly bind the bytes behind its derived boxes."""
+    """The geometry record must name the retained response that produced it.
+
+    The page Testimonium carries integer boxes derived from native floats. Its
+    response reference must travel in that same record rather than require a
+    later join through compatibility records (GOALS 5).
+    """
     run_root = tmp_path / "runs"
     result = subprocess.run(
         [
