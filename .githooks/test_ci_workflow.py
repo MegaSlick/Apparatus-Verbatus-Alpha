@@ -163,7 +163,21 @@ def test_the_image_requirements_match_the_projects_declared_direct_environment()
     )
 
 
-def test_the_audit_runs_in_the_gate_and_fails_closed():
+def test_the_audit_is_invoked_from_the_frozen_interpreter_and_nothing_rescues_a_failure():
+    """What this proves, and what it does not.
+
+    It reads the script as text, so it establishes that the audit is written
+    with the frozen interpreter and its own inventory, and -- through the sweep
+    at the end, which is a real property over the whole file -- that `set -eu` is
+    in force and no rescue construct exists anywhere to swallow a non-zero exit.
+
+    It does not execute the audit. The executable gate tests below stop before
+    the suite on purpose, and the audit runs after `pytest`, so reaching it here
+    would mean running the whole suite inside one of its own tests. The previous
+    name claimed "fails closed" as tested behaviour; this one claims only what
+    the assertions below actually check.
+    """
+
     gate = (ROOT / ".githooks" / "check-all.sh").read_text()
     assert 'frozen_python="$root/.venv/bin/python"' in gate
     assert '"$frozen_python" -m pytest' in gate
@@ -224,13 +238,40 @@ def test_the_frozen_audit_inventory_refuses_requirement_injection(
         frozen_audit.installed_pins()
 
 
-def test_a_missing_frozen_interpreter_points_chambers_at_the_image_launcher_fix():
-    gate = (ROOT / ".githooks" / "check-all.sh").read_text()
+def test_a_missing_frozen_interpreter_prints_the_image_launcher_recovery_steps(tmp_path):
+    """The advice a chamber is given is read back out of the gate that prints it.
 
-    assert "install pinned uv==0.12.1 in operations/autoclave/Dockerfile" in gate
-    assert "in cmd_new, after checkout" in gate
-    assert "operations/autoclave/autoclave.sh to operations/autoclave/fingerprint.py" in gate
-    assert "do not link .venv to /opt/venv" in gate
+    Asserting these strings against the script said only that the words exist
+    somewhere in the file: advice naming the wrong Dockerfile, the wrong command
+    or the wrong directory passed, and so would advice written into a branch
+    nothing reaches.
+
+    `chamber_environment_followup` returns early unless
+    `/opt/autoclave/CLAUDE.md` exists, which is true only inside a chamber image
+    and cannot be staged on a host. That one absolute marker path -- and nothing
+    else -- is rewritten to a file in `tmp_path`, so the branch runs here exactly
+    as it does in the image.
+    """
+
+    repo = gate_repo(tmp_path)
+    marker = tmp_path / "chamber-marker"
+    marker.write_text("stand-in for the chamber image's own marker\n")
+    script = repo / ".githooks" / "check-all.sh"
+    source = script.read_text()
+    assert source.count("/opt/autoclave/CLAUDE.md") == 1
+    script.write_text(source.replace("/opt/autoclave/CLAUDE.md", str(marker)))
+
+    result = run_gate(repo)
+
+    assert result.returncode == 1
+    assert "frozen interpreter is missing" in result.stderr
+    assert "this chamber image cannot construct the required checkout-local .venv" in result.stderr
+    assert "install pinned uv==0.12.1 in operations/autoclave/Dockerfile" in result.stderr
+    assert "in cmd_new, after checkout" in result.stderr
+    assert (
+        "operations/autoclave/autoclave.sh to operations/autoclave/fingerprint.py" in result.stderr
+    )
+    assert "do not link .venv to /opt/venv" in result.stderr
 
 
 def gate_repo(tmp_path):

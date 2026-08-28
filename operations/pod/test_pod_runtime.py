@@ -10,6 +10,7 @@ import fcntl
 import inspect
 import itertools
 import json
+import os
 import subprocess
 import threading
 import unittest.mock
@@ -1402,6 +1403,11 @@ def test_an_unreadable_lease_refuses_the_paid_gate_instead_of_raising(tmp_path: 
     Failing closed under its own name is the whole point of the reserved-
     liability read.
     """
+
+    if os.geteuid() == 0:
+        # CAP_DAC_OVERRIDE walks straight through the 0o600 below, so the
+        # unreadable directory this test depends on cannot be staged as root.
+        pytest.skip("root bypasses the directory mode this refusal is staged with")
 
     clock = Clock()
     provider = fake(clock)
