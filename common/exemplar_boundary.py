@@ -794,7 +794,7 @@ def _verify_admission(
         raise ContractError("a sealed derivative page does not input exactly its pixels and master")
     parent_bytes = _read_checked(tree, parent_ref, "the derivative page's submitted master")
     sealed_bytes = _read_checked(tree, blob_ref, "the sealed derivative page")
-    _verify_triage_derivative(rendered["render_contract"], parent_bytes, parent, sealed_bytes)
+    verify_triage_derivative(rendered["render_contract"], parent_bytes, parent, sealed_bytes)
 
 
 def _verify_rendered_source_link(
@@ -946,7 +946,7 @@ def _validate_embedded_triage_row(row: Any) -> None:
         raise ContractError("a sealed derivative page's triage row does not partition its frame")
 
 
-def _verify_triage_derivative(
+def verify_triage_derivative(
     contract: dict[str, Any],
     parent_bytes: bytes,
     parent: dict[str, Any],
