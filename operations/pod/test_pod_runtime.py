@@ -6,11 +6,13 @@ without the paired red path would not establish that the guard is wired.
 
 from __future__ import annotations
 
+import fcntl
 import inspect
 import itertools
 import json
 import subprocess
 import threading
+import unittest.mock
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -1284,6 +1286,110 @@ def test_an_oversized_spend_alert_stamp_cannot_silence_the_low_balance_page(
     assert len(warnings) == 2
     assert result.preview is not None
     assert result.preview.assessment.alert_notifications == ("Phone notification: sent.",)
+
+
+def test_a_failed_debounce_write_is_recorded_beside_the_delivered_warning(
+    tmp_path: Path,
+) -> None:
+    """A sent warning whose stamp did not persist says so on the receipt.
+
+    Losing the stamp is advisory -- it can cause one duplicate page, never a
+    blocked action -- but a receipt reading only ``sent`` leaves that duplicate
+    with no recorded cause, which is the shape GOVERNANCE 2 refuses.
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+    provider.set_account_balance("60.00")
+
+    def delivering_notifier(message: str) -> NotifyOutcome:
+        return NotifyOutcome(True, True, "delivered")
+
+    pod_runtime = runtime(provider, clock, tmp_path, notifier=delivering_notifier)
+
+    def refuse_write(path, payload):
+        raise PermissionError("the stamp directory is read-only")
+
+    with unittest.mock.patch.object(launch_module, "atomic_write", refuse_write):
+        result = pod_runtime.preview_create(request(clock))
+
+    assert result.state is LaunchState.PREVIEW
+    assert result.preview is not None
+    notifications = result.preview.assessment.alert_notifications
+    assert "Phone notification: sent." in notifications
+    assert any("Debounce state: NOT RECORDED" in line for line in notifications)
+    assert any("read-only" in line for line in notifications)
+
+
+def test_a_lease_that_vanishes_between_listing_and_reading_refuses_the_paid_gate(
+    tmp_path: Path,
+) -> None:
+    """A liability seen a moment ago and now gone is unknown, not zero.
+
+    ``glob`` accounted for the file; ``LeaseStore.load`` then answered ``None``
+    because it no longer exists.  Treating that as "nothing to reserve" lets the
+    next create authorise a pod without counting a lease that may still be
+    billing.
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+    leases = tmp_path / "leases"
+    leases.mkdir()
+    pod_runtime = runtime(provider, clock, leases)
+    # The listing names a lease the read can no longer find: exactly the state a
+    # file removed between `glob` and `LeaseStore.load` leaves behind.
+    vanished = leases / ("d" * 32 + ".json")
+    real_glob = Path.glob
+
+    def glob_reporting_a_removed_lease(self, pattern):
+        return iter([*real_glob(self, pattern), vanished])
+
+    with unittest.mock.patch.object(Path, "glob", glob_reporting_a_removed_lease):
+        result = pod_runtime.create(request(clock), confirmation=CREATE_CONFIRMATION)
+
+    assert result.state is LaunchState.REFUSED_BALANCE_UNOBSERVABLE
+    assert "vanished" in result.detail
+    assert not any(verb == "create" for verb, _ in provider.calls)
+
+
+def test_a_spend_gate_lock_another_process_holds_refuses_rather_than_waiting(
+    tmp_path: Path,
+) -> None:
+    """An unbounded wait on the money path is a defect, so the gate gives up by name.
+
+    A holder that never finishes -- a provider call hung inside another process's
+    spend gate -- used to leave this create blocked in ``flock`` forever, printing
+    nothing at all instead of a refusal an operator can act on.
+    """
+
+    clock = Clock()
+    provider = fake(clock)
+    leases = tmp_path / "leases"
+    leases.mkdir()
+    pod_runtime = PreviewingRuntime(
+        provider,
+        provider_name="fake",
+        spend_policy=policy(),
+        lease_root=leases,
+        shutdown=shutdown(provider, clock),
+        now=clock.now,
+        token_factory=lambda: "a" * 32,
+        challenge_factory=lambda: TEST_CHALLENGE,
+        controller_armer=FakeControllerArmer(clock, provider),
+        notifier=lambda message: NotifyOutcome(False, False, "test silent"),
+        lock_sleeper=lambda seconds: None,
+        lock_wait_seconds=0.05,
+    )
+    held = leases.parent / f".{leases.name}.spend-gate.lock"
+    with held.open("a+b") as blocker:
+        fcntl.flock(blocker.fileno(), fcntl.LOCK_EX)
+        result = pod_runtime.create(request(clock), confirmation=CREATE_CONFIRMATION)
+
+    assert result.state is LaunchState.REFUSED_BALANCE_UNOBSERVABLE
+    assert "spend-reservation" in result.detail
+    assert "still holds this lock" in result.detail
+    assert not any(verb == "create" for verb, _ in provider.calls)
 
 
 def test_an_unreadable_lease_refuses_the_paid_gate_instead_of_raising(tmp_path: Path) -> None:
