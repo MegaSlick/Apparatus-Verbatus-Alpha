@@ -546,6 +546,22 @@ def test_a_broken_projection_pipe_never_reads_as_damaged_run_tree_evidence(tmp_p
     assert "never opened by that process" in rendered
     assert "not complete JSON" in rendered
 
+    # The status has to be distinct from the ordinary failure exit, and the
+    # real child has to use it. Asserting only through the constant would keep
+    # this test green if it were set back to 2, which is the exact collision
+    # that made a pipe fault read as damaged evidence.
+    assert console.PROJECTION_UNREADABLE_EXIT not in (0, 2)
+    truncated = subprocess.run(
+        [sys.executable, "-m", "operations.operator.console"],
+        cwd=ROOT,
+        input='{"run_id": "reviewed"',
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert truncated.returncode == console.PROJECTION_UNREADABLE_EXIT
+    assert "never read by this process" in truncated.stderr
+
 
 @pytest.mark.skipif(sys.platform != "linux", reason="Landlock is Linux-only")
 def test_the_landlock_boundary_refuses_a_confined_write_to_evidence(tmp_path: Path):
