@@ -89,7 +89,7 @@ def _spend_policy(tmp_path: Path, *, hourly: str = "1.00", margin: int = 3600) -
     path.write_text(
         "\n".join(
             (
-                'schema = "pod-spend.v2"',
+                'schema = "pod-spend.v3"',
                 'state = "configured"',
                 'currency = "USD"',
                 f'max_hourly_usd = "{hourly}"',
@@ -1090,13 +1090,17 @@ def test_post_create_balance_refusal_does_not_claim_no_paid_action_occurred(
 ) -> None:
     surface = _surface(tmp_path)
     prepared = surface.prepare_launch(_request(), policy_path=_spend_policy(tmp_path))
-    observations = 1
+    # Counted from installation, so an extra balance read added inside
+    # `prepare_launch` cannot silently move which gate this test faults. The
+    # first read here is `launch`'s own re-preview and must pass; the second is
+    # the post-create read, which is the one this test is about.
+    observations = 0
     original_observer = surface.provider.observe_account_balance
 
     def observe():  # type: ignore[no-untyped-def]
         nonlocal observations
         observations += 1
-        if observations == 3:
+        if observations == 2:
             raise ProviderFailure("balance endpoint failed after create")
         return original_observer()
 
@@ -2262,6 +2266,134 @@ def test_export_refuses_a_symlink_at_an_existing_content_addressed_bundle(
     assert failure["state"] == "local-copy-failed"
 
 
+def test_status_reads_a_refused_upload_receipt_without_calling_it_unreadable(
+    tmp_path: Path,
+) -> None:
+    """The verb every failure message sends the operator to must survive that failure.
+
+    A refusal recorded before any transfer began -- a refused submission folder,
+    an unavailable network volume -- never had a sealed record to bind, so
+    requiring `submission_manifest_sha256` on every upload receipt made `status`
+    print "UNREADABLE; it was not treated as success" for a perfectly correct
+    record and exit 2. `status` is read-only and documented as always safe, and
+    teaching an operator to ignore STATUS_UNREADABLE costs the signal itself.
+    """
+
+    output: list[str] = []
+    surface = _surface(tmp_path, output=output)
+    surface._record_failure("upload", "submission-refused", "the submitted folder was refused")
+
+    surface.status()
+
+    printed = "\n".join(output)
+    assert "UNREADABLE" not in printed
+    assert "submission-refused" in printed
+    # A receipt that does claim bytes moved is still held to the digest.
+    surface._write_action(
+        "upload",
+        {"summary": "Upload is complete.", "state": "complete", "zero_gpu_hours": True},
+        descriptor_action="upload",
+    )
+    with pytest.raises(OperatorError) as refusal:
+        surface.status()
+    assert refusal.value.code is ErrorCode.STATUS_UNREADABLE
+
+
+def test_an_empty_armarium_is_refused_rather_than_bundled_as_complete(tmp_path: Path) -> None:
+    """A directory proved to exist was never proved to hold anything.
+
+    `7_armarium` was checked for its kind, so an empty one passed: the walk
+    wrote zero members, the writer returned normally, and `export` recorded
+    `"state": "complete"` for a bundle carrying `run.json` and not one
+    established reading. For a parish run that is every act in it missing, with
+    a receipt vouching for the absence -- GOVERNANCE 2's "'complete' is refused
+    unless everything reconciles", through one more door.
+    """
+
+    surface = _surface(tmp_path)
+    run_id = "empty-armarium"
+    run_root = tmp_path / "runs"
+    (run_root / run_id / "7_armarium").mkdir(parents=True)
+    (run_root / run_id / "run.json").write_text("{}", encoding="utf-8")
+    surface._write_action(
+        "run",
+        {
+            "summary": "test run",
+            "state": "complete",
+            "run_root": str(run_root),
+            "run_id": run_id,
+        },
+        descriptor_action="run",
+    )
+    surface._armarium_export = lambda _root, _run_id: {  # type: ignore[method-assign]
+        "aggregate": {"status": "complete", "reasons": []},
+        "pages": [],
+        "delivered": [],
+        "non_delivered": [],
+    }
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.export(run_id=run_id)
+
+    assert refusal.value.code is ErrorCode.EXPORT_FAILED
+    assert "holds no evidence files" in str(refusal.value.detail)
+    exports = surface.state_root / "exports"
+    assert list(exports.glob("*.zip")) == []
+    assert list(exports.glob("*.staged")) == []
+    assert list(exports.glob(".*tmp*")) == []
+
+
+def test_a_structural_export_refusal_still_leaves_a_receipt_and_no_staged_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`status` must be able to show a failed export, whatever refused it.
+
+    Every structural refusal in `_write_base_armarium_bundle` -- a missing
+    `run.json`, a member of the wrong kind, a name collision, a member that
+    changed while it was copied -- raises `OperatorError`, which the handler here
+    did not catch. The export failed with no receipt written and the staged file
+    left in `exports/`, so the operator was told to run `status` and `status` had
+    nothing to show them.
+    """
+
+    surface = _surface(tmp_path)
+    run_id = "structurally-refused"
+    surface._write_action(
+        "run",
+        {
+            "summary": "test run",
+            "state": "complete",
+            "run_root": str(tmp_path / "runs"),
+            "run_id": run_id,
+        },
+        descriptor_action="run",
+    )
+    surface._armarium_export = lambda _root, _run_id: {  # type: ignore[method-assign]
+        "aggregate": {"status": "complete", "reasons": []},
+        "pages": [],
+        "delivered": [],
+        "non_delivered": [],
+    }
+
+    def refuse_structurally(self, _root, _run_id, destination):  # type: ignore[no-untyped-def]
+        del self, destination
+        raise OperatorError(
+            ErrorCode.EXPORT_FAILED,
+            detail="the Armarium evidence bundle cannot be written as complete: run.json is missing",
+        )
+
+    monkeypatch.setattr(OperatorSurface, "_write_base_armarium_bundle", refuse_structurally)
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.export(run_id=run_id)
+
+    assert refusal.value.code is ErrorCode.EXPORT_FAILED
+    failure = surface.receipts.read(surface._descriptor_receipt("export"))["payload"]
+    assert failure["state"] == "local-copy-failed"
+    assert "run.json is missing" in str(failure)
+    assert list((surface.state_root / "exports").glob("*.staged")) == []
+
+
 def test_exporting_a_run_record_with_no_saved_run_root_fails_as_export_missing_not_unexpected(
     tmp_path: Path,
 ) -> None:
@@ -2530,6 +2662,32 @@ def test_a_tmpdir_inside_the_checkout_cannot_put_rehearsal_scratch_back_there(
     assert all(ROOT not in scratch.resolve().parents for scratch in recorded_temporary_directories)
 
 
+def test_no_usable_scratch_directory_is_reported_in_the_operator_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The last-resort refusal must not be the one failure that prints a traceback.
+
+    `_scratch_root` raised a plain `RuntimeError`, and `main` translates only
+    `KeyboardInterrupt`, `OperatorError` and `OSError`. `OperatorError` derives
+    from `RuntimeError` rather than the reverse, so nothing caught it: the person
+    running the rehearsal saw a stack trace instead of what happened, what it
+    meant, and what to do next.
+    """
+
+    monkeypatch.setattr(dry_run.tempfile, "gettempdir", lambda: str(ROOT / "inside"))
+    monkeypatch.setattr(dry_run, "_is_within", lambda path, directory: True)
+
+    with pytest.raises(OperatorError) as refusal:
+        dry_run._scratch_root()
+
+    assert refusal.value.code is ErrorCode.UNEXPECTED
+    assert "no temporary directory outside the checkout" in str(refusal.value.detail)
+
+    exit_code = dry_run.main(["--output", str(tmp_path / "rehearsal.txt")])
+
+    assert exit_code == 1
+
+
 def test_rehearsal_scratch_containment_compares_directory_identity(tmp_path: Path) -> None:
     checkout = tmp_path / "checkout"
     scratch = checkout / "scratch"
@@ -2537,7 +2695,7 @@ def test_rehearsal_scratch_containment_compares_directory_identity(tmp_path: Pat
     alias = tmp_path / "scratch-alias"
     alias.symlink_to(scratch, target_is_directory=True)
 
-    assert dry_run._contains_directory(alias, checkout)
+    assert dry_run._is_within(alias, checkout)
 
 
 def test_scripted_dry_run_is_a_readable_six_word_acceptance_artifact(tmp_path: Path) -> None:
@@ -2770,8 +2928,13 @@ def test_upload_receipt_retains_manifest_identity_but_no_local_paths(tmp_path: P
     joined = "\n".join(lines)
     assert receipt["submission_manifest_sha256"] in joined
     serialized = json.dumps(receipt)
-    assert str(source.resolve()) not in serialized
-    assert str(manifest.resolve()) not in serialized
+    for local in (source, manifest):
+        # Both spellings: on macOS `tmp_path` is under /var/folders while
+        # `resolve()` returns /private/var/folders, so asserting only the
+        # resolved form would have passed while the receipt carried the
+        # caller's unresolved path -- the exact leak this test names.
+        assert str(local) not in serialized
+        assert str(local.resolve()) not in serialized
 
 
 @pytest.mark.parametrize("digest", (None, "not-a-sha256", "A" * 64))
@@ -2810,7 +2973,7 @@ def test_status_contract_says_it_reads_receipts_without_reopening_manifests() ->
 
 
 def test_default_operator_state_root_is_absolute_and_not_dot_verbatus() -> None:
-    state = cli.build_parser().parse_args(["status"]).state_dir
+    state = cli._default_state_dir()
 
     assert state.is_absolute()
     assert ".verbatus" not in str(state)
@@ -2873,7 +3036,7 @@ def test_a_non_absolute_xdg_state_home_does_not_put_records_back_in_the_checkout
     monkeypatch.setenv("XDG_STATE_HOME", value)
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
 
-    default = cli.build_parser().parse_args(["status"]).state_dir
+    default = cli._default_state_dir()
 
     assert default.is_absolute()
     assert workspace not in default.parents
@@ -2889,7 +3052,7 @@ def test_a_relative_home_cannot_make_the_default_state_root_relative(
     monkeypatch.setenv("XDG_STATE_HOME", "")
     monkeypatch.setenv("HOME", "relative-home")
 
-    default = cli.build_parser().parse_args(["status"]).state_dir
+    default = cli._default_state_dir()
 
     assert default.is_absolute()
     assert workspace not in default.parents
@@ -2923,6 +3086,30 @@ def test_no_stale_verbatus_notice_when_state_dir_is_named_explicitly(
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg-state"))
 
     cli.main(["--state-dir", str(old_state), "status"])
+
+    out = capsys.readouterr().out
+    assert "not read here" not in out
+
+
+def test_an_abbreviated_state_dir_flag_is_honoured_rather_than_parsed_and_discarded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """argparse accepts abbreviations, so argv text cannot decide what was named.
+
+    `--state-di /records` set `args.state_dir`, but the scan looked for the full
+    spelling, found nothing, and overwrote the operator's folder with the
+    computed default: receipts went to `~/.local/state/verbatus`, the abandoned
+    state notice appeared, and `status` afterwards read a different set of
+    records from the one they had asked for.
+    """
+
+    workspace = tmp_path / "checkout"
+    old_state = workspace / ".verbatus"
+    old_state.mkdir(parents=True)
+    monkeypatch.chdir(workspace)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg-state"))
+
+    cli.main(["--state-di", str(old_state), "status"])
 
     out = capsys.readouterr().out
     assert "not read here" not in out

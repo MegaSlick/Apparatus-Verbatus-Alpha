@@ -27,7 +27,7 @@ from typing import Any, Final
 
 from common.contracts.canonical import canonical_bytes, digest_bytes, is_sha256
 from common.contracts.errors import SchemaRefusal
-from common.contracts.stages import TRIAGE_MODES
+from common.contracts.stages import MAX_TRIAGE_SPLIT_PARTS, TRIAGE_MODES
 
 MANIFEST_SCHEMA: Final = "triage-decision-manifest-v1"
 CLUSTER_SCHEMA: Final = "triage-re-shoot-cluster-v1"
@@ -39,7 +39,9 @@ SPLIT_OPERATION_ORDER: Final = "region-crop-rotate"
 MAX_MANIFEST_ROWS: Final = 1_000
 MAX_CLUSTER_RECORDS: Final = 1_000
 MAX_CLUSTER_MEMBERS: Final = 4_096
-MAX_SPLIT_PARTS: Final = 64
+# The shared cap, not a second declaration of it: the Exemplar boundary restates
+# this module's row schema and bounds the same split before its own pairwise check.
+MAX_SPLIT_PARTS: Final = MAX_TRIAGE_SPLIT_PARTS
 MAX_SCANTAILOR_PROJECT_BYTES: Final = 4 * 1024 * 1024
 
 _ROW_FIELDS: Final = {
@@ -127,8 +129,13 @@ def _row_digest(row: Mapping[str, Any]) -> str:
         and len(split["parts"]) > MAX_SPLIT_PARTS
     ):
         # ``make_row`` derives the digest before full validation. Refuse this
-        # quadratic-work input before canonical serialization copies it.
-        raise SchemaRefusal(f"triage split exceeds the {MAX_SPLIT_PARTS}-part limit")
+        # quadratic-work input before canonical serialization copies it. The
+        # message says *where* the refusal happened, because the identical one in
+        # ``_validate_split`` would otherwise make the two indistinguishable, and a
+        # test could not then tell that this early guard had been removed.
+        raise SchemaRefusal(
+            f"triage split exceeds the {MAX_SPLIT_PARTS}-part limit before its row is serialized"
+        )
     payload = {key: value for key, value in row.items() if key != "manifest_row_sha256"}
     try:
         return digest_bytes(canonical_bytes(payload))

@@ -25,6 +25,7 @@ this interface is the only place both sides can be held at once.
 """
 
 import copy
+import re
 import struct
 import subprocess
 import sys
@@ -444,11 +445,14 @@ def _sealed_derivative(master_size, declared_frame):
     }
     row["manifest_row_sha256"] = _rows_digest(row)
     sealed, geometry = render_triage_derivative(master, page_index=0, part=part)
-    mode_transform = (
-        "triage-region-crop-rotate-convert"
-        if geometry["source_mode"] == geometry["color_mode"]
-        else f"triage-region-crop-rotate-convert-to-{geometry['color_mode'].lower()}"
-    )
+    # The literal, not the boundary's own conditional restated: deriving the name
+    # here from the rule under test made every check below agree with whatever that
+    # rule currently says, and a change to the naming would have moved fixture and
+    # implementation together in silence. This fixture is an RGB master rendered
+    # under colour_mode "rgb", which is the un-converted case by construction; the
+    # assertion says so rather than leaving it to be inferred.
+    assert geometry["source_mode"] == geometry["color_mode"] == "RGB"
+    mode_transform = "triage-region-crop-rotate-convert"
     contract = {
         **imaging_library_versions(),
         "source_mode": geometry["source_mode"],
@@ -550,14 +554,14 @@ def test_a_derivative_page_whose_row_under_declares_its_master_is_refused():
     re-derives the sealed bytes exactly. Only the frame comparison notices that
     half the photograph was never accounted for.
     """
-    from common.exemplar_boundary import _verify_triage_derivative
+    from common.exemplar_boundary import verify_triage_derivative
 
     honest = _sealed_derivative((4, 4), {"width": 4, "height": 4})
-    _verify_triage_derivative(honest[0], honest[1], honest[2], honest[3])
+    verify_triage_derivative(honest[0], honest[1], honest[2], honest[3])
 
     contract, master, parent, sealed = _sealed_derivative((8, 4), {"width": 4, "height": 4})
     with pytest.raises(ContractError, match="declares a frame that is not the size of the master"):
-        _verify_triage_derivative(contract, master, parent, sealed)
+        verify_triage_derivative(contract, master, parent, sealed)
 
 
 def test_a_re_derivation_mismatch_names_a_decoder_upgrade_when_one_explains_it():
@@ -570,19 +574,19 @@ def test_a_re_derivation_mismatch_names_a_decoder_upgrade_when_one_explains_it()
     the ordinary cause — so when the recorded versions differ from this host's,
     the refusal says which ones.
     """
-    from common.exemplar_boundary import _verify_triage_derivative
+    from common.exemplar_boundary import verify_triage_derivative
 
     contract, master, parent, sealed = _sealed_derivative((4, 4), {"width": 4, "height": 4})
     contract["renderer_version"] = "0.0.0-not-this-host"
 
     with pytest.raises(ContractError, match="not reproducible") as drifted:
-        _verify_triage_derivative(contract, master, parent, sealed + b"x")
+        verify_triage_derivative(contract, master, parent, sealed + b"x")
     assert "renderer_version '0.0.0-not-this-host'" in str(drifted.value)
     assert "recorded, not enforced" in str(drifted.value)
 
     contract, master, parent, sealed = _sealed_derivative((4, 4), {"width": 4, "height": 4})
     with pytest.raises(ContractError, match="not reproducible") as undrifted:
-        _verify_triage_derivative(contract, master, parent, sealed + b"x")
+        verify_triage_derivative(contract, master, parent, sealed + b"x")
     assert "sealed under different imaging libraries" not in str(undrifted.value)
 
 
@@ -600,13 +604,80 @@ def test_a_re_derivation_mismatch_names_a_decoder_upgrade_when_one_explains_it()
     ],
 )
 def test_a_derivative_renderer_record_cannot_lie_about_rederived_pixels(field, forged):
-    from common.exemplar_boundary import _verify_triage_derivative
+    from common.exemplar_boundary import verify_triage_derivative
 
     contract, master, parent, sealed = _sealed_derivative((4, 4), {"width": 4, "height": 4})
     contract[field] = forged
 
     with pytest.raises(ContractError, match="renderer record does not describe"):
-        _verify_triage_derivative(contract, master, parent, sealed)
+        verify_triage_derivative(contract, master, parent, sealed)
+
+
+def test_an_embedded_triage_row_is_bounded_before_its_pairwise_geometry_check():
+    """This boundary restates the pre-door row schema because `common/` may not
+    import the numbered pipeline, and the restatement had dropped the part cap. The
+    overlap check below it compares every pair, so an unbounded parts list bought
+    quadratic work on a record this boundary exists in order not to trust. Found by
+    CodeRabbit."""
+    from common.contracts.stages import MAX_TRIAGE_SPLIT_PARTS
+    from common.exemplar_boundary import verify_triage_derivative
+
+    contract, master, parent, sealed = _sealed_derivative((4, 4), {"width": 4, "height": 4})
+    row = contract["derivative_page"]["triage_manifest_row"]
+    part = row["split"]["parts"][0]
+    row["split"]["parts"] = [copy.deepcopy(part) for _ in range(MAX_TRIAGE_SPLIT_PARTS + 1)]
+    row["manifest_row_sha256"] = _rows_digest(row)
+    contract["derivative_page"]["triage_backlink"]["triage_manifest_row_sha256"] = row[
+        "manifest_row_sha256"
+    ]
+
+    with pytest.raises(ContractError, match=f"{MAX_TRIAGE_SPLIT_PARTS}-part split limit"):
+        verify_triage_derivative(contract, master, parent, sealed)
+
+
+def test_the_boundarys_restated_triage_row_schema_matches_the_pre_door_contract():
+    """Restated rather than imported, because `common/` may not import `pipeline/`
+    (the import-boundary test in `common/chairs/` enforces that), and read out of the
+    source text for the same reason. A field the pre-door contract closes and this
+    boundary does not is a field a forged sealed page could carry."""
+    manifest_source = (ROOT / "pipeline" / "0_triage" / "manifest.py").read_text(encoding="utf-8")
+    boundary_source = (ROOT / "common" / "exemplar_boundary.py").read_text(encoding="utf-8")
+
+    def field_set(source: str, name: str) -> set[str]:
+        block = re.search(rf"{name}[^{{]*{{(.*?)}}", source, re.DOTALL)
+        assert block, f"{name} is no longer declared where this test can read it"
+        return set(re.findall(r'"([a-z_0-9]+)"', block.group(1)))
+
+    # Anchored to the function, not to the first `required = ` in the file: there
+    # are two, and an unanchored search would quietly compare the wrong one if they
+    # ever changed places. Found by CodeRabbit.
+    assert field_set(
+        boundary_source, r"def _validate_embedded_triage_row.*?    required = "
+    ) == field_set(manifest_source, r"_ROW_FIELDS: Final = ")
+    assert field_set(boundary_source, r"set\(part\) != ") == field_set(
+        manifest_source, r"_PART_FIELDS: Final = "
+    )
+    assert field_set(boundary_source, r"set\(actor\) != ") == field_set(
+        manifest_source, r"set\(actor\) != "
+    )
+
+
+def test_a_triage_row_carrying_a_field_outside_the_closed_schema_is_refused():
+    """The behaviour the source-text comparison above stands in for, exercised
+    through the ordinary verification path: matching field sets in two files would
+    still be worth nothing if the boundary had stopped closing its own."""
+    from common.exemplar_boundary import verify_triage_derivative
+
+    contract, master, parent, sealed = _sealed_derivative((4, 4), {"width": 4, "height": 4})
+    row = contract["derivative_page"]["triage_manifest_row"]
+    row["operator_note"] = "a field the pre-door contract never closes"
+    row["manifest_row_sha256"] = _rows_digest(row)
+    contract["derivative_page"]["triage_backlink"]["triage_manifest_row_sha256"] = row[
+        "manifest_row_sha256"
+    ]
+
+    with pytest.raises(ContractError, match="no complete triage manifest row"):
+        verify_triage_derivative(contract, master, parent, sealed)
 
 
 @pytest.mark.parametrize(
@@ -623,7 +694,7 @@ def test_a_derivative_renderer_record_cannot_lie_about_rederived_pixels(field, f
     ],
 )
 def test_a_self_hashed_manifest_row_still_needs_complete_mode_and_actor_provenance(forge):
-    from common.exemplar_boundary import _verify_triage_derivative
+    from common.exemplar_boundary import verify_triage_derivative
 
     contract, master, parent, sealed = _sealed_derivative((4, 4), {"width": 4, "height": 4})
     row = contract["derivative_page"]["triage_manifest_row"]
@@ -634,4 +705,4 @@ def test_a_self_hashed_manifest_row_still_needs_complete_mode_and_actor_provenan
     ]
 
     with pytest.raises(ContractError, match="triage row|triage manifest row"):
-        _verify_triage_derivative(contract, master, parent, sealed)
+        verify_triage_derivative(contract, master, parent, sealed)

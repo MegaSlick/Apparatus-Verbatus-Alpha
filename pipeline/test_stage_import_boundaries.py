@@ -106,7 +106,15 @@ def _own_module_names(stage: str) -> set[str]:
 
 
 def _imports_in(path: Path) -> list[tuple[str, str]]:
-    """`(root_module, full_module)` for every statically knowable absolute import."""
+    """`(root_module, full_module)` for every statically knowable import.
+
+    A relative `from . import x` is reported under the name it binds, and
+    `from .pkg import x` under `pkg`. No pipeline directory is a package — there
+    is no `__init__.py` anywhere under `pipeline/` — so a relative import there
+    is a runtime error rather than a boundary crossing, and this reports none
+    today. It is here so the guard fails closed rather than resting on that: a
+    node kind silently skipped is how a guard grows a gap it never announced.
+    """
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     found: list[tuple[str, str]] = []
     for node in ast.walk(tree):
@@ -116,6 +124,13 @@ def _imports_in(path: Path) -> list[tuple[str, str]]:
         elif isinstance(node, ast.ImportFrom) and node.level == 0:
             module = node.module or ""
             found.append((module.split(".")[0], module))
+        elif isinstance(node, ast.ImportFrom):
+            dots = "." * node.level
+            if node.module:
+                found.append((node.module.split(".")[0], f"{dots}{node.module}"))
+            else:
+                for alias in node.names:
+                    found.append((alias.name.split(".")[0], f"{dots}{alias.name}"))
         elif isinstance(node, ast.Call) and (module := _literal_import_module(node)) is not None:
             found.append((module.split(".")[0], module))
     return found
@@ -205,7 +220,13 @@ def test_no_stage_imports_pipeline_by_its_dotted_path():
 
 
 def test_production_stage_code_never_imports_the_reseal_forgery_helper():
-    """`reseal_chain` exists only to make test forgeries internally coherent."""
+    """`reseal_chain` exists only to make test forgeries internally coherent.
+
+    Matched on the last dotted component rather than the root, so a qualified
+    `import_module("pipeline.6_archetypus.reseal_chain")` is caught here by name
+    as well as by the dotted-path test above — the two guards describe different
+    wrongs and the qualified form is both of them.
+    """
     violations = [
         f"{path} imports {full!r}"
         for path in repository_python_files()
@@ -213,7 +234,7 @@ def test_production_stage_code_never_imports_the_reseal_forgery_helper():
         and not Path(path).name.startswith("test_")
         and Path(path).name != "reseal_chain.py"
         for root, full in _imports_in(ROOT / path)
-        if root == "reseal_chain"
+        if root == "reseal_chain" or full.split(".")[-1] == "reseal_chain"
     ]
     assert not violations, "production stage code imported a test forgery helper:\n" + "\n".join(
         violations
@@ -236,3 +257,32 @@ def test_literal_dynamic_pipeline_imports_are_visible_to_the_guard(tmp_path):
         ("pipeline", "pipeline.2_designator.run"),
         ("pipeline", "pipeline.4_perlector.run"),
     ]
+
+
+def test_the_reseal_guard_sees_every_form_the_helper_could_arrive_under(tmp_path):
+    """Bare, qualified, and relative — the guard reports all three by name.
+
+    No pipeline directory is a package, so the relative forms cannot execute
+    there today. They are checked anyway: an AST node kind the walker silently
+    skips is a gap the guard would never announce, and the qualified form used to
+    be reported only under the root `pipeline`.
+    """
+    source = tmp_path / "reseal_routes.py"
+    source.write_text(
+        "import reseal_chain\n"
+        "from importlib import import_module\n"
+        "import_module('pipeline.6_archetypus.reseal_chain')\n"
+        "from . import reseal_chain as forge\n"
+        "from .reseal_chain import reseal\n",
+        encoding="utf-8",
+    )
+
+    # A set, because `ast.walk` is breadth-first: the `import_module` call is a
+    # node deeper than the import statements and is reached after them. What is
+    # asserted is that every route is seen, not the order they are seen in.
+    names = {full for _root, full in _imports_in(source)}
+    assert {full for full in names if full.split(".")[-1] == "reseal_chain"} == {
+        "reseal_chain",
+        "pipeline.6_archetypus.reseal_chain",
+        ".reseal_chain",
+    }

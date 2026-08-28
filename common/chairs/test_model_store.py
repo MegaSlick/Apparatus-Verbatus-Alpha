@@ -530,14 +530,19 @@ def test_materializer_refuses_a_staged_symlink_before_reading_its_target(tmp_pat
             (destination / "LICENSE").write_text("terms", encoding="utf-8")
             (destination / "model.safetensors.index.json").symlink_to(outside_index)
 
-    real_read_text = Path.read_text
+    # `_indexed_shards` does not use `Path.read_text`; it reads through
+    # `_read_limited_bytes`. Guarding the wrong call left the claim in this
+    # test's name -- that the external index was never read -- asserted nowhere,
+    # so a change that read the symlinked index before the symlink check would
+    # have passed here.
+    real_read_limited_bytes = model_store._read_limited_bytes
 
     def refuse_external_read(path, *args, **kwargs):
-        if path.resolve() == outside_index:
+        if Path(path).resolve() == outside_index:
             raise AssertionError("the external shard index was read")
-        return real_read_text(path, *args, **kwargs)
+        return real_read_limited_bytes(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "read_text", refuse_external_read)
+    monkeypatch.setattr(model_store, "_read_limited_bytes", refuse_external_read)
 
     with pytest.raises(DigestMismatchRefusal, match="symlink"):
         materialize_real_roster(
@@ -1009,6 +1014,66 @@ class _FakeMaterializationFetcher:
             (destination / "LICENSE").write_text("upstream licence", encoding="utf-8")
 
 
+def test_a_missing_client_package_is_not_reported_as_a_corrupt_model_card(tmp_path, monkeypatch):
+    """A refusal that already names its cause must not be relabelled.
+
+    `load_model_card_metadata` builds the production fetcher, which raises
+    `UnresolvedChairRefusal("huggingface_hub is not installed ...")` when the
+    package is absent from the image. The blanket `except Exception` republished
+    that as "the fetched README.md has unreadable model-card metadata", so at pod
+    boot the operator read that the pinned repository's card was damaged and
+    re-fetched an intact repository while the GPU billed.
+    """
+
+    from common.chairs.errors import UnresolvedChairRefusal
+
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    (snapshot / model_store.MODEL_CARD_PATH).write_text(
+        "---\nlicense: mit\n---\n", encoding="utf-8"
+    )
+
+    def no_client(_path):
+        raise UnresolvedChairRefusal(
+            "attestator_1", "huggingface_hub is not installed for the production fetcher"
+        )
+
+    monkeypatch.setattr(model_store, "load_model_card_metadata", no_client)
+    requirement = next(item for item in REQUIRED_ARTIFACTS if item.source == "huggingface")
+
+    with pytest.raises(UnresolvedChairRefusal) as refusal:
+        model_store._reconcile_model_card_licence(snapshot, requirement)
+
+    assert "huggingface_hub is not installed" in str(refusal.value)
+    assert "unreadable model-card metadata" not in str(refusal.value)
+
+
+def test_a_resumed_materialization_refuses_a_capacity_plan_that_is_not_the_recorded_one(tmp_path):
+    """The observation the caller supplied is not thrown away without a word.
+
+    A resume rebound `record` to the one on disk, so the supplied capacity was
+    neither recorded nor compared: a volume that was resized, or a store moved to
+    a different volume, kept publishing the previous volume's figures. Only
+    `_validate_record` looks at capacity, and it asks nothing beyond whether one
+    plan is self-consistent, so nothing reported the disagreement.
+    """
+
+    fetcher = _FakeMaterializationFetcher()
+    materialize_real_roster(tmp_path, fetcher, capacity=dict(_MATERIALIZATION_CAPACITY))
+    assert load_download_record(tmp_path)["capacity"] == dict(_MATERIALIZATION_CAPACITY)
+
+    moved = dict(_MATERIALIZATION_CAPACITY) | {"available_bytes": 400}
+
+    with pytest.raises(DigestMismatchRefusal) as refusal:
+        materialize_real_roster(tmp_path, fetcher, capacity=moved)
+
+    detail = str(refusal.value)
+    assert "capacity plan differs" in detail
+    assert "400" in detail
+    # The recorded plan is evidence and is not rewritten by the refusal.
+    assert load_download_record(tmp_path)["capacity"] == dict(_MATERIALIZATION_CAPACITY)
+
+
 def test_pod_materializer_fetches_each_real_pin_once_and_records_measured_evidence(tmp_path):
     fetcher = _FakeMaterializationFetcher()
     capacity = dict(_MATERIALIZATION_CAPACITY)
@@ -1475,6 +1540,17 @@ def test_the_real_roster_carries_the_licence_notes_it_was_drafted_with():
         if isinstance(identity, ChairIdentity)
     }
 
+    # `_commented_licence_notes` reads a fixed comment shape. Reflowing or
+    # reindenting that block used to make this fail with `KeyError: 'perlector'`
+    # below -- a missing dictionary key in a licence test, with nothing pointing
+    # at comment formatting in a config file, and the comparison the docstring is
+    # about never running at all.
+    unparsed = sorted(set(carried) - set(drafted))
+    assert not unparsed, (
+        f"no commented `license_note` was parsed for {unparsed}; the drafted roster in "
+        "config/models.toml no longer matches the comment shape this test reads, so the "
+        "notes were not compared"
+    )
     assert carried == {role: drafted[role] for role in carried}
     assert len(carried) == 6
 

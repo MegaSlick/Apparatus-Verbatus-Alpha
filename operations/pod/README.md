@@ -139,7 +139,7 @@ check.
   `operations/notify/`; delivery never alters a launch decision, and whether the phone
   got it is recorded either way. A delivered warning is suppressed for fifteen minutes
   while readings remain low; two consecutive safe readings establish recovery, so a new
-  crossing pages immediately, while one-reading flaps do not re-arm it.
+  crossing sends a page immediately, while one-reading flaps do not re-arm it.
   `operations/pod/cli.py` sends nothing unless `--notify` is passed. The commented
   `$50.00` template value remains unverified and must be checked against RunPod before a
   live run. All paid actions for one provider account must use the same lease root; the

@@ -286,12 +286,27 @@ def test_sampling_approval_scan_refuses_ambiguous_noncanonical_json(tmp_path):
 
 def test_sampling_approval_scan_names_deep_json_as_a_refusal(tmp_path):
     context = _context(tmp_path, "a" * 64)
+    # A valid approval record sits beside the deep receipt on purpose. Without
+    # it the scan finds no approval subject at all, and the refusal it raised
+    # said so -- a pass this test would have accepted while the deep document
+    # was never examined.
+    context.tree.write_approval_record(_record(SUBJECTS[0], context.config_digest))
     _write_unchecked_receipt(context.tree, b'{"nested":' * 10_000 + b"0" + b"}" * 10_000)
 
-    # Depth beyond the canonical encoder's recursion bound surfaces as a
-    # canonicalization refusal, not a decode error: the scan proves the exact
-    # immutable bytes cannot be re-derived, which is the same fact said louder.
-    with pytest.raises(ContractError, match="cannot be represented as canonical receipt bytes"):
+    # Parse-time recursion exhaustion is stack-dependent. When the canonical
+    # encoder's bound trips first the depth surfaces as a canonicalization
+    # refusal; when the parser survives it is refused as a receipt instead.
+    # Either way the deep document itself is a named ContractError, never an
+    # escaping crash.
+    with pytest.raises(
+        ContractError,
+        match=(
+            "cannot be represented as canonical receipt bytes"
+            "|is not canonical JSON"
+            "|is malformed JSON while resolving approval"
+            "|not its content-addressed name"
+        ),
+    ):
         _resolve(context, SUBJECTS[0])
 
 
