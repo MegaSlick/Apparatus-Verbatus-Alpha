@@ -116,7 +116,13 @@ def test_backup_refuses_to_publish_a_snapshot_when_the_source_moves(
         return result
 
     monkeypatch.setattr("operations.operator.backup._copy_verified", copy_then_change)
-    with pytest.raises(BackupRefusal, match="changed while"):
+    # Splitting the two refusals showed which check this case actually
+    # reaches, and it is not the tree-level before/after comparison: the
+    # rewrite lands before `run.json` is copied, so the per-file read hashes
+    # to bytes the inventory does not name while the metadata it captured
+    # around that read holds still. The loose "changed while" pattern matched
+    # either mechanism and so named neither.
+    with pytest.raises(BackupRefusal, match="hashed to different bytes than the inventory"):
         sync_run_tree(volume, run_id, mac)
     # `Path.glob` on a missing directory yields nothing, so no existence guard
     # is needed. `assert X if cond else True` is one conditional expression and
@@ -708,7 +714,7 @@ def test_a_backup_taken_across_a_concurrent_append_refuses_and_stays_resumable(
         return result
 
     monkeypatch.setattr(backup_module, "_copy_verified", copy_then_append)
-    with pytest.raises(BackupRefusal, match="changed while it was being copied"):
+    with pytest.raises(BackupRefusal, match="the run tree changed while it was being copied"):
         sync_run_tree(volume, run_id, mac)
     assert not list((mac / "snapshots" / "sha256").glob("*.json"))
 

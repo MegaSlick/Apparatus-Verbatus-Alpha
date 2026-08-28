@@ -736,10 +736,23 @@ def _copy_verified(
             after = _stable_file_metadata(os.fstat(origin.fileno()))
             destination.flush()
             os.fsync(destination.fileno())
+        # Two faults, two sentences, for the same reason `from_record` splits
+        # its clauses. One shared message let an operator read "changed while
+        # it was being copied", conclude a stage was still writing, wait and
+        # retry — when the second case is identical metadata over different
+        # bytes, which is a storage or memory fault silently returning wrong
+        # content for a register page, and no amount of retrying informs them.
         if before != after:
-            raise BackupRefusal(f"source {relative!r} changed while it was being copied")
+            raise BackupRefusal(
+                f"source {relative!r} changed on disk while it was being copied; a writer "
+                "was still active, so no snapshot was published"
+            )
         if digest.hexdigest() != expected_sha256:
-            raise BackupRefusal(f"source {relative!r} changed while it was being copied")
+            raise BackupRefusal(
+                f"source {relative!r} hashed to different bytes than the inventory recorded "
+                "while its metadata held still; the read is not trustworthy and no snapshot "
+                "was published"
+            )
         try:
             _link_or_refuse(temporary_name, target.name, objects_descriptor, target_display=target)
         except FileExistsError:

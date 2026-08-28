@@ -1202,7 +1202,11 @@ def test_review_refuses_a_zip_member_that_would_expand_past_its_input_limit():
     with pytest.raises(OperatorError) as excinfo:
         review._review_items(tree, payload)
 
-    assert "review limit" in (excinfo.value.detail or "")
+    # The distinguishing verb, not the shared phrase: `_review_items` raises
+    # "exceeds the operator review limit" for the declared member size and
+    # "expands beyond" for the post-read recheck, and "review limit" matched
+    # either — so this test stayed green whichever bound was deleted.
+    assert "exceeds the operator review limit" in (excinfo.value.detail or "")
 
 
 def test_review_refuses_more_review_rows_than_the_console_can_safely_project():
@@ -1214,7 +1218,9 @@ def test_review_refuses_more_review_rows_than_the_console_can_safely_project():
     with pytest.raises(OperatorError) as excinfo:
         review._review_items(tree, payload)
 
-    assert "records" in (excinfo.value.detail or "")
+    assert f"more than the operator review limit of {review.MAX_REVIEW_ITEMS} records" in (
+        excinfo.value.detail or ""
+    )
 
 
 def test_review_refuses_ambiguous_duplicate_review_members():
@@ -1229,6 +1235,52 @@ def test_review_refuses_ambiguous_duplicate_review_members():
         review._review_items(tree, payload)
 
     assert "more than one review-items.jsonl" in (excinfo.value.detail or "")
+
+
+def test_review_refuses_a_run_whose_images_exceed_what_the_console_can_hold():
+    """The bounded review queue sat beside unbounded page and crop bytes.
+
+    Each sealed page and each act crop is read whole, expanded to a base64
+    data URL a third larger again, and serialised as JSON across the custody
+    boundary. Nothing limited that, so a parish-sized run met the machine's
+    memory rather than a refusal, and the operator got a killed console over
+    evidence that was intact on disk. The allowance is one running total
+    across pages and crops, because the console holds them all at once.
+    """
+    data = b"x" * 4096
+    digest = digest_bytes(data)
+    tree = types.SimpleNamespace(read_bytes=lambda _path: data)
+    budget = review._ImageBudget(limit=6000)
+    page = {
+        "ordinal": 1,
+        "page_id": "pg_example",
+        "outcome": "sealed",
+        "image_path": "1_exemplar/blobs/sha256/example",
+        "image_sha256": digest,
+    }
+    act = {
+        "act_id": "act_example",
+        "act_key": "a1",
+        "source_regions": [
+            {
+                "source_page_ordinal": 1,
+                "region_id": "rgn_example",
+                "image_path": "2_designator/blobs/sha256/example",
+                "image_sha256": digest,
+            }
+        ],
+    }
+
+    # The page alone fits; the crop that follows it on the same allowance does
+    # not, which is the accounting a per-kind limit would have missed.
+    review._image_row(tree, page, budget)
+    with pytest.raises(OperatorError) as excinfo:
+        review._act_row(tree, act, budget)
+
+    assert excinfo.value.code == ErrorCode.CONSOLE_TREE_UNREADABLE
+    assert "more than the console can project" in (excinfo.value.detail or "")
+    assert "intact and unchanged" in (excinfo.value.detail or "")
+    assert review.MAX_PROJECTED_IMAGE_BYTES == 256 * 1024 * 1024
 
 
 def test_review_refuses_an_act_whose_export_row_lost_its_crop_list():

@@ -472,13 +472,22 @@ def _advance_with_confirmation(
 ) -> None:
     """Bind a human confirmation to one observed digest, then launch the worker."""
 
-    from common.contracts.errors import ApprovalRefusal
+    from common.contracts.errors import ApprovalRefusal, ContractError
     from common.runtree.store import RunTree
 
-    tree = RunTree(run_root.resolve(), run_id)
+    # Binding the tree belongs inside the guard. `RunTree.__init__` validates
+    # the run id and refuses one that resolves outside the run root, and both
+    # arrive as `ContractError`. Constructed above the `try`, a typed
+    # `--run-id My-Run` reached the unclassified handler and told the operator
+    # to photograph the message and find help over a capital letter — and an
+    # attempted escape from the approved run root reported the same way, as a
+    # tool that broke rather than a request that was refused. `backup` already
+    # names this mistake; `advance` now does too. `ApprovalRefusal` is listed
+    # first for the reader; it is already a `ContractError`.
     try:
+        tree = RunTree(run_root.resolve(), run_id)
         _seal, digest = sealed_boundary(tree, stage)
-    except ApprovalRefusal as error:
+    except (ApprovalRefusal, ContractError, OSError) as error:
         raise OperatorError(ErrorCode.ADVANCE_REFUSED, detail=str(error)) from error
     phrase = f"advance {run_id} past {stage} at {digest}"
     _print(f"The current {stage} boundary has seal digest {digest}.")

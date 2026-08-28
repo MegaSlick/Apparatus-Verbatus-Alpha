@@ -24,6 +24,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         # hands the child bytes it just serialized, and a malformed pipe cannot
         # be a claim about the run tree.  The parent turns a nonzero child exit
         # into the ordinary three-part operator failure contract.
+        #
+        # It still has to say which of the two happened. Exiting silently left
+        # the parent with an empty detail, so the operator read "investigate
+        # the named evidence problem" with no problem named, and was sent to
+        # preserve and investigate register evidence that was never touched.
+        print(
+            "the projection on standard input was not complete JSON; the run tree "
+            "itself was never read by this process",
+            file=sys.stderr,
+        )
         return 2
     print(json.dumps(projection, sort_keys=True))
     return 0
