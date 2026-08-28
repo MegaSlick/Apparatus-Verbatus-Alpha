@@ -97,6 +97,32 @@ def test_a_config_declaring_an_unshared_mode_name_is_refused(tmp_path):
 
 
 @pytest.mark.parametrize(
+    "policy",
+    [
+        "review_at_or_below_confidence = 5",
+        "review_at_or_below_confidence = -1",
+        "review_at_or_below_confidence = true",
+        'review_at_or_below_confidence = "4"',
+        "review_at_or_below_confidence = 4\nreview_above_confidence = 1",
+        "",
+    ],
+    ids=["above", "below", "boolean", "string", "extra-key", "absent"],
+)
+def test_a_mode_table_outside_the_closed_threshold_shape_is_refused(tmp_path, policy):
+    # The threshold is the number that decides whether a frame is held for review,
+    # and every clause bounding it was unpinned: the mode-name tests above pass
+    # whatever the ordinal, the type check, or the closed key set is doing.
+    config = tmp_path / "triage_modes.toml"
+    config.write_text(
+        f"[manual]\n{policy}\n"
+        "[semi]\nreview_at_or_below_confidence = 4\n"
+        "[auto]\nreview_at_or_below_confidence = 4\n"
+    )
+    with pytest.raises(ContractError, match="wrong closed schema"):
+        require_triage_modes({"triage-modes": digest_bytes(config.read_bytes())}, config)
+
+
+@pytest.mark.parametrize(
     ("raw", "cause"),
     [
         (b"\xff", "not valid UTF-8"),
