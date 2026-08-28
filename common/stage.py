@@ -637,8 +637,27 @@ class StageContext:
         return audit
 
     def _write_serving_blob(self, value: dict[str, Any], label: str) -> dict[str, str]:
-        """Canonical content-addressed storage shared by serving evidence records."""
+        """Canonical content-addressed storage shared by serving evidence records.
 
+        Guarded after the seal for the same reason `publish` is, and it is the
+        same directory at stake: this writes through `tree.put_blob` into the
+        stage's own blob directory, which `_stage_blob_inventory` walks and whose
+        digest the seal payload carries. One serving-evidence write afterwards
+        changes the inventory the seal witnessed — and the symptom lands on the
+        wrong stage, because the *next* consumer refuses with "its named inventory
+        no longer matches disk". A producer that did honest work would be reported
+        as a tree whose evidence was altered, indistinguishable from real
+        tampering. Ordering discipline was already judged insufficient for
+        artifacts; blobs are no different.
+
+        Serving *receipts* need no such guard: they are run receipts written under
+        `receipts/`, outside any stage's inventory.
+        """
+        if self.sealed:
+            raise SchemaRefusal(
+                f"{self.stage} has sealed its completion boundary; storing {label} afterwards "
+                "would make its witnessed blob inventory false"
+            )
         try:
             payload = canonical_bytes(value)
         except (TypeError, ValueError) as error:

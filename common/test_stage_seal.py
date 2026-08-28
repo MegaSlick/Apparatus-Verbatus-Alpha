@@ -180,6 +180,31 @@ def test_a_stage_refuses_a_blob_whose_content_does_not_match_its_name(tmp_path):
     assert not _stage_records(tree, ATTESTATORES, "stage-seal")
 
 
+def test_serving_evidence_cannot_be_stored_after_the_boundary_is_sealed(tmp_path):
+    """The post-seal guard covers blobs, not only artifacts.
+
+    `_write_serving_blob` goes through `tree.put_blob` into the stage's own blob
+    directory — the one `_stage_blob_inventory` walks and whose digest the seal
+    carries. A write afterwards makes the witnessed inventory false, and the
+    symptom lands on the wrong stage: the next consumer refuses with "its named
+    inventory no longer matches disk", reporting an honest producer as a tampered
+    tree. The second half here shows that consequence directly.
+    """
+    tree, run, registry, bindings = _tree(tmp_path)
+    context = _context(tree, run, registry, bindings)
+    context.publish(kind="testimonium", subject_id="a1", outcome="read", payload={})
+    context.seal_boundary()
+
+    with pytest.raises(SchemaRefusal, match="witnessed blob inventory false"):
+        context._write_serving_blob({"chair": "attestator_1"}, "a serving launch audit")
+
+    # What the guard prevents: the same bytes written straight to the store leave
+    # the stored seal answering for an inventory that is no longer on disk.
+    tree.put_blob(ATTESTATORES, b"evidence written after the boundary")
+    with pytest.raises(SchemaRefusal, match="named inventory no longer matches disk"):
+        verify_predecessor_seal(tree, PERLECTOR)
+
+
 def test_an_interrupted_publish_leaves_a_blob_that_can_still_be_sealed(tmp_path):
     """SIGKILL between the publisher's link and its unlink must not end the run.
 
