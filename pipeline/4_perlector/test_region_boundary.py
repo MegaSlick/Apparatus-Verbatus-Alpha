@@ -737,7 +737,8 @@ def _replace_capture_projection(payload):
     original = payload["payload"]
     forged = ("X" if original[0] != "X" else "Y") + original[1:]
     payload["payload"] = forged
-    payload["reported"] = forged
+    # `reported` is a retired projection; the closed schema now refuses the key
+    # itself rather than checking its value.
     payload["native_capture"]["parse"]["text"] = forged
 
 
@@ -829,7 +830,9 @@ def test_page_attachment_uses_the_page_attempt_outcome_not_the_compatibility_act
                 if item["chair"] == "attestator_3" and item["page_ordinal"] == 1
             )
             assert entry["attached"] is True
-            entry.update(attached=False, attachment_basis="unattached", span=None)
+            # Comparability implies attachment; a coherent forgery drops both
+            # or the comparable seam names it before the outcome check.
+            entry.update(attached=False, attachment_basis="unattached", span=None, comparable=False)
         return record
 
     def failed_page(reference, *, stage, kind, subject_id):
