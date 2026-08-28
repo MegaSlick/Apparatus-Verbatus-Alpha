@@ -352,8 +352,29 @@ def test_a_nul_path_is_refused_before_it_reaches_the_filesystem():
         )
 
 
+def test_unicode_form_variant_input_paths_cannot_split_accounting_either():
+    """macOS hands back the decomposed spelling of a name Linux stored composed.
+
+    Different strings, different casefolds, different dictionary keys — so one
+    scanned page would enter the lineage twice and the duplicate refusal above
+    would never fire.
+    """
+    composed = "proof/\N{LATIN CAPITAL LETTER E WITH ACUTE}tienne-1.png"
+    decomposed = "proof/E\N{COMBINING ACUTE ACCENT}tienne-1.png"
+    assert composed.casefold() != decomposed.casefold(), "case folding alone cannot see it"
+    with pytest.raises(SchemaRefusal, match="Unicode-normalising filesystem"):
+        validate_envelope(
+            sound_envelope(
+                inputs=[
+                    {"relative_path": composed, "sha256": "a" * 64},
+                    {"relative_path": decomposed, "sha256": "b" * 64},
+                ]
+            )
+        )
+
+
 def test_case_variant_input_paths_cannot_split_accounting_on_default_apfs():
-    with pytest.raises(SchemaRefusal, match="case-insensitive filesystem"):
+    with pytest.raises(SchemaRefusal, match="case-insensitive"):
         validate_envelope(
             sound_envelope(
                 inputs=[
