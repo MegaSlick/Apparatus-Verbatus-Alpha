@@ -711,11 +711,16 @@ def test_register_bytes_and_replay_counts_are_bounded_before_amplification(monke
 def test_pathologically_nested_json_is_refused_for_its_depth_not_its_encoding():
     """The refusal has to send an operator to the problem it actually has.
 
-    A 10,000-deep register is valid UTF-8 and valid JSON; only its structure
+    A deeply nested register is valid UTF-8 and valid JSON; only its structure
     defeats the parser. Reported as "not UTF-8 JSON", it sent whoever read it to
     check the file's encoding, where there is nothing wrong.
+
+    The depth must beat the parser's C recursion allowance on every platform:
+    10,000 exhausted it on macOS but parsed cleanly on the Linux CI runners
+    (CPython's C recursion limit is platform-dependent), where validation then
+    reached an unrelated per-record refusal instead of the depth refusal.
     """
-    depth = 10_000
+    depth = 1_000_000
     data = b'{"schema":"corpus-register-v1","records":' + b"[" * depth + b"]" * depth + b"}"
     with pytest.raises(SchemaRefusal, match="nested too deeply") as caught:
         validate_register_bytes(data)
