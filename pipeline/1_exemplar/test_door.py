@@ -101,6 +101,7 @@ RECIPES = {"door": "fake-door-v0", "exemplar": "fake-exemplar-v0"}
 CHAIRS = ["attestator_1", "attestator_2", "attestator_3"]
 ROOT = Path(__file__).resolve().parents[2]
 EXEMPLAR_CLI = ROOT / "pipeline" / "1_exemplar" / "run.py"
+INK_MAP_CLI = ROOT / "pipeline" / "1_ink_map" / "run.py"
 DESIGNATOR_CLI = ROOT / "pipeline" / "2_designator" / "run.py"
 
 
@@ -1678,6 +1679,24 @@ def test_real_door_binds_the_local_filename_ledger_to_every_run_page(tmp_path, m
     ]
     assert {page["payload"]["ledger_sha256"] for page in pages} == {ledger["self_hash"]}
 
+    # The Designator now demands its predecessor ink-map seal before it reads
+    # anything, so the ledger boundary this test aims at is reachable only
+    # behind a sealed ink map.
+    ink_map = subprocess.run(
+        [
+            sys.executable,
+            str(INK_MAP_CLI),
+            "--run-root",
+            str(run_root),
+            "--run-id",
+            "real-ledger",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert ink_map.returncode == 0, ink_map.stderr
+
     before_designator = tree.build_manifest(DESIGNATOR)
     boundary = subprocess.run(
         [
@@ -1693,7 +1712,8 @@ def test_real_door_binds_the_local_filename_ledger_to_every_run_page(tmp_path, m
         text=True,
     )
     assert boundary.returncode == 2
-    assert "filename-ledger boundary reconciled" in boundary.stderr
+    assert "reconciled the Exemplar filename ledger" in boundary.stderr
+    assert "no proposals or holds were fabricated" in boundary.stderr
     assert tree.build_manifest(DESIGNATOR) == before_designator
 
 

@@ -171,7 +171,9 @@ def test_dai_uncertainty_tokens_reach_a_closed_testimonium_verbatim():
     )
 
     assert record["payload"] == raw.decode("utf-8")
-    assert record["reported"] == record["payload"]
+    # The `reported` compatibility projection is retired: the retained payload
+    # is the coverage text directly, so there is no second field restating it.
+    assert "reported" not in record
     assert record["observed"][0]["span"] == {"start": 0, "end": len(record["payload"])}
 
 
