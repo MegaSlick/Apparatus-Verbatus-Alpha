@@ -25,7 +25,7 @@ the other chairs to reach it would re-read ink nobody doubted.
 import json
 import sys
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any, Final, NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -195,10 +195,33 @@ def region_inputs(context, regions: list[dict], presented: dict[str, Any]) -> li
     return sorted(inputs.values(), key=lambda item: (item["relative_path"], item["sha256"]))
 
 
+REGION_PRESENTATION_FIELDS: Final = ("region_id", "image_path", "image_sha256")
+REGION_TRANSFORM_FIELDS: Final = ("source_page_id", "source_page_ordinal")
+
+
 def presentation_for_region(region: dict[str, Any]) -> dict[str, Any]:
-    """Derive one region presentation from a verified proposal record."""
-    payload = region["payload"]
-    transform = payload["transform"]
+    """Derive one region presentation from a sealed proposal record.
+
+    The writer's caller has already verified this region's crop lineage, but
+    `validate_testimonium_presentation` reads regions straight out of the
+    Designator manifest to reconcile a record it is treating as untrusted. A
+    sealed region missing its transform or blob identity left that seam as a
+    raw KeyError -- from the check whose whole job is to name what is wrong
+    with the evidence -- so the missing field is named here instead.
+    """
+    payload = region.get("payload")
+    transform = payload.get("transform") if isinstance(payload, dict) else None
+    if not isinstance(payload, dict) or not isinstance(transform, dict):
+        raise SchemaRefusal(
+            "a sealed Designator region has no payload and page-space transform to present"
+        )
+    missing = [field for field in REGION_PRESENTATION_FIELDS if field not in payload]
+    missing += [field for field in REGION_TRANSFORM_FIELDS if field not in transform]
+    if missing:
+        raise SchemaRefusal(
+            f"a sealed Designator region lacks the field(s) {sorted(missing)} its presentation "
+            "must name. The record cannot be traced to the exact pixels a witness was shown"
+        )
     return {
         "kind": "region",
         "source_page_id": transform["source_page_id"],

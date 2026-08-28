@@ -545,13 +545,21 @@ def validate_testimonium_regions(context, record: dict, proposal_regions: list[d
             "a Testimonium does not name exactly the bound proposal regions its presentation "
             "does not speak for"
         )
-    if presented["kind"] != "region":
+    # One spelling of this refusal, called from both paths rather than hoisted
+    # above them. Order is load-bearing: a forged region presentation also has
+    # the wrong inputs, and checking those first would answer "wrong blobs" for
+    # a record whose actual fault is that it presents a recovery crop as a
+    # witness basis. The specific fault has to be the one the operator reads.
+    def _require_bound_inputs() -> None:
         if record.get("inputs") != expected_inputs:
             raise SchemaRefusal(
                 "an attempted Testimonium does not bind exactly its proposal and presentation "
                 "blobs. The consumer cannot prove which immutable pixels produced the report. "
                 "Restore the complete digest-bound input set and remove unrelated inputs"
             )
+
+    if presented["kind"] != "region":
+        _require_bound_inputs()
         return
     matches = [
         region
@@ -575,12 +583,7 @@ def validate_testimonium_regions(context, record: dict, proposal_regions: list[d
         or region["payload"].get("transform") != presented["transform"]
     ):
         raise SchemaRefusal("a Testimonium region presentation disagrees with its sealed proposal")
-    if record.get("inputs") != expected_inputs:
-        raise SchemaRefusal(
-            "an attempted Testimonium does not bind exactly its proposal and presentation "
-            "blobs. The consumer cannot prove which immutable pixels produced the report. "
-            "Restore the complete digest-bound input set and remove unrelated inputs"
-        )
+    _require_bound_inputs()
 
 
 def validate_page_testimonium_record(

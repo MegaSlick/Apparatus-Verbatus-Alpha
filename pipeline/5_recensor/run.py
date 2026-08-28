@@ -330,11 +330,9 @@ def act_attachment_facts(context, act_id: str, outcomes: dict[str, str]) -> dict
             )
         seen_pairs.add(pair)
         if page_witness:
-            page_ordinal = entry.get("page_ordinal")
-            if not isinstance(page_ordinal, int) or isinstance(page_ordinal, bool):
-                raise FatalAccounting(
-                    f"act {act_id} page witness {chair!r} has no integer page ordinal"
-                )
+            # `page_ordinal` was type-checked above, before it became half of
+            # the duplicate-pair key; re-reading and re-checking it here said
+            # the same thing twice with a thinner message.
             proposal_page = proposal_pages.get(page_ordinal)
             if proposal_page is None:
                 raise FatalAccounting(
@@ -484,8 +482,16 @@ def act_attachment_facts(context, act_id: str, outcomes: dict[str, str]) -> dict
             # content denominator below.
             previous = facts[chair]
             merged = dict(_merge_page_attachment_fact(previous, fact))
+            # Only rows of this same act attempt are merged -- the health
+            # equality just above is what holds that -- so filling one page's
+            # missing basis from a sibling page never borrows another attempt's
+            # evidence.
+            #
             # `act-line-not-located` is sticky across aligned page rows: a
             # terminal blank cannot discard the page whose geometry failed.
+            # Without the stickiness `blank_corroboration` would read the merged
+            # row as geometry-checked and let a failed alignment corroborate a
+            # blank it never located.
             bases_seen = (previous["anchor_basis"], fact["anchor_basis"])
             if "act-line-not-located" in bases_seen:
                 merged["anchor_basis"] = "act-line-not-located"

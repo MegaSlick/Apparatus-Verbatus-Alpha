@@ -487,6 +487,48 @@ def test_a_page_witness_shown_pixels_carries_the_serving_moment_that_produced_th
     assert seen_failed_but_presented, "the review fixture no longer exercises the case"
 
 
+@pytest.mark.parametrize(
+    ("region", "message"),
+    (
+        ({}, "no payload and page-space transform"),
+        ({"payload": "not-an-object"}, "no payload and page-space transform"),
+        ({"payload": {"region_id": "r1", "image_path": "p", "image_sha256": "s"}},
+         "no payload and page-space transform"),
+        (
+            {
+                "payload": {
+                    "region_id": "r1",
+                    "image_path": "p",
+                    "transform": {"source_page_id": "page-1", "source_page_ordinal": 1},
+                }
+            },
+            r"lacks the field\(s\) \['image_sha256'\]",
+        ),
+        (
+            {
+                "payload": {
+                    "region_id": "r1",
+                    "image_path": "p",
+                    "image_sha256": "s",
+                    "transform": {"source_page_id": "page-1"},
+                }
+            },
+            r"lacks the field\(s\) \['source_page_ordinal'\]",
+        ),
+    ),
+)
+def test_a_sealed_region_missing_its_presentation_fields_is_named_not_indexed(region, message):
+    """`validate_testimonium_presentation` treats manifest regions as untrusted.
+
+    It reads them straight out of the Designator manifest to reconcile a record,
+    without the crop-lineage verification the writer's caller performs. A raw
+    KeyError there would be the validation seam failing to say what is wrong
+    with the evidence it was asked to judge.
+    """
+    with pytest.raises(SchemaRefusal, match=message):
+        attestatores.presentation_for_region(region)
+
+
 def test_a_never_presented_page_witness_is_not_run_and_carries_no_receipt(tmp_path):
     """The absence arm stays distinct from attempted failure at page scope."""
     result = subprocess.run(

@@ -343,7 +343,7 @@ def _read(data: bytes) -> tuple[dict[str, Any], _Reading]:
             f"corpus register has {len(value['records'])} records, past the "
             f"{MAX_REGISTER_RECORDS}-record replay bound"
         )
-    _refuse_preference(value)
+    refuse_capture_preference(value)
     reading = _Reading()
     for record in value["records"]:
         _validate_record(record, reading)
@@ -413,7 +413,14 @@ def _membership_assertion_identity(physical_page: str, member: str) -> str:
     return f"membership:{physical_page}->{member}"
 
 
-def _refuse_preference(value: Any) -> None:
+def refuse_capture_preference(value: Any, *, what: str = "corpus register") -> None:
+    """Refuse a nested capture-preference claim, naming the record it was in.
+
+    Public because the rule is not the corpus register's alone: a Testimonium
+    must not express preference either (ARCHITECTURE, GOVERNANCE 3), and it was
+    reaching this through the private name -- which also told an operator
+    reading a witness record that the *corpus register* was at fault.
+    """
     pending = [value]
     while pending:
         current = pending.pop()
@@ -421,7 +428,7 @@ def _refuse_preference(value: Any) -> None:
             forbidden = set(current) & _FORBIDDEN_PREFERENCE_FIELDS
             if forbidden:
                 raise SchemaRefusal(
-                    f"corpus register may not express capture preference: {sorted(forbidden)}"
+                    f"{what} may not express capture preference: {sorted(forbidden)}"
                 )
             pending.extend(current.values())
         elif isinstance(current, list):

@@ -12,7 +12,7 @@ from typing import Any, Final
 
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import SchemaRefusal
-from common.corpus_register import _refuse_preference
+from common.corpus_register import refuse_capture_preference
 from common.imaging import crop_png
 
 PRESENTATION_KINDS: Final = frozenset({"page", "region", "adapter-crop"})
@@ -239,7 +239,7 @@ def validate_native_witness_geometry(
     """
     if not isinstance(payload, dict):
         raise SchemaRefusal("a Testimonium payload is not an object")
-    _refuse_preference(payload)
+    refuse_capture_preference(payload, what="a Testimonium")
     presented = payload.get("presented")
     observed = payload.get("observed")
     if presented == {}:

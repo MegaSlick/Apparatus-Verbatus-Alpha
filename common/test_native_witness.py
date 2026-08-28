@@ -458,6 +458,42 @@ def test_unpresented_regions_are_derived_from_containment_for_every_presentation
     assert unpresented_region_ids({}, regions) == []
 
 
+def test_a_preference_refusal_names_the_testimonium_not_the_corpus_register():
+    """The rule is shared; the subject of the refusal is not.
+
+    An operator reading a witness record was told the *corpus register* may not
+    express preference, because the check was reached through that module's
+    private helper and its message named that module's record.
+    """
+    value = payload()
+    value["preferred"] = True
+
+    with pytest.raises(SchemaRefusal, match="a Testimonium may not express capture preference"):
+        validate_native_witness_geometry(value)
+
+
+@pytest.mark.parametrize(
+    "region_payload",
+    (
+        {"transform": {"source_page_id": "page-1", "bounds": {"x": 0, "y": 0, "w": 5, "h": 5}}},
+        {
+            "region_id": "",
+            "transform": {"source_page_id": "page-1", "bounds": {"x": 0, "y": 0, "w": 5, "h": 5}},
+        },
+        {"region_id": "r1", "transform": {"source_page_id": "page-1"}},
+    ),
+)
+def test_a_proposal_region_with_no_comparable_identity_is_refused(region_payload):
+    """Silence here would drop a crop from the disclosure list without a word.
+
+    The list says which bound crops one presentation does not speak for. A
+    region that cannot be compared must refuse, never be quietly omitted and
+    read downstream as a crop the presentation covered.
+    """
+    with pytest.raises(SchemaRefusal, match="no page-space identity to compare"):
+        unpresented_region_ids(payload()["presented"], [{"payload": region_payload}])
+
+
 def test_page_payload_closure_is_shared_with_the_consumer_and_refuses_unhashable_roles():
     value = payload()
     value.update(
