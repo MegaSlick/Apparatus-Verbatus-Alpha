@@ -550,6 +550,7 @@ def test_a_register_that_drifted_since_run_creation_refuses_before_anything_seal
                     "volume_id": "volume-1",
                     "designation": "12r",
                     "physical_page_id": physical_page_id("corpus", "volume-1", "12r"),
+                    "appending_run": "triage-1",
                 }
             ],
         }

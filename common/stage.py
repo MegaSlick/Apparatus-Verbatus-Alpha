@@ -1187,11 +1187,16 @@ def _verify_stage_seal(
         raise SchemaRefusal(
             f"{reader} refuses {producer} stage-seal: wrong decode environment name"
         )
-    if payload.get("config_digest") != tree.read_run().get("config_digest"):
+    # One read, both comparisons. Two reads can straddle a rewrite, and a seal
+    # that matched no single run authority would pass this boundary -- the same
+    # two-read fault this file already names for `pdf_render.toml` and
+    # `recovery.toml`.
+    run_authority = tree.read_run()
+    if payload.get("config_digest") != run_authority.get("config_digest"):
         raise SchemaRefusal(
             f"{reader} refuses {producer} stage-seal: config_digest differs from run authority"
         )
-    if payload.get("register_digest") != tree.read_run().get("register_digest"):
+    if payload.get("register_digest") != run_authority.get("register_digest"):
         raise SchemaRefusal(
             f"{reader} refuses {producer} stage-seal: register_digest differs from run authority"
         )
