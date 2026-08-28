@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import errno
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -1819,6 +1820,9 @@ def test_cli_entry_point_states_the_refusal_instead_of_printing_a_traceback(tmp_
         capture_output=True,
         text=True,
         cwd=Path(__file__).resolve().parents[1],
+        # PYTHONSAFEPATH (the gate exports it) drops the cwd from sys.path, so
+        # `-m gold.cli` needs the repository root supplied explicitly.
+        env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1])},
     )
     assert finished.returncode == 2
     assert finished.stderr.strip() == f"SchemaRefusal: {bad} is not readable JSON"
@@ -1846,6 +1850,7 @@ def test_a_float_in_a_gold_file_is_a_named_refusal_not_a_traceback(tmp_path):
         capture_output=True,
         text=True,
         cwd=Path(__file__).resolve().parents[1],
+        env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1])},
     )
     assert finished.returncode == 2
     assert "Traceback" not in finished.stderr
