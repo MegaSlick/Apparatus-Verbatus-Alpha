@@ -147,9 +147,9 @@ def test_the_run_digest_moves_when_the_triage_thresholds_do(tmp_path):
             "[semi]\nreview_at_or_below_confidence = 2\n"
             "[auto]\nreview_at_or_below_confidence = 1\n"
         )
-        return run_config_bindings(
-            models, fixture, "happy", triage_modes_config_path=config
-        )["config_digest"]
+        return run_config_bindings(models, fixture, "happy", triage_modes_config_path=config)[
+            "config_digest"
+        ]
 
     assert bind(3, "a.toml") != bind(4, "b.toml")
     # Identical bytes under a different file name still bind identically, so what
