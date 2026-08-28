@@ -1,6 +1,19 @@
 # Perlector — handoff
 
-# Stage-completion seal
+The Perlector writes one append-only `kind="perlectio"` record for each reading
+attempt under `4_perlector/artifacts/`, plus one append-only `kind="lectio-nuda"`
+record for each sampled unprimed instrument reading. This walking-skeleton writer
+takes its established text from the declared synthetic fixture solely to exercise
+the evidence shape; it does not claim a real model reading. Its artifacts are
+`skeleton.v1` envelopes with derived identities, attempt bindings, self-hashes, and
+checked direct inputs.
+
+**No other stage reads this one's code.** `pipeline/5_recensor/run.py`,
+`pipeline/6_archetypus/run.py` and `pipeline/7_armarium/run.py` consume exactly the
+fields named below, unchanged in shape from the walking skeleton's first landing;
+everything added since is additive.
+
+## Stage-completion seal
 
 Before this producer's final manifest it publishes one `decode-environment` and
 one `stage-seal`, or reuses both on a byte-identical retry. The seal witnesses
@@ -18,18 +31,6 @@ boundary: the producer refuses to re-seal, and the successor refuses to read,
 when any named seal is no longer on disk. Ordinals are the contiguous run 1..N,
 so removing the latest leaves a prefix that still looks whole — and the earlier
 statement would then answer for a boundary it never witnessed.
-The Perlector writes one append-only `kind="perlectio"` record for each reading
-attempt under `4_perlector/artifacts/`, plus one append-only `kind="lectio-nuda"`
-record for each sampled unprimed instrument reading. This walking-skeleton writer
-takes its established text from the declared synthetic fixture solely to exercise
-the evidence shape; it does not claim a real model reading. Its artifacts are
-`skeleton.v1` envelopes with derived identities, attempt bindings, self-hashes, and
-checked direct inputs.
-
-**No other stage reads this one's code.** `pipeline/5_recensor/run.py`,
-`pipeline/6_archetypus/run.py` and `pipeline/7_armarium/run.py` consume exactly the
-fields named below, unchanged in shape from the walking skeleton's first landing;
-everything added since is additive.
 
 ## Input boundary
 

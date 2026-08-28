@@ -1,6 +1,19 @@
 # Exemplar — handoff
 
-# Stage-completion seal
+The Exemplar is the immutable source of pixels for the rest of the run. The door
+writes its admissions into `1_exemplar/`; the Exemplar then seals one `kind="page"`
+outcome for every distinct admitted *origin* — not for every submitted ordinal,
+because page identity binds the immutable origin bytes and two rows carrying the
+same bytes are one page, sealed once and citing both rows in `submission_rows`.
+The census still carries a row per submitted ordinal, so nothing submitted goes
+unaccounted. It also seals one self-hashed `kind="seal"` corpus census. No later
+stage re-renders a source container.
+
+All paths below are existing RunTree shapes: `run.json`, artifacts, content-addressed
+blobs, manifests, and approval receipts. This stage invents no separate render or
+inventory directory.
+
+## Stage-completion seal
 
 Before this producer's final manifest it publishes one `decode-environment` and
 one `stage-seal`, or reuses both on a byte-identical retry. The seal witnesses
@@ -18,17 +31,10 @@ boundary: the producer refuses to re-seal, and the successor refuses to read,
 when any named seal is no longer on disk. Ordinals are the contiguous run 1..N,
 so removing the latest leaves a prefix that still looks whole — and the earlier
 statement would then answer for a boundary it never witnessed.
+
 Door and Exemplar share `1_exemplar/` for evidence but retain separate producer
 inventories (`manifest-door.json` and `manifest.json`), so neither can erase the
 other's stored deleted-seal trigger.
-The Exemplar is the immutable source of pixels for the rest of the run. The door
-writes its admissions into `1_exemplar/`; the Exemplar then seals one `kind="page"`
-outcome for every submitted ordinal and one self-hashed `kind="seal"` corpus census.
-No later stage re-renders a source container.
-
-All paths below are existing RunTree shapes: `run.json`, artifacts, content-addressed
-blobs, manifests, and approval receipts. This stage invents no separate render or
-inventory directory.
 
 ## Input and filename ledger
 

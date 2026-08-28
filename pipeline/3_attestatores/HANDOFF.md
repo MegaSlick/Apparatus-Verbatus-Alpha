@@ -1,6 +1,11 @@
 # Attestatores — handoff
 
-# Stage-completion seal
+The Attestatores retains one immutable `kind="testimonium"` for every configured
+chair and every Designator act, on every attempted read. It does not merge, rank,
+select, or turn a Testimonium into established text. A missing artifact is never a
+witness outcome.
+
+## Stage-completion seal
 
 Before this producer's final manifest it publishes one `decode-environment` and
 one `stage-seal`, or reuses both on a byte-identical retry. The seal witnesses
@@ -18,10 +23,6 @@ boundary: the producer refuses to re-seal, and the successor refuses to read,
 when any named seal is no longer on disk. Ordinals are the contiguous run 1..N,
 so removing the latest leaves a prefix that still looks whole — and the earlier
 statement would then answer for a boundary it never witnessed.
-The Attestatores retains one immutable `kind="testimonium"` for every configured
-chair and every Designator act, on every attempted read. It does not merge, rank,
-select, or turn a Testimonium into established text. A missing artifact is never a
-witness outcome.
 
 ## Exact input boundary
 

@@ -1,6 +1,12 @@
 # Recensor — handoff
 
-# Stage-completion seal
+The Recensor establishes no text. It writes append-only review history under
+`5_recensor/artifacts/`, using `skeleton.v1` envelopes with a derived attempt
+identity, self-hash, and digest-checked parents. The stage first validates every
+act's witness denominator, so a duplicate or unsealed witness record is refused
+before it writes a review for an earlier act.
+
+## Stage-completion seal
 
 Before this producer's final manifest it publishes one `decode-environment` and
 one `stage-seal`, or reuses both on a byte-identical retry. The seal witnesses
@@ -18,11 +24,6 @@ boundary: the producer refuses to re-seal, and the successor refuses to read,
 when any named seal is no longer on disk. Ordinals are the contiguous run 1..N,
 so removing the latest leaves a prefix that still looks whole — and the earlier
 statement would then answer for a boundary it never witnessed.
-The Recensor establishes no text. It writes append-only review history under
-`5_recensor/artifacts/`, using `skeleton.v1` envelopes with a derived attempt
-identity, self-hash, and digest-checked parents. The stage first validates every
-act's witness denominator, so a duplicate or unsealed witness record is refused
-before it writes a review for an earlier act.
 
 ## Input boundary and current state
 

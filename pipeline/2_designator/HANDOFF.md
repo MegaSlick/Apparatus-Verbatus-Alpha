@@ -1,6 +1,18 @@
 # Designator — handoff
 
-# Stage-completion seal
+The Designator turns sealed Exemplar pages into the act denominator for the
+walking skeleton. It writes only ordinary `skeleton.v1` artifacts below
+`2_designator/artifacts/`; each envelope has a derived artifact identity,
+attempt binding where applicable, a self-hash, and digest-checked direct inputs.
+The derived manifest is inventory, not a second authority.
+
+Spec 01 fixed the run-tree shape as `<stage>/artifacts/<kind>/<artifact-id>.json`
+for every stage; there is no per-page `crops/`, `acts/` or `conservation/`
+directory anywhere in this tree. Spec 06's contracts section names those as
+concepts — a crop, an act-to-crop grouping, a coverage reconciliation — and
+this handoff expresses each as an artifact *kind* below rather than a path.
+
+## Stage-completion seal
 
 Before this producer's final manifest it publishes one `decode-environment` and
 one `stage-seal`, or reuses both on a byte-identical retry. The seal witnesses
@@ -18,17 +30,6 @@ boundary: the producer refuses to re-seal, and the successor refuses to read,
 when any named seal is no longer on disk. Ordinals are the contiguous run 1..N,
 so removing the latest leaves a prefix that still looks whole — and the earlier
 statement would then answer for a boundary it never witnessed.
-The Designator turns sealed Exemplar pages into the act denominator for the
-walking skeleton. It writes only ordinary `skeleton.v1` artifacts below
-`2_designator/artifacts/`; each envelope has a derived artifact identity,
-attempt binding where applicable, a self-hash, and digest-checked direct inputs.
-The derived manifest is inventory, not a second authority.
-
-Spec 01 fixed the run-tree shape as `<stage>/artifacts/<kind>/<artifact-id>.json`
-for every stage; there is no per-page `crops/`, `acts/` or `conservation/`
-directory anywhere in this tree. Spec 06's contracts section names those as
-concepts — a crop, an act-to-crop grouping, a coverage reconciliation — and
-this handoff expresses each as an artifact *kind* below rather than a path.
 
 ## Scope and input boundary
 

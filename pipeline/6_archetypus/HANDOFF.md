@@ -1,6 +1,18 @@
 # Archetypus — handoff
 
-# Stage-completion seal
+The Archetypus is the first and only current stage that calls one machine reading
+established. It is not a correction, a witness consensus, or a truth claim. It writes
+a once-only `kind="archetypus"` record under `6_archetypus/artifacts/` for an act whose
+current Recensor review is exactly `accepted`. A held act deliberately has no Archetypus
+record; that absence is part of the terminal accounting, not a gap to fill.
+
+**Exit codes.** `EXIT_COMPLETE` when every accepted act has a record and the index
+reconciles. `EXIT_HELD` when any act's current review is `recovery-requested`: that
+outcome is unresolved rather than terminal, so the acts already established are real
+but the stage's work is not finished, and the held act ids are named on stderr. A
+refusal anywhere in establishment or index reconciliation is fatal, not a held act.
+
+## Stage-completion seal
 
 Before this producer's final manifest it publishes one `decode-environment` and
 one `stage-seal`, or reuses both on a byte-identical retry. The seal witnesses
@@ -18,17 +30,6 @@ boundary: the producer refuses to re-seal, and the successor refuses to read,
 when any named seal is no longer on disk. Ordinals are the contiguous run 1..N,
 so removing the latest leaves a prefix that still looks whole — and the earlier
 statement would then answer for a boundary it never witnessed.
-The Archetypus is the first and only current stage that calls one machine reading
-established. It is not a correction, a witness consensus, or a truth claim. It writes
-a once-only `kind="archetypus"` record under `6_archetypus/artifacts/` for an act whose
-current Recensor review is exactly `accepted`. A held act deliberately has no Archetypus
-record; that absence is part of the terminal accounting, not a gap to fill.
-
-**Exit codes.** `EXIT_COMPLETE` when every accepted act has a record and the index
-reconciles. `EXIT_HELD` when any act's current review is `recovery-requested`: that
-outcome is unresolved rather than terminal, so the acts already established are real
-but the stage's work is not finished, and the held act ids are named on stderr. A
-refusal anywhere in establishment or index reconciliation is fatal, not a held act.
 
 ## Input boundary
 
