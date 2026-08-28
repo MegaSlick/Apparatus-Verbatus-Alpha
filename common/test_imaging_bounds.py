@@ -401,16 +401,25 @@ def test_the_triage_render_refuses_geometry_that_falls_outside_what_it_decoded(f
 
 
 def test_the_triage_render_still_applies_geometry_that_is_contained():
-    """The refusal above must not have closed the ordinary path with it."""
+    """The refusal above must not have closed the ordinary path with it.
+
+    The master's pixels are all different, and the decoded output is read back and
+    compared. Against a uniform white master this test asserted only the output
+    size, and a regression that ignored `crop_box["x"]` and `crop_box["y"]`
+    entirely still returned a correctly sized 2x2 page of the right colour and
+    passed. What the function is for is *which* pixels it cuts."""
     master = BytesIO()
-    Image.new("L", (4, 4), 255).save(master, format="PNG")
+    source = Image.frombytes("L", (4, 4), bytes(16 * y + x for y in range(4) for x in range(4)))
+    source.save(master, format="PNG")
     part = triage_part()
     part["crop_box"].update(x=1, y=1, w=2, h=2)
 
-    _rendered, geometry = render_triage_derivative(master.getvalue(), page_index=0, part=part)
+    rendered, geometry = render_triage_derivative(master.getvalue(), page_index=0, part=part)
 
     assert (geometry["width"], geometry["height"]) == (2, 2)
     assert (geometry["source_width"], geometry["source_height"]) == (4, 4)
+    with Image.open(BytesIO(rendered)) as decoded:
+        assert decoded.tobytes() == bytes([17, 18, 33, 34])
 
 
 def test_the_triage_render_refuses_a_rotation_that_would_expand_past_the_pixel_bound():
