@@ -72,29 +72,42 @@ _RECURSIVE_CONFIDENCE: list = []
 _RECURSIVE_CONFIDENCE.append(_RECURSIVE_CONFIDENCE)
 
 
+# Which refusal each value must reach, not merely that some refusal mentioning
+# "confidence" was raised. Ten of these are refused by the pre-existing membership
+# check too, so matching the word alone left the type gate — the thing this test is
+# named for — provable only by the two str subclasses, and even there the two
+# messages were indistinguishable. The gap test below already pins its branch with
+# `match="position has type"`; this does the same per case.
+_TYPE_GATE = "confidence has type"
+_MEMBERSHIP_GATE = "is not one of"
+
+
 @pytest.mark.parametrize(
-    "confidence",
+    "confidence,expected",
     [
         # Adapter output is not guaranteed to have passed through JSON, so type
         # refusal must precede comparison, traversal, or rendering.
-        pytest.param(float("nan"), id="nan"),
-        pytest.param(float("inf"), id="inf"),
-        pytest.param(1.5, id="float"),
-        pytest.param(10**5000, id="huge-int"),
-        pytest.param(b"low", id="bytes"),
-        # These exact strings reach the value-bearing refusal message.
-        pytest.param("\ud800", id="lone-surrogate"),
-        pytest.param("NaN", id="nan-spelling"),
-        pytest.param("low\0", id="null-byte"),
-        pytest.param({"\ud800": "low"}, id="surrogate-key"),
-        pytest.param(_RECURSIVE_CONFIDENCE, id="recursive"),
-        pytest.param(_UnhashableString("low"), id="unhashable-string-subclass"),
-        pytest.param(_HostileReprString("maybe"), id="hostile-repr-string-subclass"),
+        pytest.param(float("nan"), _TYPE_GATE, id="nan"),
+        pytest.param(float("inf"), _TYPE_GATE, id="inf"),
+        pytest.param(1.5, _TYPE_GATE, id="float"),
+        pytest.param(10**5000, _TYPE_GATE, id="huge-int"),
+        pytest.param(b"low", _TYPE_GATE, id="bytes"),
+        pytest.param({"\ud800": "low"}, _TYPE_GATE, id="surrogate-key"),
+        pytest.param(_RECURSIVE_CONFIDENCE, _TYPE_GATE, id="recursive"),
+        # `str` subclasses: exact-type, so only the type gate stops them before
+        # membership or formatting can invoke subclass-defined behaviour.
+        pytest.param(_UnhashableString("low"), _TYPE_GATE, id="unhashable-string-subclass"),
+        pytest.param(_HostileReprString("maybe"), _TYPE_GATE, id="hostile-repr-string-subclass"),
+        # These exact strings pass the type gate and reach the value-bearing
+        # membership refusal, which must render them without complaint.
+        pytest.param("\ud800", _MEMBERSHIP_GATE, id="lone-surrogate"),
+        pytest.param("NaN", _MEMBERSHIP_GATE, id="nan-spelling"),
+        pytest.param("low\0", _MEMBERSHIP_GATE, id="null-byte"),
     ],
 )
-def test_a_noncanonical_or_undeclared_confidence_refuses_printably(confidence):
+def test_a_noncanonical_or_undeclared_confidence_refuses_printably(confidence, expected):
     """Only exact strings may be rendered in the printable refusal message."""
-    with pytest.raises(SchemaRefusal, match="confidence") as caught:
+    with pytest.raises(SchemaRefusal, match=expected) as caught:
         annotations.validate_uncertain_spans(
             [{"start": 0, "end": 1, "alternatives": [], "confidence": confidence}], "reading"
         )

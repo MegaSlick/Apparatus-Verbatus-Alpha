@@ -373,11 +373,19 @@ def test_a_late_found_capture_is_appended_and_leaves_the_declaration_untouched()
     re-derive `physical_page_id` under everything beneath it."""
     first = _membership(["a" * 64])
     second = _membership(["a" * 64, "b" * 64], predecessor=digest_of(first), run="triage-2")
-    register = canonical_bytes({"schema": SCHEMA, "records": [_declaration(), first, second]})
+    declaration = _declaration()
+    register = canonical_bytes({"schema": SCHEMA, "records": [declaration, first, second]})
     validated = validate_register_bytes(register)
     assert first in validated["records"], "the superseded link is retained, not rewritten"
     assert members_of(register, PAGE) == sorted(["a" * 64, "b" * 64])
-    assert _declaration()["physical_page_id"] == PAGE, "the declaration cannot have moved"
+    # The record the docstring is actually about, read back out of the validated
+    # register. `_declaration()["physical_page_id"] == PAGE` used to stand here,
+    # which compares the helper's own default with the constant it puts there and
+    # holds however the register treats the declaration.
+    assert declaration in validated["records"], "the declaration is retained unedited"
+    assert [row for row in validated["records"] if row["kind"] == "physical-page"] == [
+        declaration
+    ], "the append neither rewrote the declaration nor added a second one"
 
 
 def test_a_membership_link_that_does_not_name_its_predecessor_is_refused():

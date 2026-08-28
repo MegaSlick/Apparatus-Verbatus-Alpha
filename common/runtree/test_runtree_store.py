@@ -943,6 +943,12 @@ def test_a_manifest_metadata_and_digest_come_from_one_byte_snapshot(tmp_path, mo
 
 
 def test_a_manifest_refuses_an_artifact_symlink_that_leaves_the_run_tree(tmp_path):
+    """Containment, which is what this one actually pins — see the test below.
+
+    `_raise_manifest_symlink` resolves the path first, and a target outside the
+    tree fails that before any link-specific message is built. So this stays green
+    with the `S_ISLNK` check deleted, and the link guard needs its own case.
+    """
     tree = make_run(tmp_path)
     published = tree.publish_artifact(make_envelope())
     artifact_path = tree.resolve(published.relative_path)
@@ -951,6 +957,24 @@ def test_a_manifest_refuses_an_artifact_symlink_that_leaves_the_run_tree(tmp_pat
     artifact_path.symlink_to(outside)
 
     with pytest.raises(SchemaRefusal, match="outside the run tree"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_a_manifest_refuses_an_artifact_symlink_that_stays_inside_the_run_tree(tmp_path):
+    """The link guard itself, on the case containment cannot reach.
+
+    A link to a sibling artifact resolves inside the tree, so only the `S_ISLNK`
+    check stands between it and the inventory — and this is the case that matters,
+    because it is how one artifact comes to answer for two rows.
+    """
+    tree = make_run(tmp_path)
+    published = tree.publish_artifact(make_envelope())
+    sibling = tree.publish_artifact(make_envelope(subject="pg_fedcba9876543210"))
+    aliased = tree.resolve(published.relative_path)
+    aliased.unlink()
+    aliased.symlink_to(tree.resolve(sibling.relative_path))
+
+    with pytest.raises(SchemaRefusal, match="never an alias"):
         tree.build_manifest(DESIGNATOR)
 
 
