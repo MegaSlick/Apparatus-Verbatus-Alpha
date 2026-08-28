@@ -124,7 +124,17 @@ def append_records(
 
 @contextmanager
 def _register_lock(path: Path) -> Iterator[None]:
-    """Serialize pathname replacement across writers; a crash releases the lock."""
+    """Serialize pathname replacement across writers; a crash releases the lock.
+
+    The lock is load-bearing rather than advisory comfort. The append it guards is
+    a read-compare-replace against `expected_digest`, and that compare-and-swap is
+    only sound while one writer at a time holds the section: two writers that both
+    read digest D both satisfy the check, and the second `os.replace` discards the
+    first one's records with nothing anywhere recording that it happened. So every
+    way this function could fail to serialize refuses instead of proceeding — a
+    register append that was silently not serialized is exactly the append-only
+    evidence loss GOVERNANCE 2 and 4 forbid.
+    """
     lock_path = path.with_name(f".{path.name}.lock")
     no_follow = getattr(os, "O_NOFOLLOW", None)
     if no_follow is None:  # pragma: no cover - supported register stores are POSIX
@@ -143,9 +153,12 @@ def _register_lock(path: Path) -> Iterator[None]:
             raise SchemaRefusal("the corpus-register lock is not a regular file")
         try:
             import fcntl
-        except ImportError:  # pragma: no cover - supported register stores are POSIX
-            yield
-            return
+        except ImportError as error:  # pragma: no cover - supported stores are POSIX
+            raise SchemaRefusal(
+                "this platform cannot lock a corpus register: without flock the "
+                "append's digest compare-and-swap would let one writer discard "
+                "another's records unseen"
+            ) from error
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
         try:
             yield

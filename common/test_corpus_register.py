@@ -1,6 +1,7 @@
 """The corpus register declares correspondence without choosing a capture."""
 
 import json
+import sys
 
 import pytest
 
@@ -637,6 +638,25 @@ def test_a_symlinked_register_lock_cannot_disable_writer_serialization(tmp_path)
 
     assert path.read_bytes() == empty_register()
     assert victim.read_bytes() == b"unchanged"
+
+
+def test_a_platform_without_flock_refuses_the_append_rather_than_running_unserialized(
+    tmp_path, monkeypatch
+):
+    """No lock means no append. The compare-and-swap alone cannot stand in for it.
+
+    Two writers that both read digest D both satisfy the `expected_digest` check,
+    and the second replace discards the first's records. Proceeding unserialized
+    would lose an append behind a successful return, so the platform gap is named.
+    """
+    monkeypatch.setitem(sys.modules, "fcntl", None)
+    path = tmp_path / "register.json"
+    path.write_bytes(empty_register())
+
+    with pytest.raises(SchemaRefusal, match="cannot lock a corpus register"):
+        append_records(path, [_declaration()], expected_digest=EMPTY_REGISTER_DIGEST)
+
+    assert path.read_bytes() == empty_register()
 
 
 def test_register_bytes_and_replay_counts_are_bounded_before_amplification(monkeypatch):
