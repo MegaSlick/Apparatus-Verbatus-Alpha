@@ -126,6 +126,30 @@ def test_the_census_counts_this_stage_by_kind_and_outcome_and_excludes_the_bound
     ]
 
 
+def test_a_run_authority_missing_a_sealed_binding_is_refused_not_crashed_on(tmp_path):
+    """`read_run` proves a self-hash, a schema, and a run id — not a field list.
+
+    So an authority not written by `RunTree.create` reaches the seal whole and
+    still missing one of the fields the seal witnesses. Subscripting it raised a
+    bare KeyError, which `run_stage` catches neither as a ContractError nor as a
+    RunHalted: the stage ended in a traceback naming a dict key rather than one
+    of its four honest exit codes. The verifier reads both fields with `.get`
+    and tolerates their absence, so this side has to name the gap itself.
+    """
+    tree, run, registry, bindings = _tree(tmp_path)
+    authority = json.loads((tree.root / "run.json").read_text())
+    del authority["register_digest"], authority["self_hash"]
+    authority["self_hash"] = self_hash(authority)
+    (tree.root / "run.json").write_bytes(canonical_bytes(authority))
+    assert "register_digest" not in tree.read_run(), "read_run still accepts the authority"
+
+    context = _context(tree, tree.read_run(), registry, bindings)
+    context.publish(kind="testimonium", subject_id="a1", outcome="read", payload={})
+
+    with pytest.raises(SchemaRefusal, match="carries no register_digest"):
+        context.seal_boundary()
+
+
 def test_a_stage_cannot_seal_an_artifact_whose_input_bytes_changed(tmp_path):
     """The inventory verifies its hash links, not only the artifact files."""
     tree, run, registry, bindings = _tree(tmp_path)
@@ -154,6 +178,63 @@ def test_a_stage_refuses_a_blob_whose_content_does_not_match_its_name(tmp_path):
     with pytest.raises(SchemaRefusal, match="not the digest in its name"):
         _context(tree, run, registry, bindings).seal_boundary()
     assert not _stage_records(tree, ATTESTATORES, "stage-seal")
+
+
+def test_serving_evidence_cannot_be_stored_after_the_boundary_is_sealed(tmp_path):
+    """The post-seal guard covers blobs, not only artifacts.
+
+    `_write_serving_blob` goes through `tree.put_blob` into the stage's own blob
+    directory — the one `_stage_blob_inventory` walks and whose digest the seal
+    carries. A write afterwards makes the witnessed inventory false, and the
+    symptom lands on the wrong stage: the next consumer refuses with "its named
+    inventory no longer matches disk", reporting an honest producer as a tampered
+    tree. The second half here shows that consequence directly.
+    """
+    tree, run, registry, bindings = _tree(tmp_path)
+    context = _context(tree, run, registry, bindings)
+    context.publish(kind="testimonium", subject_id="a1", outcome="read", payload={})
+    context.seal_boundary()
+
+    with pytest.raises(SchemaRefusal, match="witnessed blob inventory false"):
+        context._write_serving_blob({"chair": "attestator_1"}, "a serving launch audit")
+
+    # What the guard prevents: the same bytes written straight to the store leave
+    # the stored seal answering for an inventory that is no longer on disk.
+    tree.put_blob(ATTESTATORES, b"evidence written after the boundary")
+    with pytest.raises(SchemaRefusal, match="named inventory no longer matches disk"):
+        verify_predecessor_seal(tree, PERLECTOR)
+
+
+def test_an_interrupted_publish_leaves_a_blob_that_can_still_be_sealed(tmp_path):
+    """SIGKILL between the publisher's link and its unlink must not end the run.
+
+    `_atomic_create` hard-links `.<digest>.tmp-<unique>` onto the digest name and
+    then unlinks the temporary. Killed in between, the published blob keeps a
+    second link. Its bytes are complete and its digest matches its name, but the
+    inventory refused it for the link count — so a run killed at the wrong
+    microsecond could never seal again, and the message accused intact evidence.
+    """
+    tree, run, registry, bindings = _tree(tmp_path)
+    digest, published = tree.put_blob(ATTESTATORES, b"page pixels")
+    blob = tree.resolve(published.relative_path)
+    os.link(blob, blob.parent / f".{digest}.tmp-interrupted")
+    assert blob.stat().st_nlink == 2
+
+    _context(tree, run, registry, bindings).seal_boundary()
+
+    seal = _stage_records(tree, ATTESTATORES, "stage-seal")[0]
+    assert seal["payload"]["blob_inventory"], "the interrupted publish still sealed"
+
+
+def test_a_second_link_the_publisher_cannot_explain_is_still_refused(tmp_path):
+    """The allowance is exactly the publisher's own leftover and nothing else."""
+    tree, run, registry, bindings = _tree(tmp_path)
+    _digest, published = tree.put_blob(ATTESTATORES, b"page pixels")
+    blob = tree.resolve(published.relative_path)
+    os.link(blob, tmp_path / "reachable-from-outside")
+
+    with pytest.raises(SchemaRefusal, match="did not publish it under"):
+        _context(tree, run, registry, bindings).seal_boundary()
 
 
 # Two layers refuse a planted blob symlink, and which one speaks first is not a

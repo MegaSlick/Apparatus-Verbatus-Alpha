@@ -1,13 +1,27 @@
 # Exemplar — handoff
 
-# Stage-completion seal
+The Exemplar is the immutable source of pixels for the rest of the run. The door
+writes its admissions into `1_exemplar/`; the Exemplar then seals one `kind="page"`
+outcome for every distinct admitted *origin* — not for every submitted ordinal,
+because page identity binds the immutable origin bytes and two rows carrying the
+same bytes are one page, sealed once and citing both rows in `submission_rows`.
+The census still carries a row per submitted ordinal, so nothing submitted goes
+unaccounted. It also seals one self-hashed `kind="seal"` corpus census. No later
+stage re-renders a source container.
+
+All paths below are existing RunTree shapes: `run.json`, artifacts, content-addressed
+blobs, manifests, and approval receipts. This stage invents no separate render or
+inventory directory.
+
+## Stage-completion seal
 
 Before this producer's final manifest it publishes one `decode-environment` and
 one `stage-seal`, or reuses both on a byte-identical retry. The seal witnesses
 this pass's disk inventory and blob contents, and binds the exact decode-environment
 bytes, run `config_digest` and `register_digest`, and `(kind, outcome)` census. An exit
 held after publishing stage evidence seals it (holds remain in its census); a
-pass held or refused before publishing stage evidence does not seal, so the
+pass that never reaches its seal does not seal, whether it was held or refused
+before publishing stage evidence or closed fatally after publishing it, so the
 successor correctly refuses the missing boundary. Every difference in decoders,
 platform, machine, `decode_paths_used`, and `produced_pixels` is reported by
 field or decoder name. A valid difference is report-only and never refuses;
@@ -18,17 +32,15 @@ boundary: the producer refuses to re-seal, and the successor refuses to read,
 when any named seal is no longer on disk. Ordinals are the contiguous run 1..N,
 so removing the latest leaves a prefix that still looks whole — and the earlier
 statement would then answer for a boundary it never witnessed.
+
+A wholly refused Door is that second case: it publishes its refusal report and
+its duplicate report, and only then does `require_some_admitted` raise — so the
+evidence is on disk and no `stage-seal` is, and the Exemplar's "predecessor door
+has no stage-seal" names a refused submission rather than a missing file.
+
 Door and Exemplar share `1_exemplar/` for evidence but retain separate producer
 inventories (`manifest-door.json` and `manifest.json`), so neither can erase the
 other's stored deleted-seal trigger.
-The Exemplar is the immutable source of pixels for the rest of the run. The door
-writes its admissions into `1_exemplar/`; the Exemplar then seals one `kind="page"`
-outcome for every submitted ordinal and one self-hashed `kind="seal"` corpus census.
-No later stage re-renders a source container.
-
-All paths below are existing RunTree shapes: `run.json`, artifacts, content-addressed
-blobs, manifests, and approval receipts. This stage invents no separate render or
-inventory directory.
 
 ## Input and filename ledger
 
@@ -144,15 +156,39 @@ operator-visible duplicate counts.
 ## Exemplar `kind="page"` and corpus seal
 
 For an admitted source the Exemplar writes a `sealed` page whose identity binds the
-sealed-byte digest plus ordinal. Its payload retains `declared_path`,
-`declared_sha256`, `source_sha256`, `image_path`, and the ledger facts; rendered
-pages also retain `rendered_from`. A refused admission becomes an Exemplar `refused`
-page outcome with the same original filename/digest and reason.
+**immutable origin and the transform** — never the sealed-byte digest and never the
+manifest ordinal. The origin is `{kind: "source", sha256}` for bytes admitted as they
+arrived, and `{kind: "container-page", container_sha256, container_page_index,
+render_contract}` for a rendered page, because rendered bytes are a derivative and
+the sealed container is what they came from. The transform is `{operation: "whole"}`
+here; splitting is the Designator's business. Inserting a manifest row therefore
+cannot rename an existing page.
+
+Its payload retains `declared_path`, `declared_sha256`, `source_sha256`,
+`image_path`, and the ledger facts; rendered pages also retain `rendered_from`. It
+also carries `submission_rows`, the ordinal-sorted set of submitted rows this page
+discharges — ordinarily one. Two rows carrying identical bytes derive one
+`page_id`, so the Exemplar seals one page citing both rather than publishing the
+same identity twice, and `common/exemplar_boundary.sealed_submission_rows` is where
+every consumer reads that set. The top-level `ordinal` and filename facts describe
+one of those rows and must agree with it. A refused admission becomes an Exemplar
+`refused` page outcome with the same original filename/digest and reason.
+
+**A merged page is refused at the next boundary, by name.** Every stage behind the
+Exemplar still keys its work by submitted ordinal and would mint each act on such a
+page twice, so `verify_exemplar_corpus_seal` stops the run there rather than letting
+it read the page twice or report the second row as a lost ordinal it plainly is not.
+The operator consequence is worth knowing before a run starts: a submitted folder
+holding the same scan under two filenames — routine in archive exports — produces a
+green Exemplar and then a fatal Designator. This lifts when consumers process merged
+pages once per identity.
 
 The one `kind="seal"`, subject `corpus-seal`, is self-hashed and has one census row
-per submitted ordinal. Each row includes outcome, page identity or null,
-sealed-byte digest or null, original filename, original digest, and real-ledger
-facts where applicable. Its inputs reference every Exemplar page artifact.
+per submitted ordinal — per *ordinal*, not per page, so a merged page contributes a
+row for each of its submissions and nothing submitted goes unaccounted. Each row
+includes outcome, page identity or null, sealed-byte digest or null, original
+filename, original digest, and real-ledger facts where applicable. Its inputs
+reference every Exemplar page artifact.
 
 Before any design work, `pipeline/2_designator/run.py` independently reconciles the
 source manifest, every page outcome, the seal's rows, and the seal's input

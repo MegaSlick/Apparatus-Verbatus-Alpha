@@ -49,7 +49,13 @@ from operations.submit import gate, submit
 POLICY = load_format_policy()
 
 
-def test_an_unreadable_corpus_register_is_a_named_pre_creation_refusal(tmp_path):
+def test_an_unreadable_corpus_register_refusal_names_what_it_promises(tmp_path):
+    """The wording only. What it *claims* about the tree is checked end to end below.
+
+    This calls the helper alone, with no run root and no tree, so nothing here
+    observes the ordering the message asserts. On its own it proves only that a
+    helper raises with the wording the helper itself contains.
+    """
     with pytest.raises(
         ContractError,
         match=(
@@ -1326,7 +1332,9 @@ def _approved_submission(tmp_path, files: dict[str, bytes]):
     return approved, source, policy, policy_path, ledger_path, ledger
 
 
-def _run_real_door(monkeypatch, *, run_root, source, policy_path, ledger_path, run_id):
+def _run_real_door(
+    monkeypatch, *, run_root, source, policy_path, ledger_path, run_id, corpus_register=None
+):
     monkeypatch.setattr(
         sys,
         "argv",
@@ -1342,6 +1350,7 @@ def _run_real_door(monkeypatch, *, run_root, source, policy_path, ledger_path, r
             str(ledger_path),
             "--data-gate-policy",
             str(policy_path),
+            *(["--corpus-register", str(corpus_register)] if corpus_register is not None else []),
         ],
     )
     return door.main()
@@ -1936,6 +1945,66 @@ def test_a_ledgered_file_absent_from_the_folder_keeps_its_ordinal_and_is_named(
     assert reason_code(records[1]["payload"]["reason"]) is RefusalReason.UNREADABLE
     assert records[2]["payload"]["declared_path"] == "FS-2.png"
     assert records[2]["outcome"] == "admitted"
+
+
+def test_an_unreadable_corpus_register_really_does_leave_no_run_behind(tmp_path, monkeypatch):
+    """The claim the refusal makes, checked against the tree rather than the string.
+
+    `_read_corpus_register` is evaluated as an argument to `RunTree.create`, so
+    the read precedes creation today — but nothing observed that. Move the read
+    below the create and the unit test above still passes while the door leaves a
+    run behind after telling the operator nothing was written.
+    """
+    _approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
+        tmp_path, {"FS-1.png": png()}
+    )
+    run_root = _approved / "runs"
+
+    with pytest.raises(ContractError, match="no run or admission record was written"):
+        _run_real_door(
+            monkeypatch,
+            run_root=run_root,
+            source=source,
+            policy_path=policy_path,
+            ledger_path=ledger_path,
+            run_id="no-register",
+            corpus_register=tmp_path / "missing-register.json",
+        )
+
+    assert not (run_root / "no-register" / "run.json").exists(), "a run was created anyway"
+    assert not (run_root / "no-register").exists() or not list(
+        (run_root / "no-register").rglob("*.json")
+    ), "the refused run left records behind"
+
+
+def test_an_unapproved_run_root_is_named_before_its_run_authority_is_read(tmp_path, monkeypatch):
+    """The storage gate runs before the run-level cap, so no run.json is opened.
+
+    The cap check used to run first, in `main`, against the typed run root. For a
+    real submission that meant opening and self-hash-verifying a run authority in
+    a directory the data-handling policy never approved — the exact read the gate
+    exists to stop — and an operator who mistyped the root onto an unapproved
+    volume that happened to hold a run.json was told the run was halted rather
+    than that the root is not an approved location.
+    """
+    _approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
+        tmp_path, {"FS-1.png": png()}
+    )
+    outside = tmp_path / "unapproved"
+    (outside / "halted-elsewhere").mkdir(parents=True)
+    # A run.json the cap check would have opened. It is deliberately not a valid
+    # authority: if anything reads it, the failure will not be the gate's.
+    (outside / "halted-elsewhere" / "run.json").write_text("{}", encoding="utf-8")
+
+    with pytest.raises(ContractError, match="run root is outside every approved storage root"):
+        _run_real_door(
+            monkeypatch,
+            run_root=outside,
+            source=source,
+            policy_path=policy_path,
+            ledger_path=ledger_path,
+            run_id="halted-elsewhere",
+        )
 
 
 def test_a_real_run_root_inside_its_submission_folder_is_refused_before_inventory(

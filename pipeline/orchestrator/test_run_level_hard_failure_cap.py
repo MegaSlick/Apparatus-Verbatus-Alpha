@@ -126,8 +126,10 @@ def rebind_perlector_seal(tree: RunTree) -> None:
     ]
     seal = latest_attempt(seals, "perlector stage seal", operation="seal")
     payload = seal["payload"]
-    # The seal-payload signature derives the decode-environment name itself
-    # and verifies the named inventory; there is no explicit fifth argument.
+    # The surviving seal-payload signature derives the decode-environment name
+    # itself and verifies the named inventory; the draft's explicit fifth
+    # argument is gone. This call kept the draft's shape because the branch
+    # grouping cut it away from the signature change it belonged with.
     seal["payload"] = _stage_seal_payload(
         tree,
         PERLECTOR,
