@@ -1423,10 +1423,14 @@ def test_an_unreadable_lease_refuses_the_paid_gate_instead_of_raising(tmp_path: 
         leases.chmod(0o700)
 
     assert result.state is LaunchState.REFUSED_BALANCE_UNOBSERVABLE
-    # The spend surface bounds refusal reasons at 160 characters, so a long
-    # tmp-path lease name can truncate the trailing "could not be read" phrase;
-    # the lease path itself surviving in the detail proves the same cause.
-    assert "could not be read" in result.detail or "lease" in result.detail
+    # One arm, and it is the cause. This used to accept `"lease" in detail` as
+    # well, because a long tmp path truncated the phrase away at 160 characters
+    # -- but the word `lease` appears in almost every liability refusal this
+    # gate produces, so that arm passed even when the unreadable-lease cause had
+    # been replaced by an unrelated one. `_reserved_liability` names the cause
+    # before the path now, so the phrase survives truncation and can be asserted
+    # on its own.
+    assert "could not be read" in result.detail
     assert not any(verb == "create" for verb, _ in provider.calls)
 
 
