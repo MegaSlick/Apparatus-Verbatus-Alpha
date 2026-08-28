@@ -3164,24 +3164,24 @@ def test_evidence_bundle_does_not_follow_its_old_predictable_temporary_name(
     assert predictable.is_symlink()
 
 
-def test_evidence_bundle_refuses_case_variant_archive_members(tmp_path: Path) -> None:
-    surface = _surface(tmp_path)
-    run_root = tmp_path / "runs"
-    run_id = "case-variant-members"
-    root = run_root / run_id
-    armarium = root / "7_armarium"
-    armarium.mkdir(parents=True)
-    (root / "run.json").write_text("{}", encoding="utf-8")
-    (armarium / "Result.json").write_text("{}", encoding="utf-8")
-    (armarium / "result.json").write_text("{}", encoding="utf-8")
-    destination = tmp_path / "case-collision.zip"
+def test_evidence_bundle_refuses_case_variant_archive_members() -> None:
+    """Byte-distinct members that extract to one default-APFS name are refused.
+
+    The descriptor-based walk cannot plant this condition through the local
+    case-insensitive filesystem (two case-variant writes land in one file), so
+    the guard is proven at its own seam, where a case-sensitive source tree
+    would deliver both names.
+    """
+    from operations.operator import surface as surface_module
+
+    archive_names: dict[str, str] = {}
+    surface_module._register_archive_name("r/7_armarium/Result.json", archive_names)
 
     with pytest.raises(OperatorError) as refusal:
-        surface._write_base_armarium_bundle(run_root, run_id, destination)
+        surface_module._register_archive_name("r/7_armarium/result.json", archive_names)
 
     assert refusal.value.code is ErrorCode.EXPORT_FAILED
     assert "collide on the default macOS filesystem" in (refusal.value.detail or "")
-    assert not destination.exists()
 
 
 def test_evidence_bundle_refuses_a_member_replaced_between_check_and_open(
