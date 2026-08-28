@@ -1800,13 +1800,24 @@ def _status_projection(action: str, payload: dict[str, Any]) -> list[str]:
             lines.append("  Saved upload statement: zero GPU-hours were used.")
         # Local paths are machine details; the digest is the durable manifest identity.
         recorded_sha256 = payload.get("submission_manifest_sha256")
-        if not (
-            isinstance(recorded_sha256, str)
-            and len(recorded_sha256) == 64
-            and all(character in "0123456789abcdef" for character in recorded_sha256)
-        ):
-            raise RecordError("saved upload record does not bind its submission record digest")
-        lines.append(f"  Sealed submission record digest: {recorded_sha256}.")
+        # Only a receipt that claims bytes moved must bind a digest. An upload
+        # refused before any transfer began -- `submission-refused`,
+        # `volume-unavailable` -- never had a sealed record to bind, and demanding
+        # one turned that honest receipt into "UNREADABLE; it was not treated as
+        # success", with `status` then exiting 2. `status` is read-only, is
+        # documented as always safe, and is the verb every failure message sends
+        # the operator to, so it is the one that must keep working after a
+        # failure; breaking it there also teaches them to ignore
+        # STATUS_UNREADABLE. `zero_gpu_hours` above is guarded with `is True` for
+        # exactly the same reason.
+        if payload.get("state") in {"complete", "partial-transfer"}:
+            if not (
+                isinstance(recorded_sha256, str)
+                and len(recorded_sha256) == 64
+                and all(character in "0123456789abcdef" for character in recorded_sha256)
+            ):
+                raise RecordError("saved upload record does not bind its submission record digest")
+            lines.append(f"  Sealed submission record digest: {recorded_sha256}.")
     elif action == "run":
         state = payload.get("state")
         if isinstance(state, str):

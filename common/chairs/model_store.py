@@ -26,7 +26,7 @@ from typing import Any, Mapping, Protocol
 
 from common.contracts.canonical import canonical_bytes, digest_bytes
 
-from .errors import DigestMismatchRefusal
+from .errors import ChairRefusal, DigestMismatchRefusal
 from .manifests import (
     build_manifest,
     read_manifest,
@@ -650,6 +650,13 @@ def _reconcile_model_card_licence(snapshot: Path, requirement: RequiredArtifact)
         )
     try:
         metadata = load_model_card_metadata(model_card)
+    except ChairRefusal:
+        # Already a named refusal about the client, not about these bytes.
+        # `load_model_card_metadata` builds the production fetcher, which raises
+        # `UnresolvedChairRefusal("huggingface_hub is not installed ...")` when the
+        # package is absent. Relabelling that as unreadable model-card metadata sent
+        # the operator to re-fetch an intact repository while the GPU billed.
+        raise
     except Exception as error:
         raise DigestMismatchRefusal(
             requirement.artifact,

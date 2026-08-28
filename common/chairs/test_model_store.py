@@ -1014,6 +1014,40 @@ class _FakeMaterializationFetcher:
             (destination / "LICENSE").write_text("upstream licence", encoding="utf-8")
 
 
+def test_a_missing_client_package_is_not_reported_as_a_corrupt_model_card(tmp_path, monkeypatch):
+    """A refusal that already names its cause must not be relabelled.
+
+    `load_model_card_metadata` builds the production fetcher, which raises
+    `UnresolvedChairRefusal("huggingface_hub is not installed ...")` when the
+    package is absent from the image. The blanket `except Exception` republished
+    that as "the fetched README.md has unreadable model-card metadata", so at pod
+    boot the operator read that the pinned repository's card was damaged and
+    re-fetched an intact repository while the GPU billed.
+    """
+
+    from common.chairs.errors import UnresolvedChairRefusal
+
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    (snapshot / model_store.MODEL_CARD_PATH).write_text(
+        "---\nlicense: mit\n---\n", encoding="utf-8"
+    )
+
+    def no_client(_path):
+        raise UnresolvedChairRefusal(
+            "attestator_1", "huggingface_hub is not installed for the production fetcher"
+        )
+
+    monkeypatch.setattr(model_store, "load_model_card_metadata", no_client)
+    requirement = next(item for item in REQUIRED_ARTIFACTS if item.source == "huggingface")
+
+    with pytest.raises(UnresolvedChairRefusal) as refusal:
+        model_store._reconcile_model_card_licence(snapshot, requirement)
+
+    assert "huggingface_hub is not installed" in str(refusal.value)
+    assert "unreadable model-card metadata" not in str(refusal.value)
+
+
 def test_a_resumed_materialization_refuses_a_capacity_plan_that_is_not_the_recorded_one(tmp_path):
     """The observation the caller supplied is not thrown away without a word.
 

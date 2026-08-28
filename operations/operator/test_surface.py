@@ -2266,6 +2266,39 @@ def test_export_refuses_a_symlink_at_an_existing_content_addressed_bundle(
     assert failure["state"] == "local-copy-failed"
 
 
+def test_status_reads_a_refused_upload_receipt_without_calling_it_unreadable(
+    tmp_path: Path,
+) -> None:
+    """The verb every failure message sends the operator to must survive that failure.
+
+    A refusal recorded before any transfer began -- a refused submission folder,
+    an unavailable network volume -- never had a sealed record to bind, so
+    requiring `submission_manifest_sha256` on every upload receipt made `status`
+    print "UNREADABLE; it was not treated as success" for a perfectly correct
+    record and exit 2. `status` is read-only and documented as always safe, and
+    teaching an operator to ignore STATUS_UNREADABLE costs the signal itself.
+    """
+
+    output: list[str] = []
+    surface = _surface(tmp_path, output=output)
+    surface._record_failure("upload", "submission-refused", "the submitted folder was refused")
+
+    surface.status()
+
+    printed = "\n".join(output)
+    assert "UNREADABLE" not in printed
+    assert "submission-refused" in printed
+    # A receipt that does claim bytes moved is still held to the digest.
+    surface._write_action(
+        "upload",
+        {"summary": "Upload is complete.", "state": "complete", "zero_gpu_hours": True},
+        descriptor_action="upload",
+    )
+    with pytest.raises(OperatorError) as refusal:
+        surface.status()
+    assert refusal.value.code is ErrorCode.STATUS_UNREADABLE
+
+
 def test_an_empty_armarium_is_refused_rather_than_bundled_as_complete(tmp_path: Path) -> None:
     """A directory proved to exist was never proved to hold anything.
 
@@ -2642,7 +2675,7 @@ def test_no_usable_scratch_directory_is_reported_in_the_operator_contract(
     """
 
     monkeypatch.setattr(dry_run.tempfile, "gettempdir", lambda: str(ROOT / "inside"))
-    monkeypatch.setattr(dry_run, "_contains_directory", lambda path, directory: True)
+    monkeypatch.setattr(dry_run, "_is_within", lambda path, directory: True)
 
     with pytest.raises(OperatorError) as refusal:
         dry_run._scratch_root()
@@ -2662,7 +2695,7 @@ def test_rehearsal_scratch_containment_compares_directory_identity(tmp_path: Pat
     alias = tmp_path / "scratch-alias"
     alias.symlink_to(scratch, target_is_directory=True)
 
-    assert dry_run._contains_directory(alias, checkout)
+    assert dry_run._is_within(alias, checkout)
 
 
 def test_scripted_dry_run_is_a_readable_six_word_acceptance_artifact(tmp_path: Path) -> None:

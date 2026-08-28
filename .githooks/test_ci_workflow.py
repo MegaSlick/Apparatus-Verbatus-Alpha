@@ -116,7 +116,7 @@ def test_every_runtime_dependency_is_inside_the_image_and_everyday_environment()
     requirements = (ROOT / "requirements-dev.txt").read_text().splitlines()
 
     def name(requirement):
-        return re.split(r"[=<>!~\[]", requirement.strip(), maxsplit=1)[0].strip().lower()
+        return _normalized(re.split(r"[=<>!~\[]", requirement.strip(), maxsplit=1)[0])
 
     missing = sorted(
         {name(item) for item in declared} - {name(item) for item in requirements if item}
@@ -125,6 +125,17 @@ def test_every_runtime_dependency_is_inside_the_image_and_everyday_environment()
         f"runtime dependencies {missing} are not in requirements-dev.txt, so "
         "the chamber image and everyday gate do not install them"
     )
+
+
+def _normalized(raw: str) -> str:
+    """PEP 503 name folding, the same rule `_pinned` applies.
+
+    The two files spell several distributions differently -- `huggingface_hub`
+    against `huggingface-hub` -- so comparing lower-cased text alone reported a
+    present dependency as absent and turned the build red over a spelling.
+    """
+
+    return re.sub(r"[-_.]+", "-", raw.strip()).lower()
 
 
 def _pinned(requirements):
@@ -139,7 +150,7 @@ def _pinned(requirements):
         assert separator and version, f"{entry!r} is not an exact pin"
         # PEP 503 normalization: `huggingface_hub` and `huggingface-hub` are the
         # same distribution, and the two files spell several of them differently.
-        pins[re.sub(r"[-_.]+", "-", distribution.strip()).lower()] = version.strip()
+        pins[_normalized(distribution)] = version.strip()
     return pins
 
 
@@ -228,14 +239,14 @@ def test_the_frozen_audit_inventory_is_the_running_interpreters_exact_third_part
     import tomllib
 
     declared_name = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["name"]
-    assert re.sub(r"[-_.]+", "-", declared_name).lower() == excluded, (
+    assert _normalized(declared_name) == excluded, (
         f"pyproject declares {declared_name!r} but the audit helper excludes {excluded!r}; "
         "the local project would be sent to pip-audit as a third-party pin"
     )
     installed = {
-        re.sub(r"[-_.]+", "-", distribution.metadata["Name"]).lower(): distribution.version
+        _normalized(distribution.metadata["Name"]): distribution.version
         for distribution in distributions()
-        if re.sub(r"[-_.]+", "-", distribution.metadata["Name"]).lower() != excluded
+        if _normalized(distribution.metadata["Name"]) != excluded
     }
     assert audited == installed
 
@@ -614,7 +625,7 @@ def test_every_third_party_import_in_the_gate_suite_is_declared_for_the_image():
                 roots.add(node.module.split(".")[0])
 
     declared = {
-        re.split(r"[=<>!~\[]", line.strip(), maxsplit=1)[0].strip().lower()
+        _normalized(re.split(r"[=<>!~\[]", line.strip(), maxsplit=1)[0])
         for line in (ROOT / "requirements-dev.txt").read_text().splitlines()
         if line.strip() and not line.lstrip().startswith("#")
     }
@@ -624,7 +635,7 @@ def test_every_third_party_import_in_the_gate_suite_is_declared_for_the_image():
         root
         for root in roots
         if root not in sys.stdlib_module_names
-        and distribution.get(root, root).lower() not in declared
+        and _normalized(distribution.get(root, root)) not in declared
     )
     assert not undeclared, (
         f"the gate's own suite imports {undeclared}, which requirements-dev.txt does not "
