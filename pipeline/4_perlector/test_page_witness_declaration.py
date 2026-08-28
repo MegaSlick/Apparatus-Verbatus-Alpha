@@ -122,9 +122,18 @@ def test_hostile_but_encodable_chair_strings_are_refused_printably(chair):
 
 
 def test_an_unhashable_attachment_chair_is_refused_before_duplicate_accounting(monkeypatch):
+    """Every other field is well formed, so the chair is the only thing left wrong.
+
+    `page_ordinal` was missing here, and the closed-field-set check runs before
+    the chair's type — so this passed on the missing key and would have gone on
+    passing with the chair-type gate deleted. The gate it is named for is the one
+    that stops a JSON array reaching `set(pairs)` and ending the stage in a raw
+    TypeError instead of a named refusal.
+    """
     attachment = {
         "chair": [],
         "page_witness": False,
+        "page_ordinal": None,
         "testimonium_ref": {},
         "attached": False,
         "content_health": {},

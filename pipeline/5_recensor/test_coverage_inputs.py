@@ -308,10 +308,32 @@ def test_an_unaligned_continuation_still_requires_its_current_page_testimonium(m
 
 
 def test_page_attachment_facts_preserve_a_later_primary_alignment():
-    """An earlier-page continuation cannot erase the act's primary alignment."""
+    """An earlier-page continuation cannot erase the act's primary alignment.
+
+    This order alone does not discriminate — last-row-wins would report the same
+    two values — so the reverse order below is the half that can actually fail.
+    Both are kept because the merge has to hold in either direction.
+    """
     rows = [
         _page_fact(ordinal=1, attached=False),
         _page_fact(ordinal=2, attached=True, anchor_basis="act-anchor"),
+    ]
+
+    facts = RUN.act_attachment_facts(_context(_attachment_fact_record(rows)), "act-1")
+
+    assert facts["attestator_1"]["attached"] is True
+    assert facts["attestator_1"]["anchor_basis"] == "act-anchor"
+
+
+def test_page_attachment_facts_preserve_an_earlier_primary_alignment():
+    """A later continuation row may not overwrite the primary page's alignment.
+
+    The discriminating order: replace the `attached or attached` merge with
+    last-row-wins and this reports False and None instead.
+    """
+    rows = [
+        _page_fact(ordinal=1, attached=True, anchor_basis="act-anchor"),
+        _page_fact(ordinal=2, attached=False),
     ]
 
     facts = RUN.act_attachment_facts(_context(_attachment_fact_record(rows)), "act-1")
