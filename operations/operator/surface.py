@@ -1595,12 +1595,26 @@ class OperatorSurface:
                 _write_bundle_descriptor(
                     bundle, run_descriptor, f"{run_id}/run.json", archive_names
                 )
-                _write_bundle_directory(
+                members = _write_bundle_directory(
                     bundle,
                     armarium_descriptor,
                     f"{run_id}/7_armarium",
                     "7_armarium",
                     archive_names,
+                )
+            if not members:
+                # The same defect through one more door. `7_armarium` was proved
+                # to be a directory, never to hold anything: an empty one wrote
+                # zero members, this function returned normally, and `export`
+                # recorded `"state": "complete"` for a bundle carrying `run.json`
+                # and not one established reading. For a parish run that is every
+                # act in it missing, with a receipt vouching for the absence.
+                raise OperatorError(
+                    ErrorCode.EXPORT_FAILED,
+                    detail=(
+                        "the Armarium evidence bundle cannot be written as complete: "
+                        "7_armarium holds no evidence files"
+                    ),
                 )
             try:
                 os.link(temporary, destination, follow_symlinks=False)
@@ -2244,9 +2258,14 @@ def _write_bundle_directory(
     archive_prefix: str,
     source_prefix: str,
     archive_names: dict[str, str],
-) -> None:
-    """Walk one anchored directory using only descriptor-relative opens."""
+) -> int:
+    """Walk one anchored directory using only descriptor-relative opens.
 
+    Returns how many regular-file members this subtree contributed, so a caller
+    can refuse a required member that turned out to hold nothing.
+    """
+
+    written = 0
     before = os.fstat(directory_descriptor)
     try:
         names = sorted(os.listdir(directory_descriptor))
@@ -2267,7 +2286,7 @@ def _write_bundle_directory(
         if stat.S_ISDIR(named.st_mode):
             child = _open_expected_member(directory_descriptor, name, directory=True, label=label)
             try:
-                _write_bundle_directory(
+                written += _write_bundle_directory(
                     bundle,
                     child,
                     f"{archive_prefix}/{name}",
@@ -2280,6 +2299,7 @@ def _write_bundle_directory(
             child = _open_expected_member(directory_descriptor, name, directory=False, label=label)
             try:
                 _write_bundle_descriptor(bundle, child, f"{archive_prefix}/{name}", archive_names)
+                written += 1
             finally:
                 os.close(child)
         else:
@@ -2308,6 +2328,7 @@ def _write_bundle_directory(
             ErrorCode.EXPORT_FAILED,
             detail=f"the Armarium evidence directory changed while copied: {source_prefix}",
         )
+    return written
 
 
 def _repository_commit(workspace: Path) -> str:

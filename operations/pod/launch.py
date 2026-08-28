@@ -150,8 +150,19 @@ SPEND_LOCK_WAIT_SECONDS: Final = 30.0
 ``flock`` is exactly that: one holder that never finishes -- a provider call
 hung inside the spend gate, or a crashed process on a filesystem that keeps the
 lock -- would leave the next operator with no output at all rather than a named
-refusal.  Thirty seconds is longer than any lock this module holds without a
-provider call in it, so an ordinary overlap still waits and wins.
+refusal.
+
+What this bound is *not*: a duration chosen to let every ordinary overlap wait
+and win. ``create`` and ``adopt`` hold this lock around the whole of
+``_create_locked``/``_adopt_locked``, which includes the provider call,
+controller arming, and any ``_close_and_record`` -- and a close polls to
+``shutdown_deadline_seconds`` and then retries billing reconciliation, so a
+holder can legitimately keep it for well over thirty seconds during an entirely
+ordinary failed launch. A second caller that waits this long is refused by name
+*while an earlier launch is still unresolved*, and that is the intended outcome
+rather than an accident of the number: two paid actions overlapping on one
+account balance is the state this lock exists to prevent. Nothing is spent, and
+the refusal names the lock.
 """
 
 SPEND_LOCK_POLL_SECONDS: Final = 0.05
@@ -1012,6 +1023,13 @@ class PodRuntime:
 
     @contextmanager
     def _alert_state_lock(self, path: Path) -> Iterator[None]:
+        # This creates the lease root, and `_record_nonalert_balance` deliberately
+        # does not -- an asymmetry worth stating, because the next reader will see
+        # one guard and remove the other. A delivered warning has to be remembered
+        # across processes or every later preview pages the phone again, so the
+        # alert path must be able to write its stamp. The safe path never reaches
+        # here: it checks the stamp already exists first, which is what keeps a
+        # preview that has nothing to warn about from creating anything at all.
         self.lease_root.mkdir(parents=True, exist_ok=True)
         with path.with_suffix(path.suffix + ".lock").open("a+b") as handle:
             _acquire_bounded(

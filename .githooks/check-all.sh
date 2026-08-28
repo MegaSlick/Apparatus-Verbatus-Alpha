@@ -127,6 +127,14 @@ case "$uv_version" in
     exit 1
     ;;
 esac
+# uv finds its cache through UV_CACHE_DIR, then XDG_CACHE_HOME, then HOME, and
+# `env -i` drops the first two deliberately. That is the decision, not an
+# oversight: this sync is the step that decides whether `.venv` may be trusted,
+# and a caller-named cache directory is a caller-supplied input to the verifier.
+# The cost is real and bounded -- someone whose populated cache lives outside
+# HOME gets "could not reconcile" and must re-run the recovery command with
+# network access. Losing that trade the other way would let the environment the
+# gate vouches for be reconciled from bytes the caller chose.
 /usr/bin/env -i HOME="$uv_home" PATH=/usr/bin:/bin \
   UV_PROJECT_ENVIRONMENT="$UV_PROJECT_ENVIRONMENT" \
   "$uv_binary" sync --frozen --offline --group test --group audit --no-config || {
@@ -182,8 +190,11 @@ audit_directory=$(mktemp -d "/tmp/verbatus-frozen-audit.XXXXXX") || {
 }
 audit_inventory="${audit_directory}/requirements.txt"
 cleanup_audit_inventory() {
-  rm -f -- "$audit_inventory"
-  rmdir -- "$audit_directory"
+  # The directory as a unit. `set -e` is in force, so `rmdir` returning non-zero
+  # over one unexpected file left the whole gate exiting non-zero after every
+  # check had already passed -- a directory-removal error the operator cannot
+  # tell from a real audit failure. Cleanup may not outvote the result.
+  rm -rf -- "$audit_directory"
 }
 # A POSIX sh trap for HUP/INT/TERM runs the handler and then *resumes* the
 # script. With one shared trap, Ctrl-C deleted the inventory and the gate carried

@@ -34,6 +34,21 @@ BOOTSTRAP_ENVIRONMENT = {
     "PATH": "/usr/local/bin:/usr/bin:/bin",
     "LANG": "C.UTF-8",
     "LC_ALL": "C.UTF-8",
+    # uv resolves its cache through UV_CACHE_DIR, then XDG_CACHE_HOME, then
+    # $HOME. This environment is explicit and supplies none of those, so where
+    # `uv sync --locked --frozen` cached anything was left to whatever uv could
+    # infer from a passwd entry -- on the money path, with the GPU billing while
+    # it failed. Naming it makes the dependency visible instead of inferred.
+    #
+    # `/tmp` because it is the one absolute path writable by whatever user the
+    # pod image runs as. The cost is honest and bounded: the cache does not
+    # survive a pod, so a fresh pod re-downloads the locked wheels once. It is
+    # deliberately not under the checkout, which must stay exactly the pinned
+    # commit, and not on the model volume, whose contents are evidence.
+    #
+    # Unverified against a real pod image, like the spend template's "$50.00":
+    # check it on the first live boot.
+    "UV_CACHE_DIR": "/tmp/verbatus-uv-cache",
 }
 
 

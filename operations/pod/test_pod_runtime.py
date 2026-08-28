@@ -3817,12 +3817,19 @@ def test_production_bootstrap_uses_absolute_tools_and_an_explicit_environment(
     assert actions.checkout_commit(commit) == {"commit": commit}
     assert observed
     assert all(argv[0] == "/usr/bin/git" for argv, _ in observed)
+    # The whole environment, spelled out: the point of this test is that the
+    # child sees exactly what this repository chose and nothing inherited, so an
+    # entry added to `BOOTSTRAP_ENVIRONMENT` must be named here deliberately
+    # rather than admitted by a subset check. `UV_CACHE_DIR` is here because uv
+    # otherwise infers its cache from XDG_CACHE_HOME or HOME, neither of which
+    # this environment supplies.
     assert all(
         environment
         == {
             "PATH": "/usr/local/bin:/usr/bin:/bin",
             "LANG": "C.UTF-8",
             "LC_ALL": "C.UTF-8",
+            "UV_CACHE_DIR": "/tmp/verbatus-uv-cache",
         }
         for _, environment in observed
     )

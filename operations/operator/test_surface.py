@@ -1090,13 +1090,17 @@ def test_post_create_balance_refusal_does_not_claim_no_paid_action_occurred(
 ) -> None:
     surface = _surface(tmp_path)
     prepared = surface.prepare_launch(_request(), policy_path=_spend_policy(tmp_path))
-    observations = 1
+    # Counted from installation, so an extra balance read added inside
+    # `prepare_launch` cannot silently move which gate this test faults. The
+    # first read here is `launch`'s own re-preview and must pass; the second is
+    # the post-create read, which is the one this test is about.
+    observations = 0
     original_observer = surface.provider.observe_account_balance
 
     def observe():  # type: ignore[no-untyped-def]
         nonlocal observations
         observations += 1
-        if observations == 3:
+        if observations == 2:
             raise ProviderFailure("balance endpoint failed after create")
         return original_observer()
 
@@ -2260,6 +2264,50 @@ def test_export_refuses_a_symlink_at_an_existing_content_addressed_bundle(
     assert destination.is_symlink()
     failure = surface.receipts.read(surface._descriptor_receipt("export"))["payload"]
     assert failure["state"] == "local-copy-failed"
+
+
+def test_an_empty_armarium_is_refused_rather_than_bundled_as_complete(tmp_path: Path) -> None:
+    """A directory proved to exist was never proved to hold anything.
+
+    `7_armarium` was checked for its kind, so an empty one passed: the walk
+    wrote zero members, the writer returned normally, and `export` recorded
+    `"state": "complete"` for a bundle carrying `run.json` and not one
+    established reading. For a parish run that is every act in it missing, with
+    a receipt vouching for the absence -- GOVERNANCE 2's "'complete' is refused
+    unless everything reconciles", through one more door.
+    """
+
+    surface = _surface(tmp_path)
+    run_id = "empty-armarium"
+    run_root = tmp_path / "runs"
+    (run_root / run_id / "7_armarium").mkdir(parents=True)
+    (run_root / run_id / "run.json").write_text("{}", encoding="utf-8")
+    surface._write_action(
+        "run",
+        {
+            "summary": "test run",
+            "state": "complete",
+            "run_root": str(run_root),
+            "run_id": run_id,
+        },
+        descriptor_action="run",
+    )
+    surface._armarium_export = lambda _root, _run_id: {  # type: ignore[method-assign]
+        "aggregate": {"status": "complete", "reasons": []},
+        "pages": [],
+        "delivered": [],
+        "non_delivered": [],
+    }
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.export(run_id=run_id)
+
+    assert refusal.value.code is ErrorCode.EXPORT_FAILED
+    assert "holds no evidence files" in str(refusal.value.detail)
+    exports = surface.state_root / "exports"
+    assert list(exports.glob("*.zip")) == []
+    assert list(exports.glob("*.staged")) == []
+    assert list(exports.glob(".*tmp*")) == []
 
 
 def test_a_structural_export_refusal_still_leaves_a_receipt_and_no_staged_file(
