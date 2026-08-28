@@ -1,6 +1,7 @@
 """The corpus register declares correspondence without choosing a capture."""
 
 import json
+import sys
 
 import pytest
 
@@ -97,13 +98,6 @@ def _record(register, kind):
     return next(row for row in json.loads(register)["records"] if row["kind"] == kind)
 
 
-def test_members_are_set_serialized_in_digest_order_not_preference_order():
-    first = _register(members=["b" * 64, "a" * 64])
-    second = _register(members=["a" * 64, "b" * 64])
-    assert first == second
-    assert register_digest(first) == register_digest(second)
-
-
 def test_register_refuses_a_members_list_not_already_in_canonical_order():
     """The order-reversal property, at its actual boundary.
 
@@ -130,10 +124,15 @@ def test_reversed_submission_order_reaches_byte_identical_run_artifacts(tmp_path
     """Two runs seeded by registers whose members were *discovered* in opposite
     order (capture B before capture A, or the reverse) still snapshot to the
     identical blob and `register_digest`, because both pass through the one
-    canonical-order gate before either reaches a run tree."""
+    canonical-order gate before either reaches a run tree.
+
+    The run-tree half is what this proves. `_membership` sorts its argument, so
+    the two register byte strings are already identical here and comparing them
+    would be comparing the helper with itself — the ordering guarantee is the
+    register's own, and it is asserted at its boundary in the test above.
+    """
     forward = _register(members=["a" * 64, "b" * 64])
     reversed_order = _register(members=["b" * 64, "a" * 64])
-    assert forward == reversed_order
 
     shared = {
         "source_manifest": [{"ordinal": 1, "relative_path": "fixture.png", "sha256": "a" * 64}],
@@ -147,6 +146,18 @@ def test_reversed_submission_order_reaches_byte_identical_run_artifacts(tmp_path
     first_bytes = first.read_bytes(first.blob_path("door", first.read_run()["register_digest"]))
     second_bytes = second.read_bytes(second.blob_path("door", second.read_run()["register_digest"]))
     assert first_bytes == second_bytes
+
+
+def test_a_membership_record_naming_no_capture_is_refused():
+    """A record that asserts nothing cannot be told from no record at all.
+
+    `members_of` reports `[]` for a page with no membership record, so an empty
+    one is invisible — and being immutable, it cannot be retracted either, since
+    a retraction names an assertion that was never made.
+    """
+    value = {"schema": SCHEMA, "records": [_declaration(), _membership([])]}
+    with pytest.raises(SchemaRefusal, match="names no capture"):
+        validate_register_bytes(canonical_bytes(value))
 
 
 def test_preference_field_is_refused_at_the_register_boundary():
@@ -362,11 +373,19 @@ def test_a_late_found_capture_is_appended_and_leaves_the_declaration_untouched()
     re-derive `physical_page_id` under everything beneath it."""
     first = _membership(["a" * 64])
     second = _membership(["a" * 64, "b" * 64], predecessor=digest_of(first), run="triage-2")
-    register = canonical_bytes({"schema": SCHEMA, "records": [_declaration(), first, second]})
+    declaration = _declaration()
+    register = canonical_bytes({"schema": SCHEMA, "records": [declaration, first, second]})
     validated = validate_register_bytes(register)
     assert first in validated["records"], "the superseded link is retained, not rewritten"
     assert members_of(register, PAGE) == sorted(["a" * 64, "b" * 64])
-    assert _declaration()["physical_page_id"] == PAGE, "the declaration cannot have moved"
+    # The record the docstring is actually about, read back out of the validated
+    # register. `_declaration()["physical_page_id"] == PAGE` used to stand here,
+    # which compares the helper's own default with the constant it puts there and
+    # holds however the register treats the declaration.
+    assert declaration in validated["records"], "the declaration is retained unedited"
+    assert [row for row in validated["records"] if row["kind"] == "physical-page"] == [
+        declaration
+    ], "the append neither rewrote the declaration nor added a second one"
 
 
 def test_a_membership_link_that_does_not_name_its_predecessor_is_refused():
@@ -639,6 +658,25 @@ def test_a_symlinked_register_lock_cannot_disable_writer_serialization(tmp_path)
     assert victim.read_bytes() == b"unchanged"
 
 
+def test_a_platform_without_flock_refuses_the_append_rather_than_running_unserialized(
+    tmp_path, monkeypatch
+):
+    """No lock means no append. The compare-and-swap alone cannot stand in for it.
+
+    Two writers that both read digest D both satisfy the `expected_digest` check,
+    and the second replace discards the first's records. Proceeding unserialized
+    would lose an append behind a successful return, so the platform gap is named.
+    """
+    monkeypatch.setitem(sys.modules, "fcntl", None)
+    path = tmp_path / "register.json"
+    path.write_bytes(empty_register())
+
+    with pytest.raises(SchemaRefusal, match="cannot lock a corpus register"):
+        append_records(path, [_declaration()], expected_digest=EMPTY_REGISTER_DIGEST)
+
+    assert path.read_bytes() == empty_register()
+
+
 def test_register_bytes_and_replay_counts_are_bounded_before_amplification(monkeypatch):
     monkeypatch.setattr(corpus_register, "MAX_REGISTER_BYTES", len(empty_register()) - 1)
     with pytest.raises(SchemaRefusal, match="byte validation bound"):
@@ -651,11 +689,18 @@ def test_register_bytes_and_replay_counts_are_bounded_before_amplification(monke
         validate_register_bytes(one_record)
 
 
-def test_pathologically_nested_json_is_a_named_schema_refusal():
+def test_pathologically_nested_json_is_refused_for_its_depth_not_its_encoding():
+    """The refusal has to send an operator to the problem it actually has.
+
+    A 10,000-deep register is valid UTF-8 and valid JSON; only its structure
+    defeats the parser. Reported as "not UTF-8 JSON", it sent whoever read it to
+    check the file's encoding, where there is nothing wrong.
+    """
     depth = 10_000
     data = b'{"schema":"corpus-register-v1","records":' + b"[" * depth + b"]" * depth + b"}"
-    with pytest.raises(SchemaRefusal, match="not UTF-8 JSON"):
+    with pytest.raises(SchemaRefusal, match="nested too deeply") as caught:
         validate_register_bytes(data)
+    assert "not UTF-8 JSON" not in str(caught.value)
 
 
 # --- The sealed snapshot, and the check that cannot be skipped -------------------

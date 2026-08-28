@@ -319,23 +319,61 @@ def test_a_dossier_under_an_unrecognized_witness_regime_cannot_establish(tmp_pat
     )
     assert result.returncode == 2, result.stderr
     assert "Traceback" not in result.stderr
-    assert "which is not one of" in result.stderr
+    # Pinned to the message this check owns: "which is not one of" is also
+    # produced by the provenance-regime and established-text-status refusals,
+    # so the bare fragment could be satisfied by a refusal about neither.
+    assert "embeds a dossier under witness regime" in result.stderr
 
 
 def test_a_blinded_comparison_view_may_not_wear_a_label_the_dossier_never_carried(tmp_path):
-    """A syntactically plausible pseudonym is not evidence of a dossier witness."""
+    """A syntactically plausible pseudonym is not evidence of a dossier witness.
 
-    def relabel(dossier):
+    The regime is blinded and the testimonia are blinded with it, so the refusal
+    can only come from the forged label. Written the short way -- regime flipped
+    to blinded while the rows stayed named -- every real pseudonym was already
+    absent from `labels`, the check fired on that alone, and the forgery was
+    inert: the assertion passed without ever testing what the name claims.
+    """
+    root = tmp_path / "runs"
+    run_through_recensor(root, "r")
+    tree = RunTree(root, "r")
+    config_digest = tree.read_run()["config_digest"]
+
+    def blind_and_forge(payload):
+        dossier = dict(payload["dossier"])
+        dossier["witness_regime"] = "blinded"
+        rows = []
+        for row in dossier["testimonia"]:
+            copied = dict(row)
+            copied["witness_label"] = pseudonym_for(
+                row["witness_label"], run_id="r", config_digest=config_digest
+            )
+            rows.append(copied)
         attachment = dict(dossier["act_attachment"])
-        views = dict(attachment["comparison_views"])
+        named_views = attachment["comparison_views"]
+        # Forge the row for a chair the attachment actually names. The testimonia
+        # are the wider list, so blanking an arbitrary row proves nothing: the
+        # attachment's labels would all still be carried and the run establishes.
+        attached = {
+            pseudonym_for(chair, run_id="r", config_digest=config_digest) for chair in named_views
+        }
+        forged = next(row for row in rows if row["witness_label"] in attached)
+        forged["witness_label"] = "witness-000000000000"
+        dossier["testimonia"] = sorted(rows, key=lambda row: row["witness_label"])
+
         attachment["comparison_views"] = {
-            "witness-000000000000": views.pop(next(iter(views))),
-            **views,
+            pseudonym_for(chair, run_id="r", config_digest=config_digest): text
+            for chair, text in named_views.items()
         }
         dossier["act_attachment"] = attachment
-        dossier["witness_regime"] = "blinded"
+        dossier["dossier_digest"] = digest_of(
+            {key: value for key, value in dossier.items() if key != "dossier_digest"}
+        )
+        payload["dossier"] = dossier
 
-    result = _archetypus_after(tmp_path, _reseal_dossier(relabel))
+    _reseal_reading(tree, accepted_review(tree), blind_and_forge)
+    result = invoke(root, "r", "happy", "pipeline/6_archetypus/run.py")
+
     assert result.returncode == 2, result.stderr
     assert "Traceback" not in result.stderr
     assert "name no witness this dossier carries" in result.stderr
@@ -368,6 +406,12 @@ def test_blinded_comparison_views_cannot_exchange_valid_witness_labels(tmp_path)
         }
         labels = sorted(blinded_views)
         assert len(labels) >= 2, "the fixture must carry two attached page witnesses"
+        # If the two carried the same text the swap would be a no-op and the
+        # refusal below would have to come from somewhere else, leaving the
+        # attribution claim this test names unproven.
+        assert blinded_views[labels[0]] != blinded_views[labels[1]], (
+            "the swap must actually exchange two different readings"
+        )
         blinded_views[labels[0]], blinded_views[labels[1]] = (
             blinded_views[labels[1]],
             blinded_views[labels[0]],
