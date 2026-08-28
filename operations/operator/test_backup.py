@@ -118,7 +118,11 @@ def test_backup_refuses_to_publish_a_snapshot_when_the_source_moves(
     monkeypatch.setattr("operations.operator.backup._copy_verified", copy_then_change)
     with pytest.raises(BackupRefusal, match="changed while"):
         sync_run_tree(volume, run_id, mac)
-    assert not list((mac / "snapshots").rglob("*.json")) if (mac / "snapshots").exists() else True
+    # `Path.glob` on a missing directory yields nothing, so no existence guard
+    # is needed. `assert X if cond else True` is one conditional expression and
+    # passes outright whenever the directory is absent, which a later reader
+    # can easily take for two assertions.
+    assert not list((mac / "snapshots").rglob("*.json"))
 
 
 def test_backup_snapshot_publish_survives_a_kill_before_the_link(tmp_path: Path) -> None:
@@ -284,23 +288,49 @@ def test_backup_invalid_run_id_uses_the_named_backup_refusal(tmp_path: Path) -> 
     assert "run id is invalid" in failure.value.render()
 
 
+# Each case names the refusal it must produce. Asserting only the shared
+# phrase "backup worker report" let one surviving check answer for all five:
+# delete the integer test, or the ceiling test, and the suite stayed green
+# while the CLI accepted a report it cannot prove.
 @pytest.mark.parametrize(
-    "report",
+    ("report", "expected_detail"),
     (
-        {"schema": "mac-run-backup.v1", "snapshot_sha256": "a" * 64, "copied": 2, "reused": 0},
-        {"schema": SCHEMA, "snapshot_sha256": "a" * 64, "copied": "2", "reused": 0},
-        {
-            "schema": SCHEMA,
-            "snapshot_sha256": "a" * 64,
-            "copied": backup_module.MAX_BACKUP_FILES + 1,
-            "reused": 0,
-        },
-        {"schema": SCHEMA, "snapshot_sha256": "a" * 64, "copied": 0, "reused": 0},
-        {"schema": SCHEMA, "snapshot_sha256": "a" * 64, "copied": 2, "reused": 0},
+        pytest.param(
+            {"schema": "mac-run-backup.v1", "snapshot_sha256": "a" * 64, "copied": 2, "reused": 0},
+            "declares schema",
+            id="schema-is-not-this-backup-format",
+        ),
+        pytest.param(
+            {"schema": SCHEMA, "snapshot_sha256": "a" * 64, "copied": "2", "reused": 0},
+            "'copied' is not an integer",
+            id="count-is-a-string",
+        ),
+        pytest.param(
+            {
+                "schema": SCHEMA,
+                "snapshot_sha256": "a" * 64,
+                "copied": backup_module.MAX_BACKUP_FILES + 1,
+                "reused": 0,
+            },
+            "'copied' is outside",
+            id="count-is-past-the-file-ceiling",
+        ),
+        pytest.param(
+            {"schema": SCHEMA, "snapshot_sha256": "a" * 64, "copied": 0, "reused": 0},
+            "successful snapshot of no files",
+            id="claims-success-over-nothing",
+        ),
+        pytest.param(
+            # Well-formed on its face, and still refused: no snapshot with that
+            # digest was published, so the read-back has nothing to verify.
+            {"schema": SCHEMA, "snapshot_sha256": "a" * 64, "copied": 2, "reused": 0},
+            "snapshot that does not exist",
+            id="names-a-snapshot-that-was-never-written",
+        ),
     ),
 )
 def test_backup_cli_refuses_a_worker_report_that_cannot_prove_success(
-    tmp_path: Path, monkeypatch, report: dict[str, object]
+    tmp_path: Path, monkeypatch, report: dict[str, object], expected_detail: str
 ) -> None:
     volume, run_id = _run_tree(tmp_path)
 
@@ -319,7 +349,7 @@ def test_backup_cli_refuses_a_worker_report_that_cannot_prove_success(
         cli._backup_in_custody(volume, run_id, tmp_path / "mac", tmp_path)
 
     assert failure.value.code is ErrorCode.BACKUP_FAILED
-    assert "backup worker report" in failure.value.render()
+    assert expected_detail in failure.value.render()
 
 
 def test_backup_cli_classifies_a_worker_report_json_conversion_failure(

@@ -80,15 +80,16 @@ class BackupReport:
         counts: dict[str, int] = {}
         for field in ("copied", "reused"):
             count = value[field]
-            if (
-                not isinstance(count, int)
-                or isinstance(count, bool)
-                or count < 0
-                or count > MAX_BACKUP_FILES
-            ):
+            # Two clauses, two messages. Folded into one condition they also
+            # shared one refusal, so a test could not tell which clause had
+            # fired — and removing either left the other answering for both,
+            # green. The operator gains by it too: "is not an integer" says
+            # more about a report carrying "2" than a sentence about bounds.
+            if not isinstance(count, int) or isinstance(count, bool):
+                raise BackupRefusal(f"backup worker report field {field!r} is not an integer")
+            if count < 0 or count > MAX_BACKUP_FILES:
                 raise BackupRefusal(
-                    f"backup worker report field {field!r} must be a non-negative integer "
-                    f"no larger than {MAX_BACKUP_FILES}"
+                    f"backup worker report field {field!r} is outside 0..{MAX_BACKUP_FILES}"
                 )
             counts[field] = count
         if counts["copied"] + counts["reused"] == 0:
