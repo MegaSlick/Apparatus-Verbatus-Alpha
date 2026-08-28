@@ -633,3 +633,67 @@ def test_the_materialization_fetcher_names_a_per_call_cache_cleanup_failure(tmp_
         HuggingFaceMaterializationFetcher(CachedSnapshotClientFake()).fetch(
             "fixture-org/pinned", "a" * 40, destination
         )
+
+
+def test_a_validated_file_swapped_for_a_fifo_is_refused_instead_of_hanging_the_boot(tmp_path):
+    """A check/use swap must end in a refusal, never in an open that never returns.
+
+    Validation proves the name is a regular file, and the Hugging Face client
+    still owns the per-call cache between then and the copy. Opening the name
+    again without ``O_NONBLOCK`` blocks forever on a FIFO -- inside a pod boot,
+    with the GPU billing, no journal step recorded and no reason printed -- so
+    the identity check below it never runs. ``_read_limited_bytes`` already pays
+    for this flag; this call did not.
+
+    The refusal is asserted from a worker thread with a deadline: a regression
+    here is a hang, and a hang must surface as a failed test rather than a suite
+    that never finishes.
+    """
+    import os
+    import threading
+    import unittest.mock
+
+    from common.chairs import registry as registry_module
+
+    client_cache = tmp_path / "staging.huggingface-cache"
+
+    class ReturnsOneRegularFile:
+        def snapshot_download(self, **kwargs):
+            snapshot = client_cache / "snapshot"
+            snapshot.mkdir(parents=True)
+            (snapshot / "model.safetensors").write_bytes(b"weights")
+            return snapshot
+
+    real_validate = registry_module._validated_materialization_files
+
+    def swap_for_a_fifo(source, cache, repo):
+        files = real_validate(source, cache, repo)
+        for _relative, origin, _identity in files:
+            origin.unlink()
+            os.mkfifo(origin)
+        return files
+
+    destination = tmp_path / "staging"
+    destination.mkdir()
+    outcome: list[BaseException | None] = []
+
+    def run() -> None:
+        try:
+            with unittest.mock.patch.object(
+                registry_module, "_validated_materialization_files", swap_for_a_fifo
+            ):
+                HuggingFaceMaterializationFetcher(ReturnsOneRegularFile()).fetch(
+                    "fixture-org/pinned", "a" * 40, destination
+                )
+            outcome.append(None)
+        except BaseException as error:  # noqa: BLE001 - reported through the assertion below
+            outcome.append(error)
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(timeout=15)
+
+    assert not worker.is_alive(), "the copy blocked on the FIFO instead of refusing"
+    assert isinstance(outcome[0], DigestMismatchRefusal)
+    assert "no longer a regular file" in str(outcome[0])
+    assert sorted(destination.iterdir()) == []
