@@ -148,10 +148,20 @@ def test_the_image_requirements_match_the_projects_declared_direct_environment()
     import tomllib
 
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    group_entries = [entry for group in project["dependency-groups"].values() for entry in group]
+    # PEP 735 lets a group hold `{include-group = "..."}` tables. `_pinned` would
+    # be handed the table and fail on `entry.strip()` with an AttributeError,
+    # reporting a type error where this test is meant to report environment
+    # drift. Those tables name no distribution, so they are not pins to compare.
+    included = [entry for entry in group_entries if not isinstance(entry, str)]
+    assert all(set(entry) == {"include-group"} for entry in included), (
+        f"unrecognised non-string dependency-group entries {included}; this test "
+        "compares pins and does not know what these declare"
+    )
     installed = _pinned(
         [
             *project["project"]["dependencies"],
-            *(entry for group in project["dependency-groups"].values() for entry in group),
+            *(entry for entry in group_entries if isinstance(entry, str)),
         ]
     )
     image_requirements = _pinned((ROOT / "requirements-dev.txt").read_text().splitlines())
@@ -211,10 +221,21 @@ def test_the_frozen_audit_inventory_is_the_running_interpreters_exact_third_part
 
     from importlib.metadata import distributions
 
+    # Read from the helper rather than repeating the literal: a rename that
+    # updates only one copy would otherwise fail the full gate with pip-audit's
+    # "unresolvable requirement" instead of anything about the rename.
+    excluded = frozen_audit.PROJECT_DISTRIBUTION
+    import tomllib
+
+    declared_name = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["name"]
+    assert re.sub(r"[-_.]+", "-", declared_name).lower() == excluded, (
+        f"pyproject declares {declared_name!r} but the audit helper excludes {excluded!r}; "
+        "the local project would be sent to pip-audit as a third-party pin"
+    )
     installed = {
         re.sub(r"[-_.]+", "-", distribution.metadata["Name"]).lower(): distribution.version
         for distribution in distributions()
-        if re.sub(r"[-_.]+", "-", distribution.metadata["Name"]).lower() != "verbatus"
+        if re.sub(r"[-_.]+", "-", distribution.metadata["Name"]).lower() != excluded
     }
     assert audited == installed
 
@@ -418,10 +439,20 @@ def test_the_gate_refuses_when_uv_cannot_verify_the_venv_against_the_lock(tmp_pa
     result = run_gate(repo, env=environment)
 
     assert result.returncode == 1
+    # What the `unset|unset` here establishes: the sync runs under `/usr/bin/env
+    # -i`, so uv sees an emptied environment plus only the variables named on
+    # that line. It is *not* a check on the gate's own `unset UV_CONFIG_FILE
+    # UV_INEXACT UV_PYTHON`; deleting that line leaves this passing, because
+    # `env -i` already removed them. That line still matters for the later
+    # `frozen_python` steps, which do not run under `env -i`, so it is asserted
+    # as text below and its PYTHONPATH half is exercised by the next test.
     assert calls.read_text().splitlines() == [
         f"{repo / '.venv'}|unset|unset",
         "sync --frozen --offline --group test --group audit --no-config",
     ]
+    gate = (ROOT / ".githooks" / "check-all.sh").read_text()
+    assert "unset PYTHONHOME PYTHONOPTIMIZE PYTHONPATH PYTEST_ADDOPTS PYTEST_PLUGINS" in gate
+    assert "unset UV_CONFIG_FILE UV_INEXACT UV_PYTHON" in gate
     assert "could not reconcile" in result.stderr
     assert "with network access, then retry" in result.stderr
     assert "check-static.sh" not in result.stderr
@@ -449,7 +480,11 @@ def test_the_gate_does_not_import_from_an_inherited_pythonpath(tmp_path):
         "#!/bin/sh\nif [ \"${1:-}\" = --version ]; then echo 'uv 0.12.1'; exit 0; fi\nexit 0\n"
     )
     uv.chmod(0o755)
-    (repo / ".githooks" / "check-static.sh").write_text("#!/bin/sh\nexit 1\n")
+    # The stub records that it ran. Asserting only `returncode == 1` proved
+    # nothing about contamination: the gate exits 1 for several earlier reasons,
+    # so a change that stopped before the static check would still pass here.
+    reached = tmp_path / "static-check-ran"
+    (repo / ".githooks" / "check-static.sh").write_text(f"#!/bin/sh\n: > {reached}\nexit 1\n")
     environment = {
         **os.environ,
         "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
@@ -460,6 +495,7 @@ def test_the_gate_does_not_import_from_an_inherited_pythonpath(tmp_path):
     result = run_gate(repo, env=environment)
 
     assert result.returncode == 1
+    assert reached.exists(), "the gate stopped before the static check"
     assert not marker.exists()
 
 

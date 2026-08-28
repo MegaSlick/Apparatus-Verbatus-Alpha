@@ -48,8 +48,21 @@ def _account_state_dir(workspace: Path | None = None) -> Path:
         environment_home = Path.home()
     except RuntimeError:
         environment_home = Path()
-    homes = (environment_home, Path(pwd.getpwuid(os.getuid()).pw_dir))
-    for home in homes:
+
+    def homes():
+        yield environment_home
+        try:
+            yield Path(pwd.getpwuid(os.getuid()).pw_dir)
+        except KeyError:
+            # No passwd entry for this UID -- a container running as an unmapped
+            # user, for instance. Building the tuple eagerly ran this lookup
+            # before the loop had even looked at the environment home, so every
+            # `verbatus` word ended in the unclassified message even when HOME
+            # was absolute and perfectly usable. A missing fallback is not a
+            # reason to fail a command that never needed it.
+            return
+
+    for home in homes():
         candidate = home / ".local" / "state" / "verbatus"
         if home.is_absolute() and (workspace is None or not _is_within(candidate, workspace)):
             return candidate
@@ -125,7 +138,17 @@ def build_parser() -> PlainParser:
         help="the checked-out Apparatus Verbatus folder (defaults to the current directory)",
     )
     parser.add_argument(
-        "--state-dir", type=Path, default=_default_state_dir(), help="where local receipts are kept"
+        "--state-dir",
+        type=Path,
+        # No computed default here. `main` resolves the durable default against
+        # the *resolved* workspace, and `None` is how it knows the operator did
+        # not name a path. Deciding that from a scan of raw argv could not work:
+        # argparse accepts unambiguous abbreviations, so `--state-di /records`
+        # set this value and the scan missed it -- the named folder was parsed
+        # and then silently overwritten with the default, and `status` afterwards
+        # read a different set of records than the operator had asked for.
+        default=None,
+        help="where local receipts are kept",
     )
     parser.add_argument(
         "--notify",
@@ -219,10 +242,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return 0
         args = parser.parse_args(arguments)
         workspace = args.workspace.resolve()
-        explicit_state = any(
-            argument == "--state-dir" or argument.startswith("--state-dir=")
-            for argument in arguments
-        )
+        explicit_state = args.state_dir is not None
         if explicit_state:
             state = args.state_dir if args.state_dir.is_absolute() else workspace / args.state_dir
         else:

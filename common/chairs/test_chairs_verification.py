@@ -660,16 +660,19 @@ def test_the_materialization_fetcher_refuses_default_apfs_name_collisions(tmp_pa
     destination = tmp_path / "staging"
     destination.mkdir()
 
-    # `HuggingFaceMaterializationFetcher.fetch` walks the returned snapshot in
-    # `registry`, not in `model_store`. Patching the latter worked only because
-    # `import os` in both files binds one module object, and it told a reader the
-    # collision check lives somewhere it does not.
+    # The collision check runs in `registry`, not in `model_store`. `os` is one
+    # shared module object, so this replacement is process-wide for the block
+    # below; it is spelled through `registry_module` only to say where the
+    # checked code lives. The real `os.walk` signature is kept so an unrelated
+    # positional caller inside the block cannot fail with `TypeError`.
     original_walk = registry_module.os.walk
 
-    def case_sensitive_walk(top, **kwargs):
+    def case_sensitive_walk(top, topdown=True, onerror=None, followlinks=False):
         # A case-insensitive host filesystem collapses the planted spellings
         # into one file; deliver the listing a case-sensitive fetch cache would.
-        for directory, directories, filenames in original_walk(top, **kwargs):
+        for directory, directories, filenames in original_walk(
+            top, topdown=topdown, onerror=onerror, followlinks=followlinks
+        ):
             if any(name.lower() == "weights.bin" for name in filenames):
                 filenames = sorted(set(filenames) | {"Weights.bin", "weights.bin"})
             yield directory, directories, filenames

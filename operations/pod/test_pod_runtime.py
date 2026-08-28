@@ -45,6 +45,7 @@ from .launch import (
     LaunchState,
     PodRuntime,
     _bind_report_path_to_launch,
+    _spend_refusal_state,
 )
 from .lease import LeaseStore, PodLease
 from .models import (
@@ -4464,6 +4465,60 @@ def test_spend_policy_loader_refuses_each_widening_or_malformed_file(
 
     with pytest.raises(SpendRefusal, match=message):
         load_spend_policy(path)
+
+
+def test_a_reworded_refusal_reason_cannot_reclassify_a_money_safety_refusal() -> None:
+    """The operator-facing state is decided by recorded cause, not by prose.
+
+    `hard_floor_triggered` and `balance_unobservable_triggered` used to match the
+    text of `reasons`, and `_spend_refusal_state` turns them into the state an
+    operator reads. Reflowing any of those strings -- a typo fix, a rewrap --
+    made both properties False and reported a balance-reserve refusal as a price
+    ceiling, sending the operator to inspect a price sheet with nothing wrong in
+    it. No prose assertion could catch that, because the assertions read the same
+    prose. So the reasons are rewritten here to nonsense and the classification
+    must be unchanged.
+    """
+
+    from .models import PodEstimate
+    from .spend import SpendRefusalCause, assess_spend
+
+    clock = Clock()
+    estimate = PodEstimate(POD_HOURLY, VOLUME_HOURLY, "fixture price sheet", clock.now())
+    observation = AccountBalanceObservation(
+        available_usd=Decimal("50.00"), observed_at=clock.now(), source="fixture"
+    )
+    floored = assess_spend(
+        policy(),
+        estimate,
+        requested_deadline=clock.now() + timedelta(seconds=300),
+        now=clock.now(),
+        balance_observation=observation,
+    )
+
+    assert not floored.allowed
+    assert floored.refusal_causes == frozenset({SpendRefusalCause.HARD_FLOOR})
+    assert _spend_refusal_state(floored) is LaunchState.REFUSED_BALANCE_FLOOR
+
+    reworded = replace(floored, reasons=("some future editor reflowed this line",))
+
+    assert reworded.hard_floor_triggered
+    assert _spend_refusal_state(reworded) is LaunchState.REFUSED_BALANCE_FLOOR
+
+    unobservable = assess_spend(
+        policy(),
+        estimate,
+        requested_deadline=clock.now() + timedelta(seconds=300),
+        now=clock.now(),
+        balance_observation=None,
+        balance_unavailable_detail="the fixture source is switched off",
+    )
+
+    assert unobservable.refusal_causes == frozenset({SpendRefusalCause.BALANCE_UNOBSERVABLE})
+    assert (
+        _spend_refusal_state(replace(unobservable, reasons=("reworded",)))
+        is LaunchState.REFUSED_BALANCE_UNOBSERVABLE
+    )
 
 
 def test_a_previously_valid_v2_policy_is_refused_by_name_not_as_a_missing_ceiling(

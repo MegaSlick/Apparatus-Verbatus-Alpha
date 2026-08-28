@@ -2847,8 +2847,13 @@ def test_upload_receipt_retains_manifest_identity_but_no_local_paths(tmp_path: P
     joined = "\n".join(lines)
     assert receipt["submission_manifest_sha256"] in joined
     serialized = json.dumps(receipt)
-    assert str(source.resolve()) not in serialized
-    assert str(manifest.resolve()) not in serialized
+    for local in (source, manifest):
+        # Both spellings: on macOS `tmp_path` is under /var/folders while
+        # `resolve()` returns /private/var/folders, so asserting only the
+        # resolved form would have passed while the receipt carried the
+        # caller's unresolved path -- the exact leak this test names.
+        assert str(local) not in serialized
+        assert str(local.resolve()) not in serialized
 
 
 @pytest.mark.parametrize("digest", (None, "not-a-sha256", "A" * 64))
@@ -2887,7 +2892,7 @@ def test_status_contract_says_it_reads_receipts_without_reopening_manifests() ->
 
 
 def test_default_operator_state_root_is_absolute_and_not_dot_verbatus() -> None:
-    state = cli.build_parser().parse_args(["status"]).state_dir
+    state = cli._default_state_dir()
 
     assert state.is_absolute()
     assert ".verbatus" not in str(state)
@@ -2950,7 +2955,7 @@ def test_a_non_absolute_xdg_state_home_does_not_put_records_back_in_the_checkout
     monkeypatch.setenv("XDG_STATE_HOME", value)
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
 
-    default = cli.build_parser().parse_args(["status"]).state_dir
+    default = cli._default_state_dir()
 
     assert default.is_absolute()
     assert workspace not in default.parents
@@ -2966,7 +2971,7 @@ def test_a_relative_home_cannot_make_the_default_state_root_relative(
     monkeypatch.setenv("XDG_STATE_HOME", "")
     monkeypatch.setenv("HOME", "relative-home")
 
-    default = cli.build_parser().parse_args(["status"]).state_dir
+    default = cli._default_state_dir()
 
     assert default.is_absolute()
     assert workspace not in default.parents
@@ -3000,6 +3005,30 @@ def test_no_stale_verbatus_notice_when_state_dir_is_named_explicitly(
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg-state"))
 
     cli.main(["--state-dir", str(old_state), "status"])
+
+    out = capsys.readouterr().out
+    assert "not read here" not in out
+
+
+def test_an_abbreviated_state_dir_flag_is_honoured_rather_than_parsed_and_discarded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """argparse accepts abbreviations, so argv text cannot decide what was named.
+
+    `--state-di /records` set `args.state_dir`, but the scan looked for the full
+    spelling, found nothing, and overwrote the operator's folder with the
+    computed default: receipts went to `~/.local/state/verbatus`, the abandoned
+    state notice appeared, and `status` afterwards read a different set of
+    records from the one they had asked for.
+    """
+
+    workspace = tmp_path / "checkout"
+    old_state = workspace / ".verbatus"
+    old_state.mkdir(parents=True)
+    monkeypatch.chdir(workspace)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg-state"))
+
+    cli.main(["--state-di", str(old_state), "status"])
 
     out = capsys.readouterr().out
     assert "not read here" not in out

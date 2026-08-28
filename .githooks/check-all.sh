@@ -185,7 +185,17 @@ cleanup_audit_inventory() {
   rm -f -- "$audit_inventory"
   rmdir -- "$audit_directory"
 }
-trap cleanup_audit_inventory 0 1 2 15
+# A POSIX sh trap for HUP/INT/TERM runs the handler and then *resumes* the
+# script. With one shared trap, Ctrl-C deleted the inventory and the gate carried
+# straight on to pip_audit, which then failed on a missing --requirement file:
+# the operator read a missing-file error instead of "the run was interrupted".
+interrupt_audit_inventory() {
+  cleanup_audit_inventory
+  echo "check-all: interrupted before the advisory audit finished" >&2
+  exit 1
+}
+trap cleanup_audit_inventory 0
+trap interrupt_audit_inventory 1 2 15
 "$frozen_python" .githooks/frozen_audit_requirements.py > "$audit_inventory"
 "$frozen_python" -m pip_audit --strict --no-deps --disable-pip \
   --requirement "$audit_inventory"

@@ -143,7 +143,22 @@ def open_write_source(source: Path, drawer: Path):
     except OSError as error:
         raise OSError(f"cannot safely open {source} beneath {drawer}: {error}") from error
     if external:
-        return open(source, "rb")
+        # The session's own path may legitimately be a standing-brief symlink, so
+        # this open follows links -- but it keeps the two guards the drawer path
+        # has. `O_NONBLOCK`: a FIFO left at that path would otherwise wait for a
+        # writer forever, with `dispatch` printing nothing and still holding the
+        # task lifecycle lock, so no other launcher could touch that task either.
+        # The regular-file check below: `st_size` is 0 for anything else, and the
+        # byte ceiling and `copy_bounded` both read it, so an oversized input
+        # would be reported as "input changed size while being read".
+        external_descriptor = os.open(source, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+        try:
+            if not stat.S_ISREG(os.fstat(external_descriptor).st_mode):
+                raise OSError(f"{source} is not a regular file")
+            return os.fdopen(external_descriptor, "rb")
+        except BaseException:
+            os.close(external_descriptor)
+            raise
     try:
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):
             raise OSError(f"{source} is not a regular file")

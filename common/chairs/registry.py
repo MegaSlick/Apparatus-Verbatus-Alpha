@@ -60,6 +60,15 @@ class HuggingFaceClient(Protocol):
     def snapshot_download(self, **kwargs: object) -> object:
         """Download an explicitly pinned snapshot subset."""
 
+    def metadata_load(self, local_path: Path) -> dict[str, object] | None:
+        """Read one local model card's front-matter metadata.
+
+        `load_model_card_metadata` calls this, so the declared seam has to name
+        it: a fake that implemented the Protocol as written failed here with
+        `AttributeError`, and the `attr-defined` ignore at the call site kept
+        the type checker from pointing at the cause.
+        """
+
 
 class HuggingFaceFetcher:
     """Adapter over an injected Hugging Face client; no import-time network dependency."""
@@ -334,7 +343,7 @@ def load_model_card_metadata(path: Path) -> dict[str, object] | None:
     """Load card metadata without making Hugging Face an import-time dependency."""
 
     client = HuggingFaceFetcher.from_huggingface_hub().client
-    return client.metadata_load(path)  # type: ignore[no-any-return,attr-defined]
+    return client.metadata_load(path)  # type: ignore[no-any-return]
 
 
 class ChairRegistry:

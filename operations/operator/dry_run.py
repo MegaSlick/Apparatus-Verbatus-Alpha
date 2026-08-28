@@ -9,7 +9,6 @@ read without needing a configured provider account.
 from __future__ import annotations
 
 import argparse
-import os
 import re
 import shutil
 import tempfile
@@ -20,6 +19,7 @@ from common.contracts.canonical import canonical_bytes
 from operations.pod.models import PodCreateRequest
 from operations.submit.submit import build_manifest, walk_folder
 
+from .cli import _is_within
 from .errors import ErrorCode, OperatorError, strip_control_bytes
 from .fakes import OperatorFakeProvider
 from .surface import OperatorSurface
@@ -54,21 +54,12 @@ def _scratch_root() -> Path:
     return fallback
 
 
-def _contains_directory(path: Path, directory: Path) -> bool:
-    """Compare existing ancestors by identity, not case-sensitive spelling."""
-
-    try:
-        directory_stat = os.stat(directory)
-    except OSError:
-        return False
-    for spelling in (Path(os.path.abspath(path)), path.resolve(strict=False)):
-        for ancestor in (spelling, *spelling.parents):
-            try:
-                if os.path.samestat(os.stat(ancestor), directory_stat):
-                    return True
-            except OSError:
-                continue
-    return False
+# One containment rule, not two. This decides whether the rehearsal's scratch
+# folder lands in the checkout; the same question decides where operator records
+# go, and `cli._is_within` was already the identical algorithm. Two copies drift:
+# correcting one -- for a mount point, or a missing ancestor -- would leave the
+# other answering the old way, and the two decisions would disagree in silence.
+_contains_directory = _is_within
 
 
 def make_transcript(output: str | Path) -> Path:
