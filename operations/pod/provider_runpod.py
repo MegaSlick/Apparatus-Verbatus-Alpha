@@ -39,6 +39,7 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -84,6 +85,17 @@ _POD_STATES = frozenset({"RUNNING", "EXITED", "TERMINATED"})
 _BUCKET_WIDTH = BILLING_BUCKET_WIDTH
 """Matches the `bucketSize=hour` this adapter always requests; the shared
 symbol keeps this slack and the generic verifier's from drifting apart."""
+
+BALANCE_OBSERVATION_TIMEOUT_SECONDS = 30.0
+"""How long the injected balance source may take before it is a named failure.
+
+The balance is observed at every spend gate, and one of those gates runs *after*
+`create` has returned a billing pod and *before* `_arm_or_close` has armed
+anything that would stop it. A source that blocks rather than fails leaves that
+pod running with no assessment recorded, no close attempted, and no result for
+an operator to read. Everything downstream of this method already fails closed
+on a raised exception, so bounding the call is what turns a hang into the
+refusal the runtime already knows how to handle."""
 
 _MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 """No documented RunPod response (one pod, a pod list, a billing window) is
@@ -195,12 +207,14 @@ class RunPodProvider:
         pod_price: Callable[[str], Decimal],
         volume_price: Callable[[str], Decimal],
         balance_observer: Callable[[], AccountBalanceObservation] | None = None,
+        balance_timeout_seconds: float = BALANCE_OBSERVATION_TIMEOUT_SECONDS,
         now: Callable[[], datetime] = utc_now,
     ) -> None:
         self.transport = transport
         self.pod_price = pod_price
         self.volume_price = volume_price
         self.balance_observer = balance_observer
+        self.balance_timeout_seconds = balance_timeout_seconds
         self.now = now
 
     # -- the seven verbs ---------------------------------------------------
@@ -214,11 +228,40 @@ class RunPodProvider:
         return PodEstimate(pod_hourly, volume_hourly, "RunPod reviewed price sheet", self.now())
 
     def observe_account_balance(self) -> AccountBalanceObservation:
-        """Use the separately supplied observed-balance source, never a guessed reserve."""
+        """Use the separately supplied observed-balance source, never a guessed reserve.
+
+        Bounded, because this is a money path: see
+        `BALANCE_OBSERVATION_TIMEOUT_SECONDS`. The observer runs on a daemon
+        thread so a source that never returns cannot hold the caller or the
+        interpreter's exit; the deadline is what the caller sees, and it arrives
+        as an ordinary `ProviderFailure` naming the timeout rather than as a
+        stall with nothing recorded.
+        """
 
         if self.balance_observer is None:
             raise ProviderFailure("RunPod account balance source was not configured")
-        return self.balance_observer()
+        observed: list[AccountBalanceObservation] = []
+        failed: list[BaseException] = []
+
+        def observe() -> None:
+            try:
+                observed.append(self.balance_observer())  # type: ignore[misc]
+            except BaseException as error:  # noqa: BLE001 - re-raised on the caller's thread
+                failed.append(error)
+
+        worker = threading.Thread(target=observe, name="runpod-balance-observation", daemon=True)
+        worker.start()
+        worker.join(self.balance_timeout_seconds)
+        if worker.is_alive():
+            raise ProviderFailure(
+                "RunPod account balance source did not answer within "
+                f"{self.balance_timeout_seconds} seconds"
+            )
+        if failed:
+            raise failed[0]
+        if not observed:
+            raise ProviderFailure("RunPod account balance source returned nothing")
+        return observed[0]
 
     def create(self, request: PodCreateRequest) -> PodRecord:
         """Correlate an existing launch token first, then POST — never both.

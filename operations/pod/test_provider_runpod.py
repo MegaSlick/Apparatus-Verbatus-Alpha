@@ -11,6 +11,7 @@ job, and this file does not pretend otherwise.
 from __future__ import annotations
 
 import json
+import threading
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -102,6 +103,66 @@ def test_runpod_balance_source_is_injected_and_never_an_implicit_http_read() -> 
 
     assert adapter.observe_account_balance() is observed
     assert transport.calls == []
+
+
+def test_a_balance_source_that_never_answers_becomes_a_named_timeout_refusal() -> None:
+    """A hang here would leave a created pod billing with nothing recorded.
+
+    The post-create spend assessment observes the balance after `create` has
+    returned a billing pod and before anything has been armed to stop it. Every
+    caller downstream already fails closed on a raised exception, so the only
+    outcome that escapes them is a source that blocks instead of failing. The
+    observer is never released -- that is what "blocked" means -- so the assertion
+    is on the deadline the caller sees.
+    """
+
+    transport = ScriptedTransport([])
+    blocked = threading.Event()
+    entered = threading.Event()
+
+    def never_answers() -> AccountBalanceObservation:
+        entered.set()
+        blocked.wait()
+        raise AssertionError("released only by this test's cleanup")
+
+    adapter = RunPodProvider(
+        transport,
+        pod_price=lambda gpu: Decimal("0.77"),
+        volume_price=lambda volume: Decimal("0.05"),
+        balance_observer=never_answers,
+        balance_timeout_seconds=0.05,
+        now=lambda: NOW,
+    )
+
+    try:
+        with pytest.raises(ProviderFailure, match="did not answer within"):
+            adapter.observe_account_balance()
+        assert entered.is_set(), "the source was never called, so nothing was bounded"
+    finally:
+        blocked.set()
+
+    assert transport.calls == []
+
+
+def test_a_failing_balance_source_still_raises_its_own_error_not_the_timeout() -> None:
+    """Bounding the call must not rewrite the cause of an ordinary failure."""
+
+    transport = ScriptedTransport([])
+
+    def refuses() -> AccountBalanceObservation:
+        raise ProviderFailure("balance endpoint returned 503")
+
+    adapter = RunPodProvider(
+        transport,
+        pod_price=lambda gpu: Decimal("0.77"),
+        volume_price=lambda volume: Decimal("0.05"),
+        balance_observer=refuses,
+        balance_timeout_seconds=30.0,
+        now=lambda: NOW,
+    )
+
+    with pytest.raises(ProviderFailure, match="returned 503"):
+        adapter.observe_account_balance()
 
 
 def test_runpod_without_an_observed_balance_source_refuses_without_http() -> None:
