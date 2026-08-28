@@ -2801,13 +2801,33 @@ def test_a_master_this_encoder_would_convert_is_a_named_page_refusal(tmp_path):
     assert "Declare the conversion this page needs" in record["payload"]["reason"]
 
 
-def test_a_split_derivative_records_its_master_mode_and_the_mode_it_was_sealed_in():
-    """The record must retain decoded master mode and bands, not placeholders.
+def test_a_split_derivative_records_a_palette_master_and_the_rgb_it_was_sealed_in():
+    """The lossless case where the decoded mode differs from the encoded one: the
+    deterministic encoder expands P to RGB pixel-for-pixel, so colour_mode "keep"
+    is honoured and the record must still say the master was a palette image. The
+    test below described this case in its docstring and then built an RGB master,
+    so nothing exercised palette provenance at all. Found by CodeRabbit."""
+    palette = Image.new("P", (6, 4))
+    palette.putpalette([10, 20, 30] + [0, 0, 0] * 255)
+    output = BytesIO()
+    palette.save(output, format="PNG")
+    part = door.triage_manifest.make_part(
+        {"x": 0, "y": 0, "w": 6, "h": 4},
+        {"x": 0, "y": 0, "w": 6, "h": 4},
+        0,
+        colour_mode="keep",
+    )
 
-    The whole-page and split branches share this provenance constraint. A palette
-    master is the lossless case where the decoded mode differs from the PNG mode:
-    the deterministic encoder expands P to RGB pixel-for-pixel.
-    """
+    _bytes, _geometry, contract = door.render_raster_page(output.getvalue(), 0, part)
+
+    assert contract["source_mode"] == "P"
+    assert contract["output"] == {"codec": "png", "color_mode": "RGB"}
+    assert contract["mode_transform"] == "triage-region-crop-rotate-convert-to-rgb"
+
+
+def test_a_split_derivative_records_its_master_mode_and_the_mode_it_was_sealed_in():
+    """The record must retain the decoded master mode and bands, not placeholders.
+    The whole-page and split branches share this provenance constraint."""
     output = BytesIO()
     Image.new("RGB", (6, 4), (10, 20, 30)).save(output, format="PNG")
     part = door.triage_manifest.make_part(

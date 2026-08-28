@@ -772,7 +772,10 @@ def _verify_admission(
     parent_digest = parent["sha256"]
     parent_path = parent["stored_at"]
     if (
-        parent_digest != source["sha256"]
+        # `.get`, because a submitted-source row that carries no digest at all is
+        # the boundary's business to refuse, not to raise KeyError over: this
+        # function's callers convert ContractError into a refusal and nothing else.
+        parent_digest != source.get("sha256")
         or parent_path != tree.blob_path(DOOR, parent_digest)
         or not isinstance(parent["source_frame_index"], int)
         or isinstance(parent["source_frame_index"], bool)

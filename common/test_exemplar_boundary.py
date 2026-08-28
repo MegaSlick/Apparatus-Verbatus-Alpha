@@ -659,6 +659,24 @@ def test_the_boundarys_restated_triage_row_schema_matches_the_pre_door_contract(
     )
 
 
+def test_a_triage_row_carrying_a_field_outside_the_closed_schema_is_refused():
+    """The behaviour the source-text comparison above stands in for, exercised
+    through the ordinary verification path: matching field sets in two files would
+    still be worth nothing if the boundary had stopped closing its own."""
+    from common.exemplar_boundary import verify_triage_derivative
+
+    contract, master, parent, sealed = _sealed_derivative((4, 4), {"width": 4, "height": 4})
+    row = contract["derivative_page"]["triage_manifest_row"]
+    row["operator_note"] = "a field the pre-door contract never closes"
+    row["manifest_row_sha256"] = _rows_digest(row)
+    contract["derivative_page"]["triage_backlink"]["triage_manifest_row_sha256"] = row[
+        "manifest_row_sha256"
+    ]
+
+    with pytest.raises(ContractError, match="no complete triage manifest row"):
+        verify_triage_derivative(contract, master, parent, sealed)
+
+
 @pytest.mark.parametrize(
     "forge",
     [

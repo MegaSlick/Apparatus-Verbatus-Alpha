@@ -129,8 +129,13 @@ def _row_digest(row: Mapping[str, Any]) -> str:
         and len(split["parts"]) > MAX_SPLIT_PARTS
     ):
         # ``make_row`` derives the digest before full validation. Refuse this
-        # quadratic-work input before canonical serialization copies it.
-        raise SchemaRefusal(f"triage split exceeds the {MAX_SPLIT_PARTS}-part limit")
+        # quadratic-work input before canonical serialization copies it. The
+        # message says *where* the refusal happened, because the identical one in
+        # ``_validate_split`` would otherwise make the two indistinguishable, and a
+        # test could not then tell that this early guard had been removed.
+        raise SchemaRefusal(
+            f"triage split exceeds the {MAX_SPLIT_PARTS}-part limit before its row is serialized"
+        )
     payload = {key: value for key, value in row.items() if key != "manifest_row_sha256"}
     try:
         return digest_bytes(canonical_bytes(payload))
