@@ -180,6 +180,38 @@ def test_a_stage_refuses_a_blob_whose_content_does_not_match_its_name(tmp_path):
     assert not _stage_records(tree, ATTESTATORES, "stage-seal")
 
 
+def test_an_interrupted_publish_leaves_a_blob_that_can_still_be_sealed(tmp_path):
+    """SIGKILL between the publisher's link and its unlink must not end the run.
+
+    `_atomic_create` hard-links `.<digest>.tmp-<unique>` onto the digest name and
+    then unlinks the temporary. Killed in between, the published blob keeps a
+    second link. Its bytes are complete and its digest matches its name, but the
+    inventory refused it for the link count — so a run killed at the wrong
+    microsecond could never seal again, and the message accused intact evidence.
+    """
+    tree, run, registry, bindings = _tree(tmp_path)
+    digest, published = tree.put_blob(ATTESTATORES, b"page pixels")
+    blob = tree.resolve(published.relative_path)
+    os.link(blob, blob.parent / f".{digest}.tmp-interrupted")
+    assert blob.stat().st_nlink == 2
+
+    _context(tree, run, registry, bindings).seal_boundary()
+
+    seal = _stage_records(tree, ATTESTATORES, "stage-seal")[0]
+    assert seal["payload"]["blob_inventory"], "the interrupted publish still sealed"
+
+
+def test_a_second_link_the_publisher_cannot_explain_is_still_refused(tmp_path):
+    """The allowance is exactly the publisher's own leftover and nothing else."""
+    tree, run, registry, bindings = _tree(tmp_path)
+    _digest, published = tree.put_blob(ATTESTATORES, b"page pixels")
+    blob = tree.resolve(published.relative_path)
+    os.link(blob, tmp_path / "reachable-from-outside")
+
+    with pytest.raises(SchemaRefusal, match="did not publish it under"):
+        _context(tree, run, registry, bindings).seal_boundary()
+
+
 # Two layers refuse a planted blob symlink, and which one speaks first is not a
 # property either of them promises. The run tree's own fd-bound blob walk runs
 # while the seal's manifest is built, so it now answers before the stage's

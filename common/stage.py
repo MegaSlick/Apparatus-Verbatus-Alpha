@@ -20,7 +20,7 @@ import platform
 import stat
 import sys
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Callable, Final, Protocol
@@ -976,7 +976,7 @@ def _stage_blob_inventory(
                 raise SchemaRefusal(
                     f"{stage} blob inventory contains noncanonical content address {name!r}"
                 )
-            observed = _digest_regular_file_at(directory_fd, name, stage)
+            observed = _digest_regular_file_at(directory_fd, name, stage, siblings=names)
             if verify_addresses and observed != name:
                 raise SchemaRefusal(
                     f"{stage} blob {name!r} contains digest {observed}, not the digest in its name"
@@ -1031,7 +1031,41 @@ def _refuse_unpublishable_temporary(directory_fd: int, name: str, stage: str) ->
         )
 
 
-def _digest_regular_file_at(directory_fd: int, name: str, stage: str) -> str:
+def _publisher_link_allowance(
+    directory_fd: int, siblings: Sequence[str], name: str, identity: tuple[int, int]
+) -> int:
+    """Extra links to `name` that its own interrupted publisher explains.
+
+    `RunTree._atomic_create` publishes by hard-linking `.<digest>.tmp-<unique>`
+    onto the digest name and then unlinking the temporary. SIGKILL between those
+    two steps leaves the published blob with a second link, and the only other
+    name holding it is that temporary. The bytes are complete, the digest matches
+    the name, and the inventory already skips the temporary itself — so refusing
+    the blob for its link count meant a run killed at the wrong microsecond could
+    never seal again, with the message accusing evidence that was in fact intact.
+
+    Each same-inode temporary bearing this blob's own digest explains exactly one
+    link. Every other link is still unexplained and still a refusal: this widens
+    the rule by precisely the state the publisher can leave and by nothing else.
+    """
+    explained = 0
+    for other in siblings:
+        if other == name or not other.startswith(f".{name}.tmp-"):
+            continue
+        if not _is_unpublished_blob_temporary(other):
+            continue
+        try:
+            sibling = os.stat(other, dir_fd=directory_fd, follow_symlinks=False)
+        except OSError:  # pragma: no cover - the temporary vanished mid-inventory
+            continue
+        if (sibling.st_dev, sibling.st_ino) == identity:
+            explained += 1
+    return explained
+
+
+def _digest_regular_file_at(
+    directory_fd: int, name: str, stage: str, *, siblings: Sequence[str] = ()
+) -> str:
     """Hash one directory entry without changing which inode the name denotes."""
     try:
         descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory_fd)
@@ -1043,12 +1077,19 @@ def _digest_regular_file_at(directory_fd: int, name: str, stage: str) -> str:
         with os.fdopen(descriptor, "rb") as handle:
             opened = os.fstat(handle.fileno())
             named_before = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            identity = (opened.st_dev, opened.st_ino)
+            # One link for the evidence name, plus any the interrupted publisher
+            # left behind under its own private temporary name.
+            allowed_links = 1 + _publisher_link_allowance(directory_fd, siblings, name, identity)
             if (
                 not stat.S_ISREG(opened.st_mode)
-                or opened.st_nlink != 1
-                or (opened.st_dev, opened.st_ino) != (named_before.st_dev, named_before.st_ino)
+                or opened.st_nlink > allowed_links
+                or identity != (named_before.st_dev, named_before.st_ino)
             ):
-                raise SchemaRefusal(f"{stage} blob {name!r} is not one contained regular file")
+                raise SchemaRefusal(
+                    f"{stage} blob {name!r} is not one contained regular file: it is reachable "
+                    "under a name this store did not publish it under"
+                )
             observed = hashlib.file_digest(handle, "sha256").hexdigest()
             closed_over = os.fstat(handle.fileno())
             named_after = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
@@ -1057,12 +1098,11 @@ def _digest_regular_file_at(directory_fd: int, name: str, stage: str) -> str:
             f"{stage} blob {name!r} changed or became unreadable while it was inventoried: {error}"
         ) from error
 
-    identity = (opened.st_dev, opened.st_ino)
     if (
         identity != (closed_over.st_dev, closed_over.st_ino)
         or identity != (named_after.st_dev, named_after.st_ino)
         or not stat.S_ISREG(named_after.st_mode)
-        or closed_over.st_nlink != 1
+        or closed_over.st_nlink > allowed_links
         or (opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns)
         != (closed_over.st_size, closed_over.st_mtime_ns, closed_over.st_ctime_ns)
     ):
