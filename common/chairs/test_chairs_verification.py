@@ -15,10 +15,13 @@ the seam for, and what it did with what came back.
 """
 
 import json
+import os
+import unittest.mock
 from pathlib import Path
 
 import pytest
 
+from common.chairs import registry as registry_module
 from common.chairs.config import load_models_toml
 from common.chairs.errors import (
     ConfigurationRefusal,
@@ -446,13 +449,21 @@ def test_an_unmeasured_all_zero_pin_is_refused_by_name_before_anything_reads_it(
         registry.receipt(identity, serving_details())
 
     # The refusal is about the shipped roster, not only about a synthetic one.
+    # Which rows still carry the sentinel is today's state, not a rule: recording
+    # a measured manifest digest on a row is the documented outcome of a verified
+    # fetch, and asserting every row still carries the sentinel would turn the
+    # first such config edit red while naming only the role, not the reason.
     real = load_models_toml(ROOT / "config" / "models-real.toml")
-    for role, configured in real.chairs.items():
+    unmeasured = 0
+    for _role, configured in real.chairs.items():
         if not isinstance(configured, ChairIdentity):
             continue
-        assert configured.digest_manifest == PRE_MATERIALIZATION_SENTINEL, role
+        if configured.digest_manifest != PRE_MATERIALIZATION_SENTINEL:
+            continue
+        unmeasured += 1
         with pytest.raises(ConfigurationRefusal, match="pre-materialization sentinel"):
             ChairRegistry(real).ensure(configured)
+    assert unmeasured, "no shipped row carries the sentinel, so this refusal is untested here"
 
 
 def test_the_materialization_fetcher_separates_client_state_without_deleting_repo_bytes(tmp_path):
@@ -507,6 +518,67 @@ def test_the_materialization_fetcher_refuses_a_symlinked_destination(tmp_path):
         )
 
     assert sorted(outside.iterdir()) == []
+
+
+def test_a_validated_file_swapped_for_a_fifo_is_refused_instead_of_hanging_the_boot(tmp_path):
+    """A check/use swap must end in a refusal, never in an open that never returns.
+
+    Validation proves the name is a regular file, and the Hugging Face client
+    still owns the per-call cache between then and the copy. Opening the name
+    again without ``O_NONBLOCK`` blocks forever on a FIFO -- inside a pod boot,
+    with the GPU billing, no journal step recorded and no reason printed -- so
+    the identity check below it never runs. ``_read_limited_bytes`` already pays
+    for this flag; this call did not.
+
+    The refusal is asserted from a worker thread with a deadline: a regression
+    here is a hang, and a hang must surface as a failed test rather than a suite
+    that never finishes.
+    """
+
+    import threading
+
+    client_cache = tmp_path / "staging.huggingface-cache"
+
+    class ReturnsOneRegularFile:
+        def snapshot_download(self, **kwargs):
+            snapshot = client_cache / "snapshot"
+            snapshot.mkdir(parents=True)
+            (snapshot / "model.safetensors").write_bytes(b"weights")
+            return snapshot
+
+    real_validate = registry_module._validated_materialization_files
+
+    def swap_for_a_fifo(source, cache, repo):
+        files = real_validate(source, cache, repo)
+        for _relative, origin, _identity in files:
+            origin.unlink()
+            os.mkfifo(origin)
+        return files
+
+    destination = tmp_path / "staging"
+    destination.mkdir()
+    outcome: list[BaseException | None] = []
+
+    def run() -> None:
+        try:
+            with unittest.mock.patch.object(
+                registry_module, "_validated_materialization_files", swap_for_a_fifo
+            ):
+                HuggingFaceMaterializationFetcher(ReturnsOneRegularFile()).fetch(
+                    "fixture-org/pinned", "a" * 40, destination
+                )
+            outcome.append(None)
+        except BaseException as error:  # noqa: BLE001 - reported through the assertion below
+            outcome.append(error)
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(timeout=15)
+
+    assert not worker.is_alive(), "the copy blocked on the FIFO instead of refusing"
+    assert isinstance(outcome[0], DigestMismatchRefusal)
+    assert "no longer a regular file" in str(outcome[0])
+    assert sorted(destination.iterdir()) == []
 
 
 def test_the_materialization_fetcher_refuses_a_snapshot_outside_its_per_call_cache(tmp_path):
@@ -588,11 +660,11 @@ def test_the_materialization_fetcher_refuses_default_apfs_name_collisions(tmp_pa
     destination = tmp_path / "staging"
     destination.mkdir()
 
-    import unittest.mock
-
-    from common.chairs import model_store as model_store_module
-
-    original_walk = model_store_module.os.walk
+    # `HuggingFaceMaterializationFetcher.fetch` walks the returned snapshot in
+    # `registry`, not in `model_store`. Patching the latter worked only because
+    # `import os` in both files binds one module object, and it told a reader the
+    # collision check lives somewhere it does not.
+    original_walk = registry_module.os.walk
 
     def case_sensitive_walk(top, **kwargs):
         # A case-insensitive host filesystem collapses the planted spellings
@@ -602,7 +674,7 @@ def test_the_materialization_fetcher_refuses_default_apfs_name_collisions(tmp_pa
                 filenames = sorted(set(filenames) | {"Weights.bin", "weights.bin"})
             yield directory, directories, filenames
 
-    with unittest.mock.patch.object(model_store_module.os, "walk", case_sensitive_walk):
+    with unittest.mock.patch.object(registry_module.os, "walk", case_sensitive_walk):
         with pytest.raises(DigestMismatchRefusal, match="collide on default APFS"):
             HuggingFaceMaterializationFetcher(ReturnsCaseCollidingFiles()).fetch(
                 "fixture-org/pinned", "a" * 40, destination

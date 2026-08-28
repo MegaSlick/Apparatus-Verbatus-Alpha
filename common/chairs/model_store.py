@@ -212,6 +212,20 @@ def materialize_real_roster(
         # Join before indexing so a renamed or missing artifact stays inside the
         # named refusal taxonomy.
         derived_inventory(record)
+        # The caller declared a capacity plan for this store, now. Silently
+        # keeping the recorded one meant the argument was never recorded and
+        # never compared: a resized volume, or a store moved to a different one,
+        # would leave the record stating figures for a volume nobody observed,
+        # and `_validate_record` only checks that a plan is self-consistent.
+        # Everything else in this module refuses a quiet disagreement.
+        if dict(record["capacity"]) != dict(capacity):
+            raise DigestMismatchRefusal(
+                "model-store",
+                "the supplied capacity plan differs from the one recorded here: "
+                f"recorded={dict(record['capacity'])}, supplied={dict(capacity)}; "
+                "record the new plan deliberately rather than materializing "
+                "against a stale one",
+            )
     else:
         write_download_record(record, root)
 
@@ -1195,10 +1209,19 @@ def _verify_synthetic_licence_observation(snapshot: Path, item: Mapping[str, Any
         ) from error
     expected = _licence_observation_text(requirement)
     if actual != expected:
+        # Two causes, and the message must not name only one of them. The store's
+        # bytes may genuinely disagree with the pin -- or this code's wording of
+        # what it observed may have been edited since the fetch that wrote them,
+        # in which case the store is intact and the only repair is a re-fetch.
+        # Under GOVERNANCE 4 the recorded observation is a layer and is not
+        # retroactively re-blessed, so the refusal states both readings.
         raise DigestMismatchRefusal(
             item["artifact"],
             f"synthetic licence evidence {item['license']!r} does not match the pinned "
-            "repository and roster declaration",
+            "repository and roster declaration. Either the recorded evidence differs "
+            "from the pin, or the wording this code writes for that observation has "
+            "changed since the fetch that recorded it; in the second case the store is "
+            "intact and must be re-fetched to record the current observation",
         )
 
 
