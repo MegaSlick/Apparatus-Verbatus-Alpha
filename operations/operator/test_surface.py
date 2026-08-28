@@ -2262,6 +2262,57 @@ def test_export_refuses_a_symlink_at_an_existing_content_addressed_bundle(
     assert failure["state"] == "local-copy-failed"
 
 
+def test_a_structural_export_refusal_still_leaves_a_receipt_and_no_staged_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`status` must be able to show a failed export, whatever refused it.
+
+    Every structural refusal in `_write_base_armarium_bundle` -- a missing
+    `run.json`, a member of the wrong kind, a name collision, a member that
+    changed while it was copied -- raises `OperatorError`, which the handler here
+    did not catch. The export failed with no receipt written and the staged file
+    left in `exports/`, so the operator was told to run `status` and `status` had
+    nothing to show them.
+    """
+
+    surface = _surface(tmp_path)
+    run_id = "structurally-refused"
+    surface._write_action(
+        "run",
+        {
+            "summary": "test run",
+            "state": "complete",
+            "run_root": str(tmp_path / "runs"),
+            "run_id": run_id,
+        },
+        descriptor_action="run",
+    )
+    surface._armarium_export = lambda _root, _run_id: {  # type: ignore[method-assign]
+        "aggregate": {"status": "complete", "reasons": []},
+        "pages": [],
+        "delivered": [],
+        "non_delivered": [],
+    }
+
+    def refuse_structurally(self, _root, _run_id, destination):  # type: ignore[no-untyped-def]
+        del self, destination
+        raise OperatorError(
+            ErrorCode.EXPORT_FAILED,
+            detail="the Armarium evidence bundle cannot be written as complete: run.json is missing",
+        )
+
+    monkeypatch.setattr(OperatorSurface, "_write_base_armarium_bundle", refuse_structurally)
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.export(run_id=run_id)
+
+    assert refusal.value.code is ErrorCode.EXPORT_FAILED
+    failure = surface.receipts.read(surface._descriptor_receipt("export"))["payload"]
+    assert failure["state"] == "local-copy-failed"
+    assert "run.json is missing" in str(failure)
+    assert list((surface.state_root / "exports").glob("*.staged")) == []
+
+
 def test_exporting_a_run_record_with_no_saved_run_root_fails_as_export_missing_not_unexpected(
     tmp_path: Path,
 ) -> None:
@@ -2528,6 +2579,32 @@ def test_a_tmpdir_inside_the_checkout_cannot_put_rehearsal_scratch_back_there(
 
     assert recorded_temporary_directories
     assert all(ROOT not in scratch.resolve().parents for scratch in recorded_temporary_directories)
+
+
+def test_no_usable_scratch_directory_is_reported_in_the_operator_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The last-resort refusal must not be the one failure that prints a traceback.
+
+    `_scratch_root` raised a plain `RuntimeError`, and `main` translates only
+    `KeyboardInterrupt`, `OperatorError` and `OSError`. `OperatorError` derives
+    from `RuntimeError` rather than the reverse, so nothing caught it: the person
+    running the rehearsal saw a stack trace instead of what happened, what it
+    meant, and what to do next.
+    """
+
+    monkeypatch.setattr(dry_run.tempfile, "gettempdir", lambda: str(ROOT / "inside"))
+    monkeypatch.setattr(dry_run, "_contains_directory", lambda path, directory: True)
+
+    with pytest.raises(OperatorError) as refusal:
+        dry_run._scratch_root()
+
+    assert refusal.value.code is ErrorCode.UNEXPECTED
+    assert "no temporary directory outside the checkout" in str(refusal.value.detail)
+
+    exit_code = dry_run.main(["--output", str(tmp_path / "rehearsal.txt")])
+
+    assert exit_code == 1
 
 
 def test_rehearsal_scratch_containment_compares_directory_identity(tmp_path: Path) -> None:

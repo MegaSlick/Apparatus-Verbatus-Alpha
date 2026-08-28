@@ -43,7 +43,14 @@ def _scratch_root() -> Path:
     # false. This operator already supports POSIX only (cli.py uses pwd).
     fallback = Path("/tmp").resolve()
     if _contains_directory(fallback, checkout):
-        raise RuntimeError("no temporary directory outside the checkout is available")
+        # Every other failure in this module leaves through the three-part
+        # operator contract. `OperatorError` derives from `RuntimeError`, not the
+        # reverse, so a plain one was caught by nothing here and reached the
+        # operator as a bare traceback. The refusal was right; only its shape was.
+        raise OperatorError(
+            ErrorCode.UNEXPECTED,
+            detail="no temporary directory outside the checkout is available",
+        )
     return fallback
 
 

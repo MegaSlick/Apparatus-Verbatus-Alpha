@@ -925,6 +925,16 @@ class OperatorSurface:
                         "the bytes its name claims"
                     ) from None
             staged.unlink()
+        except OperatorError as error:
+            # `_write_base_armarium_bundle` refuses an incomplete or unsafe run
+            # tree with an already-shaped OperatorError. Without this arm it
+            # travelled past the handler below: no receipt was written and the
+            # staged file was left behind, so `verbatus status` after a failed
+            # export showed no export at all and the only account of it was one
+            # terminal line.
+            staged.unlink(missing_ok=True)
+            self._record_failure("export", "local-copy-failed", str(error.detail or error))
+            raise
         except (OSError, zipfile.BadZipFile) as error:
             staged.unlink(missing_ok=True)
             self._record_failure("export", "local-copy-failed", str(error))
