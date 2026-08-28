@@ -89,6 +89,35 @@ def test_the_binding_seals_the_configuration_its_caller_named(tmp_path):
     require_triage_modes(bindings["sealed_config_digests"], config)
 
 
+def test_the_run_digest_moves_when_the_triage_thresholds_do(tmp_path):
+    """The tests above read `sealed_config_digests`, which is the *named* copy. Drop
+    `triage_modes_config_sha256` from `config_digest` and every one of them still
+    passes, while the guarantee that actually matters is gone: `open_context`
+    compares `config_digest`, so reopening a run under changed review thresholds
+    would no longer be refused as incompatible reuse. Two otherwise identical
+    bindings, differing only in the thresholds, must not hash alike. Found by
+    CodeRabbit."""
+    root = Path(__file__).resolve().parents[1]
+    fixture = load_fixture(root / "proof")
+    models = ChairRegistry.from_toml(root / "config/models.toml").config
+
+    def bind(threshold: int, name: str) -> str:
+        config = tmp_path / name
+        config.write_text(
+            f"[manual]\nreview_at_or_below_confidence = {threshold}\n"
+            "[semi]\nreview_at_or_below_confidence = 2\n"
+            "[auto]\nreview_at_or_below_confidence = 1\n"
+        )
+        return run_config_bindings(
+            models, fixture, "happy", triage_modes_config_path=config
+        )["config_digest"]
+
+    assert bind(3, "a.toml") != bind(4, "b.toml")
+    # Identical bytes under a different file name still bind identically, so what
+    # moved the digest above is the thresholds and not the path.
+    assert bind(3, "a.toml") == bind(3, "c.toml")
+
+
 def test_triage_modes_refuse_an_unsealed_or_non_vocabulary_config(tmp_path):
     config = tmp_path / "triage_modes.toml"
     config.write_text(
