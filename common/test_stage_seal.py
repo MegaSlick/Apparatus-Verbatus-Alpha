@@ -126,6 +126,30 @@ def test_the_census_counts_this_stage_by_kind_and_outcome_and_excludes_the_bound
     ]
 
 
+def test_a_run_authority_missing_a_sealed_binding_is_refused_not_crashed_on(tmp_path):
+    """`read_run` proves a self-hash, a schema, and a run id — not a field list.
+
+    So an authority not written by `RunTree.create` reaches the seal whole and
+    still missing one of the fields the seal witnesses. Subscripting it raised a
+    bare KeyError, which `run_stage` catches neither as a ContractError nor as a
+    RunHalted: the stage ended in a traceback naming a dict key rather than one
+    of its four honest exit codes. The verifier reads both fields with `.get`
+    and tolerates their absence, so this side has to name the gap itself.
+    """
+    tree, run, registry, bindings = _tree(tmp_path)
+    authority = json.loads((tree.root / "run.json").read_text())
+    del authority["register_digest"], authority["self_hash"]
+    authority["self_hash"] = self_hash(authority)
+    (tree.root / "run.json").write_bytes(canonical_bytes(authority))
+    assert "register_digest" not in tree.read_run(), "read_run still accepts the authority"
+
+    context = _context(tree, tree.read_run(), registry, bindings)
+    context.publish(kind="testimonium", subject_id="a1", outcome="read", payload={})
+
+    with pytest.raises(SchemaRefusal, match="carries no register_digest"):
+        context.seal_boundary()
+
+
 def test_a_stage_cannot_seal_an_artifact_whose_input_bytes_changed(tmp_path):
     """The inventory verifies its hash links, not only the artifact files."""
     tree, run, registry, bindings = _tree(tmp_path)

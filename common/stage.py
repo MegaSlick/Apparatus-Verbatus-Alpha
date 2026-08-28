@@ -876,12 +876,28 @@ def _stage_seal_payload(
             f"{stage} cannot seal its boundary: decode-environment "
             f"{decode_environment_artifact_id!r} is unreadable: {error}"
         ) from error
+    # Read the authority once, and refuse a missing binding by name. `read_run`
+    # proves a run authority's self-hash, schema, and run id; it does not require
+    # any particular field, so an authority not written by `RunTree.create` can
+    # reach here whole and still be missing one. Subscripting it raised a bare
+    # KeyError, which is neither a ContractError nor a RunHalted — so `run_stage`
+    # did not turn it into one of the four honest exit codes, and the operator was
+    # handed a traceback naming a dict key instead of a refusal naming the run.
+    # The verifier at `_verify_stage_seal` already reads both fields with `.get`
+    # and tolerates their absence; this side now agrees with it.
+    run = tree.read_run()
+    missing = [field for field in ("config_digest", "register_digest") if field not in run]
+    if missing:
+        raise SchemaRefusal(
+            f"{stage} cannot seal its boundary: the run authority carries no "
+            f"{', '.join(missing)}, so the seal would witness a binding that is not there"
+        )
     return {
         "stage": stage,
         "attempt_ordinal": ordinal,
         "attempt_id": attempt,
-        "config_digest": tree.read_run()["config_digest"],
-        "register_digest": tree.read_run()["register_digest"],
+        "config_digest": run["config_digest"],
+        "register_digest": run["register_digest"],
         "artifact_inventory": digest_of(artifacts),
         "blob_inventory": digest_of(blobs),
         "census": [
