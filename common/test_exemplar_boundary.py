@@ -648,9 +648,12 @@ def test_the_boundarys_restated_triage_row_schema_matches_the_pre_door_contract(
         assert block, f"{name} is no longer declared where this test can read it"
         return set(re.findall(r'"([a-z_0-9]+)"', block.group(1)))
 
-    assert field_set(boundary_source, r"    required = ") == field_set(
-        manifest_source, r"_ROW_FIELDS: Final = "
-    )
+    # Anchored to the function, not to the first `required = ` in the file: there
+    # are two, and an unanchored search would quietly compare the wrong one if they
+    # ever changed places. Found by CodeRabbit.
+    assert field_set(
+        boundary_source, r"def _validate_embedded_triage_row.*?    required = "
+    ) == field_set(manifest_source, r"_ROW_FIELDS: Final = ")
     assert field_set(boundary_source, r"set\(part\) != ") == field_set(
         manifest_source, r"_PART_FIELDS: Final = "
     )

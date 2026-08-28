@@ -106,7 +106,10 @@ def test_the_sealed_file_declares_exactly_the_shared_mode_vocabulary():
     # independent mode vocabularies.
     root = Path(__file__).resolve().parents[1]
     declared = tomllib.loads((root / "config/triage_modes.toml").read_text(encoding="utf-8"))
-    assert tuple(declared) == TRIAGE_MODES
+    # Membership, unordered, because that is what `require_triage_modes` checks:
+    # comparing tuples pinned the order of the TOML tables too, and would have
+    # failed a harmless reordering of a file whose order means nothing.
+    assert set(declared) == set(TRIAGE_MODES)
 
 
 def test_a_config_declaring_an_unshared_mode_name_is_refused(tmp_path):
