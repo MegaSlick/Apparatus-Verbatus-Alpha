@@ -446,7 +446,21 @@ def _inventory_descriptor(
     publication_temporaries: list[str] = []
     mac_spellings: dict[str, str] = {}
     encountered = 0
-    root_descriptor = os.dup(source_descriptor)
+    # A fresh open file description, not `os.dup`. `sync_run_tree` scans the
+    # same anchored root twice and compares the two views, and `dup` shares the
+    # directory offset with the caller's descriptor: on Linux `getdents64`
+    # advances that shared offset, so the second pass would start at end of
+    # directory, see an empty tree, and refuse a backup that had in fact just
+    # been copied. macOS does not advance it, which is why this was invisible
+    # here. `openat` on "." re-anchors the same directory the caller already
+    # inspected -- "." cannot be a symlink -- at offset zero, so neither pass
+    # depends on unspecified `fdopendir` positioning.
+    root_descriptor = _open_directory_descriptor(
+        ".", parent_descriptor=source_descriptor, what="source run tree"
+    )
+    if _descriptor_identity(root_descriptor) != _descriptor_identity(source_descriptor):
+        os.close(root_descriptor)
+        raise BackupRefusal("the source run tree changed filesystem identity before it was scanned")
     try:
         root_entries = os.scandir(root_descriptor)
     except OSError as error:

@@ -62,6 +62,28 @@ def test_backup_is_content_addressed_resumable_and_verifies_each_digest(tmp_path
         assert hashlib.sha256(stored.read_bytes()).hexdigest() == row["sha256"]
 
 
+def test_two_inventory_passes_from_one_descriptor_see_the_same_tree(tmp_path: Path) -> None:
+    """`sync_run_tree` scans the anchored root twice and compares the two views.
+
+    The passes therefore have to be independent of each other's directory
+    position. `os.dup` would not be: it shares one open file description, and
+    on Linux `getdents64` advances that shared offset, so the second pass
+    would start at end of directory, find nothing, and refuse a backup whose
+    bytes had just been copied correctly. macOS does not advance the shared
+    offset, which is exactly why this asymmetry has to be asserted rather than
+    left to whichever platform the suite happens to run on.
+    """
+    volume, run_id = _run_tree(tmp_path)
+    managed = backup_module.RunTree(volume, run_id).inventory_scope()
+
+    with backup_module._open_directory(volume / run_id, what="source run tree") as descriptor:
+        first = backup_module._inventory_descriptor(descriptor, managed)
+        second = backup_module._inventory_descriptor(descriptor, managed)
+
+    assert first[0], "the first inventory pass found no files to compare"
+    assert first == second
+
+
 def test_backup_never_overwrites_an_object_with_the_wrong_digest(tmp_path: Path) -> None:
     volume, run_id = _run_tree(tmp_path)
     mac = tmp_path / "mac"
