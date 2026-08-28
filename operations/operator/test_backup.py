@@ -507,7 +507,7 @@ def test_backup_child_refuses_a_replaced_layout_directory_identity(tmp_path: Pat
     volume, run_id = _run_tree(tmp_path)
     mac = tmp_path / "mac"
     source, destination = backup_module.resolve_backup_paths(volume, run_id, mac)
-    backup_module._prepare_backup_layout(source, destination)
+    backup_module.prepare_backup_layout(source, destination)
     expected = backup_module.destination_identities(destination)
     object_store = mac / "objects" / "sha256"
     object_store.rename(mac / "objects" / "sha256-before-swap")

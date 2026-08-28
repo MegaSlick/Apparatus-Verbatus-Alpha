@@ -115,7 +115,7 @@ def sync_run_tree(
     """
 
     source, root = resolve_backup_paths(run_root, run_id, mac_directory)
-    _prepare_backup_layout(source, root)
+    prepare_backup_layout(source, root)
     # Keep the requested id: an in-root symlink may resolve to a differently
     # named directory, but the snapshot must record the run the operator named.
     try:
@@ -234,8 +234,15 @@ def _validate_backup_layout(source: Path, root: Path) -> None:
             )
 
 
-def _prepare_backup_layout(source: Path, root: Path) -> None:
-    """Create each child through its already-open, no-follow parent descriptor."""
+def prepare_backup_layout(source: Path, root: Path) -> None:
+    """Create each child through its already-open, no-follow parent descriptor.
+
+    Public because the trusted parent must run it too: custody grants the
+    confined child publication into the destination but not directory
+    creation, so `cli._backup_in_custody` builds the closed layout before the
+    worker starts. A step another module is required to call is part of this
+    module's surface, not a private detail a rename could quietly break.
+    """
 
     _validate_backup_layout(source, root)
     try:

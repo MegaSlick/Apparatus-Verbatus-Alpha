@@ -404,8 +404,8 @@ def _backup_in_custody(run_root: Path, run_id: str, mac_directory: Path, _worksp
     from .backup import (
         BackupRefusal,
         BackupReport,
-        _prepare_backup_layout,
         destination_identities,
+        prepare_backup_layout,
         required_identity,
         resolve_backup_paths,
         verify_backup_snapshot,
@@ -417,7 +417,7 @@ def _backup_in_custody(run_root: Path, run_id: str, mac_directory: Path, _worksp
     # directory creation, so the checked closed layout must exist first.
     try:
         source, destination = resolve_backup_paths(run_root, run_id, mac_directory)
-        _prepare_backup_layout(source, destination)
+        prepare_backup_layout(source, destination)
         source_identity = required_identity(source, what="source run tree")
         destination_identity = destination_identities(destination)
     except BackupRefusal as refusal:
