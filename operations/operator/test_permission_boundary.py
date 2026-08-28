@@ -1237,6 +1237,25 @@ def test_review_refuses_ambiguous_duplicate_review_members():
     assert "more than one review-items.jsonl" in (excinfo.value.detail or "")
 
 
+def test_advance_names_a_bad_run_id_instead_of_calling_itself_broken(tmp_path):
+    """A mistyped or escaping run id is a refused request, not an unclassified fault.
+
+    `RunTree.__init__` validates the run id and refuses one that resolves
+    outside the run root, both as `ContractError`. Built above the guard, a
+    typed `--run-id My-Run` reached the blanket handler and told the operator
+    to photograph the message and find help over a capital letter, and an
+    attempted escape from the approved run root reported itself the same way.
+    """
+    with pytest.raises(OperatorError) as excinfo:
+        cli._advance_with_confirmation(
+            tmp_path, "My-Run", "armarium", reason="typed with a capital", workspace=ROOT
+        )
+
+    assert excinfo.value.code == ErrorCode.ADVANCE_REFUSED
+    assert "My-Run" in (excinfo.value.detail or "")
+    assert "could not classify" not in excinfo.value.render()
+
+
 def test_review_refuses_a_run_whose_images_exceed_what_the_console_can_hold():
     """The bounded review queue sat beside unbounded page and crop bytes.
 
