@@ -19,7 +19,10 @@ jobs:
     # previously read as the "hang-cancel flake" were this timeout margin.
     # The cap still exists to catch a genuinely hung leg, with headroom for
     # the suite to grow through the rest of the rebuild stack.
-    timeout-minutes: 25
+    # Raised 25 -> 45 when pr/03's review rounds grew the suite past the old
+    # cap: 3.13 finished at 24m38s while 3.12/3.14 were cancelled at 25m on
+    # four consecutive runs. A hung leg is still caught, at the higher bound.
+    timeout-minutes: 45
     strategy:
       matrix:
         # 3.12 is the supported floor; later entries are cross-version coverage.
