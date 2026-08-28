@@ -131,12 +131,21 @@ def _imports_in(path: Path) -> list[tuple[str, str]]:
             else:
                 for alias in node.names:
                     found.append((alias.name.split(".")[0], f"{dots}{alias.name}"))
-        elif isinstance(node, ast.Call) and (module := _literal_import_module(node)) is not None:
-            found.append((module.split(".")[0], module))
+        elif isinstance(node, ast.Call):
+            for module in _literal_import_modules(node):
+                found.append((module.split(".")[0], module))
     return found
 
 
-def _literal_import_module(node: ast.Call) -> str | None:
+def _literal_import_modules(node: ast.Call) -> list[str]:
+    """Every module a literal dynamic-import call names, the `fromlist` included.
+
+    `__import__("pkg.stage", fromlist=("helper",))` binds the parent but *loads*
+    `pkg.stage.helper`, so reporting the first argument alone would let the
+    helper arrive under a name no guard here ever sees. The submodules the
+    fromlist names are therefore reported beside their parent. `import_module`
+    has no fromlist; only `__import__` is read this way.
+    """
     function = node.func
     is_import_module = (
         isinstance(function, ast.Name)
@@ -145,14 +154,41 @@ def _literal_import_module(node: ast.Call) -> str | None:
         and function.attr == "import_module"
     )
     is_builtin_import = isinstance(function, ast.Name) and function.id == "__import__"
-    if (
+    if not (
         (is_import_module or is_builtin_import)
         and node.args
         and isinstance(node.args[0], ast.Constant)
         and isinstance(node.args[0].value, str)
     ):
-        return node.args[0].value
-    return None
+        return []
+    parent = node.args[0].value
+    modules = [parent]
+    if is_builtin_import:
+        for name in _literal_fromlist(node):
+            modules.append(f"{parent}.{name}" if parent else name)
+    return modules
+
+
+def _literal_fromlist(node: ast.Call) -> list[str]:
+    """The literal string entries of a `__import__` fromlist, positional or keyword.
+
+    Only literal tuples and lists of literal strings are readable; a computed
+    fromlist is not statically knowable and is reported as nothing rather than
+    guessed at. `"*"` names no submodule and is dropped.
+    """
+    fromlist: ast.expr | None = node.args[3] if len(node.args) > 3 else None
+    for keyword in node.keywords:
+        if keyword.arg == "fromlist":
+            fromlist = keyword.value
+    if not isinstance(fromlist, ast.Tuple | ast.List):
+        return []
+    return [
+        element.value
+        for element in fromlist.elts
+        if isinstance(element, ast.Constant)
+        and isinstance(element.value, str)
+        and element.value != "*"
+    ]
 
 
 def test_the_population_covers_every_stage_directory():
@@ -260,12 +296,18 @@ def test_literal_dynamic_pipeline_imports_are_visible_to_the_guard(tmp_path):
 
 
 def test_the_reseal_guard_sees_every_form_the_helper_could_arrive_under(tmp_path):
-    """Bare, qualified, and relative — the guard reports all three by name.
+    """Bare, qualified, relative, and by fromlist — the guard reports all of them.
 
     No pipeline directory is a package, so the relative forms cannot execute
     there today. They are checked anyway: an AST node kind the walker silently
     skips is a gap the guard would never announce, and the qualified form used to
     be reported only under the root `pipeline`.
+
+    The fromlist routes are the ones that ran while being reported as something
+    else. `__import__` given a fromlist loads the named child, and a stage
+    directory is a namespace package, so `__import__("6_archetypus",
+    fromlist=("reseal_chain",))` executed the helper while the guard saw only the
+    directory — a name owned by no stage, matching no other check here either.
     """
     source = tmp_path / "reseal_routes.py"
     source.write_text(
@@ -273,7 +315,9 @@ def test_the_reseal_guard_sees_every_form_the_helper_could_arrive_under(tmp_path
         "from importlib import import_module\n"
         "import_module('pipeline.6_archetypus.reseal_chain')\n"
         "from . import reseal_chain as forge\n"
-        "from .reseal_chain import reseal\n",
+        "from .reseal_chain import reseal\n"
+        "__import__('pipeline.6_archetypus', fromlist=('reseal_chain',))\n"
+        "__import__('6_archetypus', fromlist=['reseal_chain'])\n",
         encoding="utf-8",
     )
 
@@ -285,4 +329,5 @@ def test_the_reseal_guard_sees_every_form_the_helper_could_arrive_under(tmp_path
         "reseal_chain",
         "pipeline.6_archetypus.reseal_chain",
         ".reseal_chain",
+        "6_archetypus.reseal_chain",
     }
