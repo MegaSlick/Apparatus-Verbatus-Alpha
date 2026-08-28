@@ -907,36 +907,22 @@ def test_a_manifest_describes_what_the_tree_actually_holds(tmp_path):
     assert manifest["blobs"] == [digest_bytes(b"a crop")]
 
 
-def test_manifest_validates_and_digests_one_artifact_read(tmp_path, monkeypatch):
-    tree = make_run(tmp_path)
-    published = tree.publish_artifact(make_envelope())
-    artifact = tree.resolve(published.relative_path)
-    original = artifact.read_bytes()
-    forged = canonical_bytes(make_envelope(proposals=99))
-    original_read_text = Path.read_text
-
-    def swap_after_validation(path, *args, **kwargs):
-        text = original_read_text(path, *args, **kwargs)
-        if path == artifact:
-            path.write_bytes(forged)
-        return text
-
-    monkeypatch.setattr(Path, "read_text", swap_after_validation)
-    manifest = tree.build_manifest(DESIGNATOR)
-
-    assert manifest["artifacts"][0]["sha256"] == digest_bytes(original)
-    assert artifact.read_bytes() == original
-
-
 def test_a_manifest_metadata_and_digest_come_from_one_byte_snapshot(tmp_path, monkeypatch):
     """A replacement at the read seam may not splice two artifacts into one row.
 
-    Driven at `_read_manifest_artifact` rather than at `Path.read_bytes`: the
+    Driven at `_read_manifest_artifact` rather than at `Path.read_text`: the
     merged reader reaches the file through a no-follow descriptor chain and never
     calls the `Path` method, so patching that would have made this test pass
     without ever substituting anything. What is asserted is the property either
     branch's reader owes -- the row's metadata and its digest describe the same
     bytes -- against whichever bytes the one read actually returned.
+
+    A second test used to sit above this one doing exactly the patch this
+    docstring warns against: it hooked `Path.read_text`, the hook never fired,
+    its forged bytes were never written, and both of its assertions compared the
+    original bytes with themselves. It was named for this seam and would have
+    stayed green if the seam broke, so it was removed rather than counted as
+    coverage.
     """
     tree = make_run(tmp_path)
     published = tree.publish_artifact(make_envelope(outcome="proposed"))

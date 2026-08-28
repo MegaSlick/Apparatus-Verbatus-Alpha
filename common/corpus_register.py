@@ -323,7 +323,16 @@ def _read(data: bytes) -> tuple[dict[str, Any], _Reading]:
         )
     try:
         value = json.loads(data.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError, RecursionError) as error:
+    except RecursionError as error:
+        # Told apart from a parse failure on purpose. A pathologically nested
+        # register is valid UTF-8 and valid JSON; only its depth defeats the
+        # parser. Folded into the message below, it sent an operator to check the
+        # file's encoding, where there is nothing to find.
+        raise SchemaRefusal(
+            "corpus register is nested too deeply for this parser to read; it is "
+            "well-formed JSON whose structure is past the recursion bound"
+        ) from error
+    except (UnicodeDecodeError, ValueError) as error:
         raise SchemaRefusal("corpus register is not UTF-8 JSON") from error
     if not isinstance(value, dict) or set(value) != {"schema", "records"}:
         raise SchemaRefusal("corpus register must be the closed {schema, records} record")

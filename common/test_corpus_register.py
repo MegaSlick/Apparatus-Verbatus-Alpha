@@ -98,13 +98,6 @@ def _record(register, kind):
     return next(row for row in json.loads(register)["records"] if row["kind"] == kind)
 
 
-def test_members_are_set_serialized_in_digest_order_not_preference_order():
-    first = _register(members=["b" * 64, "a" * 64])
-    second = _register(members=["a" * 64, "b" * 64])
-    assert first == second
-    assert register_digest(first) == register_digest(second)
-
-
 def test_register_refuses_a_members_list_not_already_in_canonical_order():
     """The order-reversal property, at its actual boundary.
 
@@ -131,10 +124,15 @@ def test_reversed_submission_order_reaches_byte_identical_run_artifacts(tmp_path
     """Two runs seeded by registers whose members were *discovered* in opposite
     order (capture B before capture A, or the reverse) still snapshot to the
     identical blob and `register_digest`, because both pass through the one
-    canonical-order gate before either reaches a run tree."""
+    canonical-order gate before either reaches a run tree.
+
+    The run-tree half is what this proves. `_membership` sorts its argument, so
+    the two register byte strings are already identical here and comparing them
+    would be comparing the helper with itself — the ordering guarantee is the
+    register's own, and it is asserted at its boundary in the test above.
+    """
     forward = _register(members=["a" * 64, "b" * 64])
     reversed_order = _register(members=["b" * 64, "a" * 64])
-    assert forward == reversed_order
 
     shared = {
         "source_manifest": [{"ordinal": 1, "relative_path": "fixture.png", "sha256": "a" * 64}],
@@ -671,11 +669,18 @@ def test_register_bytes_and_replay_counts_are_bounded_before_amplification(monke
         validate_register_bytes(one_record)
 
 
-def test_pathologically_nested_json_is_a_named_schema_refusal():
+def test_pathologically_nested_json_is_refused_for_its_depth_not_its_encoding():
+    """The refusal has to send an operator to the problem it actually has.
+
+    A 10,000-deep register is valid UTF-8 and valid JSON; only its structure
+    defeats the parser. Reported as "not UTF-8 JSON", it sent whoever read it to
+    check the file's encoding, where there is nothing wrong.
+    """
     depth = 10_000
     data = b'{"schema":"corpus-register-v1","records":' + b"[" * depth + b"]" * depth + b"}"
-    with pytest.raises(SchemaRefusal, match="not UTF-8 JSON"):
+    with pytest.raises(SchemaRefusal, match="nested too deeply") as caught:
         validate_register_bytes(data)
+    assert "not UTF-8 JSON" not in str(caught.value)
 
 
 # --- The sealed snapshot, and the check that cannot be skipped -------------------
