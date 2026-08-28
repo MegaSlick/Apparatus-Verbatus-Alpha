@@ -77,14 +77,14 @@ proposal on its presented page. The rule records
 excluded because it reports no witness geometry. Routing is overlap; Unit 10C
 coverage is containment, and the two must remain separately named.
 
-One terminus is intentionally not present in this slice. The derived
-`unrouted-observation` is deduplicated within the Perlector invocation and printed
-before sealing, but it is not retained in the run tree. Unit 10C must put the
-same common derivation into the page Testimonium's
-`partition_disagreement.unclaimed_observations`, which the Recensor already
-reads, and route that retained coverage fact through bounded recovery. Until
-then a complete run can print reported-but-unproposed ink without retaining it;
-no second temporary artifact vocabulary is introduced here.
+The Perlector's own derived `unrouted-observation` is deduplicated within the
+invocation and printed before sealing; it is not retained by this stage. It does
+not need to be. The Attestatores page Testimonium already stores the same common
+derivation in `partition_disagreement.unclaimed_observations`, and the Recensor
+re-derives the finding independently from the observed geometry and the current
+sealed proposal denominator rather than trusting that retained snapshot. The
+print here is an operator-visible echo of a fact that is retained elsewhere, so
+no second artifact vocabulary is introduced.
 
 ## The one attempt model
 

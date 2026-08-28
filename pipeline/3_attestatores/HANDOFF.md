@@ -121,6 +121,15 @@ layout, so its adapter returns only the excluded `bounds_source="presented"`
 fallback. A future layout adapter cannot be wired to an observation callable
 that never receives its own response.
 
+**Observations reach a record from three sources, in this order.** The fixture's
+`[[native_observation]]` table is consulted first: rows matching the chair and
+page ordinal (and the scenario, where one is named) become `bounds_source="native"`
+boxes directly, ahead of the adapter. Those are reported geometry — they drive
+attachment and routing exactly as an adapter's own layout would, which is what
+makes the table a stimulus for the geometry paths rather than decoration. Only
+when no row matches does `observe` run, and only when there is no adapter at all
+does the `bounds_source="presented"` echo of the presentation stand in.
+
 ### What an adapter must produce (Units 11, 12, 13)
 
 Unit 10's contract is finished. An adapter-owning unit needs this page and no

@@ -25,7 +25,7 @@ def _load_perlector():
 perlector = _load_perlector()
 
 
-def test_approval_discovery_does_not_open_a_symlink_outside_the_run_tree(tmp_path, monkeypatch):
+def test_approval_discovery_does_not_open_a_symlink_outside_the_run_tree(tmp_path):
     config_digest = "a" * 64
     tree = RunTree.create(
         tmp_path / "runs",
@@ -51,14 +51,6 @@ def test_approval_discovery_does_not_open_a_symlink_outside_the_run_tree(tmp_pat
     candidate = receipts / f"{digest}.json"
     candidate.symlink_to(outside)
 
-    original_open = Path.open
-
-    def guarded_open(path, *args, **kwargs):
-        if path == candidate:
-            raise AssertionError("approval discovery opened an outward symlink")
-        return original_open(path, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "open", guarded_open)
     context = SimpleNamespace(tree=tree, config_digest=config_digest)
     # The surviving fd-bound scan opens receipts O_NOFOLLOW relative to the
     # directory descriptor, so the redirect is refused at open time — earlier
