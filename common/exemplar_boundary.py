@@ -19,7 +19,14 @@ from common.contracts.canonical import canonical_bytes, digest_bytes, verify_sel
 from common.contracts.envelope import validate_envelope, verify_input_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.identities import artifact_id, page_id, region_id
-from common.contracts.stages import DESIGNATOR, DOOR, EXEMPLAR, RECENSOR, TRIAGE_MODES
+from common.contracts.stages import (
+    DESIGNATOR,
+    DOOR,
+    EXEMPLAR,
+    MAX_TRIAGE_SPLIT_PARTS,
+    RECENSOR,
+    TRIAGE_MODES,
+)
 from common.imaging import (
     carries_only_image_chunks,
     crop_png,
@@ -886,6 +893,15 @@ def _validate_embedded_triage_row(row: Any) -> None:
         )
     ):
         raise ContractError("a sealed derivative page's triage row has no closed split record")
+    if len(split["parts"]) > MAX_TRIAGE_SPLIT_PARTS:
+        # Bounded here as well as in the pre-door contract, and before the pairwise
+        # overlap loop below rather than after it: this boundary exists precisely
+        # because the row reaching it is not taken on trust, and the loop it guards
+        # is quadratic in the number of parts.
+        raise ContractError(
+            f"a sealed derivative page's triage row exceeds the "
+            f"{MAX_TRIAGE_SPLIT_PARTS}-part split limit"
+        )
     frame = row["frame"]
     if (
         not isinstance(frame, dict)

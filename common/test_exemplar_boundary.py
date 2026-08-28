@@ -25,6 +25,7 @@ this interface is the only place both sides can be held at once.
 """
 
 import copy
+import re
 import struct
 import subprocess
 import sys
@@ -607,6 +608,52 @@ def test_a_derivative_renderer_record_cannot_lie_about_rederived_pixels(field, f
 
     with pytest.raises(ContractError, match="renderer record does not describe"):
         _verify_triage_derivative(contract, master, parent, sealed)
+
+
+def test_an_embedded_triage_row_is_bounded_before_its_pairwise_geometry_check():
+    """This boundary restates the pre-door row schema because `common/` may not
+    import the numbered pipeline, and the restatement had dropped the part cap. The
+    overlap check below it compares every pair, so an unbounded parts list bought
+    quadratic work on a record this boundary exists in order not to trust. Found by
+    CodeRabbit."""
+    from common.contracts.stages import MAX_TRIAGE_SPLIT_PARTS
+    from common.exemplar_boundary import _verify_triage_derivative
+
+    contract, master, parent, sealed = _sealed_derivative((4, 4), {"width": 4, "height": 4})
+    row = contract["derivative_page"]["triage_manifest_row"]
+    part = row["split"]["parts"][0]
+    row["split"]["parts"] = [copy.deepcopy(part) for _ in range(MAX_TRIAGE_SPLIT_PARTS + 1)]
+    row["manifest_row_sha256"] = _rows_digest(row)
+    contract["derivative_page"]["triage_backlink"]["triage_manifest_row_sha256"] = row[
+        "manifest_row_sha256"
+    ]
+
+    with pytest.raises(ContractError, match=f"{MAX_TRIAGE_SPLIT_PARTS}-part split limit"):
+        _verify_triage_derivative(contract, master, parent, sealed)
+
+
+def test_the_boundarys_restated_triage_row_schema_matches_the_pre_door_contract():
+    """Restated rather than imported, because `common/` may not import `pipeline/`
+    (the import-boundary test in `common/chairs/` enforces that), and read out of the
+    source text for the same reason. A field the pre-door contract closes and this
+    boundary does not is a field a forged sealed page could carry."""
+    manifest_source = (ROOT / "pipeline" / "0_triage" / "manifest.py").read_text(encoding="utf-8")
+    boundary_source = (ROOT / "common" / "exemplar_boundary.py").read_text(encoding="utf-8")
+
+    def field_set(source: str, name: str) -> set[str]:
+        block = re.search(rf"{name}[^{{]*{{(.*?)}}", source, re.DOTALL)
+        assert block, f"{name} is no longer declared where this test can read it"
+        return set(re.findall(r'"([a-z_0-9]+)"', block.group(1)))
+
+    assert field_set(boundary_source, r"    required = ") == field_set(
+        manifest_source, r"_ROW_FIELDS: Final = "
+    )
+    assert field_set(boundary_source, r"set\(part\) != ") == field_set(
+        manifest_source, r"_PART_FIELDS: Final = "
+    )
+    assert field_set(boundary_source, r"set\(actor\) != ") == field_set(
+        manifest_source, r"set\(actor\) != "
+    )
 
 
 @pytest.mark.parametrize(

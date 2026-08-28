@@ -110,3 +110,11 @@ def stage_directory(stage: str) -> str:
 # The config sections, manifest schema, and every future driver must import this
 # vocabulary rather than maintain independent spellings that can drift.
 TRIAGE_MODES: Final = ("manual", "semi", "auto")
+
+# The cap on the parts of one frame's split decision. Here beside the mode
+# vocabulary because two validators bound it: the pre-door manifest contract and
+# the Exemplar boundary's own restatement of that row, each of which checks the
+# parts pairwise for overlap and so does work quadratic in this number on input it
+# does not trust. A second spelling of the limit could drift, and the looser of the
+# two would be the one that decided.
+MAX_TRIAGE_SPLIT_PARTS: Final = 64
