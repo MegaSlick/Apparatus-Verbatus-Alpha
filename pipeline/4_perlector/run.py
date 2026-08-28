@@ -769,6 +769,45 @@ def declared_page_witness_chairs(context) -> set[str]:
     }
 
 
+ATTACHMENT_FIELDS: Final = frozenset(
+    {
+        "chair",
+        "page_witness",
+        "page_ordinal",
+        "testimonium_ref",
+        "attached",
+        "attachment_basis",
+        "content_health",
+        "alignment",
+        "span",
+    }
+)
+ATTACHMENT_BASES: Final = frozenset(
+    {"presented-region", "anchor-line", "geometric-overlap", "unattached"}
+)
+
+
+def _validate_attachment_shape(attachment: Any) -> None:
+    """The one closed-shape rule for an attachment, applied wherever it is read.
+
+    `type(chair) is not str` rather than `isinstance`: the value becomes a set
+    and dict key below, and both set construction and refusal formatting invoke
+    subclass-defined behaviour, so the exact built-in string is required first.
+    Kept in one place because a second, looser copy of a closed schema is how a
+    field added to one list quietly escapes validation in the other.
+    """
+    if (
+        not isinstance(attachment, dict)
+        or set(attachment) != ATTACHMENT_FIELDS
+        or type(attachment.get("chair")) is not str
+        or not isinstance(attachment.get("page_witness"), bool)
+        or not isinstance(attachment.get("attached"), bool)
+        or attachment.get("attachment_basis") not in ATTACHMENT_BASES
+        or not isinstance(attachment.get("content_health"), dict)
+    ):
+        raise SchemaRefusal("an act-attachment record has a malformed attachment")
+
+
 def act_attachment_view(
     context,
     act: dict[str, Any],
@@ -826,29 +865,8 @@ def act_attachment_view(
     # unhashable JSON value would otherwise escape as a raw TypeError here. The
     # attachment is untrusted evidence read from disk, so neither may reach the
     # denominator as though it named a real page.
-    attachment_fields = {
-        "chair",
-        "page_witness",
-        "page_ordinal",
-        "testimonium_ref",
-        "attached",
-        "attachment_basis",
-        "content_health",
-        "alignment",
-        "span",
-    }
     for attachment in attachments:
-        if (
-            not isinstance(attachment, dict)
-            or set(attachment) != attachment_fields
-            or type(attachment.get("chair")) is not str
-            or not isinstance(attachment.get("page_witness"), bool)
-            or not isinstance(attachment.get("attached"), bool)
-            or attachment.get("attachment_basis")
-            not in {"presented-region", "anchor-line", "geometric-overlap", "unattached"}
-            or not isinstance(attachment.get("content_health"), dict)
-        ):
-            raise SchemaRefusal("an act-attachment record has a malformed attachment")
+        _validate_attachment_shape(attachment)
         page_ordinal = attachment["page_ordinal"]
         if attachment["page_witness"] and (
             not isinstance(page_ordinal, int) or isinstance(page_ordinal, bool)
@@ -886,28 +904,7 @@ def act_attachment_view(
     page_witness_chairs: set[str] = set()
     comparison_views: dict[str, str] = {}
     for attachment in attachments:
-        if (
-            not isinstance(attachment, dict)
-            or set(attachment)
-            != {
-                "chair",
-                "page_witness",
-                "page_ordinal",
-                "testimonium_ref",
-                "attached",
-                "attachment_basis",
-                "content_health",
-                "alignment",
-                "span",
-            }
-            or not isinstance(attachment.get("chair"), str)
-            or not isinstance(attachment.get("page_witness"), bool)
-            or not isinstance(attachment.get("attached"), bool)
-            or attachment.get("attachment_basis")
-            not in {"presented-region", "anchor-line", "geometric-overlap", "unattached"}
-            or not isinstance(attachment.get("content_health"), dict)
-        ):
-            raise SchemaRefusal("an act-attachment record has a malformed attachment")
+        _validate_attachment_shape(attachment)
         span = attachment["span"]
         characters = attachment["content_health"].get("characters")
         if attachment["attached"] and not attachment["page_witness"]:

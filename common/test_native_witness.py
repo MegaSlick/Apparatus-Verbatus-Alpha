@@ -16,6 +16,7 @@ from common.native_witness import (
     validate_page_testimonium_payload,
     validate_partition_disagreement,
     validate_presented_page_binding,
+    validate_reportable_observations,
 )
 
 
@@ -222,6 +223,70 @@ def test_an_observed_box_cannot_claim_pixels_outside_the_exact_presented_image()
         validate_native_witness_geometry(value, page_size=(100, 80))
 
 
+def _page_witness_act_view():
+    """A page chair's act view: one crop presented, page-level geometry restated."""
+    value = payload()
+    value["page_witness"] = True
+    value["presented"]["kind"] = "region"
+    value["presented"]["region_ref"] = {"region_id": "rgn_0123456789abcdef"}
+    value["presented"]["transform"].update(
+        {"operation": "crop", "bounds": {"x": 10, "y": 10, "w": 20, "h": 20}}
+    )
+    return value
+
+
+def test_a_page_witnesss_act_view_may_restate_geometry_outside_its_one_crop():
+    """The chair saw the whole page; this record presents only one of its crops.
+
+    Holding it to crop containment would refuse the honest page-space geometry
+    the chair actually reported, which is what Unit 10C's coverage consumes.
+    """
+    value = _page_witness_act_view()
+    value["observed"] = [
+        {
+            "ordinal": 0,
+            "bounds": {"x": 0, "y": 0, "w": 5, "h": 5},
+            "bounds_source": "native",
+            "span": None,
+        }
+    ]
+
+    assert validate_native_witness_geometry(value, page_size=(100, 80)) is value
+
+
+def test_a_page_witnesss_act_view_is_still_bounded_by_the_sealed_page():
+    """The relaxed wall is crop containment, never the sealed page itself."""
+    value = _page_witness_act_view()
+    value["observed"] = [
+        {
+            "ordinal": 0,
+            "bounds": {"x": 0, "y": 0, "w": 101, "h": 5},
+            "bounds_source": "native",
+            "span": None,
+        }
+    ]
+
+    with pytest.raises(SchemaRefusal, match="outside the sealed source page"):
+        validate_native_witness_geometry(value, page_size=(100, 80))
+
+
+def test_the_page_witness_relaxation_cannot_be_forged_onto_a_page_scoped_record():
+    """`scope == "page"` presents the chair's complete view, so it keeps the wall."""
+    value = _page_witness_act_view()
+    value["scope"] = "page"
+    value["observed"] = [
+        {
+            "ordinal": 0,
+            "bounds": {"x": 0, "y": 0, "w": 5, "h": 5},
+            "bounds_source": "native",
+            "span": None,
+        }
+    ]
+
+    with pytest.raises(SchemaRefusal, match="outside the exact image presentation"):
+        validate_native_witness_geometry(value, page_size=(100, 80))
+
+
 def test_a_page_presentation_may_not_name_another_page_s_blob():
     """The forgery this wall exists for: a self-consistent record naming page 1
     while carrying page 2's real, digest-bound pixels. Its boxes would then be
@@ -394,6 +459,89 @@ def test_page_payload_closure_is_shared_with_the_consumer_and_refuses_unhashable
     )
     with pytest.raises(SchemaRefusal, match="invalid page scope facts"):
         validate_page_testimonium_payload(value)
+
+
+def _page_payload(**changes):
+    """A complete, valid page Testimonium payload the closed contract accepts."""
+    value = payload()
+    value.update(
+        {
+            "chair": "attestator_1",
+            "act_key": "page-1",
+            "attempt_ordinal": 1,
+            "regions": [],
+            "provenance": {},
+            "format_capabilities": {},
+            "witness_reported": None,
+            "content_health": {},
+            "unpresented_regions": [],
+            "scope": "page",
+            "page_ordinal": 1,
+            "page_role": "primary",
+            "unjoined_act_attempts": [],
+        }
+    )
+    value.update(changes)
+    return value
+
+
+def test_a_valid_page_testimonium_passes_its_closed_contract():
+    """The refusals below must be about the change, not about the baseline."""
+    value = _page_payload()
+
+    assert validate_page_testimonium_payload(value) is value
+
+
+def test_a_page_record_may_not_name_one_page_and_present_another():
+    """Its observed boxes would be read as geometry from a page never shown."""
+    value = _page_payload(page_ordinal=2)
+
+    with pytest.raises(SchemaRefusal, match="names a different page than the record"):
+        validate_page_testimonium_payload(value)
+
+
+@pytest.mark.parametrize("ordinal", (0, -1))
+def test_a_page_record_cannot_sit_below_the_first_sealed_page(ordinal):
+    """Page ordinals are 1-based, so no sealed page could ever answer for these."""
+    value = _page_payload(page_ordinal=ordinal)
+
+    with pytest.raises(SchemaRefusal, match="invalid page scope facts"):
+        validate_page_testimonium_payload(value)
+
+
+def test_an_unpresented_page_record_still_needs_a_real_page_ordinal():
+    """With no presentation to reconcile against, the bound is the only check."""
+    value = _page_payload(page_ordinal=0, presented={}, observed=[])
+
+    with pytest.raises(SchemaRefusal, match="invalid page scope facts"):
+        validate_page_testimonium_payload(value)
+
+
+@pytest.mark.parametrize(
+    ("observed", "message"),
+    (
+        ("not-a-list", "not a list"),
+        ([["ordinal", 0]], "not an object"),
+        ([{"bounds_source": "native", "bounds": {"x": 0, "y": 0, "w": 1, "h": 1}}], "ordinal"),
+        ([{"ordinal": True, "bounds_source": "native", "bounds": {}}], "ordinal"),
+        ([{"ordinal": 0, "bounds_source": "vendor-guess", "bounds": {}}], "unknown bounds_source"),
+        ([{"ordinal": 0, "bounds_source": "native"}], "page-pixel box"),
+        ([{"ordinal": 0, "bounds_source": "derived", "bounds": {"x": 0, "y": 0}}], "page-pixel box"),
+    ),
+)
+def test_a_coverage_consumer_names_malformed_observations_instead_of_indexing_them(
+    observed, message
+):
+    """A raw KeyError from the stage that decides recovery names no cause."""
+    with pytest.raises(SchemaRefusal, match=message):
+        validate_reportable_observations(observed)
+
+
+def test_a_presented_echo_is_not_required_to_carry_a_box_a_consumer_never_reads():
+    """Only reported geometry is measured; the echo is excluded before its box."""
+    echo = [{"ordinal": 0, "bounds_source": "presented"}]
+
+    assert validate_reportable_observations(echo) is echo
 
 
 def test_partition_disagreement_retains_all_ambiguous_geometry_without_a_winner():

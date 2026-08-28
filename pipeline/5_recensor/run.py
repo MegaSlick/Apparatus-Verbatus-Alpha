@@ -51,6 +51,7 @@ from common.native_witness import (  # noqa: E402
     unrouted_observations,
     validate_page_testimonium_payload,
     validate_partition_disagreement,
+    validate_reportable_observations,
 )
 from common.perlector_audit import validate_chain  # noqa: E402
 from common.recensor_receipt import build_recensor_partition_receipt  # noqa: E402
@@ -1507,6 +1508,19 @@ def testimony_content_findings(context) -> dict[int, dict]:
     findings: dict[int, dict] = {}
     for (ordinal, chair), record in page_testimonia.items():
         payload = _payload(record, f"page Testimonium {record['artifact_id']}")
+        # `current_page_testimonia` types only the page ordinal and the chair,
+        # because those two become dict keys. The observed rows below are still
+        # untrusted evidence read from disk, and `unrouted_observations` indexes
+        # each one by name: a row that is not a closed observation would leave
+        # this stage as a raw KeyError rather than a named refusal, from the one
+        # stage that decides whether coverage recovery runs.
+        try:
+            validate_reportable_observations(payload.get("observed", []))
+        except ContractError as error:
+            raise FatalAccounting(
+                f"page Testimonium {record['artifact_id']} for page {ordinal}, chair {chair!r} "
+                f"has malformed observed geometry: {error}"
+            ) from error
         presented = payload.get("presented")
         disagreement = payload.get("partition_disagreement")
         if disagreement is not None:
