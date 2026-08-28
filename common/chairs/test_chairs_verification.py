@@ -447,12 +447,17 @@ def test_an_unmeasured_all_zero_pin_is_refused_by_name_before_anything_reads_it(
 
     # The refusal is about the shipped roster, not only about a synthetic one.
     real = load_models_toml(ROOT / "config" / "models-real.toml")
+    checked = 0
     for role, configured in real.chairs.items():
         if not isinstance(configured, ChairIdentity):
             continue
         assert configured.digest_manifest == PRE_MATERIALIZATION_SENTINEL, role
         with pytest.raises(ConfigurationRefusal, match="pre-materialization sentinel"):
             ChairRegistry(real).ensure(configured)
+        checked += 1
+    # Without this the loop body can be skipped entirely and the test still
+    # passes, reporting a refusal it never exercised (GOVERNANCE 10).
+    assert checked, "the shipped roster declares no configured chair to refuse"
 
 
 def test_the_materialization_fetcher_separates_client_state_without_deleting_repo_bytes(tmp_path):
@@ -590,19 +595,26 @@ def test_the_materialization_fetcher_refuses_default_apfs_name_collisions(tmp_pa
 
     import unittest.mock
 
-    from common.chairs import model_store as model_store_module
+    from common.chairs import registry as registry_module
 
-    original_walk = model_store_module.os.walk
+    # The collision check runs in `registry`, not in `model_store`. `os` is one
+    # shared module object, so this replacement is process-wide for the block
+    # below; it is spelled through `registry_module` only to say where the
+    # checked code lives. The real `os.walk` signature is kept so an unrelated
+    # positional caller inside the block cannot fail with `TypeError`.
+    original_walk = registry_module.os.walk
 
-    def case_sensitive_walk(top, **kwargs):
+    def case_sensitive_walk(top, topdown=True, onerror=None, followlinks=False):
         # A case-insensitive host filesystem collapses the planted spellings
         # into one file; deliver the listing a case-sensitive fetch cache would.
-        for directory, directories, filenames in original_walk(top, **kwargs):
+        for directory, directories, filenames in original_walk(
+            top, topdown=topdown, onerror=onerror, followlinks=followlinks
+        ):
             if any(name.lower() == "weights.bin" for name in filenames):
                 filenames = sorted(set(filenames) | {"Weights.bin", "weights.bin"})
             yield directory, directories, filenames
 
-    with unittest.mock.patch.object(model_store_module.os, "walk", case_sensitive_walk):
+    with unittest.mock.patch.object(registry_module.os, "walk", case_sensitive_walk):
         with pytest.raises(DigestMismatchRefusal, match="collide on default APFS"):
             HuggingFaceMaterializationFetcher(ReturnsCaseCollidingFiles()).fetch(
                 "fixture-org/pinned", "a" * 40, destination
