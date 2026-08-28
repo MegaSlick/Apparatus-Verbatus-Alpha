@@ -17,6 +17,7 @@ built or that a mount behaved — the stub is not a daemon and does not pretend 
 one. What still needs a real engine is named in `operations/autoclave/README.md`.
 """
 
+import io
 import json
 import os
 import re
@@ -28,6 +29,7 @@ from pathlib import Path
 import pytest
 
 from operations.autoclave.fingerprint import INPUTS as FINGERPRINT_INPUTS
+from operations.autoclave.safe_file import copy_bounded, open_regular
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "operations" / "autoclave" / "autoclave.sh"
@@ -39,6 +41,30 @@ FINGERPRINT = ROOT / "operations" / "autoclave" / "fingerprint.py"
 # `fingerprint.py` can run in a throwaway repository; keeping a second list here is what
 # `test_the_declared_inputs_cover_every_baked_file` exists to make unnecessary.
 IMAGE_INPUTS = FINGERPRINT_INPUTS
+
+
+class _ChangesOnFirstRead:
+    """A source whose bytes change between `copy_bounded`'s fstat and its read.
+
+    `copy_bounded` measures the file through the descriptor and then reads
+    through the same object, so this stands in for the agent that owns the
+    source for the whole of that window. Only `fileno` and `read` are used, and
+    `fileno` is the real one, so the measurement is the file's own.
+    """
+
+    def __init__(self, handle, change):
+        self._handle = handle
+        self._change = change
+        self._changed = False
+
+    def fileno(self):
+        return self._handle.fileno()
+
+    def read(self, size):
+        if not self._changed:
+            self._changed = True
+            self._change()
+        return self._handle.read(size)
 
 
 def run(*args, cwd=None, env=None, script=SCRIPT):
@@ -2626,6 +2652,44 @@ class TestTheUntrustedDrawer:
         # publication -- without this test failing.
         assert "8-byte limit" in read.stderr.decode()
         assert "8-byte limit" in write.stderr
+
+    def test_a_source_that_grows_after_its_size_was_measured_is_refused(self, tmp_path):
+        """The up-front size check is not the only guard, and it is not enough.
+
+        `copy_bounded` measures the opened file once and then reads it, and a
+        chamber agent owns the source for the whole of that window. Only the
+        test above exercised the measurement, so the branch that catches a file
+        swelling past the limit afterwards could have been deleted with the
+        suite still green.
+
+        The change lands between the measurement and the first block, which is
+        the window an agent has and the only place this branch can be reached
+        from -- growing the file any earlier is just the measured-size refusal
+        again, under a second name.
+        """
+
+        source = tmp_path / "source"
+        source.write_bytes(b"1234")
+        with open_regular(source, os.O_RDONLY) as reading:
+            changing = _ChangesOnFirstRead(reading, lambda: source.write_bytes(b"1234567890AB"))
+            with pytest.raises(OSError, match="grew beyond the 8-byte limit"):
+                copy_bounded(changing, io.BytesIO(), 8)
+
+    def test_a_source_that_shrinks_after_its_size_was_measured_is_refused(self, tmp_path):
+        """The other half: fewer bytes than were measured is also a changed file.
+
+        This one stays inside the limit throughout, so neither the measured-size
+        refusal nor the grew-past-the-limit branch above would catch it. A
+        publication that silently copied a truncated brief would otherwise look
+        like an ordinary success.
+        """
+
+        source = tmp_path / "source"
+        source.write_bytes(b"12345678")
+        with open_regular(source, os.O_RDONLY) as reading:
+            changing = _ChangesOnFirstRead(reading, lambda: os.truncate(source, 4))
+            with pytest.raises(OSError, match="changed size while being read"):
+                copy_bounded(changing, io.BytesIO(), 8)
 
     def test_bundle_creation_does_not_follow_an_output_symlink(self, tmp_path):
         repository = tmp_path / "repository"

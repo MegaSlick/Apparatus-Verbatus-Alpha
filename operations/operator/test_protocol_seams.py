@@ -102,14 +102,35 @@ def _missing_concrete_methods(protocol: type, implementation: type) -> list[str]
             continue
         declared.update(vars(base))
     for name, member in declared.items():
-        if name.startswith("_") or not inspect.isfunction(member):
+        if name.startswith("_"):
+            continue
+        # `inspect.isfunction` alone sees only plain `def`s, so a protocol that
+        # declared a member as a `staticmethod`, `classmethod` or `property`
+        # would be skipped entirely and an implementation could omit it while
+        # this matrix stayed green. No seam declares one today; the walker is
+        # widened before one does rather than after.
+        descriptor = isinstance(member, (staticmethod, classmethod, property))
+        if not descriptor and not inspect.isfunction(member):
             continue
         owner = next(
             (base for base in implementation.__mro__ if name in vars(base)),
             None,
         )
         if owner is None or getattr(owner, "_is_protocol", False):
+            # A property may legitimately be answered by a slot or an annotated
+            # instance attribute rather than by a class-body definition, and
+            # calling that a missing member would be a false refusal.
+            if isinstance(member, property) and any(
+                name in getattr(base, "__slots__", ())
+                or name in getattr(base, "__annotations__", {})
+                for base in implementation.__mro__
+            ):
+                continue
             missing.append(name)
+            continue
+        if isinstance(member, property):
+            # Reading a property off the class returns the descriptor, which is
+            # not callable; its own presence is the whole obligation.
             continue
         if not callable(getattr(implementation, name, None)):
             missing.append(name)
