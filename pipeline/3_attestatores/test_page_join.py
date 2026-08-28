@@ -65,7 +65,15 @@ def test_an_unknown_page_witness_chair_is_refused_not_dropped_from_the_join():
 
     with pytest.raises(SchemaRefusal, match="outside the configured witness roster"):
         attestatores.publish_page_testimonia_and_attachments(
-            context, acts=[], ordinal=1, attempts_by_pair={}
+            # `regions_by_act` became required when the join began deriving one
+            # attachment per act from verified regions. The roster refusal under
+            # test fires before any act is walked, so an empty map is the honest
+            # argument for `acts=[]` rather than a stand-in.
+            context,
+            acts=[],
+            ordinal=1,
+            regions_by_act={},
+            attempts_by_pair={},
         )
 
 

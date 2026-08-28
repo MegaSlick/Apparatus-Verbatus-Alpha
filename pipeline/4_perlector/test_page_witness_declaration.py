@@ -155,4 +155,9 @@ def test_an_unhashable_attachment_chair_is_refused_before_duplicate_accounting(m
             context,
             {"act_id": "act_0123456789abcdef", "act_key": "a1"},
             [{"payload": {"chair": "attestator_1"}}],
+            # `bases` became required when the view began checking its spans
+            # against verified regions. The refusal under test fires on the
+            # malformed attachment before any region is consulted, so the
+            # empty list is the honest argument here, not a stand-in.
+            [],
         )
