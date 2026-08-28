@@ -299,6 +299,7 @@ def test_sampling_approval_scan_names_deep_json_as_a_refusal(tmp_path):
             "cannot be represented as canonical receipt bytes"
             "|is not canonical JSON"
             "|no approval record names experiment"
+            "|is malformed JSON while resolving approval"
         ),
     ):
         _resolve(context, SUBJECTS[0])
