@@ -12,7 +12,8 @@ one `stage-seal`, or reuses both on a byte-identical retry. The seal witnesses
 this pass's disk inventory and blob contents, and binds the exact decode-environment
 bytes, run `config_digest` and `register_digest`, and `(kind, outcome)` census. An exit
 held after publishing stage evidence seals it (holds remain in its census); a
-pass held or refused before publishing stage evidence does not seal, so the
+pass that never reaches its seal does not seal, whether it was held or refused
+before publishing stage evidence or closed fatally after publishing it, so the
 successor correctly refuses the missing boundary. Every difference in decoders,
 platform, machine, `decode_paths_used`, and `produced_pixels` is reported by
 field or decoder name. A valid difference is report-only and never refuses;

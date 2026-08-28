@@ -608,6 +608,18 @@ def _validate_membership(row: dict[str, Any], reading: _Reading) -> None:
     if not isinstance(row["appending_run"], str) or not row["appending_run"]:
         raise SchemaRefusal("membership record names no appending run")
     members = frozenset(_digests(row["members"], "membership members"))
+    if not members:
+        # A membership record that names no capture asserts nothing, and it is
+        # immutable once written: no retraction can name an assertion that was
+        # never made. `members_of` would report it as `[]`, which is exactly what
+        # a page with no membership record at all reports — so a triage bug that
+        # wrote one could never be told apart from a page nobody has photographed.
+        # `_evidence` refuses an empty list for this reason; so does this. Later
+        # records cannot be empty anyway, since each must strictly grow.
+        raise SchemaRefusal(
+            f"membership record for {page!r} names no capture; a record that asserts "
+            "nothing cannot be retracted and cannot be told from no record at all"
+        )
     prior = reading.membership_head.get(page)
     if prior is None:
         _require_declared(page, reading.physical_pages, "physical page")

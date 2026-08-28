@@ -148,6 +148,18 @@ def test_reversed_submission_order_reaches_byte_identical_run_artifacts(tmp_path
     assert first_bytes == second_bytes
 
 
+def test_a_membership_record_naming_no_capture_is_refused():
+    """A record that asserts nothing cannot be told from no record at all.
+
+    `members_of` reports `[]` for a page with no membership record, so an empty
+    one is invisible — and being immutable, it cannot be retracted either, since
+    a retraction names an assertion that was never made.
+    """
+    value = {"schema": SCHEMA, "records": [_declaration(), _membership([])]}
+    with pytest.raises(SchemaRefusal, match="names no capture"):
+        validate_register_bytes(canonical_bytes(value))
+
+
 def test_preference_field_is_refused_at_the_register_boundary():
     value = json.loads(_register(members=["a" * 64]))
     value["records"][0]["preferred"] = "a" * 64

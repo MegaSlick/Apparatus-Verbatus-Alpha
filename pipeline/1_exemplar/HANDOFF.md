@@ -20,7 +20,8 @@ one `stage-seal`, or reuses both on a byte-identical retry. The seal witnesses
 this pass's disk inventory and blob contents, and binds the exact decode-environment
 bytes, run `config_digest` and `register_digest`, and `(kind, outcome)` census. An exit
 held after publishing stage evidence seals it (holds remain in its census); a
-pass held or refused before publishing stage evidence does not seal, so the
+pass that never reaches its seal does not seal, whether it was held or refused
+before publishing stage evidence or closed fatally after publishing it, so the
 successor correctly refuses the missing boundary. Every difference in decoders,
 platform, machine, `decode_paths_used`, and `produced_pixels` is reported by
 field or decoder name. A valid difference is report-only and never refuses;
@@ -31,6 +32,11 @@ boundary: the producer refuses to re-seal, and the successor refuses to read,
 when any named seal is no longer on disk. Ordinals are the contiguous run 1..N,
 so removing the latest leaves a prefix that still looks whole — and the earlier
 statement would then answer for a boundary it never witnessed.
+
+A wholly refused Door is that second case: it publishes its refusal report and
+its duplicate report, and only then does `require_some_admitted` raise — so the
+evidence is on disk and no `stage-seal` is, and the Exemplar's "predecessor door
+has no stage-seal" names a refused submission rather than a missing file.
 
 Door and Exemplar share `1_exemplar/` for evidence but retain separate producer
 inventories (`manifest-door.json` and `manifest.json`), so neither can erase the
