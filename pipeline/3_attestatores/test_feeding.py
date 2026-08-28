@@ -636,7 +636,9 @@ def test_churro_declarations_are_checked_in_the_no_write_attempt_preflight():
     index = attestatores.AttemptIndex(False, {}, {})
 
     with pytest.raises(attestatores.SchemaRefusal, match="different model boundary"):
-        attestatores.preflight_appendable_ordinals(context, [], 1, {}, index)
+        attestatores.preflight_appendable_ordinals(
+            context, [], 1, {}, index, resume_incomplete_pass=False
+        )
 
 
 def test_one_scenarios_declared_response_is_not_another_scenarios_default():
