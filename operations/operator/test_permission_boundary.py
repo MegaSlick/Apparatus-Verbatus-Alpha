@@ -1237,7 +1237,7 @@ def test_review_refuses_ambiguous_duplicate_review_members():
     assert "more than one review-items.jsonl" in (excinfo.value.detail or "")
 
 
-def test_advance_names_a_bad_run_id_instead_of_calling_itself_broken(tmp_path):
+def test_a_bad_run_id_is_named_as_such_by_advance_and_review(tmp_path):
     """A mistyped or escaping run id is a refused request, not an unclassified fault.
 
     `RunTree.__init__` validates the run id and refuses one that resolves
@@ -1246,14 +1246,21 @@ def test_advance_names_a_bad_run_id_instead_of_calling_itself_broken(tmp_path):
     to photograph the message and find help over a capital letter, and an
     attempted escape from the approved run root reported itself the same way.
     """
-    with pytest.raises(OperatorError) as excinfo:
-        cli._advance_with_confirmation(
+    for act in (
+        lambda: cli._advance_with_confirmation(
             tmp_path, "My-Run", "armarium", reason="typed with a capital", workspace=ROOT
-        )
-
-    assert excinfo.value.code == ErrorCode.ADVANCE_REFUSED
-    assert "My-Run" in (excinfo.value.detail or "")
-    assert "could not classify" not in excinfo.value.render()
+        ),
+        lambda: cli._review_in_custody(tmp_path, "My-Run", ROOT),
+    ):
+        with pytest.raises(OperatorError) as excinfo:
+            act()
+        # `INVALID_COMMAND`, not a verb-specific refusal: nothing was read and
+        # nothing was changed, and a tree-unreadable code would send the
+        # operator to preserve evidence that was never opened.
+        assert excinfo.value.code == ErrorCode.INVALID_COMMAND
+        assert "My-Run" in (excinfo.value.detail or "")
+        assert "could not classify" not in excinfo.value.render()
+        assert "Preserve the run tree" not in excinfo.value.render()
 
 
 def test_review_refuses_a_run_whose_images_exceed_what_the_console_can_hold():

@@ -370,6 +370,32 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0
 
 
+def _bound_run_tree(run_tree_class, run_root: Path, run_id: str):
+    """Bind one run before any verb acts on it, and name a bad id as a bad id.
+
+    `RunTree.__init__` validates the run id and refuses one that resolves
+    outside the run root; both arrive as `ContractError`. Constructed outside
+    a guard, a typed `--run-id My-Run` reached the unclassified handler and
+    told the operator to photograph the message and find a maintainer over one
+    capital letter, and an attempted escape from the approved run root
+    reported itself the same way — a tool that broke rather than a request
+    that was refused.
+
+    The code is `INVALID_COMMAND` rather than a verb-specific refusal because
+    that is what happened: the instruction named no run this tool could bind,
+    nothing was read, and nothing was changed. A tree-unreadable code would
+    send the operator to preserve and investigate register evidence that was
+    never opened.
+    """
+
+    from common.contracts.errors import ContractError
+
+    try:
+        return run_tree_class(Path(run_root).resolve(), run_id)
+    except (ContractError, OSError) as error:
+        raise OperatorError(ErrorCode.INVALID_COMMAND, detail=str(error)) from error
+
+
 def _review_in_custody(run_root: Path, run_id: str, workspace: Path) -> None:
     """Exec the renderer with no credential and a kernel-enforced no-write policy."""
 
@@ -377,6 +403,9 @@ def _review_in_custody(run_root: Path, run_id: str, workspace: Path) -> None:
     # immutable value stream, never a run-tree path or a ``RunTree`` object.
     # It can deceive its viewer about those bytes if compromised, but cannot
     # reopen the evidence to mutate it or reach any pipeline/provider module.
+    from common.runtree.store import RunTree
+
+    _bound_run_tree(RunTree, run_root, run_id)
     projection = dataclasses.asdict(ReadOnlyRun(run_root, run_id).projection())
     command = python_module_command("operations.operator.console")
     backend, completed = run_confined(
@@ -472,22 +501,13 @@ def _advance_with_confirmation(
 ) -> None:
     """Bind a human confirmation to one observed digest, then launch the worker."""
 
-    from common.contracts.errors import ApprovalRefusal, ContractError
+    from common.contracts.errors import ApprovalRefusal
     from common.runtree.store import RunTree
 
-    # Binding the tree belongs inside the guard. `RunTree.__init__` validates
-    # the run id and refuses one that resolves outside the run root, and both
-    # arrive as `ContractError`. Constructed above the `try`, a typed
-    # `--run-id My-Run` reached the unclassified handler and told the operator
-    # to photograph the message and find help over a capital letter — and an
-    # attempted escape from the approved run root reported the same way, as a
-    # tool that broke rather than a request that was refused. `backup` already
-    # names this mistake; `advance` now does too. `ApprovalRefusal` is listed
-    # first for the reader; it is already a `ContractError`.
+    tree = _bound_run_tree(RunTree, run_root, run_id)
     try:
-        tree = RunTree(run_root.resolve(), run_id)
         _seal, digest = sealed_boundary(tree, stage)
-    except (ApprovalRefusal, ContractError, OSError) as error:
+    except ApprovalRefusal as error:
         raise OperatorError(ErrorCode.ADVANCE_REFUSED, detail=str(error)) from error
     phrase = f"advance {run_id} past {stage} at {digest}"
     _print(f"The current {stage} boundary has seal digest {digest}.")
