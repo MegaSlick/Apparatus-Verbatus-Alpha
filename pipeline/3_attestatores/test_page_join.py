@@ -491,6 +491,12 @@ def test_a_page_never_presented_to_the_configured_chair_is_not_run_not_failed():
     assert join.native_payload == ""
     assert join.outcome == "not-run"
     assert [row["outcome"] for row in join.unjoined_act_attempts] == ["not-run", "not-run"]
+    # The reason an operator reads must not describe requests that were made.
+    reason = attestatores.page_failure_reason(
+        join.unjoined_act_attempts, join.joined_act_attempts
+    )
+    assert "never shown" in reason
+    assert "attempts, none of them carrying a reading" not in reason
 
 
 def test_a_failed_attempt_carrying_text_is_disclosed_rather_than_folded_in():

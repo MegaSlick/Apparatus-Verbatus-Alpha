@@ -299,15 +299,28 @@ def _fixture_native_observations(
     ]
     if not rows:
         return None
-    return [
-        {
-            "ordinal": ordinal,
-            "bounds": {key: row.get(key) for key in ("x", "y", "w", "h")},
-            "bounds_source": "native",
-            "span": None,
-        }
-        for ordinal, row in enumerate(rows)
-    ]
+    observations = []
+    for ordinal, row in enumerate(rows):
+        # A row missing a coordinate is refused where the fixture row can be
+        # identified. Passing `{"w": None}` down instead reaches the geometry
+        # contract as "non-integer page-pixel coordinates", which is true and
+        # names neither the chair, the page, nor which row to go and fix.
+        missing = sorted(key for key in ("x", "y", "w", "h") if key not in row)
+        if missing:
+            raise SchemaRefusal(
+                f"fixture native_observation row {ordinal} for chair {chair!r} on page "
+                f"{page_ordinal} lacks the coordinate(s) {missing}; a declared witness "
+                "observation must be a complete page-pixel box"
+            )
+        observations.append(
+            {
+                "ordinal": ordinal,
+                "bounds": {key: row[key] for key in ("x", "y", "w", "h")},
+                "bounds_source": "native",
+                "span": None,
+            }
+        )
+    return observations
 
 
 def validate_testimonium_presentation(context, record: dict[str, Any]) -> None:
@@ -1864,6 +1877,19 @@ def page_failure_reason(unjoined_act_attempts: list[dict[str, Any]], joined: int
             "while either kind is outstanding"
         )
     if not joined:
+        # One case further along the same road the docstring above walks twice.
+        # A page whose chair was never served at all reaches here with every row
+        # `not-run` or `dead`, and "N attempts, none of them carrying a reading"
+        # describes requests that were made and came back useless -- sending an
+        # operator to look for responses that were never asked for. `not-run` at
+        # page scope means no request reached the chair, and the reason has to
+        # say that rather than borrow the attempted wording.
+        if not any(row["outcome"] in ATTEMPTED_WITNESS_OUTCOMES for row in unread):
+            return (
+                f"this chair was never shown any of the {len(unread)} act(s) on this page: "
+                "no request reached it, so the page is unattempted rather than attempted "
+                "and unread"
+            )
         return (
             f"no act attempt on this page was a reading at all: {len(unread)} attempts, "
             "none of them carrying a reading this join could take; the page is unread "

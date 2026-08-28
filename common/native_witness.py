@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any, Final
 
-from common.contracts.canonical import digest_bytes
+from common.contracts.canonical import digest_bytes, is_sha256
 from common.contracts.errors import SchemaRefusal
 from common.corpus_register import refuse_capture_preference
 from common.imaging import crop_png
@@ -105,8 +105,10 @@ def validate_presented(value: Any, *, page_size: tuple[int, int] | None = None) 
         or value["source_page_ordinal"] < 1
         or not isinstance(value["image_path"], str)
         or not value["image_path"]
-        or not isinstance(value["image_sha256"], str)
-        or len(value["image_sha256"]) != 64
+        # The lowercase hex shape, not merely 64 characters: a blob identity
+        # that cannot be a digest can never match one, and saying so here names
+        # the malformed presentation instead of a later mismatch.
+        or not is_sha256(value["image_sha256"])
     ):
         raise SchemaRefusal("a Testimonium presented block has invalid source or blob identity")
     transform = value["transform"]

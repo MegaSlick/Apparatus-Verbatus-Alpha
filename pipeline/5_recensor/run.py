@@ -1608,6 +1608,20 @@ def testimony_content_findings(context) -> dict[int, dict]:
             "uncovered_non_whitespace": uncovered,
         }
         finding["shortfall"] = finding["shortfall"] or bool(uncovered["count"])
+    for finding in findings.values():
+        if finding["by_chair"]:
+            continue
+        # This finding exists only because unclaimed geometry created it: no
+        # chair on this page reported text, so the loop above never diffed one
+        # and `by_chair` stayed empty. Leaving the seeded `shortfall: False`
+        # would publish a clean text measurement nobody took, indistinguishable
+        # from a page whose witnesses were read and covered everything
+        # (GOVERNANCE 10) -- the very restatement `NO_PAGE_CONTENT_COVERAGE`
+        # exists to avoid for pages that reach no measurement at all. The
+        # unclaimed observations stay: they are geometry, and they still route
+        # bounded recovery.
+        finding["shortfall"] = None
+        finding.setdefault("reason", NO_PAGE_CONTENT_COVERAGE["reason"])
     return findings
 
 

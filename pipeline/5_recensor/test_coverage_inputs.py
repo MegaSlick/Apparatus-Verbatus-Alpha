@@ -318,6 +318,56 @@ def test_missing_retained_partition_cannot_suppress_a_rederived_coverage_finding
     ]
 
 
+def test_unclaimed_geometry_alone_does_not_publish_a_clean_text_measurement(monkeypatch):
+    """A failed page has no text to diff, and must not look like a covered one.
+
+    The unclaimed-observation route creates the page finding, seeded
+    `shortfall: False`. On a page whose witness reported no text, nothing then
+    measures anything -- and the seed would be published as a clean text
+    coverage result, byte-identical to a page whose witnesses were read and
+    covered every character (GOVERNANCE 10). The geometry stays; the text fact
+    goes back to unmeasured.
+    """
+    page = _page_testimonium(outcome="failed")
+    page["payload"].update(
+        {
+            "presented": {"source_page_id": "page-1"},
+            "observed": [
+                {
+                    "ordinal": 0,
+                    "bounds": {"x": 50, "y": 50, "w": 10, "h": 10},
+                    "bounds_source": "native",
+                }
+            ],
+        }
+    )
+    context = _context(page)
+    context.tree.records["attachment-1"] = _attachment(context, end=3)
+    monkeypatch.setattr(
+        RUN,
+        "expected_acts",
+        lambda unused: [{"act_id": "act-1", "act_key": "a1", "page_ordinal": 1}],
+    )
+    proposal = {
+        "payload": {
+            "origin": "proposal",
+            "transform": {
+                "source_page_id": "page-1",
+                "source_page_ordinal": 1,
+                "bounds": {"x": 0, "y": 0, "w": 10, "h": 10},
+            },
+        }
+    }
+    monkeypatch.setattr(RUN, "artifacts_for", lambda *unused: [proposal])
+
+    finding = RUN.testimony_content_findings(context)[1]
+
+    assert finding["by_chair"] == {}
+    assert finding["shortfall"] is None, "no chair's text was measured on this page"
+    assert "was not measured" in finding["reason"]
+    assert len(finding["unclaimed_observations"]) == 1, "the geometry finding still stands"
+
+
 def test_retained_partition_is_bound_to_the_current_sealed_proposals(monkeypatch):
     """An internally consistent stale snapshot is still false evidence."""
     observed = [
