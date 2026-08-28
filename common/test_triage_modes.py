@@ -89,6 +89,45 @@ def test_the_binding_seals_the_configuration_its_caller_named(tmp_path):
     require_triage_modes(bindings["sealed_config_digests"], config)
 
 
+@pytest.mark.parametrize(
+    ("body", "names"),
+    [
+        pytest.param(
+            b"[automatic]\nreview_at_or_below_confidence = 4\n",
+            "wrong closed schema",
+            id="a-mode-nobody-declared",
+        ),
+        pytest.param(
+            b"[manual]\nreview_at_or_below_confidence = 9\n"
+            b"[semi]\nreview_at_or_below_confidence = 2\n"
+            b"[auto]\nreview_at_or_below_confidence = 1\n",
+            "wrong closed schema",
+            id="a-confidence-outside-the-ordinal",
+        ),
+        pytest.param(b"[manual\n", "not valid TOML", id="not-parseable-at-all"),
+        pytest.param(b"[manual]\nx = \xff\n", "not valid UTF-8", id="not-decodable-at-all"),
+    ],
+)
+def test_the_binding_refuses_a_triage_configuration_it_could_only_seal(tmp_path, body, names):
+    """`run_config_bindings` hashed these bytes without parsing them, so a file
+    declaring a mode nobody declared sealed cleanly into `run.json` and the run
+    walked several stages before the first `require_triage_modes` refused it. The
+    binding and the point-of-use check now share one validator, so the refusal
+    lands at run creation, where nothing has been written yet. Found by
+    CodeRabbit."""
+    root = Path(__file__).resolve().parents[1]
+    config = tmp_path / "triage_modes.toml"
+    config.write_bytes(body)
+
+    with pytest.raises(ContractError, match=names):
+        run_config_bindings(
+            ChairRegistry.from_toml(root / "config/models.toml").config,
+            load_fixture(root / "proof"),
+            "happy",
+            triage_modes_config_path=config,
+        )
+
+
 def test_the_run_digest_moves_when_the_triage_thresholds_do(tmp_path):
     """The tests above read `sealed_config_digests`, which is the *named* copy. Drop
     `triage_modes_config_sha256` from `config_digest` and every one of them still
