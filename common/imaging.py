@@ -752,6 +752,12 @@ def render_triage_derivative(
         colour_mode = part["colour_mode"]
         with Image.open(BytesIO(source_bytes)) as image:
             image.seek(page_index)
+            # Before `load`, and after `seek`, so the bound is enforced against the
+            # frame actually being decoded. Without it this path was the one Pillow
+            # decode in the module with no `MAX_PIXELS` check of its own, and a
+            # master between the bound and Pillow's own 2x hard ceiling materialised
+            # here under nothing worse than a warning.
+            _refuse_past_pixel_bound(image.width, image.height)
             image.load()
             source_mode = image.mode
             source_bands = list(image.getbands())
@@ -819,5 +825,10 @@ def render_triage_derivative(
                 "source_width": source_width,
                 "source_height": source_height,
             }
-    except (*_DECODE_FAILURES, KeyError, TypeError) as error:
+    # `EOFError` beside the shared decode failures because this is the one path that
+    # seeks: a `page_index` past the last frame of a container raises it, and it
+    # descends from `Exception` rather than `OSError`, so it escaped this module's
+    # contract that an undecodable frame raises `ValueError` and reached the
+    # Exemplar boundary as an unhandled error instead of a refusal.
+    except (*_DECODE_FAILURES, EOFError, KeyError, TypeError) as error:
         raise ValueError(f"source frame bytes are not a decodable image ({error})") from error
