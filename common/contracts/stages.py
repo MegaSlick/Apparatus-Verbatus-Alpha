@@ -62,6 +62,22 @@ HANDOFFS: Final = (
     (ARCHETYPUS, ARMARIUM),
 )
 
+ORCHESTRATOR: Final = "orchestrator"
+
+# Completion seals are witnessed statements at the end of each producer pass.
+# Keys are consumers, including the orchestrator as Armarium's final consumer.
+#
+# Derived from HANDOFFS rather than restated. A seal is the witness to exactly the
+# boundary above it, so a hand-kept second copy of the same seven pairs could drift
+# from the list this module exists to be the single source of — and a seal bound to
+# a boundary nobody hands off across is a statement about nothing. The orchestrator
+# is the one entry HANDOFFS cannot carry: it consumes the Armarium's pass without
+# being a stage that writes.
+SEAL_PREDECESSORS: Final = {
+    **{consumer: producer for producer, consumer in HANDOFFS},
+    ORCHESTRATOR: ARMARIUM,
+}
+
 
 # Where each producer *writes*, which is not the same question as which directory
 # a stage owns. The door owns nothing and writes into the Exemplar's directory, so

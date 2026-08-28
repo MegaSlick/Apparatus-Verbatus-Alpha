@@ -29,8 +29,15 @@ import pytest
 from common.chairs.registry import ChairRegistry
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.contracts.stages import ATTESTATORES, PERLECTOR
+from common.fixture_identity import act_identity, page_identity
 from common.runtree.store import RECENSOR_PARTITION_RECEIPT_FILE, RunTree
-from common.stage import act_by_key, act_identity, load_fixture, page_identity, run_config_bindings
+from common.stage import (
+    act_by_key,
+    load_fixture,
+    run_config_bindings,
+)
+from conftest import rebind_stage_seal_artifact as _rebind_stage_seal
+from conftest import rewitness_stage_boundary as _rewitness_stage_boundary
 
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
@@ -573,7 +580,9 @@ def test_an_attached_page_witness_alignment_names_its_anchor_basis(run_tree):
     assert checked, f"scenario {scenario!r}: no aligned page-witness alignment was checked"
 
 
-def test_perlector_consumes_the_page_testimonium_named_by_an_act_attachment(tmp_path):
+def test_perlector_consumes_the_page_testimonium_named_by_an_act_attachment(
+    tmp_path, rebind_stage_seal
+):
     """The R0 exit criterion says page testimony is consumed, not merely written.
 
     Removing a page Testimonium after Attestatores has sealed an attachment to it
@@ -601,6 +610,10 @@ def test_perlector_consumes_the_page_testimonium_named_by_an_act_attachment(tmp_
     page_path = tree.resolve(page_entry["relative_path"])
     moved = page_path.with_suffix(".json.moved")
     page_path.rename(moved)
+    # The nested reference is the claim under test, so the outer boundary is
+    # rebound: without it the Attestatores completion seal refuses first and
+    # this proves the seal a second time instead of the reference check.
+    rebind_stage_seal(tree, ATTESTATORES, rewrite_manifest=False)
     try:
         result = invoke_stage(root, "page-custody", "happy", "pipeline/4_perlector/run.py")
     finally:
@@ -651,11 +664,62 @@ def _reread(root: Path, run_id: str, scenario: str, act_id: str, chair: str):
     )
 
 
-def _reseal(path: Path, record: dict) -> None:
+def _reseal(tree: RunTree, path: Path, record: dict) -> None:
     record["self_hash"] = self_hash(
         {key: value for key, value in record.items() if key != "self_hash"}
     )
     path.write_bytes(canonical_bytes(record))
+    _rebind_stage_seal(tree, record["stage"])
+
+
+def _rewitness_perlector_boundary(tree: RunTree) -> None:
+    """Carry an Attestatores forgery through a Perlector boundary already sealed over it.
+
+    A test that needs *both* consumers to refuse the same damaged record has to
+    let the Perlector seal its boundary first: a Perlector that never sealed
+    sends the Recensor to the missing-boundary refusal instead of to the
+    contradiction. But that earlier successful Perlector run retained an input
+    reference to the Attestatores record's pre-forgery bytes, so once the record
+    is rewritten the Recensor stops at `the bytes changed under a sealed
+    reference` — the Perlector's own boundary, not the Attestatores contradiction
+    the calling test is named for. `rewitness_stage_boundary` settles that
+    boundary without touching the Attestatores contradiction itself.
+    """
+    _rewitness_stage_boundary(tree, PERLECTOR)
+
+
+def _page_testimonium_on(tree: RunTree, manifest: dict, page_ordinal: int) -> tuple[dict, dict]:
+    for entry in manifest["artifacts"]:
+        if entry["kind"] != "page-testimonium":
+            continue
+        record = tree.read_artifact(ATTESTATORES, "page-testimonium", entry["artifact_id"])
+        if record["payload"].get("page_ordinal") == page_ordinal:
+            return entry, record
+    raise AssertionError(f"page {page_ordinal} has no page Testimonium")
+
+
+def _reseal_page_and_references(
+    tree: RunTree, manifest: dict, page_entry: dict, page: dict
+) -> None:
+    """Reseal every consuming reference so a semantic page forgery reaches its validator."""
+    page_path = tree.resolve(page_entry["relative_path"])
+    _reseal(tree, page_path, page)
+    page_digest = digest_bytes(page_path.read_bytes())
+    for attachment_entry in manifest["artifacts"]:
+        if attachment_entry["kind"] != "act-attachment":
+            continue
+        attachment_path = tree.resolve(attachment_entry["relative_path"])
+        attachment = tree.read_artifact(
+            ATTESTATORES, "act-attachment", attachment_entry["artifact_id"]
+        )
+        changed = False
+        for row in attachment["payload"]["attachments"]:
+            reference = row["testimonium_ref"]
+            if reference["relative_path"] == page_entry["relative_path"]:
+                reference["sha256"] = page_digest
+                changed = True
+        if changed:
+            _reseal(tree, attachment_path, attachment)
 
 
 def test_perlector_refuses_an_attachment_for_an_unconfigured_chair(tmp_path):
@@ -670,11 +734,37 @@ def test_perlector_refuses_an_attachment_for_an_unconfigured_chair(tmp_path):
     record = tree.read_artifact(ATTESTATORES, "act-attachment", entry["artifact_id"])
     forged = dict(record["payload"]["attachments"][0], chair="attestator_ghost")
     record["payload"]["attachments"].append(forged)
-    _reseal(path, record)
+    _reseal(tree, path, record)
 
     result = invoke_stage(root, "forged-chair", "happy", "pipeline/4_perlector/run.py")
     assert result.returncode != 0
     assert "configured witnesses" in result.stderr
+
+
+@pytest.mark.parametrize("forged_ordinal", [True, [1]], ids=["boolean", "unhashable-list"])
+def test_perlector_refuses_a_non_integer_attachment_page_before_pair_accounting(
+    tmp_path, forged_ordinal
+):
+    """Malformed ordinals cannot alias integers or escape through set hashing."""
+    root = tmp_path / "runs"
+    run_id = f"forged-attachment-page-{type(forged_ordinal).__name__}"
+    tree = _through_attestatores(root, run_id)
+    entry = next(
+        row
+        for row in tree.build_manifest(ATTESTATORES)["artifacts"]
+        if row["kind"] == "act-attachment"
+    )
+    path = tree.resolve(entry["relative_path"])
+    record = tree.read_artifact(ATTESTATORES, "act-attachment", entry["artifact_id"])
+    page_row = next(row for row in record["payload"]["attachments"] if row["page_witness"])
+    page_row["page_ordinal"] = forged_ordinal
+    _reseal(tree, path, record)
+
+    result = invoke_stage(root, run_id, "happy", "pipeline/4_perlector/run.py")
+
+    assert result.returncode != 0
+    assert "integer page ordinal" in result.stderr
+    assert "Traceback" not in result.stderr
 
 
 def test_perlector_refuses_a_referenced_page_ordinal_outside_the_fixture(tmp_path):
@@ -682,24 +772,124 @@ def test_perlector_refuses_a_referenced_page_ordinal_outside_the_fixture(tmp_pat
     tree = _through_attestatores(root, "forged-page")
     manifest = tree.build_manifest(ATTESTATORES)
     page_entry = next(row for row in manifest["artifacts"] if row["kind"] == "page-testimonium")
-    page_path = tree.resolve(page_entry["relative_path"])
     page = tree.read_artifact(ATTESTATORES, "page-testimonium", page_entry["artifact_id"])
     page["payload"]["page_ordinal"] = 99
-    _reseal(page_path, page)
-    page_digest = digest_bytes(page_path.read_bytes())
-
-    attachment_entry = next(row for row in manifest["artifacts"] if row["kind"] == "act-attachment")
-    attachment_path = tree.resolve(attachment_entry["relative_path"])
-    attachment = tree.read_artifact(ATTESTATORES, "act-attachment", attachment_entry["artifact_id"])
-    for row in attachment["payload"]["attachments"]:
-        reference = row["testimonium_ref"]
-        if reference["relative_path"] == page_entry["relative_path"]:
-            reference["sha256"] = page_digest
-    _reseal(attachment_path, attachment)
+    _reseal_page_and_references(tree, manifest, page_entry, page)
 
     result = invoke_stage(root, "forged-page", "happy", "pipeline/4_perlector/run.py")
     assert result.returncode != 0
     assert "wrong page Testimonium" in result.stderr
+
+
+def test_perlector_refuses_a_page_role_its_own_ordinal_contradicts(tmp_path):
+    """An act's sealed primary ordinal must constrain its page-role label."""
+    root = tmp_path / "runs"
+    tree = _through_attestatores(root, "forged-role")
+    manifest = tree.build_manifest(ATTESTATORES)
+    page_entry, page = _page_testimonium_on(tree, manifest, 2)
+    assert page["payload"]["page_role"] == "continuation"
+    page["payload"]["page_role"] = "primary"
+    _reseal_page_and_references(tree, manifest, page_entry, page)
+
+    result = invoke_stage(root, "forged-role", "happy", "pipeline/4_perlector/run.py")
+    assert result.returncode != 0
+    assert "page_role" in result.stderr and "contradicts" in result.stderr
+
+
+def test_perlector_names_an_unhashable_page_role_as_a_schema_refusal(tmp_path):
+    """A JSON-shaped role must not escape through set membership as TypeError."""
+    root = tmp_path / "runs"
+    tree = _through_attestatores(root, "unhashable-role")
+    manifest = tree.build_manifest(ATTESTATORES)
+    page_entry, page = _page_testimonium_on(tree, manifest, 2)
+    page["payload"]["page_role"] = ["continuation"]
+    _reseal_page_and_references(tree, manifest, page_entry, page)
+
+    result = invoke_stage(root, "unhashable-role", "happy", "pipeline/4_perlector/run.py")
+
+    assert result.returncode != 0
+    assert "page_role" in result.stderr and "contradicts" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_perlector_refuses_a_forged_continuation_page_act_anchor(tmp_path):
+    """The compatibility attachment has no page-specific continuation anchor."""
+    root = tmp_path / "runs"
+    tree = _through_attestatores(root, "forged-continuation-anchor")
+    entry = next(
+        row
+        for row in tree.build_manifest(ATTESTATORES)["artifacts"]
+        if row["kind"] == "act-attachment"
+        and len(
+            {
+                attachment.get("page_ordinal")
+                for attachment in tree.read_artifact(
+                    ATTESTATORES, "act-attachment", row["artifact_id"]
+                )["payload"]["attachments"]
+                if attachment.get("page_witness")
+            }
+        )
+        == 2
+    )
+    path = tree.resolve(entry["relative_path"])
+    record = tree.read_artifact(ATTESTATORES, "act-attachment", entry["artifact_id"])
+    primary = next(
+        row
+        for row in record["payload"]["attachments"]
+        if row.get("page_witness") and row.get("page_ordinal") == 1
+    )
+    continuation = next(
+        row
+        for row in record["payload"]["attachments"]
+        if row.get("page_witness")
+        and row.get("page_ordinal") == 2
+        and row["chair"] == primary["chair"]
+    )
+    assert primary["attached"] is True
+    assert continuation["alignment"] == {
+        "status": "unaligned",
+        "reason": "continuation-page-no-act-anchor",
+    }
+    continuation["attached"] = True
+    continuation["alignment"] = primary["alignment"]
+    continuation["span"] = primary["span"]
+    _reseal(tree, path, record)
+
+    result = invoke_stage(
+        root,
+        "forged-continuation-anchor",
+        "happy",
+        "pipeline/4_perlector/run.py",
+    )
+
+    assert result.returncode != 0
+    assert "continuation-page attachment" in result.stderr
+    assert "has no page-specific anchor" in result.stderr
+
+
+def test_the_recensor_refuses_a_page_role_only_the_whole_page_disproves(tmp_path):
+    """Only the Recensor's whole-page view can disprove a forged `mixed` role."""
+    root = tmp_path / "runs"
+    tree = _through_attestatores(root, "forged-mixed")
+    manifest = tree.build_manifest(ATTESTATORES)
+    page_entry, page = _page_testimonium_on(tree, manifest, 2)
+    assert page["payload"]["page_role"] == "continuation"
+    page["payload"]["page_role"] = "mixed"
+    _reseal_page_and_references(tree, manifest, page_entry, page)
+    # The forged bytes are now the tree's own record of themselves, so the
+    # Recensor's manifest reconciliation refuses the *cache* rather than the
+    # claim. Rewriting it is what puts the forgery in front of the check under
+    # test instead of in front of an earlier one.
+    tree.write_manifest(ATTESTATORES)
+
+    # A single-act reader cannot disprove `mixed`; this is the stage boundary.
+    forward = invoke_stage(root, "forged-mixed", "happy", "pipeline/4_perlector/run.py")
+    assert forward.returncode == 0, forward.stderr
+
+    result = invoke_stage(root, "forged-mixed", "happy", "pipeline/5_recensor/run.py")
+    assert result.returncode != 0
+    assert "page_role 'mixed'" in result.stderr
+    assert "'continuation'" in result.stderr
 
 
 # --- Fresh-context review (P2): the second spelling of the scope claim -----------
@@ -732,7 +922,7 @@ def test_perlector_refuses_an_act_scoped_testimonium_wearing_a_page_witness_flag
     )
     record = tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
     record["payload"]["page_witness"] = True
-    _reseal(tree.resolve(entry["relative_path"]), record)
+    _reseal(tree, tree.resolve(entry["relative_path"]), record)
 
     result = invoke_stage(root, "forged-scope", "happy", "pipeline/4_perlector/run.py")
     assert result.returncode != 0, (
@@ -809,7 +999,7 @@ def test_perlector_refuses_an_attachment_describing_a_superseded_attempt(tmp_pat
     )
     assert entry["page_witness"] is True
     entry["content_health"] = {**entry["content_health"], "characters": 4096}
-    _reseal(path, record)
+    _reseal(tree, path, record)
 
     result = invoke_stage(root, "superseded", "reread-success", "pipeline/4_perlector/run.py")
 
@@ -845,12 +1035,23 @@ def test_the_witness_floor_is_not_counted_from_a_superseded_attachment(tmp_path)
         row for row in record["payload"]["attachments"] if row["chair"] == PAGE_WITNESS_CHAIRS[1]
     )
     entry["content_health"] = {**entry["content_health"], "characters": 4096}
-    _reseal(path, record)
+
+    # Sealed over the correct record first, for the reason given in
+    # `test_act_scoped_attachment_must_match_the_current_outcome_when_health_is_current`:
+    # a Perlector that never sealed sends the Recensor to the missing-boundary
+    # refusal, and the drift this test exists to catch stops being measured.
+    sealing = invoke_stage(root, "stale-floor", "reread-failure", "pipeline/4_perlector/run.py")
+    assert sealing.returncode == 0, sealing.stderr
+    _reseal(tree, path, record)
 
     perlector = invoke_stage(root, "stale-floor", "reread-failure", "pipeline/4_perlector/run.py")
     assert perlector.returncode != 0, (
         "the Perlector read on over an act-attachment describing a superseded attempt"
     )
+    # The refused Perlector run wrote nothing, so its earlier seal still names the
+    # record's pre-forgery bytes; without this the Recensor stops on that boundary
+    # instead of on the staleness this test measures.
+    _rewitness_perlector_boundary(tree)
     recensor = invoke_stage(root, "stale-floor", "reread-failure", "pipeline/5_recensor/run.py")
     assert recensor.returncode != 0, (
         "the Recensor counted the witness floor from an act-attachment describing a "
@@ -918,12 +1119,26 @@ def test_act_scoped_attachment_must_match_the_current_outcome_when_health_is_cur
     # instead of the outcome guard.
     assert current["payload"]["content_health"]["characters"] in (None, 0), current["payload"]
     attachment["span"] = {"start": 0, "end": 0}
-    _reseal(attachment_path, attachment_record)
+
+    # The Perlector reads and seals its boundary once over the *correct* record,
+    # before the forgery. Otherwise its refusal below leaves no Perlector seal at
+    # all and the Recensor stops on the missing boundary instead of on the
+    # contradiction — which is the check this test is named for and the one half
+    # of "each must refuse" that would then be proven nowhere. That first run
+    # retains an input reference to the record's pre-forgery bytes, so its
+    # boundary is re-witnessed below before the Recensor is asked to read.
+    sealing = invoke_stage(root, "act-scoped-stale", "happy", "pipeline/4_perlector/run.py")
+    assert sealing.returncode == 0, sealing.stderr
+    _reseal(tree, attachment_path, attachment_record)
 
     perlector = invoke_stage(root, "act-scoped-stale", "happy", "pipeline/4_perlector/run.py")
     assert perlector.returncode != 0
     assert "disagrees with that chair's current Testimonium outcome" in perlector.stderr
 
+    # The refused Perlector run wrote nothing, so its earlier seal still names the
+    # attachment's pre-forgery bytes; without this the Recensor stops on that
+    # boundary instead of on the outcome contradiction this test is named for.
+    _rewitness_perlector_boundary(tree)
     recensor = invoke_stage(root, "act-scoped-stale", "happy", "pipeline/5_recensor/run.py")
     assert recensor.returncode != 0
     assert "disagrees with the current Testimonium outcome" in recensor.stderr

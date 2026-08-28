@@ -6,7 +6,10 @@ point of this module, and a test that trusted the same claimed list the
 reconciliation is supposed to be checking would not be testing anything.
 """
 
+import importlib.util
 import random
+import sys
+from pathlib import Path
 
 import pytest
 from conservation import reconcile
@@ -18,8 +21,34 @@ BACKGROUND = 230
 INK = 40
 
 
+def _load_designator_run():
+    """Load this directory's ``run.py`` by path, under a name of its own.
+
+    Seven other stages ship a top-level module also called ``run``, so a bare
+    ``from run import ...`` here returns whichever one pytest imported first --
+    green alone, ImportError once an earlier stage's tests share the session.
+    The module name below is unique, so the collision cannot re-form.
+    """
+    path = Path(__file__).resolve().parent / "run.py"
+    spec = importlib.util.spec_from_file_location("designator_run_under_test", path)
+    module = importlib.util.module_from_spec(spec)
+    original_path = list(sys.path)
+    try:
+        sys.path.insert(0, str(path.parent))
+        spec.loader.exec_module(module)
+    finally:
+        sys.path[:] = original_path
+    return module
+
+
 def blank_rows(width: int, height: int) -> list[bytearray]:
     return [bytearray([BACKGROUND] * width) for _ in range(height)]
+
+
+def test_loading_the_designator_run_module_does_not_change_import_search_order():
+    before = list(sys.path)
+    _load_designator_run()
+    assert sys.path == before
 
 
 def paint_rect(rows: list[bytearray], x: int, y: int, w: int, h: int, value: int = INK) -> None:
@@ -221,10 +250,10 @@ def test_row_oriented_reconciliation_matches_the_oracle_on_a_dense_wholly_unclai
 
 def test_residual_components_sharing_an_origin_are_ordered_by_ink_like_the_oracle():
     """Two disjoint residual components can share a (top, left) bounds origin,
-    and the published order is identity-bearing (`residual_act_ordinal(index)` in
-    run.py). The retired implementation breaks that tie by the sorted member
-    pixels and never consults pixel_count, so the row-oriented sort must do the
-    same. The block is deliberately the LARGER component with the
+    and the published evidence order must remain deterministic even though it
+    does not enter identity. The oracle breaks that tie by sorted member pixels
+    and never consults pixel_count, so the row-oriented sort must do the same.
+    The block is deliberately the LARGER component with the
     lexicographically earlier ink: a count-based or insertion-order tie-break
     puts the diagonal first and diverges from the oracle."""
     width, height = 12, 12
@@ -444,3 +473,20 @@ def test_refuses_a_non_positive_claimed_rectangle():
             background=BACKGROUND,
             claimed_bounds=[{"x": 0, "y": 0, "w": 0, "h": 5}],
         )
+
+
+def test_two_residual_components_sharing_a_bounding_box_are_refused_before_either_is_minted():
+    """A residual act binds its class and rectangle, never list position. Two
+    connected components can share a bounding box, and minting both would
+    account for two pieces of unclaimed ink as one act: a lost act, which GOAL 1
+    puts above every other cost. Refused by name, before any hold is published.
+    """
+    _publish_residual_holds = _load_designator_run()._publish_residual_holds
+
+    shared = {"x": 4, "y": 4, "w": 6, "h": 6}
+    components = [
+        {"bounds": dict(shared), "pixel_count": 7},
+        {"bounds": dict(shared), "pixel_count": 5},
+    ]
+    with pytest.raises(ContractError, match="share the bounding box"):
+        _publish_residual_holds(None, "pg_0123456789abcdef", 1, components, {})

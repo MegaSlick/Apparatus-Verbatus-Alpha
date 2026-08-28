@@ -76,6 +76,7 @@ _PRIOR_READING_SCENARIOS = (
     "happy",
     "witness-capabilities",
     "review",
+    "continuation-recovery",
     # R5b's audit-change scenario reaches ordinary Pass A like every other
     # scenario in this tuple, so under R5a's no-borrowing rule it must declare
     # its own priors; its DECLARED audit re-proof (AUDIT_REPROOFS) is what
@@ -228,7 +229,12 @@ SCENARIO_TESTIMONY = (
 # where a2's *capture* rectangle begins: stopping there keeps every page pixel
 # cut under exactly one act identity, which stopping at 120 would not (rows
 # 114-119 are inside a2's crop, background though they are).
-RECOVERY_BOUNDS = {"a1": {"x": 0, "y": 0, "w": 200, "h": 114}}
+# The two recrops widen into opposite margins. Recropping cross-page a2 on its
+# primary page must leave its continuation page in the evidence denominator.
+RECOVERY_BOUNDS = {
+    "a1": {"x": 0, "y": 0, "w": 200, "h": 114},
+    "a2": {"x": 0, "y": 114, "w": 200, "h": 146},
+}
 
 # Per-scenario declared digests that will not match the checked-in bytes, so the
 # door refuses the page honestly through its real inspection path rather than
@@ -594,6 +600,11 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
         'name = "review"',
         'recover_acts = ["a1"]',
         'hold_acts = ["a2"]',
+        "",
+        "[[scenario]]",
+        'name = "continuation-recovery"',
+        'recover_acts = ["a2"]',
+        "hold_acts = []",
         "",
         "[[scenario]]",
         'name = "audit-change"',

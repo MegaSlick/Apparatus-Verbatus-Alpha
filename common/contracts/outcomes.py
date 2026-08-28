@@ -145,6 +145,32 @@ VOCABULARIES: Final[dict[str, dict[str, OutcomeClass]]] = {
     },
 }
 
+BOUNDARY_OUTCOMES: Final = {
+    "stage-seal": "sealed",
+    "decode-environment": "recorded",
+}
+
+# These two outcomes describe stage-boundary evidence, not an act's terminal
+# category. They use the ordinary envelope at every producer, including
+# Armarium; calling its boundary records ``delivered`` would falsely present
+# bookkeeping as exported text.
+#
+# The loop writes into a table declared by hand above, and Exemplar already
+# declares ``sealed`` itself -- with the same class, which is the only reason
+# the overwrite is invisible today. A declaration that disagreed would be
+# rewritten in silence, and a failed act would be accounted as completed while
+# the file above still read ``FAILED``. So a differing entry stops the import
+# rather than losing the declaration.
+for _stage in VOCABULARIES:
+    for _outcome in BOUNDARY_OUTCOMES.values():
+        _declared = VOCABULARIES[_stage].get(_outcome)
+        if _declared is not None and _declared is not _C.COMPLETED:
+            raise FatalAccounting(
+                f"stage {_stage!r} declares boundary outcome {_outcome!r} as "
+                f"{_declared.value!r}, which the boundary vocabulary would overwrite"
+            )
+        VOCABULARIES[_stage][_outcome] = _C.COMPLETED
+
 # --- The transition table: (stage, outcome) -> terminal category, or None -------
 #
 # None means "this unit flows onward and some later stage decides its category".
@@ -186,6 +212,18 @@ TERMINAL_CATEGORY: Final[dict[tuple[str, str], ArmariumCategory | None]] = {
     (ARMARIUM, _A.CONFIRMED_BLANK.value): _A.CONFIRMED_BLANK,
     (ARMARIUM, _A.REFUSED_WITH_REASON.value): _A.REFUSED_WITH_REASON,
 }
+
+# The same overwrite, and the same guard: `(EXEMPLAR, "sealed")` is declared
+# above as transitive, and a declaration naming a category here would otherwise
+# be replaced by ``None`` without a word.
+for _stage in VOCABULARIES:
+    for _outcome in BOUNDARY_OUTCOMES.values():
+        if TERMINAL_CATEGORY.get((_stage, _outcome), None) is not None:
+            raise FatalAccounting(
+                f"stage {_stage!r} declares boundary outcome {_outcome!r} as terminal, "
+                "which the boundary vocabulary would overwrite"
+            )
+        TERMINAL_CATEGORY[(_stage, _outcome)] = None
 
 # The Perlector's failures are transitive on purpose: a truncated or failed reading
 # is the Recensor's to act on — it may request bounded recovery — and only the

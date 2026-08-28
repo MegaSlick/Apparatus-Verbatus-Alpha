@@ -255,7 +255,9 @@ def test_perlector_names_a_testimonium_with_missing_provenance(happy_run):
         )
 
 
-def test_perlector_refuses_a_missing_witness_before_publishing_any_reading(tmp_path):
+def test_perlector_refuses_a_missing_witness_before_publishing_any_reading(
+    tmp_path, rebind_stage_seal
+):
     """A later bad act cannot leave an earlier shortened Perlectio immutable.
 
     Recensor used to discover this only after Perlector had written the earlier
@@ -303,6 +305,10 @@ def test_perlector_refuses_a_missing_witness_before_publishing_any_reading(tmp_p
     )
     tree.resolve(missing["relative_path"]).unlink()
     tree.write_manifest(ATTESTATORES)
+    # The Attestatores seal witnesses the folder it actually left behind, so a
+    # rebind is what puts a shortened denominator in front of the Perlector's
+    # own witness-floor check rather than in front of the boundary refusal.
+    rebind_stage_seal(tree, ATTESTATORES)
 
     result = subprocess.run(
         [

@@ -45,7 +45,6 @@ from common.contracts.errors import ContractError
 from common.contracts.identities import act_id as derive_act_id
 from common.imaging import grayscale_rows
 from common.perlector_audit import REPROOF_PASS_KIND, validate_audit_request
-from common.stage import FALLBACK_PAGE_ACT_ORDINAL
 
 # The page-fallback reader must be at least as sensitive as the Designator's
 # conservation denominator. This literal mirrors `structure.SECONDARY_MARGIN`;
@@ -375,7 +374,7 @@ class FixtureReader:
             if page["ordinal"] != ordinal:
                 continue
             page_bounds = {"x": 0, "y": 0, "w": page["width"], "h": page["height"]}
-            expected = derive_act_id(source_page_id, FALLBACK_PAGE_ACT_ORDINAL, page_bounds)
+            expected = derive_act_id(source_page_id, "page-fallback", page_bounds)
             return dossier.get("act_id") == expected
         return False
 

@@ -75,7 +75,15 @@ def _no_expected_acts(monkeypatch):
 def _page_testimonium(*, outcome, reported=..., attempt_ordinal=1, artifact_id=None):
     subject_id = "page-1"
     chair = "attestator_1"
-    payload = {"page_ordinal": 1, "chair": chair, "attempt_ordinal": attempt_ordinal}
+    # `page_role` is part of the closed page-Testimonium shape the producer
+    # publishes; act-1's only region is on page 1, so `primary` is what
+    # `reconcile_page_roles` re-derives for this double.
+    payload = {
+        "page_ordinal": 1,
+        "page_role": "primary",
+        "chair": chair,
+        "attempt_ordinal": attempt_ordinal,
+    }
     if reported is not ...:
         payload["reported"] = reported
     return {
@@ -144,6 +152,10 @@ def _attachment(context, *, end, testimonium_id="page-witness-1"):
                 {
                     "chair": "attestator_1",
                     "page_witness": True,
+                    # Required of every page-witness row since the attachment
+                    # became page-scoped: `reconcile_page_roles` derives each
+                    # page's role denominator from exactly this field.
+                    "page_ordinal": 1,
                     "testimonium_ref": context.artifact_ref(
                         RUN.ATTESTATORES, "page-testimonium", testimonium_id
                     ),
@@ -155,6 +167,42 @@ def _attachment(context, *, end, testimonium_id="page-witness-1"):
                 }
             ],
         },
+    }
+
+
+def _attachment_fact_record(rows):
+    return {
+        "artifact_id": "attachment-facts-1",
+        "stage": RUN.ATTESTATORES,
+        "kind": "act-attachment",
+        "subject_id": "act-1",
+        "attempt_id": attempt_id("act-1", "act-attachment", 1),
+        "outcome": "attached",
+        "payload": {"attempt_ordinal": 1, "attachments": rows},
+    }
+
+
+def _page_fact(*, ordinal, attached, anchor_basis=None):
+    alignment = (
+        {
+            "status": "aligned",
+            "anchor_basis": anchor_basis,
+            "anchor_span": {"start": 0, "end": 1},
+            "witness_span": {"start": 0, "end": 1},
+            "line_geometry": [],
+            "loss": {},
+            "offset_maps": {},
+        }
+        if attached
+        else {"status": "unaligned", "reason": "continuation-page-no-act-anchor"}
+    )
+    return {
+        "chair": "attestator_1",
+        "page_witness": True,
+        "page_ordinal": ordinal,
+        "attached": attached,
+        "content_health": {"truncated": False},
+        "alignment": alignment,
     }
 
 
@@ -174,7 +222,7 @@ def test_artifact_tree_preserves_stage_ownership_in_manifests_and_reads():
         tree.read_artifact(RUN.ATTESTATORES, "conservation", "conservation-1")
 
 
-def test_a_reading_page_testimonium_cannot_lose_its_reported_text_and_take_the_skip():
+def test_a_reading_page_testimonium_cannot_lose_its_reported_text_and_take_the_skip(monkeypatch):
     """V4: the no-report skip belongs only to a non-reading page record."""
     act_reading = {
         "artifact_id": "act-reading-1",
@@ -185,15 +233,38 @@ def test_a_reading_page_testimonium_cannot_lose_its_reported_text_and_take_the_s
         "payload": {"chair": "attestator_1", "reported": "real act text"},
     }
     context = _context(act_reading, _page_testimonium(outcome="read"))
+    context.tree.records["attachment-1"] = _attachment(context, end=0)
+    monkeypatch.setattr(
+        RUN,
+        "expected_acts",
+        lambda unused: [{"act_id": "act-1", "act_key": "a1", "page_ordinal": 1}],
+    )
 
     with pytest.raises(FatalAccounting, match="reading page Testimonium has no reported text"):
         RUN.testimony_content_findings(context)
 
 
-def test_a_non_reading_page_testimonium_still_has_no_content_to_compare():
+def test_a_non_reading_page_testimonium_still_has_no_content_to_compare(monkeypatch):
     context = _context(_page_testimonium(outcome="failed"))
+    attachment = _attachment(context, end=0)
+    row = attachment["payload"]["attachments"][0]
+    row["attached"] = False
+    row["alignment"] = {"status": "unaligned", "reason": "non-reading-page-attempt-failed"}
+    context.tree.records["attachment-1"] = attachment
+    monkeypatch.setattr(
+        RUN,
+        "expected_acts",
+        lambda unused: [{"act_id": "act-1", "act_key": "a1", "page_ordinal": 1}],
+    )
 
     assert RUN.testimony_content_findings(context) == {}
+
+
+def test_an_orphaned_page_testimonium_cannot_become_an_unowned_finding():
+    context = _context(_page_testimonium(outcome="failed"))
+
+    with pytest.raises(FatalAccounting, match="orphaned record.*page evidence cannot"):
+        RUN.testimony_content_findings(context)
 
 
 def test_an_attached_page_witness_requires_its_current_page_testimonium(monkeypatch):
@@ -210,6 +281,112 @@ def test_an_attached_page_witness_requires_its_current_page_testimonium(monkeypa
         match="act act-1.*attestator_1.*no current page Testimonium",
     ):
         RUN.testimony_content_findings(context)
+
+
+def test_an_unaligned_continuation_still_requires_its_current_page_testimonium(monkeypatch):
+    """An explicit inability to align is retained evidence, not permission to lose it."""
+    context = _context()
+    attachment = _attachment(context, end=0)
+    row = attachment["payload"]["attachments"][0]
+    row["attached"] = False
+    row["alignment"] = {
+        "status": "unaligned",
+        "reason": "continuation-page-no-act-anchor",
+    }
+    context.tree.records["attachment-1"] = attachment
+    monkeypatch.setattr(
+        RUN,
+        "expected_acts",
+        lambda unused: [{"act_id": "act-1", "act_key": "a1", "page_ordinal": 1}],
+    )
+
+    with pytest.raises(
+        FatalAccounting,
+        match="act act-1.*attestator_1.*no current page Testimonium",
+    ):
+        RUN.testimony_content_findings(context)
+
+
+def test_page_attachment_facts_preserve_a_later_primary_alignment():
+    """An earlier-page continuation cannot erase the act's primary alignment.
+
+    This order alone does not discriminate — last-row-wins would report the same
+    two values — so the reverse order below is the half that can actually fail.
+    Both are kept because the merge has to hold in either direction.
+    """
+    rows = [
+        _page_fact(ordinal=1, attached=False),
+        _page_fact(ordinal=2, attached=True, anchor_basis="act-anchor"),
+    ]
+
+    facts = RUN.act_attachment_facts(_context(_attachment_fact_record(rows)), "act-1")
+
+    assert facts["attestator_1"]["attached"] is True
+    assert facts["attestator_1"]["anchor_basis"] == "act-anchor"
+
+
+def test_page_attachment_facts_preserve_an_earlier_primary_alignment():
+    """A later continuation row may not overwrite the primary page's alignment.
+
+    The discriminating order: replace the `attached or attached` merge with
+    last-row-wins and this reports False and None instead.
+    """
+    rows = [
+        _page_fact(ordinal=1, attached=True, anchor_basis="act-anchor"),
+        _page_fact(ordinal=2, attached=False),
+    ]
+
+    facts = RUN.act_attachment_facts(_context(_attachment_fact_record(rows)), "act-1")
+
+    assert facts["attestator_1"]["attached"] is True
+    assert facts["attestator_1"]["anchor_basis"] == "act-anchor"
+
+
+@pytest.mark.parametrize(
+    "bases",
+    (("act-line-not-located", "act-anchor"), ("act-anchor", "act-line-not-located")),
+    ids=("failure-first", "failure-second"),
+)
+def test_page_attachment_facts_keep_a_failed_geometry_across_its_pages(bases):
+    """`act-line-not-located` survives an aligned sibling row, in either order.
+
+    This is the clause the merge's second condition exists for, and it decides
+    whether blank_corroboration can block a confirmed-blank. Drop it and an act
+    whose page geometry located no line for it seals as a proved blank — a real
+    baptism or burial leaving the export as "no readable text", with nothing
+    downstream able to tell.
+    """
+    rows = [
+        _page_fact(ordinal=1, attached=True, anchor_basis=bases[0]),
+        _page_fact(ordinal=2, attached=True, anchor_basis=bases[1]),
+    ]
+
+    facts = RUN.act_attachment_facts(_context(_attachment_fact_record(rows)), "act-1")
+
+    assert facts["attestator_1"]["anchor_basis"] == "act-line-not-located"
+
+
+def test_page_attachment_facts_refuse_a_duplicate_page_pair():
+    rows = [
+        _page_fact(ordinal=1, attached=False),
+        _page_fact(ordinal=1, attached=False),
+    ]
+
+    with pytest.raises(FatalAccounting, match="repeats attachment pair.*exactly one row"):
+        RUN.act_attachment_facts(_context(_attachment_fact_record(rows)), "act-1")
+
+
+@pytest.mark.parametrize(
+    ("field", "message"),
+    [("status", "computed alignment fact"), ("anchor_basis", "malformed aligned")],
+)
+def test_page_attachment_facts_name_unhashable_alignment_enums(field, message):
+    """JSON arrays at enum fields are refusals, never set-membership tracebacks."""
+    row = _page_fact(ordinal=1, attached=True, anchor_basis="act-anchor")
+    row["alignment"][field] = []
+
+    with pytest.raises(FatalAccounting, match=message):
+        RUN.act_attachment_facts(_context(_attachment_fact_record([row])), "act-1")
 
 
 def test_a_held_act_without_an_attachment_refuses_even_without_page_testimony(monkeypatch):
@@ -582,9 +759,15 @@ def test_each_act_gets_a_private_copy_of_its_pages_geometry_finding():
     assert RUN.geometry_coverage_for({}, 7) is not RUN.NO_PAGE_CONSERVATION
 
 
-def test_a_non_textual_reported_page_body_is_named_as_its_own_fault():
+def test_a_non_textual_reported_page_body_is_named_as_its_own_fault(monkeypatch):
     """F-O2: two distinct producer faults may not share one refusal string."""
     context = _context(_page_testimonium(outcome="read", reported={"lines": []}))
+    context.tree.records["attachment-1"] = _attachment(context, end=0)
+    monkeypatch.setattr(
+        RUN,
+        "expected_acts",
+        lambda unused: [{"act_id": "act-1", "act_key": "a1", "page_ordinal": 1}],
+    )
 
     with pytest.raises(FatalAccounting, match="reported page text is not text"):
         RUN.testimony_content_findings(context)

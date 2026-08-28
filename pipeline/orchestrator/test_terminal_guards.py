@@ -54,6 +54,7 @@ class _RecordingContext:
 
     def __init__(self) -> None:
         self.published: list[dict] = []
+        self.sealed = False
         self.finished = False
         self.fixture = {"fixture_id": "synthetic-terminal-guard-v0"}
         self.scenario = "synthetic-terminal-guard"
@@ -88,6 +89,9 @@ class _RecordingContext:
 
     def finish(self) -> None:
         self.finished = True
+
+    def seal_boundary(self) -> None:
+        self.sealed = True
 
     def artifact_ref(self, stage: str, kind: str, identity: str) -> dict[str, str]:
         return {
@@ -151,6 +155,7 @@ def _all_refused_door_tree(root: Path) -> RunTree:
             "reason": "corrupt: deliberately invalid synthetic bytes",
         },
     )
+    context.seal_boundary()
     context.finish()
     return tree
 

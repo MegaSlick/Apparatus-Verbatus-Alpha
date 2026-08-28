@@ -22,8 +22,9 @@ from __future__ import annotations
 
 from typing import Final
 
+from common.contracts.approval import ApprovalRecordBinding
 from common.contracts.canonical import digest_of
-from common.stage import MAX_NUDA_PER_MILLE
+from common.stage import MAX_NUDA_PER_MILLE, NUDA_APPROVAL_SUBJECT
 
 LECTIO_NUDA_KIND: Final = "lectio-nuda"
 
@@ -63,7 +64,9 @@ def is_nuda_sampled(act_id: str, *, run_id: str, nuda_per_mille: int) -> bool:
     return threshold < nuda_per_mille
 
 
-def sampling_design(*, nuda_per_mille: int, approval_ref: str) -> dict[str, object]:
+def sampling_design(
+    *, nuda_per_mille: int, approval_ref: ApprovalRecordBinding
+) -> dict[str, object]:
     """The design record every Lectio nuda carries.
 
     GOVERNANCE 10: "cost is recorded but never silently narrows the
@@ -71,10 +74,18 @@ def sampling_design(*, nuda_per_mille: int, approval_ref: str) -> dict[str, obje
     rule and the approval travel on every record drawn under them.
     """
     validate_nuda_per_mille(nuda_per_mille)
-    if not isinstance(approval_ref, str) or not approval_ref.strip():
-        raise ValueError("a Lectio nuda was drawn with no predeclared approval reference")
+    if not isinstance(approval_ref, ApprovalRecordBinding):
+        raise ValueError(
+            "a Lectio nuda was drawn with an untyped approval reference; "
+            "an arbitrary string is not an approval record"
+        )
+    if approval_ref.subject != NUDA_APPROVAL_SUBJECT:
+        raise ValueError(
+            f"a Lectio nuda executes design {NUDA_APPROVAL_SUBJECT!r}, but its approval "
+            f"record names {approval_ref.subject!r}"
+        )
     return {
         "nuda_per_mille": nuda_per_mille,
         "selection_rule": SELECTION_RULE,
-        "approval_ref": approval_ref,
+        "approval_ref": approval_ref.reference.to_record(),
     }

@@ -15,6 +15,7 @@ from .approval import (
     APPROVER,
     REAL_INGRESS,
     SYNTHETIC_FIXTURE_INGRESS,
+    ApprovalRecordBinding,
     ApprovalRecordReference,
     build_approval_record,
     parse_ingress_record,
@@ -29,6 +30,7 @@ from .canonical import (
     digest_bytes,
     digest_of,
     self_hash,
+    self_hash_refusal,
     verify_self_hash,
 )
 from .envelope import (
@@ -71,6 +73,7 @@ from .stages import HANDOFFS, STAGES, stage_directory
 __all__ = [
     "APPROVER",
     "ArmariumCategory",
+    "ApprovalRecordBinding",
     "ApprovalRecordReference",
     "ApprovalRefusal",
     "ContractError",
@@ -105,6 +108,7 @@ __all__ = [
     "require_approval",
     "run_aggregate",
     "self_hash",
+    "self_hash_refusal",
     "stage_directory",
     "terminal_category",
     "synthetic_fixture_ingress_record",

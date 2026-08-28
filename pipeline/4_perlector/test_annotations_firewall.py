@@ -10,6 +10,16 @@ import pytest
 
 from common.contracts.errors import SchemaRefusal
 
+
+class _UnhashableString(str):
+    __hash__ = None
+
+
+class _HostileReprString(str):
+    def __repr__(self):
+        raise RuntimeError("the refusal rendered an untrusted string subclass")
+
+
 # --- Uncertain spans: read text, bounds-checked -------------------------------
 
 
@@ -32,12 +42,76 @@ def test_an_uncertain_span_with_start_after_end_refuses():
         )
 
 
-@pytest.mark.parametrize("confidence", ["certain", "maybe", "", None, 1])
+@pytest.mark.parametrize(
+    "confidence",
+    [
+        "certain",
+        "maybe",
+        "",
+        None,
+        1,
+        True,
+        False,
+        [],
+        {},
+        [[]],
+        {"nested": []},
+        {"nested": {"deep": [{}]}},
+    ],
+)
 def test_an_uncertain_span_with_an_undeclared_confidence_refuses(confidence):
     with pytest.raises(SchemaRefusal, match="confidence"):
         annotations.validate_uncertain_spans(
             [{"start": 0, "end": 1, "alternatives": [], "confidence": confidence}], "reading"
         )
+
+
+# An explicit id prevents pytest from recursively rendering this cycle during
+# collection, before the validator gets the value.
+_RECURSIVE_CONFIDENCE: list = []
+_RECURSIVE_CONFIDENCE.append(_RECURSIVE_CONFIDENCE)
+
+
+# Which refusal each value must reach, not merely that some refusal mentioning
+# "confidence" was raised. Ten of these are refused by the pre-existing membership
+# check too, so matching the word alone left the type gate — the thing this test is
+# named for — provable only by the two str subclasses, and even there the two
+# messages were indistinguishable. The gap test below already pins its branch with
+# `match="position has type"`; this does the same per case.
+_TYPE_GATE = "confidence has type"
+_MEMBERSHIP_GATE = "is not one of"
+
+
+@pytest.mark.parametrize(
+    "confidence,expected",
+    [
+        # Adapter output is not guaranteed to have passed through JSON, so type
+        # refusal must precede comparison, traversal, or rendering.
+        pytest.param(float("nan"), _TYPE_GATE, id="nan"),
+        pytest.param(float("inf"), _TYPE_GATE, id="inf"),
+        pytest.param(1.5, _TYPE_GATE, id="float"),
+        pytest.param(10**5000, _TYPE_GATE, id="huge-int"),
+        pytest.param(b"low", _TYPE_GATE, id="bytes"),
+        pytest.param({"\ud800": "low"}, _TYPE_GATE, id="surrogate-key"),
+        pytest.param(_RECURSIVE_CONFIDENCE, _TYPE_GATE, id="recursive"),
+        # `str` subclasses: exact-type, so only the type gate stops them before
+        # membership or formatting can invoke subclass-defined behaviour.
+        pytest.param(_UnhashableString("low"), _TYPE_GATE, id="unhashable-string-subclass"),
+        pytest.param(_HostileReprString("maybe"), _TYPE_GATE, id="hostile-repr-string-subclass"),
+        # These exact strings pass the type gate and reach the value-bearing
+        # membership refusal, which must render them without complaint.
+        pytest.param("\ud800", _MEMBERSHIP_GATE, id="lone-surrogate"),
+        pytest.param("NaN", _MEMBERSHIP_GATE, id="nan-spelling"),
+        pytest.param("low\0", _MEMBERSHIP_GATE, id="null-byte"),
+    ],
+)
+def test_a_noncanonical_or_undeclared_confidence_refuses_printably(confidence, expected):
+    """Only exact strings may be rendered in the printable refusal message."""
+    with pytest.raises(SchemaRefusal, match=expected) as caught:
+        annotations.validate_uncertain_spans(
+            [{"start": 0, "end": 1, "alternatives": [], "confidence": confidence}], "reading"
+        )
+    str(caught.value).encode("utf-8")
 
 
 def test_an_uncertain_span_with_a_non_string_alternative_refuses():
@@ -86,6 +160,24 @@ def test_a_well_formed_zero_width_gap_validates():
         }
     ]
     assert annotations.validate_gaps(gaps, "abcxyz") == gaps
+
+
+@pytest.mark.parametrize(
+    "position",
+    [
+        pytest.param(10**5000, id="huge-int"),
+        pytest.param([], id="unhashable-list"),
+        pytest.param(_UnhashableString("internal"), id="unhashable-string-subclass"),
+        pytest.param(_HostileReprString("sideways"), id="hostile-repr-string-subclass"),
+    ],
+)
+def test_a_noncanonical_gap_position_reaches_a_printable_refusal(position):
+    with pytest.raises(SchemaRefusal, match="position has type") as caught:
+        annotations.validate_gaps(
+            [{"position": position, "start": 1, "end": 1, "witness_evidence": []}],
+            "abc",
+        )
+    str(caught.value).encode("utf-8")
 
 
 def test_the_firewall_refuses_a_fake_seat_that_fills_a_gap_from_testimony():

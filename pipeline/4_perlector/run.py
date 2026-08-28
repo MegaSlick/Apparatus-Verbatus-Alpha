@@ -27,6 +27,9 @@ and zero dissent there is the correct output.
 """
 
 import copy
+import json
+import os
+import stat
 import sys
 from pathlib import Path
 from typing import Any, Final
@@ -48,16 +51,29 @@ from reader import FixtureReader, validate_audit_delivery  # noqa: E402
 from common.alignment import markup_text_view  # noqa: E402
 from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
-from common.contracts.canonical import digest_of  # noqa: E402
+from common.contracts.approval import (  # noqa: E402
+    ApprovalRecordBinding,
+    ApprovalRecordReference,
+    validate_approval_record,
+)
+from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of  # noqa: E402
 from common.contracts.envelope import validate_input_refs  # noqa: E402
-from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal  # noqa: E402
+from common.contracts.errors import (  # noqa: E402
+    ApprovalRefusal,
+    ContractError,
+    FatalAccounting,
+    SchemaRefusal,
+)
 from common.contracts.identities import artifact_id, perlector_attempt_id  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, PERLECTOR  # noqa: E402
 from common.exemplar_boundary import verify_exemplar_crop_lineage  # noqa: E402
+from common.runtree.store import RECEIPTS_DIR  # noqa: E402
 from common.stage import (  # noqa: E402
     ATTEMPTED_WITNESS_OUTCOMES,
     EXIT_COMPLETE,
+    NUDA_APPROVAL_SUBJECT,
     PERLECTOR_CHAIR,
+    PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT,
     WITNESS_CONTEXT_REGIMES,
     WITNESS_READING_OUTCOMES,
     expected_acts,
@@ -71,6 +87,323 @@ from common.stage import (  # noqa: E402
     stage_parser,
     validate_serving_provenance,
 )
+
+# A sampling gate has to inspect the shared receipt directory because the sealed
+# experiment selector cannot contain the content address of the approval that
+# targets that selector's own config digest.  Bounds turn a planted directory
+# into a named refusal instead of an unbounded preflight.  Real receipts are a
+# few kilobytes; these ceilings allow a large alpha run while keeping both one
+# object and the aggregate scan finite.
+MAX_SAMPLING_APPROVAL_RECEIPTS: Final = 100_000
+MAX_SAMPLING_APPROVAL_RECEIPT_BYTES: Final = 4 * 1024 * 1024
+MAX_SAMPLING_APPROVAL_SCAN_BYTES: Final = 1024 * 1024 * 1024
+
+
+def _receipt_name_digest(name: str) -> str | None:
+    suffix = ".json"
+    if not name.endswith(suffix):
+        return None
+    digest = name[: -len(suffix)]
+    if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
+        return None
+    return digest
+
+
+def _open_receipts_directory(tree) -> int | None:
+    """Open the canonical receipt directory one component at a time, no-follow.
+
+    ``RunTree.resolve`` deliberately resolves symlinks before its spelling-based
+    containment check.  That is suitable for ordinary movable references, but
+    not for this security gate: a receipt alias could be changed through its
+    other name after approval was checked.  Directory descriptors keep every
+    lookup anchored to the inode that was actually opened.
+    """
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    directory = getattr(os, "O_DIRECTORY", None)
+    if no_follow is None or directory is None:
+        raise ContractError(
+            "the sampling approval gate cannot open receipt evidence without following links "
+            "on this platform"
+        )
+    flags = os.O_RDONLY | os.O_NONBLOCK | no_follow | directory
+    context_root = tree.root
+    try:
+        current = os.open(context_root, flags)
+    except OSError as error:
+        raise ContractError(
+            f"run tree {context_root} could not be opened without following a redirect while "
+            "resolving sampling approval"
+        ) from error
+    try:
+        for component in RECEIPTS_DIR.split("/"):
+            try:
+                child = os.open(component, flags, dir_fd=current)
+            except FileNotFoundError:
+                os.close(current)
+                return None
+            except OSError as error:
+                raise ContractError(
+                    f"receipt directory {RECEIPTS_DIR!r} could not be opened without following "
+                    "a redirect; sampling approval evidence must be plain directories"
+                ) from error
+            os.close(current)
+            current = child
+        return current
+    except BaseException:
+        os.close(current)
+        raise
+
+
+def _stable_file_metadata(details: os.stat_result) -> tuple[int, ...]:
+    return (
+        details.st_dev,
+        details.st_ino,
+        details.st_mode,
+        details.st_size,
+        details.st_mtime_ns,
+        details.st_ctime_ns,
+        details.st_nlink,
+    )
+
+
+def _read_receipt_bytes(directory_descriptor: int, name: str, relative_path: str) -> bytes:
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    if no_follow is None:
+        raise ContractError(
+            "the sampling approval gate cannot read receipt evidence without following links "
+            "on this platform"
+        )
+    try:
+        descriptor = os.open(
+            name,
+            os.O_RDONLY | os.O_NONBLOCK | no_follow,
+            dir_fd=directory_descriptor,
+        )
+    except OSError as error:
+        raise ContractError(
+            f"receipt {relative_path!r} could not be opened without following a redirect while "
+            "resolving sampling approval"
+        ) from error
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise ContractError(
+                f"receipt {relative_path!r} is not a regular file; the sampling gate reads only "
+                "immutable receipt files"
+            )
+        if before.st_nlink != 1:
+            raise ContractError(
+                f"receipt {relative_path!r} has {before.st_nlink} hard links; approval evidence "
+                "must have one immutable content-addressed name"
+            )
+        if before.st_size > MAX_SAMPLING_APPROVAL_RECEIPT_BYTES:
+            raise ContractError(
+                f"receipt {relative_path!r} is larger than the "
+                f"{MAX_SAMPLING_APPROVAL_RECEIPT_BYTES}-byte sampling-approval bound and was "
+                "not read"
+            )
+        with os.fdopen(descriptor, "rb") as handle:
+            descriptor = -1
+            data = handle.read(MAX_SAMPLING_APPROVAL_RECEIPT_BYTES + 1)
+            after = os.fstat(handle.fileno())
+        if len(data) > MAX_SAMPLING_APPROVAL_RECEIPT_BYTES:
+            raise ContractError(
+                f"receipt {relative_path!r} grew beyond the "
+                f"{MAX_SAMPLING_APPROVAL_RECEIPT_BYTES}-byte sampling-approval bound while "
+                "it was read"
+            )
+        if _stable_file_metadata(before) != _stable_file_metadata(after):
+            raise ContractError(
+                f"receipt {relative_path!r} changed while it was read; moving evidence cannot "
+                "authorize a sampling arm"
+            )
+        return data
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _sampling_receipts(context, *, subject: str) -> list[tuple[ApprovalRecordReference, dict]]:
+    """Read every receipt once and return validated records for ``subject``."""
+    directory = _open_receipts_directory(context.tree)
+    if directory is None:
+        return []
+    try:
+        directory_before = _stable_file_metadata(os.fstat(directory))
+        names: list[str] = []
+        casefolded: dict[str, str] = {}
+        try:
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    name = entry.name
+                    names.append(name)
+                    if len(names) > MAX_SAMPLING_APPROVAL_RECEIPTS:
+                        raise ContractError(
+                            f"receipt directory {RECEIPTS_DIR!r} holds more than "
+                            f"{MAX_SAMPLING_APPROVAL_RECEIPTS} entries; the sampling approval "
+                            "scan is bounded"
+                        )
+                    folded = name.casefold()
+                    other = casefolded.get(folded)
+                    if other is not None and other != name:
+                        raise ContractError(
+                            f"receipt directory {RECEIPTS_DIR!r} contains case-variant names "
+                            f"{other!a} and {name!a}; they collide on default APFS"
+                        )
+                    casefolded[folded] = name
+        except OSError as error:
+            raise ContractError(
+                f"receipt directory {RECEIPTS_DIR!r} could not be listed while resolving "
+                f"approval for experiment {subject!r}"
+            ) from error
+
+        records: list[tuple[ApprovalRecordReference, dict]] = []
+        scanned_bytes = 0
+        for name in sorted(names):
+            digest = _receipt_name_digest(name)
+            if digest is None:
+                raise ContractError(
+                    f"receipt directory {RECEIPTS_DIR!r} contains noncanonical entry {name!a}; "
+                    "the sampling gate cannot prove its approval inventory on a "
+                    "case-variant or non-content-addressed name"
+                )
+            relative_path = f"{RECEIPTS_DIR}/{name}"
+            data = _read_receipt_bytes(directory, name, relative_path)
+            scanned_bytes += len(data)
+            if scanned_bytes > MAX_SAMPLING_APPROVAL_SCAN_BYTES:
+                raise ContractError(
+                    f"receipt scan exceeded the {MAX_SAMPLING_APPROVAL_SCAN_BYTES}-byte "
+                    "sampling-approval bound; the gate refuses an amplified evidence directory"
+                )
+            actual = digest_bytes(data)
+            if actual != digest:
+                raise ContractError(
+                    f"receipt {relative_path!r} has digest {actual}, not its content-addressed "
+                    f"name {digest}; the sampling gate cannot skip corrupted evidence"
+                )
+            try:
+                decoded = json.loads(data.decode("utf-8"))
+            except UnicodeDecodeError as error:
+                raise ContractError(
+                    f"receipt {relative_path!r} is not UTF-8 while resolving approval for "
+                    f"experiment {subject!r}. The sampling gate cannot prove exactly one "
+                    "approval while any receipt is undecodable. Restore the exact immutable "
+                    "receipt bytes or hold this run for review, then rerun the Perlector"
+                ) from error
+            except (ValueError, RecursionError) as error:
+                raise ContractError(
+                    f"receipt {relative_path!r} is malformed JSON while resolving approval for "
+                    f"experiment {subject!r}: {error}. The sampling gate cannot prove exactly "
+                    "one approval while any receipt is malformed. Restore the exact immutable "
+                    "receipt bytes or hold this run for review, then rerun the Perlector"
+                ) from error
+            if not isinstance(decoded, dict):
+                raise ContractError(
+                    f"receipt {relative_path!r} is a JSON {type(decoded).__name__}, not an object, "
+                    f"while resolving approval for experiment {subject!r}. The sampling gate "
+                    "cannot prove exactly one approval without inspecting every receipt object. "
+                    "Restore the exact immutable receipt bytes or hold this run for review, then "
+                    "rerun the Perlector"
+                )
+            try:
+                canonical = canonical_bytes(decoded)
+            except (TypeError, ValueError, RecursionError) as error:
+                raise ContractError(
+                    f"receipt {relative_path!r} cannot be represented as canonical receipt "
+                    "bytes while resolving sampling approval"
+                ) from error
+            if canonical != data:
+                raise ContractError(
+                    f"receipt {relative_path!r} is not canonical JSON; duplicate or ambiguous "
+                    "evidence cannot authorize a sampling arm"
+                )
+            if decoded.get("subject_ids") != [subject]:
+                continue
+            reference = ApprovalRecordReference(relative_path, digest)
+            try:
+                record = validate_approval_record(decoded)
+            except ApprovalRefusal as error:
+                raise ContractError(
+                    f"approval record {relative_path!r} for experiment {subject!r} is refused: "
+                    f"{error}. The sampling gate cannot accept that record for this run's sealed "
+                    f"config_digest {context.config_digest}. Preserve this run for review and "
+                    "start a new run tree with one valid approval record before sampling"
+                ) from error
+            records.append((reference, record))
+        directory_after = _stable_file_metadata(os.fstat(directory))
+        if directory_after != directory_before:
+            raise ContractError(
+                f"receipt directory {RECEIPTS_DIR!r} changed while the sampling gate inspected "
+                "it; a moving inventory cannot prove exactly one approval"
+            )
+        return records
+    finally:
+        os.close(directory)
+
+
+def resolve_sampling_approval(context, *, approval_ref: str, subject: str) -> ApprovalRecordBinding:
+    """Resolve one sealed experiment selector to its checked approval record.
+
+    The sealed selector avoids a hash fixed point: an approval cannot both be
+    addressed by its content and target a configuration containing that address.
+    Candidates pass path, digest, schema, self-hash, approver, sole-subject,
+    action, and exact-version checks before the binding reaches either arm.
+
+    The record authenticates integrity and a claimed approver, not authorship;
+    run-tree write authority remains the trust boundary. Authenticating the human
+    act itself would require an out-of-band signature.
+    """
+    if approval_ref != subject:
+        raise ContractError(
+            f"approval reference {approval_ref!r} does not name experiment {subject!r}; "
+            "an arbitrary string is not an approval record"
+        )
+
+    candidates = _sampling_receipts(context, subject=subject)
+
+    if not candidates:
+        raise ContractError(
+            f"no approval record names experiment {subject!r}; a nonzero sampling arm "
+            "cannot draw without Tyrel's typed approval record. Expected one record "
+            f"under {RECEIPTS_DIR}/ in this run tree with subject_ids "
+            f"[{subject!r}], action 'other', and target_version_hash "
+            f"{context.config_digest}"
+        )
+    if len(candidates) != 1:
+        paths = [candidate.relative_path for candidate, _record in candidates]
+        raise ContractError(
+            f"{len(candidates)} validated approval records {paths} name experiment {subject!r} for "
+            f"this run's sealed config_digest {context.config_digest}. The sampling gate cannot "
+            "choose among approval records; it requires exactly one. Preserve this run for review "
+            "and start a new run tree with one current approval record before sampling"
+        )
+
+    candidate, record = candidates[0]
+    # "exclusion" and "salvage-promotion" approve a different governed action entirely
+    # (GOVERNANCE 1); a sampling design is filed under "other" so a record meant to
+    # authorize an exclusion can never double as a sampling approval by coincidence
+    # of subject text.
+    if record["action"] != "other":
+        raise ContractError(
+            f"approval record {candidate.relative_path!r} for experiment {subject!r} has "
+            f"action {record['action']!r}, not 'other', for this run's sealed config_digest "
+            f"{context.config_digest}. A sampling design approval is not an exclusion or "
+            "salvage-promotion record. Preserve this run for review and start a new run tree with "
+            "one approval record for action 'other' before sampling"
+        )
+    if record["target_version_hash"] != context.config_digest:
+        raise ContractError(
+            f"approval record {candidate.relative_path!r} for experiment {subject!r} names "
+            f"version {record['target_version_hash']}, not this run's sealed config_digest "
+            f"{context.config_digest}. The record approves a different sealed configuration. "
+            "Preserve this run for review and start a new run tree with one approval record for "
+            "the configuration that will be sampled"
+        )
+    return ApprovalRecordBinding(
+        candidate,
+        record["subject_ids"][0],
+        record["target_version_hash"],
+    )
 
 
 def regions_of(context, act_id: str) -> list[dict]:
@@ -209,7 +542,37 @@ def testimonia_of(context, act_id: str, proposal_regions: list[dict]) -> list[di
     return current
 
 
-def act_attachment_view(context, act: dict[str, Any], testimonia: list[dict]) -> dict[str, Any]:
+def declared_page_witness_chairs(context) -> set[str]:
+    """Independently validate the producer's page-witness declaration.
+
+    A consumer may not inherit trust across a stage boundary. Uniqueness keeps
+    duplicates from disappearing in a set, and roster membership prevents a
+    declaration for nonexistent chairs from silently erasing page coverage.
+    """
+    declared = context.fixture.get("page_witness_chairs", [])
+    # Set construction and refusal formatting may invoke subclass-defined
+    # behavior, so both require exact built-in strings first.
+    if (
+        not isinstance(declared, list)
+        or any(type(item) is not str for item in declared)
+        or len(declared) != len(set(declared))
+    ):
+        raise SchemaRefusal(
+            "the fixture's page_witness_chairs declaration is not a unique list of chair names"
+        )
+    declared_chairs = set(declared)
+    unknown = declared_chairs - set(context.witness_chairs)
+    if unknown:
+        raise SchemaRefusal(
+            "the fixture's page_witness_chairs declaration names chair(s) outside this run's "
+            f"configured witness roster: {sorted(unknown)} not in {sorted(context.witness_chairs)}"
+        )
+    return declared_chairs
+
+
+def act_attachment_view(
+    context, act: dict[str, Any], testimonia: list[dict], bases: list[dict]
+) -> dict[str, Any]:
     """Validate the R0 attachment that makes a page witness act-addressable.
 
     R4 owns alignment; until then this is the chair's complete delivered act
@@ -220,7 +583,8 @@ def act_attachment_view(context, act: dict[str, Any], testimonia: list[dict]) ->
     `testimonia` is this act's *current* attempt per chair, already collapsed by
     `testimonia_of`. The attachment is a derived view of one attempt, so it is
     checked against that collapse rather than trusted on its own: see the
-    per-chair reconciliation below.
+    per-chair reconciliation below. `bases` are the verified regions the
+    Perlector read and therefore the independent page denominator.
     """
     act_id = act["act_id"]
     current = {record["payload"]["chair"]: record for record in testimonia}
@@ -246,35 +610,72 @@ def act_attachment_view(context, act: dict[str, Any], testimonia: list[dict]) ->
     ):
         raise SchemaRefusal("an act-attachment record has no attachment list")
     configured = set(context.witness_chairs)
-    chairs = [
-        attachment.get("chair") if isinstance(attachment, dict) else None
-        for attachment in attachments
-    ]
-    if len(chairs) != len(set(chairs)) or set(chairs) != configured:
-        raise FatalAccounting(
-            f"act {act_id} attachment chairs do not equal this run's configured witnesses"
-        )
-    page_witness_count = 0
-    comparison_views: dict[str, str] = {}
+    page_ids = {basis["source_page_ordinal"]: basis["source_page_id"] for basis in bases}
+    # This run-global declaration is validated first, and by the stricter of the
+    # two readings that met here: exact strings, no duplicates hiding in a set,
+    # and no chair outside this run's configured roster. It must fail before any
+    # per-attachment diagnostic can misattribute its malformation to a chair record.
+    page_chairs = declared_page_witness_chairs(context)
+    # Validate every value that becomes a set/dict key before pair accounting.
+    # JSON booleans compare equal to integers in Python (`True == 1`), and an
+    # unhashable JSON value would otherwise escape as a raw TypeError here. The
+    # attachment is untrusted evidence read from disk, so neither may reach the
+    # denominator as though it named a real page.
+    attachment_fields = {
+        "chair",
+        "page_witness",
+        "page_ordinal",
+        "testimonium_ref",
+        "attached",
+        "content_health",
+        "alignment",
+        "span",
+    }
     for attachment in attachments:
         if (
             not isinstance(attachment, dict)
-            or set(attachment)
-            != {
-                "chair",
-                "page_witness",
-                "testimonium_ref",
-                "attached",
-                "content_health",
-                "alignment",
-                "span",
-            }
-            or not isinstance(attachment.get("chair"), str)
+            or set(attachment) != attachment_fields
+            or type(attachment.get("chair")) is not str
             or not isinstance(attachment.get("page_witness"), bool)
             or not isinstance(attachment.get("attached"), bool)
             or not isinstance(attachment.get("content_health"), dict)
         ):
             raise SchemaRefusal("an act-attachment record has a malformed attachment")
+        page_ordinal = attachment["page_ordinal"]
+        if attachment["page_witness"] and (
+            not isinstance(page_ordinal, int) or isinstance(page_ordinal, bool)
+        ):
+            raise SchemaRefusal("a page-witness attachment has no integer page ordinal")
+        if not attachment["page_witness"] and page_ordinal is not None:
+            raise SchemaRefusal("an act-scoped witness carries a page ordinal")
+    attachment_chairs = [attachment["chair"] for attachment in attachments]
+    if any(chair not in configured for chair in attachment_chairs):
+        raise FatalAccounting(
+            f"act {act_id} attachment chairs do not equal this run's configured witnesses"
+        )
+    expected_pairs = {
+        (chair, ordinal if chair in page_chairs else None)
+        for chair in configured
+        for ordinal in (page_ids if chair in page_chairs else (None,))
+    }
+    pairs = [
+        (attachment.get("chair"), attachment.get("page_ordinal"))
+        if isinstance(attachment, dict)
+        else (None, None)
+        for attachment in attachments
+    ]
+    if len(pairs) != len(set(pairs)) or set(pairs) != expected_pairs:
+        raise FatalAccounting(
+            f"act {act_id} attachments do not cover every contributing page/witness pair; "
+            "its witness denominator is duplicated or incomplete; rebuild the attachment "
+            "from the sealed regions and configured chairs"
+        )
+    # Attachment accounting is per (chair, page), but this dossier field names
+    # witnesses. Count a chair once even when its evidence spans several pages;
+    # otherwise the reader is told a two-chair roster contains four witnesses.
+    page_witness_chairs: set[str] = set()
+    comparison_views: dict[str, str] = {}
+    for attachment in attachments:
         span = attachment["span"]
         characters = attachment["content_health"].get("characters")
         if attachment["attached"] and not attachment["page_witness"]:
@@ -290,6 +691,7 @@ def act_attachment_view(context, act: dict[str, Any], testimonia: list[dict]) ->
         elif not attachment["attached"] and span is not None:
             raise SchemaRefusal("an unattached act view claims an alignment span")
         chair = attachment["chair"]
+        attachment_page = attachment["page_ordinal"]
         # The attachment describes one attempt, and the reread path
         # (`pipeline/3_attestatores/run.py::reread_pass`) appends a new act-scoped
         # attempt without rewriting it — D8 leaves page-witness reread addressing
@@ -330,19 +732,7 @@ def act_attachment_view(context, act: dict[str, Any], testimonia: list[dict]) ->
                 f"act {act_id} attachment for chair {chair!r} describes an attempt that is no "
                 "longer this chair's current Testimonium"
             )
-        declared_chairs = context.fixture.get("page_witness_chairs", [])
-        # The producer (`pipeline/3_attestatores/run.py::declared_page_witness_chairs`)
-        # refuses a declaration that is not a unique list of strings; this reader
-        # holds the same key to the same shape, or a string-valued declaration
-        # would degrade into per-character membership and blame the attachment
-        # for the fixture's own malformation.
-        if not isinstance(declared_chairs, list) or any(
-            not isinstance(item, str) for item in declared_chairs
-        ):
-            raise SchemaRefusal(
-                "the fixture's page_witness_chairs declaration is not a list of chair names"
-            )
-        expected_page_witness = chair in set(declared_chairs)
+        expected_page_witness = chair in page_chairs
         if attachment["page_witness"] != expected_page_witness:
             raise SchemaRefusal(
                 f"act {act_id} attachment changes page-witness scope for chair {chair!r}"
@@ -365,11 +755,17 @@ def act_attachment_view(context, act: dict[str, Any], testimonia: list[dict]) ->
             )
         reference = attachment.get("testimonium_ref")
         if attachment["page_witness"]:
+            if attachment_page not in page_ids:
+                raise SchemaRefusal(
+                    f"act {act_id} page attachment names page {attachment_page!r} outside its "
+                    "regions; it claims evidence the Perlector did not read; restore the "
+                    "attachment's contributing page"
+                )
             testimonium = context.tree.read_artifact_reference(
                 reference,
                 stage=ATTESTATORES,
                 kind="page-testimonium",
-                subject_id=act["page_id"],
+                subject_id=page_ids[attachment_page],
             )
             page_payload = testimonium.get("payload")
             unjoined = (
@@ -381,7 +777,7 @@ def act_attachment_view(context, act: dict[str, Any], testimonia: list[dict]) ->
                 not isinstance(page_payload, dict)
                 or page_payload.get("chair") != chair
                 or page_payload.get("scope") != "page"
-                or page_payload.get("page_ordinal") != act["page_ordinal"]
+                or page_payload.get("page_ordinal") != attachment_page
                 or not isinstance(unjoined, list)
                 or any(
                     not isinstance(row, dict)
@@ -395,6 +791,36 @@ def act_attachment_view(context, act: dict[str, Any], testimonia: list[dict]) ->
                 )
             ):
                 raise SchemaRefusal(f"act {act_id} attachment points to the wrong page Testimonium")
+            # One act can disprove `primary` or `continuation` from its sealed
+            # primary page. Only the Recensor's whole-page view can verify `mixed`.
+            role = page_payload.get("page_role")
+            is_act_primary_page = attachment_page == act["page_ordinal"]
+            if (
+                not isinstance(role, str)
+                or role not in {"primary", "continuation", "mixed"}
+                or (
+                    (is_act_primary_page and role == "continuation")
+                    or (not is_act_primary_page and role == "primary")
+                )
+            ):
+                raise SchemaRefusal(
+                    f"act {act_id} page Testimonium for chair {chair!r} carries a page_role "
+                    f"{role!r} its own primary-page fact contradicts; the page relationship "
+                    "is false; rebuild the page Testimonium from the attachment denominator"
+                )
+            if not is_act_primary_page and (
+                attachment["attached"]
+                or attachment["alignment"]
+                != {
+                    "status": "unaligned",
+                    "reason": "continuation-page-no-act-anchor",
+                }
+            ):
+                raise SchemaRefusal(
+                    f"act {act_id} continuation-page attachment for chair {chair!r} claims "
+                    "an act anchor; this compatibility record has no page-specific anchor; "
+                    "retain it as continuation-page-no-act-anchor"
+                )
             current_unjoined = [row for row in unjoined if row["act_id"] == act_id]
             if len(current_unjoined) > 1:
                 raise SchemaRefusal(
@@ -467,8 +893,10 @@ def act_attachment_view(context, act: dict[str, Any], testimonia: list[dict]) ->
                 # mapping would validate while leaving the operator no
                 # statement of why comparison failed.
                 raise SchemaRefusal("an unattached page witness has no explicit unaligned result")
-            page_witness_count += 1
+            page_witness_chairs.add(chair)
         else:
+            if attachment_page is not None:
+                raise SchemaRefusal("an act-scoped witness carries a page ordinal")
             if attachment["alignment"] is not None:
                 raise SchemaRefusal("an act-scoped witness carries page alignment evidence")
             testimonium = context.tree.read_artifact_reference(
@@ -485,7 +913,7 @@ def act_attachment_view(context, act: dict[str, Any], testimonia: list[dict]) ->
         "reference": context.artifact_ref(ATTESTATORES, "act-attachment", record["artifact_id"]),
         # A blinded dossier may show that page evidence exists, but not the
         # chair names embedded in its retained attachment artifact.
-        "page_witness_count": page_witness_count,
+        "page_witness_count": len(page_witness_chairs),
         # Stated exactly, because the count above was chosen to disclose an
         # aggregate and this does not: `comparison_views` is keyed per chair,
         # relabeled through `witness_label` in `dossier.build_dossier`, and
@@ -597,14 +1025,18 @@ def perlector_chair(context) -> ChairIdentity | AbsentChair:
 
 
 def preflight_testimonia_denominator(context, acts: list[dict]) -> None:
-    """Validate every requested act's witness denominator before any Perlectio writes.
+    """Validate the run declaration and every requested witness denominator before writes.
 
     A Perlectio is immutable, so one published over a short denominator cannot
     be corrected: restoring the missing witness changes the bytes under the same
     reading identity, and the run can no longer resume normally. Checking the
     whole requested set first is what stops a malformed act discovered late from
     leaving an unfixable reading behind it.
+
+    The run-global page-witness declaration is checked even when every act is
+    held, because those acts still publish immutable ``not-run`` Perlectiones.
     """
+    declared_page_witness_chairs(context)
     for act in acts:
         if act["outcome"] == "held":
             continue
@@ -1251,6 +1683,32 @@ def _audit_semi_final(
     }
 
 
+def audit_page_ids(bases: list[dict[str, Any]]) -> list[str]:
+    """The complete, primary-first page denominator for one act's page audit."""
+    page_ids = list(dict.fromkeys(basis["source_page_id"] for basis in bases))
+    if not page_ids:
+        raise FatalAccounting(
+            "a Perlectio has no source pages for its audit; no page comparison can be "
+            "measured; restore its verified region basis before running Pass C"
+        )
+    return page_ids
+
+
+def audit_semi_finals_for_pages(
+    *, act_id: str, order: int, text: str, bases: list[dict[str, Any]], dossier: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Place the same act in every page comparison its pixels contribute to."""
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for basis in bases:
+        grouped.setdefault(basis["source_page_id"], []).append(basis)
+    return [
+        _audit_semi_final(
+            act_id=act_id, page_id=page_id, order=order, text=text, regions=regions, dossier=dossier
+        )
+        for page_id, regions in sorted(grouped.items())
+    ]
+
+
 def _sealed_sibling_semi_finals(
     context,
     current: list[dict[str, Any]],
@@ -1270,11 +1728,10 @@ def _sealed_sibling_semi_finals(
     current_ids = {row["act_id"] for row in current}
     page_ids = {row["page_id"] for row in current}
     order_by_id = {act["act_id"]: order for order, act in enumerate(expected)}
-    sibling_ids = {
-        act["act_id"]
-        for act in expected
-        if act["act_id"] not in current_ids and act["page_id"] in page_ids
-    }
+    # Primary-page scalars cannot select candidates: only a sibling's sealed
+    # region basis reveals whether a continuation shares the recovered page.
+    # Omitting a row can also invent adjacency between its former neighbours.
+    sibling_ids = {act["act_id"] for act in expected if act["act_id"] not in current_ids}
     records_by_subject: dict[str, list[dict[str, Any]]] = {act_id: [] for act_id in sibling_ids}
     for entry in context.tree.build_manifest(PERLECTOR)["artifacts"]:
         if entry["kind"] != "perlectio" or entry["subject_id"] not in sibling_ids:
@@ -1290,11 +1747,13 @@ def _sealed_sibling_semi_finals(
             # act carries a Perlectio -- a held one carries `not-run`, handled
             # below. Zero artifacts means a reading that existed is no longer
             # here, and a page flag pass computed over a short row set would
-            # seal a quieter flag set than the page's evidence supports (the
-            # cross-act classes lose a comparison, not a row).
+            # seal a different flag set than the page's evidence supports. A
+            # missing middle row can remove its own comparison or create a new
+            # adjacency between its former neighbours.
             raise FatalAccounting(
-                f"act {act_id} shares this page with the recovered act but has no Perlectio "
-                "at all; the page audit may not be computed over a row that is missing"
+                f"act {act_id} has no Perlectio, so recovery cannot determine whether it "
+                "shares a contributing page; the page denominator is unknown; restore its "
+                "retained Perlectio before recomputing the audit"
             )
         reading = latest_attempt(
             records, f"sealed sibling Perlectio for {act_id}", operation="perlegere"
@@ -1331,13 +1790,18 @@ def _sealed_sibling_semi_finals(
             raise FatalAccounting(
                 f"sealed sibling Perlectio for {act_id} does not reconcile with its audit chain"
             )
-        siblings.append(
-            _audit_semi_final(
+        bases = reading_basis_regions(reading, f"sealed sibling Perlectio for {act_id}")
+        sibling_page_ids = {basis["source_page_id"] for basis in bases}
+        if not page_ids.intersection(sibling_page_ids):
+            continue
+        # Recovery must reproduce the whole-run denominator: a cross-page
+        # sibling participates in each contributing page's comparisons.
+        siblings.extend(
+            audit_semi_finals_for_pages(
                 act_id=act_id,
-                page_id=expected_page,
                 order=order_by_id[act_id],
                 text=payload["text"],
-                regions=reading_basis_regions(reading, f"sealed sibling Perlectio for {act_id}"),
+                bases=bases,
                 dossier=payload["dossier"],
             )
         )
@@ -1381,6 +1845,7 @@ def _publish_lectio_nuda(
     witness_context_table: dict,
     protocol_config: dict[str, str],
     protocol_sha256: str,
+    approval_ref: ApprovalRecordBinding,
 ) -> None:
     """Publish the unprimed instrument reading.
 
@@ -1421,7 +1886,7 @@ def _publish_lectio_nuda(
         "prompt": prompt,
         "sampling": nuda.sampling_design(
             nuda_per_mille=context.nuda_per_mille,
-            approval_ref=context.nuda_approval_ref,
+            approval_ref=approval_ref,
         ),
         "dissent": [],
         "truncation": truncation_record,
@@ -1441,7 +1906,8 @@ def _publish_lectio_nuda(
         subject_id=act_id,
         outcome=outcome,
         attempt=perlector_attempt_id(act_id, "lectio-nuda", ordinal),
-        inputs=_reading_image_inputs(context, bases, page_renders),
+        inputs=_reading_image_inputs(context, bases, page_renders)
+        + [approval_ref.reference.to_record()],
         payload=payload,
     )
 
@@ -1538,6 +2004,7 @@ def _publish_primed_without_prior(
     witness_context_table,
     protocol_config,
     protocol_sha256,
+    approval_ref: ApprovalRecordBinding,
 ) -> None:
     """The sampled control sees witnesses but never the Pass-A draft."""
     control_dossier, delivered_pixels = dossier_module.build_reader_dossier(
@@ -1591,11 +2058,11 @@ def _publish_primed_without_prior(
         },
         "dossier": control_dossier,
         "prompt": prompt,
-        "sampling": {
-            "perlector_instrument_per_mille": context.perlector_instrument_per_mille,
-            "selection_rule": protocol_config["selection_rule"],
-            "approval_ref": context.perlector_instrument_approval_ref,
-        },
+        "sampling": protocol.control_sampling_design(
+            per_mille=context.perlector_instrument_per_mille,
+            selection_rule=protocol_config["selection_rule"],
+            approval_ref=approval_ref,
+        ),
         "membership": {**membership, "act_id": act_id, "protocol_sha256": protocol_sha256},
         "dissent": dissent_against(text, dissent_testimonia(testimonia, attachment_view)),
         "truncation": truncation_record,
@@ -1627,7 +2094,7 @@ def _publish_primed_without_prior(
         attempt=perlector_attempt_id(act_id, "primed-without-prior", ordinal),
         inputs=_reading_image_inputs(context, bases, page_renders)
         + list(testimonium_references.values())
-        + [attachment_view["reference"]],
+        + [attachment_view["reference"], approval_ref.reference.to_record()],
         payload=payload,
     )
 
@@ -1646,6 +2113,24 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     )
     protocol_config, protocol_sha256 = protocol.load(context.perlector_protocol_config_path)
     context.require_sealed_config("perlector-protocol", protocol_sha256)
+    nuda_approval = (
+        resolve_sampling_approval(
+            context,
+            approval_ref=context.nuda_approval_ref,
+            subject=NUDA_APPROVAL_SUBJECT,
+        )
+        if context.nuda_per_mille
+        else None
+    )
+    instrument_approval = (
+        resolve_sampling_approval(
+            context,
+            approval_ref=context.perlector_instrument_approval_ref,
+            subject=PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT,
+        )
+        if context.perlector_instrument_per_mille
+        else None
+    )
     audit_policy, audit_sha256 = audit.load(context.perlector_audit_config_path)
     context.require_sealed_config("perlector-audit", audit_sha256)
 
@@ -1729,7 +2214,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         # up to the fold would be truncated, which is a failure and not an output.
         bases = [verify_region(context, region) for region in regions]
         testimonia = testimonia_of(context, act_id, proposal_regions)
-        attachment_view = act_attachment_view(context, act, testimonia)
+        attachment_view = act_attachment_view(context, act, testimonia, bases)
 
         # Which regions any witness actually saw. Ink uncovered by a recovery
         # recrop was never shown to a witness, and saying so is the difference
@@ -1762,6 +2247,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 witness_context_table=witness_context_table,
                 protocol_config=protocol_config,
                 protocol_sha256=protocol_sha256,
+                approval_ref=nuda_approval,
             )
 
         prior = _publish_lectio_prior(
@@ -1802,6 +2288,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 witness_context_table=witness_context_table,
                 protocol_config=protocol_config,
                 protocol_sha256=protocol_sha256,
+                approval_ref=instrument_approval,
             )
 
         # The establishing read: every testimonium in the dossier, verbatim.
@@ -1924,13 +2411,12 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     for row in pending:
         payload = row["payload"]
         bases = row["bases"]
-        semi_finals.append(
-            _audit_semi_final(
+        semi_finals.extend(
+            audit_semi_finals_for_pages(
                 act_id=row["act_id"],
-                page_id=bases[0]["source_page_id"],
                 order=row["order"],
                 text=payload["text"],
-                regions=bases,
+                bases=bases,
                 dossier=payload["dossier"],
             )
         )
@@ -1955,12 +2441,14 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         payload = row["payload"]
         act_id = row["act_id"]
         flags = page_flags[act_id]
-        page_id = row["bases"][0]["source_page_id"]
+        page_ids = audit_page_ids(row["bases"])
+        page_id = page_ids[0]
         draft_payload = {
             "act_key": row["act"]["act_key"],
             "attempt_ordinal": payload["attempt_ordinal"],
             "semi_final_text": payload["text"],
             "page_id": page_id,
+            "page_ids": page_ids,
             "round_cap": audit_policy["round_cap"],
             "policy": policy_record,
             "flags": flags,
@@ -2150,6 +2638,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             "act_key": row["act"]["act_key"],
             "attempt_ordinal": payload["attempt_ordinal"],
             "page_id": page_id,
+            "page_ids": page_ids,
             "round_cap": audit_policy["round_cap"],
             "policy": policy_record,
             "flags": flags,
@@ -2224,6 +2713,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     if read == 0 and acknowledged == 0:
         raise ContractError("the Perlector read no act and acknowledged no held act")
 
+    context.seal_boundary()
     context.finish()
     return EXIT_COMPLETE
 

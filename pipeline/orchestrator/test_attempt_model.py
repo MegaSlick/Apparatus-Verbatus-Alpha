@@ -35,10 +35,10 @@ import pytest
 from common.contracts.canonical import canonical_bytes, self_hash
 from common.contracts.identities import artifact_id, attempt_id
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, PERLECTOR, RECENSOR
+from common.fixture_identity import act_identity
 from common.runtree.store import RunTree
 from common.stage import (
     act_by_key,
-    act_identity,
     current_recovery_request,
     load_fixture,
     load_recovery_policy,

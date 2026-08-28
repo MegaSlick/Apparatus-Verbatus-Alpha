@@ -203,6 +203,7 @@ def test_an_outstanding_recovery_request_is_held_not_silently_skipped(tmp_path):
     review["outcome"] = "recovery-requested"
     review["self_hash"] = self_hash(review)
     review_path.write_bytes(canonical_bytes(review))
+    reseal_chain._rebind_stage_seal(tree, RECENSOR)
 
     result = invoke(root, "r", "happy", "pipeline/6_archetypus/run.py")
     assert result.returncode == 3, result.stderr

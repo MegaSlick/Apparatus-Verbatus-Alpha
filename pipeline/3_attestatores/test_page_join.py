@@ -12,8 +12,15 @@ content by every consumer downstream (CodeRabbit W44). Separators now appear onl
 between delivered characters, and the outcome is derived from the joined text.
 """
 
+import ast
 import importlib.util
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from common.chairs.models import AbsentChair
+from common.contracts.errors import SchemaRefusal
 
 
 def _load_attestatores():
@@ -26,6 +33,354 @@ def _load_attestatores():
 
 attestatores = _load_attestatores()
 Attempt = attestatores.Attempt
+
+
+class _UnhashableString(str):
+    __hash__ = None
+
+
+class _HostileReprString(str):
+    def __repr__(self):
+        raise RuntimeError("the refusal rendered an untrusted chair-name subclass")
+
+
+@pytest.mark.parametrize(
+    "bad_chair",
+    ([], {}, [[]], {"nested": []}, {"a": {"b": [1, 2]}}, [[[]]], [{"a": [{}]}]),
+)
+def test_declared_page_witness_chairs_refuses_unhashable_json_values(bad_chair):
+    """Fixture data crosses this boundary before set-based roster handling."""
+    context = SimpleNamespace(fixture={"page_witness_chairs": [bad_chair]})
+
+    with pytest.raises(SchemaRefusal, match="unique string list"):
+        attestatores.declared_page_witness_chairs(context)
+
+
+def test_an_unknown_page_witness_chair_is_refused_not_dropped_from_the_join():
+    """A declared typo is evidence of a missing witness, not an empty intersection."""
+    context = SimpleNamespace(
+        fixture={"page_witness_chairs": ["attestator_33"]},
+        witness_chairs=("attestator_1",),
+    )
+
+    with pytest.raises(SchemaRefusal, match="outside the configured witness roster"):
+        attestatores.publish_page_testimonia_and_attachments(
+            # `regions_by_act` became required when the join began deriving one
+            # attachment per act from verified regions. The roster refusal under
+            # test fires before any act is walked, so an empty map is the honest
+            # argument for `acts=[]` rather than a stand-in.
+            context,
+            acts=[],
+            ordinal=1,
+            regions_by_act={},
+            attempts_by_pair={},
+        )
+
+
+def test_an_unknown_page_witness_chair_is_refused_by_the_shared_accessor_itself():
+    """The accessor must protect write paths that cannot rely on the later page join."""
+    context = SimpleNamespace(
+        fixture={"page_witness_chairs": ["attestator_33"]},
+        witness_chairs=("attestator_1",),
+    )
+
+    with pytest.raises(SchemaRefusal, match="outside the configured witness roster"):
+        attestatores.declared_page_witness_chairs(context)
+
+
+def test_the_roster_refusal_names_the_roster_and_not_only_the_offender():
+    """A usable roster mismatch names both the declaration and sealed roster."""
+    context = SimpleNamespace(
+        fixture={"page_witness_chairs": ["attestator_33"]},
+        witness_chairs=("attestator_1", "attestator_3"),
+    )
+
+    with pytest.raises(SchemaRefusal) as caught:
+        attestatores.declared_page_witness_chairs(context)
+    message = str(caught.value)
+    assert "attestator_33" in message
+    assert "attestator_1" in message and "attestator_3" in message
+
+
+@pytest.mark.parametrize(
+    "bad_chair",
+    (
+        float("nan"),
+        float("inf"),
+        1.5,
+        True,
+        pytest.param(10**5000, id="huge-int"),
+        None,
+        # The accessor accepts in-memory fixtures, so it must refuse cycles
+        # without recursively inspecting or hashing them.
+        "recursive",
+    ),
+)
+def test_declared_page_witness_chairs_refuses_values_no_chair_name_could_be(bad_chair):
+    """Type validation must precede hashing, traversal, and value rendering."""
+    if bad_chair == "recursive":
+        recursive: list = []
+        recursive.append(recursive)
+        bad_chair = recursive
+    context = SimpleNamespace(fixture={"page_witness_chairs": [bad_chair]})
+
+    with pytest.raises(SchemaRefusal, match="unique string list"):
+        attestatores.declared_page_witness_chairs(context)
+
+
+@pytest.mark.parametrize(
+    "chair",
+    (
+        pytest.param(_UnhashableString("attestator_1"), id="unhashable-string-subclass"),
+        pytest.param(_HostileReprString("attestator_33"), id="hostile-repr-string-subclass"),
+    ),
+)
+def test_a_chair_name_string_subclass_is_refused_before_set_or_rendering(chair):
+    context = SimpleNamespace(
+        fixture={"page_witness_chairs": [chair]},
+        witness_chairs=("attestator_1",),
+    )
+
+    with pytest.raises(SchemaRefusal, match="unique string list"):
+        attestatores.declared_page_witness_chairs(context)
+
+
+def test_a_chair_name_carrying_a_surrogate_is_refused_printably():
+    """The roster refusal must remain encodable when the chair name is not."""
+    context = SimpleNamespace(
+        fixture={"page_witness_chairs": ["attestator_\ud800"]},
+        witness_chairs=("attestator_1",),
+    )
+
+    with pytest.raises(SchemaRefusal) as caught:
+        attestatores.declared_page_witness_chairs(context)
+    str(caught.value).encode("utf-8")
+
+
+@pytest.mark.parametrize("chair", ("NaN", "attestator_\0"))
+def test_hostile_but_encodable_chair_strings_are_refused_printably(chair):
+    context = SimpleNamespace(
+        fixture={"page_witness_chairs": [chair]},
+        witness_chairs=("attestator_1",),
+    )
+
+    with pytest.raises(SchemaRefusal) as caught:
+        attestatores.declared_page_witness_chairs(context)
+    str(caught.value).encode("utf-8")
+
+
+def test_no_testimonium_is_sealed_before_the_declaration_is_validated():
+    """A malformed declaration must refuse before immutable testimony is written."""
+    published: list = []
+    resolved = AbsentChair(role="attestator_1", reason="fixture test needs no live chair")
+    context = SimpleNamespace(
+        fixture={"page_witness_chairs": ["attestator_33"]},
+        witness_chairs=("attestator_1",),
+        adapter_revision="fake-attestatores-v0",
+        publish=lambda **kwargs: published.append(kwargs),
+    )
+
+    with pytest.raises(SchemaRefusal, match="outside the configured witness roster"):
+        attestatores.publish_attempt(
+            context,
+            act={"act_id": "act_0123456789abcdef", "act_key": "1-1"},
+            chair="attestator_1",
+            resolved=resolved,
+            ordinal=1,
+            regions=[],
+            attempt=attestatores.dead_attempt(resolved),
+        )
+    assert published == [], "an attempt sealed before the declaration was validated"
+
+
+class _FunctionPublishCalls(ast.NodeVisitor):
+    """Calls and aliases of ``.publish`` in one top-level function body."""
+
+    def __init__(self):
+        self.calls: list[ast.Call] = []
+        self.attributes: list[ast.Attribute] = []
+        self.bypass_lines: list[int] = []
+
+    def visit_FunctionDef(self, node):
+        # Nested functions are independent write paths; the outer scan visits
+        # them separately and must not fold them into their parent's proof.
+        return
+
+    visit_AsyncFunctionDef = visit_FunctionDef
+
+    def visit_Attribute(self, node):
+        if node.attr == "publish":
+            self.attributes.append(node)
+        self.generic_visit(node)
+
+    def visit_Call(self, node):
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "publish":
+            self.calls.append(node)
+        if isinstance(node.func, ast.Attribute) and node.func.attr in {
+            "publish_artifact",
+            "_publish_bytes",
+            "write_bytes",
+            "write_text",
+        }:
+            self.bypass_lines.append(node.lineno)
+        if isinstance(node.func, ast.Name) and node.func.id in {"open", "_atomic_create"}:
+            self.bypass_lines.append(node.lineno)
+        if (
+            isinstance(node.func, ast.Name)
+            and node.func.id == "getattr"
+            and len(node.args) >= 2
+            and isinstance(node.args[1], ast.Constant)
+            and node.args[1].value == "publish"
+        ):
+            self.bypass_lines.append(node.lineno)
+        self.generic_visit(node)
+
+
+def _dominating_declaration_line(function: ast.FunctionDef | ast.AsyncFunctionDef) -> int:
+    """A direct top-level declaration call, or -1 when none exists.
+
+    A top-level expression or assignment must execute before Python can reach a
+    later statement in the function. Merely finding the call anywhere in the
+    body is not enough: it may sit under a branch that never runs while a publish
+    below it still does.
+    """
+    for statement in function.body:
+        value = None
+        if isinstance(statement, (ast.Assign, ast.AnnAssign, ast.Expr)):
+            value = statement.value
+        if (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Name)
+            and value.func.id == "declared_page_witness_chairs"
+        ):
+            return statement.lineno
+    return -1
+
+
+def _testimonium_write_scan(source: str):
+    """Return Testimonium writers plus publish forms the proof cannot classify."""
+    writers: dict[str, tuple[int, list[int]]] = {}
+    dynamic: dict[str, list[int]] = {}
+    aliases: dict[str, list[int]] = {}
+    bypasses: dict[str, list[int]] = {}
+    tree = ast.parse(source)
+    top_level = {id(node) for node in tree.body}
+    for function in (
+        node for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ):
+        function_name = (
+            function.name if id(function) in top_level else f"{function.name}@{function.lineno}"
+        )
+        visitor = _FunctionPublishCalls()
+        for statement in function.body:
+            visitor.visit(statement)
+
+        direct_attributes = {id(call.func) for call in visitor.calls}
+        indirect = [node.lineno for node in visitor.attributes if id(node) not in direct_attributes]
+        if indirect:
+            aliases[function_name] = indirect
+        if visitor.bypass_lines:
+            bypasses[function_name] = visitor.bypass_lines
+
+        for call in visitor.calls:
+            kind_keywords = [keyword.value for keyword in call.keywords if keyword.arg == "kind"]
+            if (
+                len(kind_keywords) != 1
+                or not isinstance(kind_keywords[0], ast.Constant)
+                or not isinstance(kind_keywords[0].value, str)
+            ):
+                dynamic.setdefault(function_name, []).append(call.lineno)
+                continue
+            if kind_keywords[0].value in {"testimonium", "page-testimonium"}:
+                declaration_line = _dominating_declaration_line(function)
+                writers.setdefault(function_name, (declaration_line, []))[1].append(call.lineno)
+    return writers, dynamic, aliases, bypasses
+
+
+def test_the_write_scan_detects_a_third_path_even_when_its_syntax_changes():
+    """The source pin must reject unclassified writes, aliases, and hidden validation."""
+    literal = """
+def third(context):
+    declared_page_witness_chairs(context)
+    context.publish(kind = 'testimonium', payload={})
+"""
+    dynamic = """
+def third(context):
+    declared_page_witness_chairs(context)
+    kind = 'testimonium'
+    context.publish(kind=kind, payload={})
+"""
+    aliased = """
+def third(context):
+    declared_page_witness_chairs(context)
+    writer = context.publish
+    writer(kind='testimonium', payload={})
+"""
+    nested = """
+def wrapper(context):
+    def third():
+        context.publish(kind='testimonium', payload={})
+    third()
+"""
+    lower_level = """
+def third(context):
+    context.tree.publish_artifact({'kind': 'testimonium'})
+"""
+    reflected = """
+def third(context):
+    writer = getattr(context, 'publish')
+    writer(kind='testimonium', payload={})
+"""
+    conditional = """
+def third(context):
+    if False:
+        declared_page_witness_chairs(context)
+    context.publish(kind='testimonium', payload={})
+"""
+
+    assert set(_testimonium_write_scan(literal)[0]) == {"third"}
+    assert set(_testimonium_write_scan(dynamic)[1]) == {"third"}
+    assert set(_testimonium_write_scan(aliased)[2]) == {"third"}
+    assert next(iter(_testimonium_write_scan(nested)[0])).startswith("third@")
+    assert set(_testimonium_write_scan(lower_level)[3]) == {"third"}
+    assert set(_testimonium_write_scan(reflected)[3]) == {"third"}
+    assert _testimonium_write_scan(conditional)[0]["third"][0] == -1
+
+
+def test_every_testimonium_writer_has_a_dominating_declaration_call():
+    """Every Testimonium writer must validate in an unconditional earlier statement.
+
+    Runtime fixtures cannot detect an uncalled future writer. This source pin
+    therefore rejects new, indirect, or lower-level write paths it cannot prove.
+    """
+    module_path = Path(__file__).resolve().parent / "run.py"
+    writers, dynamic, aliases, bypasses = _testimonium_write_scan(
+        module_path.read_text(encoding="utf-8")
+    )
+
+    assert set(writers) == {"publish_attempt", "publish_page_testimonia_and_attachments"}, (
+        f"{module_path} publishes a Testimonium from {sorted(writers)}; a new write path "
+        "must validate the page-witness declaration before it seals, and this scan is what "
+        "notices it was added"
+    )
+    assert dynamic == {}, (
+        f"{module_path} has publish calls with a non-literal or missing kind at {dynamic}; "
+        "the two-function Testimonium-write proof cannot classify them"
+    )
+    assert aliases == {}, (
+        f"{module_path} aliases a publish method at {aliases}; the two-function "
+        "Testimonium-write proof cannot follow indirect calls"
+    )
+    assert bypasses == {}, (
+        f"{module_path} reaches a lower-level or raw write sink at {bypasses}; all stage "
+        "artifacts must pass through the context publisher for this proof to be complete"
+    )
+    for name, (declaration_line, publish_lines) in writers.items():
+        assert declaration_line >= 0 and declaration_line < min(publish_lines), (
+            f"{name} seals a Testimonium before validating the fixture's page-witness "
+            "declaration; a sealed record is immutable, so a refusal after the write "
+            "cannot take back the wrong page_witness flag it carries"
+        )
 
 
 def _act(key: str) -> dict:

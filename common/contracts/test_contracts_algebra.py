@@ -34,14 +34,14 @@ from common.contracts.stages import ARMARIUM, ATTESTATORES, DESIGNATOR, PERLECTO
 # loudly, naming what changed — rather than passing because the new state happened
 # to be consistent with itself.
 EXPECTED_VOCABULARY_SIZES = {
-    "door": 2,
-    "exemplar": 2,
-    "designator": 4,
-    "attestatores": 6,
-    "perlector": 5,
-    "recensor": 5,
-    "archetypus": 2,
-    "armarium": 5,
+    "door": 4,
+    "exemplar": 3,
+    "designator": 6,
+    "attestatores": 8,
+    "perlector": 7,
+    "recensor": 7,
+    "archetypus": 4,
+    "armarium": 7,
 }
 
 
@@ -84,7 +84,7 @@ def test_witness_failed_is_a_member_of_the_closed_vocabulary():
     assert terminal_category(ATTESTATORES, "failed") is None
 
 
-def test_witness_vocabulary_is_exactly_the_repaired_six():
+def test_witness_vocabulary_includes_the_two_boundary_record_outcomes():
     assert set(outcomes.VOCABULARIES[ATTESTATORES]) == {
         "read",
         "genuinely-empty",
@@ -92,6 +92,8 @@ def test_witness_vocabulary_is_exactly_the_repaired_six():
         "dead",
         "not-run",
         "excluded",
+        "sealed",
+        "recorded",
     }
 
 
@@ -105,7 +107,15 @@ def test_witness_outcome_classes_are_pinned():
         "dead": "failed",
         "not-run": "unresolved",
         "excluded": "completed",
+        "sealed": "completed",
+        "recorded": "completed",
     }
+
+
+def test_armarium_boundary_evidence_is_nonterminal_not_delivered_output():
+    for outcome in ("sealed", "recorded"):
+        assert classify(ARMARIUM, outcome) is OutcomeClass.COMPLETED
+        assert terminal_category(ARMARIUM, outcome) is None
 
 
 def test_no_witness_outcome_terminates_an_act():
@@ -551,8 +561,19 @@ def test_coverage_for_an_unknown_act_is_fatal():
 
 def test_armarium_categories_and_vocabulary_cannot_drift_apart():
     """Meta-invariant #91 — drift checks over agreement surfaces: wherever two
-    files must agree, a test reads both from source and fails on divergence."""
-    assert set(outcomes.VOCABULARIES[ARMARIUM]) == {category.value for category in ArmariumCategory}
+    files must agree, a test reads both from source and fails on divergence.
+
+    Scope, said plainly so a pass here is not read for more than it proves: the
+    subtraction removes `BOUNDARY_OUTCOMES` from the same vocabulary the loop in
+    `outcomes.py` put them into, so a *third* boundary outcome would be added
+    and taken away again and this check would stay green. What refuses that is
+    `EXPECTED_VOCABULARY_SIZES["armarium"]` above, pinned at 7 -- five
+    categories and two boundary outcomes. The two are one guard, and loosening
+    the size pin removes the half that watches this direction.
+    """
+    assert set(outcomes.VOCABULARIES[ARMARIUM]) - set(outcomes.BOUNDARY_OUTCOMES.values()) == {
+        category.value for category in ArmariumCategory
+    }
 
 
 def test_the_under_witnessed_count_is_the_attached_reads_never_the_wider_class():

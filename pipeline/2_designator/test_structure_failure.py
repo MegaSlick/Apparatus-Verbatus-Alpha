@@ -664,7 +664,7 @@ def test_a_fallback_act_minted_over_a_detected_page_is_refused(blank_first_page_
 def test_a_fallback_act_bound_to_only_part_of_its_sealed_page_is_refused(blank_first_page_run):
     """A self-consistent minted identity must still deliver the complete page downstream."""
     from common.contracts.errors import FatalAccounting
-    from common.stage import FALLBACK_PAGE_ACT_ORDINAL, _verify_page_fallback_act_row
+    from common.stage import _verify_page_fallback_act_row
 
     designator, context, _held = blank_first_page_run
     fallback_record = next(
@@ -675,7 +675,7 @@ def test_a_fallback_act_bound_to_only_part_of_its_sealed_page_is_refused(blank_f
     payload = fallback_record["payload"]
     partial_bounds = {**payload["page_bounds"], "h": payload["page_bounds"]["h"] - 1}
     corrupt_act_id = designator.derive_minted_act_id(
-        payload["page_id"], FALLBACK_PAGE_ACT_ORDINAL, partial_bounds
+        payload["page_id"], "page-fallback", partial_bounds
     )
     corrupt_record = {
         **fallback_record,
@@ -796,3 +796,20 @@ def test_fallback_tiles_cover_every_row_of_the_page_and_overlap_their_neighbours
     for earlier, later in zip(tiles, tiles[1:], strict=False):
         earlier_end = earlier["bounds"]["y"] + earlier["bounds"]["h"]
         assert later["bounds"]["y"] < earlier_end, "adjacent bands must overlap, not merely touch"
+
+
+def test_designator_refuses_two_proposals_with_identical_bounds_on_one_page():
+    """The new act identity has no ordinal fallback for coincident proposals."""
+    from types import SimpleNamespace
+
+    designator = _load_designator()
+    context = SimpleNamespace(
+        fixture={
+            "act": [
+                {"key": "first", "page_ordinal": 1, "x": 1, "y": 2, "w": 3, "h": 4},
+                {"key": "second", "page_ordinal": 1, "x": 1, "y": 2, "w": 3, "h": 4},
+            ]
+        }
+    )
+    with pytest.raises(ContractError, match="identical bounds"):
+        designator._refuse_duplicate_proposal_bounds(context)

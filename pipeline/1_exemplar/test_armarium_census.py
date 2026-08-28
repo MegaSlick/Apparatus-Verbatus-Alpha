@@ -145,6 +145,7 @@ def test_final_page_census_keeps_a_multipage_pdf_filename_digest_and_page_index(
         door.process_sources(door_context, tree, sources, lambda path: files[path], policy=policy)
         == 2
     )
+    door_context.seal_boundary()
     door_context.finish(DOOR)
 
     sealed = subprocess.run(

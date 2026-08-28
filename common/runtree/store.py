@@ -41,6 +41,7 @@ import stat
 import sys
 import tempfile
 from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Final
 
@@ -57,6 +58,7 @@ from common.contracts.canonical import (
     canonical_bytes,
     digest_bytes,
     self_hash,
+    self_hash_refusal,
     verify_self_hash,
 )
 from common.contracts.envelope import validate_envelope, validate_input_refs, verify_input_bytes
@@ -67,10 +69,12 @@ from common.contracts.errors import (
     SchemaRefusal,
 )
 from common.contracts.identities import validate_run_id
-from common.contracts.stages import writing_directory
+from common.contracts.stages import DOOR, writing_directory
+from common.corpus_register import empty_register, validate_register_bytes
 
 RUN_FILE: Final = "run.json"
 MANIFEST_FILE: Final = "manifest.json"
+DOOR_MANIFEST_FILE: Final = "manifest-door.json"
 INDEX_FILE: Final = "index.json"
 ARTIFACTS_DIR: Final = "artifacts"
 BLOBS_DIR: Final = "blobs/sha256"
@@ -85,6 +89,8 @@ _BOUND_FIELDS: Final = (
     "adapter_recipes",
     "witness_chairs",
     "corpus_frame_membership",
+    "register_digest",
+    "register_required",
 )
 _INGRESS_FIELD: Final = "ingress"
 
@@ -188,6 +194,7 @@ class RunTree:
         adapter_recipes: dict[str, str],
         witness_chairs: list[str],
         corpus_frame_membership: dict[str, str] | None = None,
+        register_bytes: bytes | None = None,
         ingress: dict[str, Any] | None = None,
         render_settings: dict[str, Any] | None = None,
         sealed_config_digests: dict[str, str] | None = None,
@@ -199,6 +206,15 @@ class RunTree:
         leaves the tree exactly as it found it.
         """
         tree = cls(root, run_id)
+        # Validated and digested here, but not *stored* until the run authority
+        # has accepted it below. Storing it first would put a foreign register's
+        # bytes into an existing run's blob store on the way to refusing that
+        # very register as an incompatible reuse — writing into a tree while
+        # telling the operator nothing was written.
+        snapshot = empty_register() if register_bytes is None else register_bytes
+        register_required = register_bytes is not None
+        validate_register_bytes(snapshot)
+        snapshot_digest = digest_bytes(snapshot)
         # An ordinal names one page. Two rows carrying the same one do not describe
         # a duplicate page — they make the run's page count ambiguous before
         # anything has been read. That matters because the Armarium's page census
@@ -241,6 +257,8 @@ class RunTree:
             "adapter_recipes": dict(sorted(adapter_recipes.items())),
             "witness_chairs": sorted(witness_chairs),
             "corpus_frame_membership": membership,
+            "register_digest": snapshot_digest,
+            "register_required": register_required,
         }
         if ingress is not None:
             authority[_INGRESS_FIELD] = ingress
@@ -266,50 +284,34 @@ class RunTree:
         authority["self_hash"] = self_hash(authority)
 
         run_file = tree.root / RUN_FILE
-        tree.root.mkdir(parents=True, exist_ok=True)
-        tree._bind_root_identity()
-        try:
-            _atomic_create(run_file, canonical_bytes(authority))
-        except FileExistsError:
-            existing = tree.read_run()
-            # `.get`, not `[...]`: a run.json missing a bound field used to raise a
-            # bare KeyError out of the reuse check, which is a traceback and an
-            # exit 1 where the contract promises a named refusal. A missing field
-            # is also not "equal" to anything, so it lands in `differing` and is
-            # refused with the reason spelled out.
-            if existing.get("schema") != authority["schema"]:
-                raise IncompatibleReuse(
-                    f"run {run_id!r} was written under schema "
-                    f"{existing.get('schema')!r} and this is {authority['schema']!r}; "
-                    "the two describe different shapes and cannot share a tree"
-                ) from None
-            optional_bound_fields = tuple(
-                field
-                for field in (
-                    _INGRESS_FIELD,
-                    _RENDER_SETTINGS_FIELD,
-                    _SEALED_CONFIG_DIGESTS_FIELD,
-                )
-                if field in authority or field in existing
-            )
-            bound_fields = _BOUND_FIELDS + optional_bound_fields
-            differing = [
-                field
-                for field in bound_fields
-                if field not in existing or existing[field] != authority.get(field)
-            ]
-            if differing:
-                raise IncompatibleReuse(
-                    f"run {run_id!r} already exists and is bound to different "
-                    f"{', '.join(differing)}; a run id names one set of inputs and "
-                    "one configuration, so this is a different run wearing an old "
-                    "name. Nothing was written"
-                ) from None
-            return tree
+        tree.root.parent.mkdir(parents=True, exist_ok=True)
+        # Creators serialize on the already-resolved parent directory itself, so
+        # no predictable lock pathname is introduced.  A new run publishes the
+        # immutable snapshot first and run.json last: a failed blob write can no
+        # longer leave a trusted authority sealing evidence that never arrived.
+        with _run_creation_lock(tree.root.parent):
+            tree.root.mkdir(parents=True, exist_ok=True)
+            # The root did not exist when __init__ resolved it, so bind device and
+            # inode here, before any write goes through it. Every later descriptor
+            # this tree opens is checked against the directory bound at this line.
+            tree._bind_root_identity()
+            if run_file.exists():
+                _verify_compatible_reuse(tree, run_id, authority)
+                _verify_register_snapshot_present(tree, snapshot_digest, snapshot)
+                return tree
+            tree.put_blob(DOOR, snapshot)
+            try:
+                _atomic_create(run_file, canonical_bytes(authority))
+            except FileExistsError:
+                # A non-cooperating writer can still race the advisory lock. Its
+                # authority must pass the same complete reuse check before this
+                # caller can proceed.
+                _verify_compatible_reuse(tree, run_id, authority)
+                _verify_register_snapshot_present(tree, snapshot_digest, snapshot)
         return tree
 
     def read_run(self) -> dict[str, Any]:
-        """The run authority, refused if it was edited after it was sealed."""
+        """The run authority, refused unless its self-hash verifies its current contents."""
         run_file = self.root / RUN_FILE
         if not run_file.exists():
             raise IncompatibleReuse(
@@ -318,6 +320,15 @@ class RunTree:
             )
         record = _read_json(run_file)
         if not verify_self_hash(record):
+            # Bare run authority has no envelope boundary to name an unhashable
+            # value; without a computed digest, this boundary cannot claim when
+            # the malformed content arose.
+            unhashable = self_hash_refusal(record)
+            if unhashable is not None:
+                raise IncompatibleReuse(
+                    f"{run_file} fails its own self-hash: {unhashable}. Nothing in this "
+                    "tree can be trusted against it"
+                )
             raise IncompatibleReuse(
                 f"{run_file} fails its own self-hash: the run authority was edited "
                 "after it was sealed, so nothing in this tree can be trusted against it"
@@ -345,7 +356,13 @@ class RunTree:
         return f"{writing_directory(stage)}/{BLOBS_DIR}/{digest}"
 
     def manifest_path(self, stage: str) -> str:
-        return f"{writing_directory(stage)}/{MANIFEST_FILE}"
+        # Door and Exemplar share their evidence directory, but their manifests
+        # are producer inventories. Giving Door a stage-qualified filename
+        # preserves both inventories, which matters when either one names a
+        # completion seal that later disappears. A shared manifest would let an
+        # Exemplar write erase the Door's deletion trigger.
+        filename = DOOR_MANIFEST_FILE if stage == DOOR else MANIFEST_FILE
+        return f"{writing_directory(stage)}/{filename}"
 
     def index_path(self, stage: str) -> str:
         """The stage-local, rebuildable derived index path.
@@ -356,12 +373,12 @@ class RunTree:
         an untracked side file beside the evidence it summarizes.
 
         Door and Exemplar share one physical directory (`writing_directory`), so
-        `index_path(DOOR)` and `index_path(EXEMPLAR)` collide, exactly as
-        `manifest_path` already does for the two. Unlike `build_manifest`, which
-        filters entries by `record["stage"]`, an index holds whatever its caller
-        builds with no such filter — so `write_index` refuses any stage whose
-        directory has more than one producer, rather than letting the second
-        stage's index silently erase the first stage's rows.
+        `index_path(DOOR)` and `index_path(EXEMPLAR)` collide. Their producer
+        manifests have stage-qualified paths, but an index holds whatever its
+        caller builds with no `build_manifest`-style stage filter — so
+        `write_index` refuses any stage whose directory has more than one
+        producer, rather than letting the second stage's index silently erase
+        the first stage's rows.
         """
         return f"{writing_directory(stage)}/{INDEX_FILE}"
 
@@ -749,13 +766,21 @@ class RunTree:
 
     # --- Manifests: derived, never the only evidence ---------------------------
 
-    def build_manifest(self, stage: str) -> dict[str, Any]:
+    def build_manifest(self, stage: str, *, verify_inputs: bool = True) -> dict[str, Any]:
         """Walk the stage's artifacts and describe what is actually there.
 
         Derived from the tree every time it is called, so it cannot drift from
         what the tree holds. That is why a manifest is never evidence on its own:
         if it disagrees with the artifacts, the artifacts are right and the
         manifest was stale.
+
+        ``verify_inputs=False`` still applies the envelope, run, and path checks,
+        but not ``_verify_artifact_inputs``. An artifact whose upstream blob has
+        since changed is then listed and reads as present. That option is for a
+        caller whose own boundary owns lineage -- one already verifying the
+        chain, or one deliberately reading a tree it is about to refuse -- and
+        never for speed. A caller that wants a manifest it can trust about
+        lineage leaves it alone.
         """
         # A manifest is a read route too. In particular, an empty directory must
         # not make a missing run authority look like an empty, trustworthy run.
@@ -780,7 +805,8 @@ class RunTree:
                 # neighboring JSON file under that directory.
                 if record["stage"] != stage:
                     continue
-                self._verify_artifact_inputs(record)
+                if verify_inputs:
+                    self._verify_artifact_inputs(record)
                 entries.append(
                     {
                         "artifact_id": record["artifact_id"],
@@ -1404,6 +1430,7 @@ class RunTree:
             prefixes.append(f"{directory}/{BLOBS_DIR}/")
             prefixes.append(f"{directory}/{MANIFEST_FILE}")
             prefixes.append(f"{directory}/{INDEX_FILE}")
+        prefixes.append(f"{writing_directory(DOOR)}/{DOOR_MANIFEST_FILE}")
         return tuple(prefixes)
 
 
@@ -1411,6 +1438,76 @@ def _all_writing_directories() -> list[str]:
     from common.contracts.stages import WRITING_DIRECTORIES
 
     return list(WRITING_DIRECTORIES.values())
+
+
+@contextmanager
+def _run_creation_lock(parent: Path) -> Iterator[None]:
+    """Serialize run creation without trusting a writable lock-file name."""
+    directory = getattr(os, "O_DIRECTORY", None)
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    if directory is None or no_follow is None:  # pragma: no cover - supported stores are POSIX
+        raise SchemaRefusal(
+            "this platform cannot lock the run root through a no-follow directory descriptor"
+        )
+    try:
+        descriptor = os.open(parent, os.O_RDONLY | directory | no_follow)
+    except OSError as error:
+        raise SchemaRefusal("the requested run root could not be locked safely") from error
+    try:
+        try:
+            import fcntl
+        except ImportError as error:  # pragma: no cover - supported stores are POSIX
+            raise SchemaRefusal("this platform cannot serialize run creation") from error
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+    finally:
+        os.close(descriptor)
+
+
+def _verify_compatible_reuse(tree: RunTree, run_id: str, authority: dict[str, Any]) -> None:
+    existing = tree.read_run()
+    # `.get`, not `[...]`: a run.json missing a bound field must become a named
+    # refusal instead of a KeyError traceback.
+    if existing.get("schema") != authority["schema"]:
+        raise IncompatibleReuse(
+            f"run {run_id!r} was written under schema {existing.get('schema')!r} and this is "
+            f"{authority['schema']!r}; the two describe different shapes and cannot share a tree"
+        ) from None
+    optional_bound_fields = tuple(
+        field
+        for field in (_INGRESS_FIELD, _RENDER_SETTINGS_FIELD, _SEALED_CONFIG_DIGESTS_FIELD)
+        if field in authority or field in existing
+    )
+    differing = [
+        field
+        for field in _BOUND_FIELDS + optional_bound_fields
+        if field not in existing or existing[field] != authority.get(field)
+    ]
+    if differing:
+        raise IncompatibleReuse(
+            f"run {run_id!r} already exists and is bound to different {', '.join(differing)}; "
+            "a run id names one set of inputs and one configuration, so this is a different "
+            "run wearing an old name. Nothing was written"
+        ) from None
+
+
+def _verify_register_snapshot_present(tree: RunTree, digest: str, expected: bytes) -> None:
+    relative = tree.blob_path(DOOR, digest)
+    try:
+        observed = tree.read_bytes(relative)
+    except OSError as error:
+        raise IncompatibleReuse(
+            "run.json seals a corpus-register snapshot that is missing or unreadable; an "
+            "existing run's immutable evidence is refused rather than silently reconstructed"
+        ) from error
+    if observed != expected:
+        raise IncompatibleReuse(
+            "run.json seals corpus-register snapshot bytes that no longer match the accepted "
+            "reuse input"
+        )
 
 
 def _atomic_write(target: Path, data: bytes) -> None:
@@ -1496,6 +1593,10 @@ def _read_json_with_bytes(path: Path) -> tuple[Any, bytes]:
     # still reach `verify_self_hash`'s own recursive walk after this guard has
     # already let a shallower-but-still-deep file through; that band is caught
     # where it happens, in `common/contracts/canonical.py`.
+    #
+    # Both merged branches split this reader the same way and named the halves
+    # differently; one tuple-returning body survives, under this name, and it
+    # decodes and returns the exact same bytes a caller may later digest.
     try:
         data = path.read_bytes()
         return json.loads(data.decode("utf-8")), data
@@ -1504,6 +1605,7 @@ def _read_json_with_bytes(path: Path) -> tuple[Any, bytes]:
 
 
 def _decode_json_bytes(data: bytes, path: Path) -> Any:
+    """Decode an already-read artifact snapshot under the store's named refusal."""
     try:
         return json.loads(data.decode("utf-8"))
     except (UnicodeDecodeError, ValueError, RecursionError) as error:

@@ -19,12 +19,15 @@ import subprocess
 import sys
 from copy import deepcopy
 from io import BytesIO
+from itertools import combinations, product
+from math import comb
 from pathlib import Path
 from zipfile import ZIP_STORED, BadZipFile, ZipFile
 
 import pytest
 
 from common.chairs import ChairIdentity, load_models_toml
+from common.contracts.approval import build_approval_record
 from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of, self_hash
 from common.contracts.envelope import build_envelope, validate_envelope, verify_input_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
@@ -40,23 +43,35 @@ from common.contracts.stages import (
     PERLECTOR,
     RECENSOR,
     STAGE_DIRECTORIES,
+    STAGES,
+    WRITING_DIRECTORIES,
 )
+from common.contracts.uncertainty import from_perlectio
+from common.fixture_identity import page_identity
 from common.imaging import PNG_SIGNATURE, decode_grayscale_png
 from common.runtree.store import RunTree
 from common.stage import (
     EXIT_FATAL,
     EXIT_HELD,
+    _decode_environment,
+    _validate_decode_environment,
     load_fixture,
     open_context,
-    page_identity,
-    residual_act_ordinal,
     run_config_bindings,
     stage_parser,
+    verify_final_seal,
 )
+from conftest import rebind_stage_seal_artifact as rebind_stage_seal
 
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
 FIXTURE = "synthetic-two-page-v0"
+# Spelled out rather than imported from `common.stage`, deliberately. This is the
+# value an operator types into `--nuda-approval-ref`, and the acceptance harness
+# pins the command a person would run. An import would follow a renamed or
+# versioned selector silently; the literal makes that rename a loud failure here,
+# which is where a change to operator-facing vocabulary should surface.
+NUDA_APPROVAL_SUBJECT = "lectio-nuda-sampling-design.v1"
 
 
 def _load_recensor():
@@ -284,8 +299,8 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # re-measured in the rebase entry below, never carried by arithmetic.
 # Re-pinned again for the System 06 deepening's second pass. File counts stay at
 # 47/51 — no scenario here produces a conservation residual, so the new
-# residual-holding-act mechanism (`common.stage.residual_act_ordinal`,
-# `_verify_residual_act_rows`) never fires and adds no artifact to either
+# residual-holding-act mechanism (`pipeline/2_designator/run.py::hold_residual_act`,
+# `common.stage::_verify_minted_act_rows`) never fires and adds no artifact to either
 # scenario. What moved: every proposal region's `padding` field now carries a
 # `provenance` sub-object (`geometry.load_padding_config` / `cut_region`),
 # stating plainly that the shipped basis-point values are carried forward from
@@ -617,8 +632,47 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # `(perlector, failed)` written into it. Comment bytes only; both digests
 # re-measured twice through this module's own helpers at the same tree, counts
 # and exits held at 64/0 and 71/3.
-HAPPY_RUN_TREE_DIGEST = "31e572e17b18868e90c933a36b471a3d04ca666382534f111410516a8337db48"
-REVIEW_RUN_TREE_DIGEST = "c6702b96996ee72813e9d4a6fa76ad4dcc5b02df501dabde0ad7b868079f2d4a"
+# Re-pinned in the Unit 18 formal correction pass after `run.json` began binding
+# `register_required` separately from `register_digest`. The distinction closes
+# the empty-register drift hole: an explicitly supplied empty register can grow,
+# so later stages must not mistake its empty digest for "no live register to
+# check." The new authority field moves both semantic trees.
+#
+# Re-pinned 2026-08-21: `proof/skeleton_fixture.toml` gained the
+# `continuation-recovery` scenario and act a2's recovery rectangle. The fixture
+# declaration is bound into every run's `config_digest`
+# (`common/stage.py::run_config_bindings` — "the digest of everything that shapes
+# this run's behaviour ... model configuration, fixture, scenario"), so declaring
+# a scenario that neither pinned run executes still moves both authorities. That
+# is the seal behaving correctly, and it is why the pin moves in a commit that
+# changed no stage code.
+#
+# Moved again the same day, one commit along: the Pass-C audit stopped
+# multiplying an act's ACT-LOCAL flags by the number of pages its crop spans, so
+# a2's audit draft and finding carry two `testimony-diff` flags rather than four,
+# and its sealed re-proof plan two rows rather than four.
+#
+# Re-pinned in the formal review: `page_witness_count` again counts distinct
+# chairs rather than the new `(chair, page)` attachment rows. The continuation
+# dossier therefore reports the two witnesses the run configured, not four
+# witnesses invented by its two-page span.
+#
+# Re-pinned for stage-completion seals. Every ordinary pass adds a
+# `decode-environment` and `stage-seal`; recovery re-entries add their own pair,
+# so review is measured rather than inferred.
+#
+# Re-pinned in the Phase-2 Sol correction: seals now bind their decode-environment
+# bytes and Armarium boundary records no longer claim delivery.
+#
+# Re-pinned at each merge that brings two authority-moving branches together. The
+# pins below stand for the merged tree and nothing else: every contributing branch
+# moved them on its own, so no branch's own pin describes this tree and taking one
+# side would be a pin measured against a tree nobody ran. Both values were measured
+# through this module's own `orchestrate` and `semantic_snapshot_digest` helpers,
+# twice, at two independent run roots, and the file counts below were re-measured
+# the same way. The host re-measures at integration.
+HAPPY_RUN_TREE_DIGEST = "214058d9049fad37256a40594c5494e79747d05ec121f08352751b1e1212d7d0"
+REVIEW_RUN_TREE_DIGEST = "01a963397c21d4d4ad619b8d2875a55098373b69b2e6838922b22c83b2c97799"
 
 
 def orchestrate(
@@ -633,6 +687,23 @@ def orchestrate(
     nuda_approval_ref: str | None = None,
 ) -> subprocess.CompletedProcess:
     """Run the pipeline the way a person would, and return the whole result."""
+    if nuda_per_mille and nuda_approval_ref == NUDA_APPROVAL_SUBJECT:
+        bindings = run_config_bindings(
+            load_models_toml(ROOT / "config" / "models.toml"),
+            load_fixture(str(ROOT / "proof")),
+            scenario,
+            nuda_per_mille=nuda_per_mille,
+            nuda_approval_ref=nuda_approval_ref,
+        )
+        RunTree(run_root, run_id).write_approval_record(
+            build_approval_record(
+                subject_ids=[NUDA_APPROVAL_SUBJECT],
+                action="other",
+                reason="test-only Lectio nuda sampling design",
+                target_version_hash=bindings["config_digest"],
+                timestamp="2026-08-21T00:00:00Z",
+            )
+        )
     command = [
         sys.executable,
         str(ORCHESTRATOR),
@@ -942,6 +1013,30 @@ def _semantic_export_artifact(data: bytes, replacements: dict[str, str]) -> byte
     return canonical_bytes(semantic)
 
 
+def _semantic_decode_environment(data: bytes) -> bytes | None:
+    """Normalize host probes while retaining the stage's semantic decode role."""
+    try:
+        record = json.loads(data)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(record, dict) or record.get("kind") != "decode-environment":
+        return None
+    try:
+        environment = _validate_decode_environment(record.get("payload"), "acceptance pin")
+    except SchemaRefusal:
+        return None
+    if canonical_bytes(record) != data or record.get("self_hash") != self_hash(record):
+        return None
+    semantic = deepcopy(record)
+    semantic["payload"] = deepcopy(environment)
+    for decoder in semantic["payload"]["decoders"]:
+        decoder["version"] = "platform-normalized"
+    semantic["payload"]["platform"] = "platform-normalized"
+    semantic["payload"]["machine"] = "platform-normalized"
+    semantic["self_hash"] = self_hash(semantic)
+    return canonical_bytes(semantic)
+
+
 def _semantic_armarium_manifest(data: bytes, replacements: dict[str, str]) -> bytes | None:
     """Reduce only derived bundle/export digests in the stage inventory."""
     try:
@@ -957,6 +1052,251 @@ def _semantic_armarium_manifest(data: bytes, replacements: dict[str, str]) -> by
     ):
         return None
     return canonical_bytes(_replace_semantic_digests(manifest, replacements))
+
+
+def _semantic_envelope(data: bytes, replacements: dict[str, str]) -> bytes | None:
+    """Reduce a valid ordinary envelope when it names semantic blob content."""
+    try:
+        record = json.loads(data)
+        validate_envelope(record)
+    except (SchemaRefusal, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if (
+        record["kind"] in {"decode-environment", "stage-seal"}
+        or canonical_bytes(record) != data
+        or record["self_hash"] != self_hash(record)
+    ):
+        return None
+    semantic = _replace_semantic_digests(record, replacements)
+    if semantic == record:
+        return None
+    semantic["self_hash"] = self_hash(semantic)
+    return canonical_bytes(semantic)
+
+
+def _semantic_stage_seal(data: bytes, replacements: dict[str, str]) -> bytes | None:
+    """Reduce a witnessed stage inventory only when its complete shape is sound."""
+    try:
+        record = json.loads(data)
+        validate_envelope(record)
+    except (SchemaRefusal, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    payload = record.get("payload")
+    if (
+        record.get("kind") != "stage-seal"
+        or canonical_bytes(record) != data
+        or record.get("self_hash") != self_hash(record)
+        or not isinstance(payload, dict)
+        or set(payload)
+        != {
+            "stage",
+            "attempt_ordinal",
+            "attempt_id",
+            "config_digest",
+            "register_digest",
+            "artifact_inventory",
+            "blob_inventory",
+            "census",
+            "decode_environment_artifact_id",
+            "decode_environment_sha256",
+        }
+        or payload["stage"] not in STAGES
+        or record.get("stage") != payload["stage"]
+        or record.get("subject_id") != payload["stage"]
+        or record.get("attempt_id") != payload["attempt_id"]
+        or not isinstance(payload["attempt_ordinal"], int)
+        or payload["attempt_ordinal"] < 1
+        or not isinstance(payload["census"], list)
+        or any(
+            not isinstance(row, dict)
+            or set(row) != {"kind", "outcome", "count"}
+            or not isinstance(row["kind"], str)
+            or not isinstance(row["outcome"], str)
+            or not isinstance(row["count"], int)
+            or row["count"] < 1
+            for row in payload["census"]
+        )
+        or payload["census"]
+        != sorted(payload["census"], key=lambda row: (row["kind"], row["outcome"]))
+        or len({(row["kind"], row["outcome"]) for row in payload["census"]})
+        != len(payload["census"])
+        or any(
+            not isinstance(payload[field], str)
+            or len(payload[field]) != 64
+            or any(character not in "0123456789abcdef" for character in payload[field])
+            for field in (
+                "config_digest",
+                "register_digest",
+                "artifact_inventory",
+                "blob_inventory",
+                "decode_environment_sha256",
+            )
+        )
+        or not isinstance(payload["attempt_id"], str)
+        or not isinstance(payload["decode_environment_artifact_id"], str)
+        or payload["artifact_inventory"] not in replacements
+        or payload["blob_inventory"] not in replacements
+        or payload["decode_environment_sha256"] not in replacements
+    ):
+        return None
+    semantic = _replace_semantic_digests(record, replacements)
+    semantic["payload"]["artifact_inventory"] = replacements[payload["artifact_inventory"]]
+    semantic["payload"]["blob_inventory"] = replacements[payload["blob_inventory"]]
+    semantic["self_hash"] = self_hash(semantic)
+    return canonical_bytes(semantic)
+
+
+def _semantic_stage_seal_inventory_replacements(
+    files: list[tuple[Path, bytes]], replacements: dict[str, str]
+) -> None:
+    """Map each valid seal's raw aggregate values to its semantic inventories."""
+    records_by_stage: dict[str, list[tuple[Path, bytes, dict]]] = {stage: [] for stage in STAGES}
+    seals: list[tuple[Path, bytes, dict]] = []
+    for path, data in files:
+        try:
+            record = json.loads(data)
+            validate_envelope(record)
+        except (SchemaRefusal, UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        if canonical_bytes(record) != data or record.get("self_hash") != self_hash(record):
+            continue
+        stage = record.get("stage")
+        if stage not in records_by_stage:
+            continue
+        row = (path, data, record)
+        records_by_stage[stage].append(row)
+        if record.get("kind") == "stage-seal":
+            seals.append(row)
+
+    def matching_artifacts(stage: str, payload: dict) -> list[tuple[Path, bytes, dict]] | None:
+        census = payload.get("census")
+        if not isinstance(census, list):
+            return None
+        by_kind_outcome: dict[tuple[str, str], list[tuple[Path, bytes, dict]]] = {}
+        for row in records_by_stage[stage]:
+            if row[2]["kind"] in {"stage-seal", "decode-environment"}:
+                continue
+            key = (row[2]["kind"], row[2]["outcome"])
+            by_kind_outcome.setdefault(key, []).append(row)
+        choice_specs = []
+        possible = 1
+        for row in census:
+            if not isinstance(row, dict):
+                return None
+            key = (row.get("kind"), row.get("outcome"))
+            count = row.get("count")
+            if (
+                not isinstance(key[0], str)
+                or not isinstance(key[1], str)
+                or not isinstance(count, int)
+            ):
+                return None
+            source = by_kind_outcome.get(key, [])
+            if count < 1 or len(source) < count:
+                return None
+            possible *= comb(len(source), count)
+            if possible > 8192:
+                return None
+            choice_specs.append((source, count))
+        matches = []
+        for groups in product(*(combinations(source, count) for source, count in choice_specs)):
+            selected = [item for group in groups for item in group]
+            entries = [
+                {
+                    "artifact_id": record["artifact_id"],
+                    "kind": record["kind"],
+                    "subject_id": record["subject_id"],
+                    "outcome": record["outcome"],
+                    "relative_path": str(path.relative_to(path.parents[3])),
+                    "sha256": digest_bytes(data),
+                }
+                for path, data, record in selected
+            ]
+            entries.sort(key=lambda entry: entry["artifact_id"])
+            if digest_of(entries) == payload.get("artifact_inventory"):
+                matches.append(selected)
+                if len(matches) > 1:
+                    return None
+        return matches[0] if matches else None
+
+    def matching_blobs(stage: str, payload: dict) -> list[dict[str, str]] | None:
+        stage_root = WRITING_DIRECTORIES[stage]
+        prefix = f"{stage_root}/blobs/sha256/"
+        candidates = []
+        for path, data in files:
+            relative = str(path.relative_to(path.parents[3]))
+            if relative.startswith(prefix) and "/" not in relative[len(prefix) :]:
+                candidates.append({"name": path.name, "sha256_of_content": digest_bytes(data)})
+        matches = []
+        probes = 0
+        for count in range(len(candidates) + 1):
+            for chosen in combinations(candidates, count):
+                probes += 1
+                if probes > 8192:
+                    return None
+                selected = sorted(chosen, key=lambda row: row["name"])
+                if digest_of(selected) == payload.get("blob_inventory"):
+                    matches.append(selected)
+                    if len(matches) > 1:
+                        return None
+        return matches[0] if matches else None
+
+    for _, _, seal in seals:
+        payload = seal.get("payload")
+        stage = payload.get("stage") if isinstance(payload, dict) else None
+        if stage not in records_by_stage:
+            continue
+        selected_artifacts = matching_artifacts(stage, payload)
+        blobs = matching_blobs(stage, payload)
+        if selected_artifacts is None or blobs is None:
+            continue
+        artifacts = [
+            {
+                "artifact_id": record["artifact_id"],
+                "kind": record["kind"],
+                "subject_id": record["subject_id"],
+                "outcome": record["outcome"],
+                "relative_path": str(path.relative_to(path.parents[3])),
+                "sha256": digest_bytes(data),
+            }
+            for path, data, record in selected_artifacts
+        ]
+        artifacts.sort(key=lambda entry: entry["artifact_id"])
+        if payload.get("artifact_inventory") != digest_of(artifacts) or payload.get(
+            "blob_inventory"
+        ) != digest_of(blobs):
+            continue
+        semantic_artifacts = _replace_semantic_digests(artifacts, replacements)
+        for entry, (_, data, _) in zip(
+            semantic_artifacts,
+            sorted(selected_artifacts, key=lambda row: row[2]["artifact_id"]),
+            strict=True,
+        ):
+            entry["sha256"] = replacements.get(digest_bytes(data), digest_bytes(data))
+        semantic_blobs = _replace_semantic_digests(blobs, replacements)
+        replacements[payload["artifact_inventory"]] = digest_of(semantic_artifacts)
+        replacements[payload["blob_inventory"]] = digest_of(semantic_blobs)
+
+
+def _semantic_manifest(data: bytes, replacements: dict[str, str]) -> bytes | None:
+    """Reduce a derived stage manifest only when it has the exact store shape."""
+    try:
+        manifest = json.loads(data)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if (
+        not isinstance(manifest, dict)
+        or set(manifest) != {"schema", "run_id", "stage", "artifacts", "blobs"}
+        or manifest.get("schema") != "skeleton.v1"
+        or manifest.get("stage") not in WRITING_DIRECTORIES
+        or not isinstance(manifest["run_id"], str)
+        or not isinstance(manifest["artifacts"], list)
+        or not isinstance(manifest["blobs"], list)
+        or canonical_bytes(manifest) != data
+    ):
+        return None
+    semantic = _replace_semantic_digests(manifest, replacements)
+    return None if semantic == manifest else canonical_bytes(semantic)
 
 
 def semantic_snapshot(root: Path) -> dict[str, str]:
@@ -984,21 +1324,72 @@ def semantic_snapshot(root: Path) -> dict[str, str]:
         bundle_paths[path] = semantic_digest
         replacements.update(bundle_replacements)
 
+    # A blob's content-addressed filename is an encoding of its container bytes.
+    # Establish its pixel value first, so every record that names that component
+    # can be reduced before inventories digest the record bytes.
+    for _, data in files:
+        if not data.startswith(PNG_SIGNATURE):
+            continue
+        try:
+            width, height, rows = decode_grayscale_png(data)
+            pixel_digest = digest_bytes(b"".join(rows))
+        except ValueError:
+            from PIL import Image
+
+            with Image.open(BytesIO(data)) as image:
+                grayscale = image.convert("L")
+                width, height = grayscale.size
+                pixel_digest = digest_bytes(grayscale.tobytes())
+        replacements[digest_bytes(data)] = digest_of(
+            {"width": width, "height": height, "pixel_sha256": pixel_digest}
+        )
+
     semantic_files = {}
+    for path, data in files:
+        semantic = _semantic_decode_environment(data)
+        if semantic is not None:
+            semantic_files[path] = semantic
+            replacements[digest_bytes(data)] = digest_bytes(semantic)
     for path, data in files:
         semantic = _semantic_export_artifact(data, replacements)
         if semantic is not None:
             semantic_files[path] = semantic
             replacements[digest_bytes(data)] = digest_bytes(semantic)
 
+    # Ordinary envelopes may bind a content-addressed blob directly. Work to a
+    # fixed point because later envelopes can name an earlier envelope's digest.
+    for _ in range(len(files)):
+        changed = False
+        for path, data in files:
+            semantic = _semantic_envelope(data, replacements)
+            if semantic is None:
+                continue
+            semantic_files[path] = semantic
+            raw_digest, semantic_digest = digest_bytes(data), digest_bytes(semantic)
+            if replacements.get(raw_digest) != semantic_digest:
+                replacements[raw_digest] = semantic_digest
+                changed = True
+        if not changed:
+            break
+
+    _semantic_stage_seal_inventory_replacements(files, replacements)
+    for path, data in files:
+        semantic = _semantic_stage_seal(data, replacements)
+        if semantic is not None:
+            semantic_files[path] = semantic
+            replacements[digest_bytes(data)] = digest_bytes(semantic)
+
     for path, data in files:
         semantic = _semantic_armarium_manifest(data, replacements)
+        if semantic is None:
+            semantic = _semantic_manifest(data, replacements)
         if semantic is not None:
             semantic_files[path] = semantic
 
     inventory = {}
     for path, data in files:
         relative = str(path.relative_to(root))
+        relative = _replace_semantic_digests(relative, replacements)
         if path in bundle_paths:
             raw_digest = digest_bytes(data)
             semantic_digest = bundle_paths[path]
@@ -1016,8 +1407,6 @@ def semantic_snapshot(root: Path) -> dict[str, str]:
                 # adaptive PNG filters the project's own minimal decoder refuses
                 # by design. The pin still binds pixels, not compressor bytes —
                 # only the decoder differs.
-                from io import BytesIO
-
                 from PIL import Image
 
                 with Image.open(BytesIO(data)) as image:
@@ -1069,6 +1458,216 @@ def test_semantic_snapshot_digest_binds_png_pixels_not_compressor_bytes(tmp_path
 
     assert snapshot(tmp_path) != raw_before
     assert semantic_snapshot_digest(tmp_path) == semantic_before
+
+
+def test_semantic_snapshot_normalizes_stage_seals_over_equivalent_png_containers(
+    tmp_path, monkeypatch
+):
+    """A witnessed raw-container inventory must not make an OS-local pin.
+
+    This is deliberately a complete miniature stage: the page envelope names a
+    content-addressed PNG, the completion seal inventories both that blob and
+    the page envelope, and the derived manifest names the seal.  It would pass
+    the older PNG-only reducer while still producing different tree digests.
+    """
+    import common.imaging as imaging
+
+    rows = [bytearray([0, 127, 255]), bytearray([255, 127, 0])]
+
+    def write_tree(root: Path) -> None:
+        run = root / "r"
+        png = imaging.encode_grayscale_png(3, 2, rows)
+        png_digest = digest_bytes(png)
+        blob_path = run / "1_exemplar" / "blobs" / "sha256" / png_digest
+        blob_path.parent.mkdir(parents=True)
+        blob_path.write_bytes(png)
+
+        page = build_envelope(
+            run_id="r",
+            artifact_id=artifact_id(EXEMPLAR, "page", "page-1"),
+            subject_id="page-1",
+            stage=EXEMPLAR,
+            kind="page",
+            outcome="sealed",
+            config_digest="a" * 64,
+            adapter_revision="fixture-exemplar-v0",
+            inputs=[],
+            payload={
+                "image_path": f"1_exemplar/blobs/sha256/{png_digest}",
+                "sha256": png_digest,
+            },
+        )
+        page_path = run / "1_exemplar" / "artifacts" / "page" / f"{page['artifact_id']}.json"
+        page_path.parent.mkdir(parents=True, exist_ok=True)
+        page_data = canonical_bytes(page)
+        page_path.write_bytes(page_data)
+
+        seal_attempt = attempt_id(EXEMPLAR, "seal", 1)
+        environment = build_envelope(
+            run_id="r",
+            artifact_id=artifact_id(EXEMPLAR, "decode-environment", EXEMPLAR, seal_attempt),
+            subject_id=EXEMPLAR,
+            stage=EXEMPLAR,
+            kind="decode-environment",
+            outcome="recorded",
+            config_digest="a" * 64,
+            adapter_revision="fixture-exemplar-v0",
+            inputs=[],
+            attempt=seal_attempt,
+            payload=_decode_environment(EXEMPLAR),
+        )
+        environment_path = (
+            run
+            / "1_exemplar"
+            / "artifacts"
+            / "decode-environment"
+            / f"{environment['artifact_id']}.json"
+        )
+        environment_path.parent.mkdir(parents=True, exist_ok=True)
+        environment_data = canonical_bytes(environment)
+        environment_path.write_bytes(environment_data)
+
+        entries = [
+            {
+                "artifact_id": page["artifact_id"],
+                "kind": page["kind"],
+                "subject_id": page["subject_id"],
+                "outcome": page["outcome"],
+                "relative_path": str(page_path.relative_to(run)),
+                "sha256": digest_bytes(page_data),
+            }
+        ]
+        payload = {
+            "stage": EXEMPLAR,
+            "attempt_ordinal": 1,
+            "attempt_id": seal_attempt,
+            "config_digest": "a" * 64,
+            "register_digest": "b" * 64,
+            "artifact_inventory": digest_of(entries),
+            "blob_inventory": digest_of([{"name": png_digest, "sha256_of_content": png_digest}]),
+            "census": [{"kind": "page", "outcome": "sealed", "count": 1}],
+            "decode_environment_artifact_id": environment["artifact_id"],
+            "decode_environment_sha256": digest_bytes(environment_data),
+        }
+        seal = build_envelope(
+            run_id="r",
+            artifact_id=artifact_id(EXEMPLAR, "stage-seal", EXEMPLAR, seal_attempt),
+            subject_id=EXEMPLAR,
+            stage=EXEMPLAR,
+            kind="stage-seal",
+            outcome="sealed",
+            config_digest="a" * 64,
+            adapter_revision="fixture-exemplar-v0",
+            inputs=[],
+            attempt=seal_attempt,
+            payload=payload,
+        )
+        seal_path = run / "1_exemplar" / "artifacts" / "stage-seal" / f"{seal['artifact_id']}.json"
+        seal_path.parent.mkdir(parents=True, exist_ok=True)
+        seal_data = canonical_bytes(seal)
+        seal_path.write_bytes(seal_data)
+
+        manifest_entries = entries + [
+            {
+                "artifact_id": record["artifact_id"],
+                "kind": record["kind"],
+                "subject_id": record["subject_id"],
+                "outcome": record["outcome"],
+                "relative_path": str(path.relative_to(run)),
+                "sha256": digest_bytes(data),
+            }
+            for record, path, data in (
+                (environment, environment_path, environment_data),
+                (seal, seal_path, seal_data),
+            )
+        ]
+        manifest = {
+            "schema": "skeleton.v1",
+            "run_id": "r",
+            "stage": EXEMPLAR,
+            "artifacts": sorted(manifest_entries, key=lambda entry: entry["artifact_id"]),
+            "blobs": [png_digest],
+        }
+        (run / "1_exemplar" / "manifest.json").write_bytes(canonical_bytes(manifest))
+
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    write_tree(first)
+    compress = imaging.zlib.compress
+    monkeypatch.setattr(
+        imaging.zlib,
+        "compress",
+        lambda data, *args, **kwargs: compress(data, level=0),
+    )
+    write_tree(second)
+
+    assert snapshot(first) != snapshot(second)
+    assert semantic_snapshot_digest(first) == semantic_snapshot_digest(second)
+
+
+def test_semantic_snapshot_normalizes_monkeypatched_decode_environment_probe(tmp_path, monkeypatch):
+    """Decoder probes remain auditable records without becoming host-specific pins."""
+    import common.stage as stage_common
+
+    path = tmp_path / "decode-environment.json"
+    payload = stage_common._decode_environment(DOOR)
+
+    def write_environment(value):
+        record = build_envelope(
+            run_id="environment-test",
+            artifact_id=artifact_id(DOOR, "decode-environment", DOOR, "att_1234567890abcdef"),
+            subject_id=DOOR,
+            stage=DOOR,
+            kind="decode-environment",
+            outcome="recorded",
+            config_digest="a" * 64,
+            adapter_revision="fixture-door-v0",
+            inputs=[],
+            attempt="att_1234567890abcdef",
+            payload=value,
+        )
+        path.write_bytes(canonical_bytes(record))
+
+    write_environment(payload)
+    raw_before = snapshot(tmp_path)
+    semantic_before = semantic_snapshot_digest(tmp_path)
+    changed = deepcopy(payload)
+    changed["decoders"][0]["version"] = "monkeypatched-decoder-version"
+    monkeypatch.setattr(stage_common, "_decode_environment", lambda _: changed)
+    write_environment(stage_common._decode_environment(DOOR))
+
+    assert snapshot(tmp_path) != raw_before
+    assert semantic_snapshot_digest(tmp_path) == semantic_before
+
+
+def test_semantic_snapshot_keeps_decode_role_fields_in_the_acceptance_pin(tmp_path):
+    """Host versions vary; whether a stage decoded or produced pixels does not."""
+    path = tmp_path / "decode-environment.json"
+    payload = _decode_environment(DOOR)
+
+    def write_environment(value):
+        record = build_envelope(
+            run_id="environment-role-test",
+            artifact_id=artifact_id(DOOR, "decode-environment", DOOR, "att_1234567890abcdef"),
+            subject_id=DOOR,
+            stage=DOOR,
+            kind="decode-environment",
+            outcome="recorded",
+            config_digest="a" * 64,
+            adapter_revision="fixture-door-v0",
+            inputs=[],
+            attempt="att_1234567890abcdef",
+            payload=value,
+        )
+        path.write_bytes(canonical_bytes(record))
+
+    write_environment(payload)
+    semantic_before = semantic_snapshot_digest(tmp_path)
+    changed = deepcopy(payload)
+    changed["produced_pixels"] = not changed["produced_pixels"]
+    write_environment(changed)
+
+    assert semantic_snapshot_digest(tmp_path) != semantic_before
 
 
 def _acceptance_sqlite(
@@ -1306,6 +1905,15 @@ def export_of(tree: RunTree) -> dict:
 def happy_run(tmp_path_factory):
     root = tmp_path_factory.mktemp("happy")
     result = orchestrate(root, "r", "happy")
+    assert result.returncode == 0, result.stderr
+    return root, RunTree(root, "r")
+
+
+@pytest.fixture(scope="module")
+def continuation_recovery_run(tmp_path_factory):
+    """Recrop a cross-page act without re-entering the Attestatores."""
+    root = tmp_path_factory.mktemp("continuation-recovery")
+    result = orchestrate(root, "r", "continuation-recovery")
     assert result.returncode == 0, result.stderr
     return root, RunTree(root, "r")
 
@@ -1637,6 +2245,9 @@ def test_a_shortened_resealed_proposal_denominator_stops_the_first_consumer(tmp_
     seal["payload"]["self_hash"] = self_hash(seal["payload"])
     seal["self_hash"] = self_hash(seal)
     path.write_bytes(canonical_bytes(seal))
+    resealing_context = _designator_context_for(root, "r", "happy")
+    resealing_context.seal_boundary()
+    resealing_context.finish()
     before = snapshot(root)
 
     result = invoke_stage(root, "r", "happy", "pipeline/3_attestatores/run.py")
@@ -1691,8 +2302,7 @@ def _mint_test_residual_row(
     is refused before that check ever runs and stays independent of a real
     conservation residual, the *denominator* check being what they exercise.
     """
-    ordinal = residual_act_ordinal(index)
-    act_id = derive_act_id(page_id, ordinal, bounds)
+    act_id = derive_act_id(page_id, "residual", bounds)
     hold = context.publish(
         kind="hold",
         subject_id=act_id,
@@ -1701,7 +2311,6 @@ def _mint_test_residual_row(
         payload={
             "act_key": f"residual:{page_ordinal}:{index}",
             "page_ordinal": page_ordinal,
-            "residual_ordinal": ordinal,
             "residual_bounds": hold_bounds if hold_bounds is not None else bounds,
             "residual_pixel_count": bounds["w"] * bounds["h"],
             "reason": "test-minted residual hold",
@@ -1749,7 +2358,9 @@ def _patch_conservation_with_extra_residual(
     return {"relative_path": relative_path, "sha256": digest_bytes(data)}
 
 
-def _reseal_with_extra_row(tree: RunTree, row: dict, *, include_hold_evidence: bool = True) -> None:
+def _reseal_with_extra_row(
+    tree: RunTree, context, row: dict, *, include_hold_evidence: bool = True
+) -> None:
     """Append one expected-act row to the real, on-disk proposal seal.
 
     Recomputes both self-hashes exactly as the precedent shortened-denominator
@@ -1767,6 +2378,8 @@ def _reseal_with_extra_row(tree: RunTree, row: dict, *, include_hold_evidence: b
     seal["payload"]["self_hash"] = self_hash(seal["payload"])
     seal["self_hash"] = self_hash(seal)
     path.write_bytes(canonical_bytes(seal))
+    context.seal_boundary()
+    context.finish()
 
 
 def test_a_well_formed_residual_act_extends_the_denominator_and_the_first_consumer_accepts_it(
@@ -1787,7 +2400,7 @@ def test_a_well_formed_residual_act_extends_the_denominator_and_the_first_consum
     bounds = {"x": 1, "y": 1, "w": 2, "h": 2}
     conservation_ref = _patch_conservation_with_extra_residual(tree, page_id, bounds, 4)
     row = _mint_test_residual_row(context, page_id, 1, 0, bounds, conservation_ref=conservation_ref)
-    _reseal_with_extra_row(tree, row)
+    _reseal_with_extra_row(tree, context, row)
 
     result = invoke_stage(root, "r", "happy", "pipeline/3_attestatores/run.py")
     assert result.returncode == 0, result.stderr
@@ -1822,7 +2435,7 @@ def test_a_self_consistent_residual_with_no_matching_conservation_component_is_r
     context = _designator_context_for(root, "r", "happy")
     page_id = page_identity(context.fixture, 1)
     row = _mint_test_residual_row(context, page_id, 1, 0, {"x": 1, "y": 1, "w": 2, "h": 2})
-    _reseal_with_extra_row(tree, row)
+    _reseal_with_extra_row(tree, context, row)
 
     result = invoke_stage(root, "r", "happy", "pipeline/3_attestatores/run.py")
     assert result.returncode == EXIT_FATAL
@@ -1832,11 +2445,11 @@ def test_a_self_consistent_residual_with_no_matching_conservation_component_is_r
 def test_a_residual_whose_bounds_do_not_match_its_own_conservation_record_is_refused(tmp_path):
     """The conservation record the hold references must actually carry this residual.
 
-    The hold's own ordinal and bounds still recompute the claimed identity
-    correctly, and it references a real conservation record — but at that
-    residual's ordinal, the referenced record's own `residual_components` name
-    a different rectangle. Self-consistency plus a reference is not the same
-    as a reference that actually corroborates the claim.
+    The hold's own bounds still recompute the claimed identity correctly, and it
+    references a real conservation record — but no component in that record's
+    own `residual_components` names this rectangle. Self-consistency plus a
+    reference is not the same as a reference that actually corroborates the
+    claim.
     """
     root = tmp_path / "runs"
     _run_through_designator(root)
@@ -1850,11 +2463,11 @@ def test_a_residual_whose_bounds_do_not_match_its_own_conservation_record_is_ref
     row = _mint_test_residual_row(
         context, page_id, 1, 0, claimed_bounds, conservation_ref=conservation_ref
     )
-    _reseal_with_extra_row(tree, row)
+    _reseal_with_extra_row(tree, context, row)
 
     result = invoke_stage(root, "r", "happy", "pipeline/3_attestatores/run.py")
     assert result.returncode == EXIT_FATAL
-    assert "does not carry at that ordinal" in result.stderr
+    assert "does not carry at those bounds" in result.stderr
 
 
 def test_a_residual_act_claiming_to_be_proposed_is_refused(tmp_path):
@@ -1867,7 +2480,7 @@ def test_a_residual_act_claiming_to_be_proposed_is_refused(tmp_path):
     page_id = page_identity(context.fixture, 1)
     row = _mint_test_residual_row(context, page_id, 1, 0, {"x": 1, "y": 1, "w": 2, "h": 2})
     row["outcome"] = "proposed"
-    _reseal_with_extra_row(tree, row)
+    _reseal_with_extra_row(tree, context, row)
 
     result = invoke_stage(root, "r", "happy", "pipeline/3_attestatores/run.py")
     assert result.returncode == EXIT_FATAL
@@ -1884,7 +2497,7 @@ def test_a_residual_act_claiming_a_continuation_is_refused(tmp_path):
     page_id = page_identity(context.fixture, 1)
     row = _mint_test_residual_row(context, page_id, 1, 0, {"x": 1, "y": 1, "w": 2, "h": 2})
     row["has_continuation"] = True
-    _reseal_with_extra_row(tree, row)
+    _reseal_with_extra_row(tree, context, row)
 
     result = invoke_stage(root, "r", "happy", "pipeline/3_attestatores/run.py")
     assert result.returncode == EXIT_FATAL
@@ -1913,11 +2526,11 @@ def test_a_residual_act_whose_hold_bounds_do_not_verify_is_refused(tmp_path):
         {"x": 1, "y": 1, "w": 2, "h": 2},
         hold_bounds={"x": 9, "y": 9, "w": 2, "h": 2},
     )
-    _reseal_with_extra_row(tree, row)
+    _reseal_with_extra_row(tree, context, row)
 
     result = invoke_stage(root, "r", "happy", "pipeline/3_attestatores/run.py")
     assert result.returncode == EXIT_FATAL
-    assert "does not verify against the residual ordinal and bounds" in result.stderr
+    assert "does not verify against the residual class and bounds" in result.stderr
 
 
 def test_a_residual_act_with_no_hold_record_is_refused(tmp_path):
@@ -1928,10 +2541,9 @@ def test_a_residual_act_with_no_hold_record_is_refused(tmp_path):
     tree = RunTree(root, "r")
     context = _designator_context_for(root, "r", "happy")
     page_id = page_identity(context.fixture, 1)
-    ordinal = residual_act_ordinal(0)
     bounds = {"x": 1, "y": 1, "w": 2, "h": 2}
     row = {
-        "act_id": derive_act_id(page_id, ordinal, bounds),
+        "act_id": derive_act_id(page_id, "residual", bounds),
         "act_key": "residual:1:0",
         "page_id": page_id,
         "page_ordinal": 1,
@@ -1939,7 +2551,7 @@ def test_a_residual_act_with_no_hold_record_is_refused(tmp_path):
         "outcome": "held",
         "evidence": [],
     }
-    _reseal_with_extra_row(tree, row, include_hold_evidence=False)
+    _reseal_with_extra_row(tree, context, row, include_hold_evidence=False)
 
     result = invoke_stage(root, "r", "happy", "pipeline/3_attestatores/run.py")
     assert result.returncode == EXIT_FATAL
@@ -1965,6 +2577,8 @@ def test_a_conservation_residual_the_seal_never_minted_is_refused(tmp_path):
     context = _designator_context_for(root, "r", "happy")
     page_id = page_identity(context.fixture, 1)
     _patch_conservation_with_extra_residual(tree, page_id, {"x": 1, "y": 1, "w": 9, "h": 9}, 81)
+    context.seal_boundary()
+    context.finish()
 
     result = invoke_stage(root, "r", "happy", "pipeline/3_attestatores/run.py")
     assert result.returncode == EXIT_FATAL
@@ -2269,7 +2883,7 @@ def test_armarium_refuses_an_archetypus_record_orphaned_beside_a_held_act(tmp_pa
     path = tree.resolve(tree.artifact_path(ARCHETYPUS, "archetypus", envelope["artifact_id"]))
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(canonical_bytes(envelope))
-    tree.write_manifest(ARCHETYPUS)
+    rebind_stage_seal(tree, ARCHETYPUS)
 
     result = subprocess.run(
         [
@@ -2304,6 +2918,144 @@ def test_the_seal_carries_an_outcome_and_a_derived_continuation_for_every_act(ha
     assert by_key["a2"]["outcome"] == "proposed"
     assert by_key["a1"]["has_continuation"] is False
     assert by_key["a2"]["has_continuation"] is True
+
+
+def test_a_continuation_has_page_scoped_testimony_and_audit_on_its_far_page(happy_run):
+    """GOALS 3/5: page two retains and audits the pixels a2 contributes there."""
+    _, tree = happy_run
+    a2 = next(
+        act
+        for act in tree.read_artifact(
+            DESIGNATOR,
+            "proposal-seal",
+            artifact_id(DESIGNATOR, "proposal-seal", "proposal-seal", None),
+        )["payload"]["expected_acts"]
+        if act["act_key"] == "a2"
+    )
+    continuation = [
+        record
+        for record in artifacts(tree, ATTESTATORES, "page-testimonium")
+        if record["payload"].get("page_ordinal") == 2
+    ]
+    assert {record["payload"]["chair"] for record in continuation} == {
+        "attestator_1",
+        "attestator_3",
+    }
+    assert {record["payload"]["page_role"] for record in continuation} == {"continuation"}
+    attachment = next(
+        record
+        for record in artifacts(tree, ATTESTATORES, "act-attachment")
+        if record["subject_id"] == a2["act_id"]
+    )
+    assert {
+        row["page_ordinal"] for row in attachment["payload"]["attachments"] if row["page_witness"]
+    } == {1, 2}
+    draft = next(
+        record
+        for record in artifacts(tree, PERLECTOR, "audit-draft")
+        if record["subject_id"] == a2["act_id"]
+    )
+    assert draft["payload"]["page_ids"] == [
+        page_identity(load_fixture(str(ROOT / "proof")), 1),
+        page_identity(load_fixture(str(ROOT / "proof")), 2),
+    ]
+
+
+def test_a_continuation_counts_page_witness_chairs_not_page_pairs(happy_run):
+    """The dossier roster count cannot grow when the same chairs span two pages."""
+    _, tree = happy_run
+    reading = next(
+        record
+        for record in artifacts(tree, PERLECTOR, "perlectio")
+        if record["payload"]["act_key"] == "a2"
+    )
+
+    attachment = reading["payload"]["dossier"]["act_attachment"]
+    assert attachment["page_witness_count"] == 2
+    assert len(attachment["comparison_views"]) == 2
+
+
+def test_a_recrop_of_a_continuation_act_keeps_its_far_page_in_the_evidence(
+    continuation_recovery_run,
+):
+    """A primary-page recrop must retain the continuation page at attempt two."""
+    _, tree = continuation_recovery_run
+    a2 = next(
+        act
+        for act in tree.read_artifact(
+            DESIGNATOR,
+            "proposal-seal",
+            artifact_id(DESIGNATOR, "proposal-seal", "proposal-seal", None),
+        )["payload"]["expected_acts"]
+        if act["act_key"] == "a2"
+    )
+    regions = [
+        record
+        for record in artifacts(tree, DESIGNATOR, "region")
+        if record["subject_id"] == a2["act_id"]
+    ]
+    origins = sorted(
+        (region["payload"]["origin"], region["payload"]["transform"]["source_page_ordinal"])
+        for region in regions
+    )
+    # This distinguishes a real primary-page recrop from a vacuous second pass.
+    assert origins == [("proposal", 1), ("proposal", 2), ("recovery", 1)]
+
+    readings = {
+        record["payload"]["attempt_ordinal"]: record
+        for record in artifacts(tree, PERLECTOR, "perlectio")
+        if record["subject_id"] == a2["act_id"]
+    }
+    assert sorted(readings) == [1, 2], "the recovery round must add exactly one attempt"
+    for ordinal, reading in readings.items():
+        pages = {basis["source_page_ordinal"] for basis in reading["payload"]["basis"]["regions"]}
+        assert pages == {1, 2}, f"attempt {ordinal} lost the continuation page"
+
+    drafts = {
+        record["payload"]["attempt_ordinal"]: record["payload"]["page_ids"]
+        for record in artifacts(tree, PERLECTOR, "audit-draft")
+        if record["subject_id"] == a2["act_id"]
+    }
+    fixture = load_fixture(str(ROOT / "proof"))
+    both_pages = [page_identity(fixture, 1), page_identity(fixture, 2)]
+    assert drafts == {1: both_pages, 2: both_pages}
+
+    attachment = next(
+        record
+        for record in artifacts(tree, ATTESTATORES, "act-attachment")
+        if record["subject_id"] == a2["act_id"]
+    )
+    # Recovery does not re-enter Attestatores, so attempt two must reconcile to
+    # this pre-recrop attachment denominator.
+    assert {
+        row["page_ordinal"] for row in attachment["payload"]["attachments"] if row["page_witness"]
+    } == {1, 2}
+
+
+def test_a_continuation_act_is_flagged_once_per_witness_not_once_per_page(happy_run):
+    """Act-local flags measure witness disagreements, not contributing pages."""
+    _, tree = happy_run
+    drafts = {
+        entry["subject_id"]: tree.read_artifact(PERLECTOR, "audit-draft", entry["artifact_id"])[
+            "payload"
+        ]
+        for entry in tree.build_manifest(PERLECTOR)["artifacts"]
+        if entry["kind"] == "audit-draft"
+    }
+    seal = tree.read_artifact(
+        DESIGNATOR, "proposal-seal", artifact_id(DESIGNATOR, "proposal-seal", "proposal-seal", None)
+    )["payload"]
+    by_key = {entry["act_key"]: entry["act_id"] for entry in seal["expected_acts"]}
+    single_page, continuation = drafts[by_key["a1"]], drafts[by_key["a2"]]
+    assert len(single_page["page_ids"]) == 1 and len(continuation["page_ids"]) == 2
+    for draft in (single_page, continuation):
+        flags = draft["flags"]
+        assert [flag["class"] for flag in flags] == ["testimony-diff", "testimony-diff"]
+        # Distinct spans prove the two rows are witnesses, not page duplicates.
+        assert len({(flag["location"]["start"], flag["location"]["end"]) for flag in flags}) == 2
+        assert len(draft["flags"]) == len(
+            {(flag["class"], flag["location"]["start"], flag["location"]["end"]) for flag in flags}
+        )
 
 
 def test_the_run_used_no_network_and_no_model(happy_run):
@@ -2500,6 +3252,7 @@ def test_perlector_refuses_a_tampered_testimonium_model_provenance(tmp_path):
     }
     record["self_hash"] = self_hash(record)
     path.write_bytes(canonical_bytes(record))
+    rebind_stage_seal(tree, ATTESTATORES)
 
     result = subprocess.run(
         [
@@ -2576,6 +3329,7 @@ def test_recensor_refuses_a_completed_perlectio_without_an_object_region_basis(t
     record["payload"]["basis"] = []
     record["self_hash"] = self_hash(record)
     path.write_bytes(canonical_bytes(record))
+    rebind_stage_seal(tree, PERLECTOR)
     before = snapshot(root)
 
     result = invoke_stage(root, "r", "happy", "pipeline/5_recensor/run.py")
@@ -2612,6 +3366,8 @@ def test_archetypus_refuses_a_resealed_completed_perlectio_without_an_object_bas
     review["payload"]["perlectio_ref"] = new_ref
     review["self_hash"] = self_hash(review)
     review_path.write_bytes(canonical_bytes(review))
+    rebind_stage_seal(tree, PERLECTOR)
+    rebind_stage_seal(tree, RECENSOR)
 
     result = invoke_stage(root, "r", "happy", "pipeline/6_archetypus/run.py")
     assert result.returncode == 2
@@ -2698,6 +3454,8 @@ def test_archetypus_refuses_to_call_an_accepted_empty_reading_blank_without_proo
     review["payload"]["perlectio_ref"] = new_ref
     review["self_hash"] = self_hash(review)
     review_path.write_bytes(canonical_bytes(review))
+    rebind_stage_seal(tree, PERLECTOR)
+    rebind_stage_seal(tree, RECENSOR)
     act_id = review["subject_id"]
 
     result = invoke_stage(root, "r", "happy", "pipeline/6_archetypus/run.py")
@@ -2792,6 +3550,8 @@ def test_archetypus_establishes_no_readable_text_once_the_review_retains_real_bl
     review["payload"]["no_readable_text_evidence_ref"] = evidence_ref
     review["self_hash"] = self_hash(review)
     review_path.write_bytes(canonical_bytes(review))
+    rebind_stage_seal(tree, PERLECTOR)
+    rebind_stage_seal(tree, RECENSOR)
 
     result = invoke_stage(root, "r", "happy", "pipeline/6_archetypus/run.py")
     assert result.returncode == 0, result.stderr
@@ -2864,6 +3624,8 @@ def test_archetypus_refuses_a_blank_proof_that_is_the_reading_itself(tmp_path):
     review["payload"]["no_readable_text_evidence_ref"] = new_ref
     review["self_hash"] = self_hash(review)
     review_path.write_bytes(canonical_bytes(review))
+    rebind_stage_seal(tree, PERLECTOR)
+    rebind_stage_seal(tree, RECENSOR)
 
     result = invoke_stage(root, "r", "happy", "pipeline/6_archetypus/run.py")
     assert result.returncode == 2, result.stderr
@@ -2929,6 +3691,8 @@ def test_archetypus_refuses_a_blank_proof_that_is_the_readings_own_crop(tmp_path
     review["payload"]["no_readable_text_evidence_ref"] = crop_ref
     review["self_hash"] = self_hash(review)
     review_path.write_bytes(canonical_bytes(review))
+    rebind_stage_seal(tree, PERLECTOR)
+    rebind_stage_seal(tree, RECENSOR)
 
     result = invoke_stage(root, "r", "happy", "pipeline/6_archetypus/run.py")
     assert result.returncode == 2, result.stderr
@@ -2972,6 +3736,7 @@ def test_archetypus_refuses_a_blank_proof_over_a_reading_that_has_text(tmp_path)
     review["payload"]["no_readable_text_evidence_ref"] = evidence_ref
     review["self_hash"] = self_hash(review)
     review_path.write_bytes(canonical_bytes(review))
+    rebind_stage_seal(tree, RECENSOR)
 
     result = invoke_stage(root, "r", "happy", "pipeline/6_archetypus/run.py")
     assert result.returncode == 2, result.stderr
@@ -3019,6 +3784,8 @@ def test_archetypus_refuses_a_crop_the_run_tree_cannot_read(tmp_path):
     review["payload"]["perlectio_ref"] = new_ref
     review["self_hash"] = self_hash(review)
     review_path.write_bytes(canonical_bytes(review))
+    rebind_stage_seal(tree, PERLECTOR)
+    rebind_stage_seal(tree, RECENSOR)
 
     result = invoke_stage(root, "r", "happy", "pipeline/6_archetypus/run.py")
     assert result.returncode == 2, result.stderr
@@ -3051,6 +3818,7 @@ def test_armarium_refuses_a_newer_perlectio_than_the_established_one(tmp_path):
     forged_path = tree.resolve(tree.artifact_path(PERLECTOR, "perlectio", forged["artifact_id"]))
     forged_path.parent.mkdir(parents=True, exist_ok=True)
     forged_path.write_bytes(canonical_bytes(forged))
+    rebind_stage_seal(tree, PERLECTOR)
 
     result = invoke_stage(root, "r", "happy", "pipeline/7_armarium/run.py")
     assert result.returncode == 2
@@ -3072,6 +3840,7 @@ def test_armarium_refuses_a_resealed_archetypus_text_that_disagrees_with_its_par
     record["payload"]["self_hash"] = self_hash(record["payload"])
     record["self_hash"] = self_hash(record)
     path.write_bytes(canonical_bytes(record))
+    rebind_stage_seal(tree, ARCHETYPUS)
     before = snapshot(root)
 
     result = invoke_stage(root, "r", "happy", "pipeline/7_armarium/run.py")
@@ -3103,11 +3872,12 @@ def test_armarium_refuses_a_resealed_archetypus_uncertainty_layer_its_parent_nev
     )
     path = tree.resolve(entry["relative_path"])
     record = json.loads(path.read_text(encoding="utf-8"))
-    assert record["payload"]["uncertainty"] == {
-        "uncertain_spans": [],
-        "gaps": [],
-        "self_revisions": [],
-    }
+    perlectio = next(
+        tree.read_artifact(PERLECTOR, "perlectio", candidate["artifact_id"])
+        for candidate in tree.build_manifest(PERLECTOR)["artifacts"]
+        if candidate["kind"] == "perlectio" and candidate["subject_id"] == record["subject_id"]
+    )
+    assert record["payload"]["uncertainty"] == from_perlectio(perlectio["payload"])
     assert len(record["payload"]["text"]) >= 1
     record["payload"]["uncertainty"]["uncertain_spans"] = [
         {"start": 0, "end": 1, "alternatives": ["?"], "confidence": "low"}
@@ -3115,6 +3885,7 @@ def test_armarium_refuses_a_resealed_archetypus_uncertainty_layer_its_parent_nev
     record["payload"]["self_hash"] = self_hash(record["payload"])
     record["self_hash"] = self_hash(record)
     path.write_bytes(canonical_bytes(record))
+    rebind_stage_seal(tree, ARCHETYPUS)
     before = snapshot(root)
 
     result = invoke_stage(root, "r", "happy", "pipeline/7_armarium/run.py")
@@ -3141,6 +3912,7 @@ def test_armarium_refuses_two_established_records_instead_of_selecting_one(tmp_p
     path = tree.resolve(tree.artifact_path(ARCHETYPUS, "archetypus", forged["artifact_id"]))
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(canonical_bytes(forged))
+    rebind_stage_seal(tree, ARCHETYPUS)
     before = snapshot(root)
 
     result = invoke_stage(root, "r", "happy", "pipeline/7_armarium/run.py")
@@ -3159,7 +3931,7 @@ def test_repeating_the_identical_command_leaves_every_byte_unchanged(tmp_path):
 
     # R0 adds two retained page Testimonia and two derived act attachments to
     # the happy walking skeleton; repeatability still compares every byte.
-    assert len(before) == 64
+    assert len(before) == 84
     assert semantic_snapshot_digest(root) == HAPPY_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "happy").returncode == 0
     after = snapshot(root)
@@ -3169,16 +3941,11 @@ def test_repeating_the_identical_command_leaves_every_byte_unchanged(tmp_path):
 
 
 def test_repeating_the_identical_command_with_nuda_enabled_leaves_every_byte_unchanged(tmp_path):
-    """The byte-identical-rerun property above is only ever exercised at the
-    default --nuda-per-mille 0. Lectio nuda's sampling rule is a deterministic
-    hash threshold over (run_id, act_id), never `random` -- this is the test
-    that actually drives two runs of the identical command with nuda turned on
-    and proves the property still holds rather than trusting the docstring's
-    word for it (audit finding: coverage gap, `nuda.py`)."""
+    """The rerun invariant must also hold when deterministic sampling is active."""
     root = tmp_path / "runs"
     assert (
         orchestrate(
-            root, "r", "happy", nuda_per_mille=1000, nuda_approval_ref="test/nuda"
+            root, "r", "happy", nuda_per_mille=1000, nuda_approval_ref=NUDA_APPROVAL_SUBJECT
         ).returncode
         == 0
     )
@@ -3187,7 +3954,7 @@ def test_repeating_the_identical_command_with_nuda_enabled_leaves_every_byte_unc
 
     assert (
         orchestrate(
-            root, "r", "happy", nuda_per_mille=1000, nuda_approval_ref="test/nuda"
+            root, "r", "happy", nuda_per_mille=1000, nuda_approval_ref=NUDA_APPROVAL_SUBJECT
         ).returncode
         == 0
     )
@@ -3206,7 +3973,7 @@ def test_repeating_the_review_scenario_also_changes_nothing(tmp_path):
 
     # R0 adds the same four retained page/attachment artifacts before review's
     # recovery loop; its append-only invariant is unchanged.
-    assert len(before) == 71
+    assert len(before) == 97
     assert semantic_snapshot_digest(root) == REVIEW_RUN_TREE_DIGEST
     assert orchestrate(root, "r", "review").returncode == 3
     assert snapshot(root) == before
@@ -3625,6 +4392,19 @@ HANDOFF_ARTIFACTS = (
     (ARCHETYPUS, ARMARIUM, "archetypus"),
 )
 
+# A sibling to HANDOFF_ARTIFACTS: seals prove complete stage boundaries, including
+# Armarium's final one, which the orchestrator itself consumes.
+SEAL_ARTIFACTS = (
+    (DOOR, EXEMPLAR),
+    (EXEMPLAR, DESIGNATOR),
+    (DESIGNATOR, ATTESTATORES),
+    (ATTESTATORES, PERLECTOR),
+    (PERLECTOR, RECENSOR),
+    (RECENSOR, ARCHETYPUS),
+    (ARCHETYPUS, ARMARIUM),
+    (ARMARIUM, "orchestrator"),
+)
+
 CONSUMER_PROGRAMS = {
     EXEMPLAR: "pipeline/1_exemplar/run.py",
     DESIGNATOR: "pipeline/2_designator/run.py",
@@ -3722,6 +4502,157 @@ def test_each_handoff_corruption_stops_its_named_real_consumer(
     assert snapshot(root) == before
 
 
+@pytest.mark.full
+@pytest.mark.parametrize("producer,consumer", SEAL_ARTIFACTS)
+def test_each_stage_seal_corruption_stops_its_named_consumer(
+    happy_run, tmp_path, producer, consumer
+):
+    """Every seal has a downstream reader; Armarium's reader is the orchestrator."""
+    source_root, _ = happy_run
+    root = tmp_path / "runs"
+    shutil.copytree(source_root, root)
+    tree = RunTree(root, "r")
+    path = _stage_seal_path(tree, producer)
+    record = json.loads(path.read_bytes())
+    record["schema"] = "skeleton.v99"
+    path.write_bytes(canonical_bytes(record))
+    before = snapshot(root)
+
+    if consumer == "orchestrator":
+        # Do not rerun Armarium: that would let the producer's own scan refuse
+        # first and would not exercise the final consumer this row names. The
+        # orchestrator now reaches that boundary through `verify_final_seal`,
+        # which is the same seal contract plus the export check, so that is what
+        # this row drives. `SchemaRefusal` is a `ContractError`, and the message
+        # match is kept so the refusal still has to name the forged config.
+        with pytest.raises(ContractError, match="skeleton.v99|schema"):
+            verify_final_seal(tree)
+        assert snapshot(root) == before
+        return
+
+    result = invoke_stage(root, "r", "happy", CONSUMER_PROGRAMS[consumer])
+
+    assert result.returncode != 0
+    assert "skeleton.v99" in result.stderr or "SchemaRefusal" in result.stderr
+    assert snapshot(root) == before
+
+
+def _stage_seal_path(tree: RunTree, stage: str) -> Path:
+    entry = next(
+        entry for entry in tree.build_manifest(stage)["artifacts"] if entry["kind"] == "stage-seal"
+    )
+    return tree.resolve(entry["relative_path"])
+
+
+@pytest.mark.full
+def test_next_stage_refuses_blob_content_changed_under_the_named_exemplar_seal(happy_run, tmp_path):
+    """A blob name is content-addressed only until disk bytes are independently read."""
+    source_root, _ = happy_run
+    root = tmp_path / "runs"
+    shutil.copytree(source_root, root)
+    tree = RunTree(root, "r")
+    blob = next(
+        path
+        for path in tree.resolve("1_exemplar/blobs").rglob("*")
+        if path.is_file() and path.name != tree.read_run()["register_digest"]
+    )
+    blob.write_bytes(b"tampered bytes under the same filename")
+
+    result = invoke_stage(root, "r", "happy", "pipeline/2_designator/run.py")
+
+    assert result.returncode == EXIT_FATAL
+    assert "exemplar stage-seal" in result.stderr
+    assert "inventory no longer matches disk" in result.stderr
+
+
+@pytest.mark.full
+def test_next_stage_refuses_artifact_added_after_the_named_boundary(happy_run, tmp_path):
+    source_root, _ = happy_run
+    root = tmp_path / "runs"
+    shutil.copytree(source_root, root)
+    tree = RunTree(root, "r")
+    forged = build_envelope(
+        run_id="r",
+        artifact_id=artifact_id(EXEMPLAR, "added-after-seal", "added", None),
+        subject_id="added",
+        stage=EXEMPLAR,
+        kind="added-after-seal",
+        outcome="sealed",
+        config_digest=tree.read_run()["config_digest"],
+        adapter_revision=tree.read_artifact(
+            EXEMPLAR,
+            "page",
+            next(
+                entry["artifact_id"]
+                for entry in tree.build_manifest(EXEMPLAR)["artifacts"]
+                if entry["kind"] == "page"
+            ),
+        )["producer"]["adapter_revision"],
+        inputs=[],
+        payload={"deliberately": "unaccounted"},
+    )
+    tree.publish_artifact(forged)
+
+    result = invoke_stage(root, "r", "happy", "pipeline/2_designator/run.py")
+
+    assert result.returncode == EXIT_FATAL
+    assert "exemplar stage-seal" in result.stderr
+    assert "inventory no longer matches disk" in result.stderr
+
+
+@pytest.mark.full
+def test_next_stage_refuses_an_artifact_removed_after_the_named_boundary(happy_run, tmp_path):
+    """The other half of the obligation the test above proves for an addition.
+
+    "Added or removed after the boundary" is the one corruption class a
+    manifest-derived seal adds over the envelope self-hash, and only the
+    addition was named. The removal runs through the same recompute, which is
+    exactly why it is cheap to state and worth stating: a claim covered "by
+    construction" is a claim nothing would report if the construction changed.
+    """
+    source_root, _ = happy_run
+    root = tmp_path / "runs"
+    shutil.copytree(source_root, root)
+    tree = RunTree(root, "r")
+    corpus_seal = tree.resolve(
+        tree.artifact_path(EXEMPLAR, "seal", artifact_id(EXEMPLAR, "seal", "corpus-seal"))
+    )
+    assert corpus_seal.is_file()
+    corpus_seal.unlink()
+
+    result = invoke_stage(root, "r", "happy", "pipeline/2_designator/run.py")
+
+    assert result.returncode == EXIT_FATAL
+    assert "exemplar stage-seal" in result.stderr
+    assert "inventory no longer matches disk" in result.stderr
+
+
+@pytest.mark.full
+def test_next_stage_refuses_forged_or_deleted_seal_without_rederiving(happy_run, tmp_path):
+    source_root, _ = happy_run
+    forged_root = tmp_path / "forged"
+    missing_root = tmp_path / "missing"
+    shutil.copytree(source_root, forged_root)
+    shutil.copytree(source_root, missing_root)
+
+    forged_tree = RunTree(forged_root, "r")
+    seal_path = _stage_seal_path(forged_tree, EXEMPLAR)
+    seal = json.loads(seal_path.read_bytes())
+    seal["payload"]["config_digest"] = "0" * 64
+    seal["self_hash"] = self_hash(seal)
+    seal_path.write_bytes(canonical_bytes(seal))
+    forged = invoke_stage(forged_root, "r", "happy", "pipeline/2_designator/run.py")
+    assert forged.returncode == EXIT_FATAL
+    assert "config_digest differs from run authority" in forged.stderr
+
+    missing_tree = RunTree(missing_root, "r")
+    _stage_seal_path(missing_tree, EXEMPLAR).unlink()
+    missing = invoke_stage(missing_root, "r", "happy", "pipeline/2_designator/run.py")
+    assert missing.returncode == EXIT_FATAL
+    assert "has no stage-seal" in missing.stderr
+    assert "never re-derived" in missing.stderr
+
+
 def test_recovery_policy_is_a_run_bound_configuration_not_a_late_local_default(tmp_path):
     """A policy change must refuse the old run before any stage can reinterpret it."""
     root = tmp_path / "runs"
@@ -3785,6 +4716,13 @@ def test_every_handoff_in_the_contract_is_covered_by_this_table():
     assert {(producer, consumer) for producer, consumer, _ in HANDOFF_ARTIFACTS} == set(HANDOFFS)
     assert {consumer for _, consumer, _ in HANDOFF_ARTIFACTS} == set(CONSUMER_PROGRAMS)
     assert len(HANDOFF_ARTIFACTS) == 7
+
+
+def test_every_stage_has_one_seal_battery_row():
+    from common.contracts.stages import STAGES
+
+    assert {producer for producer, _ in SEAL_ARTIFACTS} == set(STAGES)
+    assert len(SEAL_ARTIFACTS) == 8
 
 
 def test_the_run_authority_is_never_rewritten_by_any_stage(happy_run):
@@ -4065,6 +5003,7 @@ def test_the_recensor_refuses_a_continuation_claim_with_one_region(tmp_path):
     seal_path.write_bytes(canonical_bytes(seal))
     tree.resolve(continuations[0]["relative_path"]).unlink()
     tree.write_manifest(DESIGNATOR)
+    rebind_stage_seal(tree, DESIGNATOR)
 
     for name, program in (
         ("attestatores", "pipeline/3_attestatores/run.py"),

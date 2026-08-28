@@ -36,16 +36,17 @@ from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusa
 from common.contracts.identities import artifact_id, attempt_id  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, PERLECTOR  # noqa: E402
 from common.exemplar_boundary import verify_exemplar_crop_lineage  # noqa: E402
+from common.fixture_identity import page_identity  # noqa: E402
 from common.stage import (  # noqa: E402
     ATTEMPTED_WITNESS_OUTCOMES,
     EXIT_COMPLETE,
     EXIT_HELD,
     WITNESS_READING_OUTCOMES,
+    continuation_for,
     expected_acts,
     fixture_serving_details,
     latest_attempt,
     open_context,
-    page_identity,
     run_stage,
     stage_parser,
     validate_serving_provenance,
@@ -615,6 +616,14 @@ TESTIMONIUM_FIELDS = frozenset(
 # carries, and allowing them here let a resealed act record wear page clothing.
 OPTIONAL_TESTIMONIUM_FIELDS = frozenset({"reason", "reported", "page_witness"})
 
+# Page testimony has its own closed shape because `page_role` is evidence about
+# all acts contributing to that page, not a fact an act-scoped record can carry.
+PAGE_TESTIMONIUM_FIELDS = TESTIMONIUM_FIELDS | frozenset(
+    {"scope", "page_ordinal", "page_role", "unjoined_act_attempts"}
+)
+PAGE_TESTIMONIUM_OPTIONAL_FIELDS = frozenset({"reason", "reported"})
+PAGE_ROLES = frozenset({"primary", "continuation", "mixed"})
+
 
 def testimonium_payload(
     *,
@@ -653,6 +662,77 @@ def testimonium_payload(
     if outcome in WITNESS_READING_OUTCOMES and isinstance(native_payload, str):
         record["reported"] = native_payload
     return record
+
+
+def page_testimonium_payload(
+    *,
+    page_ordinal: int,
+    page_role: str,
+    unjoined_act_attempts: list[dict[str, Any]],
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """Page-scoped Testimonia admit only the producer's closed field set."""
+    writer_fields = {
+        "chair",
+        "act_key",
+        "ordinal",
+        "regions",
+        "provenance",
+        "format_capabilities",
+        "native_payload",
+        "witness_reported",
+        "health",
+        "outcome",
+        "reason",
+    }
+    if unknown := sorted(set(kwargs) - writer_fields):
+        raise SchemaRefusal(
+            f"a page Testimonium writer received unknown field(s) {unknown}; its closed "
+            "payload cannot account for them; remove the fields before publication"
+        )
+    record = {
+        **testimonium_payload(**kwargs),
+        "scope": "page",
+        "page_ordinal": page_ordinal,
+        "page_role": page_role,
+        "unjoined_act_attempts": unjoined_act_attempts,
+    }
+    validate_page_testimonium_payload(record)
+    return record
+
+
+def validate_page_testimonium_payload(payload: Any) -> dict[str, Any]:
+    """A page record must carry valid scope, ordinal, role, and unjoined facts."""
+    if not isinstance(payload, dict):
+        raise SchemaRefusal(
+            "a page Testimonium payload is not an object; its fields cannot be verified; "
+            "publish the closed object shape instead"
+        )
+    if unexpected := sorted(
+        set(payload) - PAGE_TESTIMONIUM_FIELDS - PAGE_TESTIMONIUM_OPTIONAL_FIELDS
+    ):
+        raise SchemaRefusal(
+            f"a page Testimonium carries unknown field(s) {unexpected}; its closed schema "
+            "cannot account for them; remove the fields before publication"
+        )
+    if missing := sorted(PAGE_TESTIMONIUM_FIELDS - set(payload)):
+        raise SchemaRefusal(
+            f"a page Testimonium lacks required field(s) {missing}; its evidence record is "
+            "incomplete; restore the fields before publication"
+        )
+    if (
+        payload["scope"] != "page"
+        or not isinstance(payload["page_ordinal"], int)
+        or isinstance(payload["page_ordinal"], bool)
+        or not isinstance(payload["page_role"], str)
+        or payload["page_role"] not in PAGE_ROLES
+        or not isinstance(payload["unjoined_act_attempts"], list)
+    ):
+        raise SchemaRefusal(
+            "a page Testimonium has invalid page-scope facts; its page evidence cannot be "
+            "placed or interpreted; correct the scope, ordinal, role, and unjoined list"
+        )
+    return payload
 
 
 AttemptHistory = dict[tuple[str, str], list[dict[str, Any]]]
@@ -1388,23 +1468,30 @@ def resolve_attempt(
 
 
 def declared_page_witness_chairs(context) -> set[str]:
-    """The fixture's page-witness declaration, validated before any use.
+    """Validate page-witness scope before any Testimonium can be sealed.
 
-    One accessor for both write paths (the act-scoped compatibility flag in
-    `publish_attempt` and the page join in
-    `publish_page_testimonia_and_attachments`), so a malformed declaration is a
-    named refusal before the first attempt publishes rather than a TypeError
-    mid-pass after some artifacts already sealed (CodeRabbit chain-end review;
-    host disposition: fixed).
+    All write and reread paths use this accessor because a downstream page-join
+    check cannot repair an immutable act record carrying the wrong scope.
     """
     declared = context.fixture.get("page_witness_chairs", [])
+    # Set construction and refusal formatting may invoke subclass-defined
+    # behavior, so both require exact built-in strings first.
     if (
         not isinstance(declared, list)
+        or any(type(chair) is not str for chair in declared)
         or len(declared) != len(set(declared))
-        or any(not isinstance(chair, str) for chair in declared)
     ):
         raise SchemaRefusal("fixture page_witness_chairs is not a unique string list")
-    return set(declared)
+    declared_chairs = set(declared)
+    unknown_chairs = declared_chairs - set(context.witness_chairs)
+    if unknown_chairs:
+        # Both sets are required to correct the fixture without consulting
+        # external configuration for the roster sealed into this run.
+        raise SchemaRefusal(
+            "fixture page_witness_chairs names chair(s) outside the configured witness roster: "
+            f"{sorted(unknown_chairs)} not in {sorted(context.witness_chairs)}"
+        )
+    return declared_chairs
 
 
 def publish_attempt(
@@ -1432,7 +1519,8 @@ def publish_attempt(
         outcome=attempt.outcome,
         reason=attempt.reason,
     )
-    if chair in declared_page_witness_chairs(context):
+    page_witness_chairs = declared_page_witness_chairs(context)
+    if chair in page_witness_chairs:
         # This is the fixture's interim act view of an immutable page witness.
         # Its attachment points at the retained page Testimonium; R4 replaces
         # this declared view with alignment, not with another witness kind.
@@ -1658,6 +1746,7 @@ def act_scoped_attachment_entry(
     return {
         "chair": chair,
         "page_witness": False,
+        "page_ordinal": None,
         "testimonium_ref": context.artifact_ref(
             ATTESTATORES,
             "testimonium",
@@ -1684,6 +1773,7 @@ def publish_page_testimonia_and_attachments(
     *,
     acts: list[dict[str, Any]],
     ordinal: int,
+    regions_by_act: dict[str, tuple[list[dict], str | None]],
     attempts_by_pair: dict[tuple[str, str], Attempt],
 ) -> None:
     """Retain page testimony and derive one attachment record for every act.
@@ -1694,7 +1784,7 @@ def publish_page_testimonia_and_attachments(
     compatibility view for the current Perlector; each is explicitly linked below
     to the immutable page Testimonium that supplied it.
     """
-    page_chairs = declared_page_witness_chairs(context) & set(context.witness_chairs)
+    page_chairs = declared_page_witness_chairs(context)
     limits, limits_digest = load_alignment_limits(context.args.alignment_config)
     context.require_sealed_config("alignment", limits_digest)
     page_records: dict[tuple[int, str], dict[str, str]] = {}
@@ -1707,10 +1797,43 @@ def publish_page_testimonia_and_attachments(
     anchor_texts: dict[int, str] = {}
     page_alignments: dict[tuple[int, str], dict[str, Any]] = {}
     anchor_ranges: dict[tuple[int, str], dict[str, int]] = {}
+    contributing_pages_by_act: dict[str, list[int]] = {}
     by_page: dict[int, list[dict[str, Any]]] = {}
     for act in acts:
         if act["outcome"] == "proposed":
-            by_page.setdefault(act["page_ordinal"], []).append(act)
+            regions, refusal = regions_by_act[act["act_id"]]
+            if regions:
+                # The proposal's scalar page identifies the primary; the region
+                # transforms supply the complete page denominator.
+                contributing_pages = sorted(
+                    {region["payload"]["transform"]["source_page_ordinal"] for region in regions}
+                )
+            else:
+                # With no verified regions, the sealed proposal and continuation
+                # declaration are the only available page denominator. The
+                # non-reading testimony must still account for every such page.
+                if refusal is None:
+                    raise FatalAccounting(
+                        f"act {act['act_id']} has neither verified proposal regions nor a "
+                        "recorded crop refusal; its page denominator is unknowable; restore "
+                        "the Designator region or refusal evidence"
+                    )
+                contributing_pages = [act["page_ordinal"]]
+                if act["has_continuation"]:
+                    continuation = continuation_for(context.fixture, act["act_key"])
+                    if continuation is None:
+                        raise FatalAccounting(
+                            f"act {act['act_id']} claims a continuation but the sealed fixture "
+                            "names none; its far-page evidence cannot be addressed; correct the "
+                            "proposal seal or fixture continuation declaration"
+                        )
+                    contributing_pages.append(continuation["page_ordinal"])
+                contributing_pages.sort()
+            contributing_pages_by_act[act["act_id"]] = contributing_pages
+            for source_ordinal in contributing_pages:
+                page_acts = by_page.setdefault(source_ordinal, [])
+                if act not in page_acts:
+                    page_acts.append(act)
 
     for page_ordinal, page_acts in sorted(by_page.items()):
         page_subject = page_identity(context.fixture, page_ordinal)
@@ -1724,33 +1847,32 @@ def publish_page_testimonia_and_attachments(
             health = content_health(native_payload, completed=reading)
             resolved = context.registry.resolve(chair)
             page_attempt = attempt_id(page_subject, f"read:{chair}", ordinal)
+            roles = {
+                "primary" if act["page_ordinal"] == page_ordinal else "continuation"
+                for act in page_acts
+            }
+            page_role = roles.pop() if len(roles) == 1 else "mixed"
             context.publish(
                 kind="page-testimonium",
                 subject_id=page_subject,
                 outcome=outcome,
                 attempt=page_attempt,
-                payload={
-                    **testimonium_payload(
-                        chair=chair,
-                        act_key=f"page-{page_ordinal}",
-                        ordinal=ordinal,
-                        regions=[],
-                        provenance=provenance_for(context, resolved, attempted=reading),
-                        format_capabilities=DEFAULT_FORMAT_CAPABILITIES,
-                        native_payload=native_payload if reading else None,
-                        witness_reported=None,
-                        health=health if reading else no_response_health(reason=failure_reason),
-                        outcome=outcome,
-                        reason=None if reading else failure_reason,
-                    ),
-                    "scope": "page",
-                    "page_ordinal": page_ordinal,
-                    # R0 synthesizes this fixture page record by joining the
-                    # chair's successful act attempts. The joined text's own
-                    # content_health cannot reveal which acts were omitted, so
-                    # retain every unjoined attempt explicitly (GOVERNANCE 2).
-                    "unjoined_act_attempts": unjoined_act_attempts,
-                },
+                payload=page_testimonium_payload(
+                    page_ordinal=page_ordinal,
+                    page_role=page_role,
+                    unjoined_act_attempts=unjoined_act_attempts,
+                    chair=chair,
+                    act_key=f"page-{page_ordinal}",
+                    ordinal=ordinal,
+                    regions=[],
+                    provenance=provenance_for(context, resolved, attempted=reading),
+                    format_capabilities=DEFAULT_FORMAT_CAPABILITIES,
+                    native_payload=native_payload if reading else None,
+                    witness_reported=None,
+                    health=health if reading else no_response_health(reason=failure_reason),
+                    outcome=outcome,
+                    reason=None if reading else failure_reason,
+                ),
             )
             page_records[(page_ordinal, chair)] = context.artifact_ref(
                 ATTESTATORES,
@@ -2052,25 +2174,40 @@ def publish_page_testimonia_and_attachments(
                     alignment["status"] == "aligned" and attempt.outcome in WITNESS_READING_OUTCOMES
                 )
             if page_witness:
-                reference = page_records[(act["page_ordinal"], chair)]
-                entries.append(
-                    {
-                        "chair": chair,
-                        "page_witness": True,
-                        "testimonium_ref": reference,
-                        "attached": attached,
-                        "content_health": attempt.health,
-                        "alignment": alignment,
-                        "span": (
-                            {
-                                "start": alignment["witness_span"]["start"],
-                                "end": alignment["witness_span"]["end"],
-                            }
-                            if attached
-                            else None
-                        ),
-                    }
-                )
+                # Derive each row from the primary alignment without mutating it:
+                # source-page ordinal does not determine primary-first act order,
+                # so an earlier continuation must not erase the comparison view.
+                for contributing_page in contributing_pages_by_act[act["act_id"]]:
+                    is_primary_page = contributing_page == act["page_ordinal"]
+                    page_alignment = (
+                        alignment
+                        if is_primary_page
+                        else {
+                            "status": "unaligned",
+                            "reason": "continuation-page-no-act-anchor",
+                        }
+                    )
+                    page_attached = attached and is_primary_page
+                    reference = page_records[(contributing_page, chair)]
+                    entries.append(
+                        {
+                            "chair": chair,
+                            "page_witness": True,
+                            "page_ordinal": contributing_page,
+                            "testimonium_ref": reference,
+                            "attached": page_attached,
+                            "content_health": attempt.health,
+                            "alignment": page_alignment,
+                            "span": (
+                                {
+                                    "start": page_alignment["witness_span"]["start"],
+                                    "end": page_alignment["witness_span"]["end"],
+                                }
+                                if page_attached
+                                else None
+                            ),
+                        }
+                    )
             else:
                 entries.append(act_scoped_attachment_entry(context, act, chair, attempt, ordinal))
         context.publish(
@@ -2506,17 +2643,28 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             attempts_by_pair,
         )
         publish_page_testimonia_and_attachments(
-            context, acts=acts, ordinal=ordinal, attempts_by_pair=attempts_by_pair
+            context,
+            acts=acts,
+            ordinal=ordinal,
+            regions_by_act=regions_by_act,
+            attempts_by_pair=attempts_by_pair,
         )
 
     if recorded == 0:
         raise ContractError("no chair produced an outcome for any act")
 
+    # The tally is part of closing this pass and can still expose a fatal
+    # accounting imbalance.  Give it the derived inventory it reconciles, then
+    # publish the completion seal only after that refusal boundary has passed.
     context.finish()
     tally = attempt_tally(context.tree, context=context, acts=acts, chairs=context.witness_chairs)
     if tally["hold"]:
         print(f"Attestatores attempt tally UNKNOWN: {tally['reason']}", file=sys.stderr)
+        context.seal_boundary()
+        context.finish()
         return EXIT_HELD
+    context.seal_boundary()
+    context.finish()
     if isolated_crop_failure:
         # Every chair still has its explicit non-reading artifact, so retention
         # completed and later stages can make that partial state visible. This is

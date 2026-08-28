@@ -968,6 +968,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         inputs=[bundle_ref],
     )
 
+    context.seal_boundary()
     context.finish()
     return EXIT_COMPLETE if export_status == "complete" else EXIT_HELD
 

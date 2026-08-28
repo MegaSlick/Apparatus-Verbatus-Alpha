@@ -13,14 +13,19 @@ declared fixture rather than by hard-coded strings scattered through seven files
 """
 
 import argparse
+import hashlib
 import json
+import os
+import platform
+import stat
 import sys
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Callable, Final, Protocol
 
+from common import fixture_identity
 from common.alignment import DEFAULT_ALIGNMENT_CONFIG_PATH, load_alignment_limits
 from common.armarium_formats import (
     DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH,
@@ -30,6 +35,7 @@ from common.armarium_formats import (
 from common.chairs.models import AbsentChair, ChairIdentity, ModelsConfig, ServingDetails, is_sha256
 from common.chairs.protocol import ChairProtocol
 from common.chairs.registry import ChairRegistry
+from common.contracts.approval import REAL_INGRESS, parse_ingress_record
 from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of, verify_self_hash
 from common.contracts.envelope import build_envelope
 from common.contracts.errors import (
@@ -42,12 +48,29 @@ from common.contracts.errors import (
 from common.contracts.identities import act_bindings, artifact_id, attempt_id
 from common.contracts.identities import act_id as derive_act_id
 from common.contracts.identities import verify as verify_identity
-from common.contracts.outcomes import WITNESS_READING_OUTCOMES as _WITNESS_READING_OUTCOMES
-from common.contracts.outcomes import classify
+from common.contracts.outcomes import (
+    BOUNDARY_OUTCOMES,
+    classify,
+)
+from common.contracts.outcomes import (
+    WITNESS_READING_OUTCOMES as _WITNESS_READING_OUTCOMES,
+)
 from common.contracts.serving import SERVING_CONFIG_INPUTS_FIELDS, SERVING_CONFIG_INPUTS_SCHEMA
-from common.contracts.stages import DESIGNATOR, EXEMPLAR, PERLECTOR, RECENSOR
+from common.contracts.stages import (
+    ARMARIUM,
+    DESIGNATOR,
+    EXEMPLAR,
+    PERLECTOR,
+    RECENSOR,
+    SEAL_PREDECESSORS,
+)
+from common.corpus_register import read_snapshot, verify_snapshot_is_current
 from common.exemplar_boundary import verify_sealed_page_pixels
-from common.hard_failure import DEFAULT_HARD_FAILURE_CONFIG_PATH, load_hard_failure_policy
+from common.hard_failure import (
+    DEFAULT_HARD_FAILURE_CONFIG_PATH,
+    load_hard_failure_policy,
+    tally_hard_failures,
+)
 from common.imaging import dimensions
 from common.recovery import (
     DEFAULT_RECOVERY_CONFIG_PATH,
@@ -66,12 +89,17 @@ EXIT_COMPLETE = 0
 EXIT_FATAL = 2
 EXIT_HELD = 3
 
-# Never a stage's own exit code, only the orchestrator's: only that process
-# decides whether to invoke another stage, so only it can halt a run for the
-# run-level hard-failure cap. Defined beside the three above, not in the
-# orchestrator module, so nothing can silently pick a fourth value that
-# collides with one of these.
+# A stage returns this only when it refuses to start a run whose durable failure
+# evidence already breaches the cap.  The orchestrator also returns it when a
+# checkpoint after a completed member breaches the cap.  Defined beside the three
+# ordinary stage exits so direct invocation cannot silently choose a colliding
+# fourth value.
 EXIT_RUN_HALTED = 4
+
+
+class RunHalted(ContractError):
+    """The run-level hard-failure cap refuses another stage entry."""
+
 
 DEFAULT_PDF_RENDER_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "pdf_render.toml"
 DEFAULT_WITNESS_CONTEXT_CONFIG_PATH = (
@@ -94,6 +122,13 @@ DEFAULT_PERLECTOR_AUDIT_CONFIG_PATH = (
 WITNESS_CONTEXT_REGIMES: Final = ("named", "blinded")
 MAX_NUDA_PER_MILLE: Final = 1000
 MAX_PERLECTOR_INSTRUMENT_PER_MILLE: Final = 1000
+# These sealed CLI values identify experiments, not approval evidence. A changed
+# condition or selection algorithm needs a new `.v1` subject; a changed rate or
+# run configuration needs a new approval targeting the resulting `config_digest`.
+# Resolution happens after the run authority exists to avoid circularly including
+# an approval record's own content address in the configuration it approves.
+NUDA_APPROVAL_SUBJECT: Final = "lectio-nuda-sampling-design.v1"
+PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT: Final = "perlector-prior-draft-instrument-design.v1"
 
 # The Designator's capture padding decides how many pixels a witness is actually
 # shown around each act, so two runs under different padding produce different
@@ -254,6 +289,7 @@ class StageContext:
         "armarium_formats",
         "serving_config_inputs",
         "_recovery_policy",
+        "sealed",
     )
 
     def __init__(
@@ -308,6 +344,7 @@ class StageContext:
         # policy, and `require_sealed_config("recovery", ...)` at each point of
         # use so a reintroduced second read cannot pass silently.
         self._recovery_policy = dict(recovery_policy) if recovery_policy is not None else None
+        self.sealed = False
 
     @property
     def config_digest(self) -> str:
@@ -366,10 +403,11 @@ class StageContext:
 
     @property
     def nuda_approval_ref(self) -> str:
-        """Tyrel's reference for the sampling design this run draws nuda under.
+        """The sealed selector for the sampling design this run draws nuda under.
 
-        Empty when nothing is sampled. `run_config_bindings` refuses a non-zero
-        rate that carries none, so a populated rate always has one.
+        Empty when nothing is sampled. `run_config_bindings` requires the exact
+        recognized selector for a non-zero rate; the Perlector later resolves
+        that selector to Tyrel's typed approval-record reference in the run tree.
         """
         return self.args.nuda_approval_ref
 
@@ -405,6 +443,11 @@ class StageContext:
         approval_ref: str | None = None,
     ) -> PublishResult:
         """Publish one artifact of this stage, with the envelope filled in."""
+        if self.sealed:
+            raise SchemaRefusal(
+                f"{self.stage} has sealed its completion boundary; publishing {kind!r} afterwards "
+                "would make its witnessed inventory false"
+            )
         if kind == "serving-receipt":
             raise SchemaRefusal(
                 "serving receipts are run receipts, never stage artifacts; "
@@ -425,6 +468,59 @@ class StageContext:
             approval_ref=approval_ref,
         )
         return self.tree.publish_artifact(envelope)
+
+    def seal_boundary(self) -> PublishResult:
+        """Witness this stage's complete on-disk boundary exactly once per change.
+
+        The manifest is deliberately only an input to the calculation: the
+        stored seal is the evidence, and a missing stored seal named by a prior
+        manifest is a refusal rather than an invitation to recreate history.
+        """
+        if self.sealed:
+            raise SchemaRefusal(f"{self.stage} completion boundary is already sealed")
+        records = _stage_records(self.tree, self.stage, "stage-seal")
+        _refuse_deleted_seal(self.tree, self.stage, {record["artifact_id"] for record in records})
+        prior = (
+            latest_attempt(records, f"{self.stage} stage seal", operation="seal")
+            if records
+            else None
+        )
+        ordinal = 1 if prior is None else prior["payload"]["attempt_ordinal"] + 1
+        attempt = attempt_id(self.stage, "seal", ordinal)
+        # A restart that did not change any stage-owned evidence reuses the
+        # previous witnessed statement instead of manufacturing a new attempt.
+        if prior is not None:
+            if prior["payload"] == _stage_seal_payload(
+                self.tree,
+                self.stage,
+                prior["payload"]["attempt_ordinal"],
+                prior["attempt_id"],
+            ):
+                self.sealed = True
+                return PublishResult(
+                    self.tree.artifact_path(self.stage, "stage-seal", prior["artifact_id"]),
+                    reused=True,
+                )
+        environment = _decode_environment(self.stage)
+        self.publish(
+            kind="decode-environment",
+            subject_id=self.stage,
+            outcome=_boundary_outcome(self.stage, "decode-environment"),
+            attempt=attempt,
+            payload=environment,
+        )
+        # Decode environment is excluded from the deterministic inventory, so
+        # it is safe to publish before the seal and does not create a fixpoint.
+        payload = _stage_seal_payload(self.tree, self.stage, ordinal, attempt)
+        result = self.publish(
+            kind="stage-seal",
+            subject_id=self.stage,
+            outcome=_boundary_outcome(self.stage, "stage-seal"),
+            attempt=attempt,
+            payload=payload,
+        )
+        self.sealed = True
+        return result
 
     def write_serving_receipt(
         self, identity: ChairIdentity, serving: ServingDetails
@@ -541,8 +637,27 @@ class StageContext:
         return audit
 
     def _write_serving_blob(self, value: dict[str, Any], label: str) -> dict[str, str]:
-        """Canonical content-addressed storage shared by serving evidence records."""
+        """Canonical content-addressed storage shared by serving evidence records.
 
+        Guarded after the seal for the same reason `publish` is, and it is the
+        same directory at stake: this writes through `tree.put_blob` into the
+        stage's own blob directory, which `_stage_blob_inventory` walks and whose
+        digest the seal payload carries. One serving-evidence write afterwards
+        changes the inventory the seal witnessed — and the symptom lands on the
+        wrong stage, because the *next* consumer refuses with "its named inventory
+        no longer matches disk". A producer that did honest work would be reported
+        as a tree whose evidence was altered, indistinguishable from real
+        tampering. Ordering discipline was already judged insufficient for
+        artifacts; blobs are no different.
+
+        Serving *receipts* need no such guard: they are run receipts written under
+        `receipts/`, outside any stage's inventory.
+        """
+        if self.sealed:
+            raise SchemaRefusal(
+                f"{self.stage} has sealed its completion boundary; storing {label} afterwards "
+                "would make its witnessed blob inventory false"
+            )
         try:
             payload = canonical_bytes(value)
         except (TypeError, ValueError) as error:
@@ -570,6 +685,587 @@ class StageContext:
     def finish(self, stage: str | None = None) -> None:
         """Write the stage's derived manifest inventory."""
         self.tree.write_manifest(stage or self.stage)
+
+
+_SEAL_EXCLUDED_KINDS: Final = frozenset({"stage-seal", "decode-environment"})
+_DECODE_PATHS: Final = frozenset({"project-png", "pillow", "pdfium", "none"})
+_DECODER_NAMES: Final = frozenset({"pillow", "jpeg-codec", "pillow-heif", "libheif", "pdfium"})
+_DECODE_ENVIRONMENT_FIELDS: Final = frozenset(
+    {"decoders", "platform", "machine", "decode_paths_used", "produced_pixels"}
+)
+
+
+def _boundary_outcome(stage: str, kind: str) -> str:
+    """The non-terminal outcome reserved for one boundary artifact kind."""
+    try:
+        return BOUNDARY_OUTCOMES[kind]
+    except KeyError:
+        raise SchemaRefusal(f"{stage} cannot publish unknown boundary kind {kind!r}") from None
+
+
+def _manifest_artifact(tree: RunTree, stage: str, entry: Mapping[str, Any]) -> dict[str, Any]:
+    """Read the exact artifact bytes one manifest snapshot witnessed.
+
+    ``build_manifest`` records a content digest, but a later consumer used to
+    discard it and reopen the path by identity.  A replacement between those two
+    reads was therefore valid evidence in isolation yet not the evidence the
+    manifest and completion seal had checked.  Compare the bytes represented by
+    the validated record to the snapshot digest before returning the record.
+    """
+    record = tree.read_artifact(stage, entry["kind"], entry["artifact_id"])
+    if digest_bytes(canonical_bytes(record)) != entry.get("sha256"):
+        raise SchemaRefusal(
+            f"{stage} artifact {entry.get('artifact_id')!r} changed between its manifest "
+            "snapshot and use; a completion seal cannot authorize replacement bytes"
+        )
+    return record
+
+
+def _stage_records(
+    tree: RunTree,
+    stage: str,
+    kind: str,
+    *,
+    manifest: Mapping[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    snapshot = tree.build_manifest(stage, verify_inputs=False) if manifest is None else manifest
+    return [
+        _manifest_artifact(tree, stage, entry)
+        for entry in snapshot["artifacts"]
+        if entry["kind"] == kind
+    ]
+
+
+def _refuse_deleted_seal(tree: RunTree, stage: str, present: set[str]) -> None:
+    """A manifest can expose deletion; it must never repair a witnessed seal.
+
+    Compared as the SET of seals the stored inventory names against the set on
+    disk, never as "some seal is still there". Attempts are the contiguous run
+    1..N, so removing the *latest* of several leaves a prefix `latest_attempt`
+    reads as whole: the earlier statement then answers for a boundary it never
+    witnessed, and the ordinal the deletion vacated is minted a second time over
+    a different inventory. Refusing only total deletion misses every case where
+    an earlier seal remains to answer in the deleted seal's place.
+
+    `present` is passed in rather than walked here: both callers have already
+    built the seal records they are about to reason about, and a second walk of
+    the same directory is the per-boundary cost this check does not need to add.
+    """
+    path = tree.resolve(tree.manifest_path(stage))
+    if not path.exists():
+        return
+    try:
+        stored = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise SchemaRefusal(
+            f"stored {stage} manifest cannot establish its prior seal: {error}"
+        ) from error
+    if not isinstance(stored, dict) or not isinstance(stored.get("artifacts"), list):
+        raise SchemaRefusal(f"stored {stage} manifest cannot establish its prior seal")
+    if stored.get("stage") != stage:
+        raise SchemaRefusal(
+            f"stored {stage} manifest names producer {stored.get('stage')!r}; "
+            "a sibling inventory cannot establish which completion seals existed"
+        )
+    named: set[str] = set()
+    for entry in stored["artifacts"]:
+        if not isinstance(entry, dict) or entry.get("kind") != "stage-seal":
+            continue
+        name = entry.get("artifact_id")
+        if not isinstance(name, str):
+            raise SchemaRefusal(
+                f"stored {stage} manifest names a stage-seal without a string artifact_id"
+            )
+        named.add(name)
+    missing = sorted(named - present)
+    if missing:
+        raise SchemaRefusal(
+            f"{stage} stage-seal(s) {missing} are missing although its stored inventory "
+            "names them; a completion seal is witnessed evidence and is never re-derived"
+        )
+
+
+def _decode_environment(stage: str) -> dict[str, Any]:
+    """The local decoders that can turn identical source bytes into pixels."""
+    import pillow_heif
+    import pypdfium2 as pdfium
+    from PIL import Image, features
+
+    jpg = features.version_codec("jpg") or "unavailable"
+    turbo = features.version_feature("libjpeg_turbo")
+    heif = pillow_heif.libheif_info().get("libheif", "unavailable")
+    # Stages that only pass evidence through record `none`; readers/croppers
+    # record the closed route family they use. The Door can take both library
+    # routes, which is deliberately visible rather than guessed from suffixes.
+    paths = {
+        "door": {"pillow", "pdfium"},
+        "exemplar": {"project-png"},
+        "designator": {"project-png"},
+        "perlector": {"project-png"},
+        "recensor": {"project-png"},
+    }.get(stage, {"none"})
+    if not paths <= _DECODE_PATHS:
+        raise SchemaRefusal(f"{stage} records an unknown decode path")
+    return {
+        "decoders": [
+            {"name": "pillow", "version": Image.__version__},
+            {"name": "jpeg-codec", "version": f"{jpg};libjpeg-turbo={turbo}"},
+            {"name": "pillow-heif", "version": pillow_heif.__version__},
+            {"name": "libheif", "version": str(heif)},
+            {"name": "pdfium", "version": str(pdfium.PDFIUM_INFO)},
+        ],
+        "platform": platform.system(),
+        "machine": platform.machine(),
+        "decode_paths_used": sorted(paths),
+        "produced_pixels": paths != {"none"},
+    }
+
+
+def _validate_decode_environment(value: Any, owner: str) -> dict[str, Any]:
+    """Require the consult's closed decode-environment record before comparing it."""
+    if not isinstance(value, dict) or set(value) != _DECODE_ENVIRONMENT_FIELDS:
+        raise SchemaRefusal(f"{owner} decode-environment does not have the closed field set")
+    decoders = value["decoders"]
+    if not isinstance(decoders, list) or any(
+        not isinstance(row, dict)
+        or set(row) != {"name", "version"}
+        or not isinstance(row["name"], str)
+        or not isinstance(row["version"], str)
+        or not row["version"]
+        for row in decoders
+    ):
+        raise SchemaRefusal(f"{owner} decode-environment has a malformed decoder list")
+    names = [row["name"] for row in decoders]
+    if len(names) != len(set(names)) or set(names) != _DECODER_NAMES:
+        raise SchemaRefusal(f"{owner} decode-environment does not name each decoder exactly once")
+    for field in ("platform", "machine"):
+        if not isinstance(value[field], str):
+            raise SchemaRefusal(f"{owner} decode-environment has a malformed {field}")
+    paths = value["decode_paths_used"]
+    if (
+        not isinstance(paths, list)
+        or any(not isinstance(path, str) for path in paths)
+        or paths != sorted(set(paths))
+        or not set(paths) <= _DECODE_PATHS
+    ):
+        raise SchemaRefusal(f"{owner} decode-environment has malformed decode_paths_used")
+    if not isinstance(value["produced_pixels"], bool):
+        raise SchemaRefusal(f"{owner} decode-environment has malformed produced_pixels")
+    return value
+
+
+def _stage_seal_payload(
+    tree: RunTree,
+    stage: str,
+    ordinal: int,
+    attempt: str,
+    *,
+    verify_inputs: bool = True,
+    verify_blob_addresses: bool = True,
+    manifest: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    # A completion boundary is the last point at which this producer can prove
+    # every link it records still reaches the bytes it consumed.  Skipping input
+    # verification here let a changed upstream blob be sealed into a locally
+    # self-consistent inventory: the artifact bytes had not changed, only the
+    # evidence their input digest named had.
+    #
+    # `manifest` is the caller's already-built inventory, passed so one reader
+    # does not walk the same stage twice. A supplied manifest carries whatever
+    # verification its builder asked for; `verify_inputs` governs the one built
+    # here, and its default stays the verifying one.
+    if manifest is None:
+        manifest = tree.build_manifest(stage, verify_inputs=verify_inputs)
+    artifacts = [
+        entry for entry in manifest["artifacts"] if entry["kind"] not in _SEAL_EXCLUDED_KINDS
+    ]
+    blobs = _stage_blob_inventory(tree, stage, verify_addresses=verify_blob_addresses)
+    census: dict[tuple[str, str], int] = {}
+    for entry in artifacts:
+        key = (entry["kind"], entry["outcome"])
+        census[key] = census.get(key, 0) + 1
+    decode_environment_artifact_id = artifact_id(stage, "decode-environment", stage, attempt)
+    decode_environment_path = tree.artifact_path(
+        stage, "decode-environment", decode_environment_artifact_id
+    )
+    try:
+        decode_environment_sha256 = digest_bytes(tree.read_bytes(decode_environment_path))
+    except OSError as error:
+        raise SchemaRefusal(
+            f"{stage} cannot seal its boundary: decode-environment "
+            f"{decode_environment_artifact_id!r} is unreadable: {error}"
+        ) from error
+    # Read the authority once, and refuse a missing binding by name. `read_run`
+    # proves a run authority's self-hash, schema, and run id; it does not require
+    # any particular field, so an authority not written by `RunTree.create` can
+    # reach here whole and still be missing one. Subscripting it raised a bare
+    # KeyError, which is neither a ContractError nor a RunHalted — so `run_stage`
+    # did not turn it into one of the four honest exit codes, and the operator was
+    # handed a traceback naming a dict key instead of a refusal naming the run.
+    # The verifier at `_verify_stage_seal` already reads both fields with `.get`
+    # and tolerates their absence; this side now agrees with it.
+    run = tree.read_run()
+    missing = [field for field in ("config_digest", "register_digest") if field not in run]
+    if missing:
+        raise SchemaRefusal(
+            f"{stage} cannot seal its boundary: the run authority carries no "
+            f"{', '.join(missing)}, so the seal would witness a binding that is not there"
+        )
+    return {
+        "stage": stage,
+        "attempt_ordinal": ordinal,
+        "attempt_id": attempt,
+        "config_digest": run["config_digest"],
+        "register_digest": run["register_digest"],
+        "artifact_inventory": digest_of(artifacts),
+        "blob_inventory": digest_of(blobs),
+        "census": [
+            {"kind": kind, "outcome": outcome, "count": count}
+            for (kind, outcome), count in sorted(census.items())
+        ],
+        "decode_environment_artifact_id": decode_environment_artifact_id,
+        "decode_environment_sha256": decode_environment_sha256,
+    }
+
+
+def _stage_blob_inventory(
+    tree: RunTree, stage: str, *, verify_addresses: bool = True
+) -> list[dict[str, str]]:
+    """Read canonical blob files through stable, no-follow descriptors.
+
+    Blob names are claims about their content.  The inventory therefore refuses
+    an unexpected spelling, a symlink or hard link, a name/content mismatch, and
+    a file whose identity or metadata changes while it is hashed.  Hashing the
+    descriptor in chunks also keeps a large but legitimate image from being
+    copied wholesale into memory merely to witness it.
+    """
+    if not hasattr(os, "O_NOFOLLOW"):
+        raise SchemaRefusal("this platform cannot enforce no-follow blob inventory reads")
+    blobs_root = tree.resolve(f"{tree.blob_path(stage, '0' * 64)}").parent
+    flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_DIRECTORY", 0)
+    try:
+        directory_fd = os.open(blobs_root, flags)
+    except FileNotFoundError:
+        return []
+    except OSError as error:
+        raise SchemaRefusal(
+            f"{stage} cannot seal its blob inventory without following links: {error}"
+        ) from error
+    try:
+        opened_directory = os.fstat(directory_fd)
+        named_directory = os.stat(blobs_root, follow_symlinks=False)
+        if not stat.S_ISDIR(opened_directory.st_mode) or (
+            opened_directory.st_dev,
+            opened_directory.st_ino,
+        ) != (named_directory.st_dev, named_directory.st_ino):
+            raise SchemaRefusal(f"{stage} blob inventory is not one contained directory")
+        with os.scandir(directory_fd) as entries:
+            names = sorted(entry.name for entry in entries)
+        inventory = []
+        folded_names: dict[str, str] = {}
+        for name in names:
+            # Case-fold collisions are judged before anything else: two names that
+            # differ only by case give one tree two different inventories on a
+            # case-sensitive and a case-insensitive filesystem, and neither name can
+            # be trusted once both are present.
+            folded = name.casefold()
+            previous = folded_names.get(folded)
+            if previous is not None:
+                raise SchemaRefusal(
+                    f"{stage} blob inventory names {previous!r} and {name!r}, which collide "
+                    "on a case-insensitive filesystem"
+                )
+            folded_names[folded] = name
+            if name != folded and is_sha256(folded):
+                raise SchemaRefusal(
+                    f"{stage} blob inventory name {name!r} is a non-canonical case variant "
+                    "of a sha256; a seal witnesses no noncanonical content address"
+                )
+            if not is_sha256(name):
+                if _is_unpublished_blob_temporary(name):
+                    # `RunTree.put_blob` writes `.<digest>.tmp-<unique>` and then
+                    # hard-links it to its evidence name. SIGKILL between the two
+                    # leaves the private name behind. That orphan is interrupted
+                    # writer state, not published evidence for a completion seal to
+                    # witness -- but it is skipped only after it is proven to be a
+                    # plain regular file, so the exception is never a way to smuggle
+                    # a link past the no-follow rule.
+                    _refuse_unpublishable_temporary(directory_fd, name, stage)
+                    continue
+                raise SchemaRefusal(
+                    f"{stage} blob inventory contains noncanonical content address {name!r}"
+                )
+            observed = _digest_regular_file_at(directory_fd, name, stage, siblings=names)
+            if verify_addresses and observed != name:
+                raise SchemaRefusal(
+                    f"{stage} blob {name!r} contains digest {observed}, not the digest in its name"
+                )
+            inventory.append({"name": name, "sha256_of_content": observed})
+        named_directory = os.stat(blobs_root, follow_symlinks=False)
+        if (opened_directory.st_dev, opened_directory.st_ino) != (
+            named_directory.st_dev,
+            named_directory.st_ino,
+        ):
+            raise SchemaRefusal(f"{stage} blob inventory directory changed while it was read")
+        return inventory
+    except OSError as error:
+        raise SchemaRefusal(
+            f"{stage} blob inventory changed or became unreadable while it was read: {error}"
+        ) from error
+    finally:
+        os.close(directory_fd)
+
+
+def _is_unpublished_blob_temporary(name: str) -> bool:
+    """True only for the store's private, same-directory blob-write name.
+
+    ``RunTree.put_blob`` publishes a sha256-named file through
+    ``.<digest>.tmp-<unique>`` and an atomic hard link.  SIGKILL can leave the
+    private name behind before the link gives those bytes their evidence name.
+    Every other unexpected name stays a refusal, so this exception can never be
+    the route by which something unexplained sits in the evidence directory.
+    """
+    if not name.startswith("."):
+        return False
+    target, separator, unique = name[1:].partition(".tmp-")
+    return bool(separator and unique and is_sha256(target))
+
+
+def _refuse_unpublishable_temporary(directory_fd: int, name: str, stage: str) -> None:
+    """Prove one entry is a plain regular file before the exception skips it."""
+    try:
+        inspected = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+    except OSError as error:
+        raise SchemaRefusal(
+            f"{stage} blob inventory entry {name!r} changed while it was inspected: {error}"
+        ) from error
+    if stat.S_ISLNK(inspected.st_mode):
+        raise SchemaRefusal(
+            f"{stage} blob inventory entry {name!r} is a symlink; evidence blobs are no-follow"
+        )
+    if not stat.S_ISREG(inspected.st_mode):
+        raise SchemaRefusal(
+            f"{stage} blob inventory entry {name!r} wears the publisher's private temporary "
+            "name but is not a regular file"
+        )
+
+
+def _publisher_link_allowance(
+    directory_fd: int, siblings: Sequence[str], name: str, identity: tuple[int, int]
+) -> int:
+    """Extra links to `name` that its own interrupted publisher explains.
+
+    `RunTree._atomic_create` publishes by hard-linking `.<digest>.tmp-<unique>`
+    onto the digest name and then unlinking the temporary. SIGKILL between those
+    two steps leaves the published blob with a second link, and the only other
+    name holding it is that temporary. The bytes are complete, the digest matches
+    the name, and the inventory already skips the temporary itself — so refusing
+    the blob for its link count meant a run killed at the wrong microsecond could
+    never seal again, with the message accusing evidence that was in fact intact.
+
+    Each same-inode temporary bearing this blob's own digest explains exactly one
+    link. Every other link is still unexplained and still a refusal: this widens
+    the rule by precisely the state the publisher can leave and by nothing else.
+    """
+    explained = 0
+    for other in siblings:
+        if other == name or not other.startswith(f".{name}.tmp-"):
+            continue
+        if not _is_unpublished_blob_temporary(other):
+            continue
+        try:
+            sibling = os.stat(other, dir_fd=directory_fd, follow_symlinks=False)
+        except OSError:  # pragma: no cover - the temporary vanished mid-inventory
+            continue
+        if (sibling.st_dev, sibling.st_ino) == identity:
+            explained += 1
+    return explained
+
+
+def _digest_regular_file_at(
+    directory_fd: int, name: str, stage: str, *, siblings: Sequence[str] = ()
+) -> str:
+    """Hash one directory entry without changing which inode the name denotes."""
+    try:
+        descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory_fd)
+    except OSError as error:
+        raise SchemaRefusal(
+            f"{stage} blob {name!r} is not a readable no-follow file: {error}"
+        ) from error
+    try:
+        with os.fdopen(descriptor, "rb") as handle:
+            opened = os.fstat(handle.fileno())
+            named_before = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            identity = (opened.st_dev, opened.st_ino)
+            # One link for the evidence name, plus any the interrupted publisher
+            # left behind under its own private temporary name.
+            allowed_links = 1 + _publisher_link_allowance(directory_fd, siblings, name, identity)
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or opened.st_nlink > allowed_links
+                or identity != (named_before.st_dev, named_before.st_ino)
+            ):
+                raise SchemaRefusal(
+                    f"{stage} blob {name!r} is not one contained regular file: it is reachable "
+                    "under a name this store did not publish it under"
+                )
+            observed = hashlib.file_digest(handle, "sha256").hexdigest()
+            closed_over = os.fstat(handle.fileno())
+            named_after = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+    except OSError as error:
+        raise SchemaRefusal(
+            f"{stage} blob {name!r} changed or became unreadable while it was inventoried: {error}"
+        ) from error
+
+    if (
+        identity != (closed_over.st_dev, closed_over.st_ino)
+        or identity != (named_after.st_dev, named_after.st_ino)
+        or not stat.S_ISREG(named_after.st_mode)
+        or closed_over.st_nlink > allowed_links
+        or (opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns)
+        != (closed_over.st_size, closed_over.st_mtime_ns, closed_over.st_ctime_ns)
+    ):
+        raise SchemaRefusal(f"{stage} blob {name!r} changed while it was inventoried")
+    return observed
+
+
+def verify_predecessor_seal(tree: RunTree, stage: str) -> None:
+    """Refuse a missing, forged, or changed predecessor boundary by name."""
+    predecessor = SEAL_PREDECESSORS.get(stage)
+    if predecessor is None:
+        return
+    _verify_stage_seal(tree, predecessor, stage, "predecessor")
+
+
+def verify_final_seal(tree: RunTree) -> dict[str, Any]:
+    """Prove the Armarium boundary, whose lack of a successor leaves no stage reader.
+
+    ``SEAL_PREDECESSORS`` is consumer-keyed, so asking it about Armarium would
+    re-prove the Archetypus boundary instead of reading Armarium's own seal.
+    """
+    manifest = tree.build_manifest(ARMARIUM, verify_inputs=False)
+    _verify_stage_seal(tree, ARMARIUM, "the orchestrator", "final boundary", manifest=manifest)
+    expected_id = artifact_id(ARMARIUM, "export", "export", None)
+    exports = [
+        entry
+        for entry in manifest["artifacts"]
+        if entry["kind"] == "export" and entry["artifact_id"] == expected_id
+    ]
+    if len(exports) != 1:
+        raise SchemaRefusal(
+            "the orchestrator refuses armarium final boundary: its manifest does not name "
+            "exactly one derived export artifact"
+        )
+    return _manifest_artifact(tree, ARMARIUM, exports[0])
+
+
+def _verify_stage_seal(
+    tree: RunTree,
+    producer: str,
+    reader: str,
+    role: str,
+    *,
+    manifest: Mapping[str, Any] | None = None,
+) -> None:
+    """Keep stage consumers and the final orchestrator reader on one seal contract."""
+    seals = _stage_records(tree, producer, "stage-seal", manifest=manifest)
+    if not seals:
+        raise SchemaRefusal(
+            f"{reader} refuses: {role} {producer} has no stage-seal; "
+            "a missing witnessed statement is never re-derived"
+        )
+    # The producer refuses a seal its own stored inventory names and disk no
+    # longer holds; so must the consumer, which is the side an attacker with the
+    # tree reaches without ever invoking the producer again. Without this,
+    # deleting the latest of several seals and reverting the change it witnessed
+    # leaves the earlier seal answering for a boundary it never saw.
+    _refuse_deleted_seal(tree, producer, {record["artifact_id"] for record in seals})
+    seal = latest_attempt(seals, f"{producer} stage seal", operation="seal")
+    payload = seal["payload"]
+    expected_id = artifact_id(producer, "decode-environment", producer, seal["attempt_id"])
+    if payload.get("decode_environment_artifact_id") != expected_id:
+        raise SchemaRefusal(
+            f"{reader} refuses {producer} stage-seal: wrong decode environment name"
+        )
+    # One read, both comparisons. Two reads can straddle a rewrite, and a seal
+    # that matched no single run authority would pass this boundary -- the same
+    # two-read fault this file already names for `pdf_render.toml` and
+    # `recovery.toml`.
+    run_authority = tree.read_run()
+    if payload.get("config_digest") != run_authority.get("config_digest"):
+        raise SchemaRefusal(
+            f"{reader} refuses {producer} stage-seal: config_digest differs from run authority"
+        )
+    if payload.get("register_digest") != run_authority.get("register_digest"):
+        raise SchemaRefusal(
+            f"{reader} refuses {producer} stage-seal: register_digest differs from run authority"
+        )
+    try:
+        environment = tree.read_artifact(producer, "decode-environment", expected_id)
+        environment_bytes = tree.read_bytes(
+            tree.artifact_path(producer, "decode-environment", expected_id)
+        )
+    except (ContractError, OSError) as error:
+        raise SchemaRefusal(
+            f"{reader} refuses {producer} stage-seal: its decode-environment is missing or damaged"
+        ) from error
+    previous_environment = _validate_decode_environment(
+        environment.get("payload"), f"{producer} stored"
+    )
+    actual_environment_sha256 = digest_bytes(environment_bytes)
+    if payload.get("decode_environment_sha256") != actual_environment_sha256:
+        raise SchemaRefusal(
+            f"{reader} refuses {producer} stage-seal: its decode-environment digest "
+            "differs from the witnessed bytes"
+        )
+    try:
+        expected = _stage_seal_payload(
+            tree,
+            producer,
+            payload.get("attempt_ordinal"),
+            seal["attempt_id"],
+            manifest=manifest,
+        )
+    except (ContractError, OSError) as error:
+        raise SchemaRefusal(
+            f"{reader} refuses {producer} stage-seal: its named inventory no longer "
+            f"matches disk: {error}"
+        ) from error
+    if payload != expected:
+        raise SchemaRefusal(
+            f"{reader} refuses {producer} stage-seal: its named inventory no longer matches disk"
+        )
+    current_environment = _validate_decode_environment(
+        _decode_environment(reader), f"{reader} current"
+    )
+    differences = _decode_difference(previous_environment, current_environment)
+    if differences:
+        # This is intentionally an observation only. Unit 17 decides when a
+        # decoder difference becomes fatal; silently omitting it is not allowed.
+        print(
+            f"decode environment differs by name from {producer}: {differences}",
+            file=sys.stderr,
+        )
+
+
+def _decode_difference(previous: dict[str, Any], current: dict[str, Any]) -> list[str]:
+    """Every field difference the binding consult requires reported by name.
+
+    The two role fields predictably differ at some boundaries, but omitting them
+    would make a self-consistent forged record observationally invisible.
+    Reporting is not refusal: Unit 17 alone decides whether any valid difference
+    becomes fatal.
+    """
+    changes = []
+    previous_decoders = {row["name"]: row["version"] for row in previous["decoders"]}
+    current_decoders = {row["name"]: row["version"] for row in current["decoders"]}
+    for name in sorted(set(previous_decoders) | set(current_decoders)):
+        if previous_decoders.get(name) != current_decoders.get(name):
+            changes.append(name)
+    for field in ("platform", "machine", "decode_paths_used", "produced_pixels"):
+        if previous.get(field) != current.get(field):
+            changes.append(field)
+    return changes
 
 
 def _serving_evidence_reference(value: Mapping[str, str], label: str) -> dict[str, str]:
@@ -656,6 +1352,11 @@ def stage_parser(description: str, *, accepts_chair: bool = False) -> argparse.A
     # refuses an undeclared name after the fixture is loaded.
     parser.add_argument("--scenario", default="happy")
     parser.add_argument("--fixture-root", default="proof")
+    parser.add_argument(
+        "--corpus-register",
+        default=None,
+        help="append-only corpus register to snapshot at ingress and verify at later stages",
+    )
     parser.add_argument("--models-config", default="config/models.toml")
     parser.add_argument("--alignment-config", default=str(DEFAULT_ALIGNMENT_CONFIG_PATH))
     parser.add_argument("--pdf-render-config", default=str(DEFAULT_PDF_RENDER_CONFIG_PATH))
@@ -794,11 +1495,11 @@ def validate_witness_context_bindings(
     # draws an unapproved sample has decided something nobody asked it to. The
     # reference is sealed beside the rate, so a run cannot later claim an
     # approval it was not started under.
-    if nuda_per_mille and not nuda_approval_ref.strip():
+    if nuda_per_mille and nuda_approval_ref != NUDA_APPROVAL_SUBJECT:
         raise ContractError(
             f"a Lectio nuda rate of {nuda_per_mille}/1000 needs Tyrel's predeclared sampling "
-            "design reference in --nuda-approval-ref; an unapproved instrument sample is a "
-            "decision this pipeline does not get to make for him"
+            f"design selector {NUDA_APPROVAL_SUBJECT!r} in --nuda-approval-ref; an arbitrary "
+            "string is not an approval record"
         )
     if (
         not isinstance(perlector_instrument_per_mille, int)
@@ -811,12 +1512,15 @@ def validate_witness_context_bindings(
         )
     if not isinstance(perlector_instrument_approval_ref, str):
         raise ContractError("perlector_instrument_approval_ref must be a string")
-    if perlector_instrument_per_mille and not perlector_instrument_approval_ref.strip():
+    if (
+        perlector_instrument_per_mille
+        and perlector_instrument_approval_ref != PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT
+    ):
         raise ContractError(
             f"a Perlector prior-draft control rate of {perlector_instrument_per_mille}/1000 "
-            "needs Tyrel's predeclared sampling design reference in "
-            "--perlector-instrument-approval-ref; an unapproved instrument sample is a "
-            "decision this pipeline does not get to make for him"
+            "needs Tyrel's predeclared sampling design selector "
+            f"{PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT!r} in "
+            "--perlector-instrument-approval-ref; an arbitrary string is not an approval record"
         )
     try:
         witness_context_config_bytes = Path(witness_context_config_path).read_bytes()
@@ -1503,9 +2207,9 @@ def _verify_synthetic_act_denominator(context, acts: list[dict[str, Any]]) -> No
     """
     fixture_acts = context.fixture.get("act", [])
     expected = {
-        act_identity(context.fixture, row): {
+        fixture_identity.act_identity(context.fixture, row): {
             "act_key": row["key"],
-            "page_id": page_identity(context.fixture, row["page_ordinal"]),
+            "page_id": fixture_identity.page_identity(context.fixture, row["page_ordinal"]),
             "page_ordinal": row["page_ordinal"],
             "has_continuation": continuation_for(context.fixture, row["key"]) is not None,
         }
@@ -1568,10 +2272,8 @@ def _verify_every_conservation_residual_is_accounted(
     that "found ink no crop claimed has not completed". This is that promise
     checked at the first consumer rather than asserted by the producer.
 
-    The derivation is the minter's own (`residual_act_ordinal` over the
-    component's index in the record's deterministically ordered
-    `residual_components`, against the page the record is subject-keyed to), so
-    the two cannot drift on what a residual's identity is.
+    Position within `residual_components` orders evidence only; identity binds
+    the residual class and its bounds, so a new component cannot rename one.
     """
     for page_id, record in _designator_records_by_subject(context, "conservation").items():
         payload = record.get("payload")
@@ -1588,7 +2290,7 @@ def _verify_every_conservation_residual_is_accounted(
                     f"the conservation record for page {page_id} carries a residual at index "
                     f"{index} with no bounds to recompute an act identity from"
                 )
-            minted = derive_act_id(page_id, residual_act_ordinal(index), bounds)
+            minted = derive_act_id(page_id, "residual", bounds)
             row = observed.get(minted)
             if row is None or row["outcome"] != "held":
                 raise FatalAccounting(
@@ -1599,72 +2301,13 @@ def _verify_every_conservation_residual_is_accounted(
                 )
 
 
-# An act identity is `act_bindings(page_id, ordinal, bounds)`, so two acts minted
-# on one page must never share an ordinal. Three classes of ordinal exist on a
-# page and they are kept disjoint here, in one place, rather than by each minter
-# knowing what the others do:
-#
-#   >= 0                          the nth region a structure pass proposed
-#   RESIDUAL_FLOOR .. -1          one conservation residual (`residual_act_ordinal`)
-#   FALLBACK_PAGE_ACT_ORDINAL     the one page-fallback act, below that floor
-#
-# The residual space used to be the *whole* negative range, which left nowhere
-# for a second minted class to live without an argument about which values were
-# "unlikely" to be reached. Bounding it below makes the fallback ordinal
-# unreachable from it by construction, and `residual_act_ordinal` refuses an
-# index that would cross the floor rather than silently minting a colliding
-# identity. The floor is far past any reachable residual count -- this stage's
-# own worst measured page reconciles to about 60,000 residual components
-# (`pipeline/2_designator/HANDOFF.md`, "Cost, and where it is unbounded") --
-# so no existing ordinal moves and none ever will in practice; the point of the
-# bound is that the disjointness is proven rather than assumed.
-RESIDUAL_ACT_ORDINAL_FLOOR: int = -(2**31)
-FALLBACK_PAGE_ACT_ORDINAL: int = RESIDUAL_ACT_ORDINAL_FLOOR - 1
-
-
-def residual_act_ordinal(index: int) -> int:
-    """The disjoint ordinal namespace a conservation-residual act's identity uses.
-
-    `identities.act_id`'s own `proposal_ordinal` is always the non-negative "nth
-    region a structure pass proposed on a page" — a residual was never such a
-    proposal, so it cannot borrow that ordinal space without risking collision
-    with a real one, present or future. `-(index + 1)` is disjoint from every
-    non-negative ordinal by construction rather than by convention, so no
-    structure pass — this fixture's or a real one's — can ever mint a genuine
-    proposal whose identity collides with a residual's. `index` is the
-    residual's position in `conservation.reconcile`'s own `residual_components`
-    list, which is already deterministically ordered (top, then left) by the
-    shared `structure.label_components`, so the same page reconciles to the
-    same ordinal on every run.
-
-    The minting code and this module's verification of what was minted call the
-    same function, so the two cannot drift on what `-(index + 1)` means.
-
-    Bounded below by `RESIDUAL_ACT_ORDINAL_FLOOR` so the page-fallback act's own
-    reserved ordinal cannot be reached from here. An index that would cross the
-    floor is refused rather than allowed to mint an identity that could collide
-    with a fallback act on the same page.
-    """
-    if index < 0:
-        raise ContractError(f"a residual index {index} is negative and names no residual")
-    ordinal = -(index + 1)
-    if ordinal < RESIDUAL_ACT_ORDINAL_FLOOR:
-        raise ContractError(
-            f"residual index {index} is past the residual ordinal floor "
-            f"{RESIDUAL_ACT_ORDINAL_FLOOR}; a page this speckled has to be refused as a page "
-            "rather than accounted for with an ordinal that collides with another minted act"
-        )
-    return ordinal
-
-
 def fallback_page_act_key(page_ordinal: int) -> str:
     """The human-readable label of the one act a page's fallback crops belong to.
 
     For a reviewer's eye and for `expected_acts`'s duplicate-key refusal; what
     keeps this act's *identity* from colliding with anything is
-    `FALLBACK_PAGE_ACT_ORDINAL`, not this string. Named here beside the ordinal
-    rather than in the Designator so the producer and this module's verification
-    of what was produced cannot spell it differently.
+    the closed ``page-fallback`` act class, not this string. Named here so the
+    producer and verifier cannot spell it differently.
     """
     return f"page-fallback:{page_ordinal}"
 
@@ -1724,27 +2367,20 @@ def _verify_minted_act_rows(context, extra_rows: dict[str, dict[str, Any]]) -> N
                 "published no hold record for it"
             )
         payload = hold.get("payload") if isinstance(hold.get("payload"), dict) else {}
-        ordinal, bounds = payload.get("residual_ordinal"), payload.get("residual_bounds")
-        if (
-            not isinstance(ordinal, int)
-            or isinstance(ordinal, bool)
-            or ordinal >= 0
-            or not isinstance(bounds, dict)
-        ):
+        bounds = payload.get("residual_bounds")
+        if not isinstance(bounds, dict):
             raise FatalAccounting(
-                f"act {act_id}'s hold record carries no valid residual ordinal and bounds to "
-                "recompute its identity from"
+                f"act {act_id}'s hold record carries no residual bounds to recompute its "
+                "identity from"
             )
         try:
-            verify_identity(act_id, "act", act_bindings(row["page_id"], ordinal, bounds))
+            verify_identity(act_id, "act", act_bindings(row["page_id"], "residual", bounds))
         except IdentityRefusal as error:
             raise FatalAccounting(
-                f"act {act_id} does not verify against the residual ordinal and bounds its own "
+                f"act {act_id} does not verify against the residual class and bounds its own "
                 f"hold record names: {error}"
             ) from error
-        _verify_residual_traces_to_conservation(
-            context, act_id, row["page_id"], hold, ordinal, bounds
-        )
+        _verify_residual_traces_to_conservation(context, act_id, row["page_id"], hold, bounds)
 
 
 def _verify_page_fallback_act_row(
@@ -1756,8 +2392,8 @@ def _verify_page_fallback_act_row(
     witnesses and the Perlector, so it is the one whose provenance most needs to
     be recomputed rather than believed. Two independent things are checked, and
     the second is what stops a fabricated one: the identity must derive from
-    this page and the one reserved fallback ordinal over the page rectangle its
-    own record declares, and that record's single input must be the page's
+    this page and the one reserved `page-fallback` act class over the page
+    rectangle its own record declares, and that record's single input must be the page's
     `structure-status` — read through the digest-checked hop, not by address —
     saying the structure pass genuinely fell back to tiles on that page. A
     fallback act minted over a page whose structure pass *did* detect something
@@ -1781,11 +2417,10 @@ def _verify_page_fallback_act_row(
         or payload.get("act_key") != expected_key
         or payload.get("page_id") != row["page_id"]
         or payload.get("page_ordinal") != ordinal
-        or payload.get("fallback_ordinal") != FALLBACK_PAGE_ACT_ORDINAL
     ):
         raise FatalAccounting(
-            f"act {act_id}'s page-fallback record does not carry the page id, ordinal, reserved "
-            "fallback ordinal, derived fallback key, and page rectangle it must bind"
+            f"act {act_id}'s page-fallback record does not carry the page id, page ordinal, "
+            "derived fallback key, and page rectangle it must bind"
         )
     sources = [
         source
@@ -1809,12 +2444,10 @@ def _verify_page_fallback_act_row(
             f"rectangle {full_page_bounds}"
         )
     try:
-        verify_identity(
-            act_id, "act", act_bindings(row["page_id"], FALLBACK_PAGE_ACT_ORDINAL, bounds)
-        )
+        verify_identity(act_id, "act", act_bindings(row["page_id"], "page-fallback", bounds))
     except IdentityRefusal as error:
         raise FatalAccounting(
-            f"act {act_id} does not verify against the reserved page-fallback ordinal and the "
+            f"act {act_id} does not verify against the reserved page-fallback class and the "
             f"page rectangle its own record names: {error}"
         ) from error
     inputs = record.get("inputs")
@@ -1840,13 +2473,13 @@ def _verify_page_fallback_act_row(
 
 
 def _verify_residual_traces_to_conservation(
-    context, act_id: str, page_id: str, hold: dict[str, Any], ordinal: int, bounds: dict[str, Any]
+    context, act_id: str, page_id: str, hold: dict[str, Any], bounds: dict[str, Any]
 ) -> None:
     """A residual's declared bounds must exist in the reconciliation that found it.
 
     The check above only proves the hold is *internally* self-consistent — its
-    own `residual_ordinal` and `residual_bounds` recompute the act id they sit
-    beside. That alone would pass a residual invented from nothing, provided
+    own `residual_bounds` recompute the act id they sit beside. That alone
+    would pass a residual invented from nothing, provided
     whoever invented it also recomputed the identity correctly: nothing yet
     opens the `conservation` artifact the hold's own `inputs` already
     reference and confirms a residual component with those bounds is actually
@@ -1865,36 +2498,19 @@ def _verify_residual_traces_to_conservation(
     conservation = context.tree.read_artifact_reference(
         inputs[0], stage=DESIGNATOR, kind="conservation", subject_id=page_id
     )
-    # Every step of this lookup is checked before it is taken, and all of it lands
-    # on the one named refusal below. Read straight through, a conservation record
-    # whose payload was not a mapping or whose indexed row was not a mapping raised
-    # `AttributeError` out of an accounting check — a traceback where invariant #10
-    # promises a named fatal.
-    #
-    # **The lower bound is for a corrupted ordinal, not a short list**, and the
-    # distinction cost a vacuous test before it was understood. `residual_act_ordinal`
-    # is `-(index + 1)` over a non-negative index, so `index = -ordinal - 1` recovers
-    # a non-negative index for every *well-formed* record and `index >= len(components)`
-    # bounds it correctly. A hold whose sealed `ordinal` has been corrupted to a
-    # positive value is the reachable case: it makes `index` negative, which
-    # `index >= len(...)` never catches, and `components[-3]` on a short list is an
-    # `IndexError`. Reaching it in a test needs the ordinal itself corrupted after
-    # minting — the minting helper cannot produce one, because it calls
-    # `residual_act_ordinal`, which refuses. Left uncovered and named rather than
-    # covered by a test that passes against the unfixed code, which is what a first
-    # attempt at one did. Found by CodeRabbit; the reachability corrected here.
+    # Malformed payloads and rows must reach the named refusal below rather than
+    # escape as attribute errors. Bounds are the residual's identity within its
+    # class, so the Designator refuses coincident component boxes before minting;
+    # this lookup can therefore match by bounds without an ordinal tie-breaker.
     payload = conservation.get("payload")
     components = payload.get("residual_components") if isinstance(payload, Mapping) else None
-    index = -ordinal - 1
-    if (
-        not isinstance(components, list)
-        or not -len(components) <= index < len(components)
-        or not isinstance(components[index], Mapping)
-        or components[index].get("bounds") != bounds
+    if not isinstance(components, list) or not any(
+        isinstance(component, Mapping) and component.get("bounds") == bounds
+        for component in components
     ):
         raise FatalAccounting(
             f"act {act_id}'s hold declares a residual the conservation record it references "
-            "does not carry at that ordinal; an extra row must trace to the reconciliation "
+            "does not carry at those bounds; an extra row must trace to the reconciliation "
             "pass that actually found it, not merely be self-consistent with its own hold"
         )
 
@@ -2014,6 +2630,8 @@ def open_context(
     )
     tree = RunTree(Path(args.run_root), args.run_id)
     run = tree.read_run()
+    verify_snapshot_is_current(run, args.corpus_register)
+    read_snapshot(tree, run)
     # `sealed_config_digests` is compared as a field of its own, not left to be
     # implied by `config_digest`. Every digest in it is inside `config_digest`, so
     # an equal digest already proves the *bytes*; what it does not prove is that
@@ -2041,6 +2659,8 @@ def open_context(
             "the currently loaded models config and fixture scenario; direct stages "
             "may not run against an unsealed configuration"
         )
+    verify_predecessor_seal(tree, stage)
+    refuse_halted_run(tree, stage, args.hard_failure_config)
     return StageContext(
         tree=tree,
         run=run,
@@ -2060,6 +2680,36 @@ def open_context(
     )
 
 
+def refuse_halted_run(tree: RunTree, stage: str, hard_failure_config_path: str | Path) -> None:
+    """Apply the sealed run-level cap when no orchestrator guards stage entry."""
+    run = tree.read_run()
+    sealed_digests = run.get(SEALED_CONFIG_DIGESTS_FIELD)
+    # Hand-built stage-seal fixtures predate named policies and carry no ingress;
+    # synthetic-ingress fixtures may also construct one narrow boundary by hand.
+    # A real run always names this policy: losing that name is a failed proof,
+    # never permission to continue without the cap.
+    if not isinstance(sealed_digests, Mapping) or "hard-failure" not in sealed_digests:
+        if "ingress" in run and parse_ingress_record(run["ingress"]) == REAL_INGRESS:
+            raise ContractError(
+                f"{stage} refuses to start: this real run authority seals no hard-failure "
+                "configuration digest, so its run-level cap cannot be proven"
+            )
+        return
+    policy = load_hard_failure_policy(hard_failure_config_path)
+    require_sealed_config(run_sealed_config_digests(run), "hard-failure", policy["config_sha256"])
+    # An unreadable tally record is a failed measurement, not permission to
+    # enter. Input-byte consistency belongs to each stage's consumer boundary,
+    # though: recursively checking every tally artifact here can intercept
+    # unrelated lineage damage before the owning boundary names it. The tally
+    # still validates every record whose outcome and subject it measures.
+    tally = tally_hard_failures(tree, policy, verify_inputs=False)
+    if tally["breached"]:
+        raise RunHalted(
+            f"{stage} refuses to start: {tally['count']} hard failure(s) exceed the run-level "
+            f"cap of {tally['threshold']}; no stage writes after a halted run"
+        )
+
+
 def run_stage(main) -> int:
     """Run a stage's main and turn a contract refusal into an honest exit code.
 
@@ -2069,6 +2719,9 @@ def run_stage(main) -> int:
     """
     try:
         return int(main() or EXIT_COMPLETE)
+    except RunHalted as error:
+        print(f"{type(error).__name__}: {error}", file=sys.stderr)
+        return EXIT_RUN_HALTED
     except ContractError as error:
         print(f"{type(error).__name__}: {error}", file=sys.stderr)
         return EXIT_FATAL
@@ -2417,40 +3070,6 @@ def require_current_witness_basis(
             "witness evidence, and a superseded basis may not be carried past this stage as "
             "though it were current"
         )
-
-
-def page_for(fixture: dict[str, Any], ordinal: int) -> dict[str, Any]:
-    for page in fixture["page"]:
-        if page["ordinal"] == ordinal:
-            return page
-    raise ContractError(f"the fixture declares no page {ordinal}")
-
-
-def page_identity(fixture: dict[str, Any], ordinal: int) -> str:
-    """Every stage derives this the same way rather than looking it up.
-
-    Identity derivation lives in one place so six stage programs cannot drift on
-    how a page is named. The fixture supplies the source digest; the contract
-    supplies the derivation.
-    """
-    from common.contracts.identities import page_id
-
-    return page_id(page_for(fixture, ordinal)["sha256"], ordinal)
-
-
-def act_bounds(act: dict[str, Any]) -> dict[str, int]:
-    """The act's original proposal bounds — what act identity is bound to."""
-    return {"x": act["x"], "y": act["y"], "w": act["w"], "h": act["h"]}
-
-
-def act_identity(fixture: dict[str, Any], act: dict[str, Any]) -> str:
-    from common.contracts.identities import act_id
-
-    return act_id(
-        page_identity(fixture, act["page_ordinal"]),
-        act["proposal_ordinal"],
-        act_bounds(act),
-    )
 
 
 def act_by_key(fixture: dict[str, Any], key: str) -> dict[str, Any]:

@@ -10,7 +10,6 @@ from reader import FixtureReader
 from common.contracts.errors import ContractError
 from common.contracts.identities import act_id as derive_act_id
 from common.imaging import encode_grayscale_png
-from common.stage import FALLBACK_PAGE_ACT_ORDINAL
 
 PAGE = {"ordinal": 3, "width": 200, "height": 260}
 PAGE_ID = "pg_0000000000000000"
@@ -45,7 +44,7 @@ def _blank_rows():
 
 def test_fallback_text_is_derived_from_the_dossier_identity_not_its_key():
     reader = FixtureReader({"act": [], "page": [PAGE], "scenario": []}, "scenario")
-    fallback_id = derive_act_id(PAGE_ID, FALLBACK_PAGE_ACT_ORDINAL, BOUNDS)
+    fallback_id = derive_act_id(PAGE_ID, "page-fallback", BOUNDS)
 
     result = reader.read(
         _dossier(act_id=fallback_id, act_key="misleading-key"),
@@ -58,7 +57,7 @@ def test_fallback_text_is_derived_from_the_dossier_identity_not_its_key():
 
 def test_fallback_text_refuses_when_a_delivered_crop_contains_faint_ink():
     reader = FixtureReader({"act": [], "page": [PAGE], "scenario": []}, "scenario")
-    fallback_id = derive_act_id(PAGE_ID, FALLBACK_PAGE_ACT_ORDINAL, BOUNDS)
+    fallback_id = derive_act_id(PAGE_ID, "page-fallback", BOUNDS)
     rows = _blank_rows()
     # Nineteen levels below paper: invisible at PRIMARY_MARGIN=20, but ink at
     # the Designator conservation denominator's SECONDARY_MARGIN=2.
@@ -76,7 +75,7 @@ def test_fallback_text_refuses_when_a_delivered_crop_contains_faint_ink():
 
 def test_a_fallback_act_without_delivered_pixels_is_refused_not_blanked():
     reader = FixtureReader({"act": [], "page": [PAGE], "scenario": []}, "scenario")
-    fallback_id = derive_act_id(PAGE_ID, FALLBACK_PAGE_ACT_ORDINAL, BOUNDS)
+    fallback_id = derive_act_id(PAGE_ID, "page-fallback", BOUNDS)
 
     with pytest.raises(ContractError, match="without its pixels"):
         reader.read(
@@ -87,7 +86,7 @@ def test_a_fallback_act_without_delivered_pixels_is_refused_not_blanked():
 
 def test_a_fallback_act_missing_one_delivered_crop_is_refused():
     reader = FixtureReader({"act": [], "page": [PAGE], "scenario": []}, "scenario")
-    fallback_id = derive_act_id(PAGE_ID, FALLBACK_PAGE_ACT_ORDINAL, BOUNDS)
+    fallback_id = derive_act_id(PAGE_ID, "page-fallback", BOUNDS)
     delivered = _delivered_pixels(_blank_rows())
     delivered["region_images"] = []
 
@@ -213,7 +212,7 @@ def test_a_prior_row_naming_an_undeclared_act_is_refused_not_ignored():
 
 def test_a_fallback_shaped_key_cannot_blank_a_non_fallback_act():
     reader = FixtureReader({"act": [], "page": [PAGE], "scenario": []}, "scenario")
-    non_fallback_id = derive_act_id(PAGE_ID, 0, BOUNDS)
+    non_fallback_id = derive_act_id(PAGE_ID, "proposal", BOUNDS)
 
     with pytest.raises(KeyError, match="declares no act"):
         reader.read(

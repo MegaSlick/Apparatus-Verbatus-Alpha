@@ -30,6 +30,7 @@ from common.contracts.errors import ApprovalRefusal, IncompatibleReuse, SchemaRe
 from common.contracts.identities import artifact_id
 from common.contracts.outcomes import INTERIM_GRANULARITY_BASIS
 from common.contracts.stages import DESIGNATOR, DOOR, EXEMPLAR, PERLECTOR, writing_directory
+from common.corpus_register import EMPTY_REGISTER_DIGEST, empty_register
 from common.recensor_receipt import build_recensor_partition_receipt
 from common.runtree import store as runtree_store
 from common.runtree.store import (
@@ -222,6 +223,21 @@ def test_creating_a_run_writes_a_self_hashed_authority(tmp_path):
     assert (tmp_path / "r1" / RUN_FILE).exists()
 
 
+def test_run_authority_seals_a_content_addressed_corpus_register_snapshot(tmp_path):
+    tree = make_run(tmp_path)
+    run = tree.read_run()
+    digest = run["register_digest"]
+    assert run["register_required"] is False
+    assert tree.read_bytes(tree.blob_path(DOOR, digest)) == empty_register()
+
+
+def test_run_authority_distinguishes_an_explicit_empty_register_from_no_register(tmp_path):
+    tree = make_run(tmp_path, register_bytes=empty_register())
+    run = tree.read_run()
+    assert run["register_digest"] == EMPTY_REGISTER_DIGEST
+    assert run["register_required"] is True
+
+
 def test_the_run_authority_does_not_predeclare_acts(tmp_path):
     """Pages are given; acts are discovered. The Designator's proposal seal is the
     downstream expected-act authority, so run.json naming acts would make the
@@ -338,6 +354,31 @@ def test_an_incompatible_reuse_writes_nothing(tmp_path):
     assert sorted(path.name for path in (tmp_path / "r1").rglob("*")) == before
 
 
+def test_run_authority_is_not_published_when_its_register_snapshot_write_fails(
+    tmp_path, monkeypatch
+):
+    def fail_snapshot(_self, _stage, _data):
+        raise OSError("simulated snapshot publication failure")
+
+    monkeypatch.setattr(RunTree, "put_blob", fail_snapshot)
+    with pytest.raises(OSError, match="snapshot publication failure"):
+        make_run(tmp_path, register_bytes=empty_register())
+
+    assert not (tmp_path / "r1" / RUN_FILE).exists()
+
+
+def test_reuse_refuses_a_missing_register_snapshot_instead_of_reconstructing_it(tmp_path):
+    tree = make_run(tmp_path, register_bytes=empty_register())
+    run = tree.read_run()
+    snapshot = tree.resolve(tree.blob_path(DOOR, run["register_digest"]))
+    snapshot.unlink()
+
+    with pytest.raises(IncompatibleReuse, match="missing or unreadable"):
+        make_run(tmp_path, register_bytes=empty_register())
+
+    assert not snapshot.exists()
+
+
 def test_an_edited_run_authority_is_refused(tmp_path):
     tree = make_run(tmp_path)
     record = tree.read_run()
@@ -346,6 +387,33 @@ def test_an_edited_run_authority_is_refused(tmp_path):
     with pytest.raises(IncompatibleReuse) as caught:
         tree.read_run()
     assert "self-hash" in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    ("damage", "named"),
+    (
+        ('{"scale": 1.5}', "float at"),
+        ('{"name": "\\ud800"}', "unencodable character"),
+        ('{"count": ' + "9" * 700 + "}", "integer at"),
+    ),
+)
+def test_a_run_authority_with_uncanonical_current_content_names_that_cause(tmp_path, damage, named):
+    """Bare run authority must name why its current contents cannot be compared.
+
+    The fixture bypasses canonical_bytes because valid pipeline output cannot
+    contain the malformed value this read boundary must still refuse.
+    """
+    tree = make_run(tmp_path)
+    record = tree.read_run()
+    record["render_settings"] = json.loads(damage)
+    (tmp_path / "r1" / RUN_FILE).write_text(json.dumps(record), encoding="utf-8")
+
+    with pytest.raises(IncompatibleReuse) as caught:
+        tree.read_run()
+    message = str(caught.value)
+    assert named in message
+    assert "was edited" not in message
+    message.encode("utf-8")
 
 
 def test_an_old_schema_run_authority_is_refused_before_a_stage_can_use_it(tmp_path):
@@ -839,6 +907,77 @@ def test_a_manifest_describes_what_the_tree_actually_holds(tmp_path):
     assert manifest["blobs"] == [digest_bytes(b"a crop")]
 
 
+def test_a_manifest_metadata_and_digest_come_from_one_byte_snapshot(tmp_path, monkeypatch):
+    """A replacement at the read seam may not splice two artifacts into one row.
+
+    Driven at `_read_manifest_artifact` rather than at `Path.read_text`: the
+    merged reader reaches the file through a no-follow descriptor chain and never
+    calls the `Path` method, so patching that would have made this test pass
+    without ever substituting anything. What is asserted is the property either
+    branch's reader owes -- the row's metadata and its digest describe the same
+    bytes -- against whichever bytes the one read actually returned.
+
+    A second test used to sit above this one doing exactly the patch this
+    docstring warns against: it hooked `Path.read_text`, the hook never fired,
+    its forged bytes were never written, and both of its assertions compared the
+    original bytes with themselves. It was named for this seam and would have
+    stayed green if the seam broke, so it was removed rather than counted as
+    coverage.
+    """
+    tree = make_run(tmp_path)
+    published = tree.publish_artifact(make_envelope(outcome="proposed"))
+    replacement = canonical_bytes(make_envelope(outcome="held"))
+    real_read = RunTree._read_manifest_artifact
+
+    def read_replacement(self, relative_path):
+        record, data = real_read(self, relative_path)
+        if relative_path == published.relative_path:
+            return json.loads(replacement.decode("utf-8")), replacement
+        return record, data
+
+    monkeypatch.setattr(RunTree, "_read_manifest_artifact", read_replacement)
+    row = tree.build_manifest(DESIGNATOR)["artifacts"][0]
+
+    assert row["outcome"] == "held"
+    assert row["sha256"] == digest_bytes(replacement)
+
+
+def test_a_manifest_refuses_an_artifact_symlink_that_leaves_the_run_tree(tmp_path):
+    """Containment, which is what this one actually pins — see the test below.
+
+    `_raise_manifest_symlink` resolves the path first, and a target outside the
+    tree fails that before any link-specific message is built. So this stays green
+    with the `S_ISLNK` check deleted, and the link guard needs its own case.
+    """
+    tree = make_run(tmp_path)
+    published = tree.publish_artifact(make_envelope())
+    artifact_path = tree.resolve(published.relative_path)
+    outside = tmp_path / "outside-artifact.json"
+    artifact_path.replace(outside)
+    artifact_path.symlink_to(outside)
+
+    with pytest.raises(SchemaRefusal, match="outside the run tree"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_a_manifest_refuses_an_artifact_symlink_that_stays_inside_the_run_tree(tmp_path):
+    """The link guard itself, on the case containment cannot reach.
+
+    A link to a sibling artifact resolves inside the tree, so only the `S_ISLNK`
+    check stands between it and the inventory — and this is the case that matters,
+    because it is how one artifact comes to answer for two rows.
+    """
+    tree = make_run(tmp_path)
+    published = tree.publish_artifact(make_envelope())
+    sibling = tree.publish_artifact(make_envelope(subject="pg_fedcba9876543210"))
+    aliased = tree.resolve(published.relative_path)
+    aliased.unlink()
+    aliased.symlink_to(tree.resolve(sibling.relative_path))
+
+    with pytest.raises(SchemaRefusal, match="never an alias"):
+        tree.build_manifest(DESIGNATOR)
+
+
 def test_a_deleted_manifest_rebuilds_identically(tmp_path):
     """A manifest is a rebuildable inventory, never the only evidence that
     something happened."""
@@ -851,6 +990,22 @@ def test_a_deleted_manifest_rebuilds_identically(tmp_path):
     tree.write_manifest(DESIGNATOR)
 
     assert tree.read_bytes(tree.manifest_path(DESIGNATOR)) == stored
+
+
+def test_shared_door_and_exemplar_evidence_keeps_one_manifest_per_producer(tmp_path):
+    """One physical evidence directory must not imply one producer inventory.
+
+    Completion-seal deletion is exposed by the last stored manifest that named
+    the seal. If Door and Exemplar overwrite one file, the second producer can
+    erase that trigger before a resume checks it.
+    """
+    tree = make_run(tmp_path)
+    tree.write_manifest(DOOR)
+    tree.write_manifest(EXEMPLAR)
+
+    assert tree.manifest_path(DOOR) != tree.manifest_path(EXEMPLAR)
+    assert json.loads(tree.read_bytes(tree.manifest_path(DOOR)))["stage"] == DOOR
+    assert json.loads(tree.read_bytes(tree.manifest_path(EXEMPLAR)))["stage"] == EXEMPLAR
 
 
 def test_a_stale_manifest_is_detectable(tmp_path):
@@ -1895,8 +2050,8 @@ def test_an_artifact_parseable_but_too_deep_for_its_self_hash_walk_is_refused_no
         )
     try:
         canonical_bytes(parsed_deep)
-    except RecursionError:
-        pass
+    except TypeError as error:
+        assert "nests too deeply" in str(error)
     else:
         pytest.skip(
             f"this interpreter's canonical walk absorbs {nesting} levels, so the "

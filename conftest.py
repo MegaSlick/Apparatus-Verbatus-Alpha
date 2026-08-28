@@ -1,12 +1,141 @@
 """Fixtures shared by tests that cross pipeline stage directories."""
 
+import json
 import shutil
 import tomllib
 from pathlib import Path
 
 import pytest
 
+from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
+from common.stage import _stage_seal_payload, latest_attempt
+
 ROOT = Path(__file__).resolve().parent
+
+
+def rebind_stage_seal_artifact(tree, stage: str, *, rewrite_manifest: bool = True) -> None:
+    """Carry a deliberate semantic forgery through its producer's completion seal.
+
+    A stage seal witnesses the producer's whole boundary, so any test that
+    rewrites an upstream record now trips the seal first and proves the boundary
+    refusal instead of the check it was written for. Rebinding models the other
+    hypothesis — a producer that wrote the bad record *and* honestly witnessed
+    it — which is the state the downstream check exists to catch and the only
+    state in which it is reachable at all.
+
+    Boundary-corruption tests deliberately do NOT rebind: leaving the seal alone
+    is what proves the earlier refusal.
+
+    `rewrite_manifest=False` is for the forgeries that leave a dangling input
+    reference behind on purpose. `write_manifest` revalidates every input, so it
+    would refuse here instead of at the consumer the test is aiming at — and the
+    stored inventory is not what the seal is read out of anyway.
+    """
+    seals = [
+        tree.read_artifact(stage, "stage-seal", entry["artifact_id"])
+        for entry in tree.build_manifest(stage, verify_inputs=False)["artifacts"]
+        if entry["kind"] == "stage-seal"
+    ]
+    seal = latest_attempt(seals, f"{stage} stage seal", operation="seal")
+    payload = seal["payload"]
+    seal["payload"] = _stage_seal_payload(
+        tree,
+        stage,
+        payload["attempt_ordinal"],
+        seal["attempt_id"],
+        verify_inputs=rewrite_manifest,
+        verify_blob_addresses=rewrite_manifest,
+    )
+    seal["self_hash"] = self_hash(seal)
+    tree.resolve(tree.artifact_path(stage, "stage-seal", seal["artifact_id"])).write_bytes(
+        canonical_bytes(seal)
+    )
+    if rewrite_manifest:
+        tree.write_manifest(stage)
+
+
+def _repoint_retained_references(tree, node) -> bool:
+    """Repoint every `{relative_path, sha256}` pair in a record to the bytes on disk.
+
+    A retained reference is not only the envelope's `inputs` list: a producer that
+    reconciles evidence carries the same pair inside its payload (the Designator's
+    proposal seal names each act's region and hold evidence that way). Repointing
+    one and not the other leaves the record disagreeing with itself, so the walk
+    is over the whole record. A reference whose file is absent is left alone --
+    that is a dangling reference some tests plant on purpose.
+    """
+    changed = False
+    if isinstance(node, dict):
+        path, sha = node.get("relative_path"), node.get("sha256")
+        if isinstance(path, str) and isinstance(sha, str):
+            try:
+                actual = digest_bytes(tree.read_bytes(path))
+            except OSError:
+                actual = sha
+            if actual != sha:
+                node["sha256"] = actual
+                changed = True
+        for value in node.values():
+            changed |= _repoint_retained_references(tree, value)
+    elif isinstance(node, list):
+        for value in node:
+            changed |= _repoint_retained_references(tree, value)
+    return changed
+
+
+def rewitness_stage_boundary(tree, stage: str) -> None:
+    """Rebind a stage's whole boundary, retained input references included.
+
+    `rebind_stage_seal_artifact` rebinds the seal alone, which is enough while the
+    forgery is the last thing in the tree that names the changed bytes. It is not
+    enough once some artifact of this stage retained an input reference to them:
+    the reference still records the pre-forgery digest, so the next reader stops
+    at `the bytes changed under a sealed reference` — this stage's own boundary —
+    instead of at the semantic check the calling test is named for.
+
+    Repointing each stale reference to the bytes now on disk models the same
+    hypothesis the seal rebind does, one link further out: a producer that read
+    the forged record and honestly witnessed what it read. No refusal is
+    softened; the boundary checks are satisfied rather than stepped around, so
+    the consumer must catch the forgery on its own re-derivation or catch it
+    nowhere. Tests aimed *at* a boundary refusal must not call this.
+
+    Artifacts of one stage also reference each other, so rewriting one moves the
+    bytes a sibling recorded; the sweep runs to a fixed point.
+    """
+    for _ in range(len(tree.build_manifest(stage, verify_inputs=False)["artifacts"]) + 1):
+        settled = True
+        for entry in tree.build_manifest(stage, verify_inputs=False)["artifacts"]:
+            path = tree.resolve(entry["relative_path"])
+            record = json.loads(path.read_text(encoding="utf-8"))
+            if _repoint_retained_references(tree, record):
+                payload = record.get("payload")
+                # A producer that seals its payload separately -- the Designator's
+                # proposal-seal denominator does -- must have that inner hash
+                # recomputed too, or the reader stops on the denominator's own
+                # self-hash instead of on the check the calling test names.
+                if isinstance(payload, dict) and "self_hash" in payload:
+                    payload["self_hash"] = self_hash(payload)
+                record["self_hash"] = self_hash(record)
+                path.write_bytes(canonical_bytes(record))
+                settled = False
+        if settled:
+            break
+    else:  # pragma: no cover - a reference cycle would be a contract failure, not a test bug
+        raise AssertionError(f"{stage} input references never settled; the sweep found a cycle")
+    rebind_stage_seal_artifact(tree, stage)
+
+
+@pytest.fixture
+def rebind_stage_seal():
+    """Expose coherent test forgeries without putting test support in stage code."""
+    return rebind_stage_seal_artifact
+
+
+@pytest.fixture
+def rewitness_boundary():
+    """The seal rebind above, extended to the stage's retained input references."""
+    return rewitness_stage_boundary
 
 
 @pytest.fixture

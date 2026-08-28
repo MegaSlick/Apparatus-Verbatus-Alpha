@@ -1,5 +1,8 @@
 # Armarium — handoff
 
+The Armarium's two boundary records carry the same non-terminal `sealed` and
+`recorded` outcomes as every other stage. They are completed bookkeeping, never
+`delivered` output; only the `export` record may make that terminal claim.
 The Armarium publishes the terminal `kind="export"` record and one
 `kind="manifest-entry"` per expected act. Both are ordinary artifacts under
 `7_armarium/artifacts/`; the stage manifest is derived inventory, never a competing
@@ -24,6 +27,26 @@ about the package, so the last gate before a recipient makes that comparison rat
 than asserting it. The published summary reports what each check actually did,
 including the search-fold recomputation's own honest "not run under a different
 Unicode database" — a check that declined to run must not read like one that ran.
+
+## Stage-completion seal
+
+Before this producer's final manifest it publishes one `decode-environment` and
+one `stage-seal`, or reuses both on a byte-identical retry. The seal witnesses
+this pass's disk inventory and blob contents, and binds the exact decode-environment
+bytes, run `config_digest` and `register_digest`, and `(kind, outcome)` census. An exit
+held after publishing stage evidence seals it (holds remain in its census); a
+pass that never reaches its seal does not seal, whether it was held or refused
+before publishing stage evidence or closed fatally after publishing it, so the
+orchestrator correctly refuses a missing final boundary. Every difference in
+decoders, platform, machine, `decode_paths_used`, and `produced_pixels` is
+reported by field or decoder name. A valid difference is report-only and never
+refuses; Unit 17 owns any fatal policy.
+
+Seals are compared as the SET the stored inventory names, on both sides of the
+boundary: the producer refuses to re-seal, and the successor refuses to read,
+when any named seal is no longer on disk. Ordinals are the contiguous run 1..N,
+so removing the latest leaves a prefix that still looks whole — and the earlier
+statement would then answer for a boundary it never witnessed.
 
 ## Export contract
 

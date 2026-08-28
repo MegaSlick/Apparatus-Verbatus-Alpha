@@ -18,13 +18,20 @@ moment genuinely matters it lives in an approval record or a run receipt, both o
 which are honestly non-deterministic and neither of which is a stage artifact.
 """
 
+import unicodedata
 from typing import Any, Final
 
-from .canonical import SCHEMA_LABEL, digest_bytes, self_hash, verify_self_hash
+from .canonical import (
+    SCHEMA_LABEL,
+    digest_bytes,
+    self_hash,
+    self_hash_refusal,
+    verify_self_hash,
+)
 from .errors import ReservedKindRefusal, SchemaRefusal
 from .identities import artifact_id, is_well_formed
-from .outcomes import classify, require_approval
-from .stages import STAGES
+from .outcomes import BOUNDARY_OUTCOMES, classify, require_approval
+from .stages import EXEMPLAR, STAGES
 
 _REQUIRED: Final = (
     "schema",
@@ -71,6 +78,10 @@ def build_envelope(
     that writes an artifact nobody can read has already lost the work, and finding
     out at the consumer means the evidence of what went wrong is a stage away.
     """
+    # Validate before sorting: ``dict.get`` and key comparison are uses of the
+    # references, and malformed producer input belongs at the same named schema
+    # boundary as a malformed record read from disk.
+    validate_input_refs(inputs)
     envelope: dict[str, Any] = {
         "schema": SCHEMA_LABEL,
         "run_id": run_id,
@@ -179,8 +190,25 @@ def validate_envelope(envelope: Any) -> dict[str, Any]:
 
     # Fatal rather than a refusal when the outcome is in no set: that is invariant
     # #10's imbalance, and it is not a unit the run may route around.
-    classify(stage, envelope["outcome"])
-    require_approval(stage, envelope["outcome"], envelope.get("approval_ref"))
+    outcome = envelope["outcome"]
+    expected_boundary_outcome = BOUNDARY_OUTCOMES.get(envelope["kind"])
+    if expected_boundary_outcome is not None and outcome != expected_boundary_outcome:
+        raise SchemaRefusal(
+            f"boundary artifact {envelope['kind']!r} has outcome {outcome!r}, not its "
+            f"required boundary outcome {expected_boundary_outcome!r}"
+        )
+    classify(stage, outcome)
+    if expected_boundary_outcome is None and (
+        outcome == BOUNDARY_OUTCOMES["decode-environment"]
+        or (outcome == BOUNDARY_OUTCOMES["stage-seal"] and stage != EXEMPLAR)
+    ):
+        # ``sealed`` is also Exemplar's ordinary success outcome. At every other
+        # stage it is boundary-only, as ``recorded`` is at every stage.
+        raise SchemaRefusal(
+            f"ordinary {stage} artifact {envelope['kind']!r} cannot carry boundary "
+            f"outcome {outcome!r}"
+        )
+    require_approval(stage, outcome, envelope.get("approval_ref"))
 
     validate_input_refs(envelope["inputs"])
 
@@ -188,6 +216,11 @@ def validate_envelope(envelope: Any) -> dict[str, Any]:
         raise SchemaRefusal("payload is not an object")
 
     if not verify_self_hash(envelope):
+        # Unhashable current contents permit no digest comparison, so they must
+        # not be described as proof that a published artifact changed.
+        unhashable = self_hash_refusal(envelope)
+        if unhashable is not None:
+            raise SchemaRefusal(f"artifact fails its self-hash: {unhashable}")
         raise SchemaRefusal(
             "artifact fails its self-hash: its sealed envelope or payload changed after publication"
         )
@@ -206,18 +239,23 @@ def validate_input_refs(inputs: Any) -> None:
     # be counted twice in the inputs, which is the double-count this refusal exists
     # to prevent.
     seen: dict[str, str] = {}
+    portable_spellings: dict[str, str] = {}
     for ref in inputs:
-        if not isinstance(ref, dict):
+        if type(ref) is not dict:
             raise SchemaRefusal("an input reference is not an object")
         path, sha = ref.get("relative_path"), ref.get("sha256")
-        if not isinstance(path, str) or not path:
+        if type(path) is not str or not path:
             raise SchemaRefusal("an input reference has no relative_path")
-        if path.startswith("/") or ".." in path.split("/"):
+        if "\0" in path:
+            raise SchemaRefusal("an input reference relative_path contains a NUL byte")
+        segments = path.split("/")
+        if any(segment in ("", ".", "..") for segment in segments):
             raise SchemaRefusal(
-                f"input reference {path!r} escapes the run tree; references are "
-                "relative to the run root so a tree stays movable and verifiable"
+                f"input reference {path!r} is not a canonical run-relative path; empty, "
+                "current-directory, and parent-directory segments are refused so one file "
+                "has one accounting name"
             )
-        if not isinstance(sha, str) or len(sha) != 64 or not _is_hex(sha):
+        if type(sha) is not str or len(sha) != 64 or not _is_hex(sha):
             raise SchemaRefusal(f"input reference {path!r} has no sha256 digest")
         if path in seen:
             conflict = (
@@ -227,7 +265,33 @@ def validate_input_refs(inputs: Any) -> None:
                 else ""
             )
             raise SchemaRefusal(f"input reference {path!r} is listed twice{conflict}")
+        portable = _portable_spelling(path)
+        if portable in portable_spellings:
+            raise SchemaRefusal(
+                f"input references {portable_spellings[portable]!r} and {path!r} collide on "
+                "a case-insensitive or Unicode-normalising filesystem; one physical file "
+                "may not acquire two accounting names"
+            )
         seen[path] = sha
+        portable_spellings[portable] = path
+
+
+def _portable_spelling(path: str) -> str:
+    """One physical file's one accounting name, across the hosts this may run on.
+
+    Case is one spelling a filesystem varies; Unicode form is the other, and it
+    came from the same place. `Étienne-1.png` composed and the same name
+    decomposed are different strings with different casefolds, and macOS hands
+    back the decomposed spelling for a name Linux stored composed. Folding only
+    the case would let one scanned page enter the lineage as two references with
+    two digests, and the double-count refusal above would never fire.
+
+    Normalised on both sides of the casefold because casefolding can itself
+    denormalise — `identities._declared_text` states the same reasoning for the
+    other place this system binds text a host or a person controls the spelling
+    of.
+    """
+    return unicodedata.normalize("NFC", unicodedata.normalize("NFC", path).casefold())
 
 
 def verify_input_bytes(ref: dict[str, str], data: bytes) -> None:

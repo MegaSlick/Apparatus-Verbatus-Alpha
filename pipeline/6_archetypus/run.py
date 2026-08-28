@@ -56,7 +56,6 @@ from common.contracts.envelope import validate_input_refs  # noqa: E402
 from common.contracts.errors import FatalAccounting, SchemaRefusal  # noqa: E402
 from common.contracts.outcomes import (  # noqa: E402
     TEXT_STATUSES,
-    OutcomeClass,
     classify,
     derive_record_text_status,
     terminal_category,
@@ -265,9 +264,9 @@ def _verify_act_attachment_view(
             f"act {act_id} is accounted to page {page_id!r}, which none of its basis regions "
             "cites; a record's page identity and the ink it was read from are one fact"
         )
-    count = 0
     views: dict[str, str] = {}
-    seen_chairs: set[str] = set()
+    page_witness_chairs: set[str] = set()
+    seen_rows: set[tuple[str, int | None]] = set()
     for item in attachments:
         if (
             not isinstance(item, dict)
@@ -279,15 +278,49 @@ def _verify_act_attachment_view(
             raise SchemaRefusal(
                 f"act {act_id} referenced act-attachment has malformed witness scope"
             )
-        if item["chair"] in seen_chairs:
+        # A row is identified by (chair, page), not by chair alone. A continuation
+        # act's crop spans more than one source page, so one chair legitimately
+        # contributes one row per contributing page -- exactly one of which is the
+        # act's own page and can be `attached`. The duplicate-row refusal below and
+        # the per-chair comparison-view refusal further down are both kept: between
+        # them nothing a repeated chair could silently replace survives.
+        # Scope decides which rule applies, in the same words the Recensor uses on
+        # the same artifact. Accepting a page-witness row with no ordinal — which
+        # this check did while `page_ordinal is not None` gated it — left two
+        # consumers of one act-attachment disagreeing about whether that row is
+        # valid, and keyed it as `(chair, None)`, so a chair with one row on page 2
+        # and one row missing the field made two distinct keys and passed the
+        # duplicate guard below as two contributing pages when nobody could say
+        # what the second page was. A stock run is protected only because the
+        # Recensor refuses first, and this function documents itself as the whole
+        # of the boundary for a caller that resolved its arguments another way.
+        page_ordinal = item.get("page_ordinal")
+        if item["page_witness"]:
+            if not isinstance(page_ordinal, int) or isinstance(page_ordinal, bool):
+                raise SchemaRefusal(
+                    f"act {act_id} referenced act-attachment page witness {item['chair']!r} "
+                    "has no integer page ordinal; its attachment cannot be placed"
+                )
+        elif page_ordinal is not None:
             raise SchemaRefusal(
-                f"act {act_id} referenced act-attachment repeats witness {item['chair']!r}; "
-                "a repeated chair would silently replace a comparison view"
+                f"act {act_id} referenced act-attachment act-scoped witness "
+                f"{item['chair']!r} carries page ordinal {page_ordinal!r}; its scope "
+                "is contradictory"
             )
-        seen_chairs.add(item["chair"])
+        row = (item["chair"], page_ordinal)
+        if row in seen_rows:
+            raise SchemaRefusal(
+                f"act {act_id} referenced act-attachment repeats witness {item['chair']!r} "
+                f"on page {page_ordinal!r}; a repeated row would silently replace a "
+                "comparison view"
+            )
+        seen_rows.add(row)
         if not item["page_witness"]:
             continue
-        count += 1
+        # What the dossier discloses is how many distinct chairs witnessed a page,
+        # never how many attachment rows there are: a two-page continuation act must
+        # not report four witnesses where the run configured two.
+        page_witness_chairs.add(item["chair"])
         if not item.get("attached"):
             continue
         chair, alignment, testimony_ref = (
@@ -318,8 +351,13 @@ def _verify_act_attachment_view(
             raise SchemaRefusal(
                 f"act {act_id} referenced act-attachment has no valid comparison view"
             )
+        if chair in views:
+            raise SchemaRefusal(
+                f"act {act_id} referenced act-attachment gives witness {chair!r} a second "
+                "comparison view; a repeated chair would silently replace a comparison view"
+            )
         views[chair] = markup_text_view(reported[span["start"] : span["end"]])["text"]
-    if count != attachment_view["page_witness_count"]:
+    if len(page_witness_chairs) != attachment_view["page_witness_count"]:
         raise SchemaRefusal(
             f"act {act_id} embedded page-witness count disagrees with its attachment"
         )
@@ -476,7 +514,12 @@ def accepted_primed_perlectio(
     if reading.get("stage") != PERLECTOR or reading.get("kind") != "perlectio":
         raise SchemaRefusal("only a Perlectio may enter the Archetypus constructor")
     reading_class = classify(PERLECTOR, reading.get("outcome"))
-    if reading_class is not OutcomeClass.COMPLETED:
+    # Boundary records use the ordinary envelope vocabulary too.  Their
+    # ``recorded``/``sealed`` outcomes are completed *boundary evidence*, never
+    # a successful Perlectio: the constructor accepts the one reading outcome
+    # that can establish text, rather than treating every completed-class value
+    # for this producer as interchangeable.
+    if reading.get("outcome") != "read":
         raise FatalAccounting(
             f"act {act_id} would be established from a {reading['outcome']!r} "
             f"reading ({reading_class.value}); the established text may only come "
@@ -1159,6 +1202,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     index = validate_index(context, build_index(context), on_disk=on_disk, accepted=accepted)
     context.tree.write_index(ARCHETYPUS, index)
     validate_index(context, context.tree.read_index(ARCHETYPUS), on_disk=on_disk, accepted=accepted)
+    context.seal_boundary()
     context.finish()
     # Establishment for the accepted acts is real either way; the exit code
     # answers a different question — "is this stage's work finished?" — and an

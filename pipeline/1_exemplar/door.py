@@ -87,6 +87,7 @@ from common.contracts.canonical import digest_bytes, digest_of, self_hash  # noq
 from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.identities import artifact_id  # noqa: E402
 from common.contracts.stages import DOOR  # noqa: E402
+from common.corpus_register import read_register_file  # noqa: E402
 from common.hard_failure import load_hard_failure_policy  # noqa: E402
 from common.recovery import load_recovery_policy  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
@@ -100,6 +101,7 @@ from common.stage import (  # noqa: E402
     adapter_recipe_for,
     load_corpus_frame_policy,
     load_fixture,
+    refuse_halted_run,
     require_corpus_frame_shard,
     run_config_bindings,
     run_stage,
@@ -1035,13 +1037,35 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     registry = registry_factory(args.models_config)
 
     if args.submission_folder is not None:
+        # The run-level cap is applied inside `real_submission`, once the run root
+        # has passed the storage gate. Reading a run authority here would open and
+        # self-hash a file in a directory the data-handling policy never approved
+        # — the exact read the gate exists to stop — and an operator who mistyped
+        # the run root onto an unapproved volume holding a run.json would be told
+        # the run was halted rather than that the root is not approved.
         return real_submission(args, registry)
+    # The fixture path is declared synthetic input and is not gated, so its cap
+    # check has no earlier gate to stand behind.
+    _refuse_halted_run_root(Path(args.run_root), args)
     if args.submission_manifest is not None:
         raise ContractError(
             "a submission filename ledger is meaningful only with a real submission folder; "
             "the walking skeleton's declared synthetic pages are not gated input"
         )
     return fixture_submission(args, registry)
+
+
+def _refuse_halted_run_root(run_root: Path, args) -> None:
+    """Apply the sealed run-level hard-failure cap to an existing run tree.
+
+    Called on the fixture path before anything is written, and on the real path
+    only after `run_root` has passed the approved-storage gate — reading a run
+    authority is a read, and a read outside an approved location is what the gate
+    is for.
+    """
+    existing_tree = RunTree(run_root, args.run_id)
+    if existing_tree.resolve("run.json").exists():
+        refuse_halted_run(existing_tree, DOOR, args.hard_failure_config)
 
 
 def _load_pdf_render_binding(args) -> render_config.PdfRenderBinding:
@@ -1067,10 +1091,11 @@ def _finish_door_run(context: StageContext, tree: RunTree, admitted: int) -> int
     """The one shared close for both entry points: reports, then the loud check."""
     refusal_report = publish_refusal_report(context)
     duplicate_report = publish_duplicate_report(context)
-    context.finish(DOOR)
     _announce_refusal_report(tree, refusal_report)
     _announce_duplicate_report(tree, duplicate_report)
     require_some_admitted(admitted, tree, refusal_report)
+    context.seal_boundary()
+    context.finish(DOOR)
     return EXIT_COMPLETE
 
 
@@ -1129,6 +1154,7 @@ def fixture_submission(args, registry) -> int:
         ingress=synthetic_fixture_ingress_record(),
         render_settings={"pdf": pdf_settings.to_record()},
         sealed_config_digests=bindings["sealed_config_digests"],
+        register_bytes=_read_corpus_register(args.corpus_register),
     )
     context = _door_context(
         tree,
@@ -1184,6 +1210,9 @@ def real_submission(args, registry) -> int:
     manifest_path = gate.require_approved_storage_location(
         Path(args.submission_manifest), roots, "submission filename ledger"
     )
+    # The run-level cap, now that the root it reads is a location the policy
+    # approved, and against the resolved path rather than the typed one.
+    _refuse_halted_run_root(run_root, args)
     for location, label in (
         (run_root, "run root"),
         (manifest_path, "submission filename ledger"),
@@ -1295,6 +1324,7 @@ def real_submission(args, registry) -> int:
         ingress=real_ingress_record(),
         render_settings={"pdf": pdf_settings.to_record()},
         sealed_config_digests=bindings["sealed_config_digests"],
+        register_bytes=_read_corpus_register(args.corpus_register),
     )
 
     context = _door_context(
@@ -1323,6 +1353,20 @@ def real_submission(args, registry) -> int:
         open_source=open_source,
     )
     return _finish_door_run(context, tree, admitted)
+
+
+def _read_corpus_register(register_path: str | None) -> bytes | None:
+    """Read an optional register before run creation, with a recoverable refusal."""
+    if register_path is None:
+        return None
+    try:
+        return read_register_file(register_path)
+    except (OSError, ContractError) as error:
+        raise ContractError(
+            "the corpus register could not be read before run creation; no run or admission "
+            "record was written; provide a readable canonical register and retry; the file "
+            "must be bounded, regular, and not a symlink"
+        ) from error
 
 
 def _announce_refusal_report(tree: RunTree, refusal_report: str | None) -> None:

@@ -8,6 +8,10 @@ validator that refuses in isolation and is never called at a boundary would be
 meta-invariant #89's vacuous pass, so both exist on purpose.
 """
 
+import contextlib
+import io
+import json
+
 import pytest
 
 from common.contracts.canonical import SCHEMA_LABEL, digest_bytes, self_hash
@@ -66,6 +70,48 @@ def test_building_validates_on_the_way_out_too():
             inputs=[PAGE_REF],
             payload={},
         )
+
+
+@pytest.mark.parametrize(
+    "stage,kind,outcome",
+    (
+        ("perlector", "perlectio", "sealed"),
+        ("attestatores", "testimonium", "recorded"),
+        ("perlector", "stage-seal", "read"),
+        ("door", "decode-environment", "admitted"),
+    ),
+)
+def test_boundary_outcomes_and_kinds_cannot_be_worn_by_ordinary_artifacts(stage, kind, outcome):
+    """Boundary bookkeeping must never classify as a successful stage result."""
+    with pytest.raises(SchemaRefusal, match="boundary"):
+        build_envelope(
+            run_id="boundary-kind-test",
+            artifact_id=artifact_id(stage, kind, "subject"),
+            subject_id="subject",
+            stage=stage,
+            kind=kind,
+            outcome=outcome,
+            config_digest="c" * 64,
+            adapter_revision="boundary-kind-test-v1",
+            inputs=[],
+            payload={},
+        )
+
+
+def test_exemplars_preexisting_sealed_outcome_remains_valid_for_page_evidence():
+    envelope = build_envelope(
+        run_id="boundary-kind-test",
+        artifact_id=artifact_id("exemplar", "page", "page-1"),
+        subject_id="page-1",
+        stage="exemplar",
+        kind="page",
+        outcome="sealed",
+        config_digest="c" * 64,
+        adapter_revision="boundary-kind-test-v1",
+        inputs=[],
+        payload={},
+    )
+    assert validate_envelope(envelope) == envelope
 
 
 # --- Corruption kind 1: the schema --------------------------------------------
@@ -170,6 +216,105 @@ def test_an_unresealed_payload_change_is_refused_when_the_identity_is_unchanged(
     assert validate_envelope(reseal(changed))["payload"] == {"proposals": 99}
 
 
+@pytest.mark.parametrize(
+    "payload,path",
+    (
+        ({"scale": 1.5}, "$.payload.scale"),
+        ({"box": [1, 2.0]}, "$.payload.box[1]"),
+        ({"nested": {"deep": 0.1}}, "$.payload.nested.deep"),
+    ),
+)
+def test_a_parsed_artifact_with_a_float_is_refused_by_name_at_the_envelope_boundary(payload, path):
+    """Unsupported JSON numbers must not escape the consumer as a serializer traceback.
+
+    Each shape asserts the field path, not merely that something mentioning
+    "self-hash" was raised. The generic self-hash message contains that word, so
+    matching on it alone would keep passing if the named diagnostic regressed and
+    every unhashable payload went back to being reported as a post-publication
+    edit — telling an operator an artifact was tampered with when the real cause
+    was a float.
+    """
+    parsed = json.loads(json.dumps(sound_envelope()))
+    parsed["payload"] = payload
+
+    with pytest.raises(SchemaRefusal) as caught:
+        validate_envelope(parsed)
+    message = str(caught.value)
+    assert f"float at {path}" in message
+    assert "changed after publication" not in message
+
+
+@pytest.mark.parametrize(
+    "payload",
+    (
+        {"name": "\ud800"},
+        {"box": ["ok", "\udfff"]},
+        {"nested": {"deep": "\ud800"}},
+        {"\ud800": "in a key"},
+    ),
+)
+def test_a_parsed_artifact_with_a_lone_surrogate_is_refused_by_name(payload):
+    """json.loads accepts lone surrogates, but canonical UTF-8 does not."""
+    parsed = json.loads(json.dumps(sound_envelope()))
+    parsed["payload"] = payload
+
+    with pytest.raises(SchemaRefusal) as caught:
+        validate_envelope(parsed)
+    message = str(caught.value)
+    assert "unencodable character" in message
+    assert "changed after publication" not in message
+    # The consumer prints this message, so it must not carry the surrogate raw.
+    message.encode("utf-8")
+
+
+def test_a_record_too_deep_to_hash_is_not_reported_as_a_verified_mismatch():
+    """Exhausted traversal permits no digest-mismatch claim."""
+    nested: dict = {"leaf": 1}
+    for _ in range(2000):
+        nested = {"nested": nested}
+    parsed = sound_envelope()
+    parsed["payload"] = {"deep": nested}
+
+    try:
+        self_hash(parsed)
+    except TypeError as error:
+        assert "nests too deeply" in str(error)
+    else:
+        pytest.skip("this interpreter absorbs 2000 levels, so the guarded band is unreachable")
+
+    with pytest.raises(SchemaRefusal) as caught:
+        validate_envelope(parsed)
+    assert "nests too deeply" in str(caught.value)
+
+
+def test_a_huge_integer_is_named_at_the_envelope_boundary():
+    parsed = sound_envelope()
+    parsed["payload"] = {"count": 10**640}
+
+    with pytest.raises(SchemaRefusal) as caught:
+        validate_envelope(parsed)
+    assert "integer at $.payload.count exceeds 640 decimal digits" in str(caught.value)
+
+
+def test_the_refusal_an_operator_sees_carries_the_diagnostic_through_run_stage():
+    """The stage boundary must preserve the field diagnostic it prints to stderr."""
+    from common.stage import EXIT_FATAL, run_stage
+
+    parsed = json.loads(json.dumps(sound_envelope()))
+    parsed["payload"] = {"scale": 1.5}
+
+    def main():
+        validate_envelope(parsed)
+
+    stream = io.StringIO()
+    with contextlib.redirect_stderr(stream):
+        assert run_stage(main) == EXIT_FATAL
+    printed = stream.getvalue()
+    assert printed.startswith(
+        "SchemaRefusal: artifact fails its self-hash: float at $.payload.scale"
+    )
+
+
 # --- Corruption kind 3: the input digest --------------------------------------
 
 
@@ -190,6 +335,77 @@ def test_a_reference_escaping_the_run_tree_is_refused():
     for bad in ("/etc/passwd", "../../elsewhere/page", "1_exemplar/../../out"):
         with pytest.raises(SchemaRefusal):
             validate_envelope(sound_envelope(inputs=[{"relative_path": bad, "sha256": "a" * 64}]))
+
+
+@pytest.mark.parametrize(
+    "alias",
+    (
+        "1_exemplar//blobs/page-1",
+        "1_exemplar/./blobs/page-1",
+        "1_exemplar/blobs/page-1/",
+    ),
+)
+def test_a_noncanonical_path_alias_is_refused(alias):
+    """One physical input must have one spelling in duplicate accounting."""
+    with pytest.raises(SchemaRefusal, match="canonical run-relative path"):
+        validate_envelope(sound_envelope(inputs=[{"relative_path": alias, "sha256": "a" * 64}]))
+
+
+def test_a_nul_path_is_refused_before_it_reaches_the_filesystem():
+    with pytest.raises(SchemaRefusal, match="NUL byte"):
+        validate_envelope(
+            sound_envelope(inputs=[{"relative_path": "proof/page\0-1.png", "sha256": "a" * 64}])
+        )
+
+
+def test_unicode_form_variant_input_paths_cannot_split_accounting_either():
+    """macOS hands back the decomposed spelling of a name Linux stored composed.
+
+    Different strings, different casefolds, different dictionary keys — so one
+    scanned page would enter the lineage twice and the duplicate refusal above
+    would never fire.
+    """
+    composed = "proof/\N{LATIN CAPITAL LETTER E WITH ACUTE}tienne-1.png"
+    decomposed = "proof/E\N{COMBINING ACUTE ACCENT}tienne-1.png"
+    assert composed.casefold() != decomposed.casefold(), "case folding alone cannot see it"
+    with pytest.raises(SchemaRefusal, match="Unicode-normalising filesystem"):
+        validate_envelope(
+            sound_envelope(
+                inputs=[
+                    {"relative_path": composed, "sha256": "a" * 64},
+                    {"relative_path": decomposed, "sha256": "b" * 64},
+                ]
+            )
+        )
+
+
+def test_case_variant_input_paths_cannot_split_accounting_on_default_apfs():
+    with pytest.raises(SchemaRefusal, match="case-insensitive"):
+        validate_envelope(
+            sound_envelope(
+                inputs=[
+                    {"relative_path": "proof/Page-1.png", "sha256": "a" * 64},
+                    {"relative_path": "proof/page-1.png", "sha256": "a" * 64},
+                ]
+            )
+        )
+
+
+def test_build_refuses_a_malformed_input_before_sorting_uses_it():
+    """Output validation must precede ``dict.get`` in the stable-order sort."""
+    with pytest.raises(SchemaRefusal, match="input reference is not an object"):
+        build_envelope(
+            run_id="r1",
+            artifact_id=artifact_id("designator", "proposal", "pg_0123456789abcdef"),
+            subject_id="pg_0123456789abcdef",
+            stage="designator",
+            kind="proposal",
+            outcome="proposed",
+            config_digest="c" * 64,
+            adapter_revision="fake-designator-v0",
+            inputs=[["not", "a", "reference"]],
+            payload={},
+        )
 
 
 def test_bytes_that_do_not_match_the_sealed_reference_are_refused():

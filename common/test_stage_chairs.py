@@ -73,6 +73,20 @@ def _context(tmp_path) -> tuple[StageContext, ChairIdentity]:
     return context, identity
 
 
+def test_context_refuses_a_publish_after_its_completion_seal(tmp_path):
+    context, _ = _context(tmp_path)
+
+    context.seal_boundary()
+
+    with pytest.raises(SchemaRefusal, match="completion boundary"):
+        context.publish(
+            kind="testimonium",
+            subject_id="act-after-seal",
+            outcome="read",
+            payload={},
+        )
+
+
 def _served_provenance(
     context: StageContext,
     identity: ChairIdentity,

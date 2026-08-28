@@ -20,6 +20,7 @@ from common.contracts.errors import FatalAccounting
 from common.contracts.identities import artifact_id
 from common.contracts.stages import ARCHETYPUS, ARMARIUM, PERLECTOR, RECENSOR
 from common.runtree.store import RunTree
+from conftest import rebind_stage_seal_artifact as _rebind_stage_seal
 
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
@@ -211,6 +212,7 @@ def test_provenance_less_established_reading_becomes_a_visible_refusal(
         tree.artifact_path(ARCHETYPUS, "archetypus", altered["artifact_id"])
     )
     artifact_path.write_bytes(canonical_bytes(altered))
+    _rebind_stage_seal(tree, ARCHETYPUS)
 
     result = _run_armarium(root, "refusal")
     assert result.returncode == 3, result.stderr
@@ -332,6 +334,9 @@ def test_a_provenance_that_fails_deeper_validation_is_also_downgraded_to_refused
         tree.artifact_path(ARCHETYPUS, "archetypus", altered["artifact_id"])
     )
     artifact_path.write_bytes(canonical_bytes(altered))
+    _rebind_stage_seal(tree, PERLECTOR)
+    _rebind_stage_seal(tree, RECENSOR)
+    _rebind_stage_seal(tree, ARCHETYPUS)
 
     result = _run_armarium(root, "deeper-refusal")
     assert result.returncode == 3, result.stderr

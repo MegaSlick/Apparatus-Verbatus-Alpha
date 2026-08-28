@@ -7,6 +7,7 @@ Where a run's evidence lives, and the only code that writes to it.
 <run>/<NN-stage>/artifacts/<kind>/<artifact-id>.json
 <run>/<NN-stage>/blobs/sha256/<digest>
 <run>/<NN-stage>/manifest.json
+<run>/1_exemplar/manifest-door.json
 <run>/receipts/sha256/<digest>.json
 ```
 
@@ -27,6 +28,11 @@ a resume.
 every time it is written. Delete it and it comes back identical. If it ever
 disagrees with the artifacts, the artifacts are right — which is why nothing may
 treat a manifest as the evidence that something happened.
+
+Door writes into Exemplar's evidence directory, but its producer inventory is
+`1_exemplar/manifest-door.json`; Exemplar retains `1_exemplar/manifest.json`.
+The files are separate because a later producer must not erase the stored set
+of completion seals the earlier producer's last inventory named.
 
 ## run.json
 
