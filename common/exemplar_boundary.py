@@ -13,7 +13,7 @@ pixels changed between stages.
 """
 
 import json
-from typing import Any
+from typing import Any, Final
 
 from common.contracts.canonical import canonical_bytes, digest_bytes, verify_self_hash
 from common.contracts.envelope import validate_envelope, verify_input_bytes
@@ -36,6 +36,12 @@ from common.imaging import (
     render_triage_derivative,
 )
 from common.runtree.store import RunTree
+
+# The one name for a triage derivative's kind. The Door writes it, this boundary
+# and the Exemplar stage read it, and each of the three used to spell it out
+# separately; a producer and its two consumers agreeing by coincidence is what
+# `is_triage_derivative_contract` below exists to stop.
+SEALED_DERIVATIVE_PAGE_KIND: Final = "sealed-derivative-page-v1"
 
 
 def verify_sealed_page_pixels(
@@ -762,7 +768,8 @@ def _verify_admission(
                 "a sealed Exemplar page's Door admission disagrees with the filename ledger"
             )
     rendered = _verify_rendered_source_link(page_rendered, payload.get("rendered_from"), source)
-    if not _is_triage_derivative(rendered):
+    render_contract = rendered.get("render_contract") if isinstance(rendered, dict) else None
+    if not is_triage_derivative_contract(render_contract):
         if admission.get("inputs") != [blob_ref]:
             raise ContractError("a sealed Exemplar page's Door admission has the wrong pixel input")
         return
@@ -820,13 +827,23 @@ def _verify_rendered_source_link(
     return admission_rendered
 
 
-def _is_triage_derivative(rendered: Any) -> bool:
+def is_triage_derivative_contract(render_contract: Any) -> bool:
+    """Whether a render contract describes a sealed triage derivative.
+
+    One function rather than two. This decides which validation a page gets — a
+    derivative is checked against its parent frame and re-derived, an ordinary
+    render against the render contract — and the Exemplar stage asked the same
+    question with its own copy. Two copies is one kind vocabulary too many: teach
+    one of them a `sealed-derivative-page-v2` and the other keeps saying no, and
+    the disagreement is not a crash. It is a page sealed as an ordinary render
+    whose pixels nobody re-derived, or a re-derivation demanded of a page that has
+    no parent. Both callers pass the render contract, which is the smaller of the
+    two shapes they had between them.
+    """
     return (
-        isinstance(rendered, dict)
-        and isinstance(rendered.get("render_contract"), dict)
-        and isinstance(rendered["render_contract"].get("derivative_page"), dict)
-        and rendered["render_contract"]["derivative_page"].get("kind")
-        == "sealed-derivative-page-v1"
+        isinstance(render_contract, dict)
+        and isinstance(render_contract.get("derivative_page"), dict)
+        and render_contract["derivative_page"].get("kind") == SEALED_DERIVATIVE_PAGE_KIND
     )
 
 

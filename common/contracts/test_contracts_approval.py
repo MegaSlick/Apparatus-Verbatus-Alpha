@@ -183,6 +183,10 @@ def test_a_resealed_record_with_an_extra_field_is_not_the_approval_schema():
 def test_a_non_string_extra_field_is_a_named_schema_refusal_not_a_sorting_crash():
     record = approval()
     record[1] = "not a JSON object key"
+    # Two unexpected keys, of two types, because one key is never sorted against
+    # anything. With a single offender this test stayed green after `key=repr`
+    # was deleted -- it named a crash it could not reach.
+    record["also unexpected"] = "a second offender"
 
     with pytest.raises(ApprovalRefusal, match="unexpected fields"):
         validate_approval_record(record)

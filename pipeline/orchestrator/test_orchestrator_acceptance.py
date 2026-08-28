@@ -670,7 +670,13 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # Re-pinned for `triage_modes.toml`, which is sealed into every run and so moves
 # both authorities without adding an artifact.
 #
-# Re-pinned for the Door's cluster report, a new artifact in every run.
+# *Not* re-pinned for the Door's cluster report, though a note here once said it was.
+# `publish_cluster_report` writes nothing unless some admission carries a
+# `triage_link`, and only the real-ingress route ever supplies triage rows to
+# `expand_sources`; the fixture route these runs take submits none, so the report
+# returns None and no artifact reaches the tree. The pins did move at the merge that
+# landed the report, but for the typed render-origin validator and the page-identity
+# refusal composed in the same commit. Found by CodeRabbit.
 #
 # Re-pinned at each merge that brings two authority-moving branches together. The
 # pins below stand for the merged tree and nothing else: every contributing branch

@@ -34,6 +34,7 @@ from synthetic_sources import (
     two_page_pdf,
 )
 
+import common.imaging as common_imaging
 from common.contracts.approval import synthetic_fixture_ingress_record
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash, verify_self_hash
 from common.contracts.errors import ContractError, IncompatibleReuse
@@ -1045,13 +1046,31 @@ def test_triage_cluster_members_are_bounded_before_set_expansion(tmp_path, monke
     assert "clusters for one configured shard" in str(refused.value)
 
 
-def test_split_render_uses_the_deterministic_common_encoder():
+def test_split_render_uses_the_deterministic_common_encoder(monkeypatch):
     """Same-process repetition alone would pass even for a Pillow-chosen framing;
     the claim under test is that a *different* PNG-writing zlib build still yields
     identical bytes, which is what `common.imaging.encode_image_deterministic`
     exists to guarantee (`common/test_imaging_determinism.py`'s own zlib-shim
     pattern). Without varying the encoder, this test cannot tell the project-owned
-    encoder from Pillow's own writer choosing whatever its bundled zlib does."""
+    encoder from Pillow's own writer choosing whatever its bundled zlib does.
+
+    The zlib shim alone did not do that. `encode_image_deterministic` writes stored
+    DEFLATE blocks through `_deterministic_stored_deflate` and never calls
+    `zlib.compress`, and neither does Pillow's PNG writer, which uses a compression
+    object. So the shim changed neither render and the test passed no matter which
+    encoder ran. The encoder call is spied on directly now, and the shim covers
+    `compressobj` too, so a replacement writer would be caught by both halves.
+    Found by CodeRabbit."""
+    calls: list[bytes] = []
+    genuine_encode = common_imaging.encode_image_deterministic
+
+    def spy(image):
+        encoded = genuine_encode(image)
+        calls.append(encoded)
+        return encoded
+
+    monkeypatch.setattr(common_imaging, "encode_image_deterministic", spy)
+
     data = jpeg(6, 4)
     part = door.triage_manifest.make_part(
         {"x": 0, "y": 0, "w": 6, "h": 4},
@@ -1062,16 +1081,23 @@ def test_split_render_uses_the_deterministic_common_encoder():
     first, _, first_contract = door.render_raster_page(data, 0, part)
     assert validate_png(first).width == 4
     assert first_contract["deterministic_encoder"] == "common.imaging.encode_image_deterministic-v1"
+    # The bytes the Door sealed are this encoder's return value, not a writer that
+    # merely produced something a PNG validator accepts.
+    assert calls == [first]
 
     genuine_compress = zlib.compress
+    genuine_compressobj = zlib.compressobj
     try:
         zlib.compress = lambda payload, level=-1, **kwargs: genuine_compress(payload, 6)
+        zlib.compressobj = lambda *args, **kwargs: genuine_compressobj(6)
         shimmed, _, shimmed_contract = door.render_raster_page(data, 0, part)
     finally:
         zlib.compress = genuine_compress
+        zlib.compressobj = genuine_compressobj
 
     assert shimmed == first, "a different zlib compression level renamed the sealed derivative"
     assert shimmed_contract == first_contract
+    assert calls == [first, first]
 
 
 def test_content_aware_shards_do_not_cut_split_pairs_or_clusters():
