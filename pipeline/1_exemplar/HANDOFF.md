@@ -156,15 +156,39 @@ operator-visible duplicate counts.
 ## Exemplar `kind="page"` and corpus seal
 
 For an admitted source the Exemplar writes a `sealed` page whose identity binds the
-sealed-byte digest plus ordinal. Its payload retains `declared_path`,
-`declared_sha256`, `source_sha256`, `image_path`, and the ledger facts; rendered
-pages also retain `rendered_from`. A refused admission becomes an Exemplar `refused`
-page outcome with the same original filename/digest and reason.
+**immutable origin and the transform** — never the sealed-byte digest and never the
+manifest ordinal. The origin is `{kind: "source", sha256}` for bytes admitted as they
+arrived, and `{kind: "container-page", container_sha256, container_page_index,
+render_contract}` for a rendered page, because rendered bytes are a derivative and
+the sealed container is what they came from. The transform is `{operation: "whole"}`
+here; splitting is the Designator's business. Inserting a manifest row therefore
+cannot rename an existing page.
+
+Its payload retains `declared_path`, `declared_sha256`, `source_sha256`,
+`image_path`, and the ledger facts; rendered pages also retain `rendered_from`. It
+also carries `submission_rows`, the ordinal-sorted set of submitted rows this page
+discharges — ordinarily one. Two rows carrying identical bytes derive one
+`page_id`, so the Exemplar seals one page citing both rather than publishing the
+same identity twice, and `common/exemplar_boundary.sealed_submission_rows` is where
+every consumer reads that set. The top-level `ordinal` and filename facts describe
+one of those rows and must agree with it. A refused admission becomes an Exemplar
+`refused` page outcome with the same original filename/digest and reason.
+
+**A merged page is refused at the next boundary, by name.** Every stage behind the
+Exemplar still keys its work by submitted ordinal and would mint each act on such a
+page twice, so `verify_exemplar_corpus_seal` stops the run there rather than letting
+it read the page twice or report the second row as a lost ordinal it plainly is not.
+The operator consequence is worth knowing before a run starts: a submitted folder
+holding the same scan under two filenames — routine in archive exports — produces a
+green Exemplar and then a fatal Designator. This lifts when consumers process merged
+pages once per identity.
 
 The one `kind="seal"`, subject `corpus-seal`, is self-hashed and has one census row
-per submitted ordinal. Each row includes outcome, page identity or null,
-sealed-byte digest or null, original filename, original digest, and real-ledger
-facts where applicable. Its inputs reference every Exemplar page artifact.
+per submitted ordinal — per *ordinal*, not per page, so a merged page contributes a
+row for each of its submissions and nothing submitted goes unaccounted. Each row
+includes outcome, page identity or null, sealed-byte digest or null, original
+filename, original digest, and real-ledger facts where applicable. Its inputs
+reference every Exemplar page artifact.
 
 Before any design work, `pipeline/2_designator/run.py` independently reconciles the
 source manifest, every page outcome, the seal's rows, and the seal's input

@@ -1034,19 +1034,38 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         help="the data-handling policy naming this run's approved storage locations",
     )
     args = parser.parse_args()
-    existing_tree = RunTree(Path(args.run_root), args.run_id)
-    if existing_tree.resolve("run.json").exists():
-        refuse_halted_run(existing_tree, DOOR, args.hard_failure_config)
     registry = registry_factory(args.models_config)
 
     if args.submission_folder is not None:
+        # The run-level cap is applied inside `real_submission`, once the run root
+        # has passed the storage gate. Reading a run authority here would open and
+        # self-hash a file in a directory the data-handling policy never approved
+        # — the exact read the gate exists to stop — and an operator who mistyped
+        # the run root onto an unapproved volume holding a run.json would be told
+        # the run was halted rather than that the root is not approved.
         return real_submission(args, registry)
+    # The fixture path is declared synthetic input and is not gated, so its cap
+    # check has no earlier gate to stand behind.
+    _refuse_halted_run_root(Path(args.run_root), args)
     if args.submission_manifest is not None:
         raise ContractError(
             "a submission filename ledger is meaningful only with a real submission folder; "
             "the walking skeleton's declared synthetic pages are not gated input"
         )
     return fixture_submission(args, registry)
+
+
+def _refuse_halted_run_root(run_root: Path, args) -> None:
+    """Apply the sealed run-level hard-failure cap to an existing run tree.
+
+    Called on the fixture path before anything is written, and on the real path
+    only after `run_root` has passed the approved-storage gate — reading a run
+    authority is a read, and a read outside an approved location is what the gate
+    is for.
+    """
+    existing_tree = RunTree(run_root, args.run_id)
+    if existing_tree.resolve("run.json").exists():
+        refuse_halted_run(existing_tree, DOOR, args.hard_failure_config)
 
 
 def _load_pdf_render_binding(args) -> render_config.PdfRenderBinding:
@@ -1191,6 +1210,9 @@ def real_submission(args, registry) -> int:
     manifest_path = gate.require_approved_storage_location(
         Path(args.submission_manifest), roots, "submission filename ledger"
     )
+    # The run-level cap, now that the root it reads is a location the policy
+    # approved, and against the resolved path rather than the typed one.
+    _refuse_halted_run_root(run_root, args)
     for location, label in (
         (run_root, "run root"),
         (manifest_path, "submission filename ledger"),

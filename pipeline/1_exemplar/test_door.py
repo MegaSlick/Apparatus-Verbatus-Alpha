@@ -1599,6 +1599,38 @@ def test_a_ledgered_file_absent_from_the_folder_keeps_its_ordinal_and_is_named(
     assert records[2]["outcome"] == "admitted"
 
 
+def test_an_unapproved_run_root_is_named_before_its_run_authority_is_read(
+    tmp_path, monkeypatch
+):
+    """The storage gate runs before the run-level cap, so no run.json is opened.
+
+    The cap check used to run first, in `main`, against the typed run root. For a
+    real submission that meant opening and self-hash-verifying a run authority in
+    a directory the data-handling policy never approved — the exact read the gate
+    exists to stop — and an operator who mistyped the root onto an unapproved
+    volume that happened to hold a run.json was told the run was halted rather
+    than that the root is not an approved location.
+    """
+    _approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
+        tmp_path, {"FS-1.png": png()}
+    )
+    outside = tmp_path / "unapproved"
+    (outside / "halted-elsewhere").mkdir(parents=True)
+    # A run.json the cap check would have opened. It is deliberately not a valid
+    # authority: if anything reads it, the failure will not be the gate's.
+    (outside / "halted-elsewhere" / "run.json").write_text("{}", encoding="utf-8")
+
+    with pytest.raises(ContractError, match="run root is outside every approved storage root"):
+        _run_real_door(
+            monkeypatch,
+            run_root=outside,
+            source=source,
+            policy_path=policy_path,
+            ledger_path=ledger_path,
+            run_id="halted-elsewhere",
+        )
+
+
 def test_a_real_run_root_inside_its_submission_folder_is_refused_before_inventory(
     tmp_path, monkeypatch
 ):
