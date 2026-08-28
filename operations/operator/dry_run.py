@@ -100,7 +100,7 @@ def make_transcript(output: str | Path) -> Path:
         spend.write_text(
             "\n".join(
                 (
-                    'schema = "pod-spend.v2"',
+                    'schema = "pod-spend.v3"',
                     'state = "configured"',
                     'currency = "USD"',
                     'max_hourly_usd = "1.00"',

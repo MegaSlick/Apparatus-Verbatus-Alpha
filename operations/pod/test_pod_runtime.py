@@ -775,7 +775,7 @@ def test_cli_prints_preview_before_collecting_typed_confirmation(
     spend_path.write_text(
         "\n".join(
             (
-                'schema = "pod-spend.v2"',
+                'schema = "pod-spend.v3"',
                 'state = "configured"',
                 'currency = "USD"',
                 'max_hourly_usd = "1.00"',
@@ -3692,6 +3692,37 @@ def test_bootstrap_journal_cannot_claim_green_with_unaccounted_steps(tmp_path: P
         journal.load_or_create()
 
 
+def test_a_journal_from_before_the_model_store_step_is_refused_as_an_old_schema(
+    tmp_path: Path,
+) -> None:
+    """A journal is not blamed for a change this code made to the step list.
+
+    Inserting ``MODEL_STORE`` before ``CHAIR_CACHE`` changed the valid completion
+    prefix. Under the old schema name a perfectly honest v1 journal was rejected
+    as "duplicated, reordered, or skips a step", which reads as tampering. The
+    schema bump makes it what it is: a journal this code no longer understands,
+    to be preserved and replaced.
+    """
+
+    lockfile = tmp_path / "uv.lock"
+    lockfile.write_text("version = 1\n", encoding="utf-8")
+    path = tmp_path / "bootstrap.json"
+    journal = BootstrapJournal(path, BootstrapPlan("f" * 40, lockfile), now=lambda: START)
+    record = journal.load_or_create()
+    # Exactly what a v1 pod wrote after finishing everything through the chair
+    # cache: the step order that existed before the model store was inserted.
+    record["schema"] = "pod-bootstrap.v1"
+    record["completed"] = ["repository", "uv-environment", "transfer", "chair-cache"]
+    path.write_text(json.dumps(record), encoding="utf-8")
+
+    with pytest.raises(BootstrapStepFailure) as failure:
+        journal.load_or_create()
+
+    assert "schema is absent or unsupported" in failure.value.detail
+    assert "reordered" not in failure.value.detail
+    assert "Preserve it for review" in failure.value.remediation
+
+
 def test_partial_transfer_becomes_named_red_bootstrap_result(tmp_path: Path) -> None:
     lockfile = tmp_path / "uv.lock"
     lockfile.write_text("version = 1\n", encoding="utf-8")
@@ -4405,7 +4436,7 @@ def test_spend_policy_loader_refuses_each_widening_or_malformed_file(
     from .spend import load_spend_policy
 
     base: dict[str, str | None] = {
-        "schema": '"pod-spend.v2"',
+        "schema": '"pod-spend.v3"',
         "state": '"configured"',
         "currency": '"USD"',
         "max_hourly_usd": '"1.00"',
@@ -4429,12 +4460,54 @@ def test_spend_policy_loader_refuses_each_widening_or_malformed_file(
         load_spend_policy(path)
 
 
+def test_a_previously_valid_v2_policy_is_refused_by_name_not_as_a_missing_ceiling(
+    tmp_path: Path,
+) -> None:
+    """The schema identifier separates an operator's mistake from a change in this code.
+
+    ``account_balance_alert_usd`` became required. A file that was a complete
+    configured v2 policy is now an incomplete v3 one, and under the unchanged
+    schema name it failed as "missing a required ceiling" -- an accusation
+    against configuration nobody had touched.
+    """
+
+    from .spend import load_spend_policy
+
+    complete_v2 = {
+        "schema": '"pod-spend.v2"',
+        "state": '"configured"',
+        "currency": '"USD"',
+        "max_hourly_usd": '"1.00"',
+        "max_estimated_metered_cost_usd": '"2.00"',
+        "account_balance_floor_usd": '"50.00"',
+        "hard_lifetime_seconds": "3600",
+        "laptop_heartbeat_timeout_seconds": "30",
+        "shutdown_poll_interval_seconds": "1",
+        "shutdown_deadline_seconds": "5",
+        "billing_cutoff_margin_seconds": "3600",
+    }
+    path = tmp_path / "spend.toml"
+    path.write_text(
+        "\n".join(f"{key} = {value}" for key, value in complete_v2.items()) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SpendRefusal) as refusal:
+        load_spend_policy(path)
+
+    detail = str(refusal.value)
+    assert "retired" in detail
+    assert "account_balance_alert_usd" in detail
+    assert "pod-spend.v3" in detail
+    assert "missing a required ceiling" not in detail
+
+
 def test_unconfigured_spend_policy_file_may_carry_only_schema_and_state(tmp_path: Path) -> None:
     from .spend import load_spend_policy
 
     path = tmp_path / "spend.toml"
     path.write_text(
-        'schema = "pod-spend.v2"\nstate = "unconfigured"\nmax_hourly_usd = "9.99"\n',
+        'schema = "pod-spend.v3"\nstate = "unconfigured"\nmax_hourly_usd = "9.99"\n',
         encoding="utf-8",
     )
 
@@ -4890,7 +4963,7 @@ def _drive_cli(
     spend_path.write_text(
         "\n".join(
             (
-                'schema = "pod-spend.v2"',
+                'schema = "pod-spend.v3"',
                 'state = "configured"',
                 'currency = "USD"',
                 'max_hourly_usd = "1.00"',

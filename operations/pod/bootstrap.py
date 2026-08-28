@@ -20,7 +20,15 @@ from .durable import atomic_write, canonical_json
 from .models import require_utc, utc_now
 from .preflight import is_cache_mismatch
 
-BOOTSTRAP_SCHEMA = "pod-bootstrap.v1"
+BOOTSTRAP_SCHEMA = "pod-bootstrap.v2"
+"""Bumped when ``ORDERED_STEPS`` changed: ``MODEL_STORE`` was inserted before
+``CHAIR_CACHE``, so a journal written under v1 lists a completion prefix this
+code no longer recognises. Left at v1, such a journal was rejected as
+"duplicated, reordered, or skips a step" -- the journal blamed for a change in
+the step list. Under its own name it is rejected as an unsupported schema, whose
+remediation is already the correct one: preserve it and start a new journal,
+because every step from ``MODEL_STORE`` onward genuinely has not run.
+"""
 BOOTSTRAP_EXECUTABLES = {"git": "/usr/bin/git", "uv": "/usr/local/bin/uv"}
 BOOTSTRAP_ENVIRONMENT = {
     "PATH": "/usr/local/bin:/usr/bin:/bin",

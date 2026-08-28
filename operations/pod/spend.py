@@ -20,7 +20,22 @@ from .models import (
 )
 from .shutdown import BILLING_RECONCILIATION_ATTEMPTS, BILLING_RECONCILIATION_RETRY_SECONDS
 
-SPEND_SCHEMA = "pod-spend.v2"
+SPEND_SCHEMA = "pod-spend.v3"
+
+RETIRED_SPEND_SCHEMAS = {
+    "pod-spend.v2": (
+        "a configured pod-spend.v2 policy predates the required "
+        "account_balance_alert_usd warning threshold"
+    ),
+}
+"""Schemas this loader once accepted, and what changed under each name.
+
+``account_balance_alert_usd`` became a required ceiling, so a file that was a
+valid configured v2 policy is now an incomplete v3 one. Left at the same schema
+name, that file failed as "missing a required ceiling" and blamed the operator's
+configuration for a change in this code. The version identifier is what tells
+those two apart, so it moves when the required shape moves.
+"""
 MAX_BALANCE_OBSERVATION_AGE_SECONDS = 60
 """A gate may use only a current observation, never an indefinitely cached balance."""
 
@@ -325,6 +340,12 @@ def load_spend_policy(path: str | Path) -> SpendPolicy:
     state = raw.get("state")
     schema = raw.get("schema")
     if schema != SPEND_SCHEMA:
+        retired = RETIRED_SPEND_SCHEMAS.get(schema) if isinstance(schema, str) else None
+        if retired is not None:
+            raise SpendRefusal(
+                f"spend policy schema {schema!r} is retired: {retired}. Add that ceiling "
+                f"deliberately and rename the schema to {SPEND_SCHEMA!r}"
+            )
         raise SpendRefusal(f"spend policy schema must be {SPEND_SCHEMA!r}")
     if state == "unconfigured":
         if set(raw) != {"schema", "state"}:

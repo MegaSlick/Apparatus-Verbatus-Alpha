@@ -89,7 +89,7 @@ def _spend_policy(tmp_path: Path, *, hourly: str = "1.00", margin: int = 3600) -
     path.write_text(
         "\n".join(
             (
-                'schema = "pod-spend.v2"',
+                'schema = "pod-spend.v3"',
                 'state = "configured"',
                 'currency = "USD"',
                 f'max_hourly_usd = "{hourly}"',
