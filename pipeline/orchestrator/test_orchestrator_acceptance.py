@@ -64,6 +64,7 @@ from common.stage import (
     verify_final_seal,
 )
 from conftest import rebind_stage_seal_artifact as rebind_stage_seal
+from operations.operator import surface, volume_s3
 from operations.submit import gate, submit
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -1002,6 +1003,26 @@ def test_orchestrator_default_data_gate_policy_is_the_gates_own(tmp_path):
     )
     assert resolved.data_gate_policy == gate.DEFAULT_POLICY_PATH
     assert resolved.data_gate_policy.is_file()
+
+
+def test_orchestrator_upload_credentials_are_the_transfers_own() -> None:
+    """The stripped credential names must be the transfer's, not a stale copy.
+
+    Both this orchestrator and the operator surface strip the upload-only
+    credentials from a stage's environment, and the import boundary keeps this
+    one a duplicate. Without this reconciliation a third credential added to the
+    transfer would go on reaching stages here while the whole suite stayed
+    green -- a live secret in the environment of the process that decodes
+    caller-supplied material.
+    """
+
+    orchestrator = _orchestrator_module("orchestrator_transfer_credentials")
+    assert orchestrator._TRANSFER_CREDENTIAL_ENV == volume_s3.TRANSFER_CREDENTIAL_ENV
+    assert surface._TRANSFER_CREDENTIAL_ENV == volume_s3.TRANSFER_CREDENTIAL_ENV
+    # The names are the transfer's own defaults, not a set that merely happens to
+    # match them today.
+    spec = volume_s3.VolumeSpec(datacenter_id="EU-CZ-1", volume_id="volume")
+    assert {spec.access_key_env, spec.secret_key_env} == set(volume_s3.TRANSFER_CREDENTIAL_ENV)
 
 
 def test_resuming_a_real_run_without_its_ingress_flags_refuses(tmp_path):
