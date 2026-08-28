@@ -175,7 +175,12 @@ def _act_row(tree: RunTree, row: Any) -> dict[str, Any]:
         raise OperatorError(
             ErrorCode.CONSOLE_TREE_UNREADABLE, detail="an Armarium act is not an object"
         )
-    regions = row.get("source_regions", [])
+    # No `[]` default. An act whose export row omits `source_regions` would
+    # then reach the console as an act with an empty crop list, and the
+    # operator could not tell "this act records no crop" from "the crop list
+    # went missing" — they would be approving text they never saw against the
+    # ink (GOVERNANCE 2, GOALS 5). Absent is refused exactly like malformed.
+    regions = row.get("source_regions")
     if not isinstance(regions, list):
         raise OperatorError(
             ErrorCode.CONSOLE_TREE_UNREADABLE, detail="an Armarium act has no crop list"
@@ -342,11 +347,26 @@ def _still_binds(record: dict[str, Any], boundaries: dict[str, dict[str, Any]]) 
 
 
 def _review_items(tree: RunTree, payload: dict[str, Any]) -> tuple[dict[str, Any], ...] | None:
+    # "Armarium recorded no bundle" and "Armarium recorded a bundle this
+    # module could not follow" are different facts and may not share an
+    # answer. Returning None for both showed the operator an empty review
+    # queue — no acts needing their attention — at the exact moment the list
+    # of acts the pipeline could not settle had gone unreadable (GOVERNANCE 2).
     bundle = payload.get("bundle")
-    reference = bundle.get("reference") if isinstance(bundle, dict) else None
+    if bundle is None:
+        return None
+    if not isinstance(bundle, dict):
+        raise OperatorError(
+            ErrorCode.CONSOLE_TREE_UNREADABLE,
+            detail="the Armarium export bundle is not an object",
+        )
+    reference = bundle.get("reference")
     path = reference.get("relative_path") if isinstance(reference, dict) else None
     if not isinstance(path, str):
-        return None
+        raise OperatorError(
+            ErrorCode.CONSOLE_TREE_UNREADABLE,
+            detail="the Armarium export bundle names no immutable reference",
+        )
     try:
         data = tree.read_bytes(path)
         expected = reference.get("sha256")
@@ -382,6 +402,12 @@ def _review_items(tree: RunTree, payload: dict[str, Any]) -> tuple[dict[str, Any
                 )
             with archive.open(member) as source:
                 review_bytes = source.read(MAX_REVIEW_ITEMS_BYTES + 1)
+            # Kept, and unreachable while the check above holds. `zipfile`
+            # bounds a member read by the `file_size` the central directory
+            # declares, so a header that lies small cannot decompress past it —
+            # measured, not assumed, and what a falsified header actually
+            # produces is a CRC failure caught below. This stays as the bound
+            # that does not depend on the archive library's own accounting.
             if len(review_bytes) > MAX_REVIEW_ITEMS_BYTES:
                 raise OperatorError(
                     ErrorCode.CONSOLE_TREE_UNREADABLE,
