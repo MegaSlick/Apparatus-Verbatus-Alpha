@@ -260,7 +260,8 @@ guessed or memorized and make the smoke falsely green without a page read;
 entropy and rotation are preconditions supplied by the fixture author.
 
 The request declares `image/png` and the sealed request bytes are checked as a
-complete, decodable PNG under the measured placement's pixel bound, because
+complete, decodable PNG under both a 64 MiB encoded-byte ceiling and the
+measured placement's pixel bound, because
 nothing else on this path inspects them for format — `AdapterCalibration` binds
 their digest and `ServingSmokeReader` re-hashes the local fixture, and
 `PreflightRunner` takes any `Path`. Checking

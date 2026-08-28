@@ -4142,11 +4142,24 @@ def _verify_reference(reference: Any, root) -> None:
         raise SchemaRefusal("a package source reference has no honest availability status")
 
 
+_MAXIMUM_MEMBER_DEPTH: Final = 32
+
+
 def _validate_member_name(name: str) -> None:
     subject = f"package member path {name!r}" if isinstance(name, str) else "a package member path"
     if isinstance(name, str) and name.endswith("/"):
         raise SchemaRefusal(f"{subject} is unsafe")
     path = _reject_unsafe_relative_path(name, subject=subject)
+    # Extraction builds parents iteratively, but `_ordinary_member_names` walks
+    # the result with a recursive helper, so a deep enough member reached
+    # `RecursionError` -- which nothing converts, making a traceback the answer
+    # to a hostile archive instead of a named refusal. Real packages nest a few
+    # levels; this is far above them and far below the interpreter's limit.
+    if len(path.parts) > _MAXIMUM_MEMBER_DEPTH:
+        raise SchemaRefusal(
+            f"{subject} nests {len(path.parts)} levels deep, past the "
+            f"{_MAXIMUM_MEMBER_DEPTH}-component package member bound"
+        )
     if path.as_posix() != name:
         # `PurePosixPath` removes `.` components and repeated separators. Distinct
         # archive spellings that normalize to one filesystem path would otherwise

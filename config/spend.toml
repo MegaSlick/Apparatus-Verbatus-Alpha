@@ -14,7 +14,7 @@
 # separately authorised in the session it happens in, and these ceilings are
 # enforced *in addition to* that permission, never instead of it.
 #
-#   schema = "pod-spend.v2"
+#   schema = "pod-spend.v3"
 #   state = "configured"
 #   currency = "USD"
 #
@@ -74,5 +74,5 @@
 # Nothing above authorises deleting or retaining the network volume after a
 # close.  That is its own separately named decision, and every close report
 # states the volume's ongoing hourly price so it cannot be forgotten.
-schema = "pod-spend.v2"
+schema = "pod-spend.v3"
 state = "unconfigured"

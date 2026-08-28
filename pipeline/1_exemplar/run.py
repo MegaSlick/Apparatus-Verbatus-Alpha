@@ -50,7 +50,7 @@ from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.identities import artifact_id, page_id  # noqa: E402
 from common.contracts.stages import DOOR, EXEMPLAR  # noqa: E402
 from common.corpus_register import read_snapshot, verify_snapshot_is_current  # noqa: E402
-from common.exemplar_boundary import _verify_triage_derivative  # noqa: E402
+from common.exemplar_boundary import verify_triage_derivative  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
@@ -627,7 +627,7 @@ def _verify_admitted_blob(
         raise ContractError("an admitted blob's bytes no longer match their sealed digest")
     verify_input_bytes(input_ref, blob)
     if is_derivative:
-        _verify_triage_derivative(rendered_from["render_contract"], parent_bytes, parent, blob)
+        verify_triage_derivative(rendered_from["render_contract"], parent_bytes, parent, blob)
     return {"relative_path": stored_at, "sha256": sealed_digest}
 
 
