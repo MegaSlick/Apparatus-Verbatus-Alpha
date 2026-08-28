@@ -422,7 +422,7 @@ def test_the_triage_render_still_applies_geometry_that_is_contained():
         assert decoded.tobytes() == bytes([17, 18, 33, 34])
 
 
-def test_the_triage_render_refuses_a_rotation_that_would_expand_past_the_pixel_bound():
+def test_the_triage_render_refuses_a_rotation_that_would_expand_past_the_pixel_bound(monkeypatch):
     """`expand=True` grows the canvas to the rotated bounding box, and that box is
     not bounded by the crop's area: a 200000x2 strip is 400000 pixels, inside the
     bound by three orders of magnitude, and at 45 degrees its bounding box is about
@@ -435,6 +435,15 @@ def test_the_triage_render_refuses_a_rotation_that_would_expand_past_the_pixel_b
     Image.new("L", (200_000, 2), 255).save(master, format="PNG")
     part = triage_part(width=200_000, height=2)
     part["rotation"]["rotation_millidegrees"] = 45_000
+
+    def refuse_to_allocate(*args, **kwargs):
+        raise AssertionError(
+            "the guard regressed: rotation was reached and would allocate ~4e10 pixels"
+        )
+
+    # Without this, a regressed guard does not fail the test — it exhausts the
+    # worker's memory allocating the canvas and the run dies without a report.
+    monkeypatch.setattr(Image.Image, "rotate", refuse_to_allocate)
 
     with pytest.raises(ValueError, match="pixel bound"):
         render_triage_derivative(master.getvalue(), page_index=0, part=part)
