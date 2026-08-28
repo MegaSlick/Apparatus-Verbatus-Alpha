@@ -272,6 +272,14 @@ def test_no_stage_imports_pipeline_by_its_dotted_path():
     )
 
 
+def _is_forgery_import(root: str, full: str) -> bool:
+    """The reseal guard's one predicate: a route to the forgery helper, or a
+    dynamic import whose loads cannot be statically known. Kept as a named
+    function so the regression tests below exercise the predicate the guard
+    actually runs, not a local restatement of it."""
+    return root == "reseal_chain" or full.split(".")[-1] in ("reseal_chain", UNVERIFIABLE_FROMLIST)
+
+
 def test_production_stage_code_never_imports_the_reseal_forgery_helper():
     """`reseal_chain` exists only to make test forgeries internally coherent.
 
@@ -287,7 +295,7 @@ def test_production_stage_code_never_imports_the_reseal_forgery_helper():
         and not Path(path).name.startswith("test_")
         and Path(path).name != "reseal_chain.py"
         for root, full in _imports_in(ROOT / path)
-        if root == "reseal_chain" or full.split(".")[-1] in ("reseal_chain", UNVERIFIABLE_FROMLIST)
+        if _is_forgery_import(root, full)
     ]
     assert not violations, "production stage code imported a test forgery helper:\n" + "\n".join(
         violations
@@ -308,11 +316,7 @@ def test_a_computed_fromlist_is_reported_unverifiable_and_refused(tmp_path):
     names = {full for _root, full in _imports_in(source)}
     assert f"6_archetypus.{UNVERIFIABLE_FROMLIST}" in names
     assert f"pipeline.3_attestatores.{UNVERIFIABLE_FROMLIST}" in names
-    flagged = {
-        full
-        for _root, full in _imports_in(source)
-        if full.split(".")[-1] in ("reseal_chain", UNVERIFIABLE_FROMLIST)
-    }
+    flagged = {full for root, full in _imports_in(source) if _is_forgery_import(root, full)}
     assert len(flagged) == 2
 
 
