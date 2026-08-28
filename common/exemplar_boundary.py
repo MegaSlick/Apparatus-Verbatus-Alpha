@@ -13,15 +13,35 @@ pixels changed between stages.
 """
 
 import json
-from typing import Any
+from typing import Any, Final
 
-from common.contracts.canonical import digest_bytes, verify_self_hash
+from common.contracts.canonical import canonical_bytes, digest_bytes, verify_self_hash
 from common.contracts.envelope import validate_envelope, verify_input_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.identities import artifact_id, page_id, region_id
-from common.contracts.stages import DESIGNATOR, DOOR, EXEMPLAR, RECENSOR
-from common.imaging import carries_only_image_chunks, crop_png, dimensions, image_shown
+from common.contracts.stages import (
+    DESIGNATOR,
+    DOOR,
+    EXEMPLAR,
+    MAX_TRIAGE_SPLIT_PARTS,
+    RECENSOR,
+    TRIAGE_MODES,
+)
+from common.imaging import (
+    carries_only_image_chunks,
+    crop_png,
+    dimensions,
+    image_shown,
+    imaging_library_versions,
+    render_triage_derivative,
+)
 from common.runtree.store import RunTree
+
+# The one name for a triage derivative's kind. The Door writes it, this boundary
+# and the Exemplar stage read it, and each of the three used to spell it out
+# separately; a producer and its two consumers agreeing by coincidence is what
+# `is_triage_derivative_contract` below exists to stop.
+SEALED_DERIVATIVE_PAGE_KIND: Final = "sealed-derivative-page-v1"
 
 
 def verify_sealed_page_pixels(
@@ -69,25 +89,12 @@ def verify_sealed_page_pixels(
     if not _is_sha256(source_digest):
         raise ContractError("a sealed Exemplar page has no lowercase pixel sha256")
     rendered = payload.get("rendered_from")
-    if rendered is None:
-        origin = {"kind": "source", "sha256": source_digest}
-    else:
-        if not isinstance(rendered, dict) or set(rendered) != {
-            "container_format",
-            "container_sha256",
-            "container_page_index",
-            "render_contract",
-        }:
-            raise ContractError(
-                "a sealed Exemplar page's rendered origin is not the complete closed "
-                "container render record"
-            )
-        origin = {
-            "kind": "container-page",
-            "container_sha256": rendered["container_sha256"],
-            "container_page_index": rendered["container_page_index"],
-            "render_contract": rendered["render_contract"],
-        }
+    # `_page_origin` is the stricter of the two derivations that met here: it
+    # type-checks every render field rather than only closing the key set. The
+    # try/except is the other branch's contribution and is kept, so a malformed
+    # origin that survives validation still becomes a named refusal rather than a
+    # raw TypeError or RecursionError out of the identity derivation.
+    origin = _page_origin(source_digest, rendered)
     try:
         expected_page_id = page_id(origin, {"operation": "whole"})
     except (ContractError, TypeError, ValueError, RecursionError) as error:
@@ -122,16 +129,44 @@ def verify_sealed_page_pixels(
     if blob_ref != {"relative_path": blob_path, "sha256": source_digest}:
         raise ContractError("a sealed Exemplar page's pixel input is not content-addressed")
 
-    blob = _read_checked(tree, blob_ref, "the sealed Exemplar pixel blob")
-    if digest_bytes(blob) != source_digest:  # defensive: `_read_checked` already proves this.
-        raise ContractError("the sealed Exemplar pixel blob has an unexpected digest")
+    _read_checked(tree, blob_ref, "the sealed Exemplar pixel blob")
 
     admission_data = _read_checked(tree, refs[admission_path], "the sealed Door admission")
     try:
         admission = validate_envelope(json.loads(admission_data.decode("utf-8")))
     except (SchemaRefusal, UnicodeDecodeError, ValueError, TypeError) as error:
         raise ContractError("the sealed page's Door admission is not a valid artifact") from error
-    _verify_admission(admission, run, source, ordinal, blob_ref)
+    _verify_admission(admission, run, source, ordinal, blob_ref, tree, rendered)
+
+
+def _page_origin(source_digest: str, rendered: Any) -> dict[str, Any]:
+    """Build page identity only from a complete, typed render origin."""
+    if rendered is None:
+        return {"kind": "source", "sha256": source_digest}
+    _validate_rendered_origin(rendered)
+    return {
+        "kind": "container-page",
+        "container_sha256": rendered["container_sha256"],
+        "container_page_index": rendered["container_page_index"],
+        "render_contract": rendered["render_contract"],
+    }
+
+
+def _validate_rendered_origin(rendered: Any) -> None:
+    """Refuse a partial render origin before any consumer indexes its fields."""
+    if (
+        not isinstance(rendered, dict)
+        or set(rendered)
+        != {"container_format", "container_sha256", "container_page_index", "render_contract"}
+        or not isinstance(rendered.get("container_format"), str)
+        or not rendered["container_format"]
+        or not _is_sha256(rendered.get("container_sha256"))
+        or not isinstance(rendered.get("container_page_index"), int)
+        or isinstance(rendered["container_page_index"], bool)
+        or rendered["container_page_index"] < 0
+        or not isinstance(rendered.get("render_contract"), dict)
+    ):
+        raise ContractError("a sealed Exemplar page has no complete rendered-container origin")
 
 
 def verify_refused_page_evidence(
@@ -292,6 +327,92 @@ def verify_exemplar_corpus_seal(
             )
 
 
+def _validate_exemplar_transform(transform: Any) -> None:
+    """Keep the recorded Exemplar transform vocabulary closed and executable."""
+    if not isinstance(transform, dict) or not isinstance(transform.get("operation"), str):
+        raise ContractError("an Exemplar transform has no declared operation")
+    operation = transform["operation"]
+    if operation == "crop":
+        if set(transform) == {"operation", "bounds"}:
+            bounds = transform["bounds"]
+            if (
+                not isinstance(bounds, dict)
+                or set(bounds) != {"space", "x", "y", "w", "h"}
+                or bounds.get("space") != "part"
+                or any(
+                    not isinstance(bounds[key], int) or isinstance(bounds[key], bool)
+                    for key in ("x", "y", "w", "h")
+                )
+                or bounds["x"] < 0
+                or bounds["y"] < 0
+                or bounds["w"] <= 0
+                or bounds["h"] <= 0
+            ):
+                raise ContractError("a derivative crop transform has no complete part-local bounds")
+            return
+        if set(transform) != {"operation", "source_page_ordinal", "source_page_id", "bounds"}:
+            raise ContractError("a crop region carries no complete Exemplar transform")
+        bounds = transform["bounds"]
+        if (
+            not isinstance(transform["source_page_ordinal"], int)
+            or isinstance(transform["source_page_ordinal"], bool)
+            or not isinstance(transform["source_page_id"], str)
+            or not transform["source_page_id"]
+            or not isinstance(bounds, dict)
+            or set(bounds) != {"x", "y", "w", "h"}
+            or any(
+                not isinstance(value, int) or isinstance(value, bool) for value in bounds.values()
+            )
+            or bounds["w"] <= 0
+            or bounds["h"] <= 0
+        ):
+            raise ContractError("a crop region carries an invalid Exemplar transform")
+        return
+    if operation == "split":
+        region = transform.get("region")
+        if (
+            set(transform) != {"operation", "region"}
+            or not isinstance(region, dict)
+            or set(region) != {"space", "x", "y", "w", "h"}
+            or region.get("space") != "frame"
+            or any(
+                not isinstance(region[key], int) or isinstance(region[key], bool)
+                for key in ("x", "y", "w", "h")
+            )
+            or region["x"] < 0
+            or region["y"] < 0
+            or region["w"] <= 0
+            or region["h"] <= 0
+        ):
+            raise ContractError("a split transform has no complete frame-space region")
+        return
+    if operation == "deskew":
+        rotation = transform.get("rotation")
+        if (
+            set(transform) != {"operation", "rotation"}
+            or not isinstance(rotation, dict)
+            or set(rotation) != {"rotation_millidegrees", "direction", "origin", "canvas"}
+            or not isinstance(rotation["rotation_millidegrees"], int)
+            or isinstance(rotation["rotation_millidegrees"], bool)
+            or not -180_000 <= rotation["rotation_millidegrees"] <= 180_000
+            or rotation.get("direction") != "clockwise"
+            or rotation.get("origin") != "crop-centre"
+            or rotation.get("canvas") != "expand"
+        ):
+            raise ContractError("a deskew transform has no complete rotation recipe")
+        return
+    if operation == "convert":
+        if set(transform) != {"operation", "colour_mode"} or transform.get("colour_mode") not in {
+            "keep",
+            "grayscale",
+            "rgb",
+            "bitonal",
+        }:
+            raise ContractError("a convert transform has no declared colour mode")
+        return
+    raise ContractError("an Exemplar transform names an operation outside the closed vocabulary")
+
+
 def verify_exemplar_crop_lineage(
     tree: RunTree, run: dict[str, Any], region: dict[str, Any]
 ) -> dict[str, Any]:
@@ -308,29 +429,15 @@ def verify_exemplar_crop_lineage(
     if not isinstance(payload, dict):
         raise ContractError("a crop region has no payload")
     transform = payload.get("transform")
-    if not isinstance(transform, dict) or set(transform) != {
-        "operation",
-        "source_page_ordinal",
-        "source_page_id",
-        "bounds",
-    }:
+    _validate_exemplar_transform(transform)
+    if set(transform) != {"operation", "source_page_ordinal", "source_page_id", "bounds"}:
         raise ContractError("a crop region carries no complete Exemplar transform")
+    # The operation is settled by the two checks above rather than here: the
+    # closed vocabulary gives "split", "deskew" and "convert" key sets of their
+    # own, so nothing but a validated crop survives the four-key shape check.
     ordinal = transform["source_page_ordinal"]
     source_page_id = transform["source_page_id"]
     bounds = transform["bounds"]
-    if (
-        transform["operation"] != "crop"
-        or not isinstance(ordinal, int)
-        or isinstance(ordinal, bool)
-        or not isinstance(source_page_id, str)
-        or not source_page_id
-        or not isinstance(bounds, dict)
-        or set(bounds) != {"x", "y", "w", "h"}
-        or any(not isinstance(value, int) or isinstance(value, bool) for value in bounds.values())
-        or bounds["w"] <= 0
-        or bounds["h"] <= 0
-    ):
-        raise ContractError("a crop region carries an invalid Exemplar transform")
     if payload.get("region_id") != region_id(region.get("subject_id"), transform):
         raise ContractError("a crop region's identities do not bind its recorded transform")
     _verify_act_identity_binding(tree, region, payload)
@@ -627,6 +734,8 @@ def _verify_admission(
     source: dict[str, Any],
     ordinal: int,
     blob_ref: dict[str, str],
+    tree: RunTree,
+    page_rendered: Any,
 ) -> None:
     if (
         admission.get("run_id") != run.get("run_id")
@@ -658,8 +767,380 @@ def _verify_admission(
             raise ContractError(
                 "a sealed Exemplar page's Door admission disagrees with the filename ledger"
             )
-    if admission.get("inputs") != [blob_ref]:
-        raise ContractError("a sealed Exemplar page's Door admission has the wrong pixel input")
+    rendered = _verify_rendered_source_link(page_rendered, payload.get("rendered_from"), source)
+    render_contract = rendered.get("render_contract") if isinstance(rendered, dict) else None
+    if not is_triage_derivative_contract(render_contract):
+        if admission.get("inputs") != [blob_ref]:
+            raise ContractError("a sealed Exemplar page's Door admission has the wrong pixel input")
+        return
+    parent = payload.get("parent_frame")
+    if not isinstance(parent, dict) or set(parent) != {"sha256", "stored_at", "source_frame_index"}:
+        raise ContractError("a sealed derivative page has no complete parent-frame back-link")
+    parent_digest = parent["sha256"]
+    parent_path = parent["stored_at"]
+    if (
+        # `.get`, because a submitted-source row that carries no digest at all is
+        # the boundary's business to refuse, not to raise KeyError over: this
+        # function's callers convert ContractError into a refusal and nothing else.
+        parent_digest != source.get("sha256")
+        or parent_path != tree.blob_path(DOOR, parent_digest)
+        or not isinstance(parent["source_frame_index"], int)
+        or isinstance(parent["source_frame_index"], bool)
+        or parent["source_frame_index"] < 0
+    ):
+        raise ContractError(
+            "a sealed derivative page's parent frame disagrees with its submitted master"
+        )
+    parent_ref = {"relative_path": parent_path, "sha256": parent_digest}
+    expected_inputs = {
+        (blob_ref["relative_path"], blob_ref["sha256"]),
+        (parent_ref["relative_path"], parent_ref["sha256"]),
+    }
+    if {
+        (reference.get("relative_path"), reference.get("sha256"))
+        for reference in admission.get("inputs", [])
+        if isinstance(reference, dict)
+    } != expected_inputs or len(admission.get("inputs", [])) != len(expected_inputs):
+        raise ContractError("a sealed derivative page does not input exactly its pixels and master")
+    parent_bytes = _read_checked(tree, parent_ref, "the derivative page's submitted master")
+    sealed_bytes = _read_checked(tree, blob_ref, "the sealed derivative page")
+    verify_triage_derivative(rendered["render_contract"], parent_bytes, parent, sealed_bytes)
+
+
+def _verify_rendered_source_link(
+    page_rendered: Any, admission_rendered: Any, source: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Bind a page's claimed container origin back to its Door admission and source row."""
+    if admission_rendered != page_rendered:
+        raise ContractError("a sealed Exemplar page changed its Door admission's render origin")
+    if admission_rendered is None:
+        if source.get("container_page_index") is not None:
+            raise ContractError("a fanned source page carries no rendered-container origin")
+        return None
+    _validate_rendered_origin(admission_rendered)
+    if admission_rendered["container_sha256"] != source.get("sha256") or admission_rendered[
+        "container_page_index"
+    ] != source.get("container_page_index"):
+        raise ContractError(
+            "a sealed Exemplar page's rendered-container origin does not bind its submitted source"
+        )
+    return admission_rendered
+
+
+def is_triage_derivative_contract(render_contract: Any) -> bool:
+    """Whether a render contract describes a sealed triage derivative.
+
+    One function rather than two. This decides which validation a page gets — a
+    derivative is checked against its parent frame and re-derived, an ordinary
+    render against the render contract — and the Exemplar stage asked the same
+    question with its own copy. Two copies is one kind vocabulary too many: teach
+    one of them a `sealed-derivative-page-v2` and the other keeps saying no, and
+    the disagreement is not a crash. It is a page sealed as an ordinary render
+    whose pixels nobody re-derived, or a re-derivation demanded of a page that has
+    no parent. Both callers pass the render contract, which is the smaller of the
+    two shapes they had between them.
+    """
+    return (
+        isinstance(render_contract, dict)
+        and isinstance(render_contract.get("derivative_page"), dict)
+        and render_contract["derivative_page"].get("kind") == SEALED_DERIVATIVE_PAGE_KIND
+    )
+
+
+def _validate_embedded_triage_row(row: Any) -> None:
+    """Validate the provenance fields the common boundary must not take on trust.
+
+    Geometry is checked executable against every recorded operation and the master
+    itself. The common boundary cannot import the numbered triage pipeline, so it
+    must also close mode, actor, override, confidence, cluster identity, and every
+    row/split/part field set here.
+    """
+    required = {
+        "corpus_id",
+        "source_frame_sha256",
+        "frame",
+        "split",
+        "re_shoot_cluster_id",
+        "confidence",
+        "mode",
+        "actor",
+        "human_override",
+        "manifest_row_sha256",
+    }
+    if not isinstance(row, dict) or set(row) != required:
+        raise ContractError("a sealed derivative page carries no complete triage manifest row")
+    if not isinstance(row["corpus_id"], str) or not row["corpus_id"].strip():
+        raise ContractError("a sealed derivative page's triage row has no corpus identity")
+    if row["mode"] not in TRIAGE_MODES:
+        raise ContractError("a sealed derivative page's triage row has no declared mode")
+    if (
+        not isinstance(row["confidence"], int)
+        or isinstance(row["confidence"], bool)
+        or row["confidence"] not in range(5)
+        or not isinstance(row["human_override"], bool)
+    ):
+        raise ContractError(
+            "a sealed derivative page's triage row has invalid confidence or override provenance"
+        )
+    cluster_id = row["re_shoot_cluster_id"]
+    if cluster_id is not None and (not isinstance(cluster_id, str) or not cluster_id.strip()):
+        raise ContractError("a sealed derivative page's triage row has an invalid cluster identity")
+    actor = row["actor"]
+    if (
+        not isinstance(actor, dict)
+        or set(actor) != {"kind", "identity", "revision"}
+        or actor.get("kind") not in {"human", "model", "scantailor"}
+        or not isinstance(actor.get("identity"), str)
+        or not actor["identity"].strip()
+        or (actor["kind"] == "human" and actor.get("revision") is not None)
+        or (
+            actor["kind"] != "human"
+            and (not isinstance(actor.get("revision"), str) or not actor["revision"].strip())
+        )
+    ):
+        raise ContractError("a sealed derivative page's triage row has no resolved actor")
+    split = row["split"]
+    if (
+        not isinstance(split, dict)
+        or set(split) != {"operation_order", "parts"}
+        or split.get("operation_order") != "region-crop-rotate"
+        or not isinstance(split.get("parts"), list)
+        or not split["parts"]
+        or any(
+            not isinstance(part, dict)
+            or set(part) != {"region", "crop_box", "rotation", "colour_mode"}
+            for part in split["parts"]
+        )
+    ):
+        raise ContractError("a sealed derivative page's triage row has no closed split record")
+    if len(split["parts"]) > MAX_TRIAGE_SPLIT_PARTS:
+        # Bounded here as well as in the pre-door contract, and before the pairwise
+        # overlap loop below rather than after it: this boundary exists precisely
+        # because the row reaching it is not taken on trust, and the loop it guards
+        # is quadratic in the number of parts.
+        raise ContractError(
+            f"a sealed derivative page's triage row exceeds the "
+            f"{MAX_TRIAGE_SPLIT_PARTS}-part split limit"
+        )
+    frame = row["frame"]
+    if (
+        not isinstance(frame, dict)
+        or set(frame) != {"width", "height"}
+        or any(
+            not isinstance(frame[field], int) or isinstance(frame[field], bool) or frame[field] <= 0
+            for field in ("width", "height")
+        )
+    ):
+        raise ContractError("a sealed derivative page's triage row has no closed frame geometry")
+    regions = []
+    for part in split["parts"]:
+        operations = (
+            {"operation": "split", "region": part["region"]},
+            {"operation": "crop", "bounds": part["crop_box"]},
+            {"operation": "deskew", "rotation": part["rotation"]},
+            {"operation": "convert", "colour_mode": part["colour_mode"]},
+        )
+        for operation in operations:
+            _validate_exemplar_transform(operation)
+        region = part["region"]
+        crop_box = part["crop_box"]
+        if (
+            region["x"] + region["w"] > frame["width"]
+            or region["y"] + region["h"] > frame["height"]
+            or crop_box["x"] + crop_box["w"] > region["w"]
+            or crop_box["y"] + crop_box["h"] > region["h"]
+        ):
+            raise ContractError("a sealed derivative page's triage row has out-of-frame geometry")
+        regions.append(region)
+    for index, region in enumerate(regions):
+        for other in regions[index + 1 :]:
+            disjoint = (
+                region["x"] + region["w"] <= other["x"]
+                or other["x"] + other["w"] <= region["x"]
+                or region["y"] + region["h"] <= other["y"]
+                or other["y"] + other["h"] <= region["y"]
+            )
+            if not disjoint:
+                raise ContractError("a sealed derivative page's triage row has overlapping parts")
+    if sum(region["w"] * region["h"] for region in regions) != frame["width"] * frame["height"]:
+        raise ContractError("a sealed derivative page's triage row does not partition its frame")
+
+
+def verify_triage_derivative(
+    contract: dict[str, Any],
+    parent_bytes: bytes,
+    parent: dict[str, Any],
+    sealed_bytes: bytes,
+) -> None:
+    """A split page is valid only when its closed decision re-derives its bytes."""
+    contract_fields = {
+        "renderer",
+        "renderer_version",
+        "pillow_heif_version",
+        "libheif_version",
+        "source_mode",
+        "source_bands",
+        "mode_transform",
+        "output",
+        "container_page_index",
+        "width",
+        "height",
+        "deterministic_encoder",
+        "derivative_page",
+    }
+    if not isinstance(contract, dict) or set(contract) != contract_fields:
+        raise ContractError("a sealed derivative page has no complete renderer record")
+    derivative = contract.get("derivative_page")
+    required = {
+        "kind",
+        "parent_frame_sha256",
+        "parent_frame_page_index",
+        "triage_manifest_row",
+        "triage_backlink",
+        "operation_order",
+        "apply_recipe",
+        "operations",
+    }
+    if not isinstance(derivative, dict) or set(derivative) != required:
+        raise ContractError("a sealed derivative page has no complete apply recipe")
+    if derivative["apply_recipe"] != {
+        "schema": "triage-raster-apply-v1",
+        "rotation_resample": "Pillow.Resampling.BICUBIC",
+        "rotation_fill": "Pillow-default-zero",
+        "rotation_expand": True,
+        "colour_conversion": "Pillow.Image.convert-direct-or-via-RGB",
+        "encoder": "common.imaging.encode_image_deterministic-v1",
+    }:
+        raise ContractError("a sealed derivative page changes its recorded raster apply recipe")
+    if contract.get("renderer") != "Pillow" or any(
+        not isinstance(contract.get(field), str) or not contract[field]
+        for field in ("renderer_version", "pillow_heif_version", "libheif_version")
+    ):
+        raise ContractError("a sealed derivative page carries no complete renderer version record")
+    row = derivative["triage_manifest_row"]
+    backlink = derivative["triage_backlink"]
+    if not isinstance(row, dict) or not isinstance(backlink, dict):
+        raise ContractError(
+            "a sealed derivative page does not carry its manifest row and back-link"
+        )
+    _validate_embedded_triage_row(row)
+    row_digest = row.get("manifest_row_sha256")
+    if not _is_sha256(row_digest):
+        raise ContractError("a sealed derivative page's manifest row has no sha256")
+    if (
+        digest_bytes(
+            canonical_bytes(
+                {key: value for key, value in row.items() if key != "manifest_row_sha256"}
+            )
+        )
+        != row_digest
+    ):
+        raise ContractError("a sealed derivative page's manifest row digest does not bind its row")
+    expected_backlink = {
+        "corpus_id": row["corpus_id"],
+        "source_frame_sha256": row["source_frame_sha256"],
+        "triage_manifest_row_sha256": row_digest,
+        "triage_part_index": backlink.get("triage_part_index"),
+    }
+    if backlink != expected_backlink or row["source_frame_sha256"] != parent["sha256"]:
+        raise ContractError(
+            "a sealed derivative page's manifest back-link does not name its master"
+        )
+    part_index = backlink["triage_part_index"]
+    split = row["split"]
+    if (
+        not isinstance(part_index, int)
+        or isinstance(part_index, bool)
+        or not 0 <= part_index < len(split["parts"])
+        or derivative["parent_frame_sha256"] != parent["sha256"]
+        or derivative["parent_frame_page_index"] != parent["source_frame_index"]
+        or derivative["operation_order"] != "region-crop-rotate"
+    ):
+        raise ContractError("a sealed derivative page changes Unit 5's closed split semantics")
+    part = split["parts"][part_index]
+    expected_operations = [
+        {"operation": "split", "region": part.get("region")},
+        {"operation": "crop", "bounds": part.get("crop_box")},
+        {"operation": "deskew", "rotation": part.get("rotation")},
+        {"operation": "convert", "colour_mode": part.get("colour_mode")},
+    ]
+    if derivative["operations"] != expected_operations:
+        raise ContractError(
+            "a sealed derivative page's transform vocabulary does not match its manifest part"
+        )
+    try:
+        expected_bytes, geometry = render_triage_derivative(
+            parent_bytes, page_index=parent["source_frame_index"], part=part
+        )
+    except ValueError as error:
+        raise ContractError(
+            "the sealed derivative page cannot be re-derived from its master"
+        ) from error
+    expected_mode_transform = (
+        "triage-region-crop-rotate-convert"
+        if geometry["source_mode"] == geometry["color_mode"]
+        else f"triage-region-crop-rotate-convert-to-{geometry['color_mode'].lower()}"
+    )
+    expected_render_record = {
+        "source_mode": geometry["source_mode"],
+        "source_bands": geometry["source_bands"],
+        "mode_transform": expected_mode_transform,
+        "output": {"codec": "png", "color_mode": geometry["color_mode"]},
+        "container_page_index": parent["source_frame_index"],
+        "width": geometry["width"],
+        "height": geometry["height"],
+        "deterministic_encoder": "common.imaging.encode_image_deterministic-v1",
+    }
+    if any(contract.get(field) != value for field, value in expected_render_record.items()):
+        raise ContractError(
+            "a sealed derivative page's renderer record does not describe its re-derived pixels"
+        )
+    # The row validator proves coverage only against the row's declared frame;
+    # equality with the decoded master is what prevents undeclared source pixels.
+    frame = row["frame"]
+    if (geometry["source_width"], geometry["source_height"]) != (
+        frame["width"],
+        frame["height"],
+    ):
+        raise ContractError(
+            "a sealed derivative page's manifest row declares a frame that is not the size "
+            "of the master it was cut from, so the row's parts do not account for that master"
+        )
+    if expected_bytes != sealed_bytes:
+        raise ContractError(
+            "a sealed derivative page's pixels are not reproducible from its master and apply "
+            f"recipe{_renderer_drift(contract)}"
+        )
+
+
+def _renderer_drift(contract: dict[str, Any]) -> str:
+    """Name a library upgrade when one is the likelier cause of a pixel mismatch.
+
+    The apply recipe is verified as a *record*, not against the running host: a
+    run sealed under an older Pillow stays verifiable, which refusing on version
+    drift would destroy for every archived run on the next routine upgrade. The
+    byte comparison above is the real property. But its message on its own points
+    an operator at forgery, and an upgraded decoder is the ordinary explanation —
+    so when the versions differ, say which ones.
+    """
+    fields = ("renderer_version", "pillow_heif_version", "libheif_version")
+    try:
+        running = imaging_library_versions()
+        recorded = {field: contract[field] for field in fields}
+    except (KeyError, TypeError, OSError, ImportError):
+        return ""
+    drifted = {
+        name: (recorded[name], running[name])
+        for name in fields
+        if recorded[name] != running.get(name)
+    }
+    if not drifted:
+        return ""
+    named = ", ".join(f"{name} {was!r} -> {now!r}" for name, (was, now) in sorted(drifted.items()))
+    return (
+        f"; the page was sealed under different imaging libraries than this host runs ({named}), "
+        "which is the ordinary cause and is recorded, not enforced"
+    )
 
 
 def _references_by_path(value: Any) -> dict[str, dict[str, str]]:

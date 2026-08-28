@@ -15,10 +15,13 @@ import importlib.util
 import json
 import subprocess
 import sys
+from io import BytesIO
 from pathlib import Path
 
+import door
 import pytest
 from door import SourceEntry, process_sources
+from PIL import Image
 from synthetic_sources import png
 
 from common.contracts.approval import real_ingress_record, synthetic_fixture_ingress_record
@@ -27,6 +30,7 @@ from common.contracts.errors import ContractError
 from common.contracts.identities import artifact_id, page_id, physical_page_id
 from common.contracts.stages import DOOR, EXEMPLAR
 from common.exemplar_boundary import verify_sealed_page_pixels
+from common.imaging import encode_image_deterministic
 from common.runtree.store import RunTree
 from common.stage import EXIT_FATAL, StageContext
 from operations.submit import submit
@@ -81,6 +85,7 @@ def build_door_run(
     run_id: str = "r1",
     *,
     files: dict[str, bytes] | None = None,
+    sources: list[SourceEntry] | None = None,
     register_bytes: bytes | None = None,
 ):
     """A run tree with the real door's admissions already published into it."""
@@ -88,7 +93,7 @@ def build_door_run(
 
     files = dict(PAGES | REFUSED) if files is None else files
     bindings = sealed_bindings()
-    sources = [
+    sources = sources or [
         SourceEntry(ordinal, name, digest_bytes(data))
         for ordinal, (name, data) in enumerate(sorted(files.items()), start=1)
     ]
@@ -100,6 +105,11 @@ def build_door_run(
                 "relative_path": entry.declared_path,
                 "sha256": entry.declared_sha256,
                 "ordinal": entry.ordinal,
+                **(
+                    {"container_page_index": entry.container_page_index}
+                    if entry.container_page_index is not None
+                    else {}
+                ),
             }
             for entry in sources
         ],
@@ -129,6 +139,255 @@ def build_door_run(
     context.seal_boundary()
     context.finish(DOOR)
     return tree, files
+
+
+def test_triage_spread_fans_out_to_sealed_derivative_pages_with_rederived_lineage(tmp_path):
+    """Every split part must seal independently while retaining one shared master."""
+    from common.exemplar_boundary import verify_sealed_page_pixels
+
+    output = BytesIO()
+    image = Image.new("RGB", (10, 4), (255, 0, 0))
+    for x in range(5, 10):
+        for y in range(4):
+            image.putpixel((x, y), (0, 0, 255))
+    image.save(output, format="JPEG", quality=100, subsampling=0)
+    master = output.getvalue()
+    digest = digest_bytes(master)
+    parts = [
+        door.triage_manifest.make_part(
+            {"x": 0, "y": 0, "w": 5, "h": 4},
+            {"x": 0, "y": 0, "w": 5, "h": 4},
+            0,
+            colour_mode="rgb",
+        ),
+        door.triage_manifest.make_part(
+            {"x": 5, "y": 0, "w": 5, "h": 4},
+            {"x": 0, "y": 0, "w": 5, "h": 4},
+            0,
+            colour_mode="rgb",
+        ),
+    ]
+    row = door.triage_manifest.make_row(
+        corpus_id="parish-a",
+        source_frame_sha256=digest,
+        frame={"width": 10, "height": 4},
+        split=door.triage_manifest.make_split(parts),
+        re_shoot_cluster_id=None,
+        confidence=4,
+        mode="manual",
+        actor={"kind": "human", "identity": "operator-1", "revision": None},
+        human_override=True,
+    )
+    sources = door.expand_sources(
+        [{"relative_path": "spread.jpg", "sha256": digest}],
+        lambda _path: master,
+        door.admission.load_format_policy(),
+        triage_rows={digest: row},
+    )
+    assert [(source.ordinal, source.container_page_index) for source in sources] == [(1, 0), (2, 1)]
+
+    tree, _ = build_door_run(tmp_path / "runs", files={"spread.jpg": master}, sources=sources)
+    result = run_exemplar(tmp_path / "runs")
+    assert result.returncode == 0, result.stderr
+    run = tree.read_run()
+    assert [source["sha256"] for source in run["source_manifest"]] == [digest, digest]
+    pages = [
+        tree.read_artifact(EXEMPLAR, "page", entry["artifact_id"])
+        for entry in tree.build_manifest(EXEMPLAR)["artifacts"]
+        if entry["kind"] == "page"
+    ]
+    assert len(pages) == 2
+    for source, page in zip(
+        run["source_manifest"],
+        sorted(pages, key=lambda page: page["payload"]["ordinal"]),
+        strict=True,
+    ):
+        verify_sealed_page_pixels(tree, run, source, page)
+        rendered = page["payload"]["rendered_from"]["render_contract"]
+        derivative = rendered["derivative_page"]
+        assert derivative["parent_frame_sha256"] == digest
+        assert derivative["triage_manifest_row"]["mode"] == "manual"
+        assert derivative["triage_manifest_row"]["actor"]["kind"] == "human"
+    admissions = [
+        tree.read_artifact(DOOR, "admission", entry["artifact_id"])
+        for entry in tree.build_manifest(DOOR)["artifacts"]
+        if entry["kind"] == "admission"
+    ]
+    assert all(
+        tree.read_bytes(admission["payload"]["parent_frame"]["stored_at"]) == master
+        for admission in admissions
+    )
+
+
+def test_a_noop_derivative_and_its_master_share_one_content_address(tmp_path):
+    """Identical roles share one input; the master is not overwritten or lost."""
+    master = encode_image_deterministic(Image.new("L", (4, 3), 37))
+    digest = digest_bytes(master)
+    part = door.triage_manifest.make_part(
+        {"x": 0, "y": 0, "w": 4, "h": 3},
+        {"x": 0, "y": 0, "w": 4, "h": 3},
+        0,
+        colour_mode="keep",
+    )
+    row = door.triage_manifest.make_row(
+        corpus_id="parish-a",
+        source_frame_sha256=digest,
+        frame={"width": 4, "height": 3},
+        split=door.triage_manifest.make_split([part]),
+        re_shoot_cluster_id=None,
+        confidence=4,
+        mode="auto",
+        actor={"kind": "model", "identity": "triage", "revision": "r1"},
+        human_override=False,
+    )
+    sources = door.expand_sources(
+        [{"relative_path": "page.png", "sha256": digest}],
+        lambda _path: master,
+        door.admission.load_format_policy(),
+        triage_rows={digest: row},
+    )
+
+    tree, _ = build_door_run(tmp_path / "runs", files={"page.png": master}, sources=sources)
+    admission = tree.read_artifact(DOOR, "admission", artifact_id(DOOR, "admission", "source-1"))
+    assert admission["payload"]["sha256"] == digest
+    assert admission["payload"]["parent_frame"]["sha256"] == digest
+    assert len(admission["inputs"]) == 1
+
+    result = run_exemplar(tmp_path / "runs")
+    assert result.returncode == 0, result.stderr
+    run = tree.read_run()
+    page = next(
+        tree.read_artifact(EXEMPLAR, "page", entry["artifact_id"])
+        for entry in tree.build_manifest(EXEMPLAR)["artifacts"]
+        if entry["kind"] == "page"
+    )
+    verify_sealed_page_pixels(tree, run, run["source_manifest"][0], page)
+
+
+def test_a_derivative_naming_a_master_other_than_its_submitted_row_refuses(tmp_path):
+    """The parent-frame back-link must name the master this row actually submitted.
+
+    That comparison sat unpinned: replacing it with `False` left 427 tests green.
+    Its siblings in the same conjunction hide it under the obvious forgeries —
+    editing `source["sha256"]` trips the earlier Door-admission comparison, and
+    editing the back-link's digest alone trips the sibling `stored_at` check with
+    the very same message. So the forgery here is made *internally consistent*:
+    the back-link names another digest and the blob path that digest would have,
+    leaving the submitted row the only thing it disagrees with.
+
+    The admission is re-sealed rather than edited in place, and the page's own
+    input reference is re-pointed at the forged bytes, because `_read_checked`
+    holds the admission to the digest the page recorded for it.
+    """
+    master = encode_image_deterministic(Image.new("L", (4, 3), 37))
+    digest = digest_bytes(master)
+    part = door.triage_manifest.make_part(
+        {"x": 0, "y": 0, "w": 4, "h": 3},
+        {"x": 0, "y": 0, "w": 4, "h": 3},
+        0,
+        colour_mode="keep",
+    )
+    row = door.triage_manifest.make_row(
+        corpus_id="parish-a",
+        source_frame_sha256=digest,
+        frame={"width": 4, "height": 3},
+        split=door.triage_manifest.make_split([part]),
+        re_shoot_cluster_id=None,
+        confidence=4,
+        mode="auto",
+        actor={"kind": "model", "identity": "triage", "revision": "r1"},
+        human_override=False,
+    )
+    sources = door.expand_sources(
+        [{"relative_path": "page.png", "sha256": digest}],
+        lambda _path: master,
+        door.admission.load_format_policy(),
+        triage_rows={digest: row},
+    )
+    tree, _ = build_door_run(tmp_path / "runs", files={"page.png": master}, sources=sources)
+    assert run_exemplar(tmp_path / "runs").returncode == 0
+    run = tree.read_run()
+    source = run["source_manifest"][0]
+    page = next(
+        tree.read_artifact(EXEMPLAR, "page", entry["artifact_id"])
+        for entry in tree.build_manifest(EXEMPLAR)["artifacts"]
+        if entry["kind"] == "page"
+    )
+    # The honest tree verifies, so the refusal below is the forgery's doing.
+    verify_sealed_page_pixels(tree, run, source, page)
+
+    other_digest = digest_bytes(encode_image_deterministic(Image.new("L", (4, 3), 91)))
+    assert other_digest != digest
+    admission_path = tree.artifact_path(
+        DOOR, "admission", artifact_id(DOOR, "admission", "source-1")
+    )
+    admission = json.loads(tree.read_bytes(admission_path).decode("utf-8"))
+    admission["payload"]["parent_frame"]["sha256"] = other_digest
+    admission["payload"]["parent_frame"]["stored_at"] = tree.blob_path(DOOR, other_digest)
+    admission["self_hash"] = self_hash(admission)
+    forged = canonical_bytes(admission)
+    (tree.root / admission_path).write_bytes(forged)
+    forged_page = json.loads(json.dumps(page))
+    for reference in forged_page["inputs"]:
+        if reference["relative_path"] == admission_path:
+            reference["sha256"] = digest_bytes(forged)
+
+    with pytest.raises(ContractError, match="parent frame disagrees with its submitted master"):
+        verify_sealed_page_pixels(tree, run, source, forged_page)
+
+
+def test_exemplar_rederives_a_derivative_recipe_before_sealing_it(tmp_path, rebind_stage_seal):
+    """A rehashed but false Door recipe cannot acquire an Exemplar seal.
+
+    `rebind_stage_seal` because the Door now witnesses its own boundary: without
+    it the Exemplar correctly stops on the Door's stage-seal and the recipe
+    re-derivation this test is named for is never reached. Rebinding models the
+    other hypothesis -- a Door that wrote the false recipe and honestly witnessed
+    it -- which is the state this check exists to catch.
+    """
+    master = encode_image_deterministic(Image.new("L", (4, 3), 37))
+    digest = digest_bytes(master)
+    part = door.triage_manifest.make_part(
+        {"x": 0, "y": 0, "w": 4, "h": 3},
+        {"x": 0, "y": 0, "w": 4, "h": 3},
+        0,
+        colour_mode="keep",
+    )
+    row = door.triage_manifest.make_row(
+        corpus_id="parish-a",
+        source_frame_sha256=digest,
+        frame={"width": 4, "height": 3},
+        split=door.triage_manifest.make_split([part]),
+        re_shoot_cluster_id=None,
+        confidence=4,
+        mode="auto",
+        actor={"kind": "model", "identity": "triage", "revision": "r1"},
+        human_override=False,
+    )
+    sources = door.expand_sources(
+        [{"relative_path": "page.png", "sha256": digest}],
+        lambda _path: master,
+        door.admission.load_format_policy(),
+        triage_rows={digest: row},
+    )
+    tree, _ = build_door_run(tmp_path / "runs", files={"page.png": master}, sources=sources)
+    identity = artifact_id(DOOR, "admission", "source-1")
+    path = tree.resolve(tree.artifact_path(DOOR, "admission", identity))
+    record = json.loads(path.read_text(encoding="utf-8"))
+    recipe = record["payload"]["rendered_from"]["render_contract"]["derivative_page"][
+        "apply_recipe"
+    ]
+    recipe["rotation_fill"] = "invented-fill"
+    record["self_hash"] = self_hash(record)
+    path.write_bytes(canonical_bytes(record))
+    tree.write_manifest(DOOR)
+    rebind_stage_seal(tree, DOOR)
+
+    result = run_exemplar(tmp_path / "runs")
+    assert result.returncode == EXIT_FATAL
+    assert "changes its recorded raster apply recipe" in result.stderr
+    assert not (tree.root / "1_exemplar" / "artifacts" / "page").exists()
+    assert not (tree.root / "1_exemplar" / "artifacts" / "seal").exists()
 
 
 def run_exemplar(
@@ -506,7 +765,10 @@ def test_a_malformed_render_origin_in_a_sealed_page_is_a_named_refusal(tmp_path)
     )
     page["payload"]["rendered_from"] = {"container_page_index": 0}
 
-    with pytest.raises(ContractError, match="complete closed container render record"):
+    # The surviving validator (`_validate_rendered_origin`) is the stricter of the
+    # two that met at this merge -- it type-checks every render field rather than
+    # only closing the key set -- and it names the refusal in its own words.
+    with pytest.raises(ContractError, match="complete rendered-container origin"):
         verify_sealed_page_pixels(tree, run, source, page)
 
 

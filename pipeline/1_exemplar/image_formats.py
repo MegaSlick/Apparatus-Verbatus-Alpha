@@ -36,6 +36,8 @@ from typing import Any, Final, NamedTuple
 import pillow_heif
 from PIL import Image, UnidentifiedImageError
 
+from common.imaging import imaging_library_versions, render_triage_derivative
+
 pillow_heif.register_heif_opener()
 
 
@@ -1376,10 +1378,7 @@ def raster_renderer_recipe() -> dict[str, Any]:
     after it has published a blob.
     """
     return {
-        "renderer": "Pillow",
-        "renderer_version": Image.__version__,
-        "pillow_heif_version": pillow_heif.__version__,
-        "libheif_version": pillow_heif.libheif_info()["libheif"],
+        **imaging_library_versions(),
         "output": {
             "codec": "png-or-tiff",
             "mode_policy": "preserve-standard-png-or-high-precision-tiff-else-convert-by-alpha",
@@ -1399,14 +1398,55 @@ _HIGH_PRECISION_TIFF_MODES: Final = {
 _PNG_IDENTITY_MODES: Final = frozenset({"1", "L", "LA", "RGB", "RGBA", "I;16"})
 
 
-def render_raster_page(data: bytes, page_index: int) -> tuple[bytes, ImageGeometry, dict[str, Any]]:
-    """Render a fanned raster page to lossless PNG or lossless TIFF pixels.
+def render_raster_page(
+    data: bytes, page_index: int, split_part: dict[str, Any] | None = None
+) -> tuple[bytes, ImageGeometry, dict[str, Any]]:
+    """Render a whole raster losslessly, or apply one declared triage part.
 
-    Standard Pillow modes retain compact PNG output.  The modes whose samples PNG
-    cannot faithfully hold keep their native samples in TIFF; an Exemplar page is
-    immutable evidence, not a display preview allowed to crush its values.
+    On the whole-page path, standard Pillow modes retain compact PNG output and
+    modes whose samples PNG cannot faithfully hold keep their native samples in
+    TIFF. The split path applies its recorded crop, rotation, and colour conversion
+    and returns the deterministic PNG plus the complete apply record.
     """
     decoded = decode_raster(data, page_index=page_index)
+    if split_part is not None:
+        try:
+            output_bytes, output_geometry = render_triage_derivative(
+                data, page_index=page_index, part=split_part
+            )
+        except ValueError as error:
+            raise unsupported(
+                # Not "the installed decoder could not", which the sibling routes
+                # above say truthfully: this one also carries the refusals that are
+                # policy rather than decoding — a colour_mode 'keep' the encoder
+                # cannot honour, and geometry outside the master — and blaming the
+                # decoder sends an operator to reinstall a library over a manifest
+                # they should be correcting instead.
+                f"{decoded.format}: the triage page geometry could not be applied ({error})"
+            ) from error
+        # Provenance names the decoded master mode and the encoded PNG mode; they
+        # may differ even when a palette expansion preserves every rendered pixel.
+        source_mode = output_geometry["source_mode"]
+        encoded_mode = output_geometry["color_mode"]
+        return (
+            output_bytes,
+            ImageGeometry(decoded.format, output_geometry["width"], output_geometry["height"]),
+            {
+                **raster_renderer_recipe(),
+                "source_mode": source_mode,
+                "source_bands": output_geometry["source_bands"],
+                "mode_transform": (
+                    "triage-region-crop-rotate-convert"
+                    if source_mode == encoded_mode
+                    else f"triage-region-crop-rotate-convert-to-{encoded_mode.lower()}"
+                ),
+                "output": {"codec": "png", "color_mode": encoded_mode},
+                "container_page_index": page_index,
+                "width": output_geometry["width"],
+                "height": output_geometry["height"],
+                "deterministic_encoder": "common.imaging.encode_image_deterministic-v1",
+            },
+        )
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("error", Image.DecompressionBombWarning)

@@ -50,6 +50,10 @@ from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.identities import artifact_id, page_id  # noqa: E402
 from common.contracts.stages import DOOR, EXEMPLAR  # noqa: E402
 from common.corpus_register import read_snapshot, verify_snapshot_is_current  # noqa: E402
+from common.exemplar_boundary import (  # noqa: E402
+    is_triage_derivative_contract,
+    verify_triage_derivative,
+)
 from common.runtree.store import RunTree  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
@@ -527,6 +531,7 @@ def _verify_admitted_blob(
     if stored_at != tree.blob_path(DOOR, sealed_digest):
         raise ContractError("an admission's stored_at is not the content-addressed blob path")
     claims_transform = "rendered_from" in payload
+    is_derivative = False
     if source.get("container_page_index") is not None and not claims_transform:
         raise ContractError(
             "a fanned source page must carry the render transform that produced its sealed pixels"
@@ -568,18 +573,47 @@ def _verify_admitted_blob(
             raise ContractError(
                 "a rendered page's transform page index disagrees with run.json's submitted row"
             )
-        _verify_render_contract(
-            rendered_from["render_contract"],
-            index,
-            payload,
-            run,
-            container_format=container_format,
+        is_derivative = is_triage_derivative_contract(rendered_from["render_contract"])
+        if is_derivative:
+            parent_ref, parent, parent_bytes = _verify_derivative_admission(
+                payload, source, rendered_from["render_contract"], tree
+            )
+        else:
+            _verify_render_contract(
+                rendered_from["render_contract"],
+                index,
+                payload,
+                run,
+                container_format=container_format,
+            )
+    expected_inputs = len({stored_at, parent_ref["relative_path"]}) if is_derivative else 1
+    if len(admission["inputs"]) != expected_inputs:
+        raise ContractError(
+            "a sealed derivative page must carry its pixels and untouched master"
+            if is_derivative
+            else "an admitted source must carry exactly one admitted-blob input"
         )
-    if len(admission["inputs"]) != 1:
-        raise ContractError("an admitted source must carry exactly one admitted-blob input")
-    input_ref = admission["inputs"][0]
-    if input_ref.get("relative_path") != stored_at or input_ref.get("sha256") != sealed_digest:
+    input_ref = next(
+        (
+            reference
+            for reference in admission["inputs"]
+            if reference.get("relative_path") == stored_at
+            and reference.get("sha256") == sealed_digest
+        ),
+        None,
+    )
+    if input_ref is None:
         raise ContractError("an admission's input does not name its content-addressed blob")
+    if is_derivative and {
+        (reference.get("relative_path"), reference.get("sha256"))
+        for reference in admission["inputs"]
+    } != {
+        (input_ref["relative_path"], input_ref["sha256"]),
+        (parent_ref["relative_path"], parent_ref["sha256"]),
+    }:
+        raise ContractError(
+            "a derivative page does not input exactly its pixels and untouched master"
+        )
     try:
         blob = tree.read_bytes(stored_at)
     except OSError as error:
@@ -595,7 +629,41 @@ def _verify_admitted_blob(
     if digest_bytes(blob) != sealed_digest:
         raise ContractError("an admitted blob's bytes no longer match their sealed digest")
     verify_input_bytes(input_ref, blob)
+    if is_derivative:
+        verify_triage_derivative(rendered_from["render_contract"], parent_bytes, parent, blob)
     return {"relative_path": stored_at, "sha256": sealed_digest}
+
+
+def _verify_derivative_admission(
+    payload: dict[str, Any], source: dict[str, Any], contract: dict[str, Any], tree: RunTree
+) -> tuple[dict[str, str], dict[str, Any], bytes]:
+    """Sealing must re-read digest-checked master bytes, not trust the Door's earlier read."""
+    parent = payload.get("parent_frame")
+    derivative = contract.get("derivative_page")
+    if (
+        not isinstance(parent, dict)
+        or set(parent) != {"sha256", "stored_at", "source_frame_index"}
+        or parent.get("sha256") != source.get("sha256")
+        or parent.get("stored_at") != tree.blob_path(DOOR, parent.get("sha256"))
+        or not isinstance(parent.get("source_frame_index"), int)
+        or isinstance(parent.get("source_frame_index"), bool)
+        or parent["source_frame_index"] < 0
+        or not isinstance(derivative, dict)
+        or derivative.get("parent_frame_sha256") != parent["sha256"]
+        or derivative.get("parent_frame_page_index") != parent["source_frame_index"]
+    ):
+        raise ContractError("a derivative page does not carry a valid immutable parent frame")
+    parent_ref = {"relative_path": parent["stored_at"], "sha256": parent["sha256"]}
+    try:
+        parent_bytes = tree.read_bytes(parent_ref["relative_path"])
+    except OSError as error:
+        raise ContractError(
+            "a derivative page's submitted master could not be read; the page was not sealed "
+            "because its lineage cannot be re-derived; restore the content-addressed master "
+            "from the submitted bytes before retrying"
+        ) from error
+    verify_input_bytes(parent_ref, parent_bytes)
+    return parent_ref, parent, parent_bytes
 
 
 def _verify_render_contract(

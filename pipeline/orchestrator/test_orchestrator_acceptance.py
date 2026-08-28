@@ -664,6 +664,17 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # Re-pinned in the Phase-2 Sol correction: seals now bind their decode-environment
 # bytes and Armarium boundary records no longer claim delivery.
 #
+# Re-pinned for `triage_modes.toml`, which is sealed into every run and so moves
+# both authorities without adding an artifact.
+#
+# *Not* re-pinned for the Door's cluster report, though a note here once said it was.
+# `publish_cluster_report` writes nothing unless some admission carries a
+# `triage_link`, and only the real-ingress route ever supplies triage rows to
+# `expand_sources`; the fixture route these runs take submits none, so the report
+# returns None and no artifact reaches the tree. The pins did move at the merge that
+# landed the report, but for the typed render-origin validator and the page-identity
+# refusal composed in the same commit. Found by CodeRabbit.
+#
 # Re-pinned at each merge that brings two authority-moving branches together. The
 # pins below stand for the merged tree and nothing else: every contributing branch
 # moved them on its own, so no branch's own pin describes this tree and taking one
@@ -671,8 +682,8 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # through this module's own `orchestrate` and `semantic_snapshot_digest` helpers,
 # twice, at two independent run roots, and the file counts below were re-measured
 # the same way. The host re-measures at integration.
-HAPPY_RUN_TREE_DIGEST = "214058d9049fad37256a40594c5494e79747d05ec121f08352751b1e1212d7d0"
-REVIEW_RUN_TREE_DIGEST = "01a963397c21d4d4ad619b8d2875a55098373b69b2e6838922b22c83b2c97799"
+HAPPY_RUN_TREE_DIGEST = "6c54a76875530ca1edc0031141e35506c829193d5151781915f3f184ea3cc9c4"
+REVIEW_RUN_TREE_DIGEST = "853cfebbd99fff5f0b6b737d27f1d85c6286171fef99bdfa28d7c320c8525100"
 
 
 def orchestrate(

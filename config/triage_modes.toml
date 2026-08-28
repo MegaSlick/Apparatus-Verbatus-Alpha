@@ -1,0 +1,13 @@
+# Pipeline-wide triage vocabulary. Unit 1's driver joins these three names;
+# this declaration does not create a second mode vocabulary.
+#
+# Thresholds are closed ordinals (0 = lowest, 4 = highest). All modes currently
+# route every frame for review: no threshold has been calibrated on a real sample.
+[manual]
+review_at_or_below_confidence = 4
+
+[semi]
+review_at_or_below_confidence = 4
+
+[auto]
+review_at_or_below_confidence = 4
