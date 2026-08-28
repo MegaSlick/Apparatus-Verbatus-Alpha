@@ -169,31 +169,43 @@ def _literal_import_modules(node: ast.Call) -> list[str]:
     parent = node.args[0].value
     modules = [parent]
     if is_builtin_import:
-        for name in _literal_fromlist(node):
-            modules.append(f"{parent}.{name}" if parent else name)
+        names = _literal_fromlist(node)
+        if names is None:
+            modules.append(f"{parent}.{UNVERIFIABLE_FROMLIST}" if parent else UNVERIFIABLE_FROMLIST)
+        else:
+            for name in names:
+                modules.append(f"{parent}.{name}" if parent else name)
     return modules
 
 
-def _literal_fromlist(node: ast.Call) -> list[str]:
+UNVERIFIABLE_FROMLIST = "<unverifiable fromlist>"
+
+
+def _literal_fromlist(node: ast.Call) -> list[str] | None:
     """The literal string entries of a `__import__` fromlist, positional or keyword.
 
-    Only literal tuples and lists of literal strings are readable; a computed
-    fromlist is not statically knowable and is reported as nothing rather than
-    guessed at. `"*"` names no submodule and is dropped.
+    Only literal tuples and lists of literal strings are readable. An absent
+    fromlist is an empty list — the call loads the parent and nothing else. A
+    fromlist that is present but computed, or that carries a computed element,
+    is `None`: what it loads is not statically knowable, and the guard fails
+    closed on that rather than narrowing the call to its parent. `"*"` names no
+    submodule and is dropped.
     """
     fromlist: ast.expr | None = node.args[3] if len(node.args) > 3 else None
     for keyword in node.keywords:
         if keyword.arg == "fromlist":
             fromlist = keyword.value
-    if not isinstance(fromlist, ast.Tuple | ast.List):
+    if fromlist is None:
         return []
-    return [
-        element.value
-        for element in fromlist.elts
-        if isinstance(element, ast.Constant)
-        and isinstance(element.value, str)
-        and element.value != "*"
-    ]
+    if not isinstance(fromlist, ast.Tuple | ast.List):
+        return None
+    names: list[str] = []
+    for element in fromlist.elts:
+        if not (isinstance(element, ast.Constant) and isinstance(element.value, str)):
+            return None
+        if element.value != "*":
+            names.append(element.value)
+    return names
 
 
 def test_the_population_covers_every_stage_directory():
@@ -275,11 +287,33 @@ def test_production_stage_code_never_imports_the_reseal_forgery_helper():
         and not Path(path).name.startswith("test_")
         and Path(path).name != "reseal_chain.py"
         for root, full in _imports_in(ROOT / path)
-        if root == "reseal_chain" or full.split(".")[-1] == "reseal_chain"
+        if root == "reseal_chain" or full.split(".")[-1] in ("reseal_chain", UNVERIFIABLE_FROMLIST)
     ]
     assert not violations, "production stage code imported a test forgery helper:\n" + "\n".join(
         violations
     )
+
+
+def test_a_computed_fromlist_is_reported_unverifiable_and_refused(tmp_path):
+    """A computed fromlist can load any child of its parent, the forgery helper
+    included, so the walker reports it as an unverifiable submodule and the
+    reseal guard's predicate refuses it rather than trusting the parent name."""
+    source = tmp_path / "computed_fromlist.py"
+    source.write_text(
+        "chosen = ['reseal_chain']\n"
+        "__import__('6_archetypus', fromlist=chosen)\n"
+        "__import__('pipeline.3_attestatores', fromlist=(name for name in ()))\n",
+        encoding="utf-8",
+    )
+    names = {full for _root, full in _imports_in(source)}
+    assert f"6_archetypus.{UNVERIFIABLE_FROMLIST}" in names
+    assert f"pipeline.3_attestatores.{UNVERIFIABLE_FROMLIST}" in names
+    flagged = {
+        full
+        for _root, full in _imports_in(source)
+        if full.split(".")[-1] in ("reseal_chain", UNVERIFIABLE_FROMLIST)
+    }
+    assert len(flagged) == 2
 
 
 def test_literal_dynamic_pipeline_imports_are_visible_to_the_guard(tmp_path):
