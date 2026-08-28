@@ -76,6 +76,13 @@ WITNESS_READING_OUTCOMES: Final = frozenset({"read", "genuinely-empty"})
 INTERIM_GRANULARITY_BASIS: Final = "computed-act-attachment-alignment"
 NATIVE_GRANULARITY_BASIS: Final = "native-observation-overlap"
 LEGACY_GRANULARITY_BASIS: Final = "legacy-class-only"
+# Which evidence decided one attachment. Producer and consumer must agree, and
+# the floor arithmetic below reads it to decide whether the native granularity
+# claim may be made at all -- so it belongs beside that arithmetic for the same
+# reason the reading outcomes do.
+ATTACHMENT_BASES: Final = frozenset(
+    {"presented-region", "anchor-line", "geometric-overlap", "unattached"}
+)
 
 # --- The vocabularies: outcome -> class, one closed set per stage ---------------
 
@@ -404,6 +411,15 @@ def witness_coverage(
     attached_chairs: set[str] = set()
     health_unrecorded = 0
     shortfalls = {"failed": 0, "truncated": 0, "unaligned": 0}
+    # Two different questions, and they were being answered by one test.
+    # *Whether* act-granularity facts were supplied decides the arithmetic below
+    # and is answered by `attachments is not None`. *How* those facts were
+    # decided is a claim that travels in the receipt, and the boolean shorthand
+    # accepted below carries no geometry at all: read from the argument's mere
+    # presence, it earned the native-overlap claim for free. A caller that does
+    # not say which basis decided its facts gets the older, weaker interim name
+    # rather than a measurement nothing performed (GOVERNANCE 10).
+    native_evidence = attachments is not None
     if attachments is not None:
         unknown = set(attachments) - set(chair_outcomes)
         if unknown:
@@ -418,6 +434,10 @@ def witness_coverage(
                 fact = {"attached": False}
             if not isinstance(fact, Mapping) or not isinstance(fact.get("attached"), bool):
                 raise FatalAccounting(f"act attachment fact for {chair!r} has no boolean attached")
+            # A fact that names no basis was not decided by the native
+            # derivation, whatever else it carries.
+            if fact.get("attachment_basis") not in ATTACHMENT_BASES:
+                native_evidence = False
             if fact.get("health_unrecorded") is True:
                 health_unrecorded += 1
             truncated = fact.get("truncated")
@@ -463,9 +483,14 @@ def witness_coverage(
         "health_unrecorded": health_unrecorded,
         "shortfalls": shortfalls,
         # Attachments are computed facts: page testimony counts only where its
-        # reported geometry overlaps the act's sealed proposal geometry.
+        # reported geometry overlaps the act's sealed proposal geometry. The
+        # claim is made only when every fact says which basis decided it.
         "granularity_basis": (
-            NATIVE_GRANULARITY_BASIS if attachments is not None else LEGACY_GRANULARITY_BASIS
+            NATIVE_GRANULARITY_BASIS
+            if native_evidence
+            else INTERIM_GRANULARITY_BASIS
+            if attachments is not None
+            else LEGACY_GRANULARITY_BASIS
         ),
     }
 

@@ -1,5 +1,6 @@
 """Writer and read-back seams enforce the same closed native intake contract."""
 
+import ast
 import copy
 import importlib.util
 import inspect
@@ -137,14 +138,102 @@ def test_a_page_witness_with_one_failed_and_one_unread_act_is_still_attempted():
     assert attestatores.page_witness_attempted(acts, "attestator_1", attempts_by_pair) is True
 
 
-def test_each_testimonium_writer_reconciles_adapter_evidence_before_publication():
-    """A later tally refusal cannot undo immutable evidence already published."""
-    for writer in (
-        attestatores.publish_attempt,
-        attestatores.publish_page_testimonia_and_attachments,
-    ):
-        source = inspect.getsource(writer)
-        assert source.index("validate_testimonium_presentation(") < source.index("context.publish(")
+def _is_call_statement(statement: ast.stmt, name: str) -> bool:
+    """A bare or assigned call to `name`, which running the block must execute."""
+    value = statement.value if isinstance(statement, (ast.Assign, ast.Expr)) else None
+    return isinstance(value, ast.Call) and isinstance(value.func, ast.Name) and value.func.id == name
+
+
+TESTIMONIUM_KINDS = {"testimonium", "page-testimonium"}
+
+
+def _publish_lines(node: ast.AST) -> list[int]:
+    """Only Testimonium writes. An act-attachment carries no adapter presentation.
+
+    A dynamic or non-literal `kind` is counted, so a write this proof cannot
+    classify fails loudly rather than slipping past it.
+    """
+    lines = []
+    for child in ast.walk(node):
+        if (
+            not isinstance(child, ast.Call)
+            or not isinstance(child.func, ast.Attribute)
+            or child.func.attr != "publish"
+        ):
+            continue
+        kinds = [keyword.value for keyword in child.keywords if keyword.arg == "kind"]
+        if len(kinds) != 1 or not isinstance(kinds[0], ast.Constant):
+            lines.append(child.lineno)
+        elif kinds[0].value in TESTIMONIUM_KINDS:
+            lines.append(child.lineno)
+    return lines
+
+
+def _child_blocks(statement: ast.stmt):
+    for field in ("body", "orelse", "finalbody"):
+        block = getattr(statement, field, None)
+        if block:
+            yield block
+    for handler in getattr(statement, "handlers", []):
+        if handler.body:
+            yield handler.body
+
+
+def _undominated_publishes(statements: list[ast.stmt], name: str) -> list[int]:
+    """Publish lines this block can reach without first executing a `name` call.
+
+    Dominance is per block, not per function: the page writer validates and
+    publishes inside its page/chair loop, which is correct. What must never
+    exist is a publish reachable down a path where the reconciliation sits in a
+    branch that did not run. (`test_page_join.py` runs the fuller write scan
+    over the same tree.)
+    """
+    validated = False
+    undominated: list[int] = []
+    for statement in statements:
+        if _is_call_statement(statement, name):
+            validated = True
+            continue
+        if not _publish_lines(statement):
+            continue
+        if validated:
+            continue
+        blocks = list(_child_blocks(statement))
+        if not blocks:
+            undominated.extend(_publish_lines(statement))
+            continue
+        for block in blocks:
+            undominated.extend(_undominated_publishes(block, name))
+    return undominated
+
+
+@pytest.mark.parametrize(
+    "writer",
+    ("publish_attempt", "publish_page_testimonia_and_attachments"),
+)
+def test_each_testimonium_writer_reconciles_adapter_evidence_before_publication(writer):
+    """A later tally refusal cannot undo immutable evidence already published.
+
+    Source order alone was too weak a proof: it is satisfied by a reconciliation
+    sitting inside a branch that never runs while the publish below it does.
+    What must hold is that no publish is *reachable* without the reconciliation
+    having executed first on that path.
+    """
+    tree = ast.parse(Path(attestatores.__file__).read_text())
+    function = next(
+        node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == writer
+    )
+
+    assert _publish_lines(function), f"{writer} no longer publishes; this proof watches nothing"
+    undominated = _undominated_publishes(function.body, "validate_testimonium_presentation")
+
+    assert undominated == [], (
+        f"{writer} can reach context.publish at line(s) {undominated} without first "
+        "reconciling its adapter-derived presentation; that evidence would be immutable "
+        "before anything checked it"
+    )
 
 
 class _Context:

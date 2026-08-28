@@ -230,7 +230,27 @@ def test_every_degenerate_corner_box_is_reported_separately_and_none_reads_as_co
 
 
 def test_an_unpresented_testimonium_contributes_no_observation():
-    unpresented = {"artifact_id": "t", "payload": {"presented": {}, "observed": []}}
+    """The record carries geometry it could not have seen, and is skipped anyway.
+
+    With an empty `observed` the inner loop has nothing to walk, so the guard
+    could be deleted and this would still pass. The reported box below is what
+    makes the assertion capable of failing: it is exactly what would become a
+    finding if a record with no presentation were ever walked.
+    """
+    unpresented = {
+        "artifact_id": "t",
+        "payload": {
+            "presented": {},
+            "observed": [
+                {
+                    "ordinal": 0,
+                    "bounds": {"x": 0, "y": 200, "w": 10, "h": 40},
+                    "bounds_source": "native",
+                }
+            ],
+        },
+    }
+
     assert perlector.unrouted_observations([unpresented], []) == []
 
 

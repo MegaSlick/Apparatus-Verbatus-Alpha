@@ -100,7 +100,18 @@ an opaque operation string.
 dense zero-based ordinal, `bounds_source` in `native | derived | presented`, and
 an optional non-overlapping span into this Testimonium's own retained text. Every
 box is contained by the exact presented image's page-space bounds; a witness
-cannot report pixels its presentation did not include. It
+cannot report pixels its presentation did not include.
+
+**One record kind is exempt, and only one.** A page chair's act view
+(`page_witness: true`, never `scope: "page"`) presents a single crop while
+restating the page-level geometry that chair actually reported, so its boxes may
+legitimately exceed that one crop. They remain bounded by the sealed page, which
+is the wall that does not move, and Unit 10C's coverage derivation is what
+consumes that page-space geometry. The flag cannot buy the exemption on its own:
+a `scope: "page"` record presents the chair's complete view and keeps the
+containment rule, so the relaxation cannot be forged onto a record whose
+presentation really was everything the witness saw. Every other record — act
+chairs, and page chairs at page scope — is contained as above. `observed`
 carries no act identity, preference, authority, or confidence field. `presented`
 is an explicit no-geometry fallback: it restates the image sent and is excluded
 from both unrouted-ink detection and Unit 10C coverage. Only `native` and

@@ -65,6 +65,7 @@ from common.contracts.errors import (  # noqa: E402
     SchemaRefusal,
 )
 from common.contracts.identities import artifact_id, perlector_attempt_id  # noqa: E402
+from common.contracts.outcomes import ATTACHMENT_BASES  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR, PERLECTOR  # noqa: E402
 from common.exemplar_boundary import verify_exemplar_crop_lineage  # noqa: E402
 from common.imaging import dimensions  # noqa: E402
@@ -782,11 +783,6 @@ ATTACHMENT_FIELDS: Final = frozenset(
         "span",
     }
 )
-ATTACHMENT_BASES: Final = frozenset(
-    {"presented-region", "anchor-line", "geometric-overlap", "unattached"}
-)
-
-
 def _validate_attachment_shape(attachment: Any) -> None:
     """The one closed-shape rule for an attachment, applied wherever it is read.
 

@@ -405,6 +405,29 @@ def test_a_page_presentation_requires_the_executable_whole_operation():
         )
 
 
+def test_an_adapter_crop_cannot_skip_re_derivation_by_withholding_its_page_bytes():
+    """Otherwise the cheapest forgery is to omit the evidence that would refute it.
+
+    The crop's digest is checked by re-cutting it from the sealed page. A caller
+    that passes no page bytes must be refused, not quietly excused from the one
+    check that binds an adapter-owned blob to the ink it claims to show.
+    """
+    value = payload()
+    value["presented"]["kind"] = "adapter-crop"
+    value["presented"]["transform"].update(
+        {"operation": "crop", "bounds": {"x": 0, "y": 0, "w": 20, "h": 20}}
+    )
+
+    with pytest.raises(SchemaRefusal, match="cannot be re-derived without its sealed page bytes"):
+        validate_presented_page_binding(
+            value["presented"],
+            page_ordinal=1,
+            page_image_path=value["presented"]["image_path"],
+            page_sha256="f" * 64,
+            page_size=(100, 80),
+        )
+
+
 def test_unpresented_regions_are_derived_from_containment_for_every_presentation_kind():
     regions = [
         {

@@ -33,6 +33,7 @@ from common.contracts.canonical import digest_bytes  # noqa: E402
 from common.contracts.errors import ContractError, FatalAccounting  # noqa: E402
 from common.contracts.identities import artifact_id, attempt_id  # noqa: E402
 from common.contracts.outcomes import (  # noqa: E402
+    ATTACHMENT_BASES,
     OutcomeClass,
     classify,
     terminal_category,
@@ -288,12 +289,7 @@ def act_attachment_facts(context, act_id: str, outcomes: dict[str, str]) -> dict
         if not isinstance(entry.get("attached"), bool):
             raise FatalAccounting(f"act {act_id} has ambiguous derived act-attachment facts")
         attachment_basis = entry.get("attachment_basis")
-        if attachment_basis not in {
-            "presented-region",
-            "anchor-line",
-            "geometric-overlap",
-            "unattached",
-        }:
+        if attachment_basis not in ATTACHMENT_BASES:
             raise FatalAccounting(
                 f"act {act_id} attachment entry for chair {entry['chair']!r} has no known attachment basis"
             )

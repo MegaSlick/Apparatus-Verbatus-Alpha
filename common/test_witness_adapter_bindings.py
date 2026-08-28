@@ -192,6 +192,25 @@ def test_bad_witness_scope_is_refused_by_the_closed_models_schema(scope):
     assert "Set witness_scope to exactly 'page' or 'act'" in message
 
 
+def test_an_adapter_without_any_scope_is_refused_like_a_wrong_one():
+    """Omission is the likeliest mistake, and it must not read as a default.
+
+    `witness_scope` is optional in the closed schema because a non-witness chair
+    carries neither field. Once `witness_adapter` names a boundary, a missing
+    scope leaves the adapter unable to say whether it runs per page or per act,
+    and guessing either would silently change how much ink a chair is shown.
+    """
+    raw = {
+        "witness_floor": 1,
+        "chairs": {"attestator_1": _configured_chair(witness_adapter="churro.v1")},
+    }
+
+    with pytest.raises(ContractError, match="invalid witness_scope") as caught:
+        parse_models_config(raw)
+
+    assert "Set witness_scope to exactly 'page' or 'act'" in str(caught.value)
+
+
 def test_two_chairs_may_share_one_adapter_at_different_scopes():
     """The adapter belongs to each occupant; it is not a unique or ranked seat.
 
