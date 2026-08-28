@@ -226,6 +226,32 @@ def test_backup_cli_executes_the_worker_inside_the_real_custody_boundary(tmp_pat
     assert list((mac / "snapshots" / "sha256").iterdir())
 
 
+def test_backup_worker_refuses_a_deeply_nested_request_in_one_line() -> None:
+    """A nesting bomb must refuse like everything else, not print a traceback.
+
+    `json.loads` raises `RecursionError`, not `ValueError`, and the byte bound
+    above still admits tens of thousands of nesting levels. Uncaught, the
+    worker dies with a stack trace and that becomes the detail the operator is
+    told to keep. `advance_worker` already lists `RecursionError` for this.
+    """
+    depth = 20_000
+    request = "[" * depth + "]" * depth
+    assert len(request) <= backup_worker.MAX_REQUEST_BYTES
+
+    completed = subprocess.run(
+        [sys.executable, "-m", "operations.operator.backup_worker"],
+        cwd=ROOT,
+        input=request,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 2
+    assert "Traceback" not in completed.stderr
+    assert len(completed.stderr.strip().splitlines()) == 1
+
+
 def test_backup_worker_bounds_its_request_before_json_deserialization() -> None:
     completed = subprocess.run(
         [sys.executable, "-m", "operations.operator.backup_worker"],
