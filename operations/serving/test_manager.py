@@ -8,6 +8,7 @@ the wrong ID, or ignored an adapter is more expensive than a visible refusal.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -23,6 +24,7 @@ from pathlib import Path
 from typing import Callable, Iterable, Mapping
 
 import pytest
+from PIL import Image, ImageDraw
 
 from common.chairs.config import load_models_toml
 from common.chairs.errors import ReceiptRefusal, ServingRecipeRefusal, UnresolvedChairRefusal
@@ -42,6 +44,7 @@ from operations.pod.preflight import (
     load_placement_table,
 )
 
+from . import smoke as smoke_module
 from .assembly import (
     _load_bound_configuration,
     assemble_serving_preflight_callback,
@@ -50,6 +53,7 @@ from .assembly import (
 from .config import (
     FixtureProfile,
     ServingConfigInputs,
+    ServingProfile,
     ServingRecipes,
     chair_preflight_identity_digest,
     load_serving_recipes,
@@ -78,12 +82,14 @@ from .http import (
 from .manager import (
     AdapterCalibration,
     ReceiptPublication,
+    ServiceHandle,
     ServingManager,
     StageContextReceiptPublisher,
 )
 from .preflight import ServingSmokeReader, prepare_log_root
 from .process import SubprocessLauncher
 from .residency import FileResidencyLease
+from .smoke import VisionSmokeCall
 
 START = datetime(2026, 8, 9, 12, 0, tzinfo=UTC)
 TIER = "generic-48gb"
@@ -684,6 +690,43 @@ def fixture_image_payload(fixture: Path) -> Mapping[str, object]:
         prompt="Read the supplied proof page.",
         mime_type="image/png",
     ).request_payload()
+
+
+PAGE_WITNESS = "h6GMQDVxeNmr7RYvT82PqWkJz3BLaF9C"
+
+
+def write_golden_page(fixture: Path) -> bytes:
+    """Keep the witness in decodable pixels, never only in a prompt or filename."""
+
+    page = Image.new("L", (640, 96), color="white")
+    ImageDraw.Draw(page).text(
+        (16, 36),
+        f"PAGE-WITNESS: {PAGE_WITNESS}",
+        fill="black",
+    )
+    page.save(fixture, format="PNG")
+    encoded = fixture.read_bytes()
+    with Image.open(fixture) as reopened:
+        reopened.verify()
+    return encoded
+
+
+def vision_smoke() -> VisionSmokeCall:
+    return VisionSmokeCall(
+        PAGE_WITNESS,
+        utilization=lambda: (UtilizationSample("71", "31"),),
+    )
+
+
+def smoke_placement() -> PlacementTier:
+    return PlacementTier(
+        identifier=TIER,
+        min_vram_gib="40",
+        max_vram_gib_exclusive="64",
+        residency="single",
+        detector_device="cpu",
+        recipe=PlacementRecipe("0.90", 4096, 1792, 1),
+    )
 
 
 def sealed_config_inputs(root: Path) -> dict[str, str]:
@@ -3388,6 +3431,488 @@ def test_serving_smoke_reader_uses_the_owned_service_and_always_stops(tmp_path: 
     )
     assert isinstance(result.receipt["smoke_fixture_output_sha256"], str)
     assert http.inference_calls >= 2  # readiness proof plus the golden-page call
+    assert launcher.processes[0].terminate_calls == 1
+
+
+def test_vision_smoke_call_refuses_an_unstarted_service_handle(tmp_path: Path) -> None:
+    chair = identity("reader", "reader-v1")
+    manager, _, _, _, _, _ = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+        ),
+        model_ids=("reader-api",),
+    )
+    profile = manager.recipes.for_identity(chair, TIER)
+    assert isinstance(profile, ServingProfile)
+    unstarted = ServiceHandle(
+        manager,
+        chair,
+        profile,
+        FakeProcess(9999),
+        build_receipt(
+            chair,
+            ServingDetails(
+                chair.receipt_revision,
+                profile.seed,
+                profile.max_model_len,
+                profile.max_pixels,
+                "vllm",
+                "0.test",
+                profile.dtype,
+                None,
+                profile.endpoint,
+                "2026-08-21T00:00:00Z",
+            ),
+        ),
+        {},
+        {},
+        {},
+        {},
+    )
+    fixture = tmp_path / "golden-page.png"
+    write_golden_page(fixture)
+
+    with pytest.raises(ServiceStopError, match="not this manager's active owned service"):
+        vision_smoke()(unstarted, chair, fixture, smoke_placement())
+
+
+def test_vision_smoke_call_marks_an_answer_producible_from_its_prompt_invalid(
+    tmp_path: Path,
+) -> None:
+    chair = identity("reader", "reader-v1")
+    expected = f"PAGE-WITNESS: {PAGE_WITNESS}"
+    prompt_only_answer = "PAGE-WITNESS: <the page witness string>"
+    assert PAGE_WITNESS not in vision_smoke().prompt
+    assert prompt_only_answer != expected
+    manager, _, _, launcher, _, _ = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+        ),
+        model_ids=("reader-api",),
+        outputs={"reader-api": prompt_only_answer},
+    )
+    fixture = tmp_path / "golden-page.png"
+    write_golden_page(fixture)
+    handle = manager.start(chair, TIER)
+
+    result = vision_smoke()(handle, chair, fixture, smoke_placement())
+
+    assert result.shape_valid is True
+    assert result.nonempty is True
+    assert result.format_valid is False
+    assert result.receipt["page_witness_matches"] is False
+    handle.stop()
+    assert launcher.processes[0].terminate_calls == 1
+
+
+def test_vision_smoke_call_accepts_the_exact_model_answer_and_records_identity(
+    tmp_path: Path,
+) -> None:
+    chair = identity("reader", "reader-v1", revision="b" * 40)
+    expected = f"PAGE-WITNESS: {PAGE_WITNESS}"
+    manager, _, http, launcher, _, _ = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+        ),
+        model_ids=("reader-api",),
+        outputs={"reader-api": expected},
+    )
+    fixture = tmp_path / "golden-page.png"
+    fixture_bytes = write_golden_page(fixture)
+    handle = manager.start(chair, TIER)
+
+    result = vision_smoke()(handle, chair, fixture, smoke_placement())
+
+    assert (result.shape_valid, result.nonempty, result.format_valid) == (True, True, True)
+    assert result.receipt["served_model_id"] == "reader-api"
+    assert result.receipt["resolved_identity"] == chair.to_record()
+    assert result.receipt["resolved_revision"] == "b" * 40
+    assert result.receipt["resolved_revision_kind"] == "git-commit"
+    request = http.calls[-1][2]
+    assert isinstance(request, dict)
+    messages = request["messages"]
+    assert isinstance(messages, list)
+    image_url = messages[0]["content"][1]["image_url"]["url"]  # type: ignore[index]
+    assert isinstance(image_url, str)
+    assert image_url == "data:image/png;base64," + base64.b64encode(fixture_bytes).decode("ascii")
+    handle.stop()
+    assert launcher.processes[0].terminate_calls == 1
+
+
+def test_vision_smoke_call_reports_multiple_nonempty_choices_honestly(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    chair = identity("reader", "reader-v1")
+    expected = f"PAGE-WITNESS: {PAGE_WITNESS}"
+    manager, _, http, launcher, _, _ = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+        ),
+        model_ids=("reader-api",),
+        outputs={"reader-api": expected},
+    )
+    fixture = tmp_path / "golden-page.png"
+    write_golden_page(fixture)
+    handle = manager.start(chair, TIER)
+    original_request = http.request
+
+    def two_choice_request(
+        method: str,
+        url: str,
+        *,
+        body: bytes | None,
+        timeout_seconds: float,
+    ) -> HttpResponse:
+        response = original_request(
+            method,
+            url,
+            body=body,
+            timeout_seconds=timeout_seconds,
+        )
+        if method == "POST" and url.endswith("/chat/completions"):
+            response_body = json.loads(response.body)
+            response_body["choices"].append(response_body["choices"][0])
+            return HttpResponse(response.status, json.dumps(response_body).encode())
+        return response
+
+    monkeypatch.setattr(http, "request", two_choice_request)
+
+    result = vision_smoke()(handle, chair, fixture, smoke_placement())
+
+    assert result.shape_valid is False
+    assert result.nonempty is True
+    assert result.format_valid is False
+    handle.stop()
+    assert launcher.processes[0].terminate_calls == 1
+
+
+def test_vision_smoke_receipt_does_not_retain_a_witness_bearing_fixture_name(
+    tmp_path: Path,
+) -> None:
+    chair = identity("reader", "reader-v1")
+    expected = f"PAGE-WITNESS: {PAGE_WITNESS}"
+    manager, _, _, launcher, _, _ = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+        ),
+        model_ids=("reader-api",),
+        outputs={"reader-api": expected},
+    )
+    fixture = tmp_path / f"{PAGE_WITNESS}.png"
+    write_golden_page(fixture)
+    handle = manager.start(chair, TIER)
+
+    result = vision_smoke()(handle, chair, fixture, smoke_placement())
+
+    assert "fixture" not in result.receipt
+    assert PAGE_WITNESS not in json.dumps(result.receipt, sort_keys=True)
+    handle.stop()
+    assert launcher.processes[0].terminate_calls == 1
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        f" PAGE-WITNESS: {PAGE_WITNESS}",
+        f"PAGE-WITNESS: {PAGE_WITNESS} ",
+        f"PAGE-WITNESS: {PAGE_WITNESS}\n",
+        f"\nPAGE-WITNESS: {PAGE_WITNESS}",
+    ],
+)
+def test_vision_smoke_call_marks_text_outside_the_exact_witness_line_invalid(
+    tmp_path: Path,
+    answer: str,
+) -> None:
+    chair = identity("reader", "reader-v1")
+    manager, _, _, launcher, _, _ = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+        ),
+        model_ids=("reader-api",),
+        outputs={"reader-api": answer},
+    )
+    fixture = tmp_path / "golden-page.png"
+    write_golden_page(fixture)
+    handle = manager.start(chair, TIER)
+
+    result = vision_smoke()(handle, chair, fixture, smoke_placement())
+
+    assert result.shape_valid is True
+    assert result.nonempty is True
+    assert result.format_valid is False
+    assert result.receipt["page_witness_matches"] is False
+    handle.stop()
+    assert launcher.processes[0].terminate_calls == 1
+
+
+@pytest.mark.parametrize(
+    "witness",
+    [
+        f"{PAGE_WITNESS} ",
+        f" {PAGE_WITNESS}",
+        f"{PAGE_WITNESS[:16]} {PAGE_WITNESS[17:]}",
+        f"{PAGE_WITNESS}\n",
+    ],
+)
+def test_vision_smoke_call_refuses_ambiguous_whitespace_in_a_witness_token(
+    witness: str,
+) -> None:
+    """A page token must not depend on preserving ambiguous whitespace glyphs."""
+
+    assert len(witness) >= 32
+    with pytest.raises(ServingConfigurationError, match="must contain no whitespace"):
+        VisionSmokeCall(witness)
+
+
+@pytest.mark.parametrize("witness", ["short", " " * 40, "a" * 129, 1234, None])
+def test_vision_smoke_call_refuses_a_non_string_blank_or_out_of_bounds_witness(
+    witness: object,
+) -> None:
+    with pytest.raises(ServingConfigurationError, match="non-blank string between 32 and 128"):
+        VisionSmokeCall(witness)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("witness", ["\x00" * 32, "\u200b" * 32, "\u0301" * 32, "!" * 32])
+def test_vision_smoke_call_refuses_a_witness_that_is_not_a_visible_url_safe_token(
+    witness: str,
+) -> None:
+    with pytest.raises(ServingConfigurationError, match="visible URL-safe ASCII"):
+        VisionSmokeCall(witness)
+
+
+def test_vision_smoke_call_refuses_a_prompt_that_carries_its_own_witness() -> None:
+    """The page-only claim is asserted, not merely true of today's constant prompt."""
+
+    class LeakedWitnessPrompt(VisionSmokeCall):
+        @property
+        def prompt(self) -> str:
+            return f"Reply with PAGE-WITNESS: {self.page_witness}"
+
+    assert PAGE_WITNESS not in vision_smoke().prompt
+    with pytest.raises(ServingConfigurationError, match="occurs in the smoke prompt"):
+        LeakedWitnessPrompt(PAGE_WITNESS)
+
+
+def test_vision_smoke_call_refuses_a_utilization_sampler_that_is_not_callable() -> None:
+    with pytest.raises(ServingConfigurationError, match="utilization sampler must be callable"):
+        VisionSmokeCall(PAGE_WITNESS, utilization=())  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "fixture_bytes",
+    [
+        b"\xff\xd8\xff\xe0not a png at all",
+        b"\x89PNG\r\n\x1a\nnot a complete png",
+    ],
+)
+def test_vision_smoke_call_refuses_bytes_that_are_not_a_complete_decodable_png(
+    tmp_path: Path,
+    fixture_bytes: bytes,
+) -> None:
+    """A signature alone must not send corrupt bytes under an image/png declaration."""
+
+    chair = identity("reader", "reader-v1")
+    manager, _, _, launcher, _, _ = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+        ),
+        model_ids=("reader-api",),
+        outputs={"reader-api": f"PAGE-WITNESS: {PAGE_WITNESS}"},
+    )
+    fixture = tmp_path / f"{PAGE_WITNESS}.png"
+    fixture.write_bytes(fixture_bytes)
+    handle = manager.start(chair, TIER)
+
+    with pytest.raises(ServingConfigurationError) as caught:
+        vision_smoke()(handle, chair, fixture, smoke_placement())
+
+    assert "PNG" in str(caught.value)
+    assert PAGE_WITNESS not in str(caught.value)
+    assert handle.fixture_requests_completed == 0
+    handle.stop()
+    assert launcher.processes[0].terminate_calls == 1
+
+
+def test_vision_smoke_call_refuses_png_geometry_past_the_measured_placement(
+    tmp_path: Path,
+) -> None:
+    chair = identity("reader", "reader-v1")
+    manager, _, _, launcher, _, _ = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+        ),
+        model_ids=("reader-api",),
+        outputs={"reader-api": f"PAGE-WITNESS: {PAGE_WITNESS}"},
+    )
+    fixture = tmp_path / "oversized-golden-page.png"
+    Image.new("L", (2_000, 2_000), color="white").save(fixture, format="PNG")
+    handle = manager.start(chair, TIER)
+
+    with pytest.raises(ServingConfigurationError, match="past the measured placement"):
+        vision_smoke()(handle, chair, fixture, smoke_placement())
+
+    assert handle.fixture_requests_completed == 0
+    handle.stop()
+    assert launcher.processes[0].terminate_calls == 1
+
+
+def test_vision_smoke_call_bounds_encoded_png_bytes_before_dispatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    chair = identity("reader", "reader-v1")
+    manager, _, _, launcher, _, _ = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+        ),
+        model_ids=("reader-api",),
+        outputs={"reader-api": f"PAGE-WITNESS: {PAGE_WITNESS}"},
+    )
+    fixture = tmp_path / "golden-page.png"
+    fixture_bytes = write_golden_page(fixture)
+    handle = manager.start(chair, TIER)
+    # The refusal below is driven by a lowered bound, so pin the real one too:
+    # the serving README states 64 MiB as a fact about this path, and without
+    # this the constant could move to any value with the suite still green.
+    assert smoke_module._MAXIMUM_PNG_BYTES == 64 * 1024 * 1024
+    monkeypatch.setattr(smoke_module, "_MAXIMUM_PNG_BYTES", len(fixture_bytes) - 1)
+
+    with pytest.raises(ServingConfigurationError, match="byte smoke request bound"):
+        vision_smoke()(handle, chair, fixture, smoke_placement())
+
+    assert handle.fixture_requests_completed == 0
+    handle.stop()
+    assert launcher.processes[0].terminate_calls == 1
+
+
+def test_vision_smoke_call_checks_the_format_of_the_sealed_request_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A path replacement cannot make non-PNG request bytes inherit a PNG declaration."""
+
+    chair = identity("reader", "reader-v1")
+    call = vision_smoke()
+    stale_fixture = tmp_path / "before-replacement.png"
+    stale_fixture.write_bytes(b"not a PNG")
+    stale_calibration = AdapterCalibration.from_image_fixture(
+        fixture=stale_fixture,
+        prompt=call.prompt,
+        mime_type="image/png",
+    )
+    manager, _, _, launcher, _, _ = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+        ),
+        model_ids=("reader-api",),
+        outputs={"reader-api": f"PAGE-WITNESS: {PAGE_WITNESS}"},
+    )
+    fixture = tmp_path / "golden-page.png"
+    write_golden_page(fixture)
+    handle = manager.start(chair, TIER)
+    monkeypatch.setattr(
+        AdapterCalibration,
+        "from_image_fixture",
+        staticmethod(lambda **unused: stale_calibration),
+    )
+
+    with pytest.raises(ServingConfigurationError, match="are not a PNG"):
+        call(handle, chair, fixture, smoke_placement())
+
+    assert handle.requests_completed == 0
+    handle.stop()
+    assert launcher.processes[0].terminate_calls == 1
+
+
+def test_vision_smoke_call_refuses_an_untyped_utilization_sample_tuple(tmp_path: Path) -> None:
+    chair = identity("reader", "reader-v1")
+    manager, _, _, launcher, _, _ = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+        ),
+        model_ids=("reader-api",),
+        outputs={"reader-api": f"PAGE-WITNESS: {PAGE_WITNESS}"},
+    )
+    fixture = tmp_path / "golden-page.png"
+    write_golden_page(fixture)
+    handle = manager.start(chair, TIER)
+    call = VisionSmokeCall(PAGE_WITNESS, utilization=lambda: ("71",))  # type: ignore[arg-type]
+
+    with pytest.raises(ServingConfigurationError, match="tuple of UtilizationSample values"):
+        call(handle, chair, fixture, smoke_placement())
+
+    handle.stop()
+    assert launcher.processes[0].terminate_calls == 1
+
+
+def test_vision_smoke_call_bounds_utilization_evidence_for_one_request(tmp_path: Path) -> None:
+    chair = identity("reader", "reader-v1")
+    manager, _, _, launcher, _, _ = manager_for(
+        tmp_path,
+        identities={chair.role: chair},
+        profiles=(
+            profile_row(
+                recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+            ),
+        ),
+        model_ids=("reader-api",),
+        outputs={"reader-api": f"PAGE-WITNESS: {PAGE_WITNESS}"},
+    )
+    fixture = tmp_path / "golden-page.png"
+    write_golden_page(fixture)
+    handle = manager.start(chair, TIER)
+    sample = UtilizationSample("71", "31")
+    call = VisionSmokeCall(PAGE_WITNESS, utilization=lambda: (sample,) * 1_025)
+
+    with pytest.raises(ServingConfigurationError, match="more than 1024 samples"):
+        call(handle, chair, fixture, smoke_placement())
+
+    handle.stop()
     assert launcher.processes[0].terminate_calls == 1
 
 

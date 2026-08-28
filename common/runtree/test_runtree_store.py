@@ -16,6 +16,7 @@ import inspect
 import json
 import os
 import re
+import sys
 from pathlib import Path
 
 import pytest
@@ -28,10 +29,17 @@ from common.contracts.envelope import build_envelope
 from common.contracts.errors import ApprovalRefusal, IncompatibleReuse, SchemaRefusal
 from common.contracts.identities import artifact_id
 from common.contracts.outcomes import INTERIM_GRANULARITY_BASIS
-from common.contracts.stages import DESIGNATOR, DOOR, EXEMPLAR, PERLECTOR
+from common.contracts.stages import DESIGNATOR, DOOR, EXEMPLAR, PERLECTOR, writing_directory
 from common.recensor_receipt import build_recensor_partition_receipt
 from common.runtree import store as runtree_store
-from common.runtree.store import INDEX_FILE, RECEIPTS_DIR, RUN_FILE, RunTree
+from common.runtree.store import (
+    ARTIFACTS_DIR,
+    BLOBS_DIR,
+    INDEX_FILE,
+    RECEIPTS_DIR,
+    RUN_FILE,
+    RunTree,
+)
 
 PAGE_BYTES = b"synthetic page one"
 SOURCE = [{"relative_path": "proof/page-1.png", "sha256": digest_bytes(PAGE_BYTES), "ordinal": 1}]
@@ -785,6 +793,14 @@ def test_resolving_a_path_outside_the_tree_is_refused(tmp_path):
             tree.resolve(bad)
 
 
+def test_a_path_the_filesystem_cannot_resolve_is_a_named_refusal(tmp_path):
+    """An embedded NUL is invalid at the OS boundary, not an interpreter failure."""
+    tree = make_run(tmp_path)
+
+    with pytest.raises(SchemaRefusal, match="could not be resolved inside the run tree"):
+        tree.resolve("1_exemplar/artifacts/a\x00b.json")
+
+
 def test_a_symlink_leading_out_of_the_tree_is_refused(tmp_path):
     """The `..` check cannot see this one: the path has no `..` in it, and only
     resolving it against the real filesystem shows where it lands.
@@ -863,6 +879,636 @@ def test_an_empty_stage_manifest_is_honest_rather_than_absent(tmp_path):
     manifest = tree.build_manifest(DESIGNATOR)
     assert manifest["artifacts"] == []
     assert manifest["blobs"] == []
+
+
+def test_a_manifest_refuses_a_stage_directory_replaced_by_a_regular_file(tmp_path):
+    """Missing inventory leaves are not honest absence below an invalid parent."""
+    tree = make_run(tmp_path)
+    stage_root = tree.resolve(writing_directory(DESIGNATOR))
+    stage_root.parent.mkdir(parents=True, exist_ok=True)
+    stage_root.write_bytes(b"not a stage directory")
+
+    with pytest.raises(SchemaRefusal, match="stage inventory.*not a directory"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_a_manifest_refuses_a_derived_artifact_symlink_outside_the_run_tree(tmp_path):
+    tree = make_run(tmp_path)
+    envelope = make_envelope()
+    outside = tmp_path / "outside-artifact.json"
+    outside.write_bytes(canonical_bytes(envelope))
+    artifact = tree.resolve(tree.artifact_path(DESIGNATOR, "proposal", envelope["artifact_id"]))
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.symlink_to(outside)
+
+    with pytest.raises(SchemaRefusal, match="resolves outside the run tree"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_a_manifest_refuses_a_derived_artifact_symlink_inside_the_run_tree(tmp_path):
+    """A contained target does not make a file alias an artifact the store wrote."""
+    tree = make_run(tmp_path)
+    envelope = make_envelope()
+    inside = tree.root / "aliased-artifact.json"
+    inside.write_bytes(canonical_bytes(envelope))
+    artifact = tree.resolve(tree.artifact_path(DESIGNATOR, "proposal", envelope["artifact_id"]))
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.symlink_to(inside)
+
+    with pytest.raises(SchemaRefusal, match="is a link"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_a_manifest_refuses_a_kind_directory_symlinked_outside_the_run_tree(tmp_path):
+    """A symlinked kind must not disappear as an apparently empty producer."""
+    tree = make_run(tmp_path)
+    envelope = make_envelope()
+    outside = tmp_path / "outside-kind-directory"
+    outside.mkdir()
+    (outside / f"{envelope['artifact_id']}.json").write_bytes(canonical_bytes(envelope))
+    kind_directory = tree.resolve(
+        tree.artifact_path(DESIGNATOR, "proposal", envelope["artifact_id"])
+    ).parent
+    kind_directory.parent.mkdir(parents=True, exist_ok=True)
+    kind_directory.symlink_to(outside)
+
+    with pytest.raises(SchemaRefusal, match="resolves outside the run tree"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_a_manifest_refuses_a_symlink_cycle_inside_the_run_tree(tmp_path):
+    """Containment alone cannot detect a cycle whose every target stays in-root."""
+    tree = make_run(tmp_path)
+    kind_directory = tree.resolve(tree.artifact_path(DESIGNATOR, "proposal", "placeholder")).parent
+    kind_directory.mkdir(parents=True, exist_ok=True)
+    (kind_directory / "loop").symlink_to(kind_directory)
+
+    with pytest.raises(SchemaRefusal, match="symlink cycle"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_a_manifest_refuses_a_filesystem_symlink_loop_instead_of_skipping_it(tmp_path):
+    """A self-link is named whether ``resolve`` returns it or raises for its loop.
+
+    Python 3.12 raises ``RuntimeError`` for the loop, while 3.13+ resolves as far
+    as possible in non-strict mode. Both supported behaviours must be refusals.
+    """
+    tree = make_run(tmp_path)
+    artifacts_root = tree.resolve(f"{writing_directory(DESIGNATOR)}/{ARTIFACTS_DIR}")
+    artifacts_root.mkdir(parents=True)
+    (artifacts_root / "loop").symlink_to("loop", target_is_directory=True)
+
+    with pytest.raises(SchemaRefusal, match="is a link|could not be resolved inside the run tree"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_a_manifest_names_a_path_resolution_failure(tmp_path, monkeypatch):
+    """Platforms disagree on whether an unresolvable link raises OSError or RuntimeError."""
+    tree = make_run(tmp_path)
+    envelope = make_envelope()
+    tree.publish_artifact(envelope)
+    artifact = tree.resolve(tree.artifact_path(DESIGNATOR, "proposal", envelope["artifact_id"]))
+    real_resolve = Path.resolve
+
+    def fail_for_artifact(path, *args, **kwargs):
+        if path == artifact:
+            raise RuntimeError("symlink loop")
+        return real_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", fail_for_artifact)
+
+    with pytest.raises(SchemaRefusal, match="could not be resolved inside the run tree"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_a_manifest_refuses_a_kind_directory_linked_to_nothing(tmp_path):
+    """A dangling non-JSON link must not erase a producer directory from the walk."""
+    tree = make_run(tmp_path)
+    artifacts_root = tree.resolve(f"{writing_directory(DESIGNATOR)}/{ARTIFACTS_DIR}")
+    artifacts_root.mkdir(parents=True)
+    (artifacts_root / "proposal").symlink_to("gone", target_is_directory=True)
+
+    with pytest.raises(SchemaRefusal, match="is a link"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_a_manifest_refuses_a_unique_directory_link_inside_the_run_tree(tmp_path):
+    """A link is not safe merely because its target has no second walked name."""
+    tree = make_run(tmp_path)
+    envelope = make_envelope()
+    elsewhere = tree.root / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / f"{envelope['artifact_id']}.json").write_bytes(canonical_bytes(envelope))
+    artifacts_root = tree.resolve(f"{writing_directory(DESIGNATOR)}/{ARTIFACTS_DIR}")
+    artifacts_root.mkdir(parents=True)
+    (artifacts_root / "proposal").symlink_to(elsewhere, target_is_directory=True)
+
+    with pytest.raises(SchemaRefusal, match="is a link"):
+        tree.build_manifest(DESIGNATOR)
+
+
+@pytest.mark.parametrize("alias_name", ("also-proposal", "z-proposal-alias"))
+def test_a_manifest_refuses_one_artifact_directory_reachable_at_two_paths(tmp_path, alias_name):
+    """Alias refusal must not depend on which directory name sorts first.
+
+    This covers the *symlink* alias and says so. The walk's other alias guard --
+    two names resolving to one inode, `identity in walked` -- cannot be reached
+    from here, because a symlink trips the link refusal first and a second
+    non-symlink name for one directory needs a directory hard link or a bind
+    mount, neither of which a portable test can make. Asserting the two messages
+    as an alternation let this read as coverage of both; it never was.
+    """
+    tree = make_run(tmp_path)
+    envelope = make_envelope()
+    tree.publish_artifact(envelope)
+    kind_directory = tree.resolve(
+        tree.artifact_path(DESIGNATOR, "proposal", envelope["artifact_id"])
+    ).parent
+    (kind_directory.parent / alias_name).symlink_to(kind_directory)
+
+    with pytest.raises(SchemaRefusal, match="is a link"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_a_manifest_refuses_a_pipe_named_as_an_artifact(tmp_path):
+    """A FIFO must be rejected before opening it, which would block for a writer."""
+    tree = make_run(tmp_path)
+    envelope = make_envelope()
+    tree.publish_artifact(envelope)
+    kind_directory = tree.resolve(
+        tree.artifact_path(DESIGNATOR, "proposal", envelope["artifact_id"])
+    ).parent
+    os.mkfifo(kind_directory / "waiting.json")
+
+    with pytest.raises(SchemaRefusal, match="neither a directory nor a regular file"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_a_manifest_refuses_a_pipe_occupying_an_artifact_kind_name(tmp_path):
+    """A non-JSON special file cannot erase the producer directory it occupies."""
+    tree = make_run(tmp_path)
+    artifacts_root = tree.resolve(f"{writing_directory(DESIGNATOR)}/{ARTIFACTS_DIR}")
+    artifacts_root.mkdir(parents=True)
+    os.mkfifo(artifacts_root / "proposal")
+
+    with pytest.raises(SchemaRefusal, match="artifact kind directory"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_a_manifest_refuses_a_directory_it_cannot_list(tmp_path):
+    """An unreadable directory cannot count as an empty part of the inventory."""
+    tree = make_run(tmp_path)
+    envelope = make_envelope()
+    tree.publish_artifact(envelope)
+    kind_directory = tree.resolve(
+        tree.artifact_path(DESIGNATOR, "proposal", envelope["artifact_id"])
+    ).parent
+    blocked = kind_directory / "unreadable"
+    blocked.mkdir()
+    blocked.chmod(0o000)
+    try:
+        if os.access(blocked, os.R_OK):  # pragma: no cover - running as root
+            pytest.skip("this process can list a mode-000 directory; the case cannot be built")
+        with pytest.raises(SchemaRefusal, match="could not be listed"):
+            tree.build_manifest(DESIGNATOR)
+    finally:
+        blocked.chmod(0o700)
+
+
+def test_the_artifact_walk_matches_the_glob_when_the_glob_matches_only_files(tmp_path):
+    """Ordinary-tree membership and order stay compatible with the replaced glob."""
+    tree = make_run(tmp_path)
+    published = []
+    # "Zeal" (not "Proposal") for the uppercase-ordering case: a kind differing from
+    # a sibling only by case collapses into one directory on a case-insensitive
+    # filesystem, and the walked path then contradicts the derived path.
+    for kind in ("proposal", "Zeal", "proposal-b", "seal"):
+        for index in range(3):
+            subject = f"pg_{index:016x}"
+            envelope = build_envelope(
+                run_id="r1",
+                artifact_id=artifact_id(DESIGNATOR, kind, subject),
+                subject_id=subject,
+                stage=DESIGNATOR,
+                kind=kind,
+                outcome="proposed",
+                config_digest=CONFIG_DIGEST,
+                adapter_revision="fake-designator-v0",
+                inputs=[],
+                payload={"proposals": index},
+            )
+            tree.publish_artifact(envelope)
+            published.append(envelope["artifact_id"])
+
+    artifacts_root = tree.resolve(f"{writing_directory(DESIGNATOR)}/{ARTIFACTS_DIR}")
+    globbed = [str(path.relative_to(tree.root)) for path in sorted(artifacts_root.rglob("*.json"))]
+    walked = list(tree._walk_artifact_json(artifacts_root))
+
+    assert walked == globbed
+    assert len(walked) == 12
+    manifest = tree.build_manifest(DESIGNATOR)
+    assert sorted(entry["artifact_id"] for entry in manifest["artifacts"]) == sorted(published)
+
+
+def test_a_manifest_descends_a_store_written_kind_directory_ending_in_json(tmp_path):
+    """A kind may end in ``.json`` even though artifact directories may not."""
+    tree = make_run(tmp_path)
+    kind = "proposal.json"
+    envelope = build_envelope(
+        run_id="r1",
+        artifact_id=artifact_id(DESIGNATOR, kind, "pg_0123456789abcdef"),
+        subject_id="pg_0123456789abcdef",
+        stage=DESIGNATOR,
+        kind=kind,
+        outcome="proposed",
+        config_digest=CONFIG_DIGEST,
+        adapter_revision="fake-designator-v0",
+        inputs=[],
+        payload={"proposals": []},
+    )
+    tree.publish_artifact(envelope)
+
+    manifest = tree.build_manifest(DESIGNATOR)
+
+    assert [entry["artifact_id"] for entry in manifest["artifacts"]] == [envelope["artifact_id"]]
+
+
+def test_a_manifest_refuses_an_artifact_file_replaced_by_an_empty_directory(tmp_path):
+    """A glob-matching directory below the kind level is missing artifact bytes."""
+    tree = make_run(tmp_path)
+    envelope = make_envelope()
+    tree.publish_artifact(envelope)
+    artifact = tree.resolve(tree.artifact_path(DESIGNATOR, "proposal", envelope["artifact_id"]))
+    artifact.unlink()
+    artifact.mkdir()
+
+    with pytest.raises(SchemaRefusal, match="named as an artifact but is a directory"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_the_artifact_walk_matches_the_glob_on_a_name_that_is_only_a_suffix(tmp_path):
+    """``.json`` matches the established glob even though ``Path.suffix`` is empty."""
+    tree = make_run(tmp_path)
+    envelope = make_envelope()
+    tree.publish_artifact(envelope)
+    kind_directory = tree.resolve(
+        tree.artifact_path(DESIGNATOR, "proposal", envelope["artifact_id"])
+    ).parent
+    (kind_directory / ".json").write_bytes(canonical_bytes(envelope))
+
+    with pytest.raises(SchemaRefusal, match="does not occupy its derived path"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_the_artifact_walk_does_not_recurse_once_per_directory(tmp_path):
+    """The walk's Python stack depth must not grow with filesystem depth."""
+    tree = make_run(tmp_path)
+    envelope = make_envelope()
+    tree.publish_artifact(envelope)
+    artifacts_root = tree.resolve(f"{writing_directory(DESIGNATOR)}/{ARTIFACTS_DIR}")
+    deepest = artifacts_root / "deep"
+    deepest.mkdir()
+    for _ in range(200):
+        deepest = deepest / "x"
+        deepest.mkdir()
+
+    limit = sys.getrecursionlimit()
+    # Headroom well under the 200 directories built above, so a walk that
+    # recursed once per directory still exhausts it and fails -- but far enough
+    # above the walk's own constant needs (JSON validation, `Path.resolve`)
+    # that incidental frames cannot raise `RecursionError` and be misread as
+    # the defect this hunts.
+    sys.setrecursionlimit(len(inspect.stack(0)) + 128)
+    try:
+        manifest = tree.build_manifest(DESIGNATOR)
+    finally:
+        sys.setrecursionlimit(limit)
+        # Unwound here rather than left for the temporary directory's own cleanup,
+        # which is itself a recursive walk of exactly the shape this test builds.
+        while deepest != artifacts_root:
+            deepest.rmdir()
+            deepest = deepest.parent
+
+    assert [entry["artifact_id"] for entry in manifest["artifacts"]] == [envelope["artifact_id"]]
+
+
+def test_a_manifest_refuses_an_artifacts_directory_symlinked_out_of_the_run_tree(tmp_path):
+    """Containment applies to the walk root even when its target is empty."""
+    tree = make_run(tmp_path)
+    outside = tmp_path / "outside-artifacts-directory"
+    outside.mkdir()
+    stage_root = tree.resolve(writing_directory(DESIGNATOR))
+    stage_root.mkdir(parents=True, exist_ok=True)
+    (stage_root / ARTIFACTS_DIR).symlink_to(outside)
+
+    with pytest.raises(SchemaRefusal, match="resolves outside the run tree"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_a_manifest_refuses_an_artifacts_directory_redirected_inside_the_run_tree(tmp_path):
+    """Containment does not make an in-tree alias a store-written directory."""
+    tree = make_run(tmp_path)
+    elsewhere = tree.root / "elsewhere-in-tree"
+    elsewhere.mkdir()
+    stage_root = tree.resolve(writing_directory(DESIGNATOR))
+    stage_root.mkdir(parents=True, exist_ok=True)
+    (stage_root / ARTIFACTS_DIR).symlink_to(elsewhere)
+
+    with pytest.raises(SchemaRefusal, match="is a link"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_a_manifest_refuses_an_artifacts_directory_linked_to_nothing(tmp_path):
+    """A dangling inventory link is not equivalent to an absent directory."""
+    tree = make_run(tmp_path)
+    stage_root = tree.resolve(writing_directory(DESIGNATOR))
+    stage_root.mkdir(parents=True, exist_ok=True)
+    (stage_root / ARTIFACTS_DIR).symlink_to("gone")
+
+    with pytest.raises(SchemaRefusal, match="is a link"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_a_manifest_refuses_an_artifacts_directory_replaced_by_a_regular_file(tmp_path):
+    """An inventory root must be a directory, not merely an existing path."""
+    tree = make_run(tmp_path)
+    stage_root = tree.resolve(writing_directory(DESIGNATOR))
+    stage_root.mkdir(parents=True, exist_ok=True)
+    (stage_root / ARTIFACTS_DIR).write_bytes(b"not a directory")
+
+    with pytest.raises(SchemaRefusal, match="is not a directory"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_a_manifest_refuses_a_blobs_directory_symlinked_out_of_the_run_tree(tmp_path):
+    """Blob and artifact inventory roots share the same containment requirement."""
+    tree = make_run(tmp_path)
+    outside = tmp_path / "outside-blobs-directory"
+    outside.mkdir()
+    (outside / ("a" * 64)).write_bytes(b"bytes this run never stored")
+    stage_root = tree.resolve(writing_directory(DESIGNATOR))
+    (stage_root / BLOBS_DIR).parent.mkdir(parents=True, exist_ok=True)
+    (stage_root / BLOBS_DIR).symlink_to(outside)
+
+    with pytest.raises(SchemaRefusal, match="resolves outside the run tree"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_a_manifest_refuses_a_blob_that_points_out_of_the_run_tree(tmp_path):
+    """A manifest cannot claim blob bytes that its own read route refuses."""
+    tree = make_run(tmp_path)
+    tree.put_blob(DESIGNATOR, b"a crop")
+    outside = tmp_path / "outside-blob-bytes"
+    outside.write_bytes(b"bytes this run never stored")
+    blobs_root = tree.resolve(f"{writing_directory(DESIGNATOR)}/{BLOBS_DIR}")
+    (blobs_root / ("b" * 64)).symlink_to(outside)
+
+    with pytest.raises(SchemaRefusal, match="resolves outside the run tree"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_a_manifest_refuses_a_blob_linked_to_bytes_inside_the_run_tree(tmp_path):
+    tree = make_run(tmp_path)
+    data = b"a crop"
+    digest = digest_bytes(data)
+    elsewhere = tree.root / "elsewhere.bin"
+    elsewhere.write_bytes(data)
+    blobs_root = tree.resolve(f"{writing_directory(DESIGNATOR)}/{BLOBS_DIR}")
+    blobs_root.mkdir(parents=True)
+    (blobs_root / digest).symlink_to(elsewhere)
+
+    with pytest.raises(SchemaRefusal, match="is a link"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_a_manifest_refuses_a_blob_name_that_is_not_stored_bytes(tmp_path):
+    tree = make_run(tmp_path)
+    tree.put_blob(DESIGNATOR, b"a crop")
+    blobs_root = tree.resolve(f"{writing_directory(DESIGNATOR)}/{BLOBS_DIR}")
+    os.mkfifo(blobs_root / ("c" * 64))
+
+    with pytest.raises(SchemaRefusal, match="is not a regular file"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_the_blob_inventory_lists_stored_bytes_and_not_a_publication_that_was_killed(tmp_path):
+    """Same-directory publication residue is not an addressable blob."""
+    tree = make_run(tmp_path)
+    digest, _ = tree.put_blob(DESIGNATOR, b"a crop")
+    blobs_root = tree.resolve(f"{writing_directory(DESIGNATOR)}/{BLOBS_DIR}")
+    (blobs_root / f".{digest}.tmp-abcdef").write_bytes(b"a partly published crop")
+
+    assert tree.build_manifest(DESIGNATOR)["blobs"] == [digest]
+
+
+def test_a_manifest_still_builds_over_the_directories_the_store_itself_wrote(tmp_path):
+    tree = make_run(tmp_path)
+    envelope = make_envelope()
+    tree.publish_artifact(envelope)
+    tree.put_blob(DESIGNATOR, b"a crop")
+
+    manifest = tree.build_manifest(DESIGNATOR)
+
+    assert [entry["artifact_id"] for entry in manifest["artifacts"]] == [envelope["artifact_id"]]
+    assert manifest["blobs"] == [digest_bytes(b"a crop")]
+
+
+def test_a_manifest_hashes_the_same_artifact_read_it_verified(tmp_path, monkeypatch):
+    """Verified metadata and its digest must come from one filesystem snapshot."""
+    tree = make_run(tmp_path)
+    envelope = make_envelope()
+    tree.publish_artifact(envelope)
+    artifact = tree.resolve(tree.artifact_path(DESIGNATOR, "proposal", envelope["artifact_id"]))
+    expected_bytes = canonical_bytes(envelope)
+    artifact_identity = (artifact.stat().st_dev, artifact.stat().st_ino)
+    real_fdopen = os.fdopen
+    reads = 0
+
+    def counted_fdopen(descriptor, *args, **kwargs):
+        nonlocal reads
+        opened = os.fstat(descriptor)
+        if (opened.st_dev, opened.st_ino) == artifact_identity:
+            reads += 1
+        return real_fdopen(descriptor, *args, **kwargs)
+
+    monkeypatch.setattr(os, "fdopen", counted_fdopen)
+    # `os.fdopen` is not the only way to read the file. Counting that route
+    # alone, a change that hashed via `Path.read_bytes` would leave `reads` at
+    # 1 and the digest still correct -- the file does not change during the
+    # test -- so the manifest could hash bytes it never verified and this would
+    # still report success.
+    real_read_bytes = Path.read_bytes
+
+    def counted_read_bytes(path):
+        nonlocal reads
+        named = path.stat()
+        if (named.st_dev, named.st_ino) == artifact_identity:
+            reads += 1
+        return real_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", counted_read_bytes)
+
+    entry = tree.build_manifest(DESIGNATOR)["artifacts"][0]
+
+    assert reads == 1
+    assert entry["sha256"] == digest_bytes(expected_bytes)
+
+
+def test_a_manifest_refuses_an_artifact_replaced_by_a_link_at_open(tmp_path, monkeypatch):
+    """The no-follow open closes the lstat-to-read replacement window."""
+    tree = make_run(tmp_path)
+    envelope = make_envelope()
+    tree.publish_artifact(envelope)
+    artifact = tree.resolve(tree.artifact_path(DESIGNATOR, "proposal", envelope["artifact_id"]))
+    outside = tmp_path / "outside-at-open.json"
+    outside.write_bytes(canonical_bytes(envelope))
+    real_open = os.open
+    replaced = False
+
+    def replace_before_open(path, flags, *args, **kwargs):
+        nonlocal replaced
+        if path == artifact.name and kwargs.get("dir_fd") is not None and not replaced:
+            replaced = True
+            artifact.unlink()
+            artifact.symlink_to(outside)
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", replace_before_open)
+
+    with pytest.raises(SchemaRefusal, match="without following links"):
+        tree.build_manifest(DESIGNATOR)
+    assert replaced is True
+
+
+def test_a_manifest_refuses_an_empty_inventory_directory_replaced_during_listing(
+    tmp_path, monkeypatch
+):
+    """An opened empty directory cannot be renamed away and reported as current."""
+    tree = make_run(tmp_path)
+    artifacts_root = tree.resolve(f"{writing_directory(DESIGNATOR)}/{ARTIFACTS_DIR}")
+    artifacts_root.mkdir(parents=True)
+    original_identity = (artifacts_root.stat().st_dev, artifacts_root.stat().st_ino)
+    parked = tree.root / "parked-artifacts"
+    outside = tmp_path / "outside-empty-artifacts"
+    outside.mkdir()
+    real_scandir = os.scandir
+    replaced = False
+
+    def replace_after_listing(path):
+        nonlocal replaced
+        listing = real_scandir(path)
+        opened = os.fstat(path)
+        if (opened.st_dev, opened.st_ino) == original_identity and not replaced:
+            replaced = True
+            artifacts_root.rename(parked)
+            artifacts_root.symlink_to(outside, target_is_directory=True)
+        return listing
+
+    monkeypatch.setattr(os, "scandir", replace_after_listing)
+
+    with pytest.raises(SchemaRefusal, match="resolves outside the run tree|is a link"):
+        tree.build_manifest(DESIGNATOR)
+    assert replaced is True
+
+
+def test_a_manifest_refuses_a_run_root_replaced_after_the_tree_was_opened(tmp_path):
+    """Containment is bound to the opened run directory's device and inode."""
+    tree = make_run(tmp_path)
+    original = tmp_path / "original-r1"
+    tree.root.rename(original)
+    tree.root.mkdir()
+    (tree.root / RUN_FILE).write_bytes((original / RUN_FILE).read_bytes())
+
+    with pytest.raises(SchemaRefusal, match="device or inode changed"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_a_manifest_refuses_case_variant_inventory_names(tmp_path):
+    """A Linux-built tree must not silently collapse when moved to default APFS."""
+    tree = make_run(tmp_path)
+    artifacts_root = tree.resolve(f"{writing_directory(DESIGNATOR)}/{ARTIFACTS_DIR}")
+    artifacts_root.mkdir(parents=True)
+    lower = artifacts_root / "residue"
+    upper = artifacts_root / "RESIDUE"
+    lower.write_bytes(b"one")
+    upper.write_bytes(b"two")
+    if lower.samefile(upper):
+        pytest.skip("the filesystem itself conflates case variants")
+
+    with pytest.raises(SchemaRefusal, match="case-variant names"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_a_manifest_refuses_an_artifact_too_large_to_read_safely(tmp_path):
+    tree = make_run(tmp_path)
+    envelope = make_envelope()
+    tree.publish_artifact(envelope)
+    artifact = tree.resolve(tree.artifact_path(DESIGNATOR, "proposal", envelope["artifact_id"]))
+    os.truncate(artifact, runtree_store._MAX_MANIFEST_ARTIFACT_BYTES + 1)
+
+    with pytest.raises(SchemaRefusal, match="manifest artifact limit"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_a_manifest_refuses_an_unbounded_number_of_walk_entries(tmp_path, monkeypatch):
+    tree = make_run(tmp_path)
+    artifacts_root = tree.resolve(f"{writing_directory(DESIGNATOR)}/{ARTIFACTS_DIR}")
+    artifacts_root.mkdir(parents=True)
+    for name in ("one", "two", "three"):
+        (artifacts_root / name).write_bytes(b"publication residue")
+    monkeypatch.setattr(runtree_store, "_MAX_MANIFEST_WALK_ENTRIES", 2)
+
+    with pytest.raises(SchemaRefusal, match="entry manifest walk limit") as refusal:
+        tree.build_manifest(DESIGNATOR)
+    # One listing carries every entry, so this is the per-directory guard in
+    # `_listing_fd`. Named here so the cumulative case below cannot be mistaken
+    # for a duplicate of it.
+    assert not str(refusal.value).startswith("artifact inventory")
+
+
+def test_a_manifest_bounds_the_whole_walk_not_only_each_directory(tmp_path, monkeypatch):
+    """The cumulative walk bound is a guard in its own right.
+
+    Every directory here lists under the limit, so the per-directory refusal
+    never fires and only the running `examined` count in `_walk_artifact_json`
+    can stop the walk. Both bounds read `_MAX_MANIFEST_WALK_ENTRIES`, so without
+    a case that separates them an implementation that counted per directory and
+    reset between them would satisfy the suite while an artifact tree of
+    unbounded *total* size walked to the end.
+    """
+    tree = make_run(tmp_path)
+    artifacts_root = tree.resolve(f"{writing_directory(DESIGNATOR)}/{ARTIFACTS_DIR}")
+    for directory in ("first", "second"):
+        nested = artifacts_root / directory
+        nested.mkdir(parents=True)
+        for name in ("one", "two"):
+            (nested / name).write_bytes(b"publication residue")
+    # Six entries in all; no single directory lists more than two.
+    monkeypatch.setattr(runtree_store, "_MAX_MANIFEST_WALK_ENTRIES", 3)
+
+    with pytest.raises(SchemaRefusal, match="artifact inventory exceeds"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_a_manifest_rechecks_containment_after_collecting_walk_members(tmp_path, monkeypatch):
+    """A path cannot become an out-of-tree link between the walk and its one read."""
+    tree = make_run(tmp_path)
+    envelope = make_envelope()
+    tree.publish_artifact(envelope)
+    artifact = tree.resolve(tree.artifact_path(DESIGNATOR, "proposal", envelope["artifact_id"]))
+    outside = tmp_path / "outside-after-walk.json"
+    outside.write_bytes(canonical_bytes(envelope))
+    real_walk = tree._walk_artifact_json
+
+    def replace_after_walk(directory):
+        yield from real_walk(directory)
+        artifact.unlink()
+        artifact.symlink_to(outside)
+
+    monkeypatch.setattr(tree, "_walk_artifact_json", replace_after_walk)
+
+    with pytest.raises(SchemaRefusal, match="resolves outside the run tree"):
+        tree.build_manifest(DESIGNATOR)
 
 
 # --- Inventory scope: harvest invariant #13 ------------------------------------

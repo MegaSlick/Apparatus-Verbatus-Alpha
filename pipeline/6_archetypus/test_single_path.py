@@ -30,6 +30,7 @@ from common.contracts.identities import artifact_id
 from common.contracts.stages import ARCHETYPUS, ATTESTATORES, PERLECTOR, RECENSOR
 from common.runtree.store import RunTree
 from common.stage import EXIT_HELD
+from common.witness_regime import pseudonym_for
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -280,6 +281,169 @@ def test_embedded_prior_text_must_match_the_referenced_lectio_prior(tmp_path):
     assert result.returncode == 2, result.stderr
     assert "Traceback" not in result.stderr
     assert "disagrees with its referenced lectio-prior" in result.stderr
+
+
+def test_embedded_page_witness_count_must_match_the_act_attachment(tmp_path):
+    def forge_count(payload):
+        dossier = dict(payload["dossier"])
+        attachment = dict(dossier["act_attachment"])
+        attachment["page_witness_count"] += 1
+        dossier["act_attachment"] = attachment
+        dossier["dossier_digest"] = digest_of(
+            {key: value for key, value in dossier.items() if key != "dossier_digest"}
+        )
+        payload["dossier"] = dossier
+
+    result = _archetypus_after(tmp_path, forge_count)
+    assert result.returncode == 2, result.stderr
+    assert "embedded page-witness count disagrees with its attachment" in result.stderr
+
+
+def _reseal_dossier(mutate_dossier):
+    def mutate(payload):
+        dossier = dict(payload["dossier"])
+        mutate_dossier(dossier)
+        dossier["dossier_digest"] = digest_of(
+            {key: value for key, value in dossier.items() if key != "dossier_digest"}
+        )
+        payload["dossier"] = dossier
+
+    return mutate
+
+
+def test_a_dossier_under_an_unrecognized_witness_regime_cannot_establish(tmp_path):
+    """An unknown regime has no safe chair-to-label rule or default."""
+    result = _archetypus_after(
+        tmp_path, _reseal_dossier(lambda dossier: dossier.update(witness_regime="anonymous"))
+    )
+    assert result.returncode == 2, result.stderr
+    assert "Traceback" not in result.stderr
+    # Pinned to the message this check owns: "which is not one of" is also
+    # produced by the provenance-regime and established-text-status refusals,
+    # so the bare fragment could be satisfied by a refusal about neither.
+    assert "embeds a dossier under witness regime" in result.stderr
+
+
+def test_a_blinded_comparison_view_may_not_wear_a_label_the_dossier_never_carried(tmp_path):
+    """A syntactically plausible pseudonym is not evidence of a dossier witness.
+
+    The regime is blinded and the testimonia are blinded with it, so the refusal
+    can only come from the forged label. Written the short way -- regime flipped
+    to blinded while the rows stayed named -- every real pseudonym was already
+    absent from `labels`, the check fired on that alone, and the forgery was
+    inert: the assertion passed without ever testing what the name claims.
+    """
+    root = tmp_path / "runs"
+    run_through_recensor(root, "r")
+    tree = RunTree(root, "r")
+    config_digest = tree.read_run()["config_digest"]
+
+    def blind_and_forge(payload):
+        dossier = dict(payload["dossier"])
+        dossier["witness_regime"] = "blinded"
+        rows = []
+        for row in dossier["testimonia"]:
+            copied = dict(row)
+            copied["witness_label"] = pseudonym_for(
+                row["witness_label"], run_id="r", config_digest=config_digest
+            )
+            rows.append(copied)
+        attachment = dict(dossier["act_attachment"])
+        named_views = attachment["comparison_views"]
+        # Forge the row for a chair the attachment actually names. The testimonia
+        # are the wider list, so blanking an arbitrary row proves nothing: the
+        # attachment's labels would all still be carried and the run establishes.
+        attached = {
+            pseudonym_for(chair, run_id="r", config_digest=config_digest) for chair in named_views
+        }
+        forged = next(row for row in rows if row["witness_label"] in attached)
+        forged["witness_label"] = "witness-000000000000"
+        dossier["testimonia"] = sorted(rows, key=lambda row: row["witness_label"])
+
+        attachment["comparison_views"] = {
+            pseudonym_for(chair, run_id="r", config_digest=config_digest): text
+            for chair, text in named_views.items()
+        }
+        dossier["act_attachment"] = attachment
+        dossier["dossier_digest"] = digest_of(
+            {key: value for key, value in dossier.items() if key != "dossier_digest"}
+        )
+        payload["dossier"] = dossier
+
+    _reseal_reading(tree, accepted_review(tree), blind_and_forge)
+    result = invoke(root, "r", "happy", "pipeline/6_archetypus/run.py")
+
+    assert result.returncode == 2, result.stderr
+    assert "Traceback" not in result.stderr
+    assert "name no witness this dossier carries" in result.stderr
+
+
+def test_blinded_comparison_views_cannot_exchange_valid_witness_labels(tmp_path):
+    """A text multiset cannot prove attribution when valid pseudonyms are swapped."""
+    root = tmp_path / "runs"
+    run_through_recensor(root, "r")
+    tree = RunTree(root, "r")
+    config_digest = tree.read_run()["config_digest"]
+
+    def blind_and_swap(payload):
+        dossier = dict(payload["dossier"])
+        dossier["witness_regime"] = "blinded"
+        rows = []
+        for row in dossier["testimonia"]:
+            copied = dict(row)
+            copied["witness_label"] = pseudonym_for(
+                row["witness_label"], run_id="r", config_digest=config_digest
+            )
+            rows.append(copied)
+        dossier["testimonia"] = sorted(rows, key=lambda row: row["witness_label"])
+
+        attachment = dict(dossier["act_attachment"])
+        named_views = attachment["comparison_views"]
+        blinded_views = {
+            pseudonym_for(chair, run_id="r", config_digest=config_digest): text
+            for chair, text in named_views.items()
+        }
+        labels = sorted(blinded_views)
+        assert len(labels) >= 2, "the fixture must carry two attached page witnesses"
+        # If the two carried the same text the swap would be a no-op and the
+        # refusal below would have to come from somewhere else, leaving the
+        # attribution claim this test names unproven.
+        assert blinded_views[labels[0]] != blinded_views[labels[1]], (
+            "the swap must actually exchange two different readings"
+        )
+        blinded_views[labels[0]], blinded_views[labels[1]] = (
+            blinded_views[labels[1]],
+            blinded_views[labels[0]],
+        )
+        attachment["comparison_views"] = blinded_views
+        dossier["act_attachment"] = attachment
+        dossier["dossier_digest"] = digest_of(
+            {key: value for key, value in dossier.items() if key != "dossier_digest"}
+        )
+        payload["dossier"] = dossier
+
+    _reseal_reading(tree, accepted_review(tree), blind_and_swap)
+    result = invoke(root, "r", "happy", "pipeline/6_archetypus/run.py")
+
+    assert result.returncode == 2, result.stderr
+    assert "Traceback" not in result.stderr
+    assert "embedded comparison views disagree with its attachment" in result.stderr
+
+
+def test_a_reading_may_not_be_accounted_to_a_page_none_of_its_regions_cites(tmp_path):
+    """The attachment subject must be among the pages the reading actually cites."""
+
+    def repage_regions(payload):
+        basis = dict(payload["basis"])
+        basis["regions"] = [
+            {**region, "source_page_id": "page_ffffffffffffffff"} for region in basis["regions"]
+        ]
+        payload["basis"] = basis
+
+    result = _archetypus_after(tmp_path, repage_regions)
+    assert result.returncode == 2, result.stderr
+    assert "Traceback" not in result.stderr
+    assert "none of its basis regions cites" in result.stderr
 
 
 def test_a_prior_draft_from_another_reading_attempt_cannot_establish(tmp_path):
