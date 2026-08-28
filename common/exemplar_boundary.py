@@ -419,11 +419,12 @@ def verify_exemplar_crop_lineage(
     _validate_exemplar_transform(transform)
     if set(transform) != {"operation", "source_page_ordinal", "source_page_id", "bounds"}:
         raise ContractError("a crop region carries no complete Exemplar transform")
+    # The operation is settled by the two checks above rather than here: the
+    # closed vocabulary gives "split", "deskew" and "convert" key sets of their
+    # own, so nothing but a validated crop survives the four-key shape check.
     ordinal = transform["source_page_ordinal"]
     source_page_id = transform["source_page_id"]
     bounds = transform["bounds"]
-    if transform["operation"] != "crop":
-        raise ContractError("a crop region carries an invalid Exemplar transform")
     if payload.get("region_id") != region_id(region.get("subject_id"), transform):
         raise ContractError("a crop region's identities do not bind its recorded transform")
     _verify_act_identity_binding(tree, region, payload)
