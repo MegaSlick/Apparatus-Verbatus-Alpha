@@ -15,7 +15,7 @@ from typing import Sequence
 
 from operations.pod.models import PodCreateRequest, require_utc
 
-from . import notify_bridge
+from . import console, notify_bridge
 from .advance import sealed_boundary, trigger_advance
 from .custody import python_module_command, run_confined
 from .errors import ErrorCode, OperatorError, strip_control_bytes
@@ -421,6 +421,13 @@ def _review_in_custody(run_root: Path, run_id: str, workspace: Path) -> None:
             # platform-enforcement refusal rather than a claim that the run
             # tree itself is unreadable.
             raise OperatorError(ErrorCode.CONSOLE_CUSTODY_REFUSED, detail=launcher)
+        if completed.returncode == console.PROJECTION_UNREADABLE_EXIT:
+            # The console never opened the run tree, so this must not tell the
+            # operator to preserve and investigate its evidence.
+            raise OperatorError(
+                ErrorCode.CONSOLE_PROJECTION_UNREADABLE,
+                detail=completed.stderr or completed.stdout,
+            )
         raise OperatorError(
             ErrorCode.CONSOLE_TREE_UNREADABLE, detail=completed.stdout or completed.stderr
         )

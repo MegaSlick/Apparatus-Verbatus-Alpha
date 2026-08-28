@@ -10,6 +10,13 @@ import json
 import sys
 from typing import Sequence
 
+# A distinct status, so the parent never reports this process's own broken
+# input pipe as a claim about the run tree. Exit 2 was indistinguishable from
+# "the console read the tree and could not make sense of it", and the operator
+# was told to freeze a parish run tree and open an evidence investigation
+# because two of this tool's own processes had mishandled a pipe.
+PROJECTION_UNREADABLE_EXIT = 3
+
 
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
@@ -34,7 +41,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "itself was never read by this process",
             file=sys.stderr,
         )
-        return 2
+        return PROJECTION_UNREADABLE_EXIT
     print(json.dumps(projection, sort_keys=True))
     return 0
 

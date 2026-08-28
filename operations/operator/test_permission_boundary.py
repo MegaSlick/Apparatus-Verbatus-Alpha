@@ -25,6 +25,8 @@ from operations.operator import advance, advance_worker, cli, console, custody, 
 from operations.operator.errors import ErrorCode, OperatorError
 from operations.operator.review import ReviewProjection
 
+_EMPTY_VIEW = ReviewProjection("reviewed", (), (), (), None, ())
+
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
 
@@ -466,15 +468,83 @@ def test_a_boundary_that_stopped_verifying_is_refused_before_the_worker_is_launc
     } == receipts_before
 
 
-def test_console_process_cannot_import_writers_or_keep_provider_credentials(tmp_path: Path):
-    source = inspect.getsource(console)
-    assert "RunTree" not in source
-    assert "write_approval_record" not in source
-    assert "build_approval_record" not in source
-    assert "trigger_advance" not in source
+def test_console_process_cannot_import_writers_or_keep_provider_credentials():
+    """Measure what importing the console actually loads, not what its text says.
+
+    Reading `inspect.getsource(console)` for forbidden names left two ways to
+    break the boundary and keep the test green: the console imports a small
+    helper and the helper imports `RunTree`, or it resolves a writer through
+    `importlib.import_module` and no forbidden spelling appears at all. The
+    module set after a real import in a child interpreter is the fact the
+    boundary is about, and a helper-shaped regression fails here.
+    """
+    loaded = subprocess.run(
+        [
+            sys.executable,
+            *custody.CHILD_INTERPRETER_FLAGS,
+            "-c",
+            "import json, sys\n"
+            "sys.path.insert(0, sys.argv[1])\n"
+            "import operations.operator.console\n"
+            "print(json.dumps(sorted(sys.modules)))\n",
+            str(ROOT),
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert loaded.returncode == 0, loaded.stderr
+    modules = set(json.loads(loaded.stdout))
+    forbidden = {
+        "common.runtree.store",
+        "common.contracts.approval",
+        "operations.operator.advance",
+        "operations.operator.advance_worker",
+        "operations.operator.backup",
+        "operations.operator.backup_worker",
+        "operations.operator.cli",
+        "operations.operator.review",
+    }
+    assert modules & forbidden == set(), sorted(modules & forbidden)
+    # The negative would hold vacuously if the child had imported nothing at
+    # all, so name the module the boundary is about.
+    assert "operations.operator.console" in modules
     assert custody.credential_free_environment({"RUNPOD_API_KEY": "secret", "SAFE": "yes"}) == {
         "SAFE": "yes"
     }
+
+
+def test_a_broken_projection_pipe_never_reads_as_damaged_run_tree_evidence(tmp_path, monkeypatch):
+    """The console's own input failure must not send anyone to freeze a parish.
+
+    Exit 2 for a truncated projection was indistinguishable from "the console
+    read the tree and could not make sense of it", so the operator was told to
+    preserve the run tree unchanged and investigate its evidence because two
+    of this tool's processes had mishandled a pipe between them.
+    """
+    backend = _StubConfinement(lambda command: command)
+
+    def _truncated(*_args, **_kwargs):
+        return backend, subprocess.CompletedProcess(
+            [], console.PROJECTION_UNREADABLE_EXIT, "", "the projection was not complete JSON"
+        )
+
+    monkeypatch.setattr(cli, "run_confined", _truncated)
+    monkeypatch.setattr(
+        cli, "ReadOnlyRun", lambda *_args: types.SimpleNamespace(projection=lambda: _EMPTY_VIEW)
+    )
+    monkeypatch.setattr(cli, "_bound_run_tree", lambda *_args: None)
+
+    with pytest.raises(OperatorError) as excinfo:
+        cli._review_in_custody(tmp_path, "reviewed", ROOT)
+
+    assert excinfo.value.code == ErrorCode.CONSOLE_PROJECTION_UNREADABLE
+    rendered = excinfo.value.render()
+    assert "Preserve the run tree unchanged" not in rendered
+    assert "never opened by that process" in rendered
+    assert "not complete JSON" in rendered
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="Landlock is Linux-only")
