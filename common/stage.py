@@ -1620,6 +1620,7 @@ def run_config_bindings(
     serving_recipes_config_path: str | Path = DEFAULT_SERVING_RECIPES_CONFIG_PATH,
     pod_placement_config_path: str | Path = DEFAULT_POD_PLACEMENT_CONFIG_PATH,
     corpus_frame_config_path: str | Path = DEFAULT_CORPUS_FRAME_CONFIG_PATH,
+    triage_modes_config_path: str | Path = DEFAULT_TRIAGE_MODES_CONFIG_PATH,
 ) -> dict[str, Any]:
     """The three `run.json` bindings, and everything that shapes them.
 
@@ -1699,9 +1700,11 @@ def run_config_bindings(
     corpus_frame_policy, corpus_frame_config_digest = load_corpus_frame_policy(
         corpus_frame_config_path
     )
-    triage_modes_config_digest = digest_bytes(
-        _read_triage_modes_config(DEFAULT_TRIAGE_MODES_CONFIG_PATH)
-    )
+    # The parameter, not the module default: every other sealed configuration here
+    # binds the path its caller named, and `require_triage_modes` already accepts
+    # one at the point of use. Sealing the default while the recheck read a caller's
+    # file would have reported drift on two files that had each never changed.
+    triage_modes_config_digest = digest_bytes(_read_triage_modes_config(triage_modes_config_path))
     armarium_formats_digest, armarium_formats = bind_armarium_formats(armarium_formats_config_path)
     try:
         serving_recipes_config_digest = digest_bytes(Path(serving_recipes_config_path).read_bytes())

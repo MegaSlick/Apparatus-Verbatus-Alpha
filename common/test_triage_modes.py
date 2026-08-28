@@ -65,6 +65,30 @@ def test_triage_modes_are_bound_at_run_creation():
     )
 
 
+def test_the_binding_seals_the_configuration_its_caller_named(tmp_path):
+    """Every other sealed configuration binds a caller-supplied path; triage modes
+    alone read the repository default, so a run bound against another file sealed a
+    digest of bytes its point-of-use check would never read. Found by CodeRabbit."""
+    root = Path(__file__).resolve().parents[1]
+    config = tmp_path / "triage_modes.toml"
+    config.write_text(
+        "[manual]\nreview_at_or_below_confidence = 3\n"
+        "[semi]\nreview_at_or_below_confidence = 2\n"
+        "[auto]\nreview_at_or_below_confidence = 1\n"
+    )
+    fixture = load_fixture(root / "proof")
+
+    bindings = run_config_bindings(
+        ChairRegistry.from_toml(root / "config/models.toml").config,
+        fixture,
+        "happy",
+        triage_modes_config_path=config,
+    )
+
+    assert bindings["sealed_config_digests"]["triage-modes"] == digest_bytes(config.read_bytes())
+    require_triage_modes(bindings["sealed_config_digests"], config)
+
+
 def test_triage_modes_refuse_an_unsealed_or_non_vocabulary_config(tmp_path):
     config = tmp_path / "triage_modes.toml"
     config.write_text(
