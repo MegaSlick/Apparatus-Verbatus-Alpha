@@ -153,7 +153,12 @@ def _literal_import_modules(node: ast.Call) -> list[str]:
         or isinstance(function, ast.Attribute)
         and function.attr == "import_module"
     )
-    is_builtin_import = isinstance(function, ast.Name) and function.id == "__import__"
+    is_builtin_import = (
+        isinstance(function, ast.Name)
+        and function.id == "__import__"
+        or isinstance(function, ast.Attribute)
+        and function.attr == "__import__"
+    )
     if not (
         (is_import_module or is_builtin_import)
         and node.args
@@ -317,7 +322,9 @@ def test_the_reseal_guard_sees_every_form_the_helper_could_arrive_under(tmp_path
         "from . import reseal_chain as forge\n"
         "from .reseal_chain import reseal\n"
         "__import__('pipeline.6_archetypus', fromlist=('reseal_chain',))\n"
-        "__import__('6_archetypus', fromlist=['reseal_chain'])\n",
+        "__import__('6_archetypus', fromlist=['reseal_chain'])\n"
+        "import builtins\n"
+        "builtins.__import__('5_recensor', fromlist=('reseal_chain',))\n",
         encoding="utf-8",
     )
 
@@ -330,4 +337,5 @@ def test_the_reseal_guard_sees_every_form_the_helper_could_arrive_under(tmp_path
         "pipeline.6_archetypus.reseal_chain",
         ".reseal_chain",
         "6_archetypus.reseal_chain",
+        "5_recensor.reseal_chain",
     }
