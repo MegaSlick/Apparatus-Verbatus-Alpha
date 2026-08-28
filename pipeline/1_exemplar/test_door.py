@@ -1638,9 +1638,7 @@ def test_an_unreadable_corpus_register_really_does_leave_no_run_behind(tmp_path,
     ), "the refused run left records behind"
 
 
-def test_an_unapproved_run_root_is_named_before_its_run_authority_is_read(
-    tmp_path, monkeypatch
-):
+def test_an_unapproved_run_root_is_named_before_its_run_authority_is_read(tmp_path, monkeypatch):
     """The storage gate runs before the run-level cap, so no run.json is opened.
 
     The cap check used to run first, in `main`, against the typed run root. For a
