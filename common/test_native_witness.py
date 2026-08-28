@@ -585,7 +585,10 @@ def test_an_unpresented_page_record_still_needs_a_real_page_ordinal():
         ([{"ordinal": True, "bounds_source": "native", "bounds": {}}], "ordinal"),
         ([{"ordinal": 0, "bounds_source": "vendor-guess", "bounds": {}}], "unknown bounds_source"),
         ([{"ordinal": 0, "bounds_source": "native"}], "page-pixel box"),
-        ([{"ordinal": 0, "bounds_source": "derived", "bounds": {"x": 0, "y": 0}}], "page-pixel box"),
+        (
+            [{"ordinal": 0, "bounds_source": "derived", "bounds": {"x": 0, "y": 0}}],
+            "page-pixel box",
+        ),
     ),
 )
 def test_a_coverage_consumer_names_malformed_observations_instead_of_indexing_them(

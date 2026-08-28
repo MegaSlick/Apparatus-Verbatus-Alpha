@@ -140,7 +140,9 @@ def test_a_page_witness_with_one_failed_and_one_unread_act_is_still_attempted():
 def _is_call_statement(statement: ast.stmt, name: str) -> bool:
     """A bare or assigned call to `name`, which running the block must execute."""
     value = statement.value if isinstance(statement, (ast.Assign, ast.Expr)) else None
-    return isinstance(value, ast.Call) and isinstance(value.func, ast.Name) and value.func.id == name
+    return (
+        isinstance(value, ast.Call) and isinstance(value.func, ast.Name) and value.func.id == name
+    )
 
 
 TESTIMONIUM_KINDS = {"testimonium", "page-testimonium"}
@@ -491,8 +493,10 @@ def test_a_page_witness_shown_pixels_carries_the_serving_moment_that_produced_th
     (
         ({}, "no payload and page-space transform"),
         ({"payload": "not-an-object"}, "no payload and page-space transform"),
-        ({"payload": {"region_id": "r1", "image_path": "p", "image_sha256": "s"}},
-         "no payload and page-space transform"),
+        (
+            {"payload": {"region_id": "r1", "image_path": "p", "image_sha256": "s"}},
+            "no payload and page-space transform",
+        ),
         (
             {
                 "payload": {

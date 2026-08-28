@@ -545,6 +545,7 @@ def validate_testimonium_regions(context, record: dict, proposal_regions: list[d
             "a Testimonium does not name exactly the bound proposal regions its presentation "
             "does not speak for"
         )
+
     # One spelling of this refusal, called from both paths rather than hoisted
     # above them. Order is load-bearing: a forged region presentation also has
     # the wrong inputs, and checking those first would answer "wrong blobs" for
@@ -786,6 +787,8 @@ ATTACHMENT_FIELDS: Final = frozenset(
         "span",
     }
 )
+
+
 def _validate_attachment_shape(attachment: Any) -> None:
     """The one closed-shape rule for an attachment, applied wherever it is read.
 

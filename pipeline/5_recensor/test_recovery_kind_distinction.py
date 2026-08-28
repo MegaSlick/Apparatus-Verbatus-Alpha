@@ -105,8 +105,7 @@ def test_the_real_recovery_request_names_fallback_recrop(tmp_path):
     # declared-crop phrase is absent is satisfied by an empty reason or an
     # unrelated one, so the cause it must actually name is asserted positively.
     assert by_act_request["a2"]["payload"]["reason"] == (
-        "a page witness reported ink outside every sealed proposal; "
-        "an expanded recrop is requested"
+        "a page witness reported ink outside every sealed proposal; an expanded recrop is requested"
     )
 
     reviews = [
