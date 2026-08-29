@@ -90,10 +90,9 @@ def test_the_3_12_floor_gate_still_runs_outside_the_matrix():
         "the 3.12 floor cannot be distinguished from 3.13/3.14 cross-version "
         "coverage without one"
     )
-    assert "3.12" in [str(version) for version in matrix_versions], (
+    assert str(matrix_versions[0]) == "3.12", (
         f"the Python version matrix is {matrix_versions!r}; 3.12 is the floor "
-        "(GAMEPLAN_v3.md Phase 1) and must be present, with 3.13/3.14 as "
-        "additional cross-version coverage"
+        "and must be listed first, with the later legs as cross-version coverage"
     )
     # Branch protection requires the single context `check`; the summary job is
     # that name, and it must gate on every matrix leg or the requirement is
