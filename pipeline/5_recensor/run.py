@@ -294,7 +294,11 @@ def act_attachment_facts(
         if not isinstance(entry.get("attached"), bool) or not isinstance(
             entry.get("comparable"), bool
         ):
-            raise FatalAccounting(f"act {act_id} has ambiguous derived act-attachment facts")
+            raise FatalAccounting(
+                f"act {act_id} attachment entry for chair {entry['chair']!r} has no boolean "
+                "attached/comparable pair; the witness floor cannot be counted from an "
+                "ambiguous attachment; rebuild the entry from the retained Testimonia"
+            )
         attachment_basis = entry.get("attachment_basis")
         if attachment_basis not in ATTACHMENT_BASES:
             raise FatalAccounting(
@@ -585,7 +589,11 @@ def act_attachment_facts(
         }
         if chair in facts:
             if not (page_witness and facts[chair]["page_witness"]):
-                raise FatalAccounting(f"act {act_id} has ambiguous derived act-attachment facts")
+                raise FatalAccounting(
+                    f"act {act_id} has two attachment entries for chair {chair!r} and at least "
+                    "one is act-scoped; only page-witness rows may repeat, once per contributing "
+                    "page; retain exactly one act-scoped entry per chair"
+                )
             if facts[chair]["content_health"] != fact["content_health"]:
                 raise FatalAccounting(
                     f"act {act_id} page witness {chair!r} restates different content health "
@@ -1695,7 +1703,7 @@ def testimony_content_findings(context) -> dict[int, dict]:
                 )
             # A page witness that read nothing across every act on this page --
             # every configured act was `dead`, `not-run`, or otherwise non-reading
-            # for this chair -- carries no `reported` text: `testimonium_payload`'s
+            # for this chair -- carries no retained `payload` text: `testimonium_payload`'s
             # reading-only bridge (pipeline/3_attestatores/run.py) never sets it for
             # a non-reading outcome. The outcome check above distinguishes that
             # legitimate absence from a malformed producer that claims it read the

@@ -11,7 +11,7 @@ import pytest
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import FatalAccounting
 from common.contracts.outcomes import OutcomeClass, classify, terminal_category
-from common.contracts.stages import EXEMPLAR, INK_MAP
+from common.contracts.stages import DESIGNATOR, EXEMPLAR, INK_MAP
 from common.imaging import encode_grayscale_png
 from common.runtree.store import RunTree
 
@@ -62,7 +62,10 @@ def test_every_sealed_page_is_mapped_before_any_detection(tmp_path):
     maps = [row for row in tree.build_manifest(INK_MAP)["artifacts"] if row["kind"] == "ink-map"]
     assert len(sealed_pages) == 2
     assert len(maps) == len(sealed_pages)
-    assert not tree.resolve(tree.manifest_path("designator")).exists()
+    # The constant, not the literal: a bare string that stops matching the
+    # stage identifier points the path at somewhere nothing writes, and the
+    # assertion then passes for the wrong reason forever.
+    assert not tree.resolve(tree.manifest_path(DESIGNATOR)).exists()
 
 
 def test_early_map_and_late_reconciliation_import_one_measure():

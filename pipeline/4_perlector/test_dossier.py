@@ -295,6 +295,36 @@ def test_an_attachment_with_no_edge_deltas_key_at_all_is_refused_not_read_as_emp
         )
 
 
+def test_an_edge_deltas_mapping_that_omits_one_chair_is_refused_like_an_absent_one(evidence):
+    """The absent-mapping rule, one chair at a time.
+
+    A present mapping that simply does not name a contributing witness used to
+    fall through to an empty list for that row, so the dossier said this
+    chair's ink had been compared against the sealed proposal and sat inside
+    it. `reported` has no such spelling -- a chair with no comparison view
+    keeps `reported_basis: "none"` -- and neither does this now.
+    """
+    context, act_id, act_key, regions, testimonia = evidence
+
+    with pytest.raises(SchemaRefusal, match="no edge-deltas entry for witness"):
+        dossier.build_dossier(
+            context,
+            act_id=act_id,
+            act_key=act_key,
+            regions=regions,
+            testimonia=testimonia,
+            regime="named",
+            page_renders=[],
+            witness_context=dossier.load_witness_context(DECLARATION),
+            act_attachment={
+                "reference": {"relative_path": "unused", "sha256": "0" * 64},
+                "page_witness_count": 0,
+                "comparison_views": {},
+                "edge_deltas": {},
+            },
+        )
+
+
 def test_blinded_regime_carries_no_chair_name_or_training_domain(evidence):
     context, act_id, act_key, regions, testimonia = evidence
     named = _build(context, act_id, act_key, regions, testimonia, regime="named")

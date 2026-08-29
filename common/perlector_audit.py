@@ -385,6 +385,8 @@ def validate_draft(payload: Any) -> dict[str, Any]:
     if not isinstance(basis, list) or any(
         not isinstance(row, dict)
         or set(row) != {"class", "chair", "derivation", "location"}
+        # Typed before membership for the same reason as `derivation` below.
+        or not isinstance(row["class"], str)
         or row["class"] not in WITNESS_DERIVED_LOCATION_CLASSES
         or not isinstance(row["chair"], str)
         or not row["chair"]
