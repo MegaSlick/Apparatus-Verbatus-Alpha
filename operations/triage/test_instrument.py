@@ -819,3 +819,46 @@ def test_pair_identity_and_directional_measures_are_canonical_by_digest():
     reverse = instrument.compare_signatures(second.signature, first.signature, config)
     assert forward == reverse
     assert forward["both_digests"] == ["a" * 64, "b" * 64]
+
+
+def _retuned_config_path(tmp_path, columns: int, rows: int):
+    """The shipped declaration with only its prefilter geometry retuned."""
+    text = instrument.DEFAULT_CONFIG_PATH.read_text(encoding="utf-8")
+    text = text.replace("global_prefilter_columns = 4", f"global_prefilter_columns = {columns}")
+    text = text.replace("global_prefilter_rows = 4", f"global_prefilter_rows = {rows}")
+    path = tmp_path / "instrument.toml"
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_a_retuned_prefilter_grid_produces_a_recipe_this_module_still_accepts(tmp_path):
+    """The loader and the recipe validator must not disagree about the same grid.
+
+    Both name 16 cells, and the columns and rows are declared UNMEASURED, so a
+    2 × 8 retune has to survive the round trip. When the validator demanded the
+    literal shipped [4, 4], the pass finished its comparisons and could not
+    publish, and the refusal named 16 cells for a grid that had 16.
+    """
+    config = instrument.load_config(_retuned_config_path(tmp_path, 2, 8))
+    assert (config.global_prefilter_columns, config.global_prefilter_rows) == (2, 8)
+    recipe = json.loads(json.dumps(instrument.producer_recipe(config)))
+    assert recipe["candidate_selection_recipe"]["global_prefilter_grid"] == [2, 8]
+    assert instrument.validate_producer_recipe(recipe)
+
+
+@pytest.mark.parametrize(
+    ("grid", "reason"),
+    [
+        ([4, 5], "not 16 cells"),
+        ([16], "columns by rows"),
+        ("4x4", "columns by rows"),
+        ([4, True], "positive integer"),
+        ([0, 16], "positive integer"),
+    ],
+)
+def test_a_recipe_prefilter_grid_outside_sixteen_cells_is_refused(grid, reason):
+    config = instrument.load_config()
+    recipe = json.loads(json.dumps(instrument.producer_recipe(config)))
+    recipe["candidate_selection_recipe"]["global_prefilter_grid"] = grid
+    with pytest.raises(instrument.InstrumentRefusal, match=reason):
+        instrument.validate_producer_recipe(recipe)

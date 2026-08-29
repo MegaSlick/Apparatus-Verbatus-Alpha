@@ -681,7 +681,20 @@ def validate_producer_recipe(record: Any) -> dict[str, Any]:
         raise InstrumentRefusal(
             "triage producer recipe candidate selection has the wrong closed schema"
         )
-    if selection["global_prefilter_grid"] != [4, 4]:
+    # The cell *count* is the invariant, exactly as `load_config` reads it: 16 is what
+    # bounds `global_prefilter_agreeing_cells`, and the columns and rows are declared
+    # tunable and UNMEASURED. Demanding the literal [4, 4] shipped today would refuse a
+    # recipe this module's own configuration loader had just accepted, and refuse it
+    # with a message naming 16 cells for a grid that has 16 — sending an operator to
+    # count cells in a file that is already correct.
+    grid = selection["global_prefilter_grid"]
+    if not isinstance(grid, list) or len(grid) != 2:
+        raise InstrumentRefusal(
+            "triage producer recipe global prefilter grid is not columns by rows"
+        )
+    columns = _plain_positive_int(grid[0], "recipe global prefilter columns")
+    rows = _plain_positive_int(grid[1], "recipe global prefilter rows")
+    if columns * rows != 16:
         raise InstrumentRefusal("triage producer recipe global prefilter is not 16 cells")
     if (
         selection["submission_window_rule"] != "each frame with its preceding N submission indices"
