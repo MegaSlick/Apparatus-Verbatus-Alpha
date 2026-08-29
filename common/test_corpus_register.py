@@ -704,17 +704,14 @@ def test_pathologically_nested_json_is_refused_for_its_depth_not_its_encoding():
     assert "not UTF-8 JSON" not in str(caught.value)
 
 
-def test_register_and_lock_paths_refuse_symlinks_without_touching_their_targets(tmp_path):
-    target = tmp_path / "outside.json"
-    target.write_bytes(empty_register())
-    register = tmp_path / "register.json"
-    register.symlink_to(target)
-    with pytest.raises(SchemaRefusal, match="corpus register path"):
-        append_records(register, [_declaration()], expected_digest=EMPTY_REGISTER_DIGEST)
-    assert target.read_bytes() == empty_register()
+def test_a_lock_symlink_refuses_before_a_register_is_created_at_all(tmp_path):
+    """The register-symlink half of this case is covered above, with a stronger match.
 
-    register.unlink()
-    (tmp_path / ".register.json.lock").unlink()
+    What is only here is the first append to a path that does not exist yet: the lock
+    is opened before the register is created, so a redirected lock must refuse without
+    leaving a register behind for the next writer to extend.
+    """
+    register = tmp_path / "register.json"
     lock_target = tmp_path / "outside.lock"
     lock_target.write_bytes(b"untouched")
     (tmp_path / ".register.json.lock").symlink_to(lock_target)

@@ -899,3 +899,23 @@ def test_no_agreeing_pair_is_recorded_unrelated_for_disagreeing_less():
             == "near-duplicate"
         ), f"{disagreements} disagreeing cells in one blob is not recorded near-duplicate"
     assert reached > 300, "the agreement band the shipped thresholds admit was not walked"
+
+
+def test_the_shipped_recipe_validates_against_the_validator_that_guards_it():
+    """The producer's two halves must agree, sentence for sentence.
+
+    Every declared rule is written once as a module constant now, but the round trip
+    is what proves it: if either half ever grows its own copy of a sentence, or the
+    validator's closed key set drifts from `imaging_library_versions()`, the producer
+    would refuse the only recipe it can build and could commit no confirmation at all.
+    """
+    recipe = json.loads(json.dumps(instrument.producer_recipe(instrument.load_config())))
+    assert instrument.validate_producer_recipe(recipe) == recipe
+    comparison = recipe["comparison_recipe"]
+    assert comparison["verdict_rule"] == instrument.VERDICT_RULE
+    assert comparison["offset_selection"] == instrument.OFFSET_SELECTION
+    assert comparison["known_blindness"] == list(instrument.SIGNATURE_BLINDNESS)
+    assert len(instrument.SIGNATURE_BLINDNESS) == 5, (
+        "a dropped comma merges two blindness statements into one, and the recipe would "
+        "then validate against the shortened tuple"
+    )
