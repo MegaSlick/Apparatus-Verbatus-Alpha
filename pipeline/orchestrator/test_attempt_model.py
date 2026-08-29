@@ -135,15 +135,6 @@ def artifacts(tree: RunTree, stage: str, kind: str, subject: str) -> list[dict]:
     ]
 
 
-def page_testimonia(tree: RunTree) -> list[dict]:
-    """Every page-scoped record the run actually sealed, whatever its subject."""
-    return [
-        tree.read_artifact(ATTESTATORES, "page-testimonium", entry["artifact_id"])
-        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
-        if entry["kind"] == "page-testimonium"
-    ]
-
-
 def snapshot(run_root: Path) -> dict[str, bytes]:
     return {
         str(path.relative_to(run_root)): path.read_bytes()
@@ -516,20 +507,26 @@ def test_an_act_targeted_reread_of_a_page_witness_is_refused_by_name(tmp_path):
     before = snapshot(root)
 
     # The refusal's basis, proved from sealed run state rather than from the
-    # sentence the refusal prints. Two facts the run already carries: this chair
-    # sealed a page-scoped record, and its row on this very act is marked a page
-    # witness -- which is exactly what makes its act-level view derived and
-    # leaves no act-scoped request to repeat. Asserting only on stderr would pass
-    # on a handler that printed the right words about the wrong chair.
-    scopes = {
-        record["payload"]["chair"]: record["payload"]["scope"] for record in page_testimonia(tree)
-    }
-    assert scopes.get("attestator_1") == "page", scopes
+    # sentence the refusal prints: asserting only on stderr would pass on a
+    # handler that printed the right words about the wrong chair.
+    #
+    # Page evidence is keyed by (page_ordinal, chair), never by chair alone --
+    # this chair contributes a record per page, so collapsing them by chair
+    # lets a record about some other page answer for this act. Each of this
+    # chair's rows on this act is therefore followed through the digest-checked
+    # reference it actually carries, and the record found at the end of it must
+    # be that chair's, page-scoped, on that row's page.
     attachment = artifacts(tree, ATTESTATORES, "act-attachment", act)[-1]
-    page_witness = {
-        row["chair"]: row["page_witness"] for row in attachment["payload"]["attachments"]
-    }
-    assert page_witness["attestator_1"] is True, page_witness
+    rows = [row for row in attachment["payload"]["attachments"] if row["chair"] == "attestator_1"]
+    assert rows, attachment["payload"]["attachments"]
+    for row in rows:
+        assert row["page_witness"] is True, row
+        record = tree.read_artifact_reference(
+            row["testimonium_ref"], stage=ATTESTATORES, kind="page-testimonium"
+        )
+        assert record["payload"]["chair"] == "attestator_1", record["payload"]
+        assert record["payload"]["scope"] == "page", record["payload"]
+        assert record["payload"]["page_ordinal"] == row["page_ordinal"], (record["payload"], row)
 
     result = reread(root, "r", "reread-success", act, "attestator_1")
 
