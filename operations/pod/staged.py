@@ -149,7 +149,12 @@ COLLECTION_BOOT_SCHEDULE: tuple[ScheduledStage, ...] = (
         True,
         (
             ScheduledChair("designator_structure", "Chandra, structure and crop authority"),
-            ScheduledChair("secondary_proposer", "proposals only, after the structure chair"),
+            ScheduledChair(
+                "secondary_proposer",
+                "NOT YET SERVABLE: every real recipe tier marks this chair unsupported "
+                "(Ultralytics YOLO detector; this package serves only vLLM completion) — "
+                "a confirmed boot will not serve it",
+            ),
         ),
     ),
     ScheduledStage(
