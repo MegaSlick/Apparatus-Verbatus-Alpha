@@ -495,9 +495,10 @@ def producer_recipe(config: InstrumentConfig) -> dict[str, Any]:
             "per_mille_rounding": "floor",
             "verdict_rule": (
                 "near-duplicate iff agreement reaches link threshold and either no component "
-                "exists or at most two components include a largest blob reaching blob share; "
-                "otherwise complementary-candidate iff agreement is below link threshold and "
-                "at most three components include a largest blob reaching span share; otherwise "
+                "exists, or the whole disagreement is below blob share, or at most two "
+                "components include a largest blob reaching blob share; otherwise "
+                "complementary-candidate iff agreement is below link threshold and at most "
+                "three components include a largest blob reaching span share; otherwise "
                 "unrelated"
             ),
             "mean_tolerance": config.mean_tolerance,
@@ -629,7 +630,7 @@ def validate_producer_recipe(record: Any) -> dict[str, Any]:
         or comparison["disagreement_components"] != "four-connected cells in the left-grid overlap"
         or comparison["per_mille_rounding"] != "floor"
         or comparison["verdict_rule"]
-        != "near-duplicate iff agreement reaches link threshold and either no component exists or at most two components include a largest blob reaching blob share; otherwise complementary-candidate iff agreement is below link threshold and at most three components include a largest blob reaching span share; otherwise unrelated"
+        != "near-duplicate iff agreement reaches link threshold and either no component exists, or the whole disagreement is below blob share, or at most two components include a largest blob reaching blob share; otherwise complementary-candidate iff agreement is below link threshold and at most three components include a largest blob reaching span share; otherwise unrelated"
     ):
         raise InstrumentRefusal(
             "triage producer recipe comparison semantics are not the declared integer rules"
@@ -960,8 +961,21 @@ def _verdict_for_metrics(
     config: InstrumentConfig,
 ) -> str:
     agreement_reaches_link = agreeing * 1000 >= config.link_agreement_per_mille * overlapping
+    # A disagreement smaller than the blob share is negligible, not disqualifying.
+    # Requiring the largest blob to *reach* that share made the verdict non-monotone in
+    # its own evidence: at the shipped values a pair disagreeing in one to thirty of
+    # 3072 cells fell past both clauses to "unrelated" — the verdict that tells a human
+    # to stop looking — while a pair disagreeing in a hundred was recorded
+    # near-duplicate. The tightest agreement is the likeliest re-shoot, and a re-shoot
+    # read as unrelated is how two frames of one physical page both enter the corpus as
+    # separate pages. The share keeps one meaning, as the floor below which a
+    # difference is not worth arguing about; a large *diffuse* disagreement is still
+    # not near-duplicate, which is what the component bound was for.
+    negligible = (overlapping - agreeing) * 1000 < config.blob_share_per_mille * overlapping
     near_duplicate = agreement_reaches_link and (
-        components == 0 or (components <= 2 and largest_share >= config.blob_share_per_mille)
+        components == 0
+        or negligible
+        or (components <= 2 and largest_share >= config.blob_share_per_mille)
     )
     complementary = (
         not agreement_reaches_link

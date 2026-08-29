@@ -195,11 +195,17 @@ def test_a_pair_at_exactly_tau_link_is_still_only_recorded_candidate_evidence():
     assert "re_shoot_cluster_id" not in evidence
 
 
-def test_blob_share_gate_is_non_vacuous_at_the_shipped_unmeasured_value():
-    """One disagreeing cell clears agreement but not the declared blob-share gate.
+def test_one_disagreeing_cell_is_negligible_rather_than_unrelated():
+    """The verdict must not run backwards against its own evidence.
 
-    This records the rule's shape without tuning it against a synthetic corpus:
-    component count alone does not make every tiny difference near-duplicate.
+    The blob share was once a floor the largest disagreeing component had to reach,
+    which sent the tightest agreements — one to thirty of 3072 cells at the shipped
+    values — past both clauses to "unrelated", while a hundred-cell blob was recorded
+    near-duplicate. A re-shoot read as unrelated is how two frames of one physical page
+    both enter the corpus as separate pages. The share still keeps a tiny difference
+    from being argued about; it no longer disqualifies the pair for being too similar.
+    Recorded without tuning against a synthetic corpus: the shipped values stay
+    UNMEASURED, and a large diffuse disagreement is still not near-duplicate.
     """
     config = instrument.load_config()
     count = config.grid_columns * config.grid_rows
@@ -225,7 +231,7 @@ def test_blob_share_gate_is_non_vacuous_at_the_shipped_unmeasured_value():
     )
     assert evidence["disagreeing_component_count"] == 1
     assert evidence["largest_component_share"] < config.blob_share_per_mille
-    assert evidence["verdict"] == "unrelated"
+    assert evidence["verdict"] == "near-duplicate"
 
 
 def test_unequal_dimensions_are_a_declared_comparison_refusal():
@@ -862,3 +868,34 @@ def test_a_recipe_prefilter_grid_outside_sixteen_cells_is_refused(grid, reason):
     recipe["candidate_selection_recipe"]["global_prefilter_grid"] = grid
     with pytest.raises(instrument.InstrumentRefusal, match=reason):
         instrument.validate_producer_recipe(recipe)
+
+
+def test_no_agreeing_pair_is_recorded_unrelated_for_disagreeing_less():
+    """Inside the agreement regime the verdict may not run backwards.
+
+    The three verdicts are not one scale — a complementary candidate disagrees a lot,
+    in one region, by design. But while agreement still reaches the link threshold,
+    every localized disagreement is the same kind of evidence, and a *smaller* one may
+    never earn "unrelated" when a larger one earns "near-duplicate". Walked across the
+    whole band rather than at one point, because the defect this guards was a band: at
+    the shipped values one to thirty disagreeing cells scored unrelated while a hundred
+    scored near-duplicate.
+    """
+    config = instrument.load_config()
+    overlapping = config.grid_columns * config.grid_rows
+    reached = 0
+    for disagreements in range(0, overlapping + 1):
+        if (overlapping - disagreements) * 1000 < config.link_agreement_per_mille * overlapping:
+            continue
+        reached += 1
+        assert (
+            instrument._verdict_for_metrics(
+                overlapping - disagreements,
+                overlapping,
+                0 if disagreements == 0 else 1,
+                disagreements * 1000 // overlapping,
+                config,
+            )
+            == "near-duplicate"
+        ), f"{disagreements} disagreeing cells in one blob is not recorded near-duplicate"
+    assert reached > 300, "the agreement band the shipped thresholds admit was not walked"
