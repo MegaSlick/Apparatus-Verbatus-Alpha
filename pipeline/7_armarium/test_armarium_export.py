@@ -876,11 +876,15 @@ def test_delivered_gate_requires_review_evidence_references(tmp_path):
     members = _members(bundle.data)
     rows = [json.loads(line) for line in members["review-items.jsonl"].decode("utf-8").splitlines()]
     assert rows[0]["evidence_refs"]
-    del rows[0]["evidence_refs"]
+    # Emptied, not deleted. Deleting the key trips the field-set guard first --
+    # already covered for delivered bundles by the retired-fields test below --
+    # and the gate's own evidence check never runs. Emptying is also the shape a
+    # resealer would actually produce: the promised field, keeping nothing.
+    rows[0]["evidence_refs"] = []
     members["review-items.jsonl"] = b"".join(canonical_bytes(row) + b"\n" for row in rows)
     _refresh_manifest_member(members, "review-items.jsonl")
 
-    with pytest.raises(SchemaRefusal, match="field set"):
+    with pytest.raises(SchemaRefusal, match="must retain at least the Recensor review"):
         verify_delivered_bundle(_zip_bytes(members), tmp_path / "delivered")
 
 
@@ -2537,6 +2541,23 @@ def test_an_extraction_cleanup_failure_names_the_leftover_temporary_file(tmp_pat
         verify_export_bundle(bundle.data, clean)
 
     assert list(clean.rglob("*.extracting-*")), "the test must exercise a real leftover file"
+
+
+def test_a_member_path_deeper_than_the_bound_is_refused_by_name():
+    """A hostile archive gets a refusal, not a RecursionError.
+
+    Extraction builds parents in a loop, so the deep path lands; the inventory
+    that follows walks it with a recursive helper, and nothing converts
+    `RecursionError`. The bound is checked at validation, before any of it runs.
+    """
+    import armarium_export as export_module
+
+    legitimate = "media/pages/page-0001/crop-0001.png"
+    export_module._validate_member_name(legitimate)
+
+    too_deep = "/".join(f"d{index}" for index in range(64)) + "/acts.jsonl"
+    with pytest.raises(SchemaRefusal, match="package member bound"):
+        export_module._validate_member_name(too_deep)
 
 
 @pytest.mark.parametrize(

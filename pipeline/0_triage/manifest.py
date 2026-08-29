@@ -27,7 +27,7 @@ from typing import Any, Final
 
 from common.contracts.canonical import canonical_bytes, digest_bytes, is_sha256
 from common.contracts.errors import SchemaRefusal
-from common.contracts.stages import TRIAGE_MODES
+from common.contracts.stages import MAX_TRIAGE_SPLIT_PARTS, TRIAGE_MODES
 
 MANIFEST_SCHEMA: Final = "triage-decision-manifest-v1"
 CLUSTER_SCHEMA: Final = "triage-re-shoot-cluster-v1"
@@ -43,11 +43,13 @@ MAX_CLUSTER_RECORDS: Final = 1_000
 MAX_CLUSTER_MEMBERS: Final = 4_096
 # A single frame's parts must remain in one content-aware shard, and the shared
 # corpus-frame policy refuses any configured shard limit above 1,000 — so any
-# bound at or below that keeps every ingestible frame provable. The tighter
-# 64-part bound below is the security pass's ceiling on the quadratic
-# pairwise-disjointness proof; a real frame with more parts than this is a
-# triage-policy conversation, not a bigger loop.
-MAX_SPLIT_PARTS: Final = 64
+# bound at or below that keeps every ingestible frame provable. The 64-part
+# value is the security pass's ceiling on the quadratic pairwise-disjointness
+# proof; a real frame with more parts is a triage-policy conversation, not a
+# bigger loop. Derived from the shared cap, not declared a second time: the
+# Exemplar boundary restates this module's row schema and bounds the same
+# split before its own pairwise check.
+MAX_SPLIT_PARTS: Final = MAX_TRIAGE_SPLIT_PARTS
 MAX_SCANTAILOR_PROJECT_BYTES: Final = 4 * 1024 * 1024
 
 _ROW_FIELDS: Final = {
@@ -135,19 +137,26 @@ def _row_digest(row: Mapping[str, Any]) -> str:
         and len(split["parts"]) > MAX_SPLIT_PARTS
     ):
         # ``make_row`` derives the digest before full validation. Refuse this
-        # quadratic-work input before canonical serialization copies it.
-        raise SchemaRefusal(f"triage split exceeds the {MAX_SPLIT_PARTS}-part limit")
+        # quadratic-work input before canonical serialization copies it. The
+        # message says *where* the refusal happened, because the identical one in
+        # ``_validate_split`` would otherwise make the two indistinguishable, and a
+        # test could not then tell that this early guard had been removed.
+        raise SchemaRefusal(
+            f"triage split exceeds the {MAX_SPLIT_PARTS}-part limit before its row is serialized"
+        )
     payload = {key: value for key, value in row.items() if key != "manifest_row_sha256"}
     try:
         return digest_bytes(canonical_bytes(payload))
-    except (TypeError, ValueError, RecursionError, UnicodeError) as error:
+    except (TypeError, ValueError, RecursionError) as error:
         # `canonical_bytes` refuses unsupported values with TypeError, circular
         # containers with ValueError, and cycles found by its own pre-walk with
-        # RecursionError; JSON can also carry a lone Unicode surrogate which
-        # cannot enter the canonical UTF-8 record. A caller building a row is
-        # inside this contract's refusal algebra, so each is one here too; a
-        # bare built-in exception would escape
-        # every `except SchemaRefusal` in the pipeline.
+        # RecursionError. A lone Unicode surrogate — which JSON accepts and UTF-8
+        # has no form for — arrives as TypeError too, because `canonical_bytes`
+        # converts it there deliberately; naming `UnicodeError` here would neither
+        # widen this clause (it is a `ValueError` subclass) nor be reachable, while
+        # reading as a branch a test had covered. A caller building a row is inside
+        # this contract's refusal algebra, so each is one here too; a bare built-in
+        # exception would escape every `except SchemaRefusal` in the pipeline.
         raise SchemaRefusal(f"triage row cannot be canonically serialized: {error}") from error
 
 

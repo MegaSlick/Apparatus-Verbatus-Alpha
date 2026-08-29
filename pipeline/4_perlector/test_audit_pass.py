@@ -15,7 +15,7 @@ import pytest
 import reader as reader_module
 
 from common.contracts.canonical import digest_of
-from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal
+from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.stages import PERLECTOR
 from common.runtree.store import RunTree
 
@@ -30,6 +30,41 @@ def test_witness_derived_location_classes_remain_the_one_open_class():
     evidence, not a witness-derived text location.
     """
     assert audit.WITNESS_DERIVED_LOCATION_CLASSES == frozenset({"testimony-diff"})
+
+
+def test_flag_location_basis_names_only_witnesses_that_located_a_frozen_diff():
+    """An agreeing witness is evidence, but it did not locate the diff flag."""
+    perlector = _perlector()
+    text = "alpha beta"
+    flags = [{"class": "testimony-diff", "location": {"start": 6, "end": 10}}]
+    dossier = {
+        "testimonia": [
+            {
+                "witness_label": "agreeing",
+                "reported": text,
+                "reported_basis": "own-report",
+            },
+            {
+                "witness_label": "departing",
+                "reported": "alpha xxxx",
+                "reported_basis": "page-slice",
+            },
+            {
+                "witness_label": "other-departure",
+                "reported": "omega beta",
+                "reported_basis": "own-report",
+            },
+        ]
+    }
+
+    assert perlector.flag_location_basis(dossier, flags, semi_final_text=text) == [
+        {
+            "class": "testimony-diff",
+            "chair": "departing",
+            "derivation": "page-slice",
+            "location": {"start": 6, "end": 10},
+        }
+    ]
 
 
 def test_audit_draft_requires_location_basis_exactly_when_testimony_located_a_flag():
@@ -51,8 +86,21 @@ def test_audit_draft_requires_location_basis_exactly_when_testimony_located_a_fl
 
     draft["flags"] = []
     draft["flag_location_basis"] = [
-        {"class": "testimony-diff", "chair": "witness-1", "derivation": "own-report"}
+        {
+            "class": "testimony-diff",
+            "chair": "witness-1",
+            "derivation": "own-report",
+            "location": {"start": 6, "end": 10},
+        }
     ]
+    with pytest.raises(SchemaRefusal, match="flags and witness-derived location basis disagree"):
+        perlector.audit.validate_draft(draft)
+
+    # The case equal lengths could never catch: one flag, one basis row, and
+    # the row accounting for a span no flag names. Read by count alone this
+    # draft was well formed, and the record said a chair located a flag it
+    # did not.
+    draft["flags"] = [{"class": "testimony-diff", "location": {"start": 0, "end": 5}}]
     with pytest.raises(SchemaRefusal, match="flags and witness-derived location basis disagree"):
         perlector.audit.validate_draft(draft)
 
@@ -82,7 +130,8 @@ def test_the_flag_location_basis_names_only_the_chairs_that_departed():
     it cannot name them. Deriving the basis from "every chair that reported"
     named a chair that agreed with the reading exactly as the basis of a flag
     it did not raise -- a wider denominator than the one the flags were counted
-    on, and a claim about something nobody measured.
+    on, and a claim about something nobody measured. A chair whose report is
+    not a string at all is not a departure either, and is passed over.
     """
     perlector = _perlector()
     dossier = _dossier(
@@ -90,9 +139,15 @@ def test_the_flag_location_basis_names_only_the_chairs_that_departed():
         ("attestator_2", "a departure", "own-report"),
         ("attestator_3", None, "none"),
     )
-    flags = [{"class": "testimony-diff", "location": {"start": 0, "end": 1}}]
-    assert perlector.flag_location_basis(dossier, flags, "the reading") == [
-        {"class": "testimony-diff", "chair": "attestator_2", "derivation": "own-report"}
+    span = audit.text_change_span("the reading", "a departure")
+    flags = [{"class": "testimony-diff", "location": {"start": span[0], "end": span[1]}}]
+    assert perlector.flag_location_basis(dossier, flags, semi_final_text="the reading") == [
+        {
+            "class": "testimony-diff",
+            "chair": "attestator_2",
+            "derivation": "own-report",
+            "location": {"start": span[0], "end": span[1]},
+        }
     ]
 
 
@@ -100,9 +155,15 @@ def test_a_page_slice_derivation_is_named_as_the_double_derivation_it_is():
     """§4.6: a page-slice diff is recorded with its derivation, never bare."""
     perlector = _perlector()
     dossier = _dossier(("attestator_2", "a departure", "page-slice"))
-    flags = [{"class": "testimony-diff", "location": {"start": 0, "end": 1}}]
-    assert perlector.flag_location_basis(dossier, flags, "the reading") == [
-        {"class": "testimony-diff", "chair": "attestator_2", "derivation": "page-slice"}
+    span = audit.text_change_span("the reading", "a departure")
+    flags = [{"class": "testimony-diff", "location": {"start": span[0], "end": span[1]}}]
+    assert perlector.flag_location_basis(dossier, flags, semi_final_text="the reading") == [
+        {
+            "class": "testimony-diff",
+            "chair": "attestator_2",
+            "derivation": "page-slice",
+            "location": {"start": span[0], "end": span[1]},
+        }
     ]
 
 
@@ -110,22 +171,22 @@ def test_no_departure_means_no_witness_derived_location_at_all():
     """Every chair agreeing is the correct zero, not an empty-looking claim."""
     perlector = _perlector()
     dossier = _dossier(("attestator_1", "the reading", "own-report"))
-    assert perlector.flag_location_basis(dossier, [], "the reading") == []
+    assert perlector.flag_location_basis(dossier, [], semi_final_text="the reading") == []
 
 
-def test_the_two_producers_may_not_count_on_different_denominators():
-    """The identity is executable, not assumed: a mismatch is refused.
+def test_a_departure_at_an_unflagged_span_is_not_named_as_a_basis():
+    """The basis is bound to the flags by span, not by "some chair differed".
 
-    Nothing else in the draft compares the flag count to the basis rows, so a
-    future producer that raised a testimony-diff flag from some other source --
-    or dropped a chair from the dossier after the flags were computed -- would
-    ship a draft whose basis silently explained the wrong number of flags.
+    This is what pr/12's count-identity guard was reaching for -- a basis that
+    explains flags nobody raised -- expressed on the binding the merged
+    contract actually uses. `validate_draft` refuses a draft whose located
+    spans and flagged spans differ, so a row invented at an unflagged span
+    could never reach disk; the producer must not offer one either.
     """
     perlector = _perlector()
-    dossier = _dossier(("attestator_1", "the reading", "own-report"))
+    dossier = _dossier(("attestator_2", "a departure", "own-report"))
     flags = [{"class": "testimony-diff", "location": {"start": 0, "end": 1}}]
-    with pytest.raises(FatalAccounting, match="different denominator"):
-        perlector.flag_location_basis(dossier, flags, "the reading")
+    assert perlector.flag_location_basis(dossier, flags, semi_final_text="the reading") == []
 
 
 # Everything ahead of the Perlector, run as real programs. The Pass-C delivery

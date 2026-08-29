@@ -33,7 +33,7 @@ from common.contracts.canonical import digest_of, is_sha256
 from common.contracts.envelope import validate_input_refs
 from common.contracts.errors import SchemaRefusal
 from common.contracts.stages import PERLECTOR
-from common.corpus_register import refuse_preference
+from common.corpus_register import refuse_capture_preference
 
 SCHEMA: Final = "perlector-audit.v1"
 # The rendered instrument's own label. Separate from `SCHEMA` because the two
@@ -53,6 +53,17 @@ AUDIT_CAP_EXHAUSTED: Final = "audit-round-cap-exhausted"
 FLAG_CLASSES: Final = frozenset(
     {"date-sequence", "numbering", "order", "testimony-diff", "repetition", "within-crop"}
 )
+# Kept exact, rather than widened from the current flag vocabulary: only a
+# text departure from retained testimony derives a witness location. Boundary
+# disagreement remains page evidence for the Recensor, and this declaration
+# deliberately settles neither the larger reproof question nor a new class.
+#
+# Declared here beside `validate_draft`, which requires a basis row for every
+# flag of one of these classes, and re-exported from `pipeline/4_perlector/
+# audit.py` for the producer that builds those rows. One declaration: a
+# producer filtering on a name the validator no longer agrees with would emit
+# no basis for a newly added class and have every such draft refused.
+WITNESS_DERIVED_LOCATION_CLASSES: Final = frozenset({"testimony-diff"})
 _DRAFT_FIELDS: Final = frozenset(
     {
         "act_key",
@@ -366,34 +377,56 @@ def _validate_common(value: dict[str, Any], *, text_length: int) -> None:
 
 def validate_draft(payload: Any) -> dict[str, Any]:
     value = _closed(payload, _DRAFT_FIELDS, "audit draft")
-    refuse_preference(value, what="an audit draft")
+    refuse_capture_preference(value, what="an audit draft")
     if not isinstance(value["semi_final_text"], str):
         raise SchemaRefusal("an audit draft has no semi-final text")
     _validate_common(value, text_length=len(value["semi_final_text"]))
     basis = value["flag_location_basis"]
     if not isinstance(basis, list) or any(
         not isinstance(row, dict)
-        or set(row) != {"class", "chair", "derivation"}
-        or row["class"] != "testimony-diff"
+        or set(row) != {"class", "chair", "derivation", "location"}
+        # Typed before membership for the same reason as `derivation` below.
+        or not isinstance(row["class"], str)
+        or row["class"] not in WITNESS_DERIVED_LOCATION_CLASSES
         or not isinstance(row["chair"], str)
         or not row["chair"]
+        # Typed before the membership test: an unhashable JSON value -- a list
+        # or an object at this field -- would otherwise escape `in` as a raw
+        # TypeError, and a traceback is not the named refusal this contract owes.
+        or not isinstance(row["derivation"], str)
         or row["derivation"] not in {"own-report", "page-slice"}
         for row in basis
     ):
         raise SchemaRefusal(
             "the audit draft has no closed witness-derived flag-location basis. "
             "A testimony-diff location cannot be traced to the testimony that located it. "
-            "Rebuild the draft with class, chair, and derivation for each such flag."
+            "Rebuild the draft with class, chair, derivation, and location for each such flag."
         )
-    identities = [(row["class"], row["chair"], row["derivation"]) for row in basis]
+    for row in basis:
+        _location(row["location"], text_length=len(value["semi_final_text"]), label="basis")
+    # The binding is by location, not by list position or list length. Equal
+    # lengths proved only that two lists were the same size: which chair
+    # located which flag was not expressible, so a row could sit against the
+    # wrong flag undetected. Keying on the span also lets one chair account for
+    # two different flags, and two chairs for one, both of which the earlier
+    # (class, chair, derivation) uniqueness wrongly refused.
+    identities = [
+        (row["chair"], row["derivation"], row["location"]["start"], row["location"]["end"])
+        for row in basis
+    ]
     if len(identities) != len(set(identities)):
         raise SchemaRefusal(
             "the audit draft repeats a witness-derived flag-location basis. "
             "One witness would be recorded twice as the source of one location. "
             "Remove the duplicate basis row and rebuild the draft."
         )
-    testimony_diff_count = sum(flag["class"] == "testimony-diff" for flag in value["flags"])
-    if len(basis) != testimony_diff_count:
+    flagged = {
+        (flag["location"]["start"], flag["location"]["end"])
+        for flag in value["flags"]
+        if flag["class"] in WITNESS_DERIVED_LOCATION_CLASSES
+    }
+    located = {(row["location"]["start"], row["location"]["end"]) for row in basis}
+    if located != flagged:
         raise SchemaRefusal(
             "the audit draft's testimony-diff flags and witness-derived location basis disagree. "
             "At least one witness-derived flag or its source would be unaccounted. "
@@ -404,7 +437,7 @@ def validate_draft(payload: Any) -> dict[str, Any]:
 
 def validate_finding(payload: Any, *, text: str, flag_text: str | None = None) -> dict[str, Any]:
     value = _closed(payload, _FINDING_FIELDS, "audit finding")
-    refuse_preference(value, what="an audit finding")
+    refuse_capture_preference(value, what="an audit finding")
     if not isinstance(text, str):
         raise SchemaRefusal("an audit finding was validated without its final text")
     if flag_text is not None and not isinstance(flag_text, str):

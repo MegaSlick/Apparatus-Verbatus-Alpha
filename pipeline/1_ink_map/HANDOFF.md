@@ -4,6 +4,14 @@ The ink map runs after the Exemplar seal and before the Designator. It writes on
 `kind="ink-map"` record per sealed page, including zero-ink pages, with the shared
 `common.residual_ink::page_residual_ink` result measured against empty coverage.
 
+Each record carries `payload["page_ordinal"]`, the sealed page's ordinal from the
+run's `source_manifest`. That ordinal is the identity a consumer joins on: this
+document is the interface, and without it named here a consumer has to guess —
+keying on `subject_id` instead silently mismatches records the day subject naming
+changes, and a page's ink evidence lands against the wrong act. The stage refuses
+the whole census rather than publish a record it cannot bind to exactly one
+submitted source.
+
 `payload["edge"]` is the bounded `unclaimed-edge-ink` detector: it measures only
 the 64-pixel page perimeter using that same implementation. A flagged record is
 unresolved evidence, not a hold. **Unit 14 owns the explicit hold outcome for an

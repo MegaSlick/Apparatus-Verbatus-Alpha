@@ -1,13 +1,19 @@
 # Attestatores — handoff
 
-# Stage-completion seal
+The Attestatores retains one immutable `kind="testimonium"` for every configured
+chair and every Designator act, on every attempted read. It does not merge, rank,
+select, or turn a Testimonium into established text. A missing artifact is never a
+witness outcome.
+
+## Stage-completion seal
 
 Before this producer's final manifest it publishes one `decode-environment` and
 one `stage-seal`, or reuses both on a byte-identical retry. The seal witnesses
 this pass's disk inventory and blob contents, and binds the exact decode-environment
 bytes, run `config_digest` and `register_digest`, and `(kind, outcome)` census. An exit
 held after publishing stage evidence seals it (holds remain in its census); a
-pass held or refused before publishing stage evidence does not seal, so the
+pass that never reaches its seal does not seal, whether it was held or refused
+before publishing stage evidence or closed fatally after publishing it, so the
 successor correctly refuses the missing boundary. Every difference in decoders,
 platform, machine, `decode_paths_used`, and `produced_pixels` is reported by
 field or decoder name. A valid difference is report-only and never refuses;
@@ -18,10 +24,6 @@ boundary: the producer refuses to re-seal, and the successor refuses to read,
 when any named seal is no longer on disk. Ordinals are the contiguous run 1..N,
 so removing the latest leaves a prefix that still looks whole — and the earlier
 statement would then answer for a boundary it never witnessed.
-The Attestatores retains one immutable `kind="testimonium"` for every configured
-chair and every Designator act, on every attempted read. It does not merge, rank,
-select, or turn a Testimonium into established text. A missing artifact is never a
-witness outcome.
 
 ## Exact input boundary
 
@@ -102,7 +104,18 @@ identity-copy path.
 dense zero-based ordinal, `bounds_source` in `native | derived | presented`, and
 an optional non-overlapping span into this Testimonium's own retained text. Every
 box is contained by the exact presented image's page-space bounds; a witness
-cannot report pixels its presentation did not include. It
+cannot report pixels its presentation did not include.
+
+**One record kind is exempt, and only one.** A page chair's act view
+(`page_witness: true`, never `scope: "page"`) presents a single crop while
+restating the page-level geometry that chair actually reported, so its boxes may
+legitimately exceed that one crop. They remain bounded by the sealed page, which
+is the wall that does not move, and Unit 10C's coverage derivation is what
+consumes that page-space geometry. The flag cannot buy the exemption on its own:
+a `scope: "page"` record presents the chair's complete view and keeps the
+containment rule, so the relaxation cannot be forged onto a record whose
+presentation really was everything the witness saw. Every other record — act
+chairs, and page chairs at page scope — is contained as above. `observed`
 carries no act identity, preference, authority, or confidence field. `presented`
 is an explicit no-geometry fallback: it restates the image sent and is excluded
 from both unrouted-ink detection and Unit 10C coverage. Only `native` and
@@ -122,6 +135,15 @@ presentation and retained response together. Churro's fixture response has no
 layout, so its adapter returns only the excluded `bounds_source="presented"`
 fallback. A future layout adapter cannot be wired to an observation callable
 that never receives its own response.
+
+**Observations reach a record from three sources, in this order.** The fixture's
+`[[native_observation]]` table is consulted first: rows matching the chair and
+page ordinal (and the scenario, where one is named) become `bounds_source="native"`
+boxes directly, ahead of the adapter. Those are reported geometry — they drive
+attachment and routing exactly as an adapter's own layout would, which is what
+makes the table a stimulus for the geometry paths rather than decoration. Only
+when no row matches does `observe` run, and only when there is no adapter at all
+does the `bounds_source="presented"` echo of the presentation stand in.
 
 ### What an adapter must produce (Units 11, 12, 13)
 

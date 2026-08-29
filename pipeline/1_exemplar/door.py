@@ -100,6 +100,7 @@ from common.stage import (  # noqa: E402
     DEFAULT_CORPUS_FRAME_CONFIG_PATH,
     DEFAULT_PERLECTOR_AUDIT_CONFIG_PATH,
     DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH,
+    DEFAULT_TRIAGE_MODES_CONFIG_PATH,
     DEFAULT_WITNESS_CONTEXT_CONFIG_PATH,
     EXIT_COMPLETE,
     StageContext,
@@ -1681,13 +1682,19 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         help="sealed triage-producer-recipe.v1 for the pre-door producer run",
     )
     args = parser.parse_args()
-    existing_tree = RunTree(Path(args.run_root), args.run_id)
-    if existing_tree.resolve("run.json").exists():
-        refuse_halted_run(existing_tree, DOOR, args.hard_failure_config)
     registry = registry_factory(args.models_config)
 
     if args.submission_folder is not None:
+        # The run-level cap is applied inside `real_submission`, once the run root
+        # has passed the storage gate. Reading a run authority here would open and
+        # self-hash a file in a directory the data-handling policy never approved
+        # — the exact read the gate exists to stop — and an operator who mistyped
+        # the run root onto an unapproved volume holding a run.json would be told
+        # the run was halted rather than that the root is not approved.
         return real_submission(args, registry)
+    # The fixture path is declared synthetic input and is not gated, so its cap
+    # check has no earlier gate to stand behind.
+    _refuse_halted_run_root(Path(args.run_root), args)
     if args.submission_manifest is not None:
         raise ContractError(
             "a submission filename ledger is meaningful only with a real submission folder; "
@@ -1700,6 +1707,19 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     ):
         raise ContractError("triage geometry is meaningful only with a real submission folder")
     return fixture_submission(args, registry)
+
+
+def _refuse_halted_run_root(run_root: Path, args) -> None:
+    """Apply the sealed run-level hard-failure cap to an existing run tree.
+
+    Called on the fixture path before anything is written, and on the real path
+    only after `run_root` has passed the approved-storage gate — reading a run
+    authority is a read, and a read outside an approved location is what the gate
+    is for.
+    """
+    existing_tree = RunTree(run_root, args.run_id)
+    if existing_tree.resolve("run.json").exists():
+        refuse_halted_run(existing_tree, DOOR, args.hard_failure_config)
 
 
 def _load_pdf_render_binding(args) -> render_config.PdfRenderBinding:
@@ -1846,6 +1866,9 @@ def real_submission(args, registry) -> int:
     manifest_path = gate.require_approved_storage_location(
         Path(args.submission_manifest), roots, "submission filename ledger"
     )
+    # The run-level cap, now that the root it reads is a location the policy
+    # approved, and against the resolved path rather than the typed one.
+    _refuse_halted_run_root(run_root, args)
     for location, label in (
         (run_root, "run root"),
         (manifest_path, "submission filename ledger"),
@@ -2194,7 +2217,12 @@ def _real_bindings(
             "the Perlector audit configuration binding at "
             f"{perlector_audit_config_path} could not be read"
         ) from error
-    triage_modes_config_path = ROOT / "config" / "triage_modes.toml"
+    # The shared constant, not a second spelling of it: `require_triage_modes` reads
+    # this same file at its point of use through the default below, and a moved path
+    # would otherwise refuse every real submission carrying triage geometry with
+    # "changed between run binding" — pointing the operator at a rewrite that never
+    # happened.
+    triage_modes_config_path = Path(DEFAULT_TRIAGE_MODES_CONFIG_PATH)
     try:
         triage_modes_config_sha256 = digest_bytes(triage_modes_config_path.read_bytes())
     except OSError as error:

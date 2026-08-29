@@ -167,6 +167,8 @@ def test_offline_producer_actor_requires_a_resolved_identity_and_revision():
 
 
 def test_a_non_utf8_actor_identity_stays_inside_the_typed_refusal_algebra():
+    # `canonical_bytes` turns the lone surrogate into TypeError, so this proves the
+    # crossing into `SchemaRefusal`, not a Unicode-specific branch of `_row_digest`.
     malformed = row()
     malformed["actor"] = {"kind": "producer", "identity": "\ud800", "revision": "v1"}
     with pytest.raises(SchemaRefusal, match="cannot be canonically serialized"):
@@ -604,7 +606,14 @@ def test_contract_counts_are_bounded_before_their_work_can_amplify():
         make_part({"x": index, "y": 0, "w": 1, "h": 1}, {"x": 0, "y": 0, "w": 1, "h": 1}, 0)
         for index in range(MAX_SPLIT_PARTS + 1)
     ]
-    with pytest.raises(SchemaRefusal, match=f"{MAX_SPLIT_PARTS}-part limit"):
+    # "before its row is serialized" specifically: `make_row` guards the count once
+    # before it derives the digest and `_validate_split` guards it again afterwards,
+    # and while both said the same words this assertion passed with the early guard
+    # deleted — which is the guard that keeps the quadratic work off untrusted input
+    # in the first place. Found by CodeRabbit.
+    with pytest.raises(
+        SchemaRefusal, match=f"{MAX_SPLIT_PARTS}-part limit before its row is serialized"
+    ):
         row(
             frame={"width": MAX_SPLIT_PARTS + 1, "height": 1},
             split=make_split(too_many_parts),

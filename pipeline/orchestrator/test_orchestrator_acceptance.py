@@ -929,6 +929,12 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # left `receipt_ref: None` beside a `presented` block claiming pixels were shown.
 # One `receipt_ref` field on attestator_3's page-2 record; no new file, no count
 # or exit change (97/3), and happy is untouched at the digest above.
+# Audit-round re-pin: each witness-derived flag-location basis row now carries
+# the span it accounts for, so the audit draft is bound to its flags by location
+# rather than by list length. Draft bytes move and the artifacts referencing them
+# follow; no artifact is added or removed, so happy stays 95/0 and review 118/3.
+# Both digests were re-measured twice in independent temporary roots through this
+# module's own `orchestrate` and `semantic_snapshot_digest` at canonical run id "r".
 # Unit 14A audit: that renamed reason said something false. Under the legacy
 # page join the outcome carried into an unaligned attachment is THIS ACT'S
 # attempt, not the page Testimonium's -- `review`'s attestator_3 has a failed a2
@@ -953,10 +959,25 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # unconfirmed witness pointer no longer spends review's second recovery round
 # (118 -> 106); happy holds 95 files. Measured twice at two independent run
 # roots through this module's own helpers at canonical run id "r".
+# Cascade re-pin (pr/11 merged into pr/12): both re-pins above are in this tree
+# at once. pr/12's ink-confirmation gate still removes review's second recovery
+# round (118 -> 106) and pr/11's flag-location basis still carries the span it
+# accounts for, so review's draft bytes moved again without adding or removing
+# an artifact. Counts are unchanged from the entries above -- happy 95/0,
+# review 106/3 -- and both digests were re-measured on the merged tree, twice in
+# independent temporary roots through this module's own `orchestrate` and
+# `semantic_snapshot_digest` at canonical run id "r".
+#
+# Reading this log: it is chronological and append-only, and every entry states
+# the counts and the fixture shape as they stood when that entry was written.
+# Only the last entry describes the tree now; an earlier entry naming a
+# different count, or a different number of declared fixture rows, is the
+# measurement it superseded and not a competing claim about today. The four
+# literals below are the authority, and each re-pin says what moved them.
 HAPPY_SNAPSHOT_FILES = 95
 REVIEW_SNAPSHOT_FILES = 106
-HAPPY_RUN_TREE_DIGEST = "a0a591175415dc06da8fb7c22ea29fbd6d297b41e328f641312001a812cf8691"
-REVIEW_RUN_TREE_DIGEST = "d660d8835857765830069b3f458c2c7e4989cc483748348cd2102e191cb7de83"
+HAPPY_RUN_TREE_DIGEST = "239077dd23162ebc6f29e48b655818f4c80d87b5163dbc3909852c340494f838"
+REVIEW_RUN_TREE_DIGEST = "224b37e17570ca8ced3d2f241389578e679dbc77bbf675ab5590c1c69ac30cc5"
 
 
 def orchestrate(
@@ -5105,10 +5126,19 @@ def test_recovery_stayed_inside_its_budget(review_run):
     `test_the_recovery_request_and_both_reading_attempts_survive`."""
     _, tree = review_run
     requests = artifacts(tree, RECENSOR, "recovery-request")
+    # pr/12's page-wide grant leaves review with one request, not two. The
+    # allowance it carries is still the configured one: `fallback_recrop +
+    # page_level_reread`, 1 + 1 in config/recovery.toml, separately bounded by
+    # `absolute_cap = 3`. The exact value, not merely "within the cap": `<= 3`
+    # is also satisfied by a budget that silently collapsed to 0 or 1, so it
+    # could not fail for the regression it names (GOVERNANCE 10).
     assert len(requests) == 1
-    assert all(request["payload"]["budget_allowed"] <= 3 for request in requests), (
-        "the absolute cap is a ruling"
-    )
+    allowed = [request["payload"]["budget_allowed"] for request in requests]
+    assert allowed == [2], "the configured recovery budget is one recrop plus one reread"
+    assert all(
+        value <= request["payload"]["recovery_policy"]["absolute_cap"]
+        for value, request in zip(allowed, requests, strict=True)
+    ), "the absolute cap is a ruling (config/recovery.toml absolute_cap)"
 
 
 # --- 6. The held act cannot look complete --------------------------------------

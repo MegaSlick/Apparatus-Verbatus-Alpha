@@ -17,7 +17,7 @@ from common.contracts.stages import STAGES
 from common.stage import RUN_MODES
 from operations.pod.models import PodCreateRequest, require_utc
 
-from . import notify_bridge
+from . import console, notify_bridge
 from .advance import (
     UnsealedBoundaryRefusal,
     boundary_summary,
@@ -60,8 +60,21 @@ def _account_state_dir(workspace: Path | None = None) -> Path:
         environment_home = Path.home()
     except RuntimeError:
         environment_home = Path()
-    homes = (environment_home, Path(pwd.getpwuid(os.getuid()).pw_dir))
-    for home in homes:
+
+    def homes():
+        yield environment_home
+        try:
+            yield Path(pwd.getpwuid(os.getuid()).pw_dir)
+        except KeyError:
+            # No passwd entry for this UID -- a container running as an unmapped
+            # user, for instance. Building the tuple eagerly ran this lookup
+            # before the loop had even looked at the environment home, so every
+            # `verbatus` word ended in the unclassified message even when HOME
+            # was absolute and perfectly usable. A missing fallback is not a
+            # reason to fail a command that never needed it.
+            return
+
+    for home in homes():
         candidate = home / ".local" / "state" / "verbatus"
         if home.is_absolute() and (workspace is None or not _is_within(candidate, workspace)):
             return candidate
@@ -137,7 +150,17 @@ def build_parser() -> PlainParser:
         help="the checked-out Apparatus Verbatus folder (defaults to the current directory)",
     )
     parser.add_argument(
-        "--state-dir", type=Path, default=_default_state_dir(), help="where local receipts are kept"
+        "--state-dir",
+        type=Path,
+        # No computed default here. `main` resolves the durable default against
+        # the *resolved* workspace, and `None` is how it knows the operator did
+        # not name a path. Deciding that from a scan of raw argv could not work:
+        # argparse accepts unambiguous abbreviations, so `--state-di /records`
+        # set this value and the scan missed it -- the named folder was parsed
+        # and then silently overwritten with the default, and `status` afterwards
+        # read a different set of records than the operator had asked for.
+        default=None,
+        help="where local receipts are kept",
     )
     parser.add_argument(
         "--notify",
@@ -166,6 +189,28 @@ def build_parser() -> PlainParser:
     )
     upload.add_argument(
         "--source", type=Path, required=True, help="folder containing the submitted files"
+    )
+
+    reuse = upload.add_mutually_exclusive_group(required=True)
+    reuse.add_argument(
+        "--sealed-manifest", type=Path, help="existing sealed Spec 03 submission record"
+    )
+    reuse.add_argument(
+        "--manifest-out",
+        type=Path,
+        help="where Spec 03 should write a new sealed submission record",
+    )
+    upload.add_argument("--policy", type=Path, help="data-handling policy used with --manifest-out")
+    upload.add_argument(
+        "--network-volume",
+        metavar="DATACENTER:VOLUME_ID",
+        help=(
+            "send to a real RunPod network volume instead of the local fixture volume, "
+            "for example EU-CZ-1:abc123. This is the one thing this tool can do that "
+            "leaves your computer, so you have to name it; it needs no pod and uses no "
+            "GPU-hours. Credentials are read from RUNPOD_S3_ACCESS_KEY and "
+            "RUNPOD_S3_SECRET_KEY in your environment, never from a file here"
+        ),
     )
 
     ingest = verbs.add_parser(
@@ -197,27 +242,6 @@ def build_parser() -> PlainParser:
         "--confirmation-file",
         type=Path,
         help="canonical Unit 6B cluster-confirmation file; omit when confirming no cluster",
-    )
-    reuse = upload.add_mutually_exclusive_group(required=True)
-    reuse.add_argument(
-        "--sealed-manifest", type=Path, help="existing sealed Spec 03 submission record"
-    )
-    reuse.add_argument(
-        "--manifest-out",
-        type=Path,
-        help="where Spec 03 should write a new sealed submission record",
-    )
-    upload.add_argument("--policy", type=Path, help="data-handling policy used with --manifest-out")
-    upload.add_argument(
-        "--network-volume",
-        metavar="DATACENTER:VOLUME_ID",
-        help=(
-            "send to a real RunPod network volume instead of the local fixture volume, "
-            "for example EU-CZ-1:abc123. This is the one thing this tool can do that "
-            "leaves your computer, so you have to name it; it needs no pod and uses no "
-            "GPU-hours. Credentials are read from RUNPOD_S3_ACCESS_KEY and "
-            "RUNPOD_S3_SECRET_KEY in your environment, never from a file here"
-        ),
     )
 
     run = verbs.add_parser("run", help="run or resume a recorded fixture or real submission")
@@ -321,10 +345,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return 0
         args = parser.parse_args(arguments)
         workspace = args.workspace.resolve()
-        explicit_state = any(
-            argument == "--state-dir" or argument.startswith("--state-dir=")
-            for argument in arguments
-        )
+        explicit_state = args.state_dir is not None
         if explicit_state:
             state = args.state_dir if args.state_dir.is_absolute() else workspace / args.state_dir
         else:
@@ -435,6 +456,32 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0
 
 
+def _bound_run_tree(run_tree_class, run_root: Path, run_id: str):
+    """Bind one run before any verb acts on it, and name a bad id as a bad id.
+
+    `RunTree.__init__` validates the run id and refuses one that resolves
+    outside the run root; both arrive as `ContractError`. Constructed outside
+    a guard, a typed `--run-id My-Run` reached the unclassified handler and
+    told the operator to photograph the message and find a maintainer over one
+    capital letter, and an attempted escape from the approved run root
+    reported itself the same way — a tool that broke rather than a request
+    that was refused.
+
+    The code is `INVALID_COMMAND` rather than a verb-specific refusal because
+    that is what happened: the instruction named no run this tool could bind,
+    nothing was read, and nothing was changed. A tree-unreadable code would
+    send the operator to preserve and investigate register evidence that was
+    never opened.
+    """
+
+    from common.contracts.errors import ContractError
+
+    try:
+        return run_tree_class(Path(run_root).resolve(), run_id)
+    except (ContractError, OSError) as error:
+        raise OperatorError(ErrorCode.INVALID_COMMAND, detail=str(error)) from error
+
+
 def _review_in_custody(run_root: Path, run_id: str, workspace: Path) -> None:
     """Exec the renderer with no credential and a kernel-enforced no-write policy."""
 
@@ -442,6 +489,9 @@ def _review_in_custody(run_root: Path, run_id: str, workspace: Path) -> None:
     # immutable value stream, never a run-tree path or a ``RunTree`` object.
     # It can deceive its viewer about those bytes if compromised, but cannot
     # reopen the evidence to mutate it or reach any pipeline/provider module.
+    from common.runtree.store import RunTree
+
+    _bound_run_tree(RunTree, run_root, run_id)
     projection = dataclasses.asdict(ReadOnlyRun(run_root, run_id).projection())
     command = python_module_command("operations.operator.console")
     backend, completed = run_confined(
@@ -457,6 +507,13 @@ def _review_in_custody(run_root: Path, run_id: str, workspace: Path) -> None:
             # platform-enforcement refusal rather than a claim that the run
             # tree itself is unreadable.
             raise OperatorError(ErrorCode.CONSOLE_CUSTODY_REFUSED, detail=launcher)
+        if completed.returncode == console.PROJECTION_UNREADABLE_EXIT:
+            # The console never opened the run tree, so this must not tell the
+            # operator to preserve and investigate its evidence.
+            raise OperatorError(
+                ErrorCode.CONSOLE_PROJECTION_UNREADABLE,
+                detail=completed.stderr or completed.stdout,
+            )
         raise OperatorError(
             ErrorCode.CONSOLE_TREE_UNREADABLE, detail=completed.stdout or completed.stderr
         )
@@ -469,8 +526,8 @@ def _backup_in_custody(run_root: Path, run_id: str, mac_directory: Path, _worksp
     from .backup import (
         BackupRefusal,
         BackupReport,
-        _prepare_backup_layout,
         destination_identities,
+        prepare_backup_layout,
         required_identity,
         resolve_backup_paths,
         verify_backup_snapshot,
@@ -482,7 +539,7 @@ def _backup_in_custody(run_root: Path, run_id: str, mac_directory: Path, _worksp
     # directory creation, so the checked closed layout must exist first.
     try:
         source, destination = resolve_backup_paths(run_root, run_id, mac_directory)
-        _prepare_backup_layout(source, destination)
+        prepare_backup_layout(source, destination)
         source_identity = required_identity(source, what="source run tree")
         destination_identity = destination_identities(destination)
     except BackupRefusal as refusal:
@@ -532,24 +589,15 @@ def _triage_queue(args: argparse.Namespace, workspace: Path) -> None:
     from . import triage
 
     try:
-        declaration = triage.declare_mode(args.mode, batch_id=args.batch_id, operator=args.operator)
-        triage.write_mode_declaration(args.mode_record, declaration)
-        queue = triage.load_queue(
-            args.manifest,
-            args.evidence,
-            args.proxy_paths,
-            mode=args.mode,
-            batch_id=args.batch_id,
-            operator=args.operator,
-            triage_modes_path=workspace / "config" / "triage_modes.toml",
-        )
-        if args.decline is not None:
-            if args.queue_state is None:
-                raise triage.TriageRefusal(
-                    "triage refusal queue-state-required: decline needs --queue-state"
-                )
-            triage.append_decision(
-                args.queue_state, queue, item_digest=args.decline, decision="decline"
+        # Completeness first, before anything durable. `write_mode_declaration`
+        # refuses to rewrite a batch's declared mode once it exists, so an
+        # incomplete `--accept` that wrote the record and *then* refused left the
+        # mode for that batch claimed by a command that did nothing — and an
+        # operator who corrects the invocation to a different `--mode` is then
+        # refused by their own abandoned attempt.
+        if args.decline is not None and args.queue_state is None:
+            raise triage.TriageRefusal(
+                "triage refusal queue-state-required: decline needs --queue-state"
             )
         if args.accept is not None:
             if args.queue_state is None or args.draft is None or args.confirmation_out is None:
@@ -560,7 +608,29 @@ def _triage_queue(args: argparse.Namespace, workspace: Path) -> None:
                 raise triage.TriageRefusal(
                     "triage refusal preview-confirmation-required: accept needs the shown preview digest"
                 )
-            draft = triage._read_canonical(args.draft, "confirmation-draft")
+        declaration = triage.declare_mode(args.mode, batch_id=args.batch_id, operator=args.operator)
+        # The queue loads before the declaration is persisted, for the same
+        # reason the flag checks run before both: `load_queue` refuses an
+        # unreadable or non-canonical manifest, evidence or proxy map, and a
+        # mode record written ahead of it claimed the batch for a command that
+        # then refused. `declare_mode` above only builds and validates the
+        # record; nothing durable happens until the batch is known to load.
+        queue = triage.load_queue(
+            args.manifest,
+            args.evidence,
+            args.proxy_paths,
+            mode=args.mode,
+            batch_id=args.batch_id,
+            operator=args.operator,
+            triage_modes_path=workspace / "config" / "triage_modes.toml",
+        )
+        triage.write_mode_declaration(args.mode_record, declaration)
+        if args.decline is not None:
+            triage.append_decision(
+                args.queue_state, queue, item_digest=args.decline, decision="decline"
+            )
+        if args.accept is not None:
+            draft = triage.load_confirmation_draft(args.draft)
             # Acceptance spans two durable files; this transaction API preserves
             # journal-first ordering and resumes a missing confirmation on replay.
             triage.accept_candidate(
@@ -592,7 +662,7 @@ def _advance_with_confirmation(
     from common.contracts.errors import ApprovalRefusal
     from common.runtree.store import RunTree
 
-    tree = RunTree(run_root.resolve(), run_id)
+    tree = _bound_run_tree(RunTree, run_root, run_id)
     try:
         # Stored boundary facts do not depend on the declared selection. Mode
         # claims must wait until the selection is validated, or an invalid
@@ -875,6 +945,15 @@ def _interactive_arguments() -> list[str]:
                 "and mode-record path. One was left blank, so nothing changed."
             )
             return []
+        # Display only, deliberately. This route shows the queue and records no
+        # decision. Acceptance is pinned to `--preview-sha256`, the digest of the
+        # draft the operator was actually shown, and a blind prompt chain cannot
+        # honestly produce that — it would be asking someone to confirm a digest
+        # they have not seen, which is the one thing that confirmation exists to
+        # prevent. Decline is withheld with it rather than offering half a
+        # decision surface where a queue item can be dismissed before its
+        # evidence is on screen. Both are recorded at the command line, where the
+        # digests are visible and checkable.
         return [
             "triage",
             "--manifest",

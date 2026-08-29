@@ -242,6 +242,32 @@ def test_two_unicode_spellings_of_one_declaration_are_one_physical_identity():
     )
 
 
+def test_typed_whitespace_does_not_split_one_declaration_into_two_physical_pages():
+    """The same argument NFC settles, on the axis a form's trailing space uses.
+
+    A space the typist cannot see is not a different folio, and nothing
+    downstream could reconcile the two identities it would otherwise mint.
+    """
+    canonical = identities.physical_page_id("corpus", "volume", "folio 12r")
+    for typed in ("folio 12r ", " folio 12r", "folio  12r", "folio\t12r", "folio 12r"):
+        assert identities.physical_page_id("corpus", "volume", typed) == canonical
+    assert identities.physical_page_id(" corpus ", "volume", "folio 12r") == canonical
+
+    act = identities.physical_act_id(canonical, "entry 4")
+    assert identities.physical_act_id(canonical, " entry  4 ") == act
+
+
+def test_a_declaration_of_nothing_but_whitespace_is_refused_rather_than_hashed():
+    """The callers' non-empty check runs before folding, so blankness lands here."""
+    with pytest.raises(IdentityRefusal, match="designation is only whitespace"):
+        identities.physical_page_id("corpus", "volume", "   ")
+    with pytest.raises(IdentityRefusal, match="volume_id is only whitespace"):
+        identities.physical_page_id("corpus", " ", "folio 12r")
+    page = identities.physical_page_id("corpus", "volume", "folio 12r")
+    with pytest.raises(IdentityRefusal, match="mint_designation is only whitespace"):
+        identities.physical_act_id(page, "\t\n")
+
+
 def test_physical_identities_bind_only_their_minting_facts():
     physical_page = identities.physical_page_id("corpus", "volume", "folio-12r")
     assert physical_page.startswith("ppg_")

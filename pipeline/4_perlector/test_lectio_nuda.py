@@ -288,7 +288,13 @@ def _approval_context(tmp_path):
     return SimpleNamespace(tree=tree, config_digest=config_digest)
 
 
-def _approval_record(config_digest):
+def _approval_record_for_digest(config_digest):
+    """A record bound to a caller-supplied digest, for a synthetic RunTree.
+
+    Distinct from `nuda_approval_record` above, which derives the real
+    config_digest from `run_config_bindings` for an orchestrated run. Reaching
+    for the wrong one binds the record to the wrong digest; the resolution gate
+    then refuses, so the cost is debugging rather than a test that passes falsely."""
     return build_approval_record(
         subject_ids=[NUDA_APPROVAL_SUBJECT],
         action="other",
@@ -300,7 +306,7 @@ def _approval_record(config_digest):
 
 def test_nuda_approval_binds_its_experiment_subject_and_sealed_config_digest(tmp_path):
     context = _approval_context(tmp_path)
-    record = _approval_record(context.config_digest)
+    record = _approval_record_for_digest(context.config_digest)
     expected, _ = context.tree.write_approval_record(record)
 
     actual = resolve_sampling_approval(
@@ -329,7 +335,7 @@ def test_a_missing_approval_names_where_the_record_goes_and_what_it_must_approve
 
 def test_nuda_approval_refuses_a_record_for_a_different_sealed_config_digest(tmp_path):
     context = _approval_context(tmp_path)
-    context.tree.write_approval_record(_approval_record("b" * 64))
+    context.tree.write_approval_record(_approval_record_for_digest("b" * 64))
 
     with pytest.raises(ContractError, match="not this run's sealed config_digest"):
         resolve_sampling_approval(
@@ -363,7 +369,7 @@ def test_nuda_approval_refuses_a_record_approved_for_a_different_action(tmp_path
 )
 def test_nuda_approval_refuses_a_corrupt_typed_record(tmp_path, corruption, refusal):
     context = _approval_context(tmp_path)
-    record = _approval_record(context.config_digest)
+    record = _approval_record_for_digest(context.config_digest)
     if corruption == "self-hash":
         record["reason"] = "edited after approval"
     elif corruption == "approver":
