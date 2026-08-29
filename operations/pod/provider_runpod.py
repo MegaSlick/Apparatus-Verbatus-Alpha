@@ -220,6 +220,10 @@ class RunPodProvider:
         # `observe_account_balance`: after that the source is not called again,
         # so at most one abandoned thread can ever exist per adapter.
         self._balance_abandoned: str | None = None
+        # True only between starting a worker and that call returning. Guarded by
+        # the same lock as the latch, because the check and the start are one
+        # transaction; see `observe_account_balance`.
+        self._balance_in_flight = False
         self._balance_lock = threading.Lock()
 
     # -- the seven verbs ---------------------------------------------------
@@ -256,8 +260,11 @@ class RunPodProvider:
         threads up to the cap. It is worse on both axes than refusing.
 
         *Refuse from then on*, which is this. At most one thread is ever
-        abandoned per adapter, and every later gate refuses at once instead of
-        stalling another `balance_timeout_seconds` on a money path. That is
+        abandoned per adapter — concurrent callers included, since the latch
+        check and the worker start are one locked transaction and a caller
+        arriving mid-observation is refused rather than queued — and every later
+        gate refuses at once instead of stalling another
+        `balance_timeout_seconds` on a money path. That is
         fail-closed in the direction that matters: the refusal denies paid
         actions and closes a created pod, because `_observe_balance` turns any
         raised error into "balance unobservable" and the callers already fail
@@ -270,36 +277,58 @@ class RunPodProvider:
 
         if self.balance_observer is None:
             raise ProviderFailure("RunPod account balance source was not configured")
+        # Reading the latch and starting the worker must be one transaction. Two
+        # callers that both read "not abandoned" before either started would
+        # both start one, and the at-most-one-abandoned-thread guarantee above
+        # would be a guarantee about the sequential case only. Refusing while an
+        # observation is in flight, rather than queueing behind it, is the same
+        # reasoning as the latch: a second caller on a money path should not
+        # wait out a deadline it can already see is at risk, and refusing denies
+        # a paid action rather than allowing one.
         with self._balance_lock:
-            abandoned = self._balance_abandoned
-        if abandoned is not None:
-            raise ProviderFailure(abandoned)
-        observed: list[AccountBalanceObservation] = []
-        failed: list[BaseException] = []
+            if self._balance_abandoned is not None:
+                raise ProviderFailure(self._balance_abandoned)
+            if self._balance_in_flight:
+                raise ProviderFailure(
+                    "RunPod account balance observation is already in progress; a "
+                    "concurrent paid action is refused rather than queued behind it"
+                )
+            self._balance_in_flight = True
+        try:
+            observed: list[AccountBalanceObservation] = []
+            failed: list[BaseException] = []
 
-        def observe() -> None:
-            try:
-                observed.append(self.balance_observer())  # type: ignore[misc]
-            except BaseException as error:  # noqa: BLE001 - re-raised on the caller's thread
-                failed.append(error)
+            def observe() -> None:
+                try:
+                    observed.append(self.balance_observer())  # type: ignore[misc]
+                except BaseException as error:  # noqa: BLE001 - re-raised on the caller's thread
+                    failed.append(error)
 
-        worker = threading.Thread(target=observe, name="runpod-balance-observation", daemon=True)
-        worker.start()
-        worker.join(self.balance_timeout_seconds)
-        if worker.is_alive():
-            overran = (
-                "RunPod account balance source did not answer within "
-                f"{self.balance_timeout_seconds} seconds; it is not consulted again, so "
-                "every later paid action is refused on this same reason"
+            worker = threading.Thread(
+                target=observe, name="runpod-balance-observation", daemon=True
             )
+            worker.start()
+            worker.join(self.balance_timeout_seconds)
+            if worker.is_alive():
+                overran = (
+                    "RunPod account balance source did not answer within "
+                    f"{self.balance_timeout_seconds} seconds; it is not consulted again, so "
+                    "every later paid action is refused on this same reason"
+                )
+                with self._balance_lock:
+                    self._balance_abandoned = overran
+                raise ProviderFailure(overran)
+            if failed:
+                raise failed[0]
+            if not observed:
+                raise ProviderFailure("RunPod account balance source returned nothing")
+            return observed[0]
+        finally:
+            # Cleared even after a timeout, where it changes nothing: the latch
+            # is set by then and is checked first, so no later call can reach
+            # the worker start again.
             with self._balance_lock:
-                self._balance_abandoned = overran
-            raise ProviderFailure(overran)
-        if failed:
-            raise failed[0]
-        if not observed:
-            raise ProviderFailure("RunPod account balance source returned nothing")
-        return observed[0]
+                self._balance_in_flight = False
 
     def create(self, request: PodCreateRequest) -> PodRecord:
         """Correlate an existing launch token first, then POST — never both.

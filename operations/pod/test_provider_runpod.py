@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -165,12 +166,13 @@ def test_a_source_that_overran_its_deadline_is_never_called_again() -> None:
         blocked.wait()
         raise AssertionError("released only by this test's cleanup")
 
+    deadline = 0.5
     adapter = RunPodProvider(
         transport,
         pod_price=lambda gpu: Decimal("0.77"),
         volume_price=lambda volume: Decimal("0.05"),
         balance_observer=never_answers,
-        balance_timeout_seconds=0.05,
+        balance_timeout_seconds=deadline,
         now=lambda: NOW,
     )
 
@@ -182,17 +184,95 @@ def test_a_source_that_overran_its_deadline_is_never_called_again() -> None:
         with pytest.raises(ProviderFailure, match="did not answer within"):
             adapter.observe_account_balance()
         assert calls == 1
+
+        started = time.monotonic()
         for _ in range(4):
             with pytest.raises(ProviderFailure, match="not consulted again"):
                 adapter.observe_account_balance()
-        # The refusal is immediate and the source is untouched: four more gates
-        # would otherwise be four more abandoned threads and four more deadlines
-        # spent while a created pod billed.
+        elapsed = time.monotonic() - started
+
+        # The source is untouched: four more gates would otherwise be four more
+        # abandoned threads.
         assert calls == 1
         assert threading.active_count() <= baseline + 1
+        # And the refusals are immediate, which the counts above cannot show. A
+        # regression that waited out the deadline before refusing would leave
+        # `calls` at 1 and pass every other assertion here while stalling four
+        # deadlines -- 2.0 seconds -- with a created pod billing through them.
+        # The bound is one whole deadline for all four, which is still roughly a
+        # thousand times what four lock acquisitions need.
+        assert elapsed < deadline, (
+            f"four latched refusals took {elapsed:.3f}s against a {deadline}s deadline; "
+            "they are supposed to refuse without consulting anything"
+        )
     finally:
         blocked.set()
 
+    assert transport.calls == []
+
+
+def test_a_second_observation_during_the_first_is_refused_rather_than_started() -> None:
+    """The latch check and the worker start are one transaction.
+
+    Two callers that both read "not abandoned" before either started would both
+    start a worker, and the at-most-one-abandoned-thread guarantee would hold
+    for the sequential case only. Nothing in this repository drives one
+    `RunPodProvider` from two threads today -- the sole production construction,
+    `timer_context_from_environment`, passes no observer at all -- so this is
+    the guarantee being made true before something relies on it, not a live bug
+    being repaired.
+    """
+
+    transport = ScriptedTransport([])
+    entered = threading.Event()
+    release = threading.Event()
+    calls = 0
+    answer = AccountBalanceObservation(Decimal("76.50"), NOW, "fake RunPod balance source")
+
+    def slow_source() -> AccountBalanceObservation:
+        nonlocal calls
+        calls += 1
+        entered.set()
+        release.wait()
+        return answer
+
+    adapter = RunPodProvider(
+        transport,
+        pod_price=lambda gpu: Decimal("0.77"),
+        volume_price=lambda volume: Decimal("0.05"),
+        balance_observer=slow_source,
+        # Long enough that the first observation is still in flight while the
+        # second arrives; the test releases it rather than waiting this out.
+        balance_timeout_seconds=30.0,
+        now=lambda: NOW,
+    )
+
+    first: list[object] = []
+
+    def observe_on_another_thread() -> None:
+        try:
+            first.append(adapter.observe_account_balance())
+        except BaseException as error:  # noqa: BLE001 - reported on the main thread
+            first.append(error)
+
+    caller = threading.Thread(target=observe_on_another_thread)
+    caller.start()
+    try:
+        assert entered.wait(10), "the first observation never reached the source"
+        with pytest.raises(ProviderFailure, match="already in progress"):
+            adapter.observe_account_balance()
+        # Refused, not queued and not started: the source saw one call.
+        assert calls == 1
+    finally:
+        release.set()
+        caller.join(10)
+
+    assert first == [answer]
+    assert not caller.is_alive()
+    # The in-flight refusal is not the latch: an ordinary observation still works
+    # once the first one has finished.
+    assert adapter.observe_account_balance() is answer
+    assert calls == 2
     assert transport.calls == []
 
 
