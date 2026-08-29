@@ -191,7 +191,7 @@ frame set and instrument configuration that produced it. It binds a digest of th
 validated evidence-record contents as well as the pair set, so the pass detects both a
 missing pair and changed evidence for a retained pair. A duplicate frame digest, a
 duplicate emitted pair, a missing selected pair, or an evidence/recipe configuration mismatch
-is a whole-pass refusal. `_refuse_preference` remains mandatory on the recipe, every evidence
+is a whole-pass refusal. `refuse_capture_preference` remains mandatory on the recipe, every evidence
 record, the evidence manifest, confirmations, decision-manifest rows, cluster records, and
 both corpus-register record types.
 
