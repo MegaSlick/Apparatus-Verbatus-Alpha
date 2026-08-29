@@ -874,31 +874,56 @@ def test_no_agreeing_pair_is_recorded_unrelated_for_disagreeing_less():
     """Inside the agreement regime the verdict may not run backwards.
 
     The three verdicts are not one scale — a complementary candidate disagrees a lot,
-    in one region, by design. But while agreement still reaches the link threshold,
-    every localized disagreement is the same kind of evidence, and a *smaller* one may
-    never earn "unrelated" when a larger one earns "near-duplicate". Walked across the
-    whole band rather than at one point, because the defect this guards was a band: at
-    the shipped values one to thirty disagreeing cells scored unrelated while a hundred
-    scored near-duplicate.
+    in one region, by design. But while agreement still reaches the link threshold, a
+    localized disagreement is the same kind of evidence however it is divided, and a
+    *smaller* one may never earn "unrelated" when a larger one earns "near-duplicate".
+    Walked across the whole band and over one and two regions, because both were bands:
+    at the shipped values one to thirty cells in a single region scored unrelated while
+    a hundred scored near-duplicate, and then forty cells split across two regions of
+    twenty scored unrelated while thirty-one in one region scored near-duplicate.
     """
     config = instrument.load_config()
     overlapping = config.grid_columns * config.grid_rows
     reached = 0
-    for disagreements in range(0, overlapping + 1):
-        if (overlapping - disagreements) * 1000 < config.link_agreement_per_mille * overlapping:
-            continue
-        reached += 1
-        assert (
-            instrument._verdict_for_metrics(
-                overlapping - disagreements,
-                overlapping,
-                0 if disagreements == 0 else 1,
-                disagreements * 1000 // overlapping,
-                config,
-            )
-            == "near-duplicate"
-        ), f"{disagreements} disagreeing cells in one blob is not recorded near-duplicate"
-    assert reached > 300, "the agreement band the shipped thresholds admit was not walked"
+    for components in (1, 2):
+        for disagreements in range(components, overlapping + 1):
+            if (overlapping - disagreements) * 1000 < config.link_agreement_per_mille * overlapping:
+                continue
+            reached += 1
+            largest = disagreements - (components - 1)
+            assert (
+                instrument._verdict_for_metrics(
+                    overlapping - disagreements,
+                    overlapping,
+                    components,
+                    largest * 1000 // overlapping,
+                    config,
+                )
+                == "near-duplicate"
+            ), f"{disagreements} disagreeing cells in {components} region(s) is not near-duplicate"
+    assert reached > 600, "the agreement band the shipped thresholds admit was not walked"
+
+
+def test_a_large_disagreement_scattered_across_many_regions_stays_unrelated():
+    """The component bound is what the blob-share floor was mistaken for.
+
+    Admitting the tightly-agreeing pairs must not admit two different pages that happen
+    to agree in most cells: a disagreement past the negligible share and spread over
+    more than two regions is still no evidence of a re-shoot.
+    """
+    config = instrument.load_config()
+    overlapping = config.grid_columns * config.grid_rows
+    scattered = 200
+    assert (
+        instrument._verdict_for_metrics(
+            overlapping - scattered,
+            overlapping,
+            40,
+            5 * 1000 // overlapping,
+            config,
+        )
+        == "unrelated"
+    )
 
 
 def test_the_shipped_recipe_validates_against_the_validator_that_guards_it():
