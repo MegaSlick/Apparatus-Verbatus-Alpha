@@ -16,7 +16,7 @@ from typing import Any, Final, Iterable, Sequence
 
 from PIL import Image
 
-from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of
+from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of, is_sha256
 from common.contracts.errors import ContractError
 from common.corpus_register import refuse_capture_preference
 from common.imaging import MAX_PIXELS, encode_image_deterministic, imaging_library_versions
@@ -267,11 +267,10 @@ def _plain_positive_int(value: Any, what: str) -> int:
 
 
 def _lower_sha256(value: Any, what: str) -> str:
-    if (
-        not isinstance(value, str)
-        or len(value) != 64
-        or any(character not in "0123456789abcdef" for character in value)
-    ):
+    # The shared predicate, not a third copy of its rule: a digest shape this module
+    # accepted and `common.corpus_register` did not would kill a confirmation at the
+    # register append, after the evidence pass had already been reported clean.
+    if not is_sha256(value):
         raise InstrumentRefusal(f"{what} must be a lowercase sha256")
     return value
 
@@ -569,12 +568,7 @@ def validate_producer_recipe(record: Any) -> dict[str, Any]:
         raise InstrumentRefusal("triage producer recipe has the wrong closed schema")
     if record.get("schema") != RECIPE_SCHEMA:
         raise InstrumentRefusal("triage producer recipe has an unknown schema")
-    digest = record.get("instrument_config_sha256")
-    if (
-        not isinstance(digest, str)
-        or len(digest) != 64
-        or any(character not in "0123456789abcdef" for character in digest)
-    ):
+    if not is_sha256(record.get("instrument_config_sha256")):
         raise InstrumentRefusal("triage producer recipe has no source configuration digest")
     proxy = record["proxy_recipe"]
     if not isinstance(proxy, dict) or set(proxy) != {

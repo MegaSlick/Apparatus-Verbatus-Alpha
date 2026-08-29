@@ -302,8 +302,9 @@ def _atomic_replace(path: Path, data: bytes) -> None:
         # against the previous digest, which the moved head then refuses as a concurrent
         # change — two refusals for one durable, successful publish.
         raise SchemaRefusal(
-            f"the corpus register was replaced and is durable; only the temporary {temporary} "
-            "could not be removed. Do not retry this append against the previous digest"
+            f"the corpus register was replaced and is durable at digest {digest_bytes(data)}; "
+            f"only the temporary {temporary} could not be removed. Do not retry this append "
+            "against the previous digest"
         ) from cleanup_error
 
 

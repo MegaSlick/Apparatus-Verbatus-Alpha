@@ -1002,6 +1002,9 @@ def test_a_cleanup_only_failure_says_the_register_was_already_published(tmp_path
     with pytest.raises(SchemaRefusal, match="was replaced and is durable") as refusal:
         append_records(path, [membership], expected_digest=first)
     assert "do not retry this append against the previous digest" in str(refusal.value).lower()
+    # The current digest travels in the message, so an operator holding only the error
+    # text does not have to re-read the file to build the next append.
+    assert register_digest(path.read_bytes()) in str(refusal.value)
 
     # The published half of the claim, not just its wording: the append is on disk.
     assert members_of(path.read_bytes(), PAGE) == ["a" * 64]
