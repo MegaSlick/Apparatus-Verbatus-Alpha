@@ -318,6 +318,56 @@ def test_missing_retained_partition_cannot_suppress_a_rederived_coverage_finding
     ]
 
 
+def test_unclaimed_geometry_alone_does_not_publish_a_clean_text_measurement(monkeypatch):
+    """A failed page has no text to diff, and must not look like a covered one.
+
+    The unclaimed-observation route creates the page finding, seeded
+    `shortfall: False`. On a page whose witness reported no text, nothing then
+    measures anything -- and the seed would be published as a clean text
+    coverage result, byte-identical to a page whose witnesses were read and
+    covered every character (GOVERNANCE 10). The geometry stays; the text fact
+    goes back to unmeasured.
+    """
+    page = _page_testimonium(outcome="failed")
+    page["payload"].update(
+        {
+            "presented": {"source_page_id": "page-1"},
+            "observed": [
+                {
+                    "ordinal": 0,
+                    "bounds": {"x": 50, "y": 50, "w": 10, "h": 10},
+                    "bounds_source": "native",
+                }
+            ],
+        }
+    )
+    context = _context(page)
+    context.tree.records["attachment-1"] = _attachment(context, end=3)
+    monkeypatch.setattr(
+        RUN,
+        "expected_acts",
+        lambda unused: [{"act_id": "act-1", "act_key": "a1", "page_ordinal": 1}],
+    )
+    proposal = {
+        "payload": {
+            "origin": "proposal",
+            "transform": {
+                "source_page_id": "page-1",
+                "source_page_ordinal": 1,
+                "bounds": {"x": 0, "y": 0, "w": 10, "h": 10},
+            },
+        }
+    }
+    monkeypatch.setattr(RUN, "artifacts_for", lambda *unused: [proposal])
+
+    finding = RUN.testimony_content_findings(context)[1]
+
+    assert finding["by_chair"] == {}
+    assert finding["shortfall"] is None, "no chair's text was measured on this page"
+    assert "was not measured" in finding["reason"]
+    assert len(finding["unclaimed_observations"]) == 1, "the geometry finding still stands"
+
+
 def test_retained_partition_is_bound_to_the_current_sealed_proposals(monkeypatch):
     """An internally consistent stale snapshot is still false evidence."""
     observed = [
@@ -471,7 +521,12 @@ def _patched_page_geometry(monkeypatch, context, observed_by_ordinal):
 
 
 def test_page_attachment_facts_preserve_a_later_primary_alignment(monkeypatch):
-    """An earlier-page continuation cannot erase the act's primary alignment."""
+    """An earlier-page continuation cannot erase the act's primary alignment.
+
+    This order alone does not discriminate — last-row-wins would report the same
+    two values — so the reverse order below is the half that can actually fail.
+    Both are kept because the merge has to hold in either direction.
+    """
     rows = [
         _page_fact(ordinal=1, attached=False),
         _page_fact(ordinal=2, attached=True, anchor_basis="act-anchor"),
@@ -483,6 +538,51 @@ def test_page_attachment_facts_preserve_a_later_primary_alignment(monkeypatch):
 
     assert facts["attestator_1"]["attached"] is True
     assert facts["attestator_1"]["anchor_basis"] == "act-anchor"
+
+
+def test_page_attachment_facts_preserve_an_earlier_primary_alignment(monkeypatch):
+    """A later continuation row may not overwrite the primary page's alignment.
+
+    The discriminating order: replace the `attached or attached` merge with
+    last-row-wins and this reports False and None instead.
+    """
+    rows = [
+        _page_fact(ordinal=1, attached=True, anchor_basis="act-anchor"),
+        _page_fact(ordinal=2, attached=False),
+    ]
+    context = _context(_attachment_fact_record(rows))
+    _patched_page_geometry(monkeypatch, context, {1: True, 2: False})
+
+    facts = RUN.act_attachment_facts(context, "act-1", {"attestator_1": "read"})
+
+    assert facts["attestator_1"]["attached"] is True
+    assert facts["attestator_1"]["anchor_basis"] == "act-anchor"
+
+
+@pytest.mark.parametrize(
+    "bases",
+    (("act-line-not-located", "act-anchor"), ("act-anchor", "act-line-not-located")),
+    ids=("failure-first", "failure-second"),
+)
+def test_page_attachment_facts_keep_a_failed_geometry_across_its_pages(bases, monkeypatch):
+    """`act-line-not-located` survives an aligned sibling row, in either order.
+
+    This is the clause the merge's second condition exists for, and it decides
+    whether blank_corroboration can block a confirmed-blank. Drop it and an act
+    whose page geometry located no line for it seals as a proved blank — a real
+    baptism or burial leaving the export as "no readable text", with nothing
+    downstream able to tell.
+    """
+    rows = [
+        _page_fact(ordinal=1, attached=True, anchor_basis=bases[0]),
+        _page_fact(ordinal=2, attached=True, anchor_basis=bases[1]),
+    ]
+    context = _context(_attachment_fact_record(rows))
+    _patched_page_geometry(monkeypatch, context, {1: True, 2: True})
+
+    facts = RUN.act_attachment_facts(context, "act-1", {"attestator_1": "read"})
+
+    assert facts["attestator_1"]["anchor_basis"] == "act-line-not-located"
 
 
 def test_page_attachment_facts_refuse_a_duplicate_page_pair(monkeypatch):

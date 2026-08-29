@@ -31,6 +31,7 @@ PNG and DEFLATE specifications decide any byte.
 import hashlib
 import struct
 import zlib
+from collections.abc import Mapping
 from io import BytesIO
 from typing import Final, NamedTuple, TypedDict
 
@@ -754,6 +755,23 @@ def imaging_library_versions() -> dict[str, str]:
     }
 
 
+def _refuse_uncontained_rectangle(
+    rectangle: Mapping[str, int], width: int, height: int, what: str
+) -> None:
+    """Refuse a rectangle Pillow would silently pad instead of rejecting."""
+    if (
+        rectangle["x"] < 0
+        or rectangle["y"] < 0
+        or rectangle["x"] + rectangle["w"] > width
+        or rectangle["y"] + rectangle["h"] > height
+    ):
+        raise ValueError(
+            f"{what} of {rectangle['w']}x{rectangle['h']} at "
+            f"({rectangle['x']}, {rectangle['y']}) falls outside its {width}x{height} source, "
+            "so the page it describes would be part invented pixels"
+        )
+
+
 def _png_colour_mode(png_bytes: bytes) -> str:
     """The Pillow mode of a PNG this module wrote, read out of its own IHDR.
 
@@ -797,6 +815,12 @@ def render_triage_derivative(
         colour_mode = part["colour_mode"]
         with Image.open(BytesIO(source_bytes)) as image:
             image.seek(page_index)
+            # Before `load`, and after `seek`, so the bound is enforced against the
+            # frame actually being decoded. Without it this path was the one Pillow
+            # decode in the module with no `MAX_PIXELS` check of its own, and a
+            # master between the bound and Pillow's own 2x hard ceiling materialised
+            # here under nothing worse than a warning.
+            _refuse_past_pixel_bound(image.width, image.height)
             image.load()
             source_mode = image.mode
             source_bands = list(image.getbands())
@@ -810,6 +834,18 @@ def render_triage_derivative(
                     "conversion this page needs ('grayscale', 'rgb' or 'bitonal') so it is "
                     "recorded, or submit the frame without a split decision"
                 )
+            # `Image.crop` pads rather than refuses: a rectangle past the master's
+            # edge comes back filled with black, so a part declaring a frame larger
+            # than the master it was actually cut from produced a page of mostly
+            # invented pixels and sealed them. The Exemplar boundary reconciles the
+            # declared frame against the decoded master, but only after this
+            # function has already rendered the padded page, and the door's
+            # producing path reconciles nothing at all. Refused here instead, at the
+            # one place both paths pass through, the way `crop_png` already refuses.
+            _refuse_uncontained_rectangle(
+                region, source_width, source_height, "a triage split region"
+            )
+            _refuse_uncontained_rectangle(crop_box, region["w"], region["h"], "a triage crop box")
             split = image.crop(
                 (
                     region["x"],
@@ -864,5 +900,10 @@ def render_triage_derivative(
                 "source_width": source_width,
                 "source_height": source_height,
             }
-    except (*_DECODE_FAILURES, KeyError, TypeError) as error:
+    # `EOFError` beside the shared decode failures because this is the one path that
+    # seeks: a `page_index` past the last frame of a container raises it, and it
+    # descends from `Exception` rather than `OSError`, so it escaped this module's
+    # contract that an undecodable frame raises `ValueError` and reached the
+    # Exemplar boundary as an unhandled error instead of a refusal.
+    except (*_DECODE_FAILURES, EOFError, KeyError, TypeError) as error:
         raise ValueError(f"source frame bytes are not a decodable image ({error})") from error

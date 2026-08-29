@@ -16,9 +16,9 @@ from typing import Any, Final, Iterable, Sequence
 
 from PIL import Image
 
-from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of
+from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of, is_sha256
 from common.contracts.errors import ContractError
-from common.corpus_register import _refuse_preference
+from common.corpus_register import refuse_capture_preference
 from common.imaging import MAX_PIXELS, encode_image_deterministic, imaging_library_versions
 
 RECIPE_SCHEMA: Final = "triage-producer-recipe.v1"
@@ -63,6 +63,28 @@ JPEG_REMEASURE_FAILURE: Final = (
     "JPEG proxy digest is recorded with imaging library versions; if those versions change, "
     "re-measure the JPEG case before making any determinism claim."
 )
+# Every sentence the sealed recipe declares and the validator then checks is written
+# once here. Both halves used to hold their own copy, wrapped differently, so a typo
+# corrected in one would have made the validator refuse every recipe the producer
+# builds — the producer unable to commit a confirmation at all, over a sentence.
+PROXY_REDUCTION: Final = "Pillow.Image.reduce(integer BOX average, nearest integer sample)"
+PROXY_INTEGER_FACTOR_RULE: Final = "smallest k with max(width,height)/k <= declared_max_edge"
+OFFSET_SELECTION: Final = (
+    "maximize agreeing-cell count, then overlap, then minimize Manhattan offset, "
+    "then prefer lower signed y and x"
+)
+VERDICT_RULE: Final = (
+    "near-duplicate iff agreement reaches link threshold and either no component "
+    "exists, or the whole disagreement is below blob share, or at most two "
+    "components include a largest blob reaching blob share; otherwise "
+    "complementary-candidate iff agreement is below link threshold and at most "
+    "three components include a largest blob reaching span share; otherwise "
+    "unrelated"
+)
+DETERMINISM_CLAIM: Final = (
+    "identical input bytes, recorded recipe, and recorded library versions produce "
+    "identical proxy bytes"
+)
 COMPLEMENTARY_CANDIDATE_REASON: Final = "insufficient-co-visible-evidence"
 # A near-duplicate verdict is agreement between two signatures, never an assertion
 # that two frames show one physical page.  On this corpus that gap is not academic:
@@ -73,17 +95,31 @@ COMPLEMENTARY_CANDIDATE_REASON: Final = "insufficient-co-visible-evidence"
 # the sealed recipe what the signature provably cannot separate, so nothing
 # downstream may read this verdict as identity (GOVERNANCE 10).
 NEAR_DUPLICATE_REASON: Final = "signature-agreement-only-not-page-identity"
+# Parenthesised element by element on purpose. These are adjacent string literals, so a
+# dropped comma merges two statements into one silently, and the validator compares the
+# recipe against this same shortened tuple — the sealed recipe would stop telling a
+# reader what the signature cannot separate, and nothing would refuse it.
 SIGNATURE_BLINDNESS: Final = (
-    "two different frames of one printed ruled form, both blank or near-blank, agree "
-    "in every cell and are recorded near-duplicate",
-    "two different openings whose ink is co-located to within the cell tolerances "
-    "agree in every cell; ink magnitude, not cell agreement, is what separates them",
-    "a written page and its own blank verso form disagree in one connected component "
-    "and reach near-duplicate whenever the written share stays inside the link threshold",
-    "cell agreement is a thresholded boolean and discards magnitude; the recorded ink "
-    "count totals and their distance are the fields a human reads to catch the three above",
-    "an ink count is within-cell contrast, not an amount of ink: a cell of uniform tone "
-    "counts zero whether it is blank paper, a solid dark insert, or a blown highlight",
+    (
+        "two different frames of one printed ruled form, both blank or near-blank, agree "
+        "in every cell and are recorded near-duplicate"
+    ),
+    (
+        "two different openings whose ink is co-located to within the cell tolerances "
+        "agree in every cell; ink magnitude, not cell agreement, is what separates them"
+    ),
+    (
+        "a written page and its own blank verso form disagree in one connected component "
+        "and reach near-duplicate whenever the written share stays inside the link threshold"
+    ),
+    (
+        "cell agreement is a thresholded boolean and discards magnitude; the recorded ink "
+        "count totals and their distance are the fields a human reads to catch the three above"
+    ),
+    (
+        "an ink count is within-cell contrast, not an amount of ink: a cell of uniform tone "
+        "counts zero whether it is blank paper, a solid dark insert, or a blown highlight"
+    ),
 )
 EVIDENCE_FIELDS: Final = (
     "schema",
@@ -231,11 +267,10 @@ def _plain_positive_int(value: Any, what: str) -> int:
 
 
 def _lower_sha256(value: Any, what: str) -> str:
-    if (
-        not isinstance(value, str)
-        or len(value) != 64
-        or any(character not in "0123456789abcdef" for character in value)
-    ):
+    # The shared predicate, not a third copy of its rule: a digest shape this module
+    # accepted and `common.corpus_register` did not would kill a confirmation at the
+    # register append, after the evidence pass had already been reported clean.
+    if not is_sha256(value):
         raise InstrumentRefusal(f"{what} must be a lowercase sha256")
     return value
 
@@ -470,8 +505,8 @@ def producer_recipe(config: InstrumentConfig) -> dict[str, Any]:
         "instrument_config_sha256": config.source_sha256,
         "proxy_recipe": {
             "colour_mode": "L",
-            "reduction": "Pillow.Image.reduce(integer BOX average, nearest integer sample)",
-            "integer_factor_rule": "smallest k with max(width,height)/k <= declared_max_edge",
+            "reduction": PROXY_REDUCTION,
+            "integer_factor_rule": PROXY_INTEGER_FACTOR_RULE,
             "signature_max_edge": config.signature_max_edge,
             "review_max_edge": config.review_max_edge,
             "encoder": "common.imaging.encode_image_deterministic-v1",
@@ -487,19 +522,10 @@ def producer_recipe(config: InstrumentConfig) -> dict[str, Any]:
         "comparison_recipe": {
             "equal_dimension_precondition": "refuse",
             "offset_cells": config.offset_cells,
-            "offset_selection": (
-                "maximize agreeing-cell count, then overlap, then minimize Manhattan offset, "
-                "then prefer lower signed y and x"
-            ),
+            "offset_selection": OFFSET_SELECTION,
             "disagreement_components": "four-connected cells in the left-grid overlap",
             "per_mille_rounding": "floor",
-            "verdict_rule": (
-                "near-duplicate iff agreement reaches link threshold and either no component "
-                "exists or at most two components include a largest blob reaching blob share; "
-                "otherwise complementary-candidate iff agreement is below link threshold and "
-                "at most three components include a largest blob reaching span share; otherwise "
-                "unrelated"
-            ),
+            "verdict_rule": VERDICT_RULE,
             "mean_tolerance": config.mean_tolerance,
             "ink_tolerance": config.ink_tolerance,
             "link_agreement_per_mille": config.link_agreement_per_mille,
@@ -524,7 +550,7 @@ def producer_recipe(config: InstrumentConfig) -> dict[str, Any]:
         },
         "imaging_library_versions": imaging_library_versions(),
         "determinism": {
-            "claim": "identical input bytes, recorded recipe, and recorded library versions produce identical proxy bytes",
+            "claim": DETERMINISM_CLAIM,
             "cross_version_claim": "NOT_CLAIMED",
             "jpeg_remeasure_failure": JPEG_REMEASURE_FAILURE,
         },
@@ -532,7 +558,7 @@ def producer_recipe(config: InstrumentConfig) -> dict[str, Any]:
             name: _STATUS for name in sorted(_INSTRUMENT_FIELDS | _THRESHOLD_FIELDS)
         },
     }
-    _refuse_preference(record)
+    refuse_capture_preference(record)
     return record
 
 
@@ -542,12 +568,7 @@ def validate_producer_recipe(record: Any) -> dict[str, Any]:
         raise InstrumentRefusal("triage producer recipe has the wrong closed schema")
     if record.get("schema") != RECIPE_SCHEMA:
         raise InstrumentRefusal("triage producer recipe has an unknown schema")
-    digest = record.get("instrument_config_sha256")
-    if (
-        not isinstance(digest, str)
-        or len(digest) != 64
-        or any(character not in "0123456789abcdef" for character in digest)
-    ):
+    if not is_sha256(record.get("instrument_config_sha256")):
         raise InstrumentRefusal("triage producer recipe has no source configuration digest")
     proxy = record["proxy_recipe"]
     if not isinstance(proxy, dict) or set(proxy) != {
@@ -564,11 +585,11 @@ def validate_producer_recipe(record: Any) -> dict[str, Any]:
         or proxy["encoder"] != "common.imaging.encode_image_deterministic-v1"
     ):
         raise InstrumentRefusal("triage producer recipe proxy recipe changes the declared encoder")
-    if proxy["reduction"] != "Pillow.Image.reduce(integer BOX average, nearest integer sample)":
+    if proxy["reduction"] != PROXY_REDUCTION:
         raise InstrumentRefusal(
             "triage producer recipe proxy reduction is not the declared BOX average"
         )
-    if proxy["integer_factor_rule"] != "smallest k with max(width,height)/k <= declared_max_edge":
+    if proxy["integer_factor_rule"] != PROXY_INTEGER_FACTOR_RULE:
         raise InstrumentRefusal("triage producer recipe proxy scale rule is not declared")
     signature_max_edge = _plain_positive_int(
         proxy["signature_max_edge"], "recipe signature_max_edge"
@@ -624,12 +645,10 @@ def validate_producer_recipe(record: Any) -> dict[str, Any]:
     if comparison["equal_dimension_precondition"] != "refuse" or comparison["offset_cells"] != 3:
         raise InstrumentRefusal("triage producer recipe comparison preconditions are not declared")
     if (
-        comparison["offset_selection"]
-        != "maximize agreeing-cell count, then overlap, then minimize Manhattan offset, then prefer lower signed y and x"
+        comparison["offset_selection"] != OFFSET_SELECTION
         or comparison["disagreement_components"] != "four-connected cells in the left-grid overlap"
         or comparison["per_mille_rounding"] != "floor"
-        or comparison["verdict_rule"]
-        != "near-duplicate iff agreement reaches link threshold and either no component exists or at most two components include a largest blob reaching blob share; otherwise complementary-candidate iff agreement is below link threshold and at most three components include a largest blob reaching span share; otherwise unrelated"
+        or comparison["verdict_rule"] != VERDICT_RULE
     ):
         raise InstrumentRefusal(
             "triage producer recipe comparison semantics are not the declared integer rules"
@@ -681,7 +700,20 @@ def validate_producer_recipe(record: Any) -> dict[str, Any]:
         raise InstrumentRefusal(
             "triage producer recipe candidate selection has the wrong closed schema"
         )
-    if selection["global_prefilter_grid"] != [4, 4]:
+    # The cell *count* is the invariant, exactly as `load_config` reads it: 16 is what
+    # bounds `global_prefilter_agreeing_cells`, and the columns and rows are declared
+    # tunable and UNMEASURED. Demanding the literal [4, 4] shipped today would refuse a
+    # recipe this module's own configuration loader had just accepted, and refuse it
+    # with a message naming 16 cells for a grid that has 16 — sending an operator to
+    # count cells in a file that is already correct.
+    grid = selection["global_prefilter_grid"]
+    if not isinstance(grid, list) or len(grid) != 2:
+        raise InstrumentRefusal(
+            "triage producer recipe global prefilter grid is not columns by rows"
+        )
+    columns = _plain_positive_int(grid[0], "recipe global prefilter columns")
+    rows = _plain_positive_int(grid[1], "recipe global prefilter rows")
+    if columns * rows != 16:
         raise InstrumentRefusal("triage producer recipe global prefilter is not 16 cells")
     if (
         selection["submission_window_rule"] != "each frame with its preceding N submission indices"
@@ -728,8 +760,7 @@ def validate_producer_recipe(record: Any) -> dict[str, Any]:
             "cross_version_claim",
             "jpeg_remeasure_failure",
         }
-        or determinism["claim"]
-        != "identical input bytes, recorded recipe, and recorded library versions produce identical proxy bytes"
+        or determinism["claim"] != DETERMINISM_CLAIM
         or determinism["cross_version_claim"] != "NOT_CLAIMED"
         or determinism["jpeg_remeasure_failure"] != JPEG_REMEASURE_FAILURE
     ):
@@ -744,7 +775,7 @@ def validate_producer_recipe(record: Any) -> dict[str, Any]:
         or any(value != _STATUS for value in statuses.values())
     ):
         raise InstrumentRefusal("triage producer recipe must declare every tuning value UNMEASURED")
-    _refuse_preference(record)
+    refuse_capture_preference(record)
     return record
 
 
@@ -935,7 +966,7 @@ def validate_candidate_evidence(record: Any, config: InstrumentConfig) -> dict[s
         raise InstrumentRefusal(
             "candidate evidence thresholds, reasons, or measurement status do not match its configuration"
         )
-    _refuse_preference(record)
+    refuse_capture_preference(record)
     return record
 
 
@@ -947,8 +978,21 @@ def _verdict_for_metrics(
     config: InstrumentConfig,
 ) -> str:
     agreement_reaches_link = agreeing * 1000 >= config.link_agreement_per_mille * overlapping
+    # A disagreement smaller than the blob share is negligible, not disqualifying.
+    # Requiring the largest blob to *reach* that share made the verdict non-monotone in
+    # its own evidence: at the shipped values a pair disagreeing in one to thirty of
+    # 3072 cells fell past both clauses to "unrelated" — the verdict that tells a human
+    # to stop looking — while a pair disagreeing in a hundred was recorded
+    # near-duplicate. The tightest agreement is the likeliest re-shoot, and a re-shoot
+    # read as unrelated is how two frames of one physical page both enter the corpus as
+    # separate pages. The share keeps one meaning, as the floor below which a
+    # difference is not worth arguing about; a large *diffuse* disagreement is still
+    # not near-duplicate, which is what the component bound was for.
+    negligible = (overlapping - agreeing) * 1000 < config.blob_share_per_mille * overlapping
     near_duplicate = agreement_reaches_link and (
-        components == 0 or (components <= 2 and largest_share >= config.blob_share_per_mille)
+        components == 0
+        or negligible
+        or (components <= 2 and largest_share >= config.blob_share_per_mille)
     )
     complementary = (
         not agreement_reaches_link
@@ -1193,7 +1237,7 @@ def evidence_manifest(
             for left, right in selection.dimension_refused
         ],
     }
-    _refuse_preference(record)
+    refuse_capture_preference(record)
     return record
 
 
@@ -1224,7 +1268,7 @@ def validate_evidence_manifest(
         raise InstrumentRefusal(
             "candidate evidence manifest does not match the proxy pass and evidence it seals"
         )
-    _refuse_preference(record)
+    refuse_capture_preference(record)
     return record
 
 

@@ -1416,7 +1416,13 @@ def render_raster_page(
             )
         except ValueError as error:
             raise unsupported(
-                f"{decoded.format}: the installed decoder could not apply the triage page geometry ({error})"
+                # Not "the installed decoder could not", which the sibling routes
+                # above say truthfully: this one also carries the refusals that are
+                # policy rather than decoding — a colour_mode 'keep' the encoder
+                # cannot honour, and geometry outside the master — and blaming the
+                # decoder sends an operator to reinstall a library over a manifest
+                # they should be correcting instead.
+                f"{decoded.format}: the triage page geometry could not be applied ({error})"
             ) from error
         # Provenance names the decoded master mode and the encoded PNG mode; they
         # may differ even when a palette expansion preserves every rendered pixel.

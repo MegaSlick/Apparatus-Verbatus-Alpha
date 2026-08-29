@@ -778,7 +778,42 @@ def test_perlector_refuses_a_referenced_page_ordinal_outside_the_fixture(tmp_pat
 
     result = invoke_stage(root, "forged-page", "happy", "pipeline/4_perlector/run.py")
     assert result.returncode != 0
+    # The shared page contract now reconciles `page_ordinal` against the
+    # presentation, so it answers this forgery before the Perlector's own
+    # subject-vs-presentation check does. The stage-local refusal is still
+    # there and still needed -- it also compares `source_page_id` against the
+    # record's subject, which the shared contract cannot see.
+    assert "names a different page than the record" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_perlector_refuses_a_page_presentation_that_disowns_its_record_subject(tmp_path):
+    """The half of the stage-local check the shared page contract cannot make.
+
+    `page_ordinal` and `source_page_ordinal` are reconciled by the shared
+    contract, so a forgery has to keep them agreeing to get this far. What only
+    the Perlector can see is the record's own `subject_id`: a page Testimonium
+    filed under page 1 whose presentation claims to be some other sealed page
+    would hand page-1 coverage the ink of a page this chair never sat with.
+    """
+    root = tmp_path / "runs"
+    tree = _through_attestatores(root, "disowned-page")
+    manifest = tree.build_manifest(ATTESTATORES)
+    page_entry = next(row for row in manifest["artifacts"] if row["kind"] == "page-testimonium")
+    page = tree.read_artifact(ATTESTATORES, "page-testimonium", page_entry["artifact_id"])
+    presented = page["payload"]["presented"]
+    # Ordinals left untouched on both sides, so the shared reconciliation passes
+    # and this forgery is answered by the subject check rather than by it.
+    forged_page_id = presented["source_page_id"] + "-not-this-page"
+    presented["source_page_id"] = forged_page_id
+    presented["transform"]["source_page_id"] = forged_page_id
+    _reseal_page_and_references(tree, manifest, page_entry, page)
+
+    result = invoke_stage(root, "disowned-page", "happy", "pipeline/4_perlector/run.py")
+
+    assert result.returncode != 0
     assert "wrong page Testimonium" in result.stderr
+    assert "Traceback" not in result.stderr
 
 
 def test_perlector_refuses_a_page_role_its_own_ordinal_contradicts(tmp_path):

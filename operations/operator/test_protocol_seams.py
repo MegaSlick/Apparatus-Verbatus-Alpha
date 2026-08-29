@@ -92,7 +92,16 @@ SEAMS = (
 
 def _missing_concrete_methods(protocol: type, implementation: type) -> list[str]:
     missing: list[str] = []
-    for name, member in vars(protocol).items():
+    # The Protocol's whole method set, not just the class body: `vars(protocol)`
+    # misses anything a base Protocol declares, so the first seam that inherits
+    # would let an implementation drop an inherited method and still pass here.
+    # Every pair in SEAMS is flat today; this closes the gap before one is not.
+    declared: dict[str, object] = {}
+    for base in reversed(protocol.__mro__):
+        if not getattr(base, "_is_protocol", False):
+            continue
+        declared.update(vars(base))
+    for name, member in declared.items():
         if name.startswith("_") or not inspect.isfunction(member):
             continue
         owner = next(

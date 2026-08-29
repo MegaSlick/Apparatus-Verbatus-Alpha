@@ -27,13 +27,17 @@ def _load_local_adapters():
     spec = importlib.util.spec_from_file_location("attestatores_witness_adapters", path)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
+    # Snapshot rather than `remove`: the stage directory is already on the path
+    # once `run.py` has been imported, and value-based removal takes the first
+    # occurrence -- that module's entry, not the one inserted here.
+    original_path = list(sys.path)
     sys.path.insert(0, str(STAGE))
     try:
         sys.modules[spec.name] = module
         spec.loader.exec_module(module)
     finally:
         sys.modules.pop(spec.name, None)
-        sys.path.remove(str(STAGE))
+        sys.path[:] = original_path
     return module
 
 
