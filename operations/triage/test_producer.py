@@ -536,7 +536,6 @@ def test_confirmation_writes_memberships_then_stable_cluster_without_a_preferenc
     register_bytes = register.read_bytes()
     left = confirmed["clusters"][0]["pages"][0]
     right = confirmed["clusters"][0]["pages"][1]
-    left_id = next(item for item in produced.clusters.values())
     assert set(
         members_of(
             register_bytes, physical_page_id("synthetic", left["volume_id"], left["designation"])
@@ -547,7 +546,17 @@ def test_confirmation_writes_memberships_then_stable_cluster_without_a_preferenc
             register_bytes, physical_page_id("synthetic", right["volume_id"], right["designation"])
         )
     ) == set(right["member_frame_sha256"])
-    assert left_id["cluster_id"] == cluster_id
+    # The id is derived from the pages the cluster covers, so it is checkable against
+    # the confirmation rather than against the dictionary key the record was written
+    # from — which would be the same string whatever the producer did.
+    record = produced.clusters[cluster_id]
+    assert cluster_id == "rsc_" + digest_of(
+        sorted(
+            physical_page_id("synthetic", page["volume_id"], page["designation"])
+            for page in confirmed["clusters"][0]["pages"]
+        )
+    )
+    assert record["cluster_id"] == cluster_id
     # Cluster identity is page-based, so adding a capture must not change it.
     fourth = frame("66")
     extended = frames + [fourth]
@@ -572,7 +581,7 @@ def test_confirmation_writes_memberships_then_stable_cluster_without_a_preferenc
         evidence_records=evidence2,
     )
     assert set(produced2.clusters) == {cluster_id}
-    append_confirmation_to_register(
+    second_digest = append_confirmation_to_register(
         confirmed2,
         produced2,
         instrument_recipe=recipe2,
@@ -581,6 +590,23 @@ def test_confirmation_writes_memberships_then_stable_cluster_without_a_preferenc
         register_path=register,
         expected_register_digest=first_digest,
     )
+    # Read the grown membership back. Without this the append could stop writing the
+    # right page's new capture and the test would still pass, while the register
+    # replay is the only place a dropped capture would ever have shown.
+    assert second_digest != first_digest
+    grown = register.read_bytes()
+    right_page = physical_page_id("synthetic", right["volume_id"], right["designation"])
+    left_page = physical_page_id("synthetic", left["volume_id"], left["designation"])
+    assert set(members_of(grown, left_page)) == set(
+        confirmed2["clusters"][0]["pages"][0]["member_frame_sha256"]
+    )
+    # The fourth frame is a capture of the left page that the first confirmation did
+    # not name, so this append is where membership grows.
+    assert set(members_of(grown, left_page)) > set(left["member_frame_sha256"])
+    assert set(members_of(grown, right_page)) == set(
+        confirmed2["clusters"][0]["pages"][1]["member_frame_sha256"]
+    )
+    assert set(members_of(grown, right_page)) >= set(right["member_frame_sha256"])
 
 
 def test_no_designation_refuses_before_any_confirmation_output_is_written(tmp_path: Path):

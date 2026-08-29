@@ -7,6 +7,8 @@ from base64 import b64decode
 from dataclasses import replace
 from io import BytesIO
 
+import PIL
+import pillow_heif
 import pytest
 from PIL import Image, ImageDraw
 
@@ -99,9 +101,29 @@ def test_jpeg_recipe_records_versions_and_requires_remeasurement_across_versions
     proxy = instrument.build_proxies_from_bytes(jpeg.getvalue(), config)
     recipe = instrument.producer_recipe(config)
     assert proxy.signature_png_sha256
-    assert recipe["imaging_library_versions"] == instrument.imaging_library_versions()
+    # Against the installed libraries, not against the call that wrote the recipe:
+    # comparing the record with its own producer holds even when the versions are
+    # empty or wrong, and these versions are the whole reason a JPEG proxy digest can
+    # be re-measured after an upgrade.
+    versions = recipe["imaging_library_versions"]
+    assert set(versions) == {
+        "renderer",
+        "renderer_version",
+        "pillow_heif_version",
+        "libheif_version",
+    }
+    assert versions["renderer"] == "Pillow"
+    assert versions["renderer_version"] == PIL.__version__
+    assert versions["pillow_heif_version"] == pillow_heif.__version__
+    assert versions["libheif_version"] == pillow_heif.libheif_info()["libheif"]
+    assert all(value for value in versions.values())
     assert recipe["determinism"]["cross_version_claim"] == "NOT_CLAIMED"
-    assert "re-measure" in recipe["determinism"]["jpeg_remeasure_failure"]
+    # The whole declared sentence, so a rewrite that drops the obligation cannot pass
+    # on the strength of one surviving word.
+    assert recipe["determinism"]["jpeg_remeasure_failure"] == instrument.JPEG_REMEASURE_FAILURE
+    assert "re-measure the JPEG case before making any determinism claim" in (
+        instrument.JPEG_REMEASURE_FAILURE
+    )
 
 
 def test_near_duplicate_small_insert_move_is_recorded_as_evidence_not_a_link():

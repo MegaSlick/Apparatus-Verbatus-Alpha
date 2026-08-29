@@ -232,7 +232,12 @@ def _whole_frame_row(
 
 
 def _verify_transcribed_row(
-    row: Mapping[str, Any], frame: SubmittedFrame, digest: str, triage_mode: str
+    row: Mapping[str, Any],
+    frame: SubmittedFrame,
+    digest: str,
+    triage_mode: str,
+    *,
+    decoded: tuple[int, int, str],
 ) -> dict[str, Any]:
     """Bind a caller-provided geometry transcription to its submitted master.
 
@@ -255,7 +260,10 @@ def _verify_transcribed_row(
         raise ProducerRefusal(
             "manual refusal digest-bytes-mismatch: transcription names other bytes"
         )
-    width, height, source_mode = _decode_dimensions_and_mode(frame.data, frame.path)
+    # The caller's own decode of these exact immutable bytes, by this same function,
+    # three lines earlier. Decoding a second time would prove nothing it did not
+    # already prove and would pay a full master decode twice per transcribed frame.
+    width, height, source_mode = decoded
     if checked["frame"] != {"width": width, "height": height}:
         raise ProducerRefusal(
             "manual refusal frame-dimensions-mismatch: transcription disagrees with decoded master"
@@ -746,7 +754,9 @@ def produce(
         width, height, source_mode = _decode_dimensions_and_mode(frame.data, frame.path)
         supplied = transcribed_rows_by_path.get(frame.path)
         row = (
-            _verify_transcribed_row(supplied, frame, digest, mode)
+            _verify_transcribed_row(
+                supplied, frame, digest, mode, decoded=(width, height, source_mode)
+            )
             if supplied is not None
             else _whole_frame_row(
                 corpus_id=corpus_id,

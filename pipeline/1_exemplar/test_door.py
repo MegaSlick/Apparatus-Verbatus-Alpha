@@ -1074,13 +1074,29 @@ def test_a_non_json_triage_producer_recipe_names_its_exact_parse_failure(tmp_pat
 
 
 @pytest.mark.parametrize(
-    "ambiguous",
+    ("ambiguous", "refusal"),
     [
-        b'{"schema":"triage-producer-recipe.v1","schema":"other"}',
-        b'{"nested":' + b"[" * 20_000 + b"]" * 20_000 + b"}",
+        # A duplicate member refuses deterministically at parse time, so this case
+        # pins the parse refusal exactly. Sharing the nesting case's alternation let
+        # it pass with `object_pairs_hook=_unique_json_object` removed: the document
+        # would then parse with the last value winning and fail the closed-schema
+        # check instead, which also matches "invalid" — the guard against a triage
+        # document carrying two values for one field gone with nothing reporting it.
+        (
+            b'{"schema":"triage-producer-recipe.v1","schema":"other"}',
+            "the triage producer recipe is not valid UTF-8 JSON",
+        ),
+        # The nesting case genuinely needs the width: whether the parser gives up
+        # before the closed-schema check is interpreter-dependent.
+        (
+            b'{"nested":' + b"[" * 20_000 + b"]" * 20_000 + b"}",
+            "the triage producer recipe is (not valid UTF-8 JSON|invalid)",
+        ),
     ],
 )
-def test_ambiguous_or_pathologically_nested_triage_json_is_a_named_refusal(tmp_path, ambiguous):
+def test_ambiguous_or_pathologically_nested_triage_json_is_a_named_refusal(
+    tmp_path, ambiguous, refusal
+):
     manifest_path = tmp_path / "manifest.json"
     manifest_path.write_text(
         json.dumps(
@@ -1095,10 +1111,7 @@ def test_ambiguous_or_pathologically_nested_triage_json_is_a_named_refusal(tmp_p
     # at closed-schema validation when the parser happens to survive the depth;
     # either way it is a named ContractError, never an escaping crash, which is
     # the guarantee this test exists for.
-    with pytest.raises(
-        ContractError,
-        match="the triage producer recipe is (not valid UTF-8 JSON|invalid)",
-    ):
+    with pytest.raises(ContractError, match=refusal):
         door.load_triage_decisions(manifest_path, producer_recipe_path=bad_recipe)
 
 
