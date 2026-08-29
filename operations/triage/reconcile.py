@@ -12,7 +12,7 @@ from typing import Any, Final, Mapping, Sequence
 
 from common.contracts.canonical import canonical_bytes, digest_of, is_sha256
 from common.contracts.errors import SchemaRefusal
-from common.corpus_register import _refuse_preference
+from common.corpus_register import refuse_capture_preference
 
 VERDICT_SCHEMA: Final = "triage-structural-verdict.v1"
 EXPECTED_SCHEMA: Final = "triage-structural-expected.v2"
@@ -161,7 +161,7 @@ def validate_verdict(value: Any) -> dict[str, Any]:
                     f"structural box names {act_id!r}, which this seat did not enumerate as an act"
                 )
             _box(box, act_id)
-    _refuse_preference(value)
+    refuse_capture_preference(value)
     try:
         encoded = canonical_bytes(value)
     except (TypeError, ValueError) as error:
@@ -336,8 +336,8 @@ def reconcile(verdicts: Sequence[Mapping[str, Any]]) -> tuple[dict[str, Any], di
     expected["reconciliation_sha256"] = reconciliation_sha256
     disagreement["reconciliation_sha256"] = reconciliation_sha256
     validate_reconciliation_pair(expected, disagreement)
-    _refuse_preference(expected)
-    _refuse_preference(disagreement)
+    refuse_capture_preference(expected)
+    refuse_capture_preference(disagreement)
     return expected, disagreement
 
 

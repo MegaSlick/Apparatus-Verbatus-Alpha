@@ -267,7 +267,7 @@ def test_malformed_signature_lengths_are_named_refusals_not_index_or_zip_errors(
 def test_every_produced_record_runs_through_the_shared_preference_refusal(monkeypatch):
     config = instrument.load_config()
     calls: list[dict] = []
-    monkeypatch.setattr(instrument, "_refuse_preference", calls.append)
+    monkeypatch.setattr(instrument, "refuse_capture_preference", calls.append)
     one = instrument.build_proxies(synthetic_page(), source_frame_sha256="a" * 64, config=config)
     two = instrument.build_proxies(synthetic_page(), source_frame_sha256="b" * 64, config=config)
     recipe = instrument.producer_recipe(config)

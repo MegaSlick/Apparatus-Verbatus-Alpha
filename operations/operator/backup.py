@@ -80,15 +80,16 @@ class BackupReport:
         counts: dict[str, int] = {}
         for field in ("copied", "reused"):
             count = value[field]
-            if (
-                not isinstance(count, int)
-                or isinstance(count, bool)
-                or count < 0
-                or count > MAX_BACKUP_FILES
-            ):
+            # Two clauses, two messages. Folded into one condition they also
+            # shared one refusal, so a test could not tell which clause had
+            # fired — and removing either left the other answering for both,
+            # green. The operator gains by it too: "is not an integer" says
+            # more about a report carrying "2" than a sentence about bounds.
+            if not isinstance(count, int) or isinstance(count, bool):
+                raise BackupRefusal(f"backup worker report field {field!r} is not an integer")
+            if count < 0 or count > MAX_BACKUP_FILES:
                 raise BackupRefusal(
-                    f"backup worker report field {field!r} must be a non-negative integer "
-                    f"no larger than {MAX_BACKUP_FILES}"
+                    f"backup worker report field {field!r} is outside 0..{MAX_BACKUP_FILES}"
                 )
             counts[field] = count
         if counts["copied"] + counts["reused"] == 0:
@@ -115,7 +116,7 @@ def sync_run_tree(
     """
 
     source, root = resolve_backup_paths(run_root, run_id, mac_directory)
-    _prepare_backup_layout(source, root)
+    prepare_backup_layout(source, root)
     # Keep the requested id: an in-root symlink may resolve to a differently
     # named directory, but the snapshot must record the run the operator named.
     try:
@@ -234,8 +235,15 @@ def _validate_backup_layout(source: Path, root: Path) -> None:
             )
 
 
-def _prepare_backup_layout(source: Path, root: Path) -> None:
-    """Create each child through its already-open, no-follow parent descriptor."""
+def prepare_backup_layout(source: Path, root: Path) -> None:
+    """Create each child through its already-open, no-follow parent descriptor.
+
+    Public because the trusted parent must run it too: custody grants the
+    confined child publication into the destination but not directory
+    creation, so `cli._backup_in_custody` builds the closed layout before the
+    worker starts. A step another module is required to call is part of this
+    module's surface, not a private detail a rename could quietly break.
+    """
 
     _validate_backup_layout(source, root)
     try:
@@ -446,7 +454,21 @@ def _inventory_descriptor(
     publication_temporaries: list[str] = []
     mac_spellings: dict[str, str] = {}
     encountered = 0
-    root_descriptor = os.dup(source_descriptor)
+    # A fresh open file description, not `os.dup`. `sync_run_tree` scans the
+    # same anchored root twice and compares the two views, and `dup` shares the
+    # directory offset with the caller's descriptor: on Linux `getdents64`
+    # advances that shared offset, so the second pass would start at end of
+    # directory, see an empty tree, and refuse a backup that had in fact just
+    # been copied. macOS does not advance it, which is why this was invisible
+    # here. `openat` on "." re-anchors the same directory the caller already
+    # inspected -- "." cannot be a symlink -- at offset zero, so neither pass
+    # depends on unspecified `fdopendir` positioning.
+    root_descriptor = _open_directory_descriptor(
+        ".", parent_descriptor=source_descriptor, what="source run tree"
+    )
+    if _descriptor_identity(root_descriptor) != _descriptor_identity(source_descriptor):
+        os.close(root_descriptor)
+        raise BackupRefusal("the source run tree changed filesystem identity before it was scanned")
     try:
         root_entries = os.scandir(root_descriptor)
     except OSError as error:
@@ -714,10 +736,23 @@ def _copy_verified(
             after = _stable_file_metadata(os.fstat(origin.fileno()))
             destination.flush()
             os.fsync(destination.fileno())
+        # Two faults, two sentences, for the same reason `from_record` splits
+        # its clauses. One shared message let an operator read "changed while
+        # it was being copied", conclude a stage was still writing, wait and
+        # retry — when the second case is identical metadata over different
+        # bytes, which is a storage or memory fault silently returning wrong
+        # content for a register page, and no amount of retrying informs them.
         if before != after:
-            raise BackupRefusal(f"source {relative!r} changed while it was being copied")
+            raise BackupRefusal(
+                f"source {relative!r} changed on disk while it was being copied; a writer "
+                "was still active, so no snapshot was published"
+            )
         if digest.hexdigest() != expected_sha256:
-            raise BackupRefusal(f"source {relative!r} changed while it was being copied")
+            raise BackupRefusal(
+                f"source {relative!r} hashed to different bytes than the inventory recorded "
+                "while its metadata held still; the read is not trustworthy and no snapshot "
+                "was published"
+            )
         try:
             _link_or_refuse(temporary_name, target.name, objects_descriptor, target_display=target)
         except FileExistsError:

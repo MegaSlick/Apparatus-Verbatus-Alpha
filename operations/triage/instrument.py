@@ -18,7 +18,7 @@ from PIL import Image
 
 from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of
 from common.contracts.errors import ContractError
-from common.corpus_register import _refuse_preference
+from common.corpus_register import refuse_capture_preference
 from common.imaging import MAX_PIXELS, encode_image_deterministic, imaging_library_versions
 
 RECIPE_SCHEMA: Final = "triage-producer-recipe.v1"
@@ -532,7 +532,7 @@ def producer_recipe(config: InstrumentConfig) -> dict[str, Any]:
             name: _STATUS for name in sorted(_INSTRUMENT_FIELDS | _THRESHOLD_FIELDS)
         },
     }
-    _refuse_preference(record)
+    refuse_capture_preference(record)
     return record
 
 
@@ -744,7 +744,7 @@ def validate_producer_recipe(record: Any) -> dict[str, Any]:
         or any(value != _STATUS for value in statuses.values())
     ):
         raise InstrumentRefusal("triage producer recipe must declare every tuning value UNMEASURED")
-    _refuse_preference(record)
+    refuse_capture_preference(record)
     return record
 
 
@@ -935,7 +935,7 @@ def validate_candidate_evidence(record: Any, config: InstrumentConfig) -> dict[s
         raise InstrumentRefusal(
             "candidate evidence thresholds, reasons, or measurement status do not match its configuration"
         )
-    _refuse_preference(record)
+    refuse_capture_preference(record)
     return record
 
 
@@ -1193,7 +1193,7 @@ def evidence_manifest(
             for left, right in selection.dimension_refused
         ],
     }
-    _refuse_preference(record)
+    refuse_capture_preference(record)
     return record
 
 
@@ -1224,7 +1224,7 @@ def validate_evidence_manifest(
         raise InstrumentRefusal(
             "candidate evidence manifest does not match the proxy pass and evidence it seals"
         )
-    _refuse_preference(record)
+    refuse_capture_preference(record)
     return record
 
 

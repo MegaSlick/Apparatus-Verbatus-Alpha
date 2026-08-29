@@ -33,6 +33,7 @@ from common.contracts.canonical import digest_bytes  # noqa: E402
 from common.contracts.errors import ContractError, FatalAccounting  # noqa: E402
 from common.contracts.identities import artifact_id, attempt_id  # noqa: E402
 from common.contracts.outcomes import (  # noqa: E402
+    ATTACHMENT_BASES,
     OutcomeClass,
     classify,
     terminal_category,
@@ -51,6 +52,7 @@ from common.native_witness import (  # noqa: E402
     unrouted_observations,
     validate_page_testimonium_payload,
     validate_partition_disagreement,
+    validate_reportable_observations,
 )
 from common.perlector_audit import validate_chain  # noqa: E402
 from common.recensor_receipt import build_recensor_partition_receipt  # noqa: E402
@@ -287,12 +289,7 @@ def act_attachment_facts(context, act_id: str, outcomes: dict[str, str]) -> dict
         if not isinstance(entry.get("attached"), bool):
             raise FatalAccounting(f"act {act_id} has ambiguous derived act-attachment facts")
         attachment_basis = entry.get("attachment_basis")
-        if attachment_basis not in {
-            "presented-region",
-            "anchor-line",
-            "geometric-overlap",
-            "unattached",
-        }:
+        if attachment_basis not in ATTACHMENT_BASES:
             raise FatalAccounting(
                 f"act {act_id} attachment entry for chair {entry['chair']!r} has no known attachment basis"
             )
@@ -333,11 +330,9 @@ def act_attachment_facts(context, act_id: str, outcomes: dict[str, str]) -> dict
             )
         seen_pairs.add(pair)
         if page_witness:
-            page_ordinal = entry.get("page_ordinal")
-            if not isinstance(page_ordinal, int) or isinstance(page_ordinal, bool):
-                raise FatalAccounting(
-                    f"act {act_id} page witness {chair!r} has no integer page ordinal"
-                )
+            # `page_ordinal` was type-checked above, before it became half of
+            # the duplicate-pair key; re-reading and re-checking it here said
+            # the same thing twice with a thinner message.
             proposal_page = proposal_pages.get(page_ordinal)
             if proposal_page is None:
                 raise FatalAccounting(
@@ -487,8 +482,16 @@ def act_attachment_facts(context, act_id: str, outcomes: dict[str, str]) -> dict
             # content denominator below.
             previous = facts[chair]
             merged = dict(_merge_page_attachment_fact(previous, fact))
+            # Only rows of this same act attempt are merged -- the health
+            # equality just above is what holds that -- so filling one page's
+            # missing basis from a sibling page never borrows another attempt's
+            # evidence.
+            #
             # `act-line-not-located` is sticky across aligned page rows: a
             # terminal blank cannot discard the page whose geometry failed.
+            # Without the stickiness `blank_corroboration` would read the merged
+            # row as geometry-checked and let a failed alignment corroborate a
+            # blank it never located.
             bases_seen = (previous["anchor_basis"], fact["anchor_basis"])
             if "act-line-not-located" in bases_seen:
                 merged["anchor_basis"] = "act-line-not-located"
@@ -1507,6 +1510,19 @@ def testimony_content_findings(context) -> dict[int, dict]:
     findings: dict[int, dict] = {}
     for (ordinal, chair), record in page_testimonia.items():
         payload = _payload(record, f"page Testimonium {record['artifact_id']}")
+        # `current_page_testimonia` types only the page ordinal and the chair,
+        # because those two become dict keys. The observed rows below are still
+        # untrusted evidence read from disk, and `unrouted_observations` indexes
+        # each one by name: a row that is not a closed observation would leave
+        # this stage as a raw KeyError rather than a named refusal, from the one
+        # stage that decides whether coverage recovery runs.
+        try:
+            validate_reportable_observations(payload.get("observed", []))
+        except ContractError as error:
+            raise FatalAccounting(
+                f"page Testimonium {record['artifact_id']} for page {ordinal}, chair {chair!r} "
+                f"has malformed observed geometry: {error}"
+            ) from error
         presented = payload.get("presented")
         disagreement = payload.get("partition_disagreement")
         if disagreement is not None:
@@ -1592,6 +1608,20 @@ def testimony_content_findings(context) -> dict[int, dict]:
             "uncovered_non_whitespace": uncovered,
         }
         finding["shortfall"] = finding["shortfall"] or bool(uncovered["count"])
+    for finding in findings.values():
+        if finding["by_chair"]:
+            continue
+        # This finding exists only because unclaimed geometry created it: no
+        # chair on this page reported text, so the loop above never diffed one
+        # and `by_chair` stayed empty. Leaving the seeded `shortfall: False`
+        # would publish a clean text measurement nobody took, indistinguishable
+        # from a page whose witnesses were read and covered everything
+        # (GOVERNANCE 10) -- the very restatement `NO_PAGE_CONTENT_COVERAGE`
+        # exists to avoid for pages that reach no measurement at all. The
+        # unclaimed observations stay: they are geometry, and they still route
+        # bounded recovery.
+        finding["shortfall"] = None
+        finding.setdefault("reason", NO_PAGE_CONTENT_COVERAGE["reason"])
     return findings
 
 

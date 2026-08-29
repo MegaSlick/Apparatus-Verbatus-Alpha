@@ -27,11 +27,11 @@ from common.contracts.errors import IncompatibleReuse, SchemaRefusal
 from common.contracts.identities import physical_page_id
 from common.corpus_register import (
     EMPTY_REGISTER_DIGEST,
-    _refuse_preference,
     append_records,
     empty_register,
     membership_heads,
     read_register_path,
+    refuse_capture_preference,
     register_digest,
     validate_register_bytes,
 )
@@ -656,7 +656,7 @@ def _confirmation_cluster_ids(
         used_members.update(members)
         used_pages.update(identities)
         result[cluster_id] = (sorted(members), page_records)
-    _refuse_preference(confirmation)
+    refuse_capture_preference(confirmation)
     return result
 
 
@@ -843,8 +843,8 @@ def produce(
         raise ProducerRefusal(
             f"manual refusal coverage: produced manifest cannot close: {error}"
         ) from error
-    _refuse_preference(manifest)
-    _refuse_preference(clusters)
+    refuse_capture_preference(manifest)
+    refuse_capture_preference(clusters)
     return ProducedTriage(manifest=manifest, clusters=clusters, rows_by_digest=by_digest)
 
 
@@ -865,7 +865,7 @@ def load_confirmation(path: str | Path) -> dict[str, Any]:
         raise ProducerRefusal("confirmation file must be canonical JSON")
     if not isinstance(value, dict) or value.get("schema") != CONFIRMATION_SCHEMA:
         raise ProducerRefusal("confirmation file has an unknown schema")
-    _refuse_preference(value)
+    refuse_capture_preference(value)
     return value
 
 
@@ -964,7 +964,7 @@ def append_confirmation_to_register(
             }
             records.append(membership)
             heads[page_id] = (digest_of(membership), set(members))
-    _refuse_preference(records)
+    refuse_capture_preference(records)
     if not records:
         # Every membership this confirmation names is already in the register: either
         # a genuine no-op resubmission, or the register half of an earlier crash-split

@@ -142,7 +142,17 @@ def append_records(
 
 @contextmanager
 def _register_lock(path: Path) -> Iterator[None]:
-    """Serialize pathname replacement across writers; a crash releases the lock."""
+    """Serialize pathname replacement across writers; a crash releases the lock.
+
+    The lock is load-bearing rather than advisory comfort. The append it guards is
+    a read-compare-replace against `expected_digest`, and that compare-and-swap is
+    only sound while one writer at a time holds the section: two writers that both
+    read digest D both satisfy the check, and the second `os.replace` discards the
+    first one's records with nothing anywhere recording that it happened. So every
+    way this function could fail to serialize refuses instead of proceeding — a
+    register append that was silently not serialized is exactly the append-only
+    evidence loss GOVERNANCE 2 and 4 forbid.
+    """
     lock_path = path.with_name(f".{path.name}.lock")
     no_follow = getattr(os, "O_NOFOLLOW", None)
     if no_follow is None:  # pragma: no cover - supported register stores are POSIX
@@ -162,9 +172,12 @@ def _register_lock(path: Path) -> Iterator[None]:
             raise SchemaRefusal("the corpus-register lock is not one unaliased regular file")
         try:
             import fcntl
-        except ImportError:  # pragma: no cover - supported register stores are POSIX
-            yield
-            return
+        except ImportError as error:  # pragma: no cover - supported stores are POSIX
+            raise SchemaRefusal(
+                "this platform cannot lock a corpus register: without flock the "
+                "append's digest compare-and-swap would let one writer discard "
+                "another's records unseen"
+            ) from error
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
         try:
             yield
@@ -396,7 +409,16 @@ def _read(data: bytes) -> tuple[dict[str, Any], _Reading]:
         )
     try:
         value = json.loads(data.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError, RecursionError) as error:
+    except RecursionError as error:
+        # Told apart from a parse failure on purpose. A pathologically nested
+        # register is valid UTF-8 and valid JSON; only its depth defeats the
+        # parser. Folded into the message below, it sent an operator to check the
+        # file's encoding, where there is nothing to find.
+        raise SchemaRefusal(
+            "corpus register is nested too deeply for this parser to read; it is "
+            "well-formed JSON whose structure is past the recursion bound"
+        ) from error
+    except (UnicodeDecodeError, ValueError) as error:
         raise SchemaRefusal("corpus register is not UTF-8 JSON") from error
     if not isinstance(value, dict) or set(value) != {"schema", "records"}:
         raise SchemaRefusal("corpus register must be the closed {schema, records} record")
@@ -407,7 +429,7 @@ def _read(data: bytes) -> tuple[dict[str, Any], _Reading]:
             f"corpus register has {len(value['records'])} records, past the "
             f"{MAX_REGISTER_RECORDS}-record replay bound"
         )
-    _refuse_preference(value)
+    refuse_capture_preference(value)
     reading = _Reading()
     for record in value["records"]:
         _validate_record(record, reading)
@@ -486,7 +508,19 @@ def _correspondence_identity(record: dict[str, Any]) -> str:
     return f"{record['act_id']}->{record['physical_act_id']}"
 
 
-def _refuse_preference(value: Any) -> None:
+def _membership_assertion_identity(physical_page: str, member: str) -> str:
+    """The retractable assertion that one capture shows one physical page."""
+    return f"membership:{physical_page}->{member}"
+
+
+def refuse_capture_preference(value: Any, *, what: str = "corpus register") -> None:
+    """Refuse a nested capture-preference claim, naming the record it was in.
+
+    Public because the rule is not the corpus register's alone: a Testimonium
+    must not express preference either (ARCHITECTURE, GOVERNANCE 3), and it was
+    reaching this through the private name -- which also told an operator
+    reading a witness record that the *corpus register* was at fault.
+    """
     pending = [value]
     while pending:
         current = pending.pop()
@@ -494,7 +528,7 @@ def _refuse_preference(value: Any) -> None:
             forbidden = set(current) & _FORBIDDEN_PREFERENCE_FIELDS
             if forbidden:
                 raise SchemaRefusal(
-                    f"corpus register may not express capture preference: {sorted(forbidden)}"
+                    f"{what} may not express capture preference: {sorted(forbidden)}"
                 )
             pending.extend(current.values())
         elif isinstance(current, list):
@@ -733,6 +767,18 @@ def _validate_membership(row: dict[str, Any], reading: _Reading) -> None:
     if not isinstance(row["appending_run"], str) or not row["appending_run"]:
         raise SchemaRefusal("membership record names no appending run")
     members = frozenset(_digests(row["members"], "membership members"))
+    if not members:
+        # A membership record that names no capture asserts nothing, and it is
+        # immutable once written: no retraction can name an assertion that was
+        # never made. `members_of` would report it as `[]`, which is exactly what
+        # a page with no membership record at all reports — so a triage bug that
+        # wrote one could never be told apart from a page nobody has photographed.
+        # `_evidence` refuses an empty list for this reason; so does this. Later
+        # records cannot be empty anyway, since each must strictly grow.
+        raise SchemaRefusal(
+            f"membership record for {page!r} names no capture; a record that asserts "
+            "nothing cannot be retracted and cannot be told from no record at all"
+        )
     prior = reading.membership_head.get(page)
     if prior is None:
         _require_declared(page, reading.physical_pages, "physical page")

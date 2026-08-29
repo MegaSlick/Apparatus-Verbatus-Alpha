@@ -8,7 +8,7 @@ from common import witness_adapters
 from common.chairs import load_models_toml
 from common.chairs.config import parse_models_config
 from common.chairs.errors import ConfigurationRefusal, ReceiptRefusal
-from common.chairs.models import ModelsConfig, ServingDetails
+from common.chairs.models import ChairIdentity, ModelsConfig, ServingDetails, is_witness_role
 from common.chairs.receipts import build_receipt, receipt_record, validate_receipt
 from common.contracts.errors import ContractError, IncompatibleReuse
 from common.runtree.store import RunTree
@@ -192,6 +192,25 @@ def test_bad_witness_scope_is_refused_by_the_closed_models_schema(scope):
     assert "Set witness_scope to exactly 'page' or 'act'" in message
 
 
+def test_an_adapter_without_any_scope_is_refused_like_a_wrong_one():
+    """Omission is the likeliest mistake, and it must not read as a default.
+
+    `witness_scope` is optional in the closed schema because a non-witness chair
+    carries neither field. Once `witness_adapter` names a boundary, a missing
+    scope leaves the adapter unable to say whether it runs per page or per act,
+    and guessing either would silently change how much ink a chair is shown.
+    """
+    raw = {
+        "witness_floor": 1,
+        "chairs": {"attestator_1": _configured_chair(witness_adapter="churro.v1")},
+    }
+
+    with pytest.raises(ContractError, match="invalid witness_scope") as caught:
+        parse_models_config(raw)
+
+    assert "Set witness_scope to exactly 'page' or 'act'" in str(caught.value)
+
+
 def test_two_chairs_may_share_one_adapter_at_different_scopes():
     """The adapter belongs to each occupant; it is not a unique or ranked seat.
 
@@ -281,10 +300,52 @@ def test_case_variant_configured_paths_are_refused_before_filesystem_resolution(
         parse_models_config(raw)
 
 
+@pytest.mark.parametrize(
+    ("first", "second"),
+    (
+        (
+            _configured_chair(manifest="manifests/shared.json"),
+            _configured_chair(manifest="manifests/shared.json"),
+        ),
+        (
+            _configured_chair(source="local-repository", path="shared"),
+            _configured_chair(source="local-repository", path="shared"),
+        ),
+    ),
+)
+def test_two_chairs_may_share_one_path_under_the_exact_same_spelling(first, second):
+    """Only two spellings of one folded path are ambiguous; exact sharing is not.
+
+    A refusal that also caught identical spellings would forbid the deliberate
+    case the check exists to distinguish, and there would be no way to pin two
+    chairs to one manifest or one local repository.
+    """
+    raw = {
+        "witness_floor": 0,
+        "model_root": "models",
+        "chairs": {"first": first, "second": second},
+    }
+
+    models = parse_models_config(raw)
+
+    assert models.chairs["first"].manifest == models.chairs["second"].manifest
+    assert models.chairs["first"].path == models.chairs["second"].path
+
+
 def test_the_live_roster_declares_the_rows_on_witness_chairs_and_nowhere_else():
+    """An explicit absence never parses the rows, so it is not held to them.
+
+    `validate_witness_adapter_bindings` skips `AbsentChair` for that reason, and
+    `_parse_chair` returns before the fields are read. Asserting the rows on an
+    absence would make this test refuse a roster the production rule allows.
+    """
+    occupied = 0
     for role, chair in _models().chairs.items():
-        carries = getattr(chair, "witness_adapter", None) is not None
-        assert carries == role.startswith("attestator_"), role
+        if not isinstance(chair, ChairIdentity):
+            continue
+        assert (chair.witness_adapter is not None) == is_witness_role(role), role
+        occupied += 1
+    assert occupied, "the live roster declares no occupied chair to check"
 
 
 def test_adapter_rows_travel_in_the_resolved_provenance_record():

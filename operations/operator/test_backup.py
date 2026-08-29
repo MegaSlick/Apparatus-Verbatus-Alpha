@@ -62,6 +62,28 @@ def test_backup_is_content_addressed_resumable_and_verifies_each_digest(tmp_path
         assert hashlib.sha256(stored.read_bytes()).hexdigest() == row["sha256"]
 
 
+def test_two_inventory_passes_from_one_descriptor_see_the_same_tree(tmp_path: Path) -> None:
+    """`sync_run_tree` scans the anchored root twice and compares the two views.
+
+    The passes therefore have to be independent of each other's directory
+    position. `os.dup` would not be: it shares one open file description, and
+    on Linux `getdents64` advances that shared offset, so the second pass
+    would start at end of directory, find nothing, and refuse a backup whose
+    bytes had just been copied correctly. macOS does not advance the shared
+    offset, which is exactly why this asymmetry has to be asserted rather than
+    left to whichever platform the suite happens to run on.
+    """
+    volume, run_id = _run_tree(tmp_path)
+    managed = backup_module.RunTree(volume, run_id).inventory_scope()
+
+    with backup_module._open_directory(volume / run_id, what="source run tree") as descriptor:
+        first = backup_module._inventory_descriptor(descriptor, managed)
+        second = backup_module._inventory_descriptor(descriptor, managed)
+
+    assert first[0], "the first inventory pass found no files to compare"
+    assert first == second
+
+
 def test_backup_never_overwrites_an_object_with_the_wrong_digest(tmp_path: Path) -> None:
     volume, run_id = _run_tree(tmp_path)
     mac = tmp_path / "mac"
@@ -94,9 +116,19 @@ def test_backup_refuses_to_publish_a_snapshot_when_the_source_moves(
         return result
 
     monkeypatch.setattr("operations.operator.backup._copy_verified", copy_then_change)
-    with pytest.raises(BackupRefusal, match="changed while"):
+    # Splitting the two refusals showed which check this case actually
+    # reaches, and it is not the tree-level before/after comparison: the
+    # rewrite lands before `run.json` is copied, so the per-file read hashes
+    # to bytes the inventory does not name while the metadata it captured
+    # around that read holds still. The loose "changed while" pattern matched
+    # either mechanism and so named neither.
+    with pytest.raises(BackupRefusal, match="hashed to different bytes than the inventory"):
         sync_run_tree(volume, run_id, mac)
-    assert not list((mac / "snapshots").rglob("*.json")) if (mac / "snapshots").exists() else True
+    # `Path.glob` on a missing directory yields nothing, so no existence guard
+    # is needed. `assert X if cond else True` is one conditional expression and
+    # passes outright whenever the directory is absent, which a later reader
+    # can easily take for two assertions.
+    assert not list((mac / "snapshots").rglob("*.json"))
 
 
 def test_backup_snapshot_publish_survives_a_kill_before_the_link(tmp_path: Path) -> None:
@@ -194,6 +226,32 @@ def test_backup_cli_executes_the_worker_inside_the_real_custody_boundary(tmp_pat
     assert list((mac / "snapshots" / "sha256").iterdir())
 
 
+def test_backup_worker_refuses_a_deeply_nested_request_in_one_line() -> None:
+    """A nesting bomb must refuse like everything else, not print a traceback.
+
+    `json.loads` raises `RecursionError`, not `ValueError`, and the byte bound
+    above still admits tens of thousands of nesting levels. Uncaught, the
+    worker dies with a stack trace and that becomes the detail the operator is
+    told to keep. `advance_worker` already lists `RecursionError` for this.
+    """
+    depth = 20_000
+    request = "[" * depth + "]" * depth
+    assert len(request) <= backup_worker.MAX_REQUEST_BYTES
+
+    completed = subprocess.run(
+        [sys.executable, "-m", "operations.operator.backup_worker"],
+        cwd=ROOT,
+        input=request,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 2
+    assert "Traceback" not in completed.stderr
+    assert len(completed.stderr.strip().splitlines()) == 1
+
+
 def test_backup_worker_bounds_its_request_before_json_deserialization() -> None:
     completed = subprocess.run(
         [sys.executable, "-m", "operations.operator.backup_worker"],
@@ -262,23 +320,49 @@ def test_backup_invalid_run_id_uses_the_named_backup_refusal(tmp_path: Path) -> 
     assert "run id is invalid" in failure.value.render()
 
 
+# Each case names the refusal it must produce. Asserting only the shared
+# phrase "backup worker report" let one surviving check answer for all five:
+# delete the integer test, or the ceiling test, and the suite stayed green
+# while the CLI accepted a report it cannot prove.
 @pytest.mark.parametrize(
-    "report",
+    ("report", "expected_detail"),
     (
-        {"schema": "mac-run-backup.v1", "snapshot_sha256": "a" * 64, "copied": 2, "reused": 0},
-        {"schema": SCHEMA, "snapshot_sha256": "a" * 64, "copied": "2", "reused": 0},
-        {
-            "schema": SCHEMA,
-            "snapshot_sha256": "a" * 64,
-            "copied": backup_module.MAX_BACKUP_FILES + 1,
-            "reused": 0,
-        },
-        {"schema": SCHEMA, "snapshot_sha256": "a" * 64, "copied": 0, "reused": 0},
-        {"schema": SCHEMA, "snapshot_sha256": "a" * 64, "copied": 2, "reused": 0},
+        pytest.param(
+            {"schema": "mac-run-backup.v1", "snapshot_sha256": "a" * 64, "copied": 2, "reused": 0},
+            "declares schema",
+            id="schema-is-not-this-backup-format",
+        ),
+        pytest.param(
+            {"schema": SCHEMA, "snapshot_sha256": "a" * 64, "copied": "2", "reused": 0},
+            "'copied' is not an integer",
+            id="count-is-a-string",
+        ),
+        pytest.param(
+            {
+                "schema": SCHEMA,
+                "snapshot_sha256": "a" * 64,
+                "copied": backup_module.MAX_BACKUP_FILES + 1,
+                "reused": 0,
+            },
+            "'copied' is outside",
+            id="count-is-past-the-file-ceiling",
+        ),
+        pytest.param(
+            {"schema": SCHEMA, "snapshot_sha256": "a" * 64, "copied": 0, "reused": 0},
+            "successful snapshot of no files",
+            id="claims-success-over-nothing",
+        ),
+        pytest.param(
+            # Well-formed on its face, and still refused: no snapshot with that
+            # digest was published, so the read-back has nothing to verify.
+            {"schema": SCHEMA, "snapshot_sha256": "a" * 64, "copied": 2, "reused": 0},
+            "snapshot that does not exist",
+            id="names-a-snapshot-that-was-never-written",
+        ),
     ),
 )
 def test_backup_cli_refuses_a_worker_report_that_cannot_prove_success(
-    tmp_path: Path, monkeypatch, report: dict[str, object]
+    tmp_path: Path, monkeypatch, report: dict[str, object], expected_detail: str
 ) -> None:
     volume, run_id = _run_tree(tmp_path)
 
@@ -297,7 +381,7 @@ def test_backup_cli_refuses_a_worker_report_that_cannot_prove_success(
         cli._backup_in_custody(volume, run_id, tmp_path / "mac", tmp_path)
 
     assert failure.value.code is ErrorCode.BACKUP_FAILED
-    assert "backup worker report" in failure.value.render()
+    assert expected_detail in failure.value.render()
 
 
 def test_backup_cli_classifies_a_worker_report_json_conversion_failure(
@@ -485,7 +569,7 @@ def test_backup_child_refuses_a_replaced_layout_directory_identity(tmp_path: Pat
     volume, run_id = _run_tree(tmp_path)
     mac = tmp_path / "mac"
     source, destination = backup_module.resolve_backup_paths(volume, run_id, mac)
-    backup_module._prepare_backup_layout(source, destination)
+    backup_module.prepare_backup_layout(source, destination)
     expected = backup_module.destination_identities(destination)
     object_store = mac / "objects" / "sha256"
     object_store.rename(mac / "objects" / "sha256-before-swap")
@@ -656,7 +740,7 @@ def test_a_backup_taken_across_a_concurrent_append_refuses_and_stays_resumable(
         return result
 
     monkeypatch.setattr(backup_module, "_copy_verified", copy_then_append)
-    with pytest.raises(BackupRefusal, match="changed while it was being copied"):
+    with pytest.raises(BackupRefusal, match="the run tree changed while it was being copied"):
         sync_run_tree(volume, run_id, mac)
     assert not list((mac / "snapshots" / "sha256").glob("*.json"))
 

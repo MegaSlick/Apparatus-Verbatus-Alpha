@@ -53,11 +53,33 @@ def _run(
     )
 
 
+_REFERENCE_KEYS = frozenset({"relative_path", "sha256"})
+# The floor is the point: with only `assert matched`, one added field on a
+# reference shape would drop that whole class out of `_references` while the
+# count stayed comfortably above zero, and the test would go on reporting a
+# volume-hosted tree movable with an unverified set of references inside it.
+#
+# Measured on `synthetic-two-page-v0`, `review` scenario: a complete run
+# resolves 313 references, and the smallest tree this helper is asked about --
+# the staged door..recensor tree the crash test starts from -- resolves 162.
+# The floor sits below that and far above zero, so it catches a class leaving
+# the check without tracking every ordinary change in fixture size.
+MINIMUM_RESOLVED_REFERENCES = 150
+
+
 def _references(value: object) -> Iterator[dict[str, str]]:
+    """Exactly the two-key shape, which is the *run-tree-relative* reference.
+
+    Deliberately not a superset match. Measured: broadening it to "carries
+    both keys" also matches the fixture ingress row
+    `{"ordinal", "relative_path", "sha256"}`, whose `relative_path` is
+    relative to the repository rather than to the run tree, and
+    `RunTree.resolve` then fails on a reference that was never this test's
+    to resolve. Two vocabularies share two key names; the floor above, not a
+    wider match, is what catches a shape silently leaving this check.
+    """
     if isinstance(value, dict):
-        if set(value) == {"relative_path", "sha256"} and all(
-            isinstance(value[key], str) for key in value
-        ):
+        if set(value) == _REFERENCE_KEYS and all(isinstance(value[key], str) for key in value):
             yield cast(dict[str, str], value)
         for nested in value.values():
             yield from _references(nested)
@@ -75,9 +97,13 @@ def _assert_every_reference_resolves(root: Path, run_id: str) -> int:
             assert resolved.is_file(), reference
             assert hashlib.sha256(resolved.read_bytes()).hexdigest() == reference["sha256"]
             matched += 1
-    # Nonzero evidence is required; a broken traversal would otherwise prove
-    # mobility vacuously.
-    assert matched, f"no run-tree references were found under {tree.root}"
+    # A floor, not merely nonzero: a broken traversal would otherwise prove
+    # mobility vacuously, and a partly broken one would prove it on whatever
+    # references happened to survive the match.
+    assert matched >= MINIMUM_RESOLVED_REFERENCES, (
+        f"only {matched} run-tree references were resolved under {tree.root}; "
+        f"at least {MINIMUM_RESOLVED_REFERENCES} were expected"
+    )
     return matched
 
 
@@ -215,6 +241,11 @@ def test_volume_hosted_tree_is_movable_and_crash_resume_appends_without_rewritin
             # A legitimate append rebuilds derived inventories and current-state
             # receipts; the immutable evidence they name must retain its bytes.
             continue
+        # Membership first. A deleted evidence file is the worst outcome this
+        # test can find -- an act removed from a parish, with nothing
+        # downstream able to say it happened -- and `finished[path]` alone
+        # would report it as a bare KeyError that reads like a broken test.
+        assert path in finished, f"resume deleted surviving evidence at {path}"
         assert finished[path] == digest, f"resume rewrote surviving evidence at {path}"
     # A resumed Recensor re-entry seals its own boundary: it adds one more
     # decode-environment/stage-seal attempt pair, and the stage's derived

@@ -127,6 +127,14 @@ case "$uv_version" in
     exit 1
     ;;
 esac
+# uv finds its cache through UV_CACHE_DIR, then XDG_CACHE_HOME, then HOME, and
+# `env -i` drops the first two deliberately. That is the decision, not an
+# oversight: this sync is the step that decides whether `.venv` may be trusted,
+# and a caller-named cache directory is a caller-supplied input to the verifier.
+# The cost is real and bounded -- someone whose populated cache lives outside
+# HOME gets "could not reconcile" and must re-run the recovery command with
+# network access. Losing that trade the other way would let the environment the
+# gate vouches for be reconciled from bytes the caller chose.
 /usr/bin/env -i HOME="$uv_home" PATH=/usr/bin:/bin \
   UV_PROJECT_ENVIRONMENT="$UV_PROJECT_ENVIRONMENT" \
   "$uv_binary" sync --frozen --offline --group test --group audit --no-config || {
@@ -182,10 +190,23 @@ audit_directory=$(mktemp -d "/tmp/verbatus-frozen-audit.XXXXXX") || {
 }
 audit_inventory="${audit_directory}/requirements.txt"
 cleanup_audit_inventory() {
-  rm -f -- "$audit_inventory"
-  rmdir -- "$audit_directory"
+  # The directory as a unit. `set -e` is in force, so `rmdir` returning non-zero
+  # over one unexpected file left the whole gate exiting non-zero after every
+  # check had already passed -- a directory-removal error the operator cannot
+  # tell from a real audit failure. Cleanup may not outvote the result.
+  rm -rf -- "$audit_directory"
 }
-trap cleanup_audit_inventory 0 1 2 15
+# A POSIX sh trap for HUP/INT/TERM runs the handler and then *resumes* the
+# script. With one shared trap, Ctrl-C deleted the inventory and the gate carried
+# straight on to pip_audit, which then failed on a missing --requirement file:
+# the operator read a missing-file error instead of "the run was interrupted".
+interrupt_audit_inventory() {
+  cleanup_audit_inventory
+  echo "check-all: interrupted before the advisory audit finished" >&2
+  exit 1
+}
+trap cleanup_audit_inventory 0
+trap interrupt_audit_inventory 1 2 15
 "$frozen_python" .githooks/frozen_audit_requirements.py > "$audit_inventory"
 "$frozen_python" -m pip_audit --strict --no-deps --disable-pip \
   --requirement "$audit_inventory"
