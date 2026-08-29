@@ -12,6 +12,9 @@ from pathlib import Path
 
 import pytest
 
+from common.runtree import store
+from common.runtree.store import RunTree
+
 from . import backup as backup_module
 from . import backup_worker, cli
 from .backup import SCHEMA, BackupRefusal, sync_run_tree
@@ -870,3 +873,35 @@ def test_a_backup_taken_across_a_concurrent_append_refuses_and_stays_resumable(
         stored = mac / "objects" / "sha256" / row["sha256"]
         assert hashlib.sha256(stored.read_bytes()).hexdigest() == row["sha256"]
     assert finished.reused == 2 and finished.copied == 1
+
+
+def test_the_exclusion_recognises_the_name_the_store_itself_publishes_through(
+    tmp_path: Path,
+) -> None:
+    """The store's temporary spelling and this module's predicate are one rule.
+
+    `_is_publication_temporary` decides what a backup silently leaves behind, and
+    `common.runtree.store` decides what an interrupted publication leaves on disk.
+    Every test that had exercised the exclusion, here and in the orchestrator's
+    volume tests, wrote `.tmp-` by hand — so if the store's prefix ever moved, the
+    predicate would stop recognising real residue and the backup would publish an
+    in-flight temporary as evidence, with the excluded list reporting nothing. The
+    name is taken from the store rather than typed here: this fails on the drift
+    instead of agreeing with whichever half changed.
+    """
+    published = tmp_path / "volume" / "r" / "1_exemplar" / "artifacts" / "page" / "art_x.json"
+    published.parent.mkdir(parents=True)
+    temporary = store._write_temporary(published, b"an interrupted publication")
+    try:
+        relative = temporary.relative_to(tmp_path / "volume" / "r").as_posix()
+        scope = RunTree(tmp_path / "volume", "r").inventory_scope()
+        assert backup_module._is_publication_temporary(relative, scope), (
+            f"the store publishes through {temporary.name!r}, which the backup's "
+            "exclusion does not recognise as a publication temporary"
+        )
+        # The published target itself is never residue, whatever it is named.
+        assert not backup_module._is_publication_temporary(
+            published.relative_to(tmp_path / "volume" / "r").as_posix(), scope
+        )
+    finally:
+        temporary.unlink()
